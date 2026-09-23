@@ -19,7 +19,7 @@ pi --offline
 
 `-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
 
-The published `0.1.0-beta.2` package predates the save/load commands below. To test this source candidate before its next release, build the checkout and run `./node_modules/.bin/pi install ./packages/pi -l` from that checkout.
+The published `0.1.0-beta.2` package predates the save/load commands below. To test this source candidate before its next release, follow [Develop from source](#develop-from-source) to build the checkout and install it into a separate project.
 
 On first launch, Pi asks whether you trust the project before loading its extension. If Pi is already open, use `/reload`. The current draft is restored from a persisted Pi session branch when available; named definition saves are stored separately.
 
@@ -59,7 +59,7 @@ After inspecting a definition, save it and reuse it in a new Pi session in the s
 /agentrun run
 ```
 
-Loading starts with empty input and does not execute. A save retains the definition, not input or execution permission. Each run restarts with the current input and model; it is not checkpoint resume.
+Loading starts with empty input and does not execute. A save retains the definition, not input or execution permission. Scripted demo adapters are not saved: loading a saved demo uses live adapters and requires the corresponding model and Jev access. Each run restarts with the current input and model; it is not checkpoint resume.
 
 | Command | What happens |
 | --- | --- |
@@ -231,11 +231,14 @@ git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.gi
 cd agentrun
 npm ci --ignore-scripts
 npm run build
-./node_modules/.bin/pi install ./packages/pi -l
-./node_modules/.bin/pi --offline
+agentrun_checkout="$PWD"
+mkdir -p ../agentrun-pi-project
+cd ../agentrun-pi-project
+"$agentrun_checkout/node_modules/.bin/pi" install "$agentrun_checkout/packages/pi" -l
+"$agentrun_checkout/node_modules/.bin/pi" --offline
 ```
 
-Use a separate project for this source installation. Pi loads the extension and skill from the checkout, so keep it in place. After source changes, rebuild and run `/reload`.
+These commands create a separate `agentrun-pi-project` beside the checkout. You can use your own project directory instead. Pi loads the extension and skill from the checkout, so keep it in place. After source changes, rebuild and run `/reload`.
 
 ## Dependencies and retained data
 

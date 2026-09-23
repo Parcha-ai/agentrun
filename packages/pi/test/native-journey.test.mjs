@@ -108,6 +108,9 @@ test('native Pi persisted-session offline journey saves, restores, reruns and lo
     const saved = await first.command('save fictional-triage');
     assert.equal(saved.details.digest, digest);
     assert.match(saved.content, /Input and execution permission are not saved/);
+    const exactLoad = saved.content.match(/\/agentrun (load fictional-triage [a-f0-9]{64})/)[1];
+    assert.equal(exactLoad, `load fictional-triage ${digest}`);
+    assert.match(saved.content, /Scripted demo adapters are not saved/);
     const history = await first.command('history');
     assert.equal(history.details.runs.length, 1);
     assert.equal(history.details.runs[0].digest, digest);
@@ -147,7 +150,8 @@ test('native Pi persisted-session offline journey saves, restores, reruns and lo
     const library = await fresh.command('list');
     assert.equal(library.details.workflows.length, 1);
     assert.equal(library.details.workflows[0].digest, digest);
-    const loaded = await fresh.command(`load fictional-triage ${digest}`);
+    assert.ok(library.content.includes(`/agentrun ${exactLoad}`));
+    const loaded = await fresh.command(exactLoad);
     assert.match(loaded.content, /Loading never executes/);
     const setup = await fresh.command('status');
     assert.equal(setup.details.mode, 'live', 'loading a saved definition does not confer demo execution authority');

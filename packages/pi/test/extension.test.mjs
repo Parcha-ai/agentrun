@@ -60,6 +60,11 @@ test('support triage preserves decisions, named reuse and branch-local receipts 
     assert.match(decision.details.join('\n'), /Interpreter accepted/);
     await first.command('save support-triage');
     assert.match(first.messages.at(-1).content, /Input and execution permission are not saved/);
+    assert.match(first.messages.at(-1).content, /Scripted demo adapters are not saved/);
+    const exactLoad = first.messages.at(-1).content.match(/\/agentrun (load support-triage [a-f0-9]{64})/)[1];
+    assert.equal(exactLoad, `load support-triage ${run.digest}`);
+    await first.command('list');
+    assert.ok(first.messages.at(-1).content.includes(`/agentrun ${exactLoad}`));
     const originalBranch = structuredClone(first.branch);
     await first.shutdown();
     second = await harness({ cwd, withModel: false, branch: originalBranch });
@@ -76,7 +81,8 @@ test('support triage preserves decisions, named reuse and branch-local receipts 
     assert.equal(second.calls.length, 0, 'scripted session restoration does not silently switch to live');
     await second.command('history');
     assert.equal(second.messages.at(-1).details.runs.length, 2);
-    await second.command('load support-triage');
+    await second.command(exactLoad);
+    assert.ok(second.messages.at(-1).content.includes(`/agentrun ${exactLoad}`));
     assert.match(second.messages.at(-1).content, /Missing input: ticket, evidence/);
     assert.match(second.messages.at(-1).content, /live adapters/);
     assert.equal(second.calls.length, 0, 'loading does not execute');
@@ -254,13 +260,18 @@ test('untrusted code is inspectable but only a user command can authorize its ex
     const inspected = await app.tool({ action: 'inspect', workflow: definition, input: { question: 'A generic task' } });
     assert.equal(inspected.details.inspection.checked, 'structure-only');
     assert.equal(globalThis.__nativeExtensionProbe, 0);
-    await assert.rejects(app.tool({ action: 'run', input: {}, trusted: true }), /allowExecutableCandidates/);
+    await assert.rejects(app.tool({ action: 'run', input: {}, trusted: true }), /\/agentrun run --trusted for each run/);
+    assert.equal(globalThis.__nativeExtensionProbe, 0);
+    await app.command('run');
+    assert.match(app.messages.at(-1).content, /user command \/agentrun run --trusted for each run/);
+    assert.match(app.messages.at(-1).content, /unsandboxed execution/);
+    assert.doesNotMatch(app.messages.at(-1).content, /allowExecutableCandidates/);
     assert.equal(globalThis.__nativeExtensionProbe, 0);
     await app.command('run --trusted');
     assert.equal(app.messages.at(-1).details.status, 'complete'); assert.deepEqual(app.messages.at(-1).details.output, { content: 'computed' });
     assert.ok(globalThis.__nativeExtensionProbe > 0); assert.equal(app.calls.length, 0);
     await app.tool({ action: 'inspect', workflow: definition });
-    await assert.rejects(app.tool({ action: 'run', input: {} }), /allowExecutableCandidates/);
+    await assert.rejects(app.tool({ action: 'run', input: {} }), /\/agentrun run --trusted for each run/);
   } finally { await app.shutdown(); delete globalThis.__nativeExtensionProbe; }
 });
 
@@ -289,7 +300,7 @@ test('native inspection rejects mechanical errors without executing Math IIFEs o
       assert.equal(Math.__nativeSafeFactory, 0);
       assert.equal(Math.__nativeSafeBody, 0);
     }
-    await assert.rejects(app.tool({ action: 'run' }), /allowExecutableCandidates/);
+    await assert.rejects(app.tool({ action: 'run' }), /\/agentrun run --trusted for each run/);
     assert.equal(Math.__nativeSafeFactory, 0);
     await app.command('run --trusted');
     assert.equal(app.messages.at(-1).details.status, 'complete');
@@ -334,7 +345,7 @@ test('native code diagnostics support inspect, trusted run, repair and rerun wit
     assert.match(failed.content, /format-result/); assert.doesNotMatch(failed.content, /private-adapter-body/);
     broken.root.code = 's => ({result:{content:"Fictional repaired fixture"}})';
     await app.tool({ action: 'inspect', workflow: broken });
-    await assert.rejects(app.tool({ action: 'run' }), /allowExecutableCandidates/);
+    await assert.rejects(app.tool({ action: 'run' }), /\/agentrun run --trusted for each run/);
     await app.command('run --trusted');
     assert.equal(app.messages.at(-1).details.status, 'complete'); assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
