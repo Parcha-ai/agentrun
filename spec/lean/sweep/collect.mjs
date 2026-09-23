@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Builds the validator-sweep corpus: every workflow the repository's own test suites hand
-// to the DSL's public validation and run entry points, plus the Pi author skill's examples
+// to the DSL's public validation and run entry points, plus the author skill's examples
 // and the conformance cases, each with the TypeScript validator's verdict. Run after
 // `npm run build`:
 //   node spec/lean/sweep/collect.mjs [out.json]
 // `lake exe validator-sweep out.json` then asserts the Lean validator accepts every
 // workflow the TypeScript validator accepts.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,10 +54,12 @@ for (const file of readdirSync(capture)) {
   add(relative(root, entry.source), entry.workflow, entry.inputKeys);
 }
 rmSync(capture, { recursive: true, force: true });
-const skillExamples = "packages/pi/skills/author/examples";
-for (const file of readdirSync(join(root, skillExamples)).filter((f) => f.endsWith(".json"))) {
+const skillExamples = "packages/dsl/skills/author/examples";
+for (const file of readdirSync(join(root, skillExamples)).filter((f) => f.endsWith(".json") && !f.endsWith(".input.json"))) {
   const workflow = JSON.parse(readFileSync(join(root, skillExamples, file), "utf8"));
   add(`${skillExamples}/${file}`, workflow, null);
+  const inputFile = join(root, skillExamples, file.replace(/\.json$/, ".input.json"));
+  if (existsSync(inputFile)) add(`${skillExamples}/${file}`, workflow, Object.keys(JSON.parse(readFileSync(inputFile, "utf8"))));
 }
 const cases = "spec/lean/conformance";
 for (const file of readdirSync(join(root, cases)).filter((f) => f.endsWith(".json"))) {

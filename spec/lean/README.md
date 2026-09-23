@@ -86,7 +86,7 @@ Two limits apply to what these results establish:
 - **Conformance pins agreement, not equivalence.** The conformance cases were recorded from the TypeScript implementation and then matched by the model. They pin agreement on those cases and cannot establish that the implementation is equivalent to the model.
 - **Totality is not liveness.** `T3_runWorkflow_total` is termination of the model, whose oracles answer atomically. It says nothing about the liveness of a run against live adapters. F8 is the concrete gap: under a recovery adapter, the engine's poll loop has no bound.
 
-The validator mirror is checked the other way as well: `lake exe validator-sweep` asserts that the Lean validator accepts every workflow the TypeScript validator accepts. The corpus is every workflow the repository's own test suites pass to the public API, plus the conformance cases and the Pi skill examples (see [the sweep](#validator-sweep)).
+The validator mirror is checked the other way as well: `lake exe validator-sweep` asserts that the Lean validator accepts every workflow the TypeScript validator accepts. The corpus is every workflow the repository's own test suites pass to the public API, plus the conformance cases and the author skill examples (see [the sweep](#validator-sweep)).
 
 `AgentRunSemantics/Check.lean` prints the axioms of every theorem and fails the build if any theorem depends on more than `propext`, `Classical.choice` and `Quot.sound`. Counterexamples are evaluated by the kernel with `decide +kernel`, never `native_decide`.
 
@@ -120,7 +120,7 @@ node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
 cd spec/lean && lake exe validator-sweep .lake/validator-corpus.json
 ```
 
-`collect.mjs` runs the DSL, Pi and example test suites with an import hook (`sweep/capture-*.mjs`). The hook records every workflow passed to `validateWorkflow`, `runWorkflow`, `runWorkflowSlice`, `runTypedWorkflow` and `dryRunWorkflow`, with the input keys of that call. The collector adds the Pi author skill's examples and the conformance workflows, then records the TypeScript validator's verdict for each. `validator-sweep` fails if the Lean validator rejects any workflow TypeScript accepts. CI runs both steps live, so a rule added to one validator only, or relaxed on the TypeScript side only, fails the `lean` job. The direction is one-way on purpose: the Lean validator checks a subset of the rules, so rejecting less than TypeScript is expected.
+`collect.mjs` runs the DSL, Pi and example test suites with an import hook (`sweep/capture-*.mjs`). The hook records every workflow passed to `validateWorkflow`, `runWorkflow`, `runWorkflowSlice`, `runTypedWorkflow` and `dryRunWorkflow`, with the input keys of that call. The collector adds the author skill's examples (with their sample inputs' keys) and the conformance workflows, then records the TypeScript validator's verdict for each. `validator-sweep` fails if the Lean validator rejects any workflow TypeScript accepts. CI runs both steps live, so a rule added to one validator only, or relaxed on the TypeScript side only, fails the `lean` job. The direction is one-way on purpose: the Lean validator checks a subset of the rules, so rejecting less than TypeScript is expected.
 
 ## Add a conformance case
 
