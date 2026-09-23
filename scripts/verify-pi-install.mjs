@@ -19,7 +19,6 @@ assert.equal(loaded.extensions.length, 1);
 const extension = loaded.extensions[0];
 assert(extension.commands.has('agentrun'));
 assert(extension.tools.has('agentrun'));
-assert(loader.getSkills().skills.some(skill => skill.name === 'agentrun-author'));
 const messages = [];
 Object.assign(loaded.runtime, {
   getActiveTools: () => [], getAllTools: () => [], getThinkingLevel: () => 'off',
@@ -54,6 +53,9 @@ runtime.registerNativeProvider(faux.provider);
 const { session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader,
   modelRuntime: runtime, model: faux.getModel(), sessionManager: SessionManager.inMemory(cwd), noTools: 'all' });
 try {
+  await session.bindExtensions({});
+  // The extension contributes the skill shipped by @parcha/agentrun-dsl when the session discovers resources.
+  assert(loader.getSkills().skills.some(skill => skill.name === 'agentrun-author' && skill.filePath.includes('agentrun-dsl')));
   let finish;
   const completed = new Promise(resolve => { finish = resolve; });
   const unsubscribe = session.subscribe(event => { if (event.type === 'agent_end') finish(); });

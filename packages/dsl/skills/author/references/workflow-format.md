@@ -1,6 +1,6 @@
 # Workflow format
 
-AgentRun documents are JSON data: `v: 2`, `name`, `schemas`, optional `input: {schemaId}`, `output: {schemaId, path}`, and `root`. Schema identifiers refer to the document's own catalog. Define the input and expected output before adding nodes. The installed `@parcha/agentrun-dsl/schema` is the complete editor schema; execution performs additional semantic checks.
+AgentRun documents are JSON data: `v: 2`, `name`, `schemas`, optional `input: {schemaId}`, `output: {schemaId, path}`, and `root`. Schema identifiers refer to the document's own catalog. Define the input and expected output before adding nodes. The [language reference](language.md) is the complete contract: every node kind, field and predicate the validator admits. The installed `@parcha/agentrun-dsl/schema` is the editor schema; execution performs additional semantic checks. This guide shows the patterns.
 
 ## Minimal typed answer
 
@@ -19,11 +19,11 @@ For repository work, an agent can declare `tools: ["read", "grep"]` only if thos
 
 Read [read-file.json](../examples/read-file.json) and its [input](../examples/read-file.input.json). This performs one active built-in `read` call; it needs no model or Jev system one decision. Replace the input path with the file the user asked to read.
 
-A built-in returns a Pi tool result: `content` is an array of text/image blocks and `details` is optional. Give `call.out` a schema for that tool return, rather than the final answer or a plain string. A later extraction can transform it into a different output schema. The bundled fictional `search` tool is the exception: its direct effect result is `{sources}`. A `call` needs its host tool name, typed `args`, result `out`, state key `as`, and positive `deadline_s`.
+A host tool returns the host's own result envelope. The example's `read` built-in (from the Pi host) returns `content`, an array of text/image blocks, and optional `details`. Give `call.out` a schema for that tool return, rather than the final answer or a plain string. A later extraction can transform it into a different output schema. The bundled fictional `search` tool is the exception: its direct effect result is `{sources}`. A `call` needs its host tool name, typed `args`, result `out`, state key `as`, and positive `deadline_s`.
 
 ## Composition and decisions
 
-Read the complete [release-note review](../examples/review-release-notes.json) and its [input](../examples/review-release-notes.input.json) before composing nodes. It maps a typed extraction over two notes, collects only each `change`, then summarizes the collected changes. This needs Pi, but no Jev or external tools.
+Read the complete [release-note review](../examples/review-release-notes.json) and its [input](../examples/review-release-notes.input.json) before composing nodes. It maps a typed extraction over two notes, collects only each `change`, then summarizes the collected changes. This needs an agent adapter, but no Jev or external tools.
 
 Use `chain.steps` for dependencies. Each `parallel.branches` entry receives the same input; branches must write different top-level keys. In `map`, `itemsPath` selects the list and the body sees `item` and `item_index`; set `as` and bound `maxConcurrency`. A body with `as` already returns that value per item. Use `resultPath` to select a different path, or to avoid retaining whole parent states from a chain body without `as`. A `loop` needs `until` and integer `maxIters` from 1 through 20; reaching the bound is not proof of success.
 
@@ -109,7 +109,7 @@ A `route` needs a nonempty `state` map and at least two named branch objects wit
 
 `unsure` selects the conservative branch below its confidence gate. Preserve the raw decision evidence; reaching `ready` does not prove migration correctness.
 
-Mechanical checks belong in predicates; semantic questions belong in agent/Jev nodes. Code is trusted JavaScript, not a sandbox, and requires the user's trusted run in the extension. Do not turn an unavailable tool or missing verifier into generated code that bypasses the host.
+Mechanical checks belong in predicates; semantic questions belong in agent/Jev nodes. Code is trusted JavaScript, not a sandbox, and runs only when the host authorizes it (the addendum names how). Do not turn an unavailable tool or missing verifier into generated code that bypasses the host.
 
 ## Code transforms and schema references
 
@@ -117,7 +117,7 @@ Read the complete fictional [evidence gate](../examples/evidence-gate.json) and 
 
 A code node permits **only** `node`, `label`, `code`, and optional `as`. Its `code` is a single synchronous function expression, such as `(s) => ({ count: s.items.length })`, not a bare statement body. The function receives the **full accumulated workflow state** as its first argument; it does not receive a scoped prompt map. Do not add `state`, `requires`, `out`, or `instructions` to a code node.
 
-Native inspection uses nonexecuting syntax/mechanical validation, equivalent to SDK `validateWorkflow(workflow, {executeCode: false})`. It neither evaluates code factories nor probes their outputs. The ordinary SDK validation default is for trusted code and may execute factories/probes. Neither mode is a sandbox or a proof that the eventual result will satisfy the output schema.
+Tool-host inspection uses nonexecuting syntax/mechanical validation, equivalent to SDK `validateWorkflow(workflow, {executeCode: false})`. It neither evaluates code factories nor probes their outputs. The ordinary SDK validation default is for trusted code and may execute factories/probes. Neither mode is a sandbox or a proof that the eventual result will satisfy the output schema.
 
 Use synchronous data operations such as `Math`, `JSON`, `Array`, `Object`, `Map`, and `Set`. The current executor shadows `Date`, `Promise`, timers, host/network globals, and `Function`; they are unavailable even in a trusted run. For example, derive calendar-month sequences from integer year/month pairs rather than `new Date(...)`. This catches accidental host dependencies; it is not an isolation or security boundary.
 

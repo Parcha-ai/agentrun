@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
+import { WORKFLOW_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
@@ -95,7 +96,7 @@ export type ArtifactNode = {
 export type ArtifactState = { path: string; filename: string; type: string };
 
 export function artifactNodeIsProse(node: ArtifactNode): boolean {
-  return node.type === "markdown" || node.type === "report";
+  return (PROSE_ARTIFACT_TYPES as readonly string[]).includes(node.type);
 }
 
 export function desugarWorkflow(workflow: Workflow): Workflow {
@@ -321,7 +322,12 @@ const snapshotState = (state: Record<string, unknown>): Record<string, unknown> 
   try { return structuredClone(state); }
   catch (cause) { throw new Error("Workflow state must be structured-cloneable", { cause }); }
 };
-const KINDS = new Set(["chain", "code", "agent", "decide", "extract", "report", "map", "parallel", "loop", "escalate", "call", "artifact", "workflow", "judge", "pick", "sift", "route"]);
+const KINDS: ReadonlySet<string> = new Set(WORKFLOW_NODE_KINDS);
+// The vocabulary names exactly the kinds the WorkflowNode type declares.
+type SameKinds<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const kindsMatchType: SameKinds<WorkflowNodeKind, WorkflowNode["node"]> = true;
+void kindsMatchType;
+const KIND_KEYS: Readonly<Record<string, ReadonlySet<string>>> = Object.fromEntries(WORKFLOW_NODE_KINDS.map((kind) => [kind, new Set([...NODE_FIELDS[kind], ...(IGNORED_NODE_FIELDS[kind] ?? [])])]));
 export const childSteps = (child: Workflow | undefined): WorkflowNode[] | null => {
   const root = child?.root;
   if (!root || typeof root !== "object") return null;
@@ -344,7 +350,7 @@ function containsReportNode(node: WorkflowNode | undefined): boolean {
   if (node.node === "route") return routeBodies(node).some(containsReportNode);
   return false;
 }
-const PREDICATES = new Set([...MECHANICAL_PREDICATE_NAMES, "ask"]);
+const PREDICATES: ReadonlySet<string> = new Set(WORKFLOW_PREDICATES);
 
 function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; instructions?: unknown; gte?: unknown; state?: unknown }): string[] {
   const out: string[] = [];
@@ -481,7 +487,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
   const declaredInput = workflow.input && Object.hasOwn(workflow.schemas, workflow.input.schemaId)
     ? resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]) : undefined;
   const inputKeys = opts?.input !== undefined ? Object.keys(opts.input ?? {}) : opts?.inputKeys;
-  const reachability = inputKeys ? { available: new Set(inputKeys), unknowable: false } : null;
+  const reachability: { available: Set<string>; unknowable: boolean } | null = inputKeys ? { available: new Set(inputKeys), unknowable: false } : null;
   // Closed, typed producers let us reject impossible nested paths without running
   // authored code. Open schemas, unions, references and dynamic control flow stand
   // down; this is a conservative edge check, not a second schema validator.
@@ -613,6 +619,16 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     }
     errors.push(`${path} (${label}): predicate path "${when.path}" is not produced by the code node that writes "${head}" (its shape has: ${missingAt && typeof missingAt === "object" ? Object.keys(missingAt).join(", ") : typeof missingAt}); the guard can never fire`);
   };
+  // A mechanical predicate reads one state key; when no input key or earlier node writes it, the guard can never fire.
+  const checkPredicateHead = (pred: unknown, label: string, path: string, field: string): void => {
+    if (!reachability || reachability.unknowable || !pred || typeof pred !== "object") return;
+    const { predicate, path: at, key } = pred as { predicate?: unknown; path?: unknown; key?: unknown };
+    const read = predicate === "no_new_items" ? key : predicate === "ask" ? undefined : at;
+    if (typeof read !== "string" || !read.trim()) return;
+    const head = read.split(".")[0];
+    if (!reachability.available.has(head)) errors.push(`${path} (${label}): ${field} reads "${read}" but no input key or earlier node produces "${head}"; the guard can never fire`);
+    else checkTypedPath(read, `${path} (${label}) ${field}`);
+  };
   const checkInterpolations = (value: unknown, label: string, path: string): void => {
     if (!reachability || reachability.unknowable || value === undefined) return;
     for (const m of JSON.stringify(value).matchAll(/\{([a-zA-Z0-9_.$]+)\}/g)) {
@@ -680,27 +696,6 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       } catch { /* Schema diagnostics above retain the original compilation failure. */ }
     }
   }
-  const KIND_KEYS: Record<string, Set<string>> = {
-    chain: new Set(["node", "steps"]),
-    code: new Set(["node", "label", "code", "as"]),
-    // "budget" (agent) and "samples"/"voteField" (decide) are deprecated-and-ignored: tolerated
-    // for legacy v2 documents. The engine invokes the adapter once per node.
-    agent: new Set(["node", "label", "state", "instructions", "sopSection", "out", "as", "requires", "tools", "effort", "thinking", "budget", "verify", "tier"]),
-    decide: new Set(["node", "label", "state", "instructions", "sopSection", "out", "as", "requires", "tools", "effort", "thinking", "samples", "voteField", "verify", "tier"]),
-    extract: new Set(["node", "label", "state", "instructions", "sopSection", "out", "as", "requires", "tools", "effort", "thinking", "verify", "tier"]),
-    report: new Set(["node", "label", "state", "instructions", "sopSection", "requires", "tools", "effort", "thinking"]),
-    artifact: new Set(["node", "label", "state", "type", "path", "instructions", "sopSection", "requires", "tools", "effort", "thinking"]),
-    map: new Set(["node", "label", "itemsPath", "body", "as", "resultPath", "maxConcurrency"]),
-    parallel: new Set(["node", "label", "branches"]),
-    loop: new Set(["node", "label", "body", "until", "maxIters"]),
-    escalate: new Set(["node", "label", "when", "kind", "stage", "summary"]),
-    call: new Set(["node", "label", "via", "tool", "args", "code", "input", "command", "where", "out", "as", "produces", "deadline_s", "retry", "poll", "requires", "env"]),
-    workflow: new Set(["node", "label", "workflow", "input", "out", "as"]),
-    judge: new Set(["node", "label", "state", "out", "as", "requires"]),
-    pick: new Set(["node", "label", "itemsPath", "describe", "instructions", "state", "allowNone", "as", "requires"]),
-    sift: new Set(["node", "label", "itemsPath", "describe", "state", "out", "as", "keep", "requires"]),
-    route: new Set(["node", "label", "state", "instructions", "branches", "unsure", "as", "requires"]),
-  };
   const checkStateMap = (map: unknown, label: string, path: string, field = "state"): void => {
     if (map === undefined) return;
     if (!map || typeof map !== "object" || Array.isArray(map)) { errors.push(`${path} (${label}): ${field} must be an object map of what the questions see`); return; }
@@ -768,10 +763,10 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (node.state !== undefined) checkStateMap(node.state, node.label, path);
         if (!node.instructions?.trim()) errors.push(`${path} (${node.label}): instructions required`);
         if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) errors.push(`${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
-        if ((node as any).thinking !== undefined && !["low", "medium", "high"].includes(String((node as any).thinking))) errors.push(`${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
+        if ((node as any).thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String((node as any).thinking))) errors.push(`${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
         if ((node as any).tools !== undefined && (!Array.isArray((node as any).tools) || (node as any).tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) errors.push(`${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
         checkRequires(node, path);
-        if ((node as any).tier !== undefined && !["fast", "default", "strong"].includes(String((node as any).tier))) errors.push(`${path} (${node.label}): tier must be fast|default|strong`);
+        if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) errors.push(`${path} (${node.label}): tier must be fast|default|strong`);
         if (node.node !== "report" && (node as any).verify !== undefined) {
           const v = (node as any).verify as VerifyClause;
           if (!v || typeof v !== "object" || typeof v.out !== "string") errors.push(`${path} (${node.label}): verify needs an out (a question schema id)`);
@@ -803,7 +798,6 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       case "parallel":
         if (!Array.isArray(node.branches) || node.branches.length < 2) errors.push(`${path} (${node.label}): parallel needs at least two branches`);
         if (containsReportNode(node)) errors.push(`${path} (${node.label}): a report node cannot live inside a parallel branch — the report is rendered once, after every branch has landed`);
-        if (reachability) reachability.unknowable = true;
         {
           const writers = new Map<string, number>();
           (node.branches || []).forEach((branch, i) => {
@@ -814,7 +808,15 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
             }
           });
         }
-        (node.branches || []).forEach((branch, i) => walk(branch, `${path}.branches[${i}]`));
+        {
+          // Every branch starts from the state before the parallel node: a branch never reads a sibling's writes.
+          const before = reachability && !reachability.unknowable ? new Set(reachability.available) : null;
+          (node.branches || []).forEach((branch, i) => {
+            if (reachability && before) { reachability.available = new Set(before); reachability.unknowable = false; }
+            walk(branch, `${path}.branches[${i}]`);
+          });
+          if (reachability) reachability.unknowable = true;
+        }
         return;
       case "loop":
         if (!Number.isInteger(node.maxIters) || node.maxIters < 1 || node.maxIters > 20) errors.push(`${path} (${node.label}): maxIters must be 1..20`);
@@ -827,6 +829,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         mayEscalate = true;
         checkPredicate(node.when, node.label, path, "when");
         if (!node.kind?.trim() || !node.stage?.trim() || !node.summary?.trim()) errors.push(`${path} (${node.label}): kind, stage, summary required`);
+        checkPredicateHead(node.when, node.label, path, "when");
         checkPredicatePath(node.when as { path?: string }, node.label, path);
         return;
       case "judge": {
@@ -935,7 +938,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       }
       case "call": {
         const label = node.label || "call";
-        if (!["tool", "executor", "shell"].includes(String(node.via))) errors.push(`${path} (${label}): via must be tool|executor|shell`);
+        if (!(CALL_TRANSPORTS as readonly string[]).includes(String(node.via))) errors.push(`${path} (${label}): via must be tool|executor|shell`);
         if (node.via === "tool") {
           if (!node.tool?.trim()) errors.push(`${path} (${label}): via tool needs a tool address`);
           if (node.args !== undefined && (!node.args || typeof node.args !== "object" || Array.isArray(node.args))) errors.push(`${path} (${label}): args must be an object`);
@@ -969,7 +972,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           const r = node.retry;
           if (!r || !Number.isInteger(r.attempts) || r.attempts < 1 || r.attempts > 5) errors.push(`${path} (${label}): retry.attempts must be 1..5`);
           if (r?.backoff_s !== undefined && !(Number.isFinite(r.backoff_s) && r.backoff_s >= 0 && r.backoff_s <= 60)) errors.push(`${path} (${label}): retry.backoff_s must be 0..60`);
-          if (r?.on !== undefined && (!Array.isArray(r.on) || r.on.some((c) => !["timeout", "http_5xx", "http_429", "connection", "exit"].includes(String(c))))) errors.push(`${path} (${label}): retry.on may name only timeout|http_5xx|http_429|connection|exit`);
+          if (r?.on !== undefined && (!Array.isArray(r.on) || r.on.some((c) => !(CALL_RETRY_CLASSES as readonly string[]).includes(String(c))))) errors.push(`${path} (${label}): retry.on may name only timeout|http_5xx|http_429|connection|exit`);
         }
         if (node.poll !== undefined) {
           const p = node.poll;

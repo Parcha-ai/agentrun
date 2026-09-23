@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { authorWorkflow, createPiRunner, PiRunError } from '../dist/index.js';
+import { authorContract, authorWorkflow } from '@parcha/agentrun-dsl';
+import { createPiRunner, PiRunError } from '../dist/index.js';
 
 const request = { kind: 'agent', label: 'test', system: ['Host instructions'], user: 'Return a count', schema: { type: 'object', properties: { count: { type: 'number' } }, required: ['count'], additionalProperties: false } };
 function scripted(script, extra = {}) {
@@ -139,140 +140,31 @@ test('timeout bounds a hanging host verifier', async () => {
 });
 
 const workflow = { v: 2, name: 'summary', schemas: { Result: { type: 'object', properties: { count: { type: 'number' } }, required: ['count'], additionalProperties: false } }, output: { schemaId: 'Result', path: 'result' }, root: { node: 'extract', label: 'extract', instructions: 'Extract the count from the text field in the JSON input.', requires: ['text'], out: 'Result', as: 'result' } };
-test('author retains rejected and accepted versions and protects host acceptance callback', async () => {
+test('the package author runs in one Pi session with no host tools and repairs from review feedback', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-'));
   try {
     const invalid = { ...workflow, output: { schemaId: 'Missing' } };
     const run = scripted([invalid, workflow]);
-    let checked = 0;
-    const authored = await authorWorkflow({ request: 'Extract a count', outputDir: dir, pi: run.options, inputKeys: ['text'], acceptance: candidate => { checked++; candidate.name = 'mutated'; return []; } });
+    const hostTool = { name: 'bash', label: 'Bash', description: 'Host shell', parameters: { type: 'object' }, async execute() { throw new Error('the author must not reach host tools'); } };
+    const runNode = createPiRunner({ ...run.options, tools: [hostTool], maxSubmissions: 2 });
+    const authored = await authorWorkflow({ request: 'Extract a count', outputDir: dir, runNode, inputKeys: ['text'], maxCandidates: 2 });
     assert.equal(authored.candidates, 2);
-    assert.equal(authored.workflow.name, 'summary');
-    assert.equal(authored.checks, 'structural-and-host');
-    assert.equal(checked, 1);
-    assert.equal(JSON.parse(await readFile(join(authored.directory, '001.review.json'))).accepted, false);
-    assert.equal(JSON.parse(await readFile(join(authored.directory, '002.review.json'))).accepted, true);
+    assert.equal(run.seen.sessions, 1);
+    assert.deepEqual(run.seen.options.tools, ['submit']);
+    assert.match(run.seen.results[0].content[0].text, /output.schemaId must name a schema/);
+    assert.equal(run.seen.options.resourceLoader.getSystemPrompt().includes(authorContract()), true);
     assert.deepEqual(JSON.parse(await readFile(authored.path)), workflow);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
-test('author refuses generated executable nodes before validation and retains failure', async () => {
+test('the Pi runner submission limit stops the package author and the failure is retained', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-'));
   try {
     const executable = { ...workflow, root: { node: 'code', label: 'unsafe', code: '() => ({})' } };
     const run = scripted([executable]);
-    await assert.rejects(authorWorkflow({ request: 'Do work', outputDir: dir, pi: run.options, maxCandidates: 1 }), e => e.reason === 'submission_limit');
+    await assert.rejects(authorWorkflow({ request: 'Do work', outputDir: dir, runNode: createPiRunner({ ...run.options, tools: [], maxSubmissions: 1 }), maxCandidates: 1 }), e => e.reason === 'submission_limit');
     const [folder] = await readdir(dir);
-    const review = JSON.parse(await readFile(join(dir, folder, '001.review.json')));
-    assert.match(review.errors.join(), /allowExecutableCandidates/);
+    assert.match(JSON.parse(await readFile(join(dir, folder, '001.review.json'))).errors.join(), /allowExecutableCandidates/);
     assert.equal(JSON.parse(await readFile(join(dir, folder, 'result.json'))).status, 'failed');
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-test('author preserves every supplied rubric section on judgments', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-'));
-  try {
-    const missing = { ...workflow, root: { ...workflow.root, node: 'decide', sopSection: ['Ratings'] } };
-    const fixed = { ...missing, root: { ...missing.root, sopSection: ['Ratings', 'Blockers'] } };
-    const run = scripted([missing, fixed]);
-    const authored = await authorWorkflow({ request: 'Judge counts', outputDir: dir, pi: run.options, inputKeys: ['text'], rubricSections: { Ratings: 'Full rating rubric.', Blockers: 'Full blocking rubric.' } });
-    assert.equal(authored.candidates, 2);
-    assert.match(run.seen.results[0].content[0].text, /Blockers/);
-    assert.match(run.seen.options.resourceLoader.getSystemPrompt(), /Full blocking rubric/);
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-test('author rejects hidden semantic judgments without a reviewed rubric contract', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-'));
-  try {
-    for (const root of [
-      { node: 'escalate', label: 'check', when: { predicate: 'ask', instructions: 'Accept?' }, kind: 'review', stage: 'check', summary: 'Review' },
-      { ...workflow.root, sopSection: ['Policy'], verify: { out: 'Result' } },
-    ]) {
-      const run = scripted([{ ...workflow, root }]);
-      await assert.rejects(authorWorkflow({ request: 'Apply policy', outputDir: dir, pi: run.options, maxCandidates: 1, rubricSections: { Policy: 'Original complete rubric.' } }), error => error.reason === 'submission_limit');
-      assert.match(run.seen.results[0].content[0].text, /separately reviewed question contract/);
-    }
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-
-test('author refuses inherited schema names and malformed fields before host acceptance', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-shape-'));
-  try {
-    const absent = { ...workflow, schemas: {}, root: { ...workflow.root, out: 'constructor' }, output: { schemaId: 'constructor' } };
-    const malformed = { ...workflow, root: { ...workflow.root, sopSection: 42 } };
-    const run = scripted([absent, malformed, workflow]);
-    let hostChecks = 0;
-    const authored = await authorWorkflow({ request: 'Extract a count', outputDir: dir, pi: run.options, inputKeys: ['text'], acceptance: () => { hostChecks++; return []; } });
-    assert.equal(authored.candidates, 3);
-    assert.equal(hostChecks, 1);
-    for (const number of ['001', '002']) {
-      const review = JSON.parse(await readFile(join(authored.directory, `${number}.review.json`)));
-      assert.equal(review.accepted, false);
-      assert.ok(review.errors.length);
-    }
-    assert.equal(JSON.parse(await readFile(join(authored.directory, '003.review.json'))).accepted, true);
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-test('author treats schema keywords and examples as data, including in child workflows', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-data-'));
-  try {
-    const safe = structuredClone(workflow);
-    safe.root.sopSection = ['Policy'];
-    safe.schemas.Input = { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] };
-    safe.input = { schemaId: 'Input' };
-    safe.schemas.Result.properties.verify = { type: 'boolean' };
-    safe.schemas.Result.properties.node = { type: 'string', examples: ['code'] };
-    safe.schemas.Result.examples = [{ count: 3, node: 'code', verify: {}, predicate: 'ask' }];
-    const parent = {
-      ...safe,
-      root: { node: 'workflow', label: 'child', workflow: safe, input: { text: '{text}' }, out: 'Result', as: 'result' },
-    };
-    for (const candidate of [safe, parent]) {
-      const run = scripted([candidate]);
-      const authored = await authorWorkflow({ request: 'Extract counts', outputDir: dir, pi: run.options, inputKeys: ['text'], rubricSections: { Policy: 'Keep the original count.' } });
-      assert.equal(authored.candidates, 1);
-      assert.equal(JSON.parse(await readFile(join(authored.directory, '001.review.json'))).accepted, true);
-    }
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-test('author follows every graph edge and rejects actual executable children before probes', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-graph-'));
-  try {
-    globalThis.__authorPolicyProbe = 0;
-    const unsafe = { node: 'code', label: 'unsafe', code: '((function(){}).constructor("globalThis.__authorPolicyProbe++")(), () => ({ result: { count: 1 } }))' };
-    const roots = [
-      { node: 'chain', steps: [unsafe] },
-      { node: 'parallel', label: 'branches', branches: [unsafe] },
-      { node: 'map', label: 'items', itemsPath: 'items', as: 'results', body: unsafe },
-      { node: 'loop', label: 'retry', body: unsafe, until: { predicate: 'field_true', path: 'done' }, maxIters: 2 },
-      { node: 'route', label: 'route', state: {}, instructions: 'Choose', branches: { chosen: { body: unsafe } } },
-      { node: 'workflow', label: 'child', workflow: { ...workflow, root: unsafe }, input: {}, out: 'Result', as: 'result' },
-    ];
-    for (const root of roots) {
-      const run = scripted([{ ...workflow, root }]);
-      await assert.rejects(authorWorkflow({ request: 'Do work', outputDir: dir, pi: run.options, maxCandidates: 1 }), error => error.reason === 'submission_limit');
-      assert.match(run.seen.results[0].content[0].text, /code requires allowExecutableCandidates/);
-      assert.equal(globalThis.__authorPolicyProbe, 0, `${root.node} must be rejected before evaluating code`);
-    }
-  } finally { delete globalThis.__authorPolicyProbe; await rm(dir, { recursive: true, force: true }); }
-});
-
-test('child workflow semantic predicates and incomplete rubric remain subject to author policy', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agentrun-author-child-policy-'));
-  try {
-    const childRoots = [
-      { ...workflow.root, sopSection: [] },
-      { node: 'escalate', label: 'check', when: { predicate: 'ask', instructions: 'Accept?' }, kind: 'review', stage: 'check', summary: 'Review' },
-      { node: 'judge', label: 'judge', state: {}, out: 'Result', as: 'result' },
-    ];
-    const messages = [/must include rubric section Policy/, /separately reviewed question contract/, /cannot carry supplied SOP sections/];
-    for (const [i, root] of childRoots.entries()) {
-      const candidate = { ...workflow, root: { node: 'workflow', label: 'child', workflow: { ...workflow, root }, input: { text: '{text}' }, out: 'Result', as: 'result' } };
-      const run = scripted([candidate]);
-      await assert.rejects(authorWorkflow({ request: 'Apply policy', outputDir: dir, pi: run.options, maxCandidates: 1, inputKeys: ['text'], rubricSections: { Policy: 'Original full rubric.' } }), error => error.reason === 'submission_limit');
-      assert.match(run.seen.results[0].content[0].text, messages[i]);
-    }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

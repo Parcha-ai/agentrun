@@ -113,7 +113,7 @@ The packaged skill has Pi inspect the available tools, build a workflow, and run
 
 Use `createPiHostRunner` inside an existing Pi extension or `createPiRunner` with a configured standalone SDK runtime. Supply tools explicitly. The runner forwards schema and review feedback to the same agent session, bounds turns and submissions, and honors cancellation.
 
-For authoring, `authorWorkflow` retains a candidate and its feedback without activating it. Supply your own acceptance callback to evaluate behavior. Without that callback, acceptance checks structure only.
+For authoring, `authorWorkflow` from `@parcha/agentrun-dsl` retains a candidate and its feedback without activating it. Pass it a Pi runner as its `runNode`. Supply your own acceptance callback to evaluate behavior. Without that callback, acceptance checks structure only.
 
 For an authoritative SOP, supply complete `rubricSections` during authoring and the same source text through runtime `sop`. The author conservatively requires every generative node to carry all supplied sections and rejects semantic paths that cannot carry them. See [Pi SDK setup](../packages/pi/README.md#sdk-embed-the-runner) for configuration and limits.
 

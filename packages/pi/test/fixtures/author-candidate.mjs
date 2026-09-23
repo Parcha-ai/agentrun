@@ -1,7 +1,7 @@
 // Test-only scripted Pi session for candidate retention and host acceptance.
 import { readFile } from 'node:fs/promises';
-import { runWorkflow } from '@parcha/agentrun-dsl';
-import { authorWorkflow, createPiRunner } from '@parcha/agentrun-pi';
+import { authorWorkflow, runWorkflow } from '@parcha/agentrun-dsl';
+import { createPiRunner } from '@parcha/agentrun-pi';
 
 const args = process.argv.slice(2);
 function option(name, fallback) {
@@ -31,7 +31,7 @@ const offlinePi = {
   model: {}, modelRuntime: {}, maxTurns: 2, timeoutMs: 10_000,
   async sessionFactory(config) {
     let listener = () => {};
-    const authoring = config.resourceLoader.getSystemPrompt().includes('You author AgentRun DSL');
+    const authoring = config.resourceLoader.getSystemPrompt().includes('You author AgentRun workflows');
     return { session: {
       subscribe(fn) { listener = fn; return () => {}; },
       async abort() {}, dispose() {},
@@ -55,7 +55,9 @@ const fixtures = [
 let fixtureChecks = 0;
 const candidate = await authorWorkflow({
   request: 'Create one extract node that reads the text input field and returns {count: nonnegative integer}. Declare an input schema requiring text, an output schema requiring count, and no tools or effects. Instructions refer to JSON input; they are literal text. Inputs contain exactly one numeric count.',
-  outputDir, inputKeys: ['text'], pi, maxCandidates: 3,
+  outputDir, inputKeys: ['text'], maxCandidates: 3,
+  // The author session gets no host tools and stops at the candidate limit.
+  runNode: createPiRunner({ ...pi, tools: [], maxSubmissions: 3 }),
   async acceptance(workflow) {
     // Fixed host policy and expectations live outside the generated workflow.
     // Keep this example's acceptance execution restricted to a single tool-free node.

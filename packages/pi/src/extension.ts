@@ -6,14 +6,16 @@ import {
   createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition,
   VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import { formatWorkflowTree, inspectWorkflow, type WorkflowDeps } from '@parcha/agentrun-dsl';
+import {
+  formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, authorSkillDirectory, loadAuthorReference, renderAuthorHostAddendum,
+  WORKFLOW_NODE_KINDS, type AuthorHostAddendum, type WorkflowDeps,
+} from '@parcha/agentrun-dsl';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
 import { WorkflowExtensionService, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
-import { loadPiJevGuide, loadPiWorkflowGuide } from './skill-bundle.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
 
 const constructors = {
@@ -76,6 +78,26 @@ export default function agentRunExtension(pi: ExtensionAPI): void {
   registerExtension(pi, {});
 }
 
+/** What this extension adds to the shared workflow language: its commands, tools and unavailable transports. */
+function piHost(hostTools: boolean): AuthorHostAddendum {
+  return {
+    name: 'Pi extension',
+    nodeKinds: WORKFLOW_NODE_KINDS.filter(kind => kind !== 'artifact'),
+    rules: [
+      'Call agentrun with action describe first, then inspect the complete workflow with its input, then run without a workflow argument.',
+      hostTools
+        ? 'Only the host-configured tools describe returns exist, including during trusted runs.'
+        : 'Active read-only built-ins (read, grep, find, ls) are available by default; bash, edit and write exist only in a trusted run. The search tool reads fictional demo sources only.',
+      'Code nodes and mutating tools run only after the user issues /agentrun run --trusted for that run. Trusted execution is local and unsandboxed.',
+      'A call uses via tool with a tool describe returns. Shell and executor calls and artifact delivery are unavailable.',
+      'This extension supplies no SOP text: do not run a workflow with sopSection here; it needs an SDK host that supplies the authoritative SOP.',
+      'Custom extension tools and outer permission hooks are not inherited, including in trusted runs.',
+      'The workflow is session-local: /agentrun shows it, /agentrun run reruns its last input, /agentrun stop requests cancellation and /agentrun status reports setup. Escape does not reliably cancel a slash-started run. There is no save or load.',
+      'The structural limits describe returns bound node count, map concurrency and parallel branches.',
+    ],
+  };
+}
+
 function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOptions): void {
   const limits: AgentRunRuntimeLimits = { ...nativeLimits, ...configuration.runtimeLimits };
   const serviceLimits = { deadlineMs: limits.deadlineMs, maxAgentCalls: limits.modelRequests,
@@ -115,7 +137,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     return current;
   };
   const readiness = (ctx: ExtensionContext, s: Session) => ({
-    skill: pi.getCommands().some(item => item.name === 'skill:agentrun-author' && item.source === 'skill'),
+    skill: pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill'),
     pi: !!ctx.model && ctx.modelRegistry.getAll().some(model => model.id === ctx.model?.id && model.provider === ctx.model?.provider && model.api === ctx.model?.api),
     jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim(), sop: false, running: s.busy, workflow: !!s.draft,
     mode: s.draft ? s.demo ? 'scripted' : 'live' : undefined,
@@ -296,7 +318,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
 
   pi.registerTool({
     name: 'agentrun', label: 'AgentRun workflow',
-    description: 'Use the agentrun-author skill to compose workflows. Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
+    description: `Use the ${AUTHOR_SKILL_NAME} skill to compose workflows.` + ' Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
       ? 'Only the explicit host-configured tools are available, including during trusted runs. Outer permission hooks are not inherited. '
       : 'Enabled read-only Pi built-ins are available to declared steps. Shell/write/edit need the trusted command for each run; custom extension tools and permission hooks are not inherited. The search tool reads fictional demo sources only. ') + 'Scripted demos stay scripted on rerun; use /agentrun demo live to switch. Saving workflows is not part of v1.',
     parameters: Type.Object({ action: Type.Union([Type.Literal('describe'), Type.Literal('inspect'), Type.Literal('run')]),
@@ -315,7 +337,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       const s = await state(ctx);
       if (args.action === 'describe') {
         const details = { tools: toolSet(ctx).map(t => ({ name: t.name, description: t.description, parameters: t.parameters })),
-          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: { workflow: loadPiWorkflowGuide(), jev: loadPiJevGuide() } };
+          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: { language: loadAuthorReference('language'), workflow: loadAuthorReference('workflow-format'), jev: loadAuthorReference('jev-decisions'), host: renderAuthorHostAddendum(piHost(!!configuration.hostTools)) } };
         return textResult(JSON.stringify(details, null, 2), details);
       }
       if (args.action === 'run' && args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then run without a workflow argument.');
@@ -357,11 +379,11 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           show(s, `Unknown AgentRun command: ${raw}\n\n${help}`);
         } else {
           if (s.busy) throw new Error('A workflow is running. Stop it before starting another.');
-          if (!pi.getCommands().some(item => item.name === 'skill:agentrun-author' && item.source === 'skill')) {
+          if (!pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill')) {
             throw new Error('AgentRun authoring skill is unavailable. Enable package skills, then /reload. Run /agentrun status to check discovery.');
           }
           if (!readiness(ctx, s).pi) throw new Error(PI_MODEL_SETUP_MESSAGE);
-          pi.sendUserMessage(`/skill:agentrun-author ${raw}`, { expandPromptTemplates: true });
+          pi.sendUserMessage(`/skill:${AUTHOR_SKILL_NAME} ${raw}`, { expandPromptTemplates: true });
         }
       } catch (error) {
         commandError(s, error);
@@ -373,6 +395,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const old = current; old.clearStatus(); current = undefined; old.closed = true; old.controller?.abort(); await old.service.dispose();
     await old.inFlight;
   };
+  pi.on('resources_discover', () => ({ skillPaths: [authorSkillDirectory()] }));
   pi.on('session_shutdown', closeSession);
   pi.on('session_before_switch', closeSession);
   pi.on('session_before_fork', closeSession);
