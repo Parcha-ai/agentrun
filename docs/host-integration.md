@@ -35,6 +35,21 @@ Store the workflow digest together with interpreter, adapter and policy versions
 
 Existing flat graphs retain their older effect keys. Repeated calls with the same label, transport and resolved input can reuse a memoized result, including across loop iterations. Use `call.poll` for repeated status checks and include an operation identifier for distinct effects. New composed graphs use path-scoped keys; this does not migrate old stores.
 
+## Host policy around generative nodes
+
+A host often has policy that is not part of the workflow language: a duty paragraph for the node that emits the terminal record, runtime metadata the model reports beside its record, an artifact field only the host can fill. `deps.hostPolicy` carries that policy as application code. Nothing in a workflow document can name or reach it, so a candidate workflow cannot change its host's channels.
+
+| Hook | When | What the engine guarantees |
+| --- | --- | --- |
+| `systemBlocks(context)` | before a generative node runs | appended after the node's instructions; `context.terminal` is true for the node whose `out` is the workflow's output schema |
+| `submissionSchema(stageSchema, context)` | before a generative node runs | the adapter submits against the returned schema; the raw submission is validated against it |
+| `decodeSubmission(submission, context)` | after an accepted submission | returns `{ value, host? }`; `value` is validated against the unchanged stage schema and is what a `verify` clause reviews; `host` keys are written at top level, tracked, excluded from a path-less output projection, checkpointed with the state and returned as `result.host` |
+| `afterNode(context)` | after any step, before commit and checkpoint | the returned patch is domain state: downstream nodes, recovery and output validation see it |
+
+`context` names the workflow, the node (`kind`, `label`, `out`, `as`), the `executionPath`, the map `item` when inside a body, and for `decodeSubmission` the current host-state slice so the host can accumulate (a list of concerns, for example). A child workflow applies the same policy with its own context and its own host state; only the child's validated output crosses back to the parent.
+
+Keep the returned transport schema a superset of the stage schema. A decoder that drops a required domain field fails on the stage schema with `WorkflowOutputInvalidError`, and a review candidate that fails the transport schema is returned to the adapter as a rejection message so the same session can repair it.
+
 ## Adopt the document with another interpreter
 
 `defineWorkflow` emits Workflow v2 JSON. Another interpreter can consume that document without importing this runtime, but a shared format number does not establish equivalent behavior.

@@ -192,13 +192,47 @@ export type Escalation = { kind: string; stage: string; summary: string; state: 
   executionPath?: string };
 
 export type WorkflowRunResult =
-  | { status: "complete"; state: Record<string, unknown>; output: unknown }
+  | { status: "complete"; state: Record<string, unknown>; output: unknown;
+      /** State the host's policy wrote through `decodeSubmission`: never part of `output`. */
+      host?: Record<string, unknown> }
   | { status: "escalated"; state: Record<string, unknown>; escalation: Escalation };
 
 export type MapItem = { label: string; index: number };
 
+/** Where a host policy hook is being applied. `terminal` is true for a generative node whose `out` is
+ *  the workflow's output schema: the node that emits the terminal record. */
+export type HostPolicyContext = {
+  workflow: { name: string; outputSchemaId: string };
+  node: { kind: WorkflowNode["node"]; label: string; out?: string; as?: string };
+  terminal: boolean;
+  executionPath: string;
+  item?: MapItem;
+};
+
+/** Application policy around generative nodes and completed steps. This is host code handed in through
+ *  deps: nothing in a workflow document can name or reach it, so a candidate workflow cannot change its
+ *  host's channels. Each hook is a general capability rather than a product rule:
+ *  - `systemBlocks` appends host text after the node's instructions.
+ *  - `submissionSchema` widens the schema the adapter submits against with host-owned channels. The
+ *    returned schema must accept every value the stage schema accepts; the engine validates the raw
+ *    submission against it and the decoded domain value against the unchanged stage schema, so no host
+ *    channel can bypass domain validation or verification.
+ *  - `decodeSubmission` splits an accepted transport submission into the domain value and host state.
+ *    Host state is written at top level, tracked by key, excluded from a path-less output projection,
+ *    checkpointed and resumed with the rest of the state, and returned as `result.host`.
+ *  - `afterNode` enriches a completed step's state before commit and checkpoint. This is domain state:
+ *    downstream nodes and output validation see it. */
+export type HostPolicy = {
+  systemBlocks?: (context: HostPolicyContext) => string[];
+  submissionSchema?: (stageSchema: Record<string, unknown>, context: HostPolicyContext) => Record<string, unknown>;
+  decodeSubmission?: (submission: unknown, context: HostPolicyContext & { host: Record<string, unknown> }) => { value: unknown; host?: Record<string, unknown> };
+  afterNode?: (context: HostPolicyContext & { state: Record<string, unknown> }) => Record<string, unknown> | undefined;
+};
+
 export type WorkflowDeps = {
   maxQuestionsPerRequest?: number;
+  /** Host application policy; see `HostPolicy`. Absent = the engine's own behavior, unchanged. */
+  hostPolicy?: HostPolicy;
   runNode?: (params: {
     kind: "agent" | "decide" | "extract" | "report";
     label: string;
@@ -1528,7 +1562,26 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
 
 const EXECUTION_PATH = Symbol("workflow.executionPath");
 const SCOPED_EFFECTS = Symbol("workflow.scopedEffects");
-type LocatedDeps = WorkflowDeps & { [EXECUTION_PATH]?: string; [SCOPED_EFFECTS]?: boolean };
+/** The top-level state keys a host policy wrote in this run: a set shared by every scoped copy of deps. */
+const HOST_STATE_KEYS = Symbol("workflow.hostStateKeys");
+/** The map item a scoped copy of deps runs for, so host policy context can name it. */
+const MAP_ITEM = Symbol("workflow.mapItem");
+type LocatedDeps = WorkflowDeps & { [EXECUTION_PATH]?: string; [SCOPED_EFFECTS]?: boolean; [HOST_STATE_KEYS]?: Set<string>; [MAP_ITEM]?: MapItem };
+const hostStateKeys = (deps: WorkflowDeps): Set<string> | undefined => (deps as LocatedDeps)[HOST_STATE_KEYS];
+const hostContext = (workflow: Workflow, node: WorkflowNode, deps: WorkflowDeps): HostPolicyContext => {
+  const item = (deps as LocatedDeps)[MAP_ITEM];
+  const generative = node.node === "agent" || node.node === "decide" || node.node === "extract" || node.node === "report";
+  return {
+    workflow: { name: workflow.name, outputSchemaId: workflow.output.schemaId },
+    node: { kind: node.node, label: String((node as { label?: string }).label ?? node.node), ...("out" in node && typeof node.out === "string" ? { out: node.out } : {}), ...("as" in node && typeof node.as === "string" ? { as: node.as } : {}) },
+    terminal: generative && node.node !== "report" && (node as { out?: string }).out === workflow.output.schemaId,
+    executionPath: executionPath(deps),
+    ...(item ? { item } : {}),
+  };
+};
+/** The host-key slice of a state, for `decodeSubmission` to merge into and for `result.host`. */
+const hostSlice = (state: Record<string, unknown>, keys: Set<string> | undefined): Record<string, unknown> =>
+  Object.fromEntries([...(keys ?? [])].filter(key => Object.prototype.hasOwnProperty.call(state, key)).map(key => [key, state[key]]));
 const executionPath = (deps: WorkflowDeps): string => (deps as LocatedDeps)[EXECUTION_PATH] ?? "/root";
 const scopeExecution = (deps: WorkflowDeps, ...parts: (string | number)[]): WorkflowDeps => ({
   ...deps,
@@ -1563,7 +1616,8 @@ function needsComposedRecovery(node: WorkflowNode, structured = false, child = f
 function scopeDepsToItem(deps: WorkflowDeps, item: MapItem, signal?: AbortSignal): WorkflowDeps {
   const recovery = deps.recovery;
   return {
-    ...deps,
+    ...(deps as LocatedDeps),
+    ...({ [MAP_ITEM]: item } as LocatedDeps),
     checkpoint: undefined,
     ...(signal ? { signal } : {}),
     ...(deps.runNode ? { runNode: params => deps.runNode!({ ...params, item: params.item ?? item, ...(signal ? { signal: params.signal ?? signal } : {}) }) } : {}),
@@ -1637,8 +1691,16 @@ async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>
   const startedAt = Date.now();
   try {
     if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
-    const out = await runNodeBody(node, state, workflow, deps);
+    let out = await runNodeBody(node, state, workflow, deps);
     if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
+    // Host policy enrichment lands before commit and checkpoint: a resumed run sees exactly what ran.
+    if (isStep && deps.hostPolicy?.afterNode) {
+      const patch = deps.hostPolicy.afterNode({ ...hostContext(workflow, node, deps), state: out });
+      if (patch && typeof patch === "object" && !Array.isArray(patch) && Object.keys(patch).length) {
+        out = { ...out, ...patch };
+        deps.onEvent?.({ type: "host.patched", label, detail: { keys: Object.keys(patch) } });
+      }
+    }
     if (deps.recovery && node.node !== "chain") await deps.recovery.commit(node, out, undefined, executionPath(deps));
     if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
     if ((isStep || CHECKPOINTED_STRUCTURE_KINDS.has(node.node)) && deps.checkpoint) {
@@ -1702,27 +1764,65 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       assertNodeInputs(node, state);
       const promptState = node.state ? interpolateValue(node.state, state, node.label) : promptStateOf(state);
       const verifier = node.node !== "report" && (node as any).verify ? compileVerifier(workflow, node as WorkflowNode & { verify: VerifyClause; as?: string; label: string; node: string }, state, deps) : null;
+      // Host policy: the adapter submits against the transport schema (the stage schema plus the host's
+      // channels); the decoded domain value is what the stage schema, the verifier and the state see.
+      const policy = deps.hostPolicy;
+      const context = policy ? hostContext(workflow, node, deps) : null;
+      const transportSchema = policy?.submissionSchema && context ? policy.submissionSchema(schema, context) : schema;
+      const transportValidator = transportSchema === schema ? validator : Compile(transportSchema as never);
+      const stageName = node.node === "report" ? "report" : node.out;
+      const decode = (raw: unknown): { value: unknown; host?: Record<string, unknown> } => {
+        normalizeStringNullsForSchema(raw, transportSchema as Record<string, unknown>);
+        if (!transportValidator.Check(raw)) {
+          throw new WorkflowOutputInvalidError(`${node.node} node "${node.label}" submission does not satisfy schema "${stageName}"`, schemaProblems(transportValidator, raw), node.label);
+        }
+        const decoded = policy?.decodeSubmission && context ? policy.decodeSubmission(raw, { ...context, host: hostSlice(state, hostStateKeys(deps)) }) : { value: raw };
+        if (decoded !== null && typeof decoded === "object" && decoded.value !== raw) normalizeStringNullsForSchema(decoded.value, schema as Record<string, unknown>);
+        if (!validator.Check(decoded.value)) {
+          throw new WorkflowOutputInvalidError(`${node.node} node "${node.label}" decoded submission does not satisfy schema "${stageName}"`, schemaProblems(validator, decoded.value), node.label);
+        }
+        return decoded;
+      };
+      // A verify clause reviews the domain value: the host's channels are split off before the judge sees it.
+      const review = verifier
+        ? (transportSchema === schema && !policy?.decodeSubmission
+          ? verifier.review
+          : async (candidate: unknown) => {
+              let decoded: { value: unknown };
+              try { decoded = decode(structuredClone(candidate)); }
+              catch (error) {
+                if (error instanceof WorkflowOutputInvalidError) return { accepted: false as const, message: error.message };
+                throw error;
+              }
+              return verifier.review(decoded.value);
+            })
+        : undefined;
       let submission: unknown;
       submission = await deps.runNode!({
       signal: deps.signal,
       kind: node.node, label: node.label,
-      ...(verifier ? { review: verifier.review } : {}),
+      ...(review ? { review } : {}),
       ...((node as any).tier ? { tier: (node as any).tier } : {}),
-      system: [sopSlice, deps.skill, node.instructions].filter(Boolean) as string[],
+      system: [sopSlice, deps.skill, node.instructions, ...(policy?.systemBlocks && context ? policy.systemBlocks(context) : [])].filter(Boolean) as string[],
       user: JSON.stringify(promptState),
-      schema,
+      schema: transportSchema,
       ...((node as any).effort ? { effort: (node as any).effort } : {}),
       ...((node as any).thinking ? { thinking: (node as any).thinking } : {}),
       ...(Array.isArray((node as any).tools) ? { tools: (node as any).tools } : {}),
       });
-      normalizeStringNullsForSchema(submission, schema as Record<string, unknown>);
-      if (!validator.Check(submission)) {
-        throw new WorkflowOutputInvalidError(`${node.node} node "${node.label}" submission does not satisfy schema "${node.node === "report" ? "report" : node.out}"`, schemaProblems(validator, submission), node.label);
-      }
-      const result = submission as Record<string, unknown>;
+      const decoded = decode(submission);
+      const result = decoded.value as Record<string, unknown>;
       const verified = verifier ? await verifier.finish(result) : null;
-      const merged = mergeStageDelta(state, node, verified ? verified.submission : result, stageSchema);
-      return verified ? { ...merged, [`${("as" in node && node.as) || node.label}$verify`]: verified.record } : merged;
+      let merged = mergeStageDelta(state, node, verified ? verified.submission : result, stageSchema);
+      if (verified) merged = { ...merged, [`${("as" in node && node.as) || node.label}$verify`]: verified.record };
+      const hostState = decoded.host && typeof decoded.host === "object" && !Array.isArray(decoded.host) ? decoded.host : null;
+      if (hostState && Object.keys(hostState).length) {
+        const keys = hostStateKeys(deps);
+        for (const key of Object.keys(hostState)) keys?.add(key);
+        deps.onEvent?.({ type: "host.decoded", label: node.label, detail: { keys: Object.keys(hostState) } });
+        merged = { ...merged, ...hostState };
+      }
+      return merged;
     }
     case "map": {
       const items = getPath(state, node.itemsPath);
@@ -1988,14 +2088,20 @@ export async function runWorkflow(workflow: Workflow, input: Record<string, unkn
   assertWorkflowCapabilities(workflow.root, deps, workflow);
   if (needsComposedRecovery(workflow.root)) deps = { ...deps, [SCOPED_EFFECTS]: true } as LocatedDeps;
   if (deps.recovery && !deps.recovery.supportsExecutionPaths && needsComposedRecovery(workflow.root)) throw new Error("Composed child workflows require recovery.supportsExecutionPaths: true and stores keyed by executionPath");
+  // Every run (a child included) tracks its own host state keys: what the host wrote is never mistaken for output.
+  deps = { ...deps, [HOST_STATE_KEYS]: new Set<string>() } as LocatedDeps;
   try {
     const state = await runNodeOnState(workflow.root, snapshotState(input), workflow, deps);
-    const output = workflow.output.path ? getPath(state, workflow.output.path) : state;
+    const keys = hostStateKeys(deps);
+    const host = hostSlice(state, keys);
+    const output = workflow.output.path
+      ? getPath(state, workflow.output.path)
+      : (Object.keys(host).length ? Object.fromEntries(Object.entries(state).filter(([key]) => !keys!.has(key))) : state);
     const validator = Compile(resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.output.schemaId]) as never);
     if (!validator.Check(output)) {
       throw new WorkflowOutputInvalidError(`workflow "${workflow.name}" output does not satisfy schema "${workflow.output.schemaId}"`, schemaProblems(validator, output));
     }
-    return { status: "complete", state, output };
+    return { status: "complete", state, output, ...(Object.keys(host).length ? { host } : {}) };
   } catch (error) {
     if (error instanceof EscalationSignal) return { status: "escalated", state: error.escalation.state, escalation: error.escalation };
     throw error;
@@ -2024,6 +2130,7 @@ export async function runWorkflowSlice(
   const state = snapshotState({ ...input, ...(focus.seed ?? {}) });
   assertWorkflowCapabilities(slice, deps, desugared);
   if (needsComposedRecovery(desugared.root)) deps = { ...deps, [SCOPED_EFFECTS]: true } as LocatedDeps;
+  deps = { ...deps, [HOST_STATE_KEYS]: new Set<string>() } as LocatedDeps;
   if (deps.recovery && !deps.recovery.supportsExecutionPaths && needsComposedRecovery(slice)) throw new Error("Composed child workflows require recovery.supportsExecutionPaths: true and stores keyed by executionPath");
   try {
     // A slice keeps the original document positions: effects must have the same identity as
