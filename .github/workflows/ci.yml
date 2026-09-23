@@ -42,6 +42,7 @@ jobs:
         with:
           name: package-verification-${{ matrix.node }}
           path: .release/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   lean:

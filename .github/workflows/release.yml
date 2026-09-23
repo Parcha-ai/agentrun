@@ -82,4 +82,5 @@ jobs:
         with:
           name: beta-release-${{ github.run_id }}
           path: .release/
+          include-hidden-files: true
           if-no-files-found: ignore

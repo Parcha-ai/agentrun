@@ -70,3 +70,40 @@ test('invalid release plans also replace prior successful verification evidence'
   await assert.rejects(verifyPublished(root, 'dsl', { fetchImpl: async () => { throw new Error('must not fetch'); }, wait }));
   assert.equal((await receipt()).status, 'failed');
 }));
+
+test('published metadata and tarball can become visible after the old 25-second window', () => fixture(async (root, receipt) => {
+  let metadataCalls = 0, tarballCalls = 0, waited = 0;
+  const result = await verifyPublished(root, 'dsl', {
+    wait: async ms => { waited += ms; },
+    fetchImpl: async url => {
+      if (String(url).endsWith('.tgz')) return ++tarballCalls <= 7 ? new Response(null, { status: 404 }) : new Response(bytes);
+      return ++metadataCalls <= 40 ? new Response(null, { status: 404 }) : Response.json(metadata);
+    },
+  });
+  assert.equal(result.status, 'passed');
+  assert.equal(waited, 235_000);
+  assert.equal((await receipt()).packages[0].status, 'matched');
+}));
+
+test('a published version that never becomes visible fails after bounded retries', () => fixture(async (root, receipt) => {
+  let calls = 0, waited = 0;
+  await assert.rejects(verifyPublished(root, 'dsl', {
+    wait: async ms => { waited += ms; },
+    fetchImpl: async () => { calls++; return new Response(null, { status: 404 }); },
+  }), /HTTP 404/);
+  assert.equal(calls, 61);
+  assert.equal(waited, 300_000);
+  assert.equal((await receipt()).status, 'failed');
+}));
+
+test('post-publish authentication and integrity failures are not propagation delays', () => fixture(async (root, receipt) => {
+  for (const response of [new Response(null, { status: 403 }), Response.json({ ...metadata, dist: { ...metadata.dist, integrity: 'wrong' } })]) {
+    let calls = 0;
+    await assert.rejects(verifyPublished(root, 'dsl', {
+      wait: async () => { assert.fail('permanent failures must not wait'); },
+      fetchImpl: async () => { calls++; return response; },
+    }), /HTTP 403|integrity differs/);
+    assert.equal(calls, 1);
+    assert.equal((await receipt()).status, 'failed');
+  }
+}));
