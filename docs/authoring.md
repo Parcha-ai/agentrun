@@ -42,21 +42,18 @@ The [configured research walkthrough](live-research.md) wires the same workflow 
 
 Copy the [standalone TypeScript app](../examples/starter/README.md) to build your own workflow. It includes a package file, compiler configuration, offline Jev client, and four tests. It keeps a documentation policy and its emergency exception while dropping a promotional claim. No agent is needed.
 
-Follow its tarball installation steps, then run `npm test` and `npm start`. `npm start -- --no-evidence` demonstrates the stop condition with exit code `2`. The app uses public imports and runs outside the checkout. Keep the tarballs for reinstalls until packages are published; their paths are recorded in the app's lockfile.
+Follow its npm installation steps, then run `npm test` and `npm start`. `npm start -- --no-evidence` demonstrates the stop condition with exit code `2`. The app uses public imports and runs outside the checkout.
 
 The [Jev adapter's offline example](../packages/jev/README.md#offline-tests) shows the request and response without credentials.
 
-If you only need the core, install just its tarball. From the built AgentRun checkout:
+If you only need the core, start in a new directory:
 
 ```sh
-agentrun_checkout="$PWD"
-mkdir -p .release/npm
-npm pack --workspace @parcha/agentrun-dsl --ignore-scripts --pack-destination .release/npm
-mkdir ../my-workflow
-cd ../my-workflow
+mkdir my-workflow
+cd my-workflow
 npm init -y
 npm pkg set type=module
-npm install --ignore-scripts "$agentrun_checkout/.release/npm/parcha-agentrun-dsl-0.1.0-beta.1.tgz"
+npm install --ignore-scripts @parcha/agentrun-dsl@beta
 node --input-type=module -e 'import { runTriageDemo } from "@parcha/agentrun-dsl/demo"; console.log((await runTriageDemo("billing")).result.output)'
 ```
 

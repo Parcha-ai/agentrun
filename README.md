@@ -8,7 +8,7 @@ AgentRun is a workflow language for the agents you already run. Define repeatabl
 
 ![An agent repeatedly plans, uses tools, and checks its work. AgentRun replaces that repeated planning with search, a Jev decision, and an answer; requests needing context go to an agent and are checked again.](docs/assets/support-workflow.gif)
 
-[View the static diagram](docs/assets/support-workflow.svg) · [Run this example](#quickstart)
+[View the static diagram](docs/assets/support-workflow.svg) · [Run this example](#run-the-support-example)
 
 - **Reuse known steps.** Put a repeatable procedure in a workflow and call an agent when a step needs investigation.
 - **Make decisions explicit.** Jev returns typed answers and probabilities. Your workflow sets the thresholds and fallback.
@@ -16,7 +16,18 @@ AgentRun is a workflow language for the agents you already run. Define repeatabl
 
 ## Quickstart
 
-Requires **Node 22.19+** and npm. Build and run from source:
+Requires **Node 22.19+** and npm. In your project:
+
+```sh
+npm install @parcha/agentrun-dsl@beta
+npx agentrun demo
+```
+
+This small ticket-routing demo runs without an API key. It uses scripted Jev decisions to show the workflow's steps and result. [Use it in Pi](#use-it-in-pi) to build workflows with your agent.
+
+### Run the support example
+
+To run the workflow in the animation, clone the examples and build:
 
 ```sh
 git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git
@@ -72,6 +83,8 @@ This small domain-specific language (DSL) can be authored as JSON or with the [T
 
 ## Connect your application
 
+Install the core and Jev adapter in your application with `npm install @parcha/agentrun-dsl@beta @parcha/agentrun-jev@beta`. Then:
+
 1. **Supply adapters.** Connect tools through `runEffect`, your existing agent through `runNode`, and Jev decisions through `createJevRunner()` as `runJudge`.
 2. **Define and test the workflow.** Write its schemas, steps, thresholds, and review path. Start with fixtures, then evaluate real decisions on labeled cases from your task.
 3. **Expose it to your agent.** Wrap a workflow run as a tool in your application. Your agent can call that procedure when needed and use its validated output or escalation result.
@@ -82,14 +95,14 @@ The [support integration guide](docs/support-quickstart.md) includes the config 
 
 ## Use it in Pi
 
-From the built checkout, install the extension and start the included Pi 0.87.0 CLI:
+With [Pi 0.87.0 installed](packages/pi/README.md#install), run these commands in your project:
 
 ```sh
-./node_modules/.bin/pi install ./packages/pi -l
-./node_modules/.bin/pi --offline
+pi install npm:@parcha/agentrun-pi@0.1.0-beta.1 -l
+pi --offline
 ```
 
-`-l` installs in this project; `--offline` skips Pi startup downloads. On first launch, Pi asks whether you trust the project before loading its extension. Keep the checkout because Pi loads the extension and skill from it.
+`-l` installs in this project; omit it to install for all Pi sessions. `--offline` skips Pi startup downloads. On first launch, Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed.
 
 - `/agentrun demo` loads the scripted research example; `/agentrun run` repeats it without model calls.
 - `/agentrun demo live` uses your configured Pi model and Jev.
@@ -133,7 +146,7 @@ npm run eval:research
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
 
-This is a beta release candidate. See [release instructions](docs/releasing.md), [contracts and limits](docs/guide.md#limits), and the [contribution guide](CONTRIBUTING.md). The website is maintained separately.
+`0.1.0-beta.1` is published on npm. See [release instructions](docs/releasing.md), [contracts and limits](docs/guide.md#limits), and the [contribution guide](CONTRIBUTING.md). The website is maintained separately.
 
 Ordinary functions may be enough for a small fixed sequence. AgentRun adds a reusable workflow document with explicit execution rules. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 

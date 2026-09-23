@@ -2,24 +2,24 @@
 
 Describe a task in Pi. AgentRun turns it into a workflow you can inspect and runs its steps using your current Pi model. Requires Node 22.19+ and Pi 0.87.0.
 
-## Install from source
+## Install
 
-Build the extension and use the included Pi CLI. From a new terminal:
+If you do not have Pi, install the tested host version first:
 
 ```sh
-git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git
-cd agentrun
-npm ci --ignore-scripts
-npm run build
-./node_modules/.bin/pi install ./packages/pi -l
-./node_modules/.bin/pi --offline
+npm install -g @earendil-works/pi-coding-agent@0.87.0
 ```
 
-`-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls.
+Then, in your project:
 
-On first launch, Pi asks whether you trust the project before loading its extension. Review the checkout before accepting.
+```sh
+pi install npm:@parcha/agentrun-pi@0.1.0-beta.1 -l
+pi --offline
+```
 
-Already built this checkout? Start at the `pi install` line. The included CLI is the tested Pi 0.87.0 version; a global Pi installation is unnecessary. If Pi 0.87.0 is already open, use `/reload`. Keep this checkout: Pi loads the extension and skill from it. Rebuild after source changes, then reload. `/reload` clears the current workflow definition; run the demo or describe your task again to create one.
+`-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
+
+On first launch, Pi asks whether you trust the project before loading its extension. If Pi is already open, use `/reload`. Reloading clears the current workflow definition; run the demo or describe your task again to create one.
 
 For live tasks, configure model access in Pi first. AgentRun uses Pi's current model and authentication; it needs no separate model configuration. The scripted demo below works without provider access.
 
@@ -31,7 +31,7 @@ Try the bundled example inside Pi:
 
 The demo shows the workflow graph, progress, and a completed result with call counts. It uses scripted responses over fictional sources. It makes no model calls and does not test model quality. Run `/agentrun status` to check the loaded skill and Pi host version. The tested version is 0.87.0; status flags a different host without blocking it. Missing Pi or Jev access does not prevent the scripted demo. To repeat it, run `/agentrun run` or `/agentrun demo`. A scripted demo stays scripted on rerun, including its missing-evidence path. Use `/agentrun demo live` to switch to real Pi and Jev calls. Workflows authored by Pi use real adapters.
 
-For an offline Pi startup, use `./node_modules/.bin/pi --offline`. Without that flag, Pi may download optional command-line tools on first launch. This is separate from the scripted demo, which makes no network calls.
+For an offline Pi startup, use `pi --offline`. Without that flag, Pi may download optional command-line tools on first launch. This is separate from the scripted demo, which makes no network calls.
 
 ## Describe, inspect, run
 
@@ -64,7 +64,7 @@ One workflow runs at a time. Definitions and run state belong to the current Pi 
 | `/agentrun demo empty` | Scripted insufficient-evidence path, without model calls. |
 | `/agentrun demo live` | Real Pi agent steps and Jev system one decisions over the same fictional sources. |
 
-Live mode uses your active Pi model and requires configured TypeSafe access for Jev. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](../jev/README.md). Live calls can incur usage charges; scripted mode needs no provider access.
+Live mode uses your active Pi model and requires configured TypeSafe access for Jev. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
 
 ## Tools and execution
 
@@ -195,6 +195,21 @@ The host owns `checkAgainstYourFixtures`: return diagnostics, or `[]` to accept.
 With `rubricSections`, every supplied section must appear on every generated LLM node, including child workflows. The author conservatively rejects Jev nodes, semantic `ask` predicates, and `verify` clauses under that policy; those need a separately reviewed question contract. Schema properties named `node`, `verify`, or `predicate` remain ordinary data. Supply the authoritative rubric as `deps.sop` when executing the candidate.
 
 The standalone CLI remains available as `node packages/pi/dist/cli.js --help` from source. It imports a trusted caller-owned `--config` module for `author` and `run`; importing that module executes its code. `validate` can evaluate code probes. Review executable workflows before using it.
+
+## Develop from source
+
+To change the extension itself, clone and build the repository:
+
+```sh
+git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git
+cd agentrun
+npm ci --ignore-scripts
+npm run build
+./node_modules/.bin/pi install ./packages/pi -l
+./node_modules/.bin/pi --offline
+```
+
+Use a separate project for this source installation. Pi loads the extension and skill from the checkout, so keep it in place. After source changes, rebuild and run `/reload`.
 
 ## Dependencies and retained data
 
