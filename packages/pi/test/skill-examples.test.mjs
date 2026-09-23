@@ -16,7 +16,8 @@ const inlineExample = async () => {
   return JSON.parse(main.match(/```json\n([\s\S]*?)\n```/)[1]);
 };
 
-test('Pi discovers the packaged skill and all progressive references remain inside it', async () => {
+test('Pi discovers the neutral and the Pi-rendered skill, and all progressive references remain inside each', async () => {
+  for (const skillDir of [authorSkillDirectory(), fileURLToPath(new URL('../dist/skills/author/', import.meta.url))]) {
   const loaded = loadSkillsFromDir({ dir: dirname(skillDir), source: 'test' });
   assert.deepEqual(loaded.diagnostics, []);
   const skill = loaded.skills.find(entry => entry.name === 'agentrun-author');
@@ -40,6 +41,7 @@ test('Pi discovers the packaged skill and all progressive references remain insi
     }
   }
   await checkLinks(skill.filePath);
+  }
 });
 
 test('the extraction example passes native admission and preserves its typed result and scoped prompt', async () => {

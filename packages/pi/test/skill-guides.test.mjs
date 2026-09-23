@@ -30,10 +30,9 @@ test('native describe ships the packaged language, guides and the Pi host addend
     assert.equal(result.details.authoring.language, loadAuthorReference('language'));
     assert.match(result.details.authoring.host, /^## Host: Pi extension/);
     assert.match(result.details.authoring.host, /\/agentrun run --trusted/);
-    assert.match(result.details.authoring.host, /Only the host-configured tools/);
+    assert.match(result.details.authoring.host, /a host that configures its tools offers only those/);
     assert.doesNotMatch(result.details.authoring.host, /`artifact`/);
     assert.doesNotMatch(result.details.authoring.language, /\/agentrun|Pi extension/, 'the shared language carries no Pi vocabulary');
-    assert.deepEqual(await events.get('resources_discover')(), { skillPaths: [authorSkillDirectory()] }, 'the extension contributes the packaged skill');
   } finally { await events.get('session_shutdown')(); }
 });
 

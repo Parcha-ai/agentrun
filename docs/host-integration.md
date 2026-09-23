@@ -64,7 +64,7 @@ Authoring has the same split as execution. The package owns the language: `autho
 
 `authorWorkflow` returns the candidate as authored. A host with prose output types validates and runs `applyHostOutputTypes(workflow, host)` and keeps the authored bytes for its digest.
 
-An addendum cannot change a language rule: it is appended after the language, which states that host rules add to it. Keep procedural knowledge a domain teaches in the host's expert data rather than in `rules`; the addendum is for what the host is, not what a domain learned. The Pi extension's addendum, returned by `describe` as `authoring.host`, is a working example: its trusted-run command, its missing SOP text, and the transports it does not offer.
+An addendum cannot change a language rule: it is appended after the language, which states that host rules add to it. Keep procedural knowledge a domain teaches in the host's expert data rather than in `rules`; the addendum is for what the host is, not what a domain learned. The Pi extension's addendum (`PI_HOST_ADDENDUM`) is a working example: its trusted-run command, its missing SOP text, and the transports it does not offer. A host registers the rendered contract, not the neutral skill: the Pi package builds `dist/skills/author` with the addendum appended to `SKILL.md` and its language reference, so a session reads the host rules without calling any tool. `describe` also returns the addendum as `authoring.host`. The package's own skill and its generated `language.md` stay host-neutral.
 
 ## Adopt the document with another interpreter
 

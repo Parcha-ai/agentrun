@@ -27,7 +27,7 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json",
+    "build": "node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json && node ../../scripts/render-pi-skill.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs"
   },
@@ -64,6 +64,9 @@
   "pi": {
     "extensions": [
       "./dist/extension.js"
+    ],
+    "skills": [
+      "./dist/skills"
     ]
   }
 }

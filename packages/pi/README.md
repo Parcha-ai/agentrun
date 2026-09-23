@@ -39,7 +39,7 @@ For an offline Pi startup, use `pi --offline`. Without that flag, Pi may downloa
 /agentrun Find the main entry points in this repository and summarize how requests reach them.
 ```
 
-The command loads the `agentrun-author` skill, which ships in `@parcha/agentrun-dsl` and which this extension registers with Pi. Pi reads the available tools, builds a workflow, inspects its graph, then runs it with the task's input. You can also invoke `/skill:agentrun-author <task>` directly. Ask Pi to change a step or explain a result as you would in an ordinary conversation.
+The command loads the `agentrun-author` skill. Its source ships in `@parcha/agentrun-dsl`; this package registers it rendered with the Pi host rules, so the skill text itself states the trusted-run command, the missing SOP and the unavailable transports. Pi reads the available tools, builds a workflow, inspects its graph, then runs it with the task's input. You can also invoke `/skill:agentrun-author <task>` directly. Ask Pi to change a step or explain a result as you would in an ordinary conversation.
 
 | Command | What happens |
 | --- | --- |

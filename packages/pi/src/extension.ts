@@ -7,11 +7,11 @@ import {
   VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import {
-  formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, authorSkillDirectory, loadAuthorReference, renderAuthorHostAddendum,
-  WORKFLOW_NODE_KINDS, type AuthorHostAddendum, type WorkflowDeps,
+  formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, loadAuthorReference, renderAuthorHostAddendum, type WorkflowDeps,
 } from '@parcha/agentrun-dsl';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
+import { PI_HOST_ADDENDUM } from './host-addendum.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
 import { WorkflowExtensionService, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
@@ -76,26 +76,6 @@ export function createAgentRunExtension(options: AgentRunExtensionOptions = {}):
 
 export default function agentRunExtension(pi: ExtensionAPI): void {
   registerExtension(pi, {});
-}
-
-/** What this extension adds to the shared workflow language: its commands, tools and unavailable transports. */
-function piHost(hostTools: boolean): AuthorHostAddendum {
-  return {
-    name: 'Pi extension',
-    nodeKinds: WORKFLOW_NODE_KINDS.filter(kind => kind !== 'artifact'),
-    rules: [
-      'Call agentrun with action describe first, then inspect the complete workflow with its input, then run without a workflow argument.',
-      hostTools
-        ? 'Only the host-configured tools describe returns exist, including during trusted runs.'
-        : 'Active read-only built-ins (read, grep, find, ls) are available by default; bash, edit and write exist only in a trusted run. The search tool reads fictional demo sources only.',
-      'Code nodes and mutating tools run only after the user issues /agentrun run --trusted for that run. Trusted execution is local and unsandboxed.',
-      'A call uses via tool with a tool describe returns. Shell and executor calls and artifact delivery are unavailable.',
-      'This extension supplies no SOP text: do not run a workflow with sopSection here; it needs an SDK host that supplies the authoritative SOP.',
-      'Custom extension tools and outer permission hooks are not inherited, including in trusted runs.',
-      'The workflow is session-local: /agentrun shows it, /agentrun run reruns its last input, /agentrun stop requests cancellation and /agentrun status reports setup. Escape does not reliably cancel a slash-started run. There is no save or load.',
-      'The structural limits describe returns bound node count, map concurrency and parallel branches.',
-    ],
-  };
 }
 
 function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOptions): void {
@@ -337,7 +317,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       const s = await state(ctx);
       if (args.action === 'describe') {
         const details = { tools: toolSet(ctx).map(t => ({ name: t.name, description: t.description, parameters: t.parameters })),
-          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: { language: loadAuthorReference('language'), workflow: loadAuthorReference('workflow-format'), jev: loadAuthorReference('jev-decisions'), host: renderAuthorHostAddendum(piHost(!!configuration.hostTools)) } };
+          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: { language: loadAuthorReference('language'), workflow: loadAuthorReference('workflow-format'), jev: loadAuthorReference('jev-decisions'), host: renderAuthorHostAddendum(PI_HOST_ADDENDUM) } };
         return textResult(JSON.stringify(details, null, 2), details);
       }
       if (args.action === 'run' && args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then run without a workflow argument.');
@@ -395,7 +375,6 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const old = current; old.clearStatus(); current = undefined; old.closed = true; old.controller?.abort(); await old.service.dispose();
     await old.inFlight;
   };
-  pi.on('resources_discover', () => ({ skillPaths: [authorSkillDirectory()] }));
   pi.on('session_shutdown', closeSession);
   pi.on('session_before_switch', closeSession);
   pi.on('session_before_fork', closeSession);

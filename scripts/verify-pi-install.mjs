@@ -1,6 +1,7 @@
 // Executed from an empty consumer containing only the packed release artifacts.
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DefaultPackageManager, DefaultResourceLoader, SettingsManager, ModelRuntime, SessionManager, createAgentSession } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } from '@earendil-works/pi-ai';
@@ -19,6 +20,10 @@ assert.equal(loaded.extensions.length, 1);
 const extension = loaded.extensions[0];
 assert(extension.commands.has('agentrun'));
 assert(extension.tools.has('agentrun'));
+// A bare loader, before any session: the package registers the skill rendered with the Pi addendum.
+const authorSkills = loader.getSkills().skills.filter(skill => skill.name === 'agentrun-author');
+assert.equal(authorSkills.length, 1);
+assert.match(readFileSync(authorSkills[0].filePath, 'utf8'), /## Host: Pi extension[\s\S]*\/agentrun run --trusted/);
 const messages = [];
 Object.assign(loaded.runtime, {
   getActiveTools: () => [], getAllTools: () => [], getThinkingLevel: () => 'off',
@@ -53,9 +58,6 @@ runtime.registerNativeProvider(faux.provider);
 const { session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader,
   modelRuntime: runtime, model: faux.getModel(), sessionManager: SessionManager.inMemory(cwd), noTools: 'all' });
 try {
-  await session.bindExtensions({});
-  // The extension contributes the skill shipped by @parcha/agentrun-dsl when the session discovers resources.
-  assert(loader.getSkills().skills.some(skill => skill.name === 'agentrun-author' && skill.filePath.includes('agentrun-dsl')));
   let finish;
   const completed = new Promise(resolve => { finish = resolve; });
   const unsubscribe = session.subscribe(event => { if (event.type === 'agent_end') finish(); });
