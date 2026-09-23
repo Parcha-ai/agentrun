@@ -13,16 +13,17 @@ import { releasePackageNames } from './release-preflight.mjs';
 const exec = promisify(execFile);
 
 export async function registryResponse(url, { fetchImpl = fetch, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), retryNotFound = false, timeoutMs = 10_000 } = {}) {
-  for (let attempt = 0; attempt < 6; attempt++) {
+  const attempts = retryNotFound ? 61 : 6;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     let response;
     try { response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) }); }
     catch (error) {
-      if (attempt === 5) throw error;
+      if (attempt === attempts - 1) throw error;
       await wait(5000);
       continue;
     }
     const transient = response.status === 429 || response.status >= 500 || (retryNotFound && response.status === 404);
-    if (!transient || attempt === 5) return response;
+    if (!transient || attempt === attempts - 1) return response;
     await response.body?.cancel();
     await wait(5000);
   }
