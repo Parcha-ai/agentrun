@@ -14,8 +14,8 @@ workflows validated with their invocation's input keys.
 Out of scope (need a JSON Schema engine or JavaScript): schema compilation and `$ref`s,
 question schemas, typed path checks, code compilation and probes, predicate paths checked
 against probed code shapes, numeric call bounds, unknown-key checks, the document shape
-schema. Because this is a subset of the TypeScript rules, a workflow that TypeScript
-accepts is accepted here, and every theorem that assumes `validate` applies to it.
+schema. These rules are intended to be a subset of the TypeScript rules. The validator sweep
+checks that relationship on its corpus; it is not a proof of implementation equivalence.
 -/
 
 namespace AgentRun
