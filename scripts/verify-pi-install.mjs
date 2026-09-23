@@ -25,11 +25,15 @@ const authorSkills = loader.getSkills().skills.filter(skill => skill.name === 'a
 assert.equal(authorSkills.length, 1);
 assert.match(readFileSync(authorSkills[0].filePath, 'utf8'), /## Host: Pi extension[\s\S]*\/agentrun run --trusted/);
 const messages = [];
+const branch = [];
 Object.assign(loaded.runtime, {
   getActiveTools: () => [], getAllTools: () => [], getThinkingLevel: () => 'off',
   sendMessage: message => messages.push(message),
+  appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data }),
 });
-const ctx = { cwd, hasUI: false, sessionManager: { getSessionId: () => 'installed-smoke' } };
+const ctx = { cwd, mode: 'print', hasUI: false, sessionManager: {
+  getSessionId: () => 'installed-smoke', getBranch: () => branch, getSessionFile: () => undefined,
+} };
 const command = extension.commands.get('agentrun');
 await command.handler('demo', ctx);
 assert.equal(messages.at(-1).details.status, 'complete');

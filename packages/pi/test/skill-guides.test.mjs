@@ -4,19 +4,37 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentRunExtension } from '../dist/extension.js';
+import { WorkflowExtensionService } from '../dist/extension-service.js';
 import { join as joinPath } from 'node:path';
-import { authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle } from '@parcha/agentrun-dsl';
+import { authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle, validateWorkflow } from '@parcha/agentrun-dsl';
 
 const workflow = JSON.parse(await readFile(joinPath(authorSkillDirectory(), 'examples/read-source-decision.json'), 'utf8'));
+
+test('the shared author skill gates unsupported categorical output', async () => {
+  const skill = await readFile(joinPath(authorSkillDirectory(), 'SKILL.md'), 'utf8');
+  const examples = [...skill.matchAll(/```json\n([\s\S]*?)\n```/g)].map(match => JSON.parse(match[1]));
+  const definition = examples.find(item => item.name === 'evidence-gated-category');
+  assert.ok(definition);
+  assert.equal(validateWorkflow(definition, { executeCode: false }).ok, true);
+  const service = new WorkflowExtensionService(); service.prepare(definition);
+  try {
+    const vague = await service.run({ note: 'It broke after the change.' }, { deps: { runNode: async () => ({ supported: false }) } });
+    assert.equal(vague.status, 'escalated');
+    assert.equal(vague.output, undefined);
+    const clear = await service.run({ note: 'Checkout failed for 35% of requests.' }, { deps: { runNode: async () => ({ supported: true, decision: { severity: 'high' } }) } });
+    assert.equal(clear.status, 'complete');
+    assert.deepEqual(clear.output, { severity: 'high' });
+  } finally { await service.dispose(); }
+});
 
 test('native describe ships the packaged language, guides and the Pi host addendum', async () => {
   const tools = new Map(), events = new Map();
   createAgentRunExtension({ hostTools: () => [] })({
-    registerTool: tool => tools.set(tool.name, tool), registerCommand() {},
+    registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, registerEntryRenderer() {}, appendEntry() {},
     on: (name, handler) => events.set(name, handler),
     getCommands: () => [], getThinkingLevel: () => 'off', sendMessage() {},
   });
-  const ctx = { cwd: process.cwd(), hasUI: false, sessionManager: { getSessionId: () => 'guide-test' },
+  const ctx = { cwd: process.cwd(), hasUI: false, sessionManager: { getSessionId: () => 'guide-test', getBranch: () => [], getSessionFile: () => undefined },
     modelRegistry: { getAll: () => [] } };
   try {
     const result = await tools.get('agentrun').execute('describe', { action: 'describe' }, undefined, undefined, ctx);
@@ -45,7 +63,7 @@ test('shipped read→Jev→code graph preserves original context through the nat
   };
   for (const [path, content] of Object.entries(originals)) await writeFile(join(cwd, path), content);
   const question = 'Does this source announce a required client migration for the current release rather than a proposal?';
-  const ctx = { cwd, hasUI: false, sessionManager: { getSessionId: () => 'source-guide-test' },
+  const ctx = { cwd, hasUI: false, sessionManager: { getSessionId: () => 'source-guide-test', getBranch: () => [], getSessionFile: () => undefined },
     modelRegistry: { getAll: () => [], streamSimple() { assert.fail('Jev/code graph must not call a generative model'); } } };
   createAgentRunExtension({ createJudge: () => async request => {
     states.push(request.state);
@@ -54,7 +72,7 @@ test('shipped read→Jev→code graph preserves original context through the nat
     assert.ok(Object.values(originals).includes(text), 'judge receives exact host-read text, not a summary');
     return { answers: { matches: { type: 'noul', noul: text === originals['current.txt'] ? .94 : .07 } } };
   } })({
-    registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command),
+    registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), registerEntryRenderer() {}, appendEntry() {},
     on: (name, handler) => events.set(name, handler), getCommands: () => [], getThinkingLevel: () => 'off',
     getActiveTools: () => ['read'], getAllTools: () => [{ name: 'read', sourceInfo: { source: 'builtin' } }],
     sendMessage: message => messages.push(message),

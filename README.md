@@ -114,7 +114,7 @@ Once Pi has model access, ask it to build a workflow:
 /agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report gaps with file references.
 ```
 
-Pi uses the packaged skill to build, inspect, and run the workflow. If Pi is already open, run `/reload` after installing. Workflows stay in memory for the current session; `/reload` clears the current definition. Saving them for later is planned for V2. [Pi setup and limits](packages/pi/README.md).
+Pi uses the packaged skill to build, inspect, and run the workflow. The current source also supports `/agentrun save <name>` and `/agentrun load <name>` for project-local definition revisions; the published beta.2 package predates these commands. Saves contain neither run input nor execution permission. [Pi setup and limits](packages/pi/README.md).
 
 ## More examples
 

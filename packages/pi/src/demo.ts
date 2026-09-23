@@ -12,6 +12,7 @@ export function demoSearchTool(): PiToolDefinition {
     name: 'search', label: 'Search example sources',
     description: 'Read the bundled fictional wiki-migration sources. This does not search the internet.',
     parameters: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'], additionalProperties: false },
+    resultSchema: { type: 'object', properties: { sources: { type: 'array', items: { type: 'object' } } }, required: ['sources'], additionalProperties: false },
     async execute(_id, _args, signal) {
       signal?.throwIfAborted();
       return { content: [{ type: 'text', text: JSON.stringify({ sources: demoSources }) }], details: { sources: structuredClone(demoSources) } };

@@ -13,7 +13,7 @@ function lines(value: unknown, depth = 0): string[] {
   }).concat(value.length > 30 ? [`… ${value.length - 30} more items in the structured result`] : []);
   const entries = Object.entries(value);
   return entries.slice(0, 30).flatMap(([key, item]) => {
-    const label = key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ');
+    const label = key.replace(/([a-z])([A-Z])/g, (_, first: string, upper: string) => `${first} ${upper.toLowerCase()}`).replace(/_/g, ' ');
     const children = lines(item, depth + 1);
     return children.length === 1 ? [`${label}: ${children[0]}`] : [`${label}:`, ...children.map(line => `  ${line}`)];
   }).concat(entries.length > 30 ? [`… ${entries.length - 30} more fields in the structured result`] : []);
@@ -32,5 +32,5 @@ export function formatRunReport(report: ExtensionRunReport, scripted = false): s
   const trace = report.traceTruncated ? `\nTrace retention is partial${report.trace ? ` (${report.trace.droppedEvents} valid events omitted, ${report.trace.rejectedEvents} rejected)` : ''}; this does not mean the output is truncated.` : '';
   const clipped = body.length > 12_000 ? `${body.slice(0, 12_000)}\n… Full output is in the structured result.` : body;
   const status = report.status === 'escalated' ? 'stopped — needs attention (escalated)' : report.status;
-  return cleanText(`${scripted ? 'Scripted demo' : 'Workflow'}: ${status}${report.error ? ` (${report.error.code})` : ''}\n\n${clipped}${recovery}${uncertain}${trace}\n\nWorkflow calls: ${report.calls.tool} direct tool call${report.calls.tool === 1 ? '' : 's'}, ${report.calls.judge} system one decision${report.calls.judge === 1 ? '' : 's'}, ${report.calls.agent} model step${report.calls.agent === 1 ? '' : 's'}.${scripted ? '\nScripted responses; no model calls. Replay: /agentrun run. Real models: /agentrun demo live.' : ''}`);
+  return cleanText(`${scripted ? 'Scripted demo' : 'Workflow'}: ${status}${report.error ? ` (${report.error.code})` : ''}\n\n${clipped}${recovery}${uncertain}${trace}\n\nWorkflow calls: ${report.calls.tool} direct tool call${report.calls.tool === 1 ? '' : 's'}, ${report.calls.judge} system one decision${report.calls.judge === 1 ? '' : 's'}, ${report.calls.agent} model step${report.calls.agent === 1 ? '' : 's'}.${scripted ? '\nScripted responses; no model calls. Replay: /agentrun run. Example modes: /agentrun help.' : ''}`);
 }

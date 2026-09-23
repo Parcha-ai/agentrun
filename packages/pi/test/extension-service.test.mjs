@@ -239,6 +239,20 @@ test('provider failures and credential fields never enter retained traces', asyn
   assert.equal(report.status, 'failed'); assert.equal(JSON.stringify(service.inspect()).includes('SECRET'), false);
 });
 
+test('ordinary registered-tool failures name the observed step without exposing thrown text', async () => {
+  const service = new WorkflowExtensionService({ allowedTools: ['source_search'] });
+  service.prepare(workflow({ node: 'call', label: 'read-local-evidence', via: 'tool',
+    tool: 'source_search', args: {}, out: 'Result', as: 'decision', deadline_s: 1 }));
+  const report = await service.run({}, { deps: { runEffect: async () => { throw new Error('PRIVATE_TOOL_DETAIL'); } } });
+  assert.equal(report.status, 'failed');
+  assert.equal(report.error.code, 'execution_failed');
+  assert.equal(report.error.stage, 'read-local-evidence');
+  assert.match(report.error.message, /registered tool call failed/);
+  assert.equal(report.calls.tool, 1);
+  assert.equal(report.events.filter(event => event.type === 'effect.failed').length, 1);
+  assert.doesNotMatch(JSON.stringify(report), /PRIVATE_TOOL_DETAIL/);
+});
+
 
 test('interrupted tool effects retain uncertainty without exposing provider errors', { timeout: 2000 }, async () => {
   const service = new WorkflowExtensionService({ allowedTools: ['source_search'] });

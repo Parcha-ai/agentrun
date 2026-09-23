@@ -9,20 +9,21 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialSto
 import agentRunExtension, { createAgentRunExtension } from '../dist/extension.js';
 import { demoWorkflow } from '../dist/demo.js';
 import { authorSkillDirectory } from '@parcha/agentrun-dsl';
+import { supportTriageWorkflow, supportTriageInputs, scriptedSupportTriageDeps } from '../dist/triage-demo.js';
 
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const waitUntil = async predicate => { while (!predicate()) await new Promise(resolve => setImmediate(resolve)); };
 const resultSchema = { type: 'object', additionalProperties: false, required: ['content'], properties: { content: { type: 'string' } } };
 const workflow = root => ({ v: 2, name: 'Read a local note', schemas: { Result: resultSchema }, output: { schemaId: 'Result', path: 'result' }, root: root ?? { node: 'agent', label: 'read-note', instructions: 'Read the supplied file with read and submit its exact text.', tools: ['read'], out: 'Result', as: 'result' } });
 
-async function harness({ cwd = process.cwd(), responses = [], activeTools = ['read'], tokensPerSecond = Infinity, withModel = true, hasUI = false, extensionOptions } = {}) {
+async function harness({ cwd = process.cwd(), responses = [], activeTools = ['read'], tokensPerSecond = Infinity, withModel = true, hasUI = false, mode = hasUI ? 'tui' : 'print', branch = [], extensionOptions } = {}) {
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const faux = fauxProvider({ tokensPerSecond }); faux.setResponses(responses); runtime.registerNativeProvider(faux.provider);
   const registry = new ModelRegistry(runtime), calls = [], messages = [], prompts = [], statuses = [], widgets = [], commands = new Map(), tools = new Map(), events = new Map();
   const entered = deferred(); const controller = new AbortController();
-  const ctx = { cwd, model: withModel ? faux.getModel() : undefined, thinkingLevel: 'low', signal: controller.signal, hasUI,
-    sessionManager: { getSessionId: () => 'native-extension-test' },
-    ui: { setStatus: (name, value) => statuses.push({ name, value }), setWidget: (name, value) => widgets.push({ name, value }) },
+  const ctx = { cwd, model: withModel ? faux.getModel() : undefined, thinkingLevel: 'low', signal: controller.signal, hasUI, mode,
+    sessionManager: { getSessionId: () => 'native-extension-test', getBranch: () => branch, getSessionFile: () => undefined },
+    ui: { setStatus: (name, value) => statuses.push({ name, value }), setWidget: (name, value) => widgets.push({ name, value }), custom: async () => undefined },
     modelRegistry: {
       getAll: () => registry.getAll(),
       streamSimple(model, transcript, options) { calls.push({ model, transcript, options }); entered.resolve(); return registry.streamSimple(model, transcript, options); },
@@ -30,6 +31,7 @@ async function harness({ cwd = process.cwd(), responses = [], activeTools = ['re
   };
   const pi = {
     registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command),
+    registerEntryRenderer: () => {}, appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data }),
     on: (name, handler) => events.set(name, handler),
     getActiveTools: () => activeTools,
     getCommands: () => [{name: 'skill:agentrun-author', source: 'skill'}],
@@ -38,12 +40,113 @@ async function harness({ cwd = process.cwd(), responses = [], activeTools = ['re
     sendMessage: message => messages.push(message), sendUserMessage: (text, options) => prompts.push({ text, options }),
   };
   (extensionOptions === undefined ? agentRunExtension : createAgentRunExtension(extensionOptions))(pi);
-  return { ctx, pi, calls, messages, prompts, statuses, widgets, commands, tools, events, faux, entered,
+  return { ctx, pi, calls, messages, prompts, statuses, widgets, commands, tools, events, faux, entered, branch,
     command: args => commands.get('agentrun').handler(args, ctx),
     tool: (args, update) => tools.get('agentrun').execute('test-call', args, controller.signal, update, ctx),
     shutdown: () => events.get('session_shutdown')(),
   };
 }
+
+test('support triage preserves decisions, named reuse and branch-local receipts across new hosts', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-procedure-'));
+  const first = await harness({ cwd, withModel: false });
+  let second;
+  try {
+    await first.command('triage billing');
+    const run = first.messages.at(-1).details;
+    assert.equal(run.status, 'complete'); assert.equal(run.output.queue, 'billing');
+    const decision = run.view.nodes.find(node => node.kind === 'route');
+    assert.match(decision.details.join('\n'), /Fictional ledger/);
+    assert.match(decision.details.join('\n'), /Interpreter accepted/);
+    await first.command('save support-triage');
+    assert.match(first.messages.at(-1).content, /Input and execution permission are not saved/);
+    const originalBranch = structuredClone(first.branch);
+    await first.shutdown();
+    second = await harness({ cwd, withModel: false, branch: originalBranch });
+    await second.command('inspect');
+    assert.match(second.messages.at(-1).content, /complete/);
+    await second.command('history 1');
+    assert.equal(second.messages.at(-1).details.run.report.output.queue, 'billing');
+    const restored = await second.tool({ action: 'inspect' });
+    assert.equal(restored.details.inspection.name, supportTriageWorkflow.name);
+    await second.command(`input ${JSON.stringify(supportTriageInputs.technical)}`);
+    await second.command('run');
+    assert.equal(second.messages.at(-1).details.output.queue, 'technical');
+    assert.equal(second.messages.at(-1).details.calls.agent, 1);
+    assert.equal(second.calls.length, 0, 'scripted session restoration does not silently switch to live');
+    await second.command('history');
+    assert.equal(second.messages.at(-1).details.runs.length, 2);
+    await second.command('load support-triage');
+    assert.match(second.messages.at(-1).content, /Missing input: ticket, evidence/);
+    assert.match(second.messages.at(-1).content, /live adapters/);
+    assert.equal(second.calls.length, 0, 'loading does not execute');
+    assert.equal(second.branch.at(-1).data.demo, undefined);
+    assert.deepEqual(second.branch.at(-1).data.input, {});
+  } finally { await second?.shutdown(); await first.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('saved procedure loads in an empty session and uses only current host tools and judge', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-new-session-'));
+  const first = await harness({ cwd, withModel: false });
+  let second;
+  try {
+    await first.tool({ action: 'inspect', workflow: supportTriageWorkflow, input: supportTriageInputs.billing });
+    await first.tool({ action: 'save', name: 'triage' }); await first.shutdown();
+    second = await harness({ cwd, extensionOptions: { createJudge: () => scriptedSupportTriageDeps().runJudge } });
+    const loaded = await second.tool({ action: 'load', name: 'triage', input: supportTriageInputs.billing });
+    assert.equal(loaded.details.inspection.sha256.length, 64);
+    const run = await second.tool({ action: 'run' });
+    assert.equal(run.details.status, 'complete'); assert.equal(run.details.output.queue, 'billing');
+    assert.equal(run.details.calls.agent, 0);
+    assert(!JSON.stringify(second.branch).includes('executableAuthorized'));
+  } finally { await second?.shutdown(); await first.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('RPC inspection is readable and never attempts a custom TUI', async () => {
+  const app = await harness({ withModel: false, hasUI: true, mode: 'rpc' });
+  app.ctx.ui.custom = async () => { throw new Error('RPC cannot show native custom UI'); };
+  try {
+    await app.command('triage ambiguous');
+    assert.equal(app.messages.at(-1).details.status, 'escalated');
+    await app.command('inspect');
+    assert.match(app.messages.at(-1).content, /choose-support-route/);
+    await app.command('history 1');
+    assert.equal(app.messages.at(-1).details.run.report.status, 'escalated');
+  } finally { await app.shutdown(); }
+});
+
+test('one-string natural input is stored verbatim without an authoring call', async () => {
+  const app = await harness();
+  try {
+    const definition = workflow();
+    definition.schemas.Input = { type: 'object', properties: { note: { type: 'string', minLength: 1 } },
+      required: ['note'], additionalProperties: false };
+    definition.input = { schemaId: 'Input' };
+    await app.tool({ action: 'inspect', workflow: definition });
+    await app.command('input It broke after the change.');
+    assert.deepEqual(app.branch.at(-1).data.input, { note: 'It broke after the change.' });
+    assert.equal(app.prompts.length, 0);
+    assert.match(app.messages.at(-1).content, /Nothing was run/);
+
+    await app.tool({ action: 'inspect', workflow: supportTriageWorkflow });
+    await app.command('input A different support case');
+    assert.equal(app.prompts.length, 1, 'multi-field input still asks Pi to map the case');
+  } finally { await app.shutdown(); }
+});
+
+test('history is read-only and branch navigation cannot restore sibling history', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await app.command('triage failure');
+    assert.equal(app.messages.at(-1).details.status, 'failed');
+    await app.command('history 1');
+    assert.equal(app.messages.at(-1).details.run.report.status, 'failed');
+    app.ctx.sessionManager.getBranch = () => [];
+    await app.events.get('session_tree')({}, app.ctx);
+    await app.command('history'); assert.match(app.messages.at(-1).content, /No retained runs/);
+    await app.command('inspect'); assert.match(app.messages.at(-1).content, /Describe a task/);
+  } finally { await app.shutdown(); }
+});
 
 test('native tool declares object-valued workflows and rejects encoded JSON without changing the staged draft', async () => {
   const app = await harness({ withModel: false });
@@ -75,7 +178,7 @@ test('native extension has one workflow tool and a task-first command without ad
     assert.equal(app.prompts[0].text, '/skill:agentrun-author Review the release notes and summarize missing migration steps');
     assert.equal(app.prompts[0].options.expandPromptTemplates, true);
     const described = await app.tool({ action: 'describe' });
-    assert.deepEqual(described.details.tools.map(tool => tool.name), ['search', 'read']);
+    assert.deepEqual(described.details.tools.map(tool => tool.name), ['search', 'support_demo_lookup', 'support_demo_handoff', 'read']);
     assert.ok(described.details.tools.every(tool => tool.parameters));
     assert.deepEqual(described.details.limits, { deadlineMs: 600000, modelRequests: 50, judgeCalls: 100, toolAttempts: 100,
       nodeMaxTurns: 8, nodeMaxSubmissions: 3, nodeTimeoutMs: 120000 });
@@ -95,7 +198,7 @@ test('demo displays the real graph and executes the real interpreter without mod
     assert.equal(result.details.output.findings.length, 3);
     assert.ok(result.details.events.some(event => event.type === 'judge.answered'));
     assert.equal(app.calls.length, 0);
-    await app.command(''); assert.match(app.messages.at(-1).content, /Replay: \/agentrun run/);
+    await app.command(''); assert.match(app.messages.at(-1).content, /scripted · fictional · no model calls/);
   } finally { await app.shutdown(); }
 });
 
@@ -263,7 +366,12 @@ for (const termination of ['stop', 'shutdown']) {
       assert.equal(app.messages.length, count); assert.equal(app.statuses.length, statusCount);
       assert.equal(app.calls.length, 1); assert.equal(app.calls[0].options.signal.aborted, true);
       if (termination === 'stop') assert.equal(app.messages.at(-1).details.status, 'interrupted');
-      else { assert.equal(app.messages.length, 0); await app.command(''); assert.match(app.messages.at(-1).content, /Describe a task/); }
+      else {
+        assert.equal(app.messages.length, 0);
+        app.ctx.mode = 'print'; await app.command('inspect');
+        assert.match(app.messages.at(-1).content, /interrupted/);
+        assert.equal(app.calls.length, 1, 'restoring the same session never restarts interrupted work');
+      }
     } finally { await app.shutdown(); }
   });
 }
@@ -280,6 +388,7 @@ test('switching sessions clears the originating status and cannot deliver the ol
     assert.equal(app.statuses.at(-1).value, undefined);
     assert.equal(app.messages.length, 0, 'session event alone prevents old results without another AgentRun command');
     app.ctx.sessionManager.getSessionId = () => 'next-native-session';
+    app.ctx.sessionManager.getBranch = () => [];
     await app.command('');
     assert.equal(app.messages.length, 1); assert.match(app.messages[0].content, /Describe a task/);
     assert.equal(app.calls[0].options.signal.aborted, true);
@@ -308,7 +417,7 @@ test('default tool inventory is read-only and shell declarations cannot bypass h
   try {
     const definition = workflow(); definition.root.tools = ['bash'];
     const inspected = await app.tool({ action: 'inspect', workflow: definition });
-    assert.deepEqual([...inspected.details.tools].sort(), ['find', 'grep', 'ls', 'read', 'search']);
+    assert.deepEqual([...inspected.details.tools].sort(), ['find', 'grep', 'ls', 'read', 'search', 'support_demo_handoff', 'support_demo_lookup']);
     await assert.rejects(app.tool({ action: 'run', input: {}, trusted: true }), /registered/);
     assert.equal(app.calls.length, 0);
     await app.command('Summarize this repository');
@@ -415,12 +524,12 @@ test('status describes readiness without credentials, network access or a model 
   }
 });
 
-test('progress widget reports finished steps, renders readable findings and clears after a run', async () => {
+test('progress widget separates success and failure, renders readable findings and clears after a run', async () => {
   const app = await harness({ withModel: false, hasUI: true });
   try {
     await app.command('demo');
     await waitUntil(() => app.messages.some(message => message.details?.status));
-    assert.ok(app.widgets.some(({ value }) => value?.some(line => /finished/.test(line))));
+    assert.ok(app.widgets.some(({ value }) => value?.some(line => /succeeded.*failed/.test(line))));
     assert.equal(app.widgets.at(-1).value, undefined);
     assert.match(app.messages.at(-1).content, /findings:/);
     assert.doesNotMatch(app.messages.at(-1).content, /"findings"\s*:/);
@@ -721,6 +830,8 @@ test('configured host tool inventory replaces built-ins and demo even during tru
   try {
     const described = await app.tool({ action: 'describe' });
     assert.deepEqual(described.details.tools.map(tool => tool.name), ['corpus_search']);
+    assert.deepEqual(described.details.tools[0].resultSchema.required, ['content']);
+    assert.match(described.details.tools[0].resultContract, /Do not invent fields/);
     assert.equal(attempts, 0, 'describe is an outer attempt owned by the calling host');
     await app.tool({ action: 'inspect', workflow: toolWorkflow() });
     await app.command('run --trusted');
@@ -731,6 +842,55 @@ test('configured host tool inventory replaces built-ins and demo even during tru
     const retained = await app.tool({ action: 'inspect' });
     assert.equal(retained.details.inspection.sha256, (await app.tool({ action: 'inspect', workflow: toolWorkflow() })).details.inspection.sha256);
     assert.equal(executions, 1); assert.equal(attempts, 1);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('discovery exposes exact direct-call return contracts without executing tools', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    const described = await app.tool({ action: 'describe' });
+    const lookup = described.details.tools.find(tool => tool.name === 'support_demo_lookup');
+    assert.deepEqual(lookup.resultSchema.required, ['evidence']);
+    assert.equal(lookup.resultSchema.additionalProperties, false);
+    assert.equal(lookup.resultSchema.properties.matches, undefined);
+    const handoff = described.details.tools.find(tool => tool.name === 'support_demo_handoff');
+    assert.deepEqual(handoff.resultSchema, supportTriageWorkflow.schemas.Handoff);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+  let executed = false;
+  const schema = { type: 'object', properties: { content: { type: 'array' }, details: { type: 'object', properties: { note: { type: 'string' } } } }, required: ['content', 'details'] };
+  const configured = await harness({ withModel: false, extensionOptions: {
+    hostTools: () => [{ ...hostTool(async () => { executed = true; return corpusResult('source'); }), resultSchema: schema }],
+  } });
+  try {
+    const described = await configured.tool({ action: 'describe' });
+    assert.deepEqual(described.details.tools[0].resultSchema, schema);
+    assert.equal(executed, false);
+  } finally { await configured.shutdown(); }
+});
+
+test('read-only inspect returns the exact draft and input to an author while rendering a human preview', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await app.tool({ action: 'inspect', workflow: supportTriageWorkflow, input: supportTriageInputs.billing });
+    const inspected = await app.tool({ action: 'inspect' });
+    const model = JSON.parse(inspected.content[0].text);
+    assert.deepEqual(model.workflow, supportTriageWorkflow);
+    assert.deepEqual(model.input, supportTriageInputs.billing);
+    const rendered = app.tools.get('agentrun').renderResult(inspected, { expanded: false }).render(100).join('\n');
+    assert.match(rendered, /fictional-support-triage/);
+    assert.doesNotMatch(rendered, /"additionalProperties"/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('an unrestorable receipt is disclosed instead of silently added to native history', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    const inspected = await app.tool({ action: 'inspect', workflow: workflow(), input: { large: 'x'.repeat(8 * 1024 * 1024) } });
+    assert.match(inspected.details.view.summary.join('\n'), /could not be retained/);
+    assert.equal(app.branch.length, 0);
     assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
 });
@@ -831,9 +991,11 @@ test('host judge is lazy, receives cancellation, and needs no ambient provider c
 test('host judge configuration failure does not select an ambient fallback', async () => {
   const app = await harness({ extensionOptions: { createJudge: () => { throw new Error('host_judge_unavailable'); } } });
   try {
-    await app.tool({ action: 'inspect', workflow: judgeWorkflow() });
+    await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'Valid input before adapter admission.' } });
     await assert.rejects(app.tool({ action: 'run' }), /host_judge_unavailable/);
     assert.equal(app.calls.length, 0);
+    await app.command('history');
+    assert.match(app.messages.at(-1).content, /No retained runs/);
   } finally { await app.shutdown(); }
 });
 

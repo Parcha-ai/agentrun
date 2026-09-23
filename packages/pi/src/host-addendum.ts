@@ -12,7 +12,9 @@ export const PI_HOST_ADDENDUM: AuthorHostAddendum = Object.freeze({
     'A call uses via tool with a tool describe returns. Shell and executor calls and artifact delivery are unavailable.',
     'This extension supplies no SOP text: do not run a workflow with sopSection here; it needs an SDK host that supplies the authoritative SOP.',
     'Custom extension tools and outer permission hooks are not inherited, including in trusted runs.',
-    'The workflow is session-local: /agentrun shows it, /agentrun run reruns its last input, /agentrun stop requests cancellation and /agentrun status reports setup. Escape does not reliably cancel a slash-started run. There is no save or load.',
+    'A preview, procedure edit or input change does not authorize execution: inspect it, report Inspected — not run, and execute only when requested.',
+    'Use /agentrun to inspect the current graph, /agentrun input to change input, /agentrun save and /agentrun load for named definition revisions, /agentrun history for retained receipts, /agentrun run to restart, and /agentrun stop to request cancellation; closing the inspector does not stop a run.',
+    'Saving retains the definition without input or execution permission; loading rechecks current host capabilities and never resumes an interrupted run.',
     'The structural limits describe returns bound node count, map concurrency and parallel branches.',
   ],
 });
