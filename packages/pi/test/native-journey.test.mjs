@@ -163,7 +163,8 @@ test('native Pi persisted-session offline journey saves, restores, reruns and lo
     await fresh.stop();
 
     const storedFiles = await readdir(join(directory, '.pi', 'agentrun', 'workflows', 'fictional-triage'));
-    assert.deepEqual(storedFiles, [`${digest}.json`]);
+    assert.deepEqual(storedFiles, [`${digest}.json`, 'latest']);
+    assert.equal(await readFile(join(directory, '.pi', 'agentrun', 'workflows', 'fictional-triage', 'latest'), 'utf8'), `${digest}\n`);
     const stored = JSON.parse(await readFile(join(directory, '.pi', 'agentrun', 'workflows', 'fictional-triage', storedFiles[0]), 'utf8'));
     assert.deepEqual(Object.keys(stored).sort(), ['createdAt', 'digest', 'name', 'version', 'workflow']);
     const freshRows = snapshots(await entries(freshSession));

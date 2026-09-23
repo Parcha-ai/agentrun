@@ -126,6 +126,24 @@ test('real nested research map attributes repeated executions and child schema r
   }
 });
 
+test('partial observation cannot imply a structural stage succeeded', async () => {
+  const observed = new WorkflowObservation();
+  const report = await runWorkflow(demoWorkflow, demoInput,
+    observed.observe({ ...scriptedDemoDeps(), onEvent: event => observed.record(event) }));
+  const partial = { ...observed.data, omitted: 1 };
+  const view = workflowView(demoWorkflow, { observation: partial, report });
+  assert.equal(view.nodes.find(node => node.path === '/root').status, 'completion not observed');
+  assert.equal(view.nodes.find(node => node.kind === 'map').status, 'completion not observed');
+  assert.equal(view.nodes.find(node => node.label === 'write-finding').status, 'succeeded');
+  assert.match(view.summary.join('\n'), /Observation is partial/);
+
+  const failed = structuredClone(partial);
+  const path = Object.keys(failed.steps).find(path => path.includes('/body/'));
+  assert.ok(path);
+  failed.steps[path].status = 'failed';
+  assert.equal(workflowView(demoWorkflow, { observation: failed, report }).nodes[0].status, 'failed');
+});
+
 test('ask answers require interpreter acceptance, not just a transport response', async () => {
   const observed = new WorkflowObservation();
   await observed.observe({ runJudge: async () => ({ answers: { enough: { type: 'noul', noul: .8 } } }) })

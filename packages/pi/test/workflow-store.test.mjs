@@ -43,15 +43,36 @@ test('concurrent identical saves publish one immutable revision and retain old r
   const { store, root } = await setup(t);
   const all = await Promise.all(Array.from({ length: 8 }, () => store.save('copy', fixture())));
   assert.ok(all.every(s => s.digest === all[0].digest && s.createdAt === all[0].createdAt));
-  assert.deepEqual(await readdir(join(root, 'copy')), [`${all[0].digest}.json`]);
+  assert.deepEqual(await readdir(join(root, 'copy')), [`${all[0].digest}.json`, 'latest']);
   const before = await readFile(join(root, 'copy', `${all[0].digest}.json`), 'utf8');
   const next = await store.save('copy', fixture('Copy without changing spelling.'));
   assert.notEqual(next.digest, all[0].digest);
   assert.equal(await readFile(join(root, 'copy', `${all[0].digest}.json`), 'utf8'), before);
   const revisions = await store.list();
   assert.equal(revisions.length, 2); assert.ok(revisions.every(r => r.workflow === undefined));
-  assert.equal((await store.load('copy')).digest, revisions[0].digest);
+  assert.equal((await store.load('copy')).digest, next.digest);
   assert.deepEqual((await store.load('copy', all[0].digest)).workflow, fixture());
+});
+
+test('name loads follow the last published revision when timestamps tie', async t => {
+  const { cwd, root, store } = await setup(t);
+  const first = await store.save('copy', fixture('First version.'));
+  const second = await store.save('copy', fixture('Second version.'));
+  const secondPath = join(root, 'copy', `${second.digest}.json`);
+  const record = JSON.parse(await readFile(secondPath, 'utf8'));
+  record.createdAt = first.createdAt;
+  await writeFile(secondPath, JSON.stringify(record));
+
+  assert.equal((await new WorkflowStore(cwd).load('copy')).digest, second.digest);
+  assert.equal((await store.list()).filter(item => item.name === 'copy')[0].digest, second.digest);
+  assert.equal(await readFile(join(root, 'copy', 'latest'), 'utf8'), `${second.digest}\n`);
+
+  // Older stores have no pointer. A tied timestamp cannot choose one safely.
+  await rm(join(root, 'copy', 'latest'));
+  await assert.rejects(store.load('copy'), code('ambiguous_revision'));
+  assert.equal((await store.load('copy', first.digest)).digest, first.digest);
+  await store.save('copy', fixture('First version.'));
+  assert.equal((await store.load('copy')).digest, first.digest);
 });
 
 test('procedure validation rejects malformed schemas without executing code or accessors', async t => {

@@ -185,6 +185,7 @@ export function workflowView(workflow: unknown, options: {
     const nodeStatus = statuses.includes('running') ? final ? ['interrupted', 'cancelled'].includes(status) ? 'interrupted' : 'completion not observed' : 'running' : statuses.includes('failed') ? 'failed'
       : statuses.some(value => ['interrupted', 'cancelled'].includes(value)) ? 'interrupted'
       : statuses.includes('needs attention') ? 'needs attention'
+      : structural && !instances.length && observed?.omitted ? 'completion not observed'
       : statuses.length && statuses.every(value => value === 'condition not met') ? 'condition not met'
       : statuses.length && statuses.every(value => value === 'succeeded' || value === 'condition not met') ? 'succeeded'
       : statuses.length ? 'completion not observed'
