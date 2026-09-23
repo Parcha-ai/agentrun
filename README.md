@@ -10,9 +10,7 @@ AgentRun is a workflow language for the agents you already run. Define repeatabl
 
 [View the static diagram](docs/assets/support-workflow.svg) · [Run this example](#run-the-support-example)
 
-- **Reuse known steps.** Put a repeatable procedure in a workflow and call an agent when a step needs investigation.
-- **Make decisions explicit.** Jev returns typed answers and probabilities. Your workflow sets the thresholds and fallback.
-- **Test the procedure.** Validate inputs and outputs, test individual steps, and bound parallel work, retries, and loops.
+The support example below follows this workflow with scripted tools and model responses.
 
 ## Quickstart
 
@@ -23,7 +21,7 @@ npm install @parcha/agentrun-dsl@beta
 npx agentrun demo
 ```
 
-This small ticket-routing demo runs without an API key. It uses scripted Jev decisions to show the workflow's steps and result. [Use it in Pi](#use-it-in-pi) to build workflows with your agent.
+This ticket-routing demo uses scripted decisions and needs no API key. To run the support workflow shown above, use the checkout below. To build workflows with your agent, [install the Pi extension](#use-it-in-pi).
 
 ### Run the support example
 
@@ -38,7 +36,7 @@ npm run build
 npm run demo:support
 ```
 
-This runs the actual DSL interpreter with **scripted tools, Jev answers, and agent responses**. No API key or model access is needed. It checks execution, not model quality, and sends no customer replies.
+This runs the interpreter with **scripted tools, Jev answers, and agent responses**. It needs no API key and sends no customer replies.
 
 The command prints a report for each case:
 
@@ -46,7 +44,7 @@ The command prints a report for each case:
 | --- | ---: | ---: | --- |
 | Reset a password | 0 | 1 | Return the help answer |
 | Find an invoice | 0 | 1 | Return the help answer |
-| Investigate a failed payment | 1 | 2 | Return the checked investigation |
+| Investigate a failed payment | 1 | 2 | Return the investigation answer |
 | Payment still unresolved | 1 | 2 | Escalate for review |
 
 ```sh
@@ -54,13 +52,13 @@ npm run demo:support -- payment
 npm run test:support
 ```
 
-To see the stop path, run `npm run demo:support -- unresolved`. It exits with code `2`; the all-cases demo exits `0` when every expected outcome matches. Scripted responses do not adapt when you change the prompts.
+Try `npm run demo:support -- unresolved` to see an escalation (exit code `2`). The responses are scripted; changing a prompt does not change them.
 
 [Connect live Jev and your agent](docs/support-quickstart.md), or [give these instructions to your coding agent](docs/agent-instructions.md).
 
 ## What a workflow looks like
 
-The [support workflow](examples/support-answer.mjs) searches for an answer, asks Jev whether it resolves the request, and investigates only if needed. A nonempty answer with a source reference and a `yes` with confidence of at least `0.8` passes. Otherwise, one agent attempt is allowed, followed by a second Jev check. An unresolved result escalates.
+The [support workflow](examples/support-answer.mjs) accepts an answer when it has text, a source reference, and a Jev `yes` decision with confidence of at least `0.8`. Otherwise, it allows one agent attempt and checks again. If that fails, it escalates for review. These are the example's rules; you choose the criteria and thresholds for your task.
 
 These are the search and decision nodes from that workflow:
 
@@ -89,9 +87,7 @@ Install the core and Jev adapter in your application with `npm install @parcha/a
 2. **Define and test the workflow.** Write its schemas, steps, thresholds, and review path. Start with fixtures, then evaluate real decisions on labeled cases from your task.
 3. **Expose it to your agent.** Wrap a workflow run as a tool in your application. Your agent can call that procedure when needed and use its validated output or escalation result.
 
-For live Jev calls, reuse `TYPESAFE_API_KEY` from the server environment. If it is missing, get a key from the [TypeSafe dashboard](https://console.typesafe.ai/keys) and follow the [Jev quickstart](https://docs.typesafe.ai/introduction/quickstart). A coding-agent login does not provide this key. Keep credentials out of prompts and source control.
-
-The [support integration guide](docs/support-quickstart.md) includes the config template, live command, and expected call sequence. The [host integration guide](docs/host-integration.md) explains permissions, cancellation, recovery, and existing-interpreter compatibility. Jev is optional for workflows without decision nodes.
+The [support integration guide](docs/support-quickstart.md) has a config template and live command. Live Jev calls need `TYPESAFE_API_KEY` from the [TypeSafe dashboard](https://console.typesafe.ai/keys), separate from your coding-agent login. Workflows without Jev decisions do not need that key. See [host integration](docs/host-integration.md) for permissions, cancellation, and recovery.
 
 ## Use it in Pi
 
@@ -102,7 +98,7 @@ pi install npm:@parcha/agentrun-pi@0.1.0-beta.2 -l
 pi --offline
 ```
 
-`-l` installs in this project; omit it to install for all Pi sessions. `--offline` skips Pi startup downloads. On first launch, Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed.
+`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed.
 
 - `/agentrun demo` loads the scripted research example; `/agentrun run` repeats it without model calls.
 - `/agentrun demo live` uses your configured Pi model and Jev.
@@ -114,7 +110,7 @@ Once Pi has model access, ask it to build a workflow:
 /agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report gaps with file references.
 ```
 
-Pi uses the packaged skill to build, inspect, and run the workflow. If Pi is already open, run `/reload` after installing. Workflows stay in memory for the current session; `/reload` clears the current definition. Saving them for later is planned for V2. [Pi setup and limits](packages/pi/README.md).
+Pi uses the packaged skill to build, inspect, and run the workflow. Run `/reload` if you install into an open Pi session. Workflows stay in memory for that session; `/reload` clears them. [Pi setup and limits](packages/pi/README.md).
 
 ## More examples
 
@@ -128,15 +124,14 @@ Pi uses the packaged skill to build, inspect, and run the workflow. If Pi is alr
 
 ### Research demo
 
-The existing `npm run demo` command runs the scripted research workflow: “Should our team move its docs from a wiki into the code repository?” It prints a workflow preview, then researches three subquestions and retains three sources. Expected calls: three tools, three system one decisions, and five model steps.
+From the built checkout, run a scripted research workflow: “Should our team move its docs from a wiki into the code repository?”
 
 ```sh
 npm run demo
-npm run test:typed-example
 npm run eval:research
 ```
 
-`npm run demo -- --no-evidence` stops before writing findings or a report and exits `2`. Only the planning model step runs. The evaluation checks six labeled cases with scripted responses. [Connect real Jev and Pi models](docs/live-research.md).
+It plans subquestions, researches them in parallel, screens evidence, and writes a report. The evaluation checks six labeled cases with scripted responses. [Connect real Jev and Pi models](docs/live-research.md).
 
 ## Packages, status, and contributing
 
@@ -146,12 +141,10 @@ npm run eval:research
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
 
-`0.1.0-beta.2` is published on npm. See [release instructions](docs/releasing.md), [contracts and limits](docs/guide.md#limits), and the [contribution guide](CONTRIBUTING.md). The website is maintained separately.
+`0.1.0-beta.2` is published on npm; this checkout includes changes for beta.3. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
 
 Ordinary functions may be enough for a small fixed sequence. AgentRun adds a reusable workflow document with explicit execution rules. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 
-A formal model of the language lives in [`spec/lean`](spec/lean/README.md). It is written in Lean 4 and proves what validation and execution guarantee about `requires`, state writes, parallel merges, loop bounds and desugaring, for any model or tool behavior. Conformance cases run on both the model and this interpreter, so the two cannot drift apart. Its README lists what is modeled and the places where a commonly stated guarantee does not hold.
-
-To contribute, install the checkout, make a focused change, and run `npm run check` and `npm run verify:packages`. [Open an issue](https://github.com/Parcha-ai/agentrun/issues) for bugs or proposals.
+For development setup and checks, see [Contributing](CONTRIBUTING.md). [Open an issue](https://github.com/Parcha-ai/agentrun/issues) for bugs or proposals.
 
 Code and documentation use [Apache-2.0](LICENSE). Copyright 2026 Parcha Labs, Inc. Dependencies retain their own licenses. Built by [Grep.ai](https://grep.ai).

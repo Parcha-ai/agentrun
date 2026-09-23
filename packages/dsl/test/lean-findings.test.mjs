@@ -1,17 +1,4 @@
-// Claims the Lean model shows are false (spec/lean/AgentRunSemantics/Findings.lean). Each
-// test asserts the claim as it is commonly stated and is marked `todo`: it runs, fails
-// today, and documents the gap until the behavior or the claim changes. The conformance
-// corpus pins the current behavior (spec/lean/conformance/*.json).
-//
-// Each test name leads with its disposition; this PR changes no runtime behavior.
-//   [fix]        a shipped runtime defect: F7 ($host merge order; fixed: mixed-shape writes conflict in
-//                either order, appends still join in branch order), F8 (poll unbounded under
-//                recovery), F9 (predicate paths stop at arrays; fixed: one resolver).
-//   [validator]  a check validateWorkflow should gain: F1 (requires after the first opaque
-//                node; empty values), F2 (writes declaredWrites misses), F4 (child input
-//                naming $host), F5 (child output that may be undefined).
-//   [document]   behavior that stays and the docs must state: F3 ($ keys from code
-//                patches). F6 (the write set) has no runtime test; see Findings.lean.
+// Dispositions: spec/lean/README.md#findings. Pending items: https://github.com/Parcha-ai/agentrun/issues/10.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runWorkflow, validateWorkflow } from "../dist/index.js";
@@ -57,10 +44,11 @@ test("[validator] F2b: parallel branches that pass validation never conflict (un
   assert.equal(await reason(runWorkflow(w, { q: 1 }, { runNode: async () => ({ v: "a" }) })), null);
 });
 
-test("[document] F3: no workflow writes an engine-owned $ key", { todo: "F3: only $host is rejected in a code patch" }, async () => {
+test("[document] F3: code patches may write $-prefixed keys other than $host", async () => {
   const w = wf(code("c", "s => ({ $other: 1 })"));
-  const result = await runWorkflow(w, {}, {}).catch(() => null);
-  assert.ok(!result || !Object.keys(result.state).some((key) => key.startsWith("$")), "a $-prefixed key was written");
+  const result = await runWorkflow(w, {}, {});
+  assert.equal(result.state.$other, 1);
+  assert.equal(await reason(runWorkflow(wf(code("c", "s => ({ $host: 1 })")), {}, {})), "reserved_state_key");
 });
 
 test("[validator] F4: validation rejects a child invocation whose input names $host", { todo: "F4: the reserved key is only checked when the child runs" }, () => {
@@ -74,14 +62,16 @@ const hostRun = (order, hostFor) => runWorkflow(
   { runNode: async () => ({ v: "ok" }), hostPolicy: { decodeSubmission: (raw, ctx) => ({ value: raw, host: hostFor[ctx.node.label] }) } },
 ).then((r) => ({ host: r.host }), (e) => ({ error: e.reason }));
 
-test("[fix] F7a: the $host merge does not depend on branch order (scalar then array)", async () => {
+test("[fixed] F7a: mixed scalar/array host writes conflict in either branch order", async () => {
   const hostFor = { a: { k: "scalar" }, b: { k: ["x"] } };
-  assert.deepEqual(await hostRun(["a", "b"], hostFor), await hostRun(["b", "a"], hostFor));
+  assert.deepEqual(await hostRun(["a", "b"], hostFor), { error: "parallel_write_conflict" });
+  assert.deepEqual(await hostRun(["b", "a"], hostFor), { error: "parallel_write_conflict" });
 });
 
-test("[fix] F7b: the $host merge does not depend on branch order (arrays)", { todo: "F7b: appends join in branch order by design (documented); the merge is order-independent up to that ordering" }, async () => {
+test("[document] F7b: host array appends follow the declared branch order", async () => {
   const hostFor = { a: { log: ["from-a"] }, b: { log: ["from-b"] } };
-  assert.deepEqual(await hostRun(["a", "b"], hostFor), await hostRun(["b", "a"], hostFor));
+  assert.deepEqual(await hostRun(["a", "b"], hostFor), { host: { log: ["from-a", "from-b"] } });
+  assert.deepEqual(await hostRun(["b", "a"], hostFor), { host: { log: ["from-b", "from-a"] } });
 });
 
 test("[fix] F8: a polled call stops at its poll deadline", { todo: "F8: with deps.recovery the engine leaves the poll bound to the host's recovery adapter" }, async () => {
@@ -98,7 +88,7 @@ test("[fix] F8: a polled call stops at its poll deadline", { todo: "F8: with dep
   assert.ok(effects <= 11, `${effects} polls after the deadline had passed`);
 });
 
-test("[fix] F9: a predicate reads a state path the way requires and interpolation do", async () => {
+test("[fixed] F9: a predicate reads a state path the way requires and interpolation do", async () => {
   const w = wf({ node: "chain", steps: [
     agent("a", { as: "a", requires: ["scores.0"], state: { first: "{scores.0}" } }),
     { node: "escalate", label: "gate", when: { predicate: "gte", path: "scores.0", n: 5 }, kind: "k", stage: "s", summary: "high" },

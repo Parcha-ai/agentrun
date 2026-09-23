@@ -1,6 +1,6 @@
 # AgentRun semantics in Lean
 
-A Lean 4 model of the workflow language that `packages/dsl` interprets, with theorems about what `validateWorkflow` and `runWorkflow` guarantee, and a conformance corpus that both the model and the TypeScript interpreter must agree on.
+A contributor specification for selected validation and execution rules in `packages/dsl`. Lean checks proofs about this model under their stated assumptions. Shared test cases compare it with the TypeScript interpreter; the implementation is not formally verified by these proofs.
 
 The model uses core Lean and its standard library only. No Mathlib.
 
@@ -27,14 +27,14 @@ A clean `lake build` takes about 20 seconds.
 
 | Lean | TypeScript |
 | --- | --- |
-| `Value.lean`: JSON values, state, the two `getPath` functions, `hasConcreteValue` | `workflow.ts`, `predicates.ts` |
+| `Value.lean`: JSON values, state, the shared `getPath` resolver, `hasConcreteValue` | `workflow.ts`, `predicates.ts` |
 | `Syntax.lean`: every node kind, predicates, templates, child workflows | `WorkflowNode`, `Predicate` |
 | `Semantics.lean`: `eval`, one case per node kind, the parallel merge, `stepWrap` | `runNodeOnState`, `runNodeBody`, `mergeStageDelta` |
 | `Validate.lean`: the structural rules of `validateWorkflow` | `validateWorkflow` |
 | `Desugar.lean` | `desugarWorkflow` |
 | `Run.lean`: validate, check input, run, project output | `runWorkflow` |
 
-Everything the interpreter delegates is a field of `Oracle`: `runNode`, `runJudge`, `runEffect`, code execution, `ask` predicates, JSON Schema checks, the host policy's `decodeSubmission` and `afterNode`, and which of several concurrent failures is reported. Every theorem quantifies over every oracle.
+Everything the interpreter delegates is a field of `Oracle`: `runNode`, `runJudge`, `runEffect`, code execution, `ask` predicates, JSON Schema checks, the host policy's `decodeSubmission` and `afterNode`, and which of several concurrent failures is reported. The execution theorems quantify over oracle functions subject to their stated assumptions.
 
 ### What each oracle boundary hides
 
@@ -52,7 +52,7 @@ A theorem sees only what the engine does with an oracle's answer. Behavior insid
 
 An oracle is a function of the call site, and a call site is its execution path. Within one run every oracle is called at most once per execution path: loop iterations, map items, branches and child workflows each extend the path. So a function loses nothing against a stateful adapter for a single run.
 
-The validator model covers reachability of `requires`, `itemsPath` and interpolation heads, the reserved `$` keys, parallel disjointness as `declaredWrites` computes it, loop bounds, terminal report placement, output-path producers, artifact files produced by earlier shell calls, and child workflows validated with their invocation's input keys. It is a subset of the TypeScript rules, so every workflow the TypeScript validator accepts is accepted here and every theorem applies to it.
+The validator model covers reachability of `requires`, `itemsPath` and interpolation heads, the reserved `$` keys, parallel disjointness as `declaredWrites` computes it, loop bounds, terminal report placement, output-path producers, artifact files produced by earlier shell calls, and child workflows validated with their invocation's input keys. It is intended to check a subset of the TypeScript rules. The validator sweep tests that relationship on the collected corpus; it does not prove it for all workflows.
 
 ## What is not modeled
 
@@ -72,7 +72,7 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 | `T1_requires_sound` | `Theorems/Requires.lean` | If validation accepts with the input's keys, no node the validator checked fails `required_nonempty` because the first key of a required path is absent. Assumes schema checks reject `undefined`. |
 | `T1_as_stated_is_false` | `Findings.lean` | The stronger claim, that validation rules out `required_nonempty` entirely, is false. |
 | `T2_frame` | `Theorems/Writes.lean` | A completed node changes only keys in `mayWrite`: its `as` or label, the `$answers` and `$verify` sidecars, `report_markdown`, `artifact`, and `$host` for generative nodes. Holds for any oracle without `afterNode`. `$host` is untouched outside generative nodes even with `afterNode`. |
-| `T2_parallel_no_domain_conflict` | `Theorems/Parallel.lean` | If no two branches may write the same key, apart from `$host`, the merge raises no domain write conflict. |
+| `T2_parallel_no_domain_conflict` | `Theorems/Parallel.lean` | If no two branches may write the same key, apart from `$host`, the merge raises no domain write conflict. Assumes the branches complete and `afterNode` is absent. |
 | `T2_merge_order_independent` | `Theorems/Parallel.lean` | The domain merge's success and every merged key are invariant under any permutation of branch results. |
 | `T3_loop_ignores_late_iterations` | `Theorems/Loop.lean` | A loop's result does not depend on its body at any iteration index at or above `maxIters`. |
 | `T3_loop_exit_count` | `Theorems/Loop.lean` | When `until` holds, it held after iteration `n` with `1 ≤ n ≤ maxIters`. |
@@ -86,22 +86,22 @@ Two limits apply to what these results establish:
 - **Conformance pins agreement, not equivalence.** The conformance cases were recorded from the TypeScript implementation and then matched by the model. They pin agreement on those cases and cannot establish that the implementation is equivalent to the model.
 - **Totality is not liveness.** `T3_runWorkflow_total` is termination of the model, whose oracles answer atomically. It says nothing about the liveness of a run against live adapters. F8 is the concrete gap: under a recovery adapter, the engine's poll loop has no bound.
 
-The validator mirror is checked the other way as well: `lake exe validator-sweep` asserts that the Lean validator accepts every workflow the TypeScript validator accepts. The corpus is every workflow the repository's own test suites pass to the public API, plus the conformance cases and the author skill examples (see [the sweep](#validator-sweep)).
+The validator mirror is checked the other way as well: `lake exe validator-sweep` asserts that the Lean validator accepts every TypeScript-accepted workflow in its corpus. The corpus is every workflow the repository's own test suites pass to the public API, plus the conformance cases and the author skill examples (see [the sweep](#validator-sweep)).
 
 `AgentRunSemantics/Check.lean` prints the axioms of every theorem and fails the build if any theorem depends on more than `propext`, `Classical.choice` and `Quot.sound`. Counterexamples are evaluated by the kernel with `decide +kernel`, never `native_decide`.
 
 <a id="findings"></a>
 ## Findings
 
-Each open finding has a kernel-checked counterexample in `Findings.lean`, a conformance case that pins the current TypeScript behavior, and a `todo` test in `packages/dsl/test/lean-findings.test.mjs` that asserts the claim and fails. A fixed finding keeps its case with the corrected expectation, a theorem of the fixed behavior, and a live test.
+The table records counterexamples and their disposition. Findings F6 and F8 have the evidence noted in their rows rather than a shared conformance case. Pending validation and recovery changes have executable `todo` reproducers in `packages/dsl/test/lean-findings.test.mjs`; they are not passing guarantees. Documented behavior and fixed defects have passing assertions of the expected behavior. [Issue #10](https://github.com/Parcha-ai/agentrun/issues/10) tracks the remaining dispositions, including which broad claims should become documented limits instead of runtime changes.
 
-Disposition: **fix** is a shipped runtime defect, **validator** is a check `validateWorkflow` should gain, and **document** is behavior that stays and the docs must state. Nothing here changes runtime behavior.
+Disposition: **fix** is a shipped runtime defect, **validator** is a check `validateWorkflow` should gain, and **document** is behavior that stays and the docs must state. The model is separate from the runtime; each runtime fix needs its own TypeScript change and regression test.
 
 | Id | Disposition | Finding | Case |
 | --- | --- | --- | --- |
 | F1 | validator | Validation does not rule out `required_nonempty`. After the first `code`, `map`, `parallel`, `loop` or `route` on the walk, `requires` is not checked at all. Where it is checked, only the first key must have a producer; the value can still be empty or the nested path missing. | `requires-after-code`, `requires-empty-submission` |
 | F2 | validator | Parallel disjointness uses `declaredWrites`, which ignores labels of unaliased generative nodes, keys returned by unaliased code nodes, and the `$answers` and `$verify` sidecars. Such workflows validate and then fail with `parallel_write_conflict`. | `parallel-code-collision`, `parallel-label-collision` |
-| F3 | document | An unaliased code node may write `$`-prefixed keys other than `$host`. The host-integration guide says no workflow may name one. | `code-writes-dollar-key` |
+| F3 | document | An unaliased code node may write `$`-prefixed keys other than `$host`. Labels and `as` keys reject that prefix; patches reserve `$host` specifically. The host-integration guide states this boundary. | `code-writes-dollar-key` |
 | F4 | validator | A child invocation whose `input` names `$host` passes validation and fails at run time with `input_invalid`. | `child-input-host` |
 | F5 | validator | A child whose output schema accepts `undefined` can leave its parent's `as` undefined, and a validated `requires` on it then fails. T1 needs its schema hypothesis. | `child-undefined-output` |
 | F6 | document | "A node writes only its `as` or label, plus `$host`" understates the write set: judges and picks write `<as>$answers`, verified nodes write `<as>$verify`, unaliased code nodes write whatever they return, and `afterNode` may write any key but `$host`. `mayWrite` in `T2_frame` is the accurate set. | none; see `F6_writes_beyond_as_or_label` |
@@ -112,7 +112,7 @@ Disposition: **fix** is a shipped runtime defect, **validator** is a check `vali
 <a id="validator-sweep"></a>
 ## Validator sweep
 
-Every theorem assumes the Lean validator accepts the workflow. That TypeScript acceptance implies Lean acceptance is argued rule by rule in `Validate.lean`. The sweep supplies the empirical half:
+For theorems that assume Lean validation succeeds, applying the result to a TypeScript-accepted workflow also requires agreement between the validators. `Validate.lean` describes the intended correspondence; the sweep checks the acceptance direction on collected examples:
 
 ```sh
 npm run build
@@ -120,7 +120,7 @@ node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
 cd spec/lean && lake exe validator-sweep .lake/validator-corpus.json
 ```
 
-`collect.mjs` runs the DSL, Pi and example test suites with an import hook (`sweep/capture-*.mjs`). The hook records every workflow passed to `validateWorkflow`, `runWorkflow`, `runWorkflowSlice`, `runTypedWorkflow` and `dryRunWorkflow`, with the input keys of that call. The collector adds the author skill's examples (with their sample inputs' keys) and the conformance workflows, then records the TypeScript validator's verdict for each. `validator-sweep` fails if the Lean validator rejects any workflow TypeScript accepts. CI runs both steps live, so a rule added to one validator only, or relaxed on the TypeScript side only, fails the `lean` job. The direction is one-way on purpose: the Lean validator checks a subset of the rules, so rejecting less than TypeScript is expected.
+`collect.mjs` runs the DSL, Pi and example test suites with an import hook (`sweep/capture-*.mjs`). The hook records every workflow passed to `validateWorkflow`, `runWorkflow`, `runWorkflowSlice`, `runTypedWorkflow` and `dryRunWorkflow`, with the input keys of that call. The collector adds the author skill's examples (with their sample inputs' keys) and the conformance workflows, then records the TypeScript validator's verdict for each. `validator-sweep` fails if the Lean validator rejects a workflow that TypeScript accepts in that corpus. CI runs both steps live, so incompatible validator changes exercised by the corpus fail the `lean` job. The direction is one-way on purpose: the Lean validator is intended to check fewer rules, so it may accept workflows TypeScript rejects.
 
 ## Add a conformance case
 
@@ -130,4 +130,4 @@ cd spec/lean && lake exe validator-sweep .lake/validator-corpus.json
 
 ## Add a theorem
 
-Put it in `AgentRunSemantics/Theorems/`, import the file from `AgentRunSemantics.lean`, and add a `#print axioms` entry under `#guard_msgs` in `AgentRunSemantics/Check.lean`. A claim that turns out false stays false: add its counterexample to `Findings.lean` and a `todo` test instead of weakening the statement.
+Put it in `AgentRunSemantics/Theorems/`, import the file from `AgentRunSemantics.lean`, and add a `#print axioms` entry under `#guard_msgs` in `AgentRunSemantics/Check.lean`. When a claim is false, retain its counterexample in `Findings.lean` and record its disposition in the findings table. Test documented behavior with a passing assertion. Use an executable `todo` reproducer for a pending fix, and remove the marker when the fix lands. State any narrower theorem and its assumptions explicitly.
