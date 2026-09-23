@@ -172,6 +172,11 @@ test('every authority sentence has a candidate-policy check that refuses its vio
   }
 });
 
+test('the contract example is a workflow the validator accepts', () => {
+  const example = JSON.parse(authorContract().split('## Example\n\n')[1].trim());
+  assert.deepEqual(validateWorkflow(example, { inputKeys: ['text'] }), { ok: true });
+});
+
 test('the packaged skill ships the generated language reference beside its guides', async () => {
   const language = loadAuthorReference('language');
   assert.ok(language.includes(authorContract()), 'the skill reference is the SDK contract');
