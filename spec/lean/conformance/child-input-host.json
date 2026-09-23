@@ -1,5 +1,5 @@
 {
-  "description": "FINDING: a child invocation whose input names $host validates and fails at run time.",
+  "description": "A child invocation whose input names $host is rejected before execution.",
   "workflow": {
     "v": 2,
     "name": "parent-host",
@@ -67,16 +67,6 @@
   },
   "script": {},
   "expected": {
-    "valid": true,
-    "outcome": "failed",
-    "error": {
-      "kind": "input_invalid"
-    },
-    "events": {
-      "/root": [
-        "node.start:w",
-        "node.end:w:failed"
-      ]
-    }
+    "valid": false
   }
 }

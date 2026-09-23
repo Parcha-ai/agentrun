@@ -179,7 +179,7 @@ test('agent params retain host contracts and cancellation bounds an uncooperativ
       assert.ok(Array.isArray(params.system));
       assert.ok(params.user.includes('existingAnswer'));
       assert.deepEqual(params.schema.required, ['text', 'sources']);
-      assert.deepEqual(params.tools, ['support.read']);
+      assert.deepEqual(params.tools, ['support_read']);
       assert.ok(params.signal instanceof AbortSignal);
       setTimeout(() => controller.abort(), 10);
       return new Promise(() => {});

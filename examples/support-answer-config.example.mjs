@@ -21,10 +21,10 @@ export default {
   async runNode(params) {
     // Forward ALL params to your existing agent adapter: system, user, schema,
     // tools, signal, and review when present. Return { text, sources } directly.
-    // Register a read-only support.read tool explicitly; installing the DSL does not add it.
+    // Register a read-only support_read tool explicitly; installing the DSL does not add it.
     // Keep model access, permissions, turns, and budgets in your existing harness.
     // A review rejection must continue the same session or fail explicitly.
-    // For pi: use createPiRunner(configuredPiOptions) with support.read registered.
+    // For pi: use createPiRunner(configuredPiOptions) with support_read registered.
     throw new Error('Wire runNode to your existing authenticated agent runtime.');
   },
 };

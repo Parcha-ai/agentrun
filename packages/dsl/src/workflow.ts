@@ -981,6 +981,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (typeof node.label !== "string" || !node.label.trim() || typeof node.as !== "string" || !node.as.trim()) errors.push(`${path} (${label}): a workflow invocation requires label and as`);
         if (!Object.hasOwn(workflow.schemas, node.out)) errors.push(`${path} (${label}): out schema "${String(node.out)}" not in workflow.schemas`);
         if (!node.input || typeof node.input !== "object" || Array.isArray(node.input)) errors.push(`${path} (${label}): input must be an object mapping onto the child's initial state`);
+        else if (Object.hasOwn(node.input, HOST_STATE_KEY)) errors.push(`${path} (${label}): input must not contain the reserved "${HOST_STATE_KEY}" key`);
         const child = node.workflow;
         const steps = childSteps(child);
         if (!child || typeof child !== "object" || !steps || !steps.length) errors.push(`${path} (${label}): the child workflow must contain a root node`);

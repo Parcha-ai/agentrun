@@ -15,7 +15,7 @@ import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import { PI_HOST_ADDENDUM } from './host-addendum.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
-import { WorkflowExtensionService, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
+import { WorkflowExtensionService, ExtensionServiceError, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
@@ -339,6 +339,12 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         // Failure diagnostics must not echo rejected raw arguments. The operator
         // can inspect the retained draft explicitly; the error receipt stays sanitized.
         ...(report.error ? {} : { view: workflowView(s.draft, { input: s.input, observation: s.observation, report, mode }) }) });
+    } catch (error) {
+      if (error instanceof ExtensionServiceError && error.code === 'admission' && error.message.includes('code requires allowExecutableCandidates')) {
+        throw new ExtensionServiceError(error.code, error.message.replaceAll('code requires allowExecutableCandidates',
+          'Code requires the user command /agentrun run --trusted for each run. This permits local, unsandboxed execution.'));
+      }
+      throw error;
     } finally { s.busy = false; s.controller = undefined; stage(ctx, s); if (current === s && !s.closed && ctx.hasUI) ctx.ui.setWidget('agentrun', undefined); }
   };
 
@@ -382,7 +388,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         if (s.busy) throw new Error('A workflow is running. Save after it stops.');
         if (!s.draft) throw new Error('No workflow to save. Inspect a workflow first.');
         const saved = await store.save(args.name ?? '', s.draft); s.savedName = saved.name; persist(s);
-        return textResult(`Saved ${saved.name} · ${saved.digest.slice(0, 12)}. Input and execution permission are not saved.`, saved);
+        return textResult(`Saved ${saved.name} · ${saved.digest.slice(0, 12)}. Input and execution permission are not saved.\nLoad this revision: /agentrun load ${saved.name} ${saved.digest}${s.demo ? '\nScripted demo adapters are not saved. Loading this definition uses live adapters.' : ''}`, saved);
       }
       if (args.action === 'list') { const workflows = await store.list(); return textResult(modelJson(workflows), { workflows }); }
       if (args.action === 'load') {
@@ -447,7 +453,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           if (s.busy) throw new Error('A workflow is running. Save after it stops.');
           if (!s.draft) throw new Error('No workflow to save. Inspect a workflow first.');
           const saved = await new WorkflowStore(ctx.cwd).save(command.slice(4).trim(), s.draft); s.savedName = saved.name; persist(s);
-          show(s, `Saved ${saved.name} · ${saved.digest.slice(0, 12)}. Input and execution permission are not saved.\nReuse: /agentrun load ${saved.name}`, saved);
+          show(s, `Saved ${saved.name} · ${saved.digest.slice(0, 12)}. Input and execution permission are not saved.\nReuse: /agentrun load ${saved.name}\nLoad this revision: /agentrun load ${saved.name} ${saved.digest}${s.demo ? '\nScripted demo adapters are not saved. Loading this definition uses live adapters.' : ''}`, saved);
         } else if (/^load(?:\s|$)/.test(command)) {
           const [, name, digest] = command.split(/\s+/);
           const saved = await new WorkflowStore(ctx.cwd).load(name ?? '', digest);
@@ -455,7 +461,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           show(s, `Loaded procedure. Supply new input with /agentrun input. Loading never executes it.\n\n${formatWorkflowView(view(ctx, s))}`);
         } else if (command === 'list') {
           const stored = await new WorkflowStore(ctx.cwd).list();
-          show(s, stored.length ? stored.map(item => `${item.name} · ${item.digest.slice(0, 12)} · ${item.workflowName}`).join('\n') : 'No saved procedures yet. Use /agentrun save <name>.', { workflows: stored });
+          show(s, stored.length ? stored.map(item => `${item.name} · ${item.workflowName}\n/agentrun load ${item.name} ${item.digest}`).join('\n') : 'No saved procedures yet. Use /agentrun save <name>.', { workflows: stored });
         } else if (/^history(?:\s|$)/.test(command)) {
           const history = workflowRunHistory(ctx.sessionManager.getBranch());
           if (!history.length) { show(s, 'No retained runs on this Pi session branch yet.'); return; }

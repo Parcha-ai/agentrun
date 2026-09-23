@@ -30,7 +30,7 @@ export const workflow = {
             node: 'agent', label: 'investigate',
             instructions: 'Investigate this request using the allowed support tools. Return an answer grounded in what you find, with source references. State any unresolved gaps. Do not send a reply or modify the account.',
             state: { request: '{request}', existingAnswer: '{answer}' },
-            tools: ['support.read'], out: 'Answer', as: 'answer',
+            tools: ['support_read'], out: 'Answer', as: 'answer',
           },
           checkAnswer('recheck-agent-answer'),
           {

@@ -34,7 +34,7 @@ Replace both stubs:
 
 An empty answer or missing source references sends the request through the same single investigation and recheck. The final `Answer` still requires nonempty text and at least one source reference.
 
-Register the read-only `support.read` tool in your host and scope access to the authenticated user. Keep model selection, permissions, turn limits, and budgets in that host. Honor cancellation and deadlines. The config module is trusted executable code; do not load user-supplied modules.
+Register the read-only `support_read` tool in your host and scope access to the authenticated user. Keep model selection, permissions, turn limits, and budgets in that host. Honor cancellation and deadlines. The config module is trusted executable code; do not load user-supplied modules.
 
 The live runner constructs `createJevRunner()` itself. It does not accept a replacement judge or fake transport in the config. Its lower-level execution helper accepts injected adapters for tests, which are labeled separately. Jev options in the config are limited to `apiKey`, `baseURL`, `model`, `timeoutMs`, and `maxAttempts`.
 

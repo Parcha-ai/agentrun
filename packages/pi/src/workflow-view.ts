@@ -218,6 +218,7 @@ export function workflowView(workflow: unknown, options: {
     title: cleanText(inspection.name), digest: inspection.sha256, status,
     summary: [
       `${options.savedName ? `Saved: ${cleanText(options.savedName)} · ` : ''}Revision: ${inspection.sha256.slice(0, 12)} · ${options.mode ?? 'live adapters'}`,
+      ...(options.savedName ? [`Load this saved revision: /agentrun load ${cleanText(options.savedName)} ${inspection.sha256}`] : []),
       `Input: ${inspection.inputSchema ?? 'object'} → Output: ${inspection.outputSchema}${inspection.outputPath ? ` (${inspection.outputPath})` : ''}`,
       ...(missing.length ? [`Missing input: ${missing.join(', ')}`] : []),
       `Tools: ${tools.join(', ') || 'none'}`,

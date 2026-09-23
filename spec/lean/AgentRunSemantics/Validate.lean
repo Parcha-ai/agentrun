@@ -14,8 +14,8 @@ workflows validated with their invocation's input keys.
 Out of scope (need a JSON Schema engine or JavaScript): schema compilation and `$ref`s,
 question schemas, typed path checks, code compilation and probes, predicate paths checked
 against probed code shapes, numeric call bounds, unknown-key checks, the document shape
-schema. Because this is a subset of the TypeScript rules, a workflow that TypeScript
-accepts is accepted here, and every theorem that assumes `validate` applies to it.
+schema. These rules are intended to be a subset of the TypeScript rules. The validator sweep
+checks that relationship on its corpus; it is not a proof of implementation equivalence.
 -/
 
 namespace AgentRun
@@ -355,6 +355,7 @@ def walk : Node → Addr → VEnv → VOut
     { avail := addAvail env.avail [as], produced := env.produced ++ topProduces root
       errors := dollarErrors n ++ (if label.isEmpty || as.isEmpty then ["a workflow invocation requires label and as"] else []) ++
         (if env.schemas.contains out then [] else ["out schema not in workflow.schemas"]) ++
+        (if input.any (fun field => field.1 == "$host") then ["input must not contain the reserved $host key"] else []) ++
         (if containsReport root then ["a child cannot render a report or deliver an artifact"] else []) ++
         (match child.input with
           | some id => if child.schemas.contains id then [] else ["the child must declare input.schemaId"]

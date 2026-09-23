@@ -145,7 +145,7 @@ theorem F3_code_writes_dollar_key :
       .ok [("$other", .num 1)] := by
   decide +kernel
 
-/-! ## F4: a child invocation's input may name `$host`; it fails only at run time -/
+/-! ## F4: a child invocation's input cannot name `$host` -/
 
 def childHdr : Header := { name := "child", schemas := ["CIn", "Any2"], input := some "CIn", output := "Any2", outputPath := none }
 
@@ -154,9 +154,7 @@ def wfChildHost : Workflow :=
 
 /-- `child-input-host.json`. -/
 theorem F4_child_input_host :
-    (validate wfChildHost (some ["q"])).ok = true ∧
-    (runWorkflow (exampleOracle (fun _ => .obj [("y", .num 1)]) (.obj [])) wfChildHost
-      [("q", .obj [("a", .num 1)])]).outcome = .failed (.inputInvalid "child") := by
+    (validate wfChildHost (some ["q"])).ok = false := by
   decide +kernel
 
 /-! ## F5: the `undefined` hypothesis of T1_requires_sound is necessary -/

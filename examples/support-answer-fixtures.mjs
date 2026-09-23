@@ -65,7 +65,7 @@ export function createScriptedAdapters(scenario, overrides = {}) {
     async runNode({ kind, label, user, tools, schema }) {
       assert.equal(kind, 'agent');
       assert.equal(label, 'investigate');
-      assert.deepEqual(tools, ['support.read']);
+      assert.deepEqual(tools, ['support_read']);
       assert.deepEqual(JSON.parse(user), { request: fixture.input.request, existingAnswer: found });
       assert.deepEqual(schema.required, ['text', 'sources']);
       calls.push({ kind: 'agent', label, input: JSON.parse(user) });
