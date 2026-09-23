@@ -58,7 +58,7 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 
 - **JSON Schema.** Schema compilation, `$ref` resolution, question schemas and typed path checks need a schema engine. Schema acceptance is the `schemaOk` oracle.
 - **JavaScript.** Code nodes return what the `code` oracle says, and validation's code probes are not modeled. Conformance cases script each code node's return value, and the TypeScript test checks that the real code returned exactly that.
-- **Effects in detail.** A `call`, including retries, polling, memoization and its deadline, is one atomic oracle call. The poll loop's bound is finding F8.
+- **Effects in detail.** A `call`, including retries, polling, memoization and its deadline, is one atomic oracle call. Recovery polling relies on the host admission contract described in F8.
 - **Host adapters, recovery, checkpoints, cancellation, cost and events other than control flow.** Recovery's `resume` and `commit`, checkpoint failure modes, abort signals and `onEvent` details are outside the model.
 - **Prompt assembly and text rendering.** SOP slicing, instruction text, `describe` rendering and escalation summaries are not modeled. The pick option text is an oracle field.
 - **Number and string details.** Numbers are rationals. `trim` uses ASCII whitespace. Property reads on strings, such as `length` or indexes, are not modeled. An adapter returning `undefined` is outside the model, because oracles return JSON values.
@@ -84,7 +84,7 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 Two limits apply to what these results establish:
 
 - **Conformance pins agreement, not equivalence.** The conformance cases were recorded from the TypeScript implementation and then matched by the model. They pin agreement on those cases and cannot establish that the implementation is equivalent to the model.
-- **Totality is not liveness.** `T3_runWorkflow_total` is termination of the model, whose oracles answer atomically. It says nothing about the liveness of a run against live adapters. F8 is the concrete gap: under a recovery adapter, the engine's poll loop has no bound.
+- **Totality is not liveness.** `T3_runWorkflow_total` is termination of the model, whose oracles answer atomically. It says nothing about the liveness of a run against live adapters. In F8, a recovery adapter must reject fresh admission after the original deadline while still allowing reads of completed receipts.
 
 The validator mirror is checked the other way as well: `lake exe validator-sweep` asserts that the Lean validator accepts every TypeScript-accepted workflow in its corpus. The corpus is every workflow the repository's own test suites pass to the public API, plus the conformance cases and the author skill examples (see [the sweep](#validator-sweep)).
 
@@ -93,20 +93,20 @@ The validator mirror is checked the other way as well: `lake exe validator-sweep
 <a id="findings"></a>
 ## Findings
 
-The table records counterexamples and their disposition. Findings F6 and F8 have the evidence noted in their rows rather than a shared conformance case. Pending validation and recovery changes have executable `todo` reproducers in `packages/dsl/test/lean-findings.test.mjs`; they are not passing guarantees. Documented behavior and fixed defects have passing assertions of the expected behavior. [Issue #10](https://github.com/Parcha-ai/agentrun/issues/10) tracks the remaining dispositions, including which broad claims should become documented limits instead of runtime changes.
+The table records counterexamples and their disposition. Findings F6 and F8 have the evidence noted in their rows rather than a shared conformance case. The tests in `packages/dsl/test/lean-findings.test.mjs` assert the intended runtime protections and the fixed validation defect. Static validation cannot predict arbitrary code patches or future model output. [Issue #10](https://github.com/Parcha-ai/agentrun/issues/10) records follow-up opportunities for earlier diagnostics.
 
-Disposition: **fix** is a shipped runtime defect, **validator** is a check `validateWorkflow` should gain, and **document** is behavior that stays and the docs must state. The model is separate from the runtime; each runtime fix needs its own TypeScript change and regression test.
+Disposition: **fixed** has a regression test, **runtime** needs values produced during execution, **host** is an adapter obligation, and **document** is intentional behavior. The model is separate from the runtime; each runtime fix needs its own TypeScript change and regression test.
 
 | Id | Disposition | Finding | Case |
 | --- | --- | --- | --- |
-| F1 | validator | Validation does not rule out `required_nonempty`. After the first `code`, `map`, `parallel`, `loop` or `route` on the walk, `requires` is not checked at all. Where it is checked, only the first key must have a producer; the value can still be empty or the nested path missing. | `requires-after-code`, `requires-empty-submission` |
-| F2 | validator | Parallel disjointness uses `declaredWrites`, which ignores labels of unaliased generative nodes, keys returned by unaliased code nodes, and the `$answers` and `$verify` sidecars. Such workflows validate and then fail with `parallel_write_conflict`. | `parallel-code-collision`, `parallel-label-collision` |
+| F1 | runtime | Static reachability stops after dynamic control flow and tracks producers, not future values. At execution, `requires` rejects missing or empty values before constructing the consuming agent. More static reachability checks could improve diagnostics; they cannot guarantee non-empty model output. | `requires-after-code`, `requires-empty-submission` |
+| F2 | runtime | Arbitrary code patches need the runtime `parallel_write_conflict` guard. Static `declaredWrites` also omits predictable unaliased labels and `$answers`/`$verify` sidecars; checking those earlier remains a diagnostic improvement. Conflicting branches cannot silently overwrite each other. | `parallel-code-collision`, `parallel-label-collision` |
 | F3 | document | An unaliased code node may write `$`-prefixed keys other than `$host`. `as` keys and labels used as state keys by unaliased `agent`, `decide`, `extract`, and `code` nodes reject that prefix. Patches reserve `$host` specifically. The host-integration guide states this boundary. | `code-writes-dollar-key` |
-| F4 | validator | A child invocation whose `input` names `$host` passes validation and fails at run time with `input_invalid`. | `child-input-host` |
-| F5 | validator | A child whose output schema accepts `undefined` can leave its parent's `as` undefined, and a validated `requires` on it then fails. T1 needs its schema hypothesis. | `child-undefined-output` |
+| F4 | fixed | Validation rejects a child invocation whose top-level `input` names `$host`, before any parent or child node executes. Nested data and other `$`-prefixed input keys remain allowed. | `child-input-host` |
+| F5 | runtime | A permissive child output schema can allow `undefined`; `requires` then rejects it. An explicit parent output type rejects it at the child boundary instead. Authors must declare the output they need. T1 needs its schema hypothesis. | `child-undefined-output` |
 | F6 | document | "A node writes only its `as` or label, plus `$host`" understates the write set: judges and picks write `<as>$answers`, verified nodes write `<as>$verify`, unaliased code nodes write whatever they return, and `afterNode` may write any key but `$host`. `mayWrite` in `T2_frame` is the accurate set. | none; see `F6_writes_beyond_as_or_label` |
 | F7 | fixed | A scalar write and an array write on the same new `$host` key are a `parallel_write_conflict` in either branch order (`T2_host_mixed_shape_conflicts_either_order`); before, one order silently replaced the scalar. Appends still join in branch order by design (`T2_host_merge_order_dependent`). | `parallel-host-scalar-then-array`, `parallel-host-array-then-scalar`, `parallel-host-append` |
-| F8 | fix | With `deps.recovery` set, a polled `call` has no engine bound: the deadline checks are skipped and termination rests on the host's recovery adapter. The guide states this as a host obligation. | TypeScript test only; calls are atomic in the model |
+| F8 | host | With `deps.recovery`, the host must reject fresh admission and further polling after the original deadline. Reading a completed durable receipt after expiry is allowed. The integration test covers absent, incomplete and completed receipts; an adapter that ignores this contract can poll indefinitely. | TypeScript test only; calls are atomic in the model |
 | F9 | fixed | One resolver serves predicates, `requires`, interpolation, `itemsPath` and `output.path` (`F9_fixed_one_resolver`): a record by key, an array by a canonical in-bounds index, anything else to `undefined`. A gate on `scores.0` fires when `{scores.0}` resolves (`F9_fixed_predicate_indexes_arrays`). | `predicate-array-index` |
 
 <a id="validator-sweep"></a>

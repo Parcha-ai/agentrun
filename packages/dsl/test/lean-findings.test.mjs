@@ -1,7 +1,6 @@
-// Dispositions: spec/lean/README.md#findings. Pending items: https://github.com/Parcha-ai/agentrun/issues/10.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runWorkflow, validateWorkflow } from "../dist/index.js";
+import { EffectFailure, runWorkflow, validateWorkflow } from "../dist/index.js";
 
 const V = { type: "object", properties: { v: { type: "string" } } };
 const wf = (root, extra = {}) => ({ v: 2, name: "finding", schemas: { Any: { type: "object" }, V, ...(extra.schemas ?? {}) }, output: { schemaId: "Any" }, root });
@@ -12,36 +11,60 @@ async function reason(promise) {
   try { await promise; return null; } catch (error) { return error.reason ?? error.code ?? error.name; }
 }
 
-test("[validator] F1a: a validated workflow never fails required_nonempty (requires after a code node)", { todo: "F1: the validator stops tracking requires after the first code/map/parallel/loop/route" }, async () => {
+test("F1a: a missing input after dynamic code fails before constructing the agent", async () => {
   const w = wf({ node: "chain", steps: [code("noop", "s => ({})"), agent("answer", { as: "answer", requires: ["missing"] })] });
+  let calls = 0;
   assert.equal(validateWorkflow(w, { input: { q: 1 } }).ok, true);
-  assert.equal(await reason(runWorkflow(w, { q: 1 }, { runNode: async () => ({ v: "x" }) })), null);
+  await assert.rejects(runWorkflow(w, { q: 1 }, { runNode: async () => { calls++; return { v: "x" }; } }), {
+    code: "state_invalid", reason: "required_nonempty", stage: "answer", path: "missing",
+  });
+  assert.equal(calls, 0);
 });
 
-test("[validator] F1b: a validated workflow never fails required_nonempty (produced but empty)", { todo: "F1: validation guarantees a producer for the first key, not a non-empty value" }, async () => {
+test("F1b: schema-valid but empty output cannot reach an agent that requires a value", async () => {
   const w = wf({ node: "chain", steps: [agent("draft", { as: "draft" }), agent("review", { as: "review", requires: ["draft"] })] });
+  const calls = [];
   assert.equal(validateWorkflow(w, { input: { q: 1 } }).ok, true);
-  assert.equal(await reason(runWorkflow(w, { q: 1 }, { runNode: async ({ label }) => (label === "draft" ? {} : { v: "x" }) })), null);
+  await assert.rejects(runWorkflow(w, { q: 1 }, { runNode: async ({ label }) => { calls.push(label); return {}; } }), {
+    code: "state_invalid", reason: "required_nonempty", stage: "review", path: "draft",
+  });
+  assert.deepEqual(calls, ["draft"]);
 });
 
-test("[validator] F5: a child invocation's validated as key holds a value", { todo: "F5: a permissive output schema lets undefined land at the parent's as" }, async () => {
+test("F5: a permissive child output is checked by requires; a typed output rejects it earlier", async () => {
   const child = { v: 2, name: "child", schemas: { CIn: { type: "object" }, CAny: {}, CR: { type: "object", properties: { a: { type: "string" } } } },
     input: { schemaId: "CIn" }, output: { schemaId: "CAny", path: "r.a" }, root: { node: "agent", label: "r", instructions: "x", out: "CR", as: "r" } };
   const w = wf({ node: "chain", steps: [{ node: "workflow", label: "w", workflow: child, input: { q: "{q}" }, out: "Undef", as: "w" }, agent("b", { as: "b", requires: ["w"] })] }, { schemas: { Undef: {} } });
+  const calls = [];
+  const deps = { runNode: async ({ label }) => { calls.push(label); return {}; } };
   assert.equal(validateWorkflow(w, { input: { q: "x" } }).ok, true);
-  assert.equal(await reason(runWorkflow(w, { q: "x" }, { runNode: async ({ label }) => (label.endsWith("r") ? {} : { v: "x" }) })), null);
+  await assert.rejects(runWorkflow(w, { q: "x" }, deps), {
+    code: "state_invalid", reason: "required_nonempty", stage: "b", path: "w",
+  });
+  assert.equal(calls.length, 1);
+  calls.length = 0;
+  w.schemas.Undef = { type: "string" };
+  assert.equal(validateWorkflow(w, { input: { q: "x" } }).ok, true);
+  await assert.rejects(runWorkflow(w, { q: "x" }, deps), {
+    code: "output_invalid", stage: "w", message: /does not satisfy the parent's schema "Undef"/,
+  });
+  assert.equal(calls.length, 1);
 });
 
-test("[validator] F2a: parallel branches that pass validation never conflict (code patches)", { todo: "F2: declaredWrites ignores the keys an unaliased code node returns" }, async () => {
+test("F2a: dynamic code patches cannot silently overwrite each other across parallel branches", async () => {
   const w = wf({ node: "parallel", label: "both", branches: [code("c1", "s => ({ k: 1 })"), code("c2", "s => ({ k: 2 })")] });
   assert.equal(validateWorkflow(w, { input: {} }).ok, true);
-  assert.equal(await reason(runWorkflow(w, {}, {})), null);
+  await assert.rejects(runWorkflow(w, {}, {}), {
+    code: "state_invalid", reason: "parallel_write_conflict", stage: "both", path: "k",
+  });
 });
 
-test("[validator] F2b: parallel branches that pass validation never conflict (unaliased label)", { todo: "F2: declaredWrites ignores labels, <as>$answers and <as>$verify" }, async () => {
+test("F2b: a dynamic code patch cannot overwrite an unaliased parallel agent's output", async () => {
   const w = wf({ node: "parallel", label: "both", branches: [agent("x"), code("c", "s => ({ x: 1 })")] });
   assert.equal(validateWorkflow(w, { input: { q: 1 } }).ok, true);
-  assert.equal(await reason(runWorkflow(w, { q: 1 }, { runNode: async () => ({ v: "a" }) })), null);
+  await assert.rejects(runWorkflow(w, { q: 1 }, { runNode: async () => ({ v: "a" }) }), {
+    code: "state_invalid", reason: "parallel_write_conflict", stage: "both", path: "x",
+  });
 });
 
 test("[document] F3: code patches may write $-prefixed keys other than $host", async () => {
@@ -51,10 +74,20 @@ test("[document] F3: code patches may write $-prefixed keys other than $host", a
   assert.equal(await reason(runWorkflow(wf(code("c", "s => ({ $host: 1 })")), {}, {})), "reserved_state_key");
 });
 
-test("[validator] F4: validation rejects a child invocation whose input names $host", { todo: "F4: the reserved key is only checked when the child runs" }, () => {
+test("F4: a reserved child input is rejected before any parent or child runs", async () => {
   const child = { v: 2, name: "child", schemas: { CIn: { type: "object" }, Any2: { type: "object" } }, input: { schemaId: "CIn" }, output: { schemaId: "Any2" }, root: code("k", "s => ({ y: 1 })") };
-  const w = wf({ node: "workflow", label: "w", workflow: child, input: { $host: "{q}" }, out: "Any", as: "w" });
-  assert.equal(validateWorkflow(w, { input: { q: { a: 1 } } }).ok, false);
+  const invocation = { node: "workflow", label: "w", workflow: child, input: { $host: "{q}" }, out: "Any", as: "w" };
+  const w = wf({ node: "chain", steps: [agent("first"), invocation] });
+  const validated = validateWorkflow(w, { input: { q: { a: 1 } } });
+  assert.equal(validated.ok, false);
+  assert.ok(validated.errors.some(error => /root\.steps\[1\].*\(w\).*input must not contain the reserved "\$host" key/.test(error)), validated.errors.join("; "));
+  let calls = 0;
+  await assert.rejects(runWorkflow(w, { q: { a: 1 } }, { runNode: async () => { calls++; return { v: "x" }; } }), { code: "workflow_invalid" });
+  assert.equal(calls, 0);
+  for (const input of [{ $other: "{q}" }, { record: { $host: "{q}" } }]) {
+    invocation.input = input;
+    assert.equal(validateWorkflow(w, { input: { q: { a: 1 } } }).ok, true);
+  }
 });
 
 const hostRun = (order, hostFor) => runWorkflow(
@@ -74,18 +107,45 @@ test("[document] F7b: host array appends follow the declared branch order", asyn
   assert.deepEqual(await hostRun(["b", "a"], hostFor), { host: { log: ["from-b", "from-a"] } });
 });
 
-test("[fix] F8: a polled call stops at its poll deadline", { todo: "F8: with deps.recovery the engine leaves the poll bound to the host's recovery adapter" }, async () => {
-  let effects = 0;
-  const controller = new AbortController();
+test("F8: recovery reads expired receipts but admits no new effects after the original deadline", async t => {
   const w = { v: 2, name: "poll", schemas: { R: { type: "object", properties: { done: { type: "boolean" } } }, Any: { type: "object" } }, output: { schemaId: "Any" },
     root: { node: "call", label: "c", via: "tool", tool: "t", out: "R", as: "r", deadline_s: 1, poll: { until: { predicate: "field_true", path: "done" }, interval_s: 0.1, deadline_s: 1 } } };
   const startedAt = Date.now() - 3_600_000;
-  await runWorkflow(w, {}, {
-    signal: controller.signal,
-    runEffect: async () => { if (++effects >= 100) controller.abort(new Error("stopped by the test")); return { done: false }; },
-    recovery: { resume: async () => undefined, commit: async () => {}, pollStartedAt: () => startedAt, wait: async () => {} },
-  }).catch(() => {});
-  assert.ok(effects <= 11, `${effects} polls after the deadline had passed`);
+  for (const receipt of [undefined, { done: false }, { done: true }]) {
+    await t.test(receipt ? `stored receipt: done=${receipt.done}` : "no stored receipt", async () => {
+      let admissions = 0, reads = 0, waits = 0, commits = 0;
+      const deps = {
+        runEffect: async ({ node }) => {
+          reads++;
+          if (receipt) return structuredClone(receipt);
+          if (Date.now() >= startedAt + node.poll.deadline_s * 1000) throw new EffectFailure("original poll deadline expired before admission", "timeout");
+          admissions++;
+          return { done: false };
+        },
+        recovery: {
+          resume: async () => undefined,
+          commit: async () => { commits++; },
+          pollStartedAt: () => startedAt,
+          wait: async (node, ms) => {
+            waits++;
+            if (Date.now() + ms >= startedAt + node.poll.deadline_s * 1000) throw new EffectFailure("original poll deadline expired before another poll", "timeout");
+          },
+        },
+      };
+      if (receipt?.done) {
+        const result = await runWorkflow(w, {}, deps);
+        assert.equal(result.status, "complete");
+        assert.deepEqual(result.state.r, receipt);
+        assert.equal(commits, 1);
+      } else {
+        await assert.rejects(runWorkflow(w, {}, deps), error => error instanceof EffectFailure && error.retryClass === "timeout" && /original poll deadline expired/.test(error.message));
+        assert.equal(commits, 0);
+      }
+      assert.equal(admissions, 0);
+      assert.equal(reads, 1);
+      assert.equal(waits, receipt && !receipt.done ? 1 : 0);
+    });
+  }
 });
 
 test("[fixed] F9: a predicate reads a state path the way requires and interpolation do", async () => {
