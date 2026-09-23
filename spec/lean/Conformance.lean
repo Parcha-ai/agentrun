@@ -238,10 +238,17 @@ def check (name : String) (c : Json) : Except String Unit := do
     | some s, some es => if Value.deepEq (.obj s) (value es) then problems else
         problems.push s!"state: model {(Value.obj s).toJs}, expected {(value es).toJs}"
     | _, _ => problems
-  let problems := match r.output, get? exp "output" with
+  -- A complete run's output must agree on presence as well as content: JSON has no
+  -- `undefined`, so an absent `output` field means the interpreter returned none.
+  let expOutput : Option Json := match exp.getObjVal? "output" with
+    | .ok j => some j
+    | .error _ => none
+  let problems := if kind != "complete" then problems else match r.output, expOutput with
     | some o, some eo => if Value.deepEq o (value eo) then problems else
         problems.push s!"output: model {o.toJs}, expected {(value eo).toJs}"
-    | _, _ => problems
+    | none, none => problems
+    | some o, none => problems.push s!"output: model {o.toJs}, expected none"
+    | none, some eo => problems.push s!"output: model none, expected {(value eo).toJs}"
   let problems := match r.outcome, get? exp "escalation" with
     | .escalated e, some ee =>
       if e.kind == strD ee "kind" && e.stage == strD ee "stage" && e.label == strD ee "label" then problems

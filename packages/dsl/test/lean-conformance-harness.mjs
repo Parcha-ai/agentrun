@@ -54,6 +54,19 @@ export function nodeAt(workflow, executionPath) {
   return node;
 }
 
+const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The value a code node returned, recovered from the patch the interpreter applied:
+ *  `{[as]: out}`, the returned object itself, or `{[label]: out}` for any other return.
+ *  Returning `{[label]: x}` with a non-object `x` applies the same patch as returning `x`;
+ *  both are recorded as `x`, which the model wraps back into the identical patch. */
+function codeReturn(node, patch) {
+  if (node.as) return patch[node.as];
+  const keys = Object.keys(patch);
+  if (keys.length === 1 && keys[0] === node.label && !isPlainObject(patch[node.label])) return patch[node.label];
+  return patch;
+}
+
 export async function runCase(c) {
   if (!validateWorkflow(c.workflow, { input: c.input }).ok) return { expected: { valid: false }, codeReturns: {} };
   const script = c.script ?? {};
@@ -77,7 +90,7 @@ export async function runCase(c) {
       events.push(event);
       if (event.type === "code.patch") {
         const node = nodeAt(c.workflow, event.executionPath);
-        codeReturns[event.executionPath] = { return: node.as ? event.detail[node.as] : event.detail };
+        codeReturns[event.executionPath] = { return: codeReturn(node, event.detail) };
       }
     },
   };

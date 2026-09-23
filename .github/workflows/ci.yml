@@ -67,6 +67,8 @@ jobs:
         run: |
           if [ ! -x "$HOME/.elan/bin/elan" ]; then
             curl -sSfL https://raw.githubusercontent.com/leanprover/elan/v4.2.4/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+            # Reviewed installer bytes for elan v4.2.4; a retargeted tag fails here instead of running.
+            echo "a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53  $RUNNER_TEMP/elan-init.sh" | sha256sum --check --strict
             sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none
           fi
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
