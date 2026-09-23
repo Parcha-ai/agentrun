@@ -23,14 +23,25 @@ const suites = [
   ["packages/pi/test", /\.test\.mjs$/],
   ["examples", /\.test\.mjs$/],
 ];
+const problems = [];
 for (const [dir, pattern] of suites) {
   const files = readdirSync(join(root, dir)).filter((f) => pattern.test(f)).map((f) => join(dir, f));
+  const before = readdirSync(capture).length;
   try {
     execFileSync(process.execPath, ["--test", ...files], {
-      cwd: root, stdio: "ignore",
+      cwd: root, stdio: ["ignore", "ignore", "pipe"], maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, LEAN_SWEEP_DIR: capture, NODE_OPTIONS: `--import=${register}` },
     });
-  } catch { /* A failing test still contributes the workflows it built; the suites run unwrapped elsewhere. */ }
+  } catch (error) {
+    problems.push(`${dir}: the suite failed under the capture hook (exit ${error.status}); its corpus would be incomplete`);
+  }
+  const captured = readdirSync(capture).length - before;
+  if (captured === 0) problems.push(`${dir}: the suite contributed no workflows; the capture hook is not reaching it`);
+  console.log(`${dir}: ${files.length} test files, ${captured} new validations captured`);
+}
+if (problems.length) {
+  for (const problem of problems) console.error(problem);
+  process.exit(1);
 }
 
 const entries = new Map();
