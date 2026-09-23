@@ -212,9 +212,9 @@ export function candidatePolicyErrors(candidate: unknown, options: CandidatePoli
   return errors;
 }
 
-/** The engine's view of a candidate for a host with prose output types: those artifact nodes validate as the
- *  report writer they are. The candidate itself is retained unchanged. */
-function engineView(candidate: Workflow, host: AuthorHostAddendum | undefined): Workflow {
+/** The interpreter's view of a workflow written in a host's vocabulary: an artifact of a declared prose output
+ *  type becomes the report writer it is. Validate and run this view; retain and digest the authored bytes. */
+export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddendum | undefined): Workflow {
   const prose = new Set(Object.entries(host?.outputTypes ?? {}).filter(([, spec]) => spec.kind === "prose").map(([type]) => type));
   if (!prose.size) return candidate;
   const visit = (node: WorkflowNode): WorkflowNode => {
@@ -240,12 +240,14 @@ export interface AuthorWorkflowOptions {
   rubricSections?: Record<string, string>;
   allowExecutableCandidates?: boolean;
   maxCandidates?: number;
-  /** Host acceptance over a structurally valid candidate: diagnostics, or [] to accept. */
+  /** Host acceptance over a structurally valid candidate, in the interpreter's view (`applyHostOutputTypes`):
+   *  diagnostics, or [] to accept. */
   acceptance?: (candidate: Workflow) => Promise<string[]> | string[];
   signal?: AbortSignal;
 }
 
 export interface AuthoredWorkflow {
+  /** The accepted candidate as authored. A host with prose output types runs `applyHostOutputTypes(workflow, host)`. */
   workflow: Workflow;
   path: string;
   directory: string;
@@ -265,9 +267,10 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
   await writeFile(join(directory, "request.json"), JSON.stringify({ request: options.request, host: options.host?.name ?? null, inputKeys, rubricSections: options.rubricSections ?? {}, allowExecutableCandidates: options.allowExecutableCandidates ?? false, maxCandidates }, null, 2), { flag: "wx" });
   let candidates = 0;
   let acceptedPath: string | undefined;
+  let accepted: Workflow | undefined;
   const checks = options.acceptance ? "structural-and-host" as const : "structural" as const;
   try {
-    const workflow = await options.runNode({
+    await options.runNode({
       kind: "agent", label: "author-workflow", tools: [], signal: options.signal,
       system: [authorContract({ host: options.host }), "Deliver each candidate as the value of the submit tool. A rejected candidate comes back with its errors; repair it in the same session.", `Executable candidates authorized: ${options.allowExecutableCandidates ?? false}.`, `All supplied rubric sections (authoritative): ${JSON.stringify(options.rubricSections ?? {})}`],
       user: `${options.request}\nAvailable input keys: ${JSON.stringify(inputKeys)}`,
@@ -281,18 +284,21 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
         const errors = candidatePolicyErrors(value, options);
         if (!errors.length) {
           try {
-            const verdict = validateWorkflow(engineView(value as Workflow, options.host), { inputKeys });
+            const verdict = validateWorkflow(applyHostOutputTypes(value as Workflow, options.host), { inputKeys });
             if (!verdict.ok) errors.push(...verdict.errors);
           } catch (error) { errors.push(`Invalid workflow: ${error instanceof Error ? error.message : String(error)}`); }
         }
-        if (!errors.length && options.acceptance) errors.push(...await options.acceptance(structuredClone(value) as Workflow));
+        if (!errors.length && options.acceptance) errors.push(...await options.acceptance(applyHostOutputTypes(structuredClone(value) as Workflow, options.host)));
         await writeFile(join(directory, `${number}.review.json`), JSON.stringify({ accepted: !errors.length, checks, errors }, null, 2), { flag: "wx" });
         if (errors.length) return { accepted: false, message: errors.join("\n") };
         acceptedPath = candidatePath;
+        accepted = structuredClone(value) as Workflow;
         return { accepted: true };
       },
-    }) as Workflow;
-    if (!acceptedPath) throw new Error("Author returned without a retained accepted candidate");
+    });
+    // The result is the candidate review accepted, never whatever the adapter returns afterwards.
+    if (!acceptedPath || !accepted) throw new Error("Author returned without a retained accepted candidate");
+    const workflow = accepted;
     await writeFile(join(directory, "result.json"), JSON.stringify({ status: "candidate", path: acceptedPath, candidates }, null, 2), { flag: "wx" });
     return { workflow, path: acceptedPath, directory, candidates, checks };
   } catch (error) {

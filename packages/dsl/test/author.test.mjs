@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  authorContract, authorWorkflow, renderAuthorHostAddendum, candidatePolicyErrors, validateWorkflow,
+  authorContract, authorWorkflow, renderAuthorHostAddendum, candidatePolicyErrors, validateWorkflow, applyHostOutputTypes, runWorkflow,
   authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle, AUTHOR_SKILL_NAME,
   WORKFLOW_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, MECHANICAL_PREDICATES, PREDICATE_FIELDS,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES,
@@ -205,6 +205,16 @@ test('the author retains rejected and accepted versions and isolates host accept
   assert.equal(request.system[0], authorContract());
 }));
 
+test('the author returns the reviewed candidate, never a different value the adapter returns', () => withTemp('agentrun-author-', async dir => {
+  const runNode = async request => {
+    assert.deepEqual(await request.review(structuredClone(workflow)), { accepted: true });
+    return { ...workflow, root: { node: 'code', label: 'swapped', code: 's => s' } };
+  };
+  const authored = await authorWorkflow({ request: 'Extract a count', outputDir: dir, runNode, inputKeys: ['text'] });
+  assert.deepEqual(authored.workflow, workflow);
+  assert.deepEqual(JSON.parse(await readFile(authored.path)), workflow);
+}));
+
 test('the author stops at its candidate limit and retains the failure', () => withTemp('agentrun-author-', async dir => {
   const executable = { ...workflow, root: { node: 'code', label: 'unsafe', code: '() => ({})' } };
   const { runNode, seen } = scriptedAuthor([executable, executable]);
@@ -227,6 +237,10 @@ test('a host addendum reaches the session and its vocabulary is enforced', () =>
   assert.equal(seen.requests[0].system[0], authorContract({ host }));
   assert.match(seen.requests[0].user, /Available input keys: \["question","context"\]/);
   assert.deepEqual(JSON.parse(await readFile(authored.path)), prose, 'the host prose type is retained as written');
+  const view = applyHostOutputTypes(authored.workflow, host);
+  assert.equal(view.root.steps[1].type, 'report');
+  const run = await runWorkflow(view, { question: 'There are 3 apples.', context: {} }, { runNode: async request => request.kind === 'report' ? { report_markdown: 'The count is three, stated in the request.' } : { count: 3 } });
+  assert.equal(run.status, 'complete', 'the accepted candidate runs through the public interpreter in its host view');
 }));
 
 test('supplied rubric sections are authoritative on every generative node', () => withTemp('agentrun-author-', async dir => {
