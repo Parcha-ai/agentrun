@@ -40,6 +40,7 @@ export {
   // Host-side data helpers the interpreter itself uses: the same normalization and reference shaping.
   buildReferenceContext, normalizeStringNullsForSchema, parseCsvRows,
 } from "./workflow.js";
+export { compileTransform, compileTransformSyntax } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";

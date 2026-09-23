@@ -3,7 +3,7 @@
 ## Unreleased
 
 - `WorkflowDeps.hostPolicy`: application policy around generative nodes and completed steps, handed in by the host and unreachable from workflow documents. `systemBlocks` appends host text to a node's prompt; `submissionSchema` widens the adapter's transport schema with host-owned channels; `decodeSubmission` splits an accepted submission into the domain value and host state; `afterNode` enriches a completed step's state before commit and checkpoint. The domain value is always validated against the unchanged stage schema and is what a `verify` clause reviews; host state is tracked by key, excluded from a path-less output projection, and returned as `result.host`. Events `host.decoded` and `host.patched` name the keys written. Absent, the engine behaves exactly as before.
-- Exported for host facades: `childSteps`, `declaredWrites`, `terminalArtifactType`, `artifactNodeIsProse`, `schemaProblems`, `buildReferenceContext`, `normalizeStringNullsForSchema`, `parseCsvRows`.
+- Exported for host facades: `childSteps`, `declaredWrites`, `terminalArtifactType`, `artifactNodeIsProse`, `schemaProblems`, `buildReferenceContext`, `normalizeStringNullsForSchema`, `parseCsvRows`, `compileTransform`, `compileTransformSyntax`.
 - CI also runs on Node 24.21.0.
 
 ## 0.1.0-beta.1, 2026-09-23
