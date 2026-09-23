@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-jev",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Optional Jev system one decisions for AgentRun workflows",
   "type": "module",
   "license": "Apache-2.0",
@@ -27,7 +27,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.1",
+    "@parcha/agentrun-dsl": "0.1.0-beta.2",
     "@typesafe-ai/sdk": "0.6.0"
   },
   "repository": {
