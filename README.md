@@ -6,7 +6,7 @@ AgentRun is a workflow language for the agents you already run. Define repeatabl
 
 [Quickstart](#quickstart) · [Documentation](docs/guide.md) · [Examples](docs/examples.md) · [Pi extension](#use-it-in-pi) · [Agent instructions](docs/agent-instructions.md)
 
-![An agent repeatedly plans, uses tools, and checks its work. AgentRun replaces that repeated planning with search, a Jev decision, and an answer; requests needing context go to an agent and are checked again.](docs/assets/support-workflow.gif)
+![Support workflow: search for an answer, check it with Jev, and return it or ask an agent to investigate. Check the investigation before returning it or escalating for review.](docs/assets/support-workflow.gif)
 
 [View the static diagram](docs/assets/support-workflow.svg) · [Run this example](#run-the-support-example)
 
@@ -14,7 +14,7 @@ The support example below follows this workflow with scripted tools and model re
 
 ## Quickstart
 
-Requires **Node 22.19+** and npm. In your project:
+Requires Node 22.19+ and npm. In your project:
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
@@ -36,7 +36,7 @@ npm run build
 npm run demo:support
 ```
 
-This runs the interpreter with **scripted tools, Jev answers, and agent responses**. It needs no API key and sends no customer replies.
+This runs the interpreter with scripted tools, Jev answers, and agent responses. It needs no API key and sends no customer replies.
 
 The command prints a report for each case:
 
@@ -52,13 +52,13 @@ npm run demo:support -- payment
 npm run test:support
 ```
 
-Try `npm run demo:support -- unresolved` to see an escalation (exit code `2`). The responses are scripted; changing a prompt does not change them.
+Try `npm run demo:support -- unresolved` to see an escalation. It exits with code `2`. The responses are scripted; changing a prompt does not change them.
 
 [Connect live Jev and your agent](docs/support-quickstart.md), or [give these instructions to your coding agent](docs/agent-instructions.md).
 
 ## What a workflow looks like
 
-The [support workflow](examples/support-answer.mjs) accepts an answer when it has text, a source reference, and a Jev `yes` decision with confidence of at least `0.8`. Otherwise, it allows one agent attempt and checks again. If that fails, it escalates for review. These are the example's rules; you choose the criteria and thresholds for your task.
+The [support workflow](examples/support-answer.mjs) requires answer text and a source reference. Jev must also answer `yes` with confidence of at least `0.8`. Otherwise, the workflow allows one agent attempt and checks again. If the answer still fails those checks, it escalates for review. You choose the criteria and thresholds for your task.
 
 These are the search and decision nodes from that workflow:
 
@@ -77,7 +77,7 @@ These are the search and decision nodes from that workflow:
 
 `Candidate` and `Fit` refer to schemas in the workflow. `Fit` defines the question and its `yes`, `no`, and `uncertain` criteria. Code reads the decision and its confidence to choose the next step. [Read the complete definition, including the agent and review path](examples/support-answer.mjs).
 
-This small domain-specific language (DSL) can be authored as JSON or with the [TypeScript builder and Zod contracts](docs/authoring.md). The builder infers input and output types; intermediate state paths are checked at runtime. Workflows can call other workflows, map work in parallel, and run bounded loops.
+Write workflows as JSON or use the [TypeScript builder and Zod contracts](docs/authoring.md). The builder infers input and output types. The interpreter checks intermediate state paths at runtime. Workflows can call other workflows, map work in parallel, and run bounded loops.
 
 ## Connect your application
 
@@ -85,7 +85,7 @@ Install the core and Jev adapter in your application with `npm install @parcha/a
 
 1. **Supply adapters.** Connect tools through `runEffect`, your existing agent through `runNode`, and Jev decisions through `createJevRunner()` as `runJudge`.
 2. **Define and test the workflow.** Write its schemas, steps, thresholds, and review path. Start with fixtures, then evaluate real decisions on labeled cases from your task.
-3. **Expose it to your agent.** Wrap a workflow run as a tool in your application. Your agent can call that procedure when needed and use its validated output or escalation result.
+3. **Give your agent a workflow tool.** Register a function that calls `runWorkflow` as one of your agent's tools. Handle the workflow's output, escalation, and errors.
 
 The [support integration guide](docs/support-quickstart.md) has a config template and live command. Live Jev calls need `TYPESAFE_API_KEY` from the [TypeSafe dashboard](https://console.typesafe.ai/keys), separate from your coding-agent login. Workflows without Jev decisions do not need that key. See [host integration](docs/host-integration.md) for permissions, cancellation, and recovery.
 
@@ -124,7 +124,7 @@ Pi uses the packaged skill to build, inspect, and run the workflow. Run `/reload
 
 ### Research demo
 
-From the built checkout, run a scripted research workflow: “Should our team move its docs from a wiki into the code repository?”
+From the built checkout, run a scripted research workflow: "Should our team move its docs from a wiki into the code repository?"
 
 ```sh
 npm run demo
@@ -143,7 +143,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 
 `0.1.0-beta.2` is published on npm; this checkout includes changes for beta.3. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
 
-Ordinary functions may be enough for a small fixed sequence. AgentRun adds a reusable workflow document with explicit execution rules. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
+Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps in a workflow document that you can inspect, rerun, or call from an agent. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 
 For development setup and checks, see [Contributing](CONTRIBUTING.md). [Open an issue](https://github.com/Parcha-ai/agentrun/issues) for bugs or proposals.
 
