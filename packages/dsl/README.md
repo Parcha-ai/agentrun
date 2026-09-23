@@ -27,6 +27,8 @@ Raw JSON schemas retain `unknown` boundary types. Zod transforms, refinements, d
 
 ## Public API
 
+This table describes the beta.3 source checkout. The published beta.2 package does not yet include the author contract, author skill, or language vocabulary exports.
+
 The package root exports a deliberate API. The beta retains agent, structured-output, report, artifact, effect, child-workflow and focused-evaluation paths. Hosts supply their adapters and policy; a workflow cannot grant itself tool permissions.
 
 | Group | Exports and purpose |

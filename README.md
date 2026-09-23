@@ -21,7 +21,7 @@ npm install @parcha/agentrun-dsl@beta
 npx agentrun demo
 ```
 
-This ticket-routing demo uses scripted decisions and needs no API key. To run the support workflow shown above, use the checkout below. To build workflows with your agent, [install the Pi extension](#use-it-in-pi).
+This ticket-routing demo uses scripted decisions and needs no API key. Next, [run and change a workflow in your own app](examples/starter/README.md). To run the support workflow shown above, use the checkout below. To build workflows with your agent, [install the Pi extension](#use-it-in-pi).
 
 ### Run the support example
 
@@ -110,7 +110,7 @@ Once Pi has model access, ask it to build a workflow:
 /agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report gaps with file references.
 ```
 
-Pi uses the packaged skill to build, inspect, and run the workflow. The current source also supports `/agentrun save <name>` and `/agentrun load <name>` for project-local definition revisions; the published beta.2 package predates these commands. Saves contain neither run input nor execution permission. [Pi setup and limits](packages/pi/README.md).
+Pi uses the packaged skill to build, inspect, and run the workflow. Run `/reload` if you install into an open Pi session. The current source also supports `/agentrun save <name>` and `/agentrun load <name>` for project-local definition revisions; the published beta.2 package predates these commands. Saves contain neither run input nor execution permission. [Pi setup and limits](packages/pi/README.md).
 
 ## More examples
 
