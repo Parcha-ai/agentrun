@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.1, unreleased
+## 0.1.0-beta.1, 2026-09-23
 
 Initial beta of `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, and `@parcha/agentrun-pi`.
 
@@ -12,4 +12,4 @@ Initial beta of `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, and `@parcha/age
 
 Live Pi demos keep status and cancellation commands responsive. Support example failures preserve the original error and eventual tool outcome for host reconciliation while keeping JSON reports redacted. Dry-run accepts valid empty-only output schemas.
 
-Code and documentation use Apache-2.0. Packages are unpublished. Pi workflows are session-local; durable storage and external delivery belong to the host. See [compatibility](docs/compatibility.md) and [execution limits](docs/guide.md#limits).
+Code and documentation use Apache-2.0. All three packages are available on npm under the `beta` tag. Pi workflows are session-local; durable storage and external delivery belong to the host. See [compatibility](docs/compatibility.md) and [execution limits](docs/guide.md#limits).

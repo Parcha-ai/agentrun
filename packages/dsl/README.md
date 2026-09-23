@@ -2,7 +2,14 @@
 
 Composable, typed workflows for agents. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
 
-This is an unpublished `0.1.0-beta.1` candidate. Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
+Published beta: `0.1.0-beta.1`. Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
+
+```sh
+npm install @parcha/agentrun-dsl@beta
+npx agentrun demo
+```
+
+For the JavaScript API, save this as `demo.mjs` and run `node demo.mjs`:
 
 ```js
 import { runTriageDemo } from '@parcha/agentrun-dsl/demo';

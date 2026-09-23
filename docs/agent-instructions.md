@@ -10,7 +10,7 @@ Give this file to your coding agent. Use the actual AgentRun interpreter and Jev
 - [Host integration contract](host-integration.md)
 - [Jev adapter](../packages/jev/README.md)
 
-If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git` on `main` into a new directory. If access is unavailable, report the failure. Do not replace it with an unrelated similarly named package. Follow the source installation below; verify registry availability before suggesting an npm installation.
+If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git` on `main` into a new directory. If access is unavailable, report the failure. Do not replace it with an unrelated similarly named package. The packages are published on npm. Install `@parcha/agentrun-dsl@beta` and, for Jev decisions, `@parcha/agentrun-jev@beta` in the target application. Use the separate source checkout below to run the support example.
 
 ## Establish a working baseline
 

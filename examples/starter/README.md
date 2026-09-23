@@ -14,25 +14,17 @@ This app uses the real interpreter and Jev adapter with fictional documents and 
 
 ## Install outside the checkout
 
-Requires Node 22.19+ and npm. The packages are not published yet. From the AgentRun repository root:
+Requires Node 22.19+ and npm. From the AgentRun repository root:
 
 ```sh
-npm ci --ignore-scripts
-npm run build
-agentrun_checkout="$PWD"
-mkdir -p .release/npm
-npm pack --workspace @parcha/agentrun-dsl --ignore-scripts --pack-destination .release/npm
-npm pack --workspace @parcha/agentrun-jev --ignore-scripts --pack-destination .release/npm
 cp -R examples/starter ../my-evidence-workflow
 cd ../my-evidence-workflow
-npm install --ignore-scripts \
-  "$agentrun_checkout/.release/npm/parcha-agentrun-dsl-0.1.0-beta.1.tgz" \
-  "$agentrun_checkout/.release/npm/parcha-agentrun-jev-0.1.0-beta.1.tgz"
+npm install --ignore-scripts
 npm test
 npm start
 ```
 
-Choose an unused destination directory. Install both tarballs together so npm resolves the unpublished DSL dependency locally. These are regular installed packages, not workspace links. Keep the tarballs available for later `npm ci`: npm records their paths in this app's lockfile. Commit the generated lockfile with your application.
+Choose an unused destination directory. The starter installs `@parcha/agentrun-dsl` and `@parcha/agentrun-jev` at `0.1.0-beta.1` from npm. No repository build or local tarballs are needed. Commit the generated lockfile with your application; use `npm ci --ignore-scripts` for reinstalls.
 
 The output retains `review-policy` and `incident-policy`, then prints:
 

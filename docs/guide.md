@@ -5,32 +5,33 @@ AgentRun defines workflows that combine tools, code, Jev system one decisions, a
 <a id="quickstart"></a>
 ## Start with an example
 
-Use Node 22.19+ and npm. Follow the [repository quickstart](../README.md#quickstart) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
+Use Node 22.19+ and npm. Follow the [support example](../README.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
 
 For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths.
 
 ## Inspect the smaller triage workflow
 
-Save the complete triage workflow:
+In your project, install the core and save the complete triage workflow:
 
 ```sh
-node packages/dsl/dist/cli.js example workflow.json
-node packages/dsl/dist/cli.js validate workflow.json --trusted
-node packages/dsl/dist/cli.js dry-run workflow.json --trusted
+npm install @parcha/agentrun-dsl@beta
+npx agentrun example workflow.json
+npx agentrun validate workflow.json --trusted
+npx agentrun dry-run workflow.json --trusted
 ```
 
 `example` refuses to overwrite a file. `--trusted` acknowledges that JavaScript in a workflow may execute during validation. Dry-run synthesizes the declared input schema; a workflow without one starts from `{}`. Supply your own JSON object when needed:
 
 ```sh
-node packages/dsl/dist/cli.js validate workflow.json input.json --trusted
-node packages/dsl/dist/cli.js dry-run workflow.json input.json --trusted
+npx agentrun validate workflow.json input.json --trusted
+npx agentrun dry-run workflow.json input.json --trusted
 ```
 
 Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. `ok` with `skipped` means a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized); read those reasons rather than treating it as execution proof.
 
 ## Use a deterministic workflow
 
-After the build above, save this as `double.mjs` in the source root and run `node double.mjs`. Workspace installation makes `@parcha/agentrun-dsl` available there; this example does not assume the candidate has been published to npm.
+After installing the core above, save this as `double.mjs` in your project and run `node double.mjs`.
 
 ```js
 import { runWorkflow } from '@parcha/agentrun-dsl';
@@ -64,9 +65,9 @@ The `input` contract, when supplied, is checked before execution. A completed wo
 <a id="jev"></a>
 ## Add live Jev system one decisions
 
-Jev is the optional TypeSafe model adapter for typed judgments. This section makes a live model request, unlike the offline demo. First complete the source build and obtain authorized TypeSafe access through your provider or organization. Configure `TYPESAFE_API_KEY` in the server environment using your existing secret-management process. If your organization uses a gateway, also use its configured `TYPESAFE_BASE_URL`. Do not put credentials in browser code or commit them to this source tree.
+Jev is the optional TypeSafe model adapter for typed judgments. This section makes a live model request, unlike the offline demo. Install `@parcha/agentrun-jev@beta` alongside the core and obtain authorized TypeSafe access through your provider or organization. Configure `TYPESAFE_API_KEY` in the server environment using your existing secret-management process. If your organization uses a gateway, also use its configured `TYPESAFE_BASE_URL`. Do not put credentials in browser code or commit them to this source tree.
 
-From the built source root after configuring access, save this as `live-triage.mjs` and run `node live-triage.mjs`. A live model can return a different answer from the scripted fixture:
+In your project after configuring access, save this as `live-triage.mjs` and run `node live-triage.mjs`. A live model can return a different answer from the scripted fixture:
 
 ```js
 import { runTriageDemo } from '@parcha/agentrun-dsl/demo';
@@ -89,16 +90,16 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 <a id="pi"></a>
 ## Let Pi build and run a workflow
 
-From the built source root, install the extension and start the included Pi 0.87.0 CLI:
+With [Pi 0.87.0 installed](../packages/pi/README.md#install), run these commands in your project:
 
 ```sh
-./node_modules/.bin/pi install ./packages/pi -l
-./node_modules/.bin/pi --offline
+pi install npm:@parcha/agentrun-pi@0.1.0-beta.1 -l
+pi --offline
 ```
 
 `-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch.
 
-Inside Pi, run `/agentrun demo` to see a scripted research workflow without making model calls. Run `/agentrun status` to confirm that the authoring skill loaded. If Pi 0.87.0 is already open, use `/reload` first. Keep the checkout: the installation points to its built files and skill.
+Inside Pi, run `/agentrun demo` to see a scripted research workflow without making model calls. Run `/agentrun status` to confirm that the authoring skill loaded. If Pi 0.87.0 is already open, use `/reload` first. The npm package includes the extension and skill; no AgentRun checkout is needed.
 
 With model access configured in Pi, describe a task:
 
