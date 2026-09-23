@@ -13,13 +13,11 @@ npm install -g @earendil-works/pi-coding-agent@0.87.0
 Then, in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@0.1.0-beta.2 -l
+pi install npm:@parcha/agentrun-pi@0.1.0-beta.3 -l
 pi --offline
 ```
 
 `-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
-
-The published `0.1.0-beta.2` package predates the save/load commands below. To test this source candidate before its next release, follow [Develop from source](#develop-from-source) to build the checkout and install it into a separate project.
 
 On first launch, Pi asks whether you trust the project before loading its extension. If Pi is already open, use `/reload`. The current draft is restored from a persisted Pi session branch when available; named definition saves are stored separately.
 

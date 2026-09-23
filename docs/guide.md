@@ -93,7 +93,7 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 With [Pi 0.87.0 installed](../packages/pi/README.md#install), run these commands in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@0.1.0-beta.2 -l
+pi install npm:@parcha/agentrun-pi@0.1.0-beta.3 -l
 pi --offline
 ```
 
@@ -107,7 +107,7 @@ With model access configured in Pi, describe a task:
 /agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report the gaps with file references.
 ```
 
-The packaged skill has Pi inspect the available tools and build a workflow using the selected Pi model. `/agentrun` opens the graph; `/agentrun run` executes it; `/agentrun stop` requests cancellation. The current source supports project-local named definition saves with `/agentrun save` and `/agentrun load`; the published beta.2 package predates them. Saves do not retain input or execution permission. Jev access is needed only for system one decisions. See [Pi setup and limits](../packages/pi/README.md).
+The packaged skill has Pi inspect the available tools and build a workflow using the selected Pi model. `/agentrun` opens the graph; `/agentrun run` executes it; `/agentrun stop` requests cancellation. Use `/agentrun save` and `/agentrun load` for project-local named definition saves. Saves do not retain input or execution permission. Jev access is needed only for system one decisions. See [Pi setup and limits](../packages/pi/README.md).
 
 ### Embed the Pi SDK
 

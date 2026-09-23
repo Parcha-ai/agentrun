@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.1.0-beta.3, unreleased
+## 0.1.0-beta.3, 2026-09-23
+
+- Pi can inspect workflow steps, save named definition revisions, and load them in another session. Saved definitions exclude run input and execution permission. Save and list show commands for loading the exact revision. Code runs require `/agentrun run --trusted` each time.
+- The support example registers its agent tool as `support_read`, a name accepted by providers that prohibit dots in tool names.
 
 - One author. `@parcha/agentrun-dsl` now owns the author contract, the author skill and the candidate loop. `authorContract({ host? })` renders the language every author receives (`renderAuthorContract` also returns the sha256 of that exact text, which `authorWorkflow` records with every candidate as `contractSha256`), then an optional `AuthorHostAddendum` (`name`, `initialState`, `outputTypes`, `nodeKinds`, `rules`) that names a host's vocabulary without changing the language. `authorWorkflow` moved from `@parcha/agentrun-pi` and now takes the host's `runNode` adapter instead of Pi runner options; it enforces a declared addendum's node kinds and output types and validates against its initial state. `candidatePolicyErrors` is the shared author policy. `authorWorkflow` returns the candidate its review accepted; `applyHostOutputTypes` gives the interpreter view of a host's prose output types. The skill ships in the dsl package under `skills/author`, with the contract generated as `references/language.md`; `authorSkillDirectory`, `loadAuthorReference` and `loadAuthorSkillBundle` expose it.
 - The Pi package registers the dsl skill rendered with its own host addendum (`PI_HOST_ADDENDUM`, exported), built into `dist/skills/author`, so a session reads the Pi rules without calling `describe`. `describe` returns `authoring.language` and `authoring.host` beside the guides.

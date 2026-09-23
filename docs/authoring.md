@@ -172,8 +172,6 @@ See [host integration](host-integration.md) for the compatibility check and reco
 
 ## One author contract
 
-The APIs in this section are in the beta.3 source checkout. They are not in the published beta.2 package; build the checkout to try them before the next release.
-
 The package owns the author contract. `authorContract()` returns the language every AgentRun author receives, and the packaged skill ships the same text as [`references/language.md`](../packages/dsl/skills/author/references/language.md). Its node kinds, fields and predicates are rendered from the constants the validator admits, so the contract cannot teach a field the validator refuses or omit one it accepts. A host adds only an [addendum](host-integration.md#host-addendum-for-authoring): its initial state, output types, node kinds and rules.
 
 ```ts

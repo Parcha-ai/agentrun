@@ -2,7 +2,7 @@
 
 Composable, typed workflows for agents. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
 
-Published beta: `0.1.0-beta.2`. Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
+Beta: `0.1.0-beta.3`. Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
@@ -26,8 +26,6 @@ The `agentrun` CLI provides `demo`, `example`, `inspect`, `validate`, `dry-run`,
 Raw JSON schemas retain `unknown` boundary types. Zod transforms, refinements, defaults and coercion are rejected rather than silently dropped. The core does not depend on Zod at runtime. Other Standard JSON Schema providers must faithfully represent their contracts. Typed execution accepts the original `defineWorkflow` result; copied or deserialized documents use `runWorkflow`.
 
 ## Public API
-
-This table describes the beta.3 source checkout. The published beta.2 package does not yet include the author contract, author skill, or language vocabulary exports.
 
 The package root exports a deliberate API. The beta retains agent, structured-output, report, artifact, effect, child-workflow and focused-evaluation paths. Hosts supply their adapters and policy; a workflow cannot grant itself tool permissions.
 

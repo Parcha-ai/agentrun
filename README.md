@@ -94,7 +94,7 @@ The [support integration guide](docs/support-quickstart.md) has a config templat
 With [Pi 0.87.0 installed](packages/pi/README.md#install), run these commands in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@0.1.0-beta.2 -l
+pi install npm:@parcha/agentrun-pi@0.1.0-beta.3 -l
 pi --offline
 ```
 
@@ -110,7 +110,7 @@ Once Pi has model access, ask it to build a workflow:
 /agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report gaps with file references.
 ```
 
-Pi uses the packaged skill to build, inspect, and run the workflow. Run `/reload` if you install into an open Pi session. The current source also supports `/agentrun save <name>` and `/agentrun load <name>` for project-local definition revisions; the published beta.2 package predates these commands. Saves contain neither run input nor execution permission. [Pi setup and limits](packages/pi/README.md).
+Pi uses the packaged skill to build, inspect, and run the workflow. Run `/reload` if you install into an open Pi session. Use `/agentrun save <name>` and `/agentrun load <name>` for project-local definition revisions. Saves contain neither run input nor execution permission. [Pi setup and limits](packages/pi/README.md).
 
 ## More examples
 
@@ -141,7 +141,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
 
-`0.1.0-beta.2` is published on npm; this checkout includes changes for beta.3. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
+This release is `0.1.0-beta.3`. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
 
 Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps in a workflow document that you can inspect, rerun, or call from an agent. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 
