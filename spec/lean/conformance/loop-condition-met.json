@@ -1,0 +1,104 @@
+{
+  "description": "A loop exits when its until predicate holds, reporting the iteration count.",
+  "workflow": {
+    "v": 2,
+    "name": "loop-met",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "init",
+          "code": "s => ({ n: 0 })"
+        },
+        {
+          "node": "loop",
+          "label": "count",
+          "maxIters": 5,
+          "until": {
+            "predicate": "gte",
+            "path": "n",
+            "n": 3
+          },
+          "body": {
+            "node": "code",
+            "label": "inc",
+            "code": "s => ({ n: s.n + 1 })"
+          }
+        }
+      ]
+    }
+  },
+  "input": {},
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {
+          "n": 0
+        }
+      },
+      "/root/steps/1/iterations/0/body": {
+        "return": {
+          "n": 1
+        }
+      },
+      "/root/steps/1/iterations/1/body": {
+        "return": {
+          "n": 2
+        }
+      },
+      "/root/steps/1/iterations/2/body": {
+        "return": {
+          "n": 3
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "n": 3
+    },
+    "output": {
+      "n": 3
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:init",
+        "node.end:init:ok"
+      ],
+      "/root/steps/1/iterations/0/body": [
+        "node.start:inc",
+        "node.end:inc:ok"
+      ],
+      "/root/steps/1/iterations/1/body": [
+        "node.start:inc",
+        "node.end:inc:ok"
+      ],
+      "/root/steps/1/iterations/2/body": [
+        "node.start:inc",
+        "node.end:inc:ok"
+      ],
+      "/root/steps/1": [
+        "loop.exited:count:condition_met:3"
+      ]
+    }
+  }
+}

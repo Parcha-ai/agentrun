@@ -1,0 +1,79 @@
+{
+  "description": "FINDING: an unaliased agent writes under its label, which declaredWrites ignores.",
+  "workflow": {
+    "v": 2,
+    "name": "par-label",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "parallel",
+      "label": "both",
+      "branches": [
+        {
+          "node": "agent",
+          "label": "x",
+          "instructions": "Do it.",
+          "out": "V"
+        },
+        {
+          "node": "code",
+          "label": "c",
+          "code": "s => ({ x: 1 })"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/branches/0": {
+        "submission": {
+          "v": "a"
+        }
+      }
+    },
+    "code": {
+      "/root/branches/1": {
+        "return": {
+          "x": 1
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "parallel_write_conflict",
+      "label": "both",
+      "path": "x"
+    },
+    "events": {
+      "/root/branches/0": [
+        "node.start:x",
+        "node.end:x:ok"
+      ],
+      "/root/branches/1": [
+        "node.start:c",
+        "node.end:c:ok"
+      ]
+    }
+  }
+}

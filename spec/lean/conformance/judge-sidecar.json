@@ -1,0 +1,89 @@
+{
+  "description": "A judge writes its typed value at as and the answers sidecar at <as>$answers.",
+  "workflow": {
+    "v": 2,
+    "name": "judge",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      },
+      "Check": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Is it ok?"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "check"
+    },
+    "root": {
+      "node": "judge",
+      "label": "check",
+      "state": {
+        "q": "{q}"
+      },
+      "out": "Check",
+      "as": "check"
+    }
+  },
+  "input": {
+    "q": "hello"
+  },
+  "script": {
+    "judge": {
+      "/root": {
+        "answers": {
+          "ok": {
+            "type": "noul",
+            "noul": 0.9
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": "hello",
+      "check": {
+        "ok": true
+      },
+      "check$answers": {
+        "answers": {
+          "ok": {
+            "type": "noul",
+            "noul": 0.9
+          }
+        },
+        "confidence": {
+          "ok": 0.8
+        },
+        "weakest": "ok",
+        "min_confidence": 0.8
+      }
+    },
+    "output": {
+      "ok": true
+    },
+    "events": {
+      "/root": [
+        "node.start:check",
+        "node.end:check:ok"
+      ]
+    }
+  }
+}

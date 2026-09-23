@@ -1,0 +1,82 @@
+{
+  "description": "FINDING: a child invocation whose input names $host validates and fails at run time.",
+  "workflow": {
+    "v": 2,
+    "name": "parent-host",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "workflow",
+      "label": "w",
+      "workflow": {
+        "v": 2,
+        "name": "child",
+        "schemas": {
+          "CIn": {
+            "type": "object"
+          },
+          "COut": {
+            "type": "object",
+            "properties": {
+              "v": {
+                "type": "string"
+              }
+            }
+          },
+          "Any2": {
+            "type": "object"
+          }
+        },
+        "input": {
+          "schemaId": "CIn"
+        },
+        "output": {
+          "schemaId": "Any2"
+        },
+        "root": {
+          "node": "code",
+          "label": "k",
+          "code": "s => ({ y: 1 })"
+        }
+      },
+      "input": {
+        "$host": "{q}"
+      },
+      "out": "Any",
+      "as": "w"
+    }
+  },
+  "input": {
+    "q": {
+      "a": 1
+    }
+  },
+  "script": {},
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "input_invalid"
+    },
+    "events": {
+      "/root": [
+        "node.start:w",
+        "node.end:w:failed"
+      ]
+    }
+  }
+}

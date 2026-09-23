@@ -1,0 +1,47 @@
+{
+  "description": "Validation rejects a terminal report that is not the last root step.",
+  "workflow": {
+    "v": 2,
+    "name": "bad-report",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "report",
+          "label": "r",
+          "instructions": "Write."
+        },
+        {
+          "node": "agent",
+          "label": "a",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "a"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

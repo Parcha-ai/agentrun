@@ -1,0 +1,54 @@
+{
+  "description": "A code node that writes $host fails with reserved_state_key.",
+  "workflow": {
+    "v": 2,
+    "name": "code-host",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "code",
+      "label": "c",
+      "code": "s => ({ $host: 1 })"
+    }
+  },
+  "input": {},
+  "script": {
+    "code": {
+      "/root": {
+        "return": {
+          "$host": 1
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "reserved_state_key",
+      "label": "c",
+      "path": "$host"
+    },
+    "events": {
+      "/root": [
+        "node.start:c",
+        "node.end:c:failed"
+      ]
+    }
+  }
+}

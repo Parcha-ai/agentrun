@@ -1,0 +1,74 @@
+{
+  "description": "A map over a value that is not a list fails with expected_list.",
+  "workflow": {
+    "v": 2,
+    "name": "map-bad",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "agent",
+          "label": "plan",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "plan"
+        },
+        {
+          "node": "map",
+          "label": "each",
+          "itemsPath": "plan",
+          "as": "results",
+          "body": {
+            "node": "code",
+            "label": "id",
+            "code": "s => ({ r: s.item })"
+          }
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/steps/0": {
+        "submission": {
+          "v": "not a list"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "expected_list",
+      "label": "each",
+      "path": "plan"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:plan",
+        "node.end:plan:ok"
+      ]
+    }
+  }
+}

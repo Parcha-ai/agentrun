@@ -1,0 +1,92 @@
+{
+  "description": "Parallel branches run on the same state; disjoint patches merge.",
+  "workflow": {
+    "v": 2,
+    "name": "par",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "parallel",
+      "label": "both",
+      "branches": [
+        {
+          "node": "agent",
+          "label": "left",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "left"
+        },
+        {
+          "node": "agent",
+          "label": "right",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "right"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/branches/0": {
+        "submission": {
+          "v": "l"
+        }
+      },
+      "/root/branches/1": {
+        "submission": {
+          "v": "r"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": 1,
+      "left": {
+        "v": "l"
+      },
+      "right": {
+        "v": "r"
+      }
+    },
+    "output": {
+      "q": 1,
+      "left": {
+        "v": "l"
+      },
+      "right": {
+        "v": "r"
+      }
+    },
+    "events": {
+      "/root/branches/0": [
+        "node.start:left",
+        "node.end:left:ok"
+      ],
+      "/root/branches/1": [
+        "node.start:right",
+        "node.end:right:ok"
+      ]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+name = "AgentRunSemantics"
+version = "0.1.0"
+defaultTargets = ["AgentRunSemantics", "conformance"]
+
+[[lean_lib]]
+name = "AgentRunSemantics"
+
+[[lean_exe]]
+name = "conformance"
+root = "Conformance"

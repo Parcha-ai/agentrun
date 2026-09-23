@@ -1,0 +1,80 @@
+{
+  "description": "FINDING: a validated requires head is present but empty after an agent submits {}.",
+  "workflow": {
+    "v": 2,
+    "name": "req-empty",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "agent",
+          "label": "draft",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "draft"
+        },
+        {
+          "node": "agent",
+          "label": "review",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "review",
+          "requires": [
+            "draft"
+          ]
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/steps/0": {
+        "submission": {}
+      },
+      "/root/steps/1": {
+        "submission": {
+          "v": "never"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "required_nonempty",
+      "label": "review",
+      "path": "draft"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:draft",
+        "node.end:draft:ok"
+      ],
+      "/root/steps/1": [
+        "node.start:review",
+        "node.end:review:failed"
+      ]
+    }
+  }
+}

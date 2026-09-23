@@ -1,0 +1,68 @@
+{
+  "description": "A call interpolates its args and lands the effect result at as.",
+  "workflow": {
+    "v": 2,
+    "name": "call",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "hits"
+    },
+    "root": {
+      "node": "call",
+      "label": "search",
+      "via": "tool",
+      "tool": "search",
+      "args": {
+        "query": "{q}",
+        "note": "about {q}"
+      },
+      "out": "Any",
+      "as": "hits",
+      "deadline_s": 10
+    }
+  },
+  "input": {
+    "q": "wiki"
+  },
+  "script": {
+    "effect": {
+      "/root": {
+        "result": {
+          "count": 2
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": "wiki",
+      "hits": {
+        "count": 2
+      }
+    },
+    "output": {
+      "count": 2
+    },
+    "events": {
+      "/root": [
+        "node.start:search",
+        "node.end:search:ok"
+      ]
+    }
+  }
+}

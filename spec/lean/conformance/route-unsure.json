@@ -1,0 +1,156 @@
+{
+  "description": "A route takes its unsure branch when confidence is below the threshold.",
+  "workflow": {
+    "v": 2,
+    "name": "route",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "route",
+      "label": "triage",
+      "state": {
+        "q": "{q}"
+      },
+      "instructions": "Which path?",
+      "as": "triage",
+      "unsure": {
+        "branch": "slow",
+        "gte": 0.6
+      },
+      "branches": {
+        "fast": {
+          "criteria": "Simple",
+          "body": {
+            "node": "agent",
+            "label": "quick",
+            "instructions": "Do it.",
+            "out": "V",
+            "as": "result"
+          }
+        },
+        "slow": {
+          "criteria": "Hard",
+          "body": {
+            "node": "agent",
+            "label": "deep",
+            "instructions": "Do it.",
+            "out": "V",
+            "as": "result"
+          }
+        }
+      }
+    }
+  },
+  "input": {
+    "q": "x"
+  },
+  "script": {
+    "judge": {
+      "/root": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "fast",
+            "probabilities": {
+              "fast": 0.9,
+              "slow": 0.1
+            },
+            "confidence": 0.4
+          }
+        }
+      }
+    },
+    "gen": {
+      "/root/branches/slow/body": {
+        "submission": {
+          "v": "deep"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": "x",
+      "triage": {
+        "branch": "fast",
+        "taken": "slow",
+        "unsure": true
+      },
+      "triage$answers": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "fast",
+            "probabilities": {
+              "fast": 0.9,
+              "slow": 0.1
+            },
+            "confidence": 0.4
+          }
+        },
+        "confidence": {
+          "branch": 0.4
+        },
+        "weakest": "branch",
+        "min_confidence": 0.4
+      },
+      "result": {
+        "v": "deep"
+      }
+    },
+    "output": {
+      "q": "x",
+      "triage": {
+        "branch": "fast",
+        "taken": "slow",
+        "unsure": true
+      },
+      "triage$answers": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "fast",
+            "probabilities": {
+              "fast": 0.9,
+              "slow": 0.1
+            },
+            "confidence": 0.4
+          }
+        },
+        "confidence": {
+          "branch": 0.4
+        },
+        "weakest": "branch",
+        "min_confidence": 0.4
+      },
+      "result": {
+        "v": "deep"
+      }
+    },
+    "events": {
+      "/root": [
+        "route.chosen:triage:slow"
+      ],
+      "/root/branches/slow/body": [
+        "node.start:deep",
+        "node.end:deep:ok"
+      ]
+    }
+  }
+}

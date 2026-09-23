@@ -1,0 +1,46 @@
+{
+  "description": "Validation rejects a loop bound outside 1..20.",
+  "workflow": {
+    "v": 2,
+    "name": "bad-loop",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "loop",
+      "label": "l",
+      "maxIters": 21,
+      "until": {
+        "predicate": "field_true",
+        "path": "d"
+      },
+      "body": {
+        "node": "agent",
+        "label": "a",
+        "instructions": "Do it.",
+        "out": "V",
+        "as": "a"
+      }
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

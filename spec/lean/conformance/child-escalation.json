@@ -1,0 +1,123 @@
+{
+  "description": "A child escalation surfaces with the parent's state and a prefixed label.",
+  "workflow": {
+    "v": 2,
+    "name": "parent-esc",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "seed",
+          "code": "s => ({ seeded: true })"
+        },
+        {
+          "node": "workflow",
+          "label": "inner",
+          "workflow": {
+            "v": 2,
+            "name": "child",
+            "schemas": {
+              "CIn": {
+                "type": "object",
+                "properties": {
+                  "question": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "question"
+                ]
+              },
+              "COut": {
+                "type": "object",
+                "properties": {
+                  "v": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "input": {
+              "schemaId": "CIn"
+            },
+            "output": {
+              "schemaId": "COut"
+            },
+            "root": {
+              "node": "escalate",
+              "label": "stop",
+              "when": {
+                "predicate": "field_equals",
+                "path": "question",
+                "value": "halt"
+              },
+              "kind": "k",
+              "stage": "s",
+              "summary": "halt"
+            }
+          },
+          "input": {
+            "question": "{q}"
+          },
+          "out": "Any",
+          "as": "inner"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": "halt"
+  },
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {
+          "seeded": true
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "escalated",
+    "state": {
+      "q": "halt",
+      "seeded": true
+    },
+    "escalation": {
+      "kind": "k",
+      "stage": "s",
+      "label": "inner/stop"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:seed",
+        "node.end:seed:ok"
+      ],
+      "/root/steps/1": [
+        "node.start:inner",
+        "node.end:inner:escalated"
+      ],
+      "/root/steps/1/workflow/root": [
+        "escalate.evaluated:inner/stop:true"
+      ]
+    }
+  }
+}

@@ -24,3 +24,6 @@ pi.config.mjs
 
 # Session notes stay outside the public source
 precap.md
+
+# Lean build output
+spec/lean/.lake/
