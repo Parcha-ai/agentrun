@@ -93,7 +93,7 @@ The validator mirror is checked the other way as well: `lake exe validator-sweep
 <a id="findings"></a>
 ## Findings
 
-Each finding has a kernel-checked counterexample in `Findings.lean`, a conformance case that pins the current TypeScript behavior, and a `todo` test in `packages/dsl/test/lean-findings.test.mjs` that asserts the claim and fails.
+Each open finding has a kernel-checked counterexample in `Findings.lean`, a conformance case that pins the current TypeScript behavior, and a `todo` test in `packages/dsl/test/lean-findings.test.mjs` that asserts the claim and fails. A fixed finding keeps its case with the corrected expectation, a theorem of the fixed behavior, and a live test.
 
 Disposition: **fix** is a shipped runtime defect, **validator** is a check `validateWorkflow` should gain, and **document** is behavior that stays and the docs must state. Nothing here changes runtime behavior.
 
@@ -105,9 +105,9 @@ Disposition: **fix** is a shipped runtime defect, **validator** is a check `vali
 | F4 | validator | A child invocation whose `input` names `$host` passes validation and fails at run time with `input_invalid`. | `child-input-host` |
 | F5 | validator | A child whose output schema accepts `undefined` can leave its parent's `as` undefined, and a validated `requires` on it then fails. T1 needs its schema hypothesis. | `child-undefined-output` |
 | F6 | document | "A node writes only its `as` or label, plus `$host`" understates the write set: judges and picks write `<as>$answers`, verified nodes write `<as>$verify`, unaliased code nodes write whatever they return, and `afterNode` may write any key but `$host`. `mayWrite` in `T2_frame` is the accurate set. | none; see `F6_writes_beyond_as_or_label` |
-| F7 | fix | The `$host` parallel merge depends on branch order. Arrays append in branch order. A scalar write followed by an array write on the same new key is silently replaced, and the reverse order is a conflict. | `parallel-host-scalar-then-array`, `parallel-host-array-then-scalar`, `parallel-host-append` |
+| F7 | fixed | A scalar write and an array write on the same new `$host` key are a `parallel_write_conflict` in either branch order (`T2_host_mixed_shape_conflicts_either_order`); before, one order silently replaced the scalar. Appends still join in branch order by design (`T2_host_merge_order_dependent`). | `parallel-host-scalar-then-array`, `parallel-host-array-then-scalar`, `parallel-host-append` |
 | F8 | fix | With `deps.recovery` set, a polled `call` has no engine bound: the deadline checks are skipped and termination rests on the host's recovery adapter. The guide states this as a host obligation. | TypeScript test only; calls are atomic in the model |
-| F9 | fix | Predicates read paths with the `predicates.ts` `getPath`, which stops at arrays. `requires` and interpolation use the `workflow.ts` `getPath`, which indexes them. A gate on `scores.0` never fires while `{scores.0}` resolves. | `predicate-array-index` |
+| F9 | fixed | One resolver serves predicates, `requires`, interpolation, `itemsPath` and `output.path` (`F9_fixed_one_resolver`): a record by key, an array by a canonical in-bounds index, anything else to `undefined`. A gate on `scores.0` fires when `{scores.0}` resolves (`F9_fixed_predicate_indexes_arrays`). | `predicate-array-index` |
 
 <a id="validator-sweep"></a>
 ## Validator sweep

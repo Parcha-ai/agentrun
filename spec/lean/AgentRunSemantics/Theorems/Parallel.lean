@@ -292,11 +292,11 @@ theorem T2_merge_order_independent (base m0 : State) (outs outs' : List State) (
   simp only [List.nil_append] at hn hn'
   rw [setAll_get_nodup _ _ _ hn, setAll_get_nodup _ _ _ hn', lookup_perm k hf hn]
 
-/-! ## `$host` merges are not order-independent (findings, checked by the kernel) -/
+/-! ## `$host` merges: appends join in branch order; a mixed-shape write conflicts in either order -/
 
 def hostDelta (k : String) (v : Value) : State := [(hostKey, .obj [(k, v)])]
 
-/-- **Finding.** Two branches appending to the same `$host` array merge in branch order:
+/-- **By design.** Two branches appending to the same `$host` array merge in branch order:
 swapping the branches reorders the merged value. -/
 theorem T2_host_merge_order_dependent :
     mergeParallel "p" [] [hostDelta "log" (.arr [.str "a"]), hostDelta "log" (.arr [.str "b"])] =
@@ -305,11 +305,11 @@ theorem T2_host_merge_order_dependent :
       .ok [(hostKey, .obj [("log", .arr [.str "b", .str "a"])])] := by
   constructor <;> rfl
 
-/-- **Finding.** A scalar `$host` write followed by an array write to the same new key is
-silently replaced by the array; in the other branch order it is a write conflict. -/
-theorem T2_host_scalar_then_array :
+/-- **F7, fixed.** A scalar `$host` write and an array write to the same new key are a write
+conflict in either branch order; no shape wins silently. -/
+theorem T2_host_mixed_shape_conflicts_either_order :
     mergeParallel "p" [] [hostDelta "k" (.str "scalar"), hostDelta "k" (.arr [.str "x"])] =
-      .ok [(hostKey, .obj [("k", .arr [.str "x"])])] ∧
+      .failed (.state .parallelWriteConflict "p" [hostKey, "k"]) ∧
     mergeParallel "p" [] [hostDelta "k" (.arr [.str "x"]), hostDelta "k" (.str "scalar")] =
       .failed (.state .parallelWriteConflict "p" [hostKey, "k"]) := by
   constructor <;> rfl

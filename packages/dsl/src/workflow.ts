@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
-import { predicateMatches, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
+import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
 import { WORKFLOW_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { Compile } from "typebox/compile";
@@ -1144,10 +1144,6 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
   return errors.length ? { ok: false, errors } : { ok: true };
 }
 
-function getPath(value: unknown, path: string): unknown {
-  return path.split(".").reduce<any>((acc, key) => (acc == null ? acc : acc[key]), value);
-}
-
 function interpolate(template: string, state: Record<string, unknown>): string {
   return template.replace(/\{([a-zA-Z0-9_.$]+)\}/g, (_, p) => {
     let v = getPath(state, p);
@@ -1984,14 +1980,19 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
           // The same value from several branches is one write, whatever its shape.
           if (hostWriter.has(key) && isDeepStrictEqual(mergedHost[key], value)) continue;
           const base = baseHost[key];
+          const prior = hostWriter.get(key);
+          const conflict = () => new WorkflowStateError(`parallel node "${node.label}": branches ${prior} and ${i} both wrote host state ${HOST_STATE_KEY}.${key} to different values`, node.label, `${HOST_STATE_KEY}.${key}`, "parallel_write_conflict");
+          // An append is an array that extends the base array (or a new array on a key with no base).
+          // Appends from several branches join in branch order. An append meets a prior non-append
+          // write of the same key as a conflict, whichever branch came first: no shape wins silently.
           if (Array.isArray(value) && (base === undefined || Array.isArray(base)) && (!Array.isArray(base) || (value.length >= base.length && base.every((entry, n) => isDeepStrictEqual(entry, value[n]))))) {
+            if (prior !== undefined && !Array.isArray(mergedHost[key])) throw conflict();
             const appended = value.slice(Array.isArray(base) ? base.length : 0);
             mergedHost[key] = [...(Array.isArray(mergedHost[key]) ? mergedHost[key] as unknown[] : []), ...appended];
             hostWriter.set(key, i);
             continue;
           }
-          const prior = hostWriter.get(key);
-          if (prior !== undefined && !isDeepStrictEqual(mergedHost[key], value)) throw new WorkflowStateError(`parallel node "${node.label}": branches ${prior} and ${i} both wrote host state ${HOST_STATE_KEY}.${key} to different values`, node.label, `${HOST_STATE_KEY}.${key}`, "parallel_write_conflict");
+          if (prior !== undefined && !isDeepStrictEqual(mergedHost[key], value)) throw conflict();
           hostWriter.set(key, i);
           mergedHost[key] = value;
         }

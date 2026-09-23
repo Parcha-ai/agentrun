@@ -355,6 +355,9 @@ def hostStep (base : List (String × Value)) (acc : HostAcc) (kv : String × Val
     | _ => none
   match appendable with
   | some added =>
+    -- An append onto a key an earlier branch set to a non-array is a conflict, whichever branch
+    -- came first: no shape wins silently.
+    if acc.writer.contains k && !(match lookup k acc.merged with | some (.arr _) => true | _ => false) then .error k else
     let prior := match lookup k acc.merged with
       | some (.arr xs) => xs
       | _ => []

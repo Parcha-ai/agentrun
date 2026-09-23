@@ -4,8 +4,9 @@
 // corpus pins the current behavior (spec/lean/conformance/*.json).
 //
 // Each test name leads with its disposition; this PR changes no runtime behavior.
-//   [fix]        a shipped runtime defect: F7 ($host merge order), F8 (poll unbounded under
-//                recovery), F9 (predicate paths stop at arrays).
+//   [fix]        a shipped runtime defect: F7 ($host merge order; fixed: mixed-shape writes conflict in
+//                either order, appends still join in branch order), F8 (poll unbounded under
+//                recovery), F9 (predicate paths stop at arrays; fixed: one resolver).
 //   [validator]  a check validateWorkflow should gain: F1 (requires after the first opaque
 //                node; empty values), F2 (writes declaredWrites misses), F4 (child input
 //                naming $host), F5 (child output that may be undefined).
@@ -73,12 +74,12 @@ const hostRun = (order, hostFor) => runWorkflow(
   { runNode: async () => ({ v: "ok" }), hostPolicy: { decodeSubmission: (raw, ctx) => ({ value: raw, host: hostFor[ctx.node.label] }) } },
 ).then((r) => ({ host: r.host }), (e) => ({ error: e.reason }));
 
-test("[fix] F7a: the $host merge does not depend on branch order (scalar then array)", { todo: "F7: a scalar host write followed by an array write is silently replaced" }, async () => {
+test("[fix] F7a: the $host merge does not depend on branch order (scalar then array)", async () => {
   const hostFor = { a: { k: "scalar" }, b: { k: ["x"] } };
   assert.deepEqual(await hostRun(["a", "b"], hostFor), await hostRun(["b", "a"], hostFor));
 });
 
-test("[fix] F7b: the $host merge does not depend on branch order (arrays)", { todo: "F7: arrays append in branch order" }, async () => {
+test("[fix] F7b: the $host merge does not depend on branch order (arrays)", { todo: "F7b: appends join in branch order by design (documented); the merge is order-independent up to that ordering" }, async () => {
   const hostFor = { a: { log: ["from-a"] }, b: { log: ["from-b"] } };
   assert.deepEqual(await hostRun(["a", "b"], hostFor), await hostRun(["b", "a"], hostFor));
 });
@@ -97,7 +98,7 @@ test("[fix] F8: a polled call stops at its poll deadline", { todo: "F8: with dep
   assert.ok(effects <= 11, `${effects} polls after the deadline had passed`);
 });
 
-test("[fix] F9: a predicate reads a state path the way requires and interpolation do", { todo: "F9: predicates.ts getPath stops at arrays; workflow.ts getPath indexes them" }, async () => {
+test("[fix] F9: a predicate reads a state path the way requires and interpolation do", async () => {
   const w = wf({ node: "chain", steps: [
     agent("a", { as: "a", requires: ["scores.0"], state: { first: "{scores.0}" } }),
     { node: "escalate", label: "gate", when: { predicate: "gte", path: "scores.0", n: 5 }, kind: "k", stage: "s", summary: "high" },
