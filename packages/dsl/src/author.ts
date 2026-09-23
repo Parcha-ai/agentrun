@@ -312,7 +312,7 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
     await writeFile(join(directory, "result.json"), JSON.stringify({ status: "candidate", path: acceptedPath, candidates, contractSha256: contract.sha256 }, null, 2), { flag: "wx" });
     return { workflow, path: acceptedPath, directory, candidates, checks, contractSha256: contract.sha256 };
   } catch (error) {
-    await writeFile(join(directory, "result.json"), JSON.stringify({ status: "failed", candidates, message: error instanceof Error ? error.message : String(error) }, null, 2), { flag: "wx" });
+    await writeFile(join(directory, "result.json"), JSON.stringify({ status: "failed", candidates, contractSha256: contract.sha256, message: error instanceof Error ? error.message : String(error) }, null, 2), { flag: "wx" });
     throw error;
   }
 }

@@ -244,7 +244,9 @@ test('the author stops at its candidate limit and retains the failure', () => wi
   await assert.rejects(authorWorkflow({ request: 'Do work', outputDir: dir, runNode, maxCandidates: 1 }), /Candidate limit exceeded: 1/);
   assert.match(seen.messages[0], /allowExecutableCandidates/);
   const [folder] = await readdir(dir);
-  assert.equal(JSON.parse(await readFile(join(dir, folder, 'result.json'))).status, 'failed');
+  const failed = JSON.parse(await readFile(join(dir, folder, 'result.json')));
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.contractSha256, renderAuthorContract().sha256, 'a failed result names its contract too');
 }));
 
 test('a host addendum reaches the session and its vocabulary is enforced', () => withTemp('agentrun-author-host-', async dir => {
