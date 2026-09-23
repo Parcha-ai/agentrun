@@ -1,6 +1,6 @@
 name = "AgentRunSemantics"
 version = "0.1.0"
-defaultTargets = ["AgentRunSemantics", "Check", "conformance"]
+defaultTargets = ["AgentRunSemantics", "Check", "conformance", "validator-sweep"]
 
 [[lean_lib]]
 name = "AgentRunSemantics"
@@ -12,3 +12,7 @@ root = "Conformance"
 [[lean_lib]]
 name = "Check"
 roots = ["AgentRunSemantics.Check"]
+
+[[lean_exe]]
+name = "validator-sweep"
+root = "ValidatorSweep"

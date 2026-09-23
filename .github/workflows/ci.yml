@@ -45,8 +45,9 @@ jobs:
           if-no-files-found: ignore
 
   lean:
-    # The Lean model of the workflow language (spec/lean): proofs, axiom audit and the
-    # model's side of the conformance corpus. The TypeScript side runs in `npm test` above.
+    # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
+    # side of the conformance corpus, and the validator sweep. The TypeScript side of the
+    # conformance corpus runs in `npm test` above.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -76,3 +77,15 @@ jobs:
         run: lake build
       - name: Run the conformance corpus against the model
         run: lake exe conformance
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - name: Build the TypeScript packages
+        working-directory: .
+        run: npm ci --ignore-scripts && npm run build
+      - name: Collect every workflow the test suites validate, with TypeScript's verdicts
+        working-directory: .
+        run: node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
+      - name: The Lean validator accepts everything the TypeScript validator accepts
+        run: lake exe validator-sweep .lake/validator-corpus.json

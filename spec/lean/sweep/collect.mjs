@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+// Builds the validator-sweep corpus: every workflow the repository's own test suites hand
+// to the DSL's public validation and run entry points, plus the Pi author skill's examples
+// and the conformance cases, each with the TypeScript validator's verdict. Run after
+// `npm run build`:
+//   node spec/lean/sweep/collect.mjs [out.json]
+// `lake exe validator-sweep out.json` then asserts the Lean validator accepts every
+// workflow the TypeScript validator accepts.
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+const out = resolve(process.argv[2] ?? join(root, "spec/lean/.lake/validator-corpus.json"));
+const { validateWorkflow } = await import(join(root, "packages/dsl/dist/index.js"));
+const capture = mkdtempSync(join(tmpdir(), "lean-sweep-"));
+const register = join(root, "spec/lean/sweep/capture-register.mjs");
+
+const suites = [
+  ["packages/dsl/test", /\.test\.mjs$/],
+  ["packages/pi/test", /\.test\.mjs$/],
+  ["examples", /\.test\.mjs$/],
+];
+for (const [dir, pattern] of suites) {
+  const files = readdirSync(join(root, dir)).filter((f) => pattern.test(f)).map((f) => join(dir, f));
+  try {
+    execFileSync(process.execPath, ["--test", ...files], {
+      cwd: root, stdio: "ignore",
+      env: { ...process.env, LEAN_SWEEP_DIR: capture, NODE_OPTIONS: `--import=${register}` },
+    });
+  } catch { /* A failing test still contributes the workflows it built; the suites run unwrapped elsewhere. */ }
+}
+
+const entries = new Map();
+const add = (source, workflow, inputKeys) => {
+  const text = JSON.stringify({ workflow, inputKeys });
+  if (!entries.has(text)) entries.set(text, { source, workflow, inputKeys });
+};
+for (const file of readdirSync(capture)) {
+  const entry = JSON.parse(readFileSync(join(capture, file), "utf8"));
+  add(relative(root, entry.source), entry.workflow, entry.inputKeys);
+}
+rmSync(capture, { recursive: true, force: true });
+const skillExamples = "packages/pi/skills/author/examples";
+for (const file of readdirSync(join(root, skillExamples)).filter((f) => f.endsWith(".json"))) {
+  const workflow = JSON.parse(readFileSync(join(root, skillExamples, file), "utf8"));
+  add(`${skillExamples}/${file}`, workflow, null);
+}
+const cases = "spec/lean/conformance";
+for (const file of readdirSync(join(root, cases)).filter((f) => f.endsWith(".json"))) {
+  const c = JSON.parse(readFileSync(join(root, cases, file), "utf8"));
+  add(`${cases}/${file}`, c.workflow, null);
+  add(`${cases}/${file}`, c.workflow, Object.keys(c.input ?? {}));
+}
+
+const corpus = [...entries.values()].map((entry) => {
+  let accepted = false;
+  try {
+    accepted = validateWorkflow(entry.workflow, entry.inputKeys ? { inputKeys: entry.inputKeys } : undefined).ok;
+  } catch { /* A document the validator cannot even read is a rejection. */ }
+  return { ...entry, tsAccepts: accepted };
+});
+mkdirSync(resolve(out, ".."), { recursive: true });
+writeFileSync(out, JSON.stringify(corpus));
+const accepted = corpus.filter((e) => e.tsAccepts).length;
+console.log(`${corpus.length} validations collected (${accepted} accepted by the TypeScript validator) -> ${relative(root, out)}`);

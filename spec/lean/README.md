@@ -36,6 +36,20 @@ A clean `lake build` takes about 20 seconds.
 
 Everything the interpreter delegates is a field of `Oracle`: `runNode`, `runJudge`, `runEffect`, code execution, `ask` predicates, JSON Schema checks, the host policy's `decodeSubmission` and `afterNode`, and which of several concurrent failures is reported. Every theorem quantifies over every oracle.
 
+### What each oracle boundary hides
+
+A theorem sees only what the engine does with an oracle's answer. Behavior inside a boundary is invisible to every theorem here:
+
+| Oracle | Folds together | Invisible to the theorems |
+| --- | --- | --- |
+| `gen`, `report` (`runNode`) | The adapter session, `normalizeStringNullsForSchema`, the transport schema, `decodeSubmission`, stage-schema validation, `mergeStageDelta`'s filter to declared properties, and the whole `verify` loop with its `runJudge` drives | Which properties the filter drops, whether a submission is schema-valid, how many review drives ran and what they saw, and the `$verify` record's contents. The model only knows the value lands at the node's key, plus `$verify` and `$host` |
+| `judge`, `pick`, `sift`, `route`, `ask` (`runJudge`) | `validateAnswers`, `answersToValue`, the sidecar, sift's keep threshold, the question-count guard for static question sets | Answer validation failures other than as an adapter error, how confidences become values, and which items sift keeps and why |
+| `effect` (`runEffect`) | Attempts, retry classes, backoff, deadlines, polling (`until`, `fail_when`, `interval_s`), memo reads and writes, the result schema check, `EffectOutcomeUnknownError` and late settlement | Every timing and retry property, and whether a poll ends. A `call` is one atomic answer, so F8 cannot be expressed in the model |
+| `code` | Compiling and running the JavaScript transform | Anything the code does besides returning a value. Validation's code probes are not modeled |
+| `schemaOk` | TypeBox `Check` against resolved schemas | Every schema-content rule |
+| `afterNode` | The host's patch | Its content. Theorems that need a frame assume it is absent |
+| `choose` | Which concurrent failure is reported | Timing: all branches and items run to completion in the model, and sibling cancellation is not modeled |
+
 An oracle is a function of the call site, and a call site is its execution path. Within one run every oracle is called at most once per execution path: loop iterations, map items, branches and child workflows each extend the path. So a function loses nothing against a stateful adapter for a single run.
 
 The validator model covers reachability of `requires`, `itemsPath` and interpolation heads, the reserved `$` keys, parallel disjointness as `declaredWrites` computes it, loop bounds, terminal report placement, output-path producers, artifact files produced by earlier shell calls, and child workflows validated with their invocation's input keys. It is a subset of the TypeScript rules, so every workflow the TypeScript validator accepts is accepted here and every theorem applies to it.
@@ -67,6 +81,13 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 | `T4_eval_desugar` | `Theorems/Desugar.lean` | Running a desugared node is running the node, for every oracle. |
 | `T4_validate_desugar`, `T4_runWorkflow_desugar` | `Theorems/Desugar.lean` | Validation and `runWorkflow` cannot tell a workflow from its desugaring. |
 
+Two limits apply to what these results establish:
+
+- **Conformance pins agreement, not equivalence.** The conformance cases were recorded from the TypeScript implementation and then matched by the model. They pin agreement on those cases and cannot establish that the implementation is equivalent to the model.
+- **Totality is not liveness.** `T3_runWorkflow_total` is termination of the model, whose oracles answer atomically. It says nothing about the liveness of a run against live adapters. F8 is the concrete gap: under a recovery adapter, the engine's poll loop has no bound.
+
+The validator mirror is checked the other way as well: `lake exe validator-sweep` asserts that the Lean validator accepts every workflow the TypeScript validator accepts. The corpus is every workflow the repository's own test suites pass to the public API, plus the conformance cases and the Pi skill examples (see [the sweep](#validator-sweep)).
+
 `AgentRunSemantics/Check.lean` prints the axioms of every theorem and fails the build if any theorem depends on more than `propext`, `Classical.choice` and `Quot.sound`. Counterexamples are evaluated by the kernel with `decide +kernel`, never `native_decide`.
 
 <a id="findings"></a>
@@ -74,17 +95,32 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 
 Each finding has a kernel-checked counterexample in `Findings.lean`, a conformance case that pins the current TypeScript behavior, and a `todo` test in `packages/dsl/test/lean-findings.test.mjs` that asserts the claim and fails.
 
-| Id | Finding | Case |
-| --- | --- | --- |
-| F1 | Validation does not rule out `required_nonempty`. After the first `code`, `map`, `parallel`, `loop` or `route` on the walk, `requires` is not checked at all. Where it is checked, only the first key must have a producer; the value can still be empty or the nested path missing. | `requires-after-code`, `requires-empty-submission` |
-| F2 | Parallel disjointness uses `declaredWrites`, which ignores labels of unaliased generative nodes, keys returned by unaliased code nodes, and the `$answers` and `$verify` sidecars. Such workflows validate and then fail with `parallel_write_conflict`. | `parallel-code-collision`, `parallel-label-collision` |
-| F3 | An unaliased code node may write `$`-prefixed keys other than `$host`. The host-integration guide says no workflow may name one. | `code-writes-dollar-key` |
-| F4 | A child invocation whose `input` names `$host` passes validation and fails at run time with `input_invalid`. | `child-input-host` |
-| F5 | A child whose output schema accepts `undefined` can leave its parent's `as` undefined, and a validated `requires` on it then fails. T1 needs its schema hypothesis. | `child-undefined-output` |
-| F6 | "A node writes only its `as` or label, plus `$host`" understates the write set: judges and picks write `<as>$answers`, verified nodes write `<as>$verify`, unaliased code nodes write whatever they return, and `afterNode` may write any key but `$host`. `mayWrite` in `T2_frame` is the accurate set. | none; see `F6_writes_beyond_as_or_label` |
-| F7 | The `$host` parallel merge depends on branch order. Arrays append in branch order. A scalar write followed by an array write on the same new key is silently replaced, and the reverse order is a conflict. | `parallel-host-scalar-then-array`, `parallel-host-array-then-scalar`, `parallel-host-append` |
-| F8 | With `deps.recovery` set, a polled `call` has no engine bound: the deadline checks are skipped and termination rests on the host's recovery adapter. The guide states this as a host obligation. | TypeScript test only; calls are atomic in the model |
-| F9 | Predicates read paths with the `predicates.ts` `getPath`, which stops at arrays. `requires` and interpolation use the `workflow.ts` `getPath`, which indexes them. A gate on `scores.0` never fires while `{scores.0}` resolves. | `predicate-array-index` |
+Disposition: **fix** is a shipped runtime defect, **validator** is a check `validateWorkflow` should gain, and **document** is behavior that stays and the docs must state. Nothing here changes runtime behavior.
+
+| Id | Disposition | Finding | Case |
+| --- | --- | --- | --- |
+| F1 | validator | Validation does not rule out `required_nonempty`. After the first `code`, `map`, `parallel`, `loop` or `route` on the walk, `requires` is not checked at all. Where it is checked, only the first key must have a producer; the value can still be empty or the nested path missing. | `requires-after-code`, `requires-empty-submission` |
+| F2 | validator | Parallel disjointness uses `declaredWrites`, which ignores labels of unaliased generative nodes, keys returned by unaliased code nodes, and the `$answers` and `$verify` sidecars. Such workflows validate and then fail with `parallel_write_conflict`. | `parallel-code-collision`, `parallel-label-collision` |
+| F3 | document | An unaliased code node may write `$`-prefixed keys other than `$host`. The host-integration guide says no workflow may name one. | `code-writes-dollar-key` |
+| F4 | validator | A child invocation whose `input` names `$host` passes validation and fails at run time with `input_invalid`. | `child-input-host` |
+| F5 | validator | A child whose output schema accepts `undefined` can leave its parent's `as` undefined, and a validated `requires` on it then fails. T1 needs its schema hypothesis. | `child-undefined-output` |
+| F6 | document | "A node writes only its `as` or label, plus `$host`" understates the write set: judges and picks write `<as>$answers`, verified nodes write `<as>$verify`, unaliased code nodes write whatever they return, and `afterNode` may write any key but `$host`. `mayWrite` in `T2_frame` is the accurate set. | none; see `F6_writes_beyond_as_or_label` |
+| F7 | fix | The `$host` parallel merge depends on branch order. Arrays append in branch order. A scalar write followed by an array write on the same new key is silently replaced, and the reverse order is a conflict. | `parallel-host-scalar-then-array`, `parallel-host-array-then-scalar`, `parallel-host-append` |
+| F8 | fix | With `deps.recovery` set, a polled `call` has no engine bound: the deadline checks are skipped and termination rests on the host's recovery adapter. The guide states this as a host obligation. | TypeScript test only; calls are atomic in the model |
+| F9 | fix | Predicates read paths with the `predicates.ts` `getPath`, which stops at arrays. `requires` and interpolation use the `workflow.ts` `getPath`, which indexes them. A gate on `scores.0` never fires while `{scores.0}` resolves. | `predicate-array-index` |
+
+<a id="validator-sweep"></a>
+## Validator sweep
+
+Every theorem assumes the Lean validator accepts the workflow. That TypeScript acceptance implies Lean acceptance is argued rule by rule in `Validate.lean`. The sweep supplies the empirical half:
+
+```sh
+npm run build
+node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
+cd spec/lean && lake exe validator-sweep .lake/validator-corpus.json
+```
+
+`collect.mjs` runs the DSL, Pi and example test suites with an import hook (`sweep/capture-*.mjs`). The hook records every workflow passed to `validateWorkflow`, `runWorkflow`, `runWorkflowSlice`, `runTypedWorkflow` and `dryRunWorkflow`, with the input keys of that call. The collector adds the Pi author skill's examples and the conformance workflows, then records the TypeScript validator's verdict for each. `validator-sweep` fails if the Lean validator rejects any workflow TypeScript accepts. CI runs both steps live, so a rule added to one validator only, or relaxed on the TypeScript side only, fails the `lean` job. The direction is one-way on purpose: the Lean validator checks a subset of the rules, so rejecting less than TypeScript is expected.
 
 ## Add a conformance case
 
