@@ -10,4 +10,6 @@ Initial beta of `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, and `@parcha/age
 - Use the optional Jev adapter for typed decisions or the Pi extension to author and run workflows with the active Pi model.
 - Run the support quickstart without credentials, then connect the same workflow to your own tools, Jev and agent runtime.
 
+Live Pi demos keep status and cancellation commands responsive. Support example failures preserve the original error and eventual tool outcome for host reconciliation while keeping JSON reports redacted. Dry-run accepts valid empty-only output schemas.
+
 Code and documentation use Apache-2.0. Packages are unpublished. Pi workflows are session-local; durable storage and external delivery belong to the host. See [compatibility](docs/compatibility.md) and [execution limits](docs/guide.md#limits).

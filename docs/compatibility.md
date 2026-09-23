@@ -20,4 +20,4 @@ A separate interpreter may support fewer nodes even when it accepts Workflow v2 
 
 Use the [contribution checks](../CONTRIBUTING.md). Propose new execution behavior with a failing case and observable acceptance result, then retain existing behavior at its boundaries. Changes to providers belong at the existing adapter interfaces. The Parcha repository maintainers review changes; this beta carries no production support SLA.
 
-Use repository issues for ordinary bugs with a minimal workflow and redacted input. Follow [SECURITY.md](../SECURITY.md) for sensitive reports; configure the private reporting route before the public launch. Do not put credentials, customer records or private SOPs in public reproductions.
+Use repository issues for ordinary bugs with a minimal workflow and redacted input. Follow [SECURITY.md](../SECURITY.md) for private vulnerability reporting. Do not put credentials, customer records or private SOPs in public reproductions.

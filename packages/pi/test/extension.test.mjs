@@ -418,6 +418,7 @@ test('progress widget reports finished steps, renders readable findings and clea
   const app = await harness({ withModel: false, hasUI: true });
   try {
     await app.command('demo');
+    await waitUntil(() => app.messages.some(message => message.details?.status));
     assert.ok(app.widgets.some(({ value }) => value?.some(line => /finished/.test(line))));
     assert.equal(app.widgets.at(-1).value, undefined);
     assert.match(app.messages.at(-1).content, /findings:/);
@@ -624,6 +625,56 @@ test('interactive slash run yields so status and stop dispatch before a deferred
   } finally { release.resolve(); await app.shutdown(); }
 });
 
+for (const termination of ['stop', 'shutdown']) {
+  test(`interactive live demo yields to ${termination} and retains child cancellation cleanup`, { timeout: 5000 }, async () => {
+    const app = await harness({ hasUI: true, tokensPerSecond: 1,
+      responses: [fauxAssistantMessage('This fictional planning response stays open until cancelled.')],
+      extensionOptions: { createJudge: () => async () => { assert.fail('Cancelled planning must not reach Jev'); } },
+    });
+    try {
+      await app.command('demo live');
+      await app.entered.promise;
+      assert.equal(app.messages.filter(message => message.details?.status).length, 0);
+      await app.command('status');
+      assert.equal(app.messages.at(-1).details.running, true);
+      await app.command('demo');
+      assert.match(app.messages.at(-1).content, /workflow is running/);
+      assert.equal((await app.tool({ action: 'describe' })).details.mode, 'live', 'busy demo cannot replace the active mode');
+      if (termination === 'stop') {
+        await app.command('stop');
+        await waitUntil(() => app.messages.some(message => message.details?.status === 'interrupted'));
+        assert.equal(app.messages.filter(message => message.details?.status).length, 1);
+      } else {
+        await app.shutdown();
+        assert.equal(app.messages.filter(message => message.details?.status).length, 0);
+      }
+      assert.equal(app.calls.length, 1);
+      assert.equal(app.calls[0].options.signal.aborted, true);
+      assert.equal(app.statuses.at(-1).value, undefined);
+      assert.equal(app.widgets.at(-1).value, undefined);
+    } finally { await app.shutdown(); }
+  });
+}
+
+test('headless live demo awaits its terminal report', { timeout: 5000 }, async () => {
+  const app = await harness({ hasUI: false, tokensPerSecond: 1,
+    responses: [fauxAssistantMessage('This fictional planning response stays open until cancelled.')],
+    extensionOptions: { createJudge: () => async () => { assert.fail('Cancelled planning must not reach Jev'); } },
+  });
+  let settled = false;
+  try {
+    const running = app.command('demo live').then(() => { settled = true; });
+    await app.entered.promise;
+    assert.equal(settled, false);
+    assert.equal(app.messages.filter(message => message.details?.status).length, 0);
+    await app.command('stop');
+    await running;
+    assert.equal(settled, true);
+    assert.equal(app.messages.at(-1).details.status, 'interrupted');
+    assert.equal(app.calls[0].options.signal.aborted, true);
+  } finally { await app.shutdown(); }
+});
+
 test('headless slash run continues awaiting its report until a deferred tool finishes', { timeout: 5000 }, async () => {
   const entered = deferred(), release = deferred(); let settled = false;
   const app = await harness({ hasUI: false, withModel: false, extensionOptions: {
@@ -716,6 +767,9 @@ test('native child tool attempts count unknown, invalid, valid and submit once e
     assert.equal(result.details.status, 'complete');
     assert.equal(attempts, 4); assert.equal(executions, 1);
     assert.equal(app.calls.length, 4);
+    const displayed = app.tools.get('agentrun').renderResult(result).render(160).join('\n');
+    assert.match(displayed, /Workflow calls: 0 direct tool calls, 0 system one decisions, 1 model step/,
+      'graph calls are distinguished from the four child tool attempts and model requests');
   } finally { await app.shutdown(); }
 });
 

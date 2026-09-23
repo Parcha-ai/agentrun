@@ -1,10 +1,36 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Compile } from 'typebox/compile';
-import { dryRunWorkflow, synthesizeInstance } from '../dist/index.js';
+import { dryRunWorkflow, runWorkflow, synthesizeInstance } from '../dist/index.js';
 
 const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const workflow = (schema, root) => ({ v: 2, name: 'dry-run-boundary', schemas: { Result: schema }, output: { schemaId: 'Result', path: 'result' }, root });
+
+test('empty-only output contracts dry-run like valid real submissions', async () => {
+  for (const [base, minimum, empty] of [
+    [{ type: 'string', maxLength: 0 }, 'minLength', ''],
+    [{ type: 'array', items: { type: 'string' }, maxItems: 0 }, 'minItems', []],
+  ]) {
+    for (const schema of [base, { ...base, [minimum]: 0 }]) {
+      const candidate = workflow(schema, { node: 'extract', label: 'empty', instructions: 'Return an empty value.', out: 'Result', as: 'result' });
+      assert.deepEqual((await runWorkflow(candidate, {}, { runNode: async () => empty })).output, empty);
+      assert.deepEqual(await dryRunWorkflow(candidate), { ok: true }, JSON.stringify(schema));
+    }
+  }
+});
+
+test('empty synthesis does not accept contradictory positive minimums', async () => {
+  for (const schema of [
+    { type: 'string', minLength: 1, maxLength: 0 },
+    { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 0 },
+  ]) {
+    const candidate = workflow(schema, { node: 'extract', label: 'empty', instructions: 'Return a value.', out: 'Result', as: 'result' });
+    const result = await dryRunWorkflow(candidate);
+    assert.equal(result.ok, false, JSON.stringify(schema));
+    assert.equal(result.stage, 'empty');
+    assert.ok(result.problems.length > 0);
+  }
+});
 
 test('numeric synthesis intersects inclusive and exclusive bounds on both sides', async () => {
   const intervals = [

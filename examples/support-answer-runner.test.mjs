@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createJevRunner } from '../packages/jev/dist/index.js';
-import { workflowSha256 } from '../packages/dsl/dist/index.js';
+import { EffectOutcomeUnknownError, workflowSha256 } from '../packages/dsl/dist/index.js';
 import { workflow } from './support-answer.mjs';
 import { scenarios, createScriptedAdapters } from './support-answer-fixtures.mjs';
 import { parseArgs } from './run-support-answer.mjs';
@@ -110,18 +110,64 @@ for (const name of Object.keys(scenarios)) {
 
 test('adapter errors retain failed-call evidence without raw error/customer data', async () => {
   const scripted = createScriptedAdapters('payment');
+  const failure = new Error('SECRET-CUSTOMER-AND-KEY');
   await assert.rejects(runSupportWithAdapters(scenarios.payment.input, {
     ...scripted.deps,
-    runNode: async () => { throw new Error('SECRET-CUSTOMER-AND-KEY'); },
+    runNode: async () => { throw failure; },
   }), error => {
     assert.ok(error instanceof SupportRunError);
     assert.equal(error.report.status, 'failed');
     assert.deepEqual(error.report.calls.map(call => call.kind), ['tool', 'judge', 'agent']);
     assert.equal(error.report.calls.at(-1).status, 'failed');
+    assert.equal(error.cause, failure, 'The host retains the original adapter failure.');
+    assert.equal(Object.getOwnPropertyDescriptor(error, 'cause').enumerable, false);
+    assert.ok(!JSON.stringify(error).includes('SECRET-CUSTOMER-AND-KEY'));
     assert.ok(!JSON.stringify(error.report).includes('SECRET-CUSTOMER-AND-KEY'));
     return true;
   });
 });
+
+for (const outcome of ['fulfilled', 'rejected']) {
+  test(`cancelled tool retains its real late ${outcome} settlement without leaking it`, { timeout: 2000 }, async () => {
+    const controller = new AbortController();
+    const started = Promise.withResolvers();
+    const pending = Promise.withResolvers();
+    let toolCalls = 0;
+    const running = runSupportWithAdapters(scenarios.password.input, {
+      ...createScriptedAdapters('password').deps,
+      runEffect: async params => {
+        toolCalls++;
+        assert.ok(params.signal instanceof AbortSignal);
+        started.resolve();
+        return pending.promise;
+      },
+    }, { signal: controller.signal });
+    await started.promise;
+    controller.abort();
+    let failure;
+    await assert.rejects(running, error => {
+      failure = error;
+      assert.ok(error instanceof SupportRunError);
+      assert.ok(error.cause instanceof EffectOutcomeUnknownError);
+      assert.equal(error.report.error.code, 'effect_outcome_unknown');
+      assert.equal(error.report.calls[0].status, 'started', 'The underlying tool is still pending.');
+      assert.equal(error.report.judgeCalls, 0);
+      return true;
+    });
+    const receipt = { text: 'PRIVATE-LATE-RECEIPT', sources: ['PRIVATE-SOURCE'] };
+    const rejection = new Error('PRIVATE-LATE-REJECTION');
+    if (outcome === 'fulfilled') pending.resolve(receipt);
+    else pending.reject(rejection);
+    const settled = await failure.cause.settlement;
+    assert.equal(settled.status, outcome);
+    if (outcome === 'fulfilled') assert.equal(settled.value, receipt);
+    else assert.equal(settled.reason, rejection);
+    assert.equal(toolCalls, 1, 'An uncertain effect is never automatically retried.');
+    assert.equal(failure.report.judgeCalls, 0, 'Late settlement does not resume the workflow.');
+    assert.ok(failure.report.events.some(event => event.type === 'effect.late_settled'));
+    assert.doesNotMatch(JSON.stringify(failure), /PRIVATE-LATE|PRIVATE-SOURCE/);
+  });
+}
 
 test('agent params retain host contracts and cancellation bounds an uncooperative adapter', async () => {
   const scripted = createScriptedAdapters('payment');

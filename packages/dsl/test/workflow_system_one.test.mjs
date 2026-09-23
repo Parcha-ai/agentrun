@@ -7,7 +7,7 @@ const hitFacts = {
   properties: {
     name_link: { type: "string", description: "How the hit name links to `customer.name`.", enum: ["exact", "nickname", "different"], criteria: { nickname: "Al for Alex", different: "a genuinely different given or family name" } },
     age_gap: { type: "string", description: "The age relation from `arithmetic`.", enum: ["gap_ge_2y", "aligned", "missing"] },
-    is_urgent: { type: "boolean", description: "Is the subject on a urgent list per `hit.screenType`?", criteria: { true: "a urgent flag", false: "ordinary ticket" } },
+    is_urgent: { type: "boolean", description: "Does `hit.priority` mark the request as urgent?", criteria: { true: "an urgent priority", false: "ordinary ticket" } },
     severity: { type: "integer", description: "How important is the request?", minimum: 0, maximum: 2, criteria: ["none", "ordinary", "urgent"] },
   },
 };
@@ -17,7 +17,7 @@ test("compileQuestions: enum → choice with criteria, boolean → noul, integer
   assert.equal(r.ok, true);
   const q = r.questions;
   assert.deepEqual(q.name_link, { type: "choice", instructions: "How the hit name links to `customer.name`.", criteria: { exact: null, nickname: "Al for Alex", different: "a genuinely different given or family name" } });
-  assert.deepEqual(q.is_urgent, { type: "noul", instructions: "Is the subject on a urgent list per `hit.screenType`?", criteria: { true: "a urgent flag", false: "ordinary ticket" } });
+  assert.deepEqual(q.is_urgent, { type: "noul", instructions: "Does `hit.priority` mark the request as urgent?", criteria: { true: "an urgent priority", false: "ordinary ticket" } });
   assert.deepEqual(q.severity, { type: "score", instructions: "How important is the request?", criteria: ["none", "ordinary", "urgent"] });
   assert.deepEqual(Object.fromEntries(Object.entries(q).map(([k, v]) => [k, v.type])), { name_link: "choice", age_gap: "choice", is_urgent: "noul", severity: "score" });
 });
@@ -82,7 +82,7 @@ const wfWith = (steps, schemas = {}) => ({
 test("judge: the state map is interpolated by value, the value lands at `as`, the distributions at `<as>$answers`", async () => {
   const seen = [];
   const wf = wfWith([
-    { node: "code", label: "seed", code: "(s) => ({ client: { name: 'Alex Example', dob: '1980-01-02' }, hit: { hitName: 'Al Example', screenType: 'pep' }, arithmetic: { age_gap_years: 6 } })" },
+    { node: "code", label: "seed", code: "(s) => ({ client: { name: 'Alex Example', dob: '1980-01-02' }, hit: { hitName: 'Al Example', priority: 'normal' }, arithmetic: { age_gap_years: 6 } })" },
     { node: "judge", label: "facts", state: { customer: "{client}", hit: "{hit}", arithmetic: "{arithmetic}", note: "gap is {arithmetic.age_gap_years} years" }, out: "hit_facts", as: "facts", requires: ["client.name"] },
     { node: "code", label: "record", code: "(s) => ({ record: { rating: s.facts.name_link === 'nickname' && s.facts.age_gap === 'gap_ge_2y' ? 'low' : 'medium', weakest: s['facts$answers'].weakest } })" },
   ]);
@@ -104,12 +104,12 @@ test("judge: the state map is interpolated by value, the value lands at `as`, th
 test("judge inside a map: one request per item, values collected as a list, the item reachable in the state map", async () => {
   const seen = [];
   const wf = wfWith([
-    { node: "code", label: "seed", code: "(s) => ({ hits: [{ hitName: 'A', screenType: 'sanctions' }, { hitName: 'B', screenType: 'pep' }] })" },
+    { node: "code", label: "seed", code: "(s) => ({ hits: [{ hitName: 'A', priority: 'urgent' }, { hitName: 'B', priority: 'normal' }] })" },
     { node: "map", label: "each hit", itemsPath: "hits", as: "facts", body: { node: "judge", label: "facts of one hit", state: { hit: "{item}", index: "{item_index}" }, out: "hit_facts", as: "f" } },
     { node: "code", label: "record", code: "(s) => ({ record: { rating: s.facts.some((f) => f.is_urgent) ? 'medium' : 'low' } })" },
   ]);
   assert.deepEqual(validateWorkflow(wf, { inputKeys: ["question", "context"] }), { ok: true });
-  const out = await runWorkflow(wf, { question: "q", context: {} }, { runJudge: async (p) => { seen.push(p); return scripted({ is_urgent: p.state.hit.screenType === "sanctions" })(p); } });
+  const out = await runWorkflow(wf, { question: "q", context: {} }, { runJudge: async (p) => { seen.push(p); return scripted({ is_urgent: p.state.hit.priority === "urgent" })(p); } });
   assert.equal(out.status, "complete");
   assert.equal(seen.length, 2);
   assert.deepEqual(seen.map((p) => p.item.index), [0, 1]);

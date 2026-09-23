@@ -1,11 +1,16 @@
-import { runWorkflow, workflowSha256 } from '../packages/dsl/dist/index.js';
+import { EffectOutcomeUnknownError, runWorkflow, workflowSha256 } from '../packages/dsl/dist/index.js';
 import { createJevRunner, JevError } from '../packages/jev/dist/index.js';
 import { workflow } from './support-answer.mjs';
 
 const keySetup = 'Set TYPESAFE_API_KEY in the server process, or supply jev.apiKey from your secret loader. Get a Jev key at https://console.typesafe.ai/keys; setup: https://docs.typesafe.ai/introduction/quickstart. An agent CLI login does not supply a Jev key.';
 export class SupportSetupError extends Error {}
 export class SupportRunError extends Error {
-  constructor(report) { super('The workflow failed; see the redacted run report.'); this.report = report; }
+  constructor(report, cause) {
+    // The host needs the original error and effect settlement for reconciliation.
+    // Error.cause is nonenumerable; only the redacted report is serialized.
+    super('The workflow failed; see the redacted run report.', { cause });
+    this.report = report;
+  }
 }
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 function allowedKeys(value, allowed, description) {
@@ -31,7 +36,7 @@ export function validateHostConfig(config, env = process.env) {
   return { ...config, timeoutMs, jev: { ...jev, apiKey } };
 }
 
-// Race an adapter that forgets cancellation; its own tools must still honor signal.
+// Bound model adapters that forget cancellation. The core owns effect cutoffs.
 function cancellable(action, signal) {
   return new Promise((resolve, reject) => {
     const abort = () => { cleanup(); reject(new DOMException('Workflow cancelled.', 'AbortError')); };
@@ -51,6 +56,10 @@ const safeMetadata = result => ({
   request_sha256: /^[a-f0-9]{64}$/.test(result.request_sha256 ?? '') ? result.request_sha256 : null,
 });
 function safeFailure(error, signal) {
+  if (error instanceof EffectOutcomeUnknownError) return {
+    code: 'effect_outcome_unknown',
+    message: 'A tool was still pending when the run stopped. Reconcile the original error cause and its settlement before retrying; cancellation does not undo the tool call.',
+  };
   if (signal?.aborted || error?.name === 'AbortError') return { code: 'cancelled_or_timeout', message: 'The run was cancelled or reached its configured deadline.' };
   if (error instanceof JevError) return {
     code: `jev_${error.code}`, attempts: error.attempts,
@@ -68,7 +77,10 @@ export async function runSupportWithAdapters(input, adapters, { signal, mode = '
     calls.push(entry);
     try {
       // Forward the entire request: do not drop review, schema, tools, or cancellation.
-      const value = await cancellable(() => fn(params), params.signal ?? signal);
+      // Preserve the actual tool promise so core cutoff errors retain its eventual
+      // receipt or rejection instead of the result of a second cancellation race.
+      const value = kind === 'tool' ? await fn(params)
+        : await cancellable(() => fn(params), params.signal ?? signal);
       entry.status = 'returned';
       if (kind === 'judge') Object.assign(entry, safeMetadata(value));
       return value;
@@ -102,7 +114,7 @@ export async function runSupportWithAdapters(input, adapters, { signal, mode = '
       ...(result.status === 'complete' ? { output: { validated: true, sourceCount: result.output.sources.length } }
         : { escalation: { kind: result.escalation.kind, stage: result.escalation.stage } }),
     } };
-  } catch (error) { throw new SupportRunError({ ...base(), status: 'failed', error: safeFailure(error, signal) }); }
+  } catch (error) { throw new SupportRunError({ ...base(), status: 'failed', error: safeFailure(error, signal) }, error); }
 }
 
 export async function runLiveSupport(input, rawConfig, { signal, env = process.env } = {}) {
