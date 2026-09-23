@@ -141,16 +141,16 @@ structure Oracle where
 def ratToString (q : Rat) : String :=
   if q.den = 1 then toString q.num else
     -- Terminating decimals only (conformance cases); other rationals render as a fraction.
-    let rec digits (n : Nat) (r : Rat) : Nat → String
+    let rec digits (r : Rat) : Nat → String
       | 0 => ""
       | k + 1 => if r = 0 then "" else
           let r10 := r * 10
           let d := r10.floor
-          toString d ++ digits n (r10 - d) k
+          toString d ++ digits (r10 - d) k
     let sign := if q < 0 then "-" else ""
     let a := if q < 0 then -q else q
     let whole := a.floor
-    sign ++ toString whole ++ "." ++ digits 0 (a - whole) 20
+    sign ++ toString whole ++ "." ++ digits (a - whole) 20
 
 def jsonEscape (s : String) : String :=
   "\"" ++ String.join (s.toList.map fun c =>

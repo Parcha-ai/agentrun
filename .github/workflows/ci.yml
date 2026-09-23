@@ -43,3 +43,34 @@ jobs:
           name: package-verification-${{ matrix.node }}
           path: .release/
           if-no-files-found: ignore
+
+  lean:
+    # The Lean model of the workflow language (spec/lean): proofs, axiom audit and the
+    # model's side of the conformance corpus. The TypeScript side runs in `npm test` above.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: spec/lean
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the Lean toolchain and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            spec/lean/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('spec/lean/lean-toolchain', 'spec/lean/lakefile.toml', 'spec/lean/lake-manifest.json') }}-${{ hashFiles('spec/lean/**/*.lean') }}
+          restore-keys: |
+            lean-${{ runner.os }}-${{ hashFiles('spec/lean/lean-toolchain', 'spec/lean/lakefile.toml', 'spec/lean/lake-manifest.json') }}-
+      - name: Install elan (the toolchain version comes from lean-toolchain)
+        run: |
+          if [ ! -x "$HOME/.elan/bin/elan" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/v4.2.4/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+            sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Build the model and check every proof
+        run: lake build
+      - name: Run the conformance corpus against the model
+        run: lake exe conformance

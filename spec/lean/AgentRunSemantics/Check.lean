@@ -97,3 +97,7 @@ open AgentRun
 /-- info: 'AgentRun.F6_writes_beyond_as_or_label' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms F6_writes_beyond_as_or_label
+
+/-- info: 'AgentRun.F9_predicate_path_stops_at_arrays' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms F9_predicate_path_stops_at_arrays

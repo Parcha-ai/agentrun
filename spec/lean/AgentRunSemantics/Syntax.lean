@@ -121,10 +121,4 @@ def Node.asField : Node → Option String
   | .workflow _ _ _ _ _ as => some as
   | _ => none
 
-/-- Node kinds that `runNodeOnState` treats as steps (`STEP_KINDS`). -/
-def Node.isStep : Node → Bool
-  | .gen .. | .report .. | .code .. | .call .. | .artifact .. | .workflow .. | .judge ..
-  | .pick .. | .sift .. => true
-  | _ => false
-
 end AgentRun

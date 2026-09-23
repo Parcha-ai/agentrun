@@ -1,0 +1,96 @@
+{
+  "description": "FINDING: requires and interpolation index arrays ({scores.0}); a predicate on the same path never holds.",
+  "workflow": {
+    "v": 2,
+    "name": "paths",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "agent",
+          "label": "a",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "a",
+          "requires": [
+            "scores.0"
+          ],
+          "state": {
+            "first": "{scores.0}"
+          }
+        },
+        {
+          "node": "escalate",
+          "label": "gate",
+          "when": {
+            "predicate": "gte",
+            "path": "scores.0",
+            "n": 5
+          },
+          "kind": "k",
+          "stage": "s",
+          "summary": "high"
+        }
+      ]
+    }
+  },
+  "input": {
+    "scores": [
+      9
+    ]
+  },
+  "script": {
+    "gen": {
+      "/root/steps/0": {
+        "submission": {
+          "v": "x"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "scores": [
+        9
+      ],
+      "a": {
+        "v": "x"
+      }
+    },
+    "output": {
+      "scores": [
+        9
+      ],
+      "a": {
+        "v": "x"
+      }
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:a",
+        "node.end:a:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:gate:false"
+      ]
+    }
+  }
+}

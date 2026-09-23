@@ -69,6 +69,16 @@ end State
 
 /-! ## Paths: the two `getPath` functions of the TypeScript code -/
 
+/-- A canonical array index as JavaScript reads a property key: `"0"`, `"12"`; not `"01"`
+or `"1e1"`. Written over `toList` so the kernel can evaluate it. -/
+def arrayIndex (k : String) : Option Nat :=
+  match k.toList with
+  | [] => none
+  | ['0'] => some 0
+  | '0' :: _ => none
+  | cs => cs.foldl (fun acc c => acc.bind fun n =>
+      if c.isDigit then some (n * 10 + (c.toNat - '0'.toNat)) else none) (some 0)
+
 /-- `getPath` in `workflow.ts`: `reduce((acc, key) => acc == null ? acc : acc[key])`.
 A `null` propagates as `null`; a missing key is `undefined` (`none`). Arrays index by a
 decimal segment. Property reads on strings (`length`, indexes) are not modeled. -/
@@ -80,7 +90,7 @@ def getPathV : Value → Path → Option Value
     | some v => getPathV v rest
     | none => none
   | .arr xs, k :: rest =>
-    match k.toNat? with
+    match arrayIndex k with
     | some i => match xs[i]? with
       | some v => getPathV v rest
       | none => none
@@ -101,7 +111,7 @@ def getPathR : Value → Path → Option Value
     | some v => getPathR v rest
     | none => none
   | .arr xs, k :: rest =>
-    match k.toNat? with
+    match arrayIndex k with
     | some i => match xs[i]? with
       | some v => getPathR v rest
       | none => none
@@ -188,10 +198,6 @@ end
 
 /-- `isDeepStrictEqual`: identical values, or equal up to object key order. -/
 def Value.eqv (a b : Value) : Bool := Value.structEq a b || Value.deepEq a b
-
-def Value.isArr : Value → Bool
-  | .arr _ => true
-  | _ => false
 
 /-- The object view of a value (`hostStateOf`): plain objects only. -/
 def Value.asObj : Value → List (String × Value)

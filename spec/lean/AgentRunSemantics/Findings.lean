@@ -189,4 +189,13 @@ theorem F6_writes_beyond_as_or_label :
       ["root"] [] "" []).1 = .ok [("j", .obj []), ("j$answers", .obj [])] := by
   constructor <;> rfl
 
+/-! ## F9: predicates and `requires` read state paths differently -/
+
+/-- `predicate-array-index.json`: `requires` and interpolation index arrays (`scores.0` is 9),
+while a `gte` predicate on the same path never holds. -/
+theorem F9_predicate_path_stops_at_arrays :
+    getPathS [("scores", .arr [.num 9])] ["scores", "0"] = some (.num 9) ∧
+    mechHolds (.obj [("scores", .arr [.num 9])]) (.gte ["scores", "0"] 5) = false := by
+  decide +kernel
+
 end AgentRun
