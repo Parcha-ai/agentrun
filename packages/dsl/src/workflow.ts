@@ -725,8 +725,10 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       const allowed = KIND_KEYS[(node as any).node];
       const extraneous = Object.keys(node).filter((key) => !allowed.has(key));
       if (extraneous.length) errors.push(`${path} (${(node as any).label || (node as any).node}): unknown key(s) for a ${(node as any).node} node: ${extraneous.join(", ")}`);
-      // `$`-prefixed state keys are engine-owned (`$host`, `<as>$verify`): no node may write one.
+      // `$`-prefixed state keys are engine-owned (`$host`, `<as>$verify`): no node may write one. A label
+      // is the state key whenever `as` is omitted, so labels are held to the same rule.
       if (typeof (node as any).as === "string" && (node as any).as.startsWith("$")) errors.push(`${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
+      if (typeof (node as any).label === "string" && (node as any).label.startsWith("$")) errors.push(`${path} (${(node as any).label}): label must not begin with "$" — a label is a state key when "as" is omitted, and "$" keys are engine-owned`);
     }
     switch (node.node) {
       case "chain":

@@ -236,6 +236,10 @@ test("the reserved host key cannot be written by a workflow, a code node, an aft
   const named = validateWorkflow(workflow([decide({ as: HOST_STATE_KEY })]));
   assert.equal(named.ok, false);
   assert.match(named.errors.join("\n"), /engine-owned "\$" state key/);
+  // An unaliased node writes under its label, so a "$host" label is the same bypass and is refused too.
+  const labeled = validateWorkflow({ ...workflow([{ node: "decide", label: HOST_STATE_KEY, instructions: "Decide.", out: "Record" }]), output: { schemaId: "Record", path: HOST_STATE_KEY } });
+  assert.equal(labeled.ok, false);
+  assert.match(labeled.errors.join("\n"), /label must not begin with "\$"/);
   await assert.rejects(runWorkflow(workflow([{ node: "code", label: "smuggle", code: "() => ({ $host: { x: 1 }, record: { label: 'a', count: 1 } })" }]), { text: "x" }, {}),
     (error) => error.reason === "reserved_state_key");
   await assert.rejects(runWorkflow(workflow([decide()]), { text: "x" }, {
