@@ -45,9 +45,10 @@ export default function (pi) {
     const result = await read.execute('compatibility-read', { path: 'note.txt' });
     assert.deepEqual(result.content, [{ type: 'text', text: 'Loaded through the Pi host.' }]);
     assert.ok(extension.tools.has('agentrun'));
-    const messages = [];
-    Object.assign(loaded.runtime, { getActiveTools: () => [], getAllTools: () => [], getThinkingLevel: () => 'off', sendMessage: message => messages.push(message) });
-    const ctx = { cwd, hasUI: false, sessionManager: { getSessionId: () => 'host-compatibility' } };
+    const messages = [], branch = [];
+    Object.assign(loaded.runtime, { getActiveTools: () => [], getAllTools: () => [], getThinkingLevel: () => 'off', sendMessage: message => messages.push(message),
+      appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data: structuredClone(data) }) });
+    const ctx = { cwd, hasUI: false, sessionManager: { getSessionId: () => 'host-compatibility', getBranch: () => branch, getSessionFile: () => undefined } };
     try {
       await extension.commands.get('agentrun').handler('demo', ctx);
       assert.equal(messages.at(-1).details.status, 'complete');

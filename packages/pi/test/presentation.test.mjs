@@ -8,11 +8,17 @@ test('human-readable output retains values and limits display without changing t
   const original = { ...report, output: { findings: [{ sourceId: 'record-1', text: 'Supported by the source.' }], raw: 'x'.repeat(15_000) } };
   const retained = structuredClone(original);
   const displayed = formatRunReport(original);
-  assert.match(displayed, /source Id: record-1/);
+  assert.match(displayed, /source id: record-1/);
   assert.match(displayed, /Supported by the source/);
   assert.match(displayed, /Full output is in the structured result/);
   assert.deepEqual(original, retained);
   assert.ok(displayed.length < 13_000);
+});
+
+test('camelCase output keys are readable sentence-case labels', () => {
+  const displayed = formatRunReport({ ...report, output: { nextAction: 'Review the change.', uncertaintyNote: 'Cause unknown.' } });
+  assert.match(displayed, /next action: Review the change/);
+  assert.match(displayed, /uncertainty note: Cause unknown/);
 });
 
 test('failed and uncertain effects show recovery without encouraging blind retries', () => {
@@ -42,6 +48,13 @@ test('escalation is explained without changing its machine status or hiding the 
   assert.match(displayed, /No sources met the evidence threshold/);
   assert.match(displayed, /no model calls/);
   assert.deepEqual(stopped, before);
+});
+
+test('scripted replay keeps its mode without suggesting a switch to a different example', () => {
+  const displayed = formatRunReport(report, true);
+  assert.match(displayed, /Replay: \/agentrun run/);
+  assert.match(displayed, /Example modes: \/agentrun help/);
+  assert.doesNotMatch(displayed, /\/agentrun demo live/);
 });
 
 test('bounded trace retention is disclosed separately from output completeness', () => {

@@ -107,7 +107,7 @@ With model access configured in Pi, describe a task:
 /agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report the gaps with file references.
 ```
 
-The packaged skill has Pi inspect the available tools, build a workflow, and run its steps with the selected Pi model. `/agentrun` shows the graph; `/agentrun stop` requests cancellation. Jev access is needed only for system one decisions. Native workflows are session-local; named saves are planned for V2. See [Pi setup and limits](../packages/pi/README.md).
+The packaged skill has Pi inspect the available tools and build a workflow using the selected Pi model. `/agentrun` opens the graph; `/agentrun run` executes it; `/agentrun stop` requests cancellation. The current source supports project-local named definition saves with `/agentrun save` and `/agentrun load`; the published beta.2 package predates them. Saves do not retain input or execution permission. Jev access is needed only for system one decisions. See [Pi setup and limits](../packages/pi/README.md).
 
 ### Embed the Pi SDK
 

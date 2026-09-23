@@ -1,6 +1,6 @@
 # agent.run() + Pi
 
-Describe a task in Pi. AgentRun turns it into a workflow you can inspect and runs its steps using your current Pi model. Requires Node 22.19+ and Pi 0.87.0.
+Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 0.87.0.
 
 ## Install
 
@@ -19,7 +19,9 @@ pi --offline
 
 `-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
 
-On first launch, Pi asks whether you trust the project before loading its extension. If Pi is already open, use `/reload`. Reloading clears the current workflow definition; run the demo or describe your task again to create one.
+The published `0.1.0-beta.2` package predates the save/load commands below. To test this source candidate before its next release, build the checkout and run `./node_modules/.bin/pi install ./packages/pi -l` from that checkout.
+
+On first launch, Pi asks whether you trust the project before loading its extension. If Pi is already open, use `/reload`. The current draft is restored from a persisted Pi session branch when available; named definition saves are stored separately.
 
 For live tasks, configure model access in Pi first. AgentRun uses Pi's current model and authentication; it needs no separate model configuration. The scripted demo below works without provider access.
 
@@ -33,28 +35,51 @@ The demo shows the workflow graph, progress, and a completed result with call co
 
 For an offline Pi startup, use `pi --offline`. Without that flag, Pi may download optional command-line tools on first launch. This is separate from the scripted demo, which makes no network calls.
 
-## Describe, inspect, run
+## Preview, run, save, reuse
 
 ```text
-/agentrun Find the main entry points in this repository and summarize how requests reach them.
+/agentrun Preview a reusable workflow that identifies breaking changes and migration actions in supplied release notes. Do not run it yet.
 ```
 
-The command loads the `agentrun-author` skill. Its source ships in `@parcha/agentrun-dsl`; this package registers it rendered with the Pi host rules, so the skill text itself states the trusted-run command, the missing SOP and the unavailable transports. Pi reads the available tools, builds a workflow, inspects its graph, then runs it with the task's input. You can also invoke `/skill:agentrun-author <task>` directly. Ask Pi to change a step or explain a result as you would in an ordinary conversation.
+The command loads the `agentrun-author` skill. Its source ships in `@parcha/agentrun-dsl`; this package registers it rendered with the Pi host rules. A preview validates and displays the graph without running it. Ask Pi to run when ready, or use `/agentrun run`. You can also invoke `/skill:agentrun-author <task>` directly.
+
+Open `/agentrun` to inspect the graph in the native terminal UI. Select a stage to see its contract, instructions or criteria, and observed evidence. The Actions page offers run, input, edit, save, load, and history. Arrow keys navigate, Enter inspects, `a` opens Actions, and Escape goes back or closes the view. Closing the inspector does not cancel execution; non-TUI hosts receive a text view.
+
+After inspecting a definition, save it and reuse it in a new Pi session in the same project:
+
+```text
+/agentrun input The release note says requests now require X-Workspace.
+/agentrun run
+/agentrun save release-review
+```
+
+```text
+/agentrun load release-review
+/agentrun input The next release removes /events; clients must use /v2/events.
+/agentrun run
+```
+
+Loading starts with empty input and does not execute. A save retains the definition, not input or execution permission. Each run restarts with the current input and model; it is not checkpoint resume.
 
 | Command | What happens |
 | --- | --- |
-| `/agentrun <task>` | Ask Pi to build, inspect, and run a workflow for the task. |
+| `/agentrun <task>` | Ask Pi to author, edit, or run; say when you want a preview only. |
 | `/agentrun help` | List commands and demo modes. |
-| `/agentrun` | Show the current workflow, or help if there is none. |
+| `/agentrun` | Inspect the current workflow, or show help if there is none. |
+| `/agentrun input <case or JSON>` | Set new input without changing the definition or running it. |
 | `/agentrun run` | Repeat the current workflow with its last supplied input. Scripted demos stay scripted; authored workflows use real adapters. |
+| `/agentrun save <name>` | Save an immutable, project-local definition revision. |
+| `/agentrun load <name> [digest]` | Load the newest or exact revision; input starts empty. |
+| `/agentrun list` | List saved revisions. |
+| `/agentrun history` | Inspect retained run receipts on this Pi branch. |
 | `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration without making provider calls. |
 | `/agentrun stop` | Request cancellation of the running workflow. |
 
-A progress widget shows active steps and the number finished. Results appear in Pi, with full output and events in the structured result.
+A progress widget shows active steps and the number finished. Results distinguish completion, escalation, failure, and interruption. Decision records show supplied evidence, criteria, answer, and route, not hidden reasoning or proof of correctness.
 
 Pi 0.87.0 cannot export a fresh session containing only slash-command results. To save an offline research receipt from the checkout, run `node examples/research-live.mjs --out research-result.json`. This runs the scripted example again and writes its result; it does not export the Pi session.
 
-One workflow runs at a time. Definitions and run state belong to the current Pi session; switching sessions or closing Pi does not create a saved workflow library. Named saves and reuse across sessions are planned for V2. This extension does not support them.
+One workflow runs at a time. Named definitions are durable across sessions in the same project. Pi run receipts belong to the current branch and may remain in memory until Pi persists its session; saving a definition does not save a receipt.
 
 ### Three demo modes
 
@@ -174,7 +199,7 @@ The child model delivers `{value: result}` through its `submit` tool. Schema and
 
 ## SDK: retain candidates and check fixed fixtures
 
-`authorWorkflow` lives in `@parcha/agentrun-dsl` beside the language it teaches. It saves candidate files separately from the native extension's session-local workflow. Give it a Pi runner with no host tools, and bound its submissions by the candidate limit:
+`authorWorkflow` lives in `@parcha/agentrun-dsl` beside the language it teaches. It saves candidate files separately from the native extension's current draft and named procedure revisions. Give it a Pi runner with no host tools, and bound its submissions by the candidate limit:
 
 ```js
 import { authorWorkflow } from '@parcha/agentrun-dsl';

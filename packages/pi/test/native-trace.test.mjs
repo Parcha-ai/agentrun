@@ -5,12 +5,14 @@ import { loadAuthorReference } from '@parcha/agentrun-dsl';
 
 // Fictional registered-extension integration; no provider, source corpus or network.
 function app(options = {}, hasUI = false) {
-  const tools = new Map(), commands = new Map(), handlers = new Map(), messages = [], statuses = [];
+  const tools = new Map(), commands = new Map(), handlers = new Map(), renderers = new Map(), branch = [], messages = [], statuses = [];
   const ctx = { cwd: process.cwd(), hasUI, model: undefined, modelRegistry: { getAll: () => [] },
-    sessionManager: { getSessionId: () => 'fictional-trace' },
+    sessionManager: { getSessionId: () => 'fictional-trace', getBranch: () => branch, getSessionFile: () => undefined },
     ui: { setStatus: (...args) => statuses.push(args), setWidget: () => {} } };
   createAgentRunExtension({ hostTools: () => [], ...options })({
     registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command),
+    registerEntryRenderer: (type, renderer) => renderers.set(type, renderer),
+    appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data: structuredClone(data) }),
     on: (name, handler) => handlers.set(name, handler), getActiveTools: () => [], getAllTools: () => [],
     getCommands: () => [], getThinkingLevel: () => 'high', sendMessage: message => messages.push(message),
   });

@@ -13,7 +13,7 @@ const skillDir = authorSkillDirectory();
 const example = async name => JSON.parse(await readFile(join(skillDir, 'examples', name), 'utf8'));
 const inlineExample = async () => {
   const main = await readFile(join(skillDir, 'SKILL.md'), 'utf8');
-  return JSON.parse(main.match(/```json\n([\s\S]*?)\n```/)[1]);
+  return [...main.matchAll(/```json\n([\s\S]*?)\n```/g)].map(match => JSON.parse(match[1])).find(value => value.action === 'inspect');
 };
 
 test('Pi discovers the neutral and the Pi-rendered skill, and all progressive references remain inside each', async () => {
@@ -93,11 +93,11 @@ test('the direct read example uses the native Pi adapter without an agent or Jev
   const tools = new Map(), events = new Map();
   const controller = new AbortController();
   const ctx = { cwd, signal: controller.signal, hasUI: false, model: undefined,
-    sessionManager: { getSessionId: () => 'author-skill-test' },
+    sessionManager: { getSessionId: () => 'author-skill-test', getBranch: () => [], getSessionFile: () => undefined },
     modelRegistry: { getAll: () => [], streamSimple: () => assert.fail('tool-only workflow must not call a model') },
   };
   agentRunExtension({
-    registerTool: tool => tools.set(tool.name, tool), registerCommand: () => {},
+    registerTool: tool => tools.set(tool.name, tool), registerCommand: () => {}, registerEntryRenderer: () => {}, appendEntry: () => {},
     on: (name, handler) => events.set(name, handler),
     getActiveTools: () => ['read'],
     getAllTools: () => [{ name: 'read', sourceInfo: { source: 'builtin' } }],
@@ -112,9 +112,7 @@ test('the direct read example uses the native Pi adapter without an agent or Jev
     assert.equal(report.status, 'complete', JSON.stringify(report));
     assert.match(report.output.content[0].text, /local fixture read through the real Pi built-in/);
     assert.deepEqual(report.calls, { agent: 0, judge: 0, tool: 1 });
-    const { details: invalid } = await call({ action: 'run', input: {} });
-    assert.equal(invalid.status, 'failed');
-    assert.deepEqual(invalid.calls, { agent: 0, judge: 0, tool: 0 });
+    await assert.rejects(call({ action: 'run', input: {} }), /input:.*required properties path/);
   } finally { await events.get('session_shutdown')(); await rm(cwd, { recursive: true, force: true }); }
 });
 

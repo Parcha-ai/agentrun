@@ -10,11 +10,13 @@ const definition = args => ({ v: 2, name: 'Fictional tool-input diagnostics',
   root: { node: 'call', label: 'read-fictional-record', via: 'tool', tool: 'lookup', args, out: 'Result', as: 'result', deadline_s: 1 },
 });
 const harness = execute => {
-  const tools = new Map(), events = new Map(); let attempts = 0;
+  const tools = new Map(), events = new Map(), renderers = new Map(), branch = []; let attempts = 0;
   const ctx = { cwd: process.cwd(), hasUI: false, signal: new AbortController().signal,
-    sessionManager: { getSessionId: () => 'fictional-input-diagnostic' }, modelRegistry: { getAll: () => [] } };
+    sessionManager: { getSessionId: () => 'fictional-input-diagnostic', getBranch: () => branch, getSessionFile: () => undefined }, modelRegistry: { getAll: () => [] } };
   createAgentRunExtension({ hostTools: () => [{ name: 'lookup', label: 'Fictional lookup', description: 'A test fixture, not a live source.', parameters, execute }], onToolAttempt: () => attempts++ })({
     registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, on: (name, listener) => events.set(name, listener),
+    registerEntryRenderer: (type, renderer) => renderers.set(type, renderer),
+    appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data: structuredClone(data) }),
     getCommands: () => [{ name: 'skill:agentrun-author', source: 'skill' }], sendMessage() {}, getThinkingLevel: () => 'low',
   });
   return { call: args => tools.get('agentrun').execute('fixture', args, ctx.signal, undefined, ctx), attempts: () => attempts,
@@ -47,6 +49,8 @@ test('unknown submitted keys are omitted and ordinary tool exceptions remain opa
     await app.call({ action: 'inspect', workflow: definition({ query: 'allowed' }) });
     const failed = await app.call({ action: 'run' });
     assert.equal(failed.details.error.code, 'execution_failed');
+    assert.equal(failed.details.error.stage, 'read-fictional-record');
+    assert.match(failed.content[0].text, /registered tool call failed/);
     assert.doesNotMatch(JSON.stringify(failed), /PRIVATE_PROVIDER_DETAIL/);
     assert.equal(app.attempts(), 2);
   } finally { await app.close(); }

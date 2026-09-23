@@ -37,6 +37,9 @@ export interface PiToolDefinition<TArgs = unknown, TDetails = unknown> {
   description: string;
 
   parameters: object;
+  /** Optional JSON Schema for a direct workflow call's return value. Host tools
+   * normally return {content, details}; this describes that whole envelope. */
+  resultSchema?: Record<string, unknown>;
   executionMode?: "sequential" | "parallel";
   execute(toolCallId: string, params: TArgs, signal: AbortSignal | undefined, onUpdate: ((result: PiToolResult<TDetails>) => void) | undefined, context: unknown): Promise<PiToolResult<TDetails>>;
 }

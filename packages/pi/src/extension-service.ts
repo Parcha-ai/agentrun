@@ -404,9 +404,17 @@ export class WorkflowExtensionService {
         else if (failure instanceof AggregateError) failure.errors.slice(0, 100).forEach(collect);
       };
       collect(error);
+      const failedStep = events.findLast(event => event.type === 'node.end' && (event.detail as { status?: string })?.status === 'failed');
+      const failedPath = failedStep?.executionPath;
+      const toolFailed = failedStep && (failedStep.detail as { kind?: string })?.kind === 'call'
+        && events.some(event => event.type === 'effect.failed' && event.executionPath === failedPath);
+      const observedStage = failedStep?.label.slice(0, 200);
       report = { digest: prepared.digest, status: code === 'cancelled' || code === 'deadline' ? 'interrupted' : 'failed', calls, events,
         error: !owned && !signal.aborted && !invalidInput && localDiagnostic(error) || { code,
-          ...(invalidInput ? { stage: 'input', problems: error.problems.slice(0, 8).map(problem => problem.slice(0, 500)) } : {}), message: owned ? reason.message : signal.aborted ? 'Workflow interrupted.' : invalidInput ? 'Input does not match this workflow. Pass input with action run, or inspect the workflow with its input before running.' : 'Workflow failed. Check the prepared graph, input contracts and host adapter access; provider error bodies are omitted.' },
+          ...(invalidInput ? { stage: 'input', problems: error.problems.slice(0, 8).map(problem => problem.slice(0, 500)) } : observedStage ? { stage: observedStage } : {}),
+          message: owned ? reason.message : signal.aborted ? 'Workflow interrupted.' : invalidInput ? 'Input does not match this workflow. Pass input with action run, or inspect the workflow with its input before running.'
+            : toolFailed ? 'A registered tool call failed. Inspect the tool step and reconcile any effect before a new run. Underlying error text is omitted.'
+              : 'Workflow failed. Inspect the affected step, input contracts and host adapters. Underlying error text is omitted.' },
         ...(unknown.length ? { uncertainEffects: unknown } : {}), ...(traceTruncated ? { traceTruncated: true } : {}) };
     } finally { closed = true; clearTimeout(timer); this.active = undefined; finish(); }
     report.trace = { policy: 'tail', receivedEvents, receivedBytes, rejectedEvents,
