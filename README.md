@@ -16,7 +16,7 @@ AgentRun is a workflow language for the agents you already run. Define repeatabl
 
 ## Quickstart
 
-Requires **Node 22.19+** and npm. The repo is currently private and the npm packages are unpublished; use this source checkout. See [release instructions](docs/releasing.md).
+Requires **Node 22.19+** and npm. Build and run from source:
 
 ```sh
 git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git

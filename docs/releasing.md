@@ -25,7 +25,7 @@ Confirm publishing access to the `@parcha` npm organization. New packages need a
 
 Once each package exists, configure its trusted publisher for this repository's `release.yml` workflow. This workflow publishes directly, so the association must allow direct publishing. Configure the `npm-release` GitHub environment with maintainer review and allowed tags. Subsequent workflow releases use OIDC and provenance. See [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/) for publisher configuration.
 
-Before a public release, configure and test private vulnerability reporting and update [SECURITY.md](../SECURITY.md). Review the source, repository refs and retained GitHub records before changing visibility. Source export checks do not review issues, pull requests or Actions artifacts.
+Complete the [public launch checklist](#public-launch) before announcing the release. Review source, repository refs and retained GitHub records before changing visibility. Source export checks do not review issues, pull requests or Actions artifacts.
 
 Create a reviewed beta tag whose version matches every package, such as `v0.1.0-beta.1`. At that exact tag:
 
@@ -44,3 +44,10 @@ If publication stops partway, resume from the same tag and archive bytes. The wo
 After publication, test the README from an empty clone and exact-version npm installation outside the workspace. Remove private or unpublished notices only when those public paths work. Website deployment belongs to the separate website repository.
 
 See npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/), [provenance](https://docs.npmjs.com/generating-provenance-statements/) and [scoped package](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/) documentation for account setup.
+
+## Public launch
+
+1. Review the release source and make only the DSL repository public. Keep the website repository and any prelaunch history archive private. Verify that an unauthenticated user can clone the source and follow the README.
+2. A repository admin must enable **Settings → Advanced Security → Private vulnerability reporting**. GitHub provides this feature only for public repositories. Open the [reporting form](https://github.com/Parcha-ai/agentrun/security/advisories/new) from a signed-in account without repository write access to confirm it works. A maintainer must subscribe to security-alert notifications. See [GitHub's setup instructions](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository).
+3. Publish the verified packages in dependency order, then verify a clean registry installation. Until that succeeds, keep the source installation as the default and retain the unpublished-package notices. Previously prepared tarballs are invalid after source changes; rebuild and verify them.
+4. Once the registry checks pass, update the package READMEs and changelog with the published version, `beta` install commands and release date. Test those exact commands outside the workspace before announcing them.

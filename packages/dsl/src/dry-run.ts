@@ -30,11 +30,13 @@ export function synthesizeInstance(schema: unknown, definitions: Record<string, 
     return { ...out };
   }
   if (type === "array") {
+    if (spec.maxItems === 0) return [];
     const min = Number.isInteger(spec.minItems) ? spec.minItems : 1;
     if (!spec.items) return [];
     return Array.from({ length: Math.max(1, min) }, () => synthesizeInstance(spec.items, definitions, depth + 1));
   }
   if (type === "string") {
+    if (spec.maxLength === 0) return "";
     const min = Number.isInteger(spec.minLength) ? spec.minLength : 1;
     return "x".repeat(Math.max(1, min));
   }

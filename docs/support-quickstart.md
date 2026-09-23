@@ -77,3 +77,5 @@ Real decisions may differ from the scripted fixtures. A typed `yes` and a source
 The default whole-run deadline is 60 seconds (`timeoutMs` in the config). Ctrl-C and SIGTERM cancel the run. Cancellation cannot undo an already admitted external call; host adapters must cooperate. Missing credentials stop the workflow before tools or agents run. Provider failures do not fall back to scripted responses.
 
 To let your agent use the workflow, register a host tool that calls `runLiveSupport(input, config, { signal })`. Its return value contains both `result` (the validated output or escalation) and `report` (the redacted trace). Handle escalation explicitly and keep delivery in your application. See [host integration](host-integration.md).
+
+On failure, `SupportRunError.report` is safe for the CLI output; `SupportRunError.cause` retains the original error for the host. An `effect_outcome_unknown` report means the tool may still finish. Inspect the cause's `settlement` promise to reconcile the outcome before retrying. Keep the cause and its eventual result in private host diagnostics, not public logs or model prompts.

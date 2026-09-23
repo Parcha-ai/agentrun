@@ -10,7 +10,7 @@ Give this file to your coding agent. Use the actual AgentRun interpreter and Jev
 - [Host integration contract](host-integration.md)
 - [Jev adapter](../packages/jev/README.md)
 
-If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git` on `main` into a new directory. The repository is currently private; if access is unavailable, report that prerequisite. Do not replace it with an unrelated similarly named package. The npm packages are not published yet.
+If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git` on `main` into a new directory. If access is unavailable, report the failure. Do not replace it with an unrelated similarly named package. Follow the source installation below; verify registry availability before suggesting an npm installation.
 
 ## Establish a working baseline
 

@@ -4,7 +4,7 @@ Describe a task in Pi. AgentRun turns it into a workflow you can inspect and run
 
 ## Install from source
 
-This is an unpublished, private source candidate. Repository access is required; `@parcha/agentrun-pi` is not available on npm. From a new terminal:
+Build the extension and use the included Pi CLI. From a new terminal:
 
 ```sh
 git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git
@@ -76,7 +76,7 @@ Native V1 does not supply SOP text. Workflows declaring `sopSection` stop before
 
 Custom extension tools and the outer Pi session's permission hooks are **not inherited**, including in trusted runs. A configured host can explicitly supply its own tool definitions as described below. Shell/executor effect transports and artifact delivery are unavailable in this extension; declared tool effects must use an available tool.
 
-A direct `call` to a Pi built-in returns a Pi tool result. Its `content` is an array of text/image blocks; `details` is optional. Declare that result shape in the output schema. Only the demo `search` tool returns `{sources}` directly. A tool-only workflow does not create an agent session. Jev is needed only for system one decisions.
+A direct `call` to a Pi built-in returns a Pi tool result. Its `content` is an array of text/image blocks; `details` may be absent from the workflow's JSON result. Declare that result shape in the output schema. Custom `PiToolDefinition` implementations follow Pi's SDK contract and return a `details` field; use `details: undefined` when there is no extra data. Only the demo `search` tool returns `{sources}` directly. A tool-only workflow does not create an agent session. Jev is needed only for system one decisions.
 
 Jev design guidance is bundled with the author skill and returned by `describe`
 under `authoring.jev`, including for hosts without a file-reading tool. No separate
@@ -102,6 +102,8 @@ permission to truncate evidence. Provider text remains private.
 These diagnostics add no retry and do not infer an unobserved provider cause.
 
 Use `/agentrun stop` to cancel a slash-command run; pressing Escape is not a guaranteed cancellation path. Stopping signals admitted tools, but already-started effects may still finish. Check their results before retrying; a stop does not undo a write.
+
+Displayed workflow counts include direct tool calls, system one decisions, and model steps. They do not include tools called inside an agent step or measure tokens, requests, or spending. Hosts can count child tool attempts through `onToolAttempt`.
 
 Agent steps capture the active Pi model when the run starts and keep that selection for the run. Request-count and deadline limits bound execution; they are not token or spending caps.
 

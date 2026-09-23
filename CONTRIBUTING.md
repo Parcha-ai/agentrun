@@ -14,6 +14,6 @@ Keep provider configuration and application policy outside the interpreter. Inte
 
 Document breaking changes and failure behavior. After changing workflow types, regenerate the editor schema with `node scripts/generate-schema.mjs`. For installation or packaging changes, also run `npm run export:source` and `npm run verify:source`. The source verifier builds the exported archive in an empty directory and exercises the offline examples.
 
-Website changes belong in [agentrun-website](https://github.com/Parcha-ai/agentrun-website). Documentation illustrations in this repository have their own [asset instructions](docs/assets/README.md).
+The website is maintained separately in a private repository. Send website feedback through this repository's [issues](https://github.com/Parcha-ai/agentrun/issues). Documentation illustrations in this repository have their own [asset instructions](docs/assets/README.md).
 
 Code and documentation use Apache-2.0. Unless you explicitly state otherwise, contributions submitted for inclusion use that license. Preserve third-party notices. This repository requires no separate contribution licensing agreement.

@@ -280,6 +280,20 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     } finally { s.busy = false; s.controller = undefined; stage(ctx, s); if (current === s && !s.closed && ctx.hasUI) ctx.ui.setWidget('agentrun', undefined); }
   };
 
+  const launch = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, trusted = false) => {
+    if (s.busy) throw new Error('A workflow is already running. Use /agentrun stop first.');
+    // Capture host selection and permission before yielding the interactive command loop.
+    const runContext = { ...ctx, model: ctx.model, thinkingLevel: ctx.thinkingLevel ?? pi.getThinkingLevel() };
+    const pending = execute(runContext, s, structuredClone(input), { trusted })
+      .then(result => show(s, result.content[0].text, result.details), error => commandError(s, error));
+    s.inFlight = pending;
+    const clear = () => { if (s.inFlight === pending) s.inFlight = undefined; };
+    void pending.then(clear, clear);
+    // Headless callers await the report. Interactive Pi must regain its input
+    // loop so status/stop can be dispatched while a child Agent is running.
+    if (!ctx.hasUI) await pending;
+  };
+
   pi.registerTool({
     name: 'agentrun', label: 'AgentRun workflow',
     description: 'Use the agentrun-author skill to compose workflows. Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
@@ -336,20 +350,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           inspect(ctx, s, demoWorkflow);
           s.demo = command === 'demo live' ? undefined : command === 'demo empty' ? 'empty' : 'scripted';
           show(s, `${inspect(ctx, s).tree}\n\n${s.demo ? 'Running scripted demo. No model calls.' : 'Running with your Pi model and Jev.'}`);
-          const result = await execute(ctx, s, demoInput);
-          show(s, result.content[0].text, result.details);
+          await launch(ctx, s, demoInput);
         } else if (command === 'run' || command === 'run --trusted') {
-          if (s.busy) throw new Error('A workflow is already running. Use /agentrun stop first.');
-          // Capture host selection and permission before yielding the interactive command loop.
-          const runContext = { ...ctx, model: ctx.model, thinkingLevel: ctx.thinkingLevel ?? pi.getThinkingLevel() };
-          const pending = execute(runContext, s, structuredClone(s.input), { trusted: command === 'run --trusted' })
-            .then(result => show(s, result.content[0].text, result.details), error => commandError(s, error));
-          s.inFlight = pending;
-          const clear = () => { if (s.inFlight === pending) s.inFlight = undefined; };
-          void pending.then(clear, clear);
-          // Headless callers rely on the report being available when this handler resolves.
-          // Interactive Pi must regain its input loop so status/stop can be dispatched.
-          if (!ctx.hasUI) await pending;
+          await launch(ctx, s, s.input, command === 'run --trusted');
         } else if (commandLike || command.startsWith('-')) {
           show(s, `Unknown AgentRun command: ${raw}\n\n${help}`);
         } else {
