@@ -28,8 +28,9 @@ seen is the wrong draft.
 - `output.path` selects the final state value; `output.schemaId` validates it. Without a path, the
   whole state (minus reserved host keys) is the output.
 - Execution has one shared state object. Every node returns a patch: with `as`, the node's value is
-  stored at that key; without `as`, an object return shallow-merges into state (an LLM node without `as`
-  stores under its label). Nothing else about state is implicit.
+  stored at that key; without `as`, a code node's object return shallow-merges into state, and an
+  `agent`, `decide` or `extract` without `as` stores under its label. A `report` always writes
+  `report_markdown`, whatever its label. Nothing else about state is implicit.
 
 ## Node kinds and their fields
 
@@ -64,12 +65,14 @@ and the state it receives):
 - `decide` — same fields: judges what is already in state; its tools verify, never expand scope.
 - `extract` — same fields: transcribes facts already stated in the state, verbatim, null when absent.
 - `report` — `label*`, `instructions*`, `state`, `sopSection`, `requires`, `tools`, `effort`, `thinking`:
-  the terminal prose writer; it renders the typed record already in state and never invents one.
+  the terminal prose writer; it renders the typed record already in state and never invents one. Its
+  output is always `state.report_markdown` (it takes no `as`); at most one, never inside a map body.
 - `artifact` — `label*`, `type*`, `path`, `instructions`, `state`, `sopSection`, `requires`, `tools`,
   `effort`, `thinking`: the terminal deliverable of a host output type; at most one, last in the root.
-- `verify` (a clause on agent, decide, extract) — `out`, `state`, `maxDrives`, `override: {below}`: a
-  typed question reviews the submission before it is accepted; a rejected submission is driven again up
-  to `maxDrives`; exhaustion is a failure, never a silent acceptance.
+- `verify` (a clause on agent, decide, extract) — `out*`, `state`, `maxDrives`, `override: {below}`: a
+  typed question reviews the submission before it is accepted. `out` names a flat question schema with
+  at least one boolean question (the acceptance); a rejected submission is driven again up to
+  `maxDrives`; exhaustion is a failure, never a silent acceptance.
 
 Question nodes (one typed request to the host's judge; no prose, no tools):
 
@@ -102,8 +105,11 @@ Predicates (`when`, `until`, and the `keep` and `unsure` gates read the same way
 - `count_gte` `{path, n}`, `gte` `{path, n}`, `lt` `{path, n}`, `no_new_items` `{key}`
 - `ask` `{instructions, state, criteria, gte}`: a typed yes/no question to the judge, gated at `gte`
 
-Every mechanical predicate names a path the initial state or an earlier node writes; a predicate on a
-never-written path can never fire and is rejected.
+Name in every mechanical predicate a path the initial state or an earlier node writes: on a missing
+value, `empty` is true and the others are false, so a predicate on a path nothing writes is a
+decorative guard (or an always-on one) that reads as a real condition. Validation catches some of these
+(interpolated paths and code outputs it can probe, when the host declares the input keys); it does not
+prove every stopping condition names real state. That is the author's job, and the reviewer's.
 
 ## Edges: name the value produced and the path consumed
 

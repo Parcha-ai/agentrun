@@ -27,9 +27,7 @@ A built-in returns a Pi tool result: `content` is an array of text/image blocks 
 
 Read the complete [release-note review](../examples/review-release-notes.json) and its [input](../examples/review-release-notes.input.json) before composing nodes. It maps a typed extraction over two notes, collects only each `change`, then summarizes the collected changes. This needs Pi, but no Jev or external tools.
 
-Use `chain.steps` for dependencies. Each `parallel.branches` entry receives the same input; branches must write different top-level keys. In `map`, `itemsPath` selects the list and the body sees `item` and `item_index`; set `as` and bound `maxConcurrency`. A body with `as` already returns that value per item. Use `resultPath` to select a different path, or to avoid retaining whole parent states from a chain body without `as`. A `loop` needs `until` and integer `maxIters` from 1 through 20; reaching the bound is not proof of success.
-
-A Jev `judge` has a nonempty `state` map, `out`, and `as`. Its schema is flat: descriptions state questions, booleans yield yes-probabilities, enums yield choices, and integers with 2 to 10 explicit level descriptions in `criteria` yield scores. Scores range from 0 to the last level index. Raw answers are retained at `<as>$answers`; confidence is not calibrated accuracy. `sift` applies questions to each item, and `route` chooses a branch. Use an explicit uncertainty gate or escalation rather than inventing evidence. Supply the complete reviewed rubric; Jev question text is not a substitute for an unavailable SOP.
+The structure nodes (`chain`, `parallel`, `map`, `loop`) and the question nodes (`judge`, `sift`, `pick`, `route`) are defined in the shared contract. In Pi, a question node runs only when TypeSafe access is configured; use an explicit uncertainty gate or escalation rather than inventing evidence, and supply the complete reviewed rubric, since Jev question text is not a substitute for an unavailable SOP.
 
 For `sift`, add a flat question schema to `schemas`, then a node such as:
 
@@ -55,28 +53,13 @@ fields, preserving the full rubric and necessary headers/qualifiers. See the
 
 ### Check the edges before running
 
-For each connection, name the actual value produced and the exact path consumed.
-These are different contracts; do not make them all the final answer schema:
-
-Inspection displays typed state keys and the final selection. It rejects nested
-paths excluded by known closed producer schemas before execution. Dynamic code,
-open schemas, unions and conditional control flow may leave shapes unknown;
-passing inspection does not prove those paths exist at runtime.
-
-| Producer | Value available downstream |
-| --- | --- |
-| Host tool called with `as: "read"` | `read.content` and optional `read.details`; not the fields inside `details` at top level |
-| Agent/extract with `out: "Row", as: "row"` | The schema-valid Row at `row`, not `{row: Row}` inside it |
-| Code with `as: "total"` returning a number | The number at `total`; returning `{total: number}` adds a second wrapper |
-| Map with an agent body using `as: "row"` | An array of Row values; no `row` wrapper on each item |
-| Map with a chain body and `resultPath: "row"` | An array of Row values selected from each completed body state |
-
-Without `resultPath`, a chain map body retains the whole item state. That is not
-the same as collecting its last step. After mapping, an array is still an array:
-if the final contract is an object, explicitly assemble that object and point
-`output.path` to it. Preserve the same distinction for tool result schemas and
-final answer schemas. Inspection does not execute transforms or prove these
-runtime shapes; check the reported value and contract when execution fails.
+The producer-to-consumer contracts (tool `call` result at `as`, LLM value at `as` without a wrapper,
+code `as` versus patch, map arrays and `resultPath`) are the shared contract's edges section. What is
+Pi's: inspection displays typed state keys and the final selection and rejects nested paths excluded by
+known closed producer schemas before execution; dynamic code, open schemas, unions and conditional
+control flow may leave shapes unknown, so passing inspection does not prove those paths exist at
+runtime, and inspection does not execute transforms. Check the reported value and contract when
+execution fails.
 
 An `escalate` node always requires `when`. Inside a route branch, the branch-taken predicate below makes escalation unconditional for that branch; outside a branch, provide a predicate for the actual stopping condition.
 
@@ -117,17 +100,11 @@ Mechanical checks belong in predicates; semantic questions belong in agent/Jev n
 
 Read the complete fictional [evidence gate](../examples/evidence-gate.json) and its [input](../examples/evidence-gate.input.json). It preserves a supplied claim and evidence, asks one Jev question, and gates the raw yes-probability in code before returning a typed record. It uses no agent or tool; running it with a real judge still needs Jev. The repository test uses a fake judge and proves interface behavior, not semantic quality.
 
-A code node permits **only** `node`, `label`, `code`, and optional `as`. Its `code` is a single synchronous function expression, such as `(s) => ({ count: s.items.length })`, not a bare statement body. The function receives the **full accumulated workflow state** as its first argument; it does not receive a scoped prompt map. Do not add `state`, `requires`, `out`, or `instructions` to a code node.
-
 Native inspection uses nonexecuting syntax/mechanical validation, equivalent to SDK `validateWorkflow(workflow, {executeCode: false})`. It neither evaluates code factories nor probes their outputs. The ordinary SDK validation default is for trusted code and may execute factories/probes. Neither mode is a sandbox or a proof that the eventual result will satisfy the output schema.
 
 Use synchronous data operations such as `Math`, `JSON`, `Array`, `Object`, `Map`, and `Set`. The current executor shadows `Date`, `Promise`, timers, host/network globals, and `Function`; they are unavailable even in a trusted run. For example, derive calendar-month sequences from integer year/month pairs rather than `new Date(...)`. This catches accidental host dependencies; it is not an isolation or security boundary.
 
-- With `as: "result"`, the returned value is stored at `state.result`; do not also wrap it in `{result: ...}`.
-- Without `as`, return an object patch: its top-level fields shallow-merge into state. Other state keys remain; returning a nested object replaces that entire top-level value. A non-object or array return is stored under the node's label instead, so use an object for patch semantics.
-- Do not mutate the input state. Return new values; do not return a Promise. Code remains trusted host JavaScript, not a sandbox.
-
-A node's `out: "Record"` names a sibling catalog schema directly. Inside a schema, the same sibling is referenced as `{"$ref":"#/definitions/Record"}`, **not** `{"$ref":"Record"}`. The example's input and result schemas both use this form. A `judge` has no `instructions` field: put each complete question in its output schema property's `description` (and its decision criteria in `criteria`, when needed).
+The code node's fields, its `as` versus patch semantics and the `$ref` form are the shared contract's; in Pi, code remains trusted host JavaScript, not a sandbox, and runs only under the user's trusted run.
 
 ### Gate the raw probability, not the decoded boolean
 
