@@ -315,16 +315,21 @@ def stepWrap (O : Oracle) (isStep : Bool) (ctx : Ctx) (r : Run) : Run :=
 def patchOf (baseline out : State) : List (String × Value) :=
   out.entries.filter fun (k, v) =>
     k != hostKey && !(match baseline.get k with
-      | some b => Value.deepEq v b
+      | some b => Value.eqv v b
       | none => false)
+
+/-- Apply one branch's patch; `w` holds the keys earlier branches wrote. -/
+def mergePatch : List (String × Value) → List String → State → Except String (List String × State)
+  | [], w, m => .ok (w, m)
+  | (k, v) :: rest, w, m => if w.contains k then .error k else mergePatch rest (k :: w) (m.set k v)
 
 /-- Domain merge: apply each branch's patch in branch order; a key written by two
 branches is a `parallel_write_conflict`. Returns the conflicting key on failure. -/
 def mergePatches : List (List (String × Value)) → List String → State → Except String State
   | [], _, m => .ok m
-  | [] :: ps, w, m => mergePatches ps w m
-  | ((k, v) :: rest) :: ps, w, m =>
-    if w.contains k then .error k else mergePatches (rest :: ps) (k :: w) (m.set k v)
+  | p :: ps, w, m => match mergePatch p w m with
+    | .ok (w', m') => mergePatches ps w' m'
+    | .error k => .error k
 
 /-- The host-state delta merge. `writer` tracks which keys some branch already wrote. -/
 structure HostAcc where
@@ -335,10 +340,10 @@ structure HostAcc where
 def hostStep (base : List (String × Value)) (acc : HostAcc) (kv : String × Value) :
     Except String HostAcc :=
   let (k, v) := kv
-  if (match lookup k base with | some b => Value.deepEq v b | none => false) then .ok acc else
+  if (match lookup k base with | some b => Value.eqv v b | none => false) then .ok acc else
   let acc := { acc with changed := true }
   if acc.writer.contains k && (match lookup k acc.merged with
-      | some m => Value.deepEq m v | none => false) then .ok acc else
+      | some m => Value.eqv m v | none => false) then .ok acc else
   let b := lookup k base
   let appendable : Option (List Value) := match v with
     | .arr vs => match b with
@@ -356,7 +361,7 @@ def hostStep (base : List (String × Value)) (acc : HostAcc) (kv : String × Val
     .ok { acc with merged := State.set acc.merged k (.arr (prior ++ added)), writer := k :: acc.writer }
   | none =>
     if acc.writer.contains k && !(match lookup k acc.merged with
-        | some m => Value.deepEq m v | none => false) then .error k
+        | some m => Value.eqv m v | none => false) then .error k
     else .ok { acc with merged := State.set acc.merged k v, writer := k :: acc.writer }
 
 def hostMergeAll (base : List (String × Value)) : HostAcc → List (String × Value) → Except String HostAcc
@@ -438,6 +443,14 @@ def artifactRecord (type : String) (path : Option String) : Value :=
 
 def seg (i : Nat) : String := toString i
 
+/-- A code node's state patch: `{[as]: out}`, the returned object itself, or `{[label]: out}`. -/
+def codePatch (label : String) (as : Option String) (out : Value) : List (String × Value) :=
+  match as with
+  | some k => [(k, out)]
+  | none => match out with
+    | .obj kvs => kvs
+    | v => [(label, v)]
+
 /-- Keys of a list of named branches. -/
 def branchNames (bs : List (String × Node)) : List String := bs.map (·.1)
 
@@ -452,11 +465,7 @@ def eval (O : Oracle) : Node → ExecPath → Addr → String → State → Run
       match O.code ctx s with
       | .error m => (.failed (.adapter ctx.label m), [])
       | .ok out =>
-        let patch : List (String × Value) := match as with
-          | some k => [(k, out)]
-          | none => match out with
-            | .obj kvs => kvs
-            | v => [(label, v)]
+        let patch := codePatch label as out
         if (lookup hostKey patch).isSome then
           (.failed (.state .reservedStateKey label [hostKey]), [])
         else (.ok (s.setAll patch), [])

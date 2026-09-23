@@ -56,9 +56,14 @@ def keys (s : State) : List String := s.map (·.1)
 /-- A key is present when `get` finds it. -/
 def has (s : State) (k : String) : Bool := (s.get k).isSome
 
+/-- Distinct keys in first-occurrence order. -/
+def dedup : List String → List String
+  | [] => []
+  | k :: ks => k :: (dedup ks).filter (· != k)
+
 /-- `Object.entries(s)`: one entry per distinct key, with the value `get` sees. -/
 def entries (s : State) : List (String × Value) :=
-  s.keys.eraseDups.filterMap (fun k => (s.get k).map (k, ·))
+  (dedup s.keys).filterMap (fun k => (s.get k).map (k, ·))
 
 end State
 
@@ -160,6 +165,29 @@ def Value.deepEqFields : List (String × Value) → List (String × Value) → B
       | some w => Value.deepEq v w
       | none => false) && Value.deepEqFields rest b
 end
+
+mutual
+/-- Syntactic equality of values (same keys in the same order). -/
+def Value.structEq : Value → Value → Bool
+  | .null, .null => true
+  | .bool a, .bool b => a == b
+  | .num a, .num b => a == b
+  | .str a, .str b => a == b
+  | .arr xs, .arr ys => Value.structEqList xs ys
+  | .obj a, .obj b => Value.structEqFields a b
+  | _, _ => false
+def Value.structEqList : List Value → List Value → Bool
+  | [], [] => true
+  | x :: xs, y :: ys => Value.structEq x y && Value.structEqList xs ys
+  | _, _ => false
+def Value.structEqFields : List (String × Value) → List (String × Value) → Bool
+  | [], [] => true
+  | (k, v) :: rest, (k', v') :: rest' => k == k' && Value.structEq v v' && Value.structEqFields rest rest'
+  | _, _ => false
+end
+
+/-- `isDeepStrictEqual`: identical values, or equal up to object key order. -/
+def Value.eqv (a b : Value) : Bool := Value.structEq a b || Value.deepEq a b
 
 def Value.isArr : Value → Bool
   | .arr _ => true

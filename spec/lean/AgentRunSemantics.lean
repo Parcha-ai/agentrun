@@ -4,3 +4,8 @@ import AgentRunSemantics.Semantics
 import AgentRunSemantics.Desugar
 import AgentRunSemantics.Validate
 import AgentRunSemantics.Run
+import AgentRunSemantics.Lemmas
+import AgentRunSemantics.Theorems.Desugar
+import AgentRunSemantics.Theorems.Loop
+import AgentRunSemantics.Theorems.Writes
+import AgentRunSemantics.Theorems.Parallel
