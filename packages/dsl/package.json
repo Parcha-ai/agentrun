@@ -23,7 +23,8 @@
     "README.md",
     "LICENSE",
     "NOTICE",
-    "schema"
+    "schema",
+    "authoring"
   ],
   "engines": {
     "node": ">=22.19.0"

@@ -55,3 +55,19 @@ Keep the returned transport schema a superset of the stage schema. A decoder tha
 `defineWorkflow` emits Workflow v2 JSON. Another interpreter can consume that document without importing this runtime, but a shared format number does not establish equivalent behavior.
 
 Validate against the interpreter that will execute the document. Test its supported nodes, input and output contracts, assembled SOP instructions, cancellation and recovery. Keep the current interpreter available until those checks pass. Activate changed definitions as new candidates and retain old receipts if rollback or reconciliation is needed.
+
+## The author contract
+
+A host that lets a model write workflows hands it the shipped contract plus its own addendum, never a
+restatement of the grammar:
+
+```ts
+import { composeAuthorContract, loadAuthorContract } from "@parcha/agentrun-dsl";
+
+const { text, sha256 } = composeAuthorContract(hostAddendum);   // contract + Jev guide + your addendum
+const shared = loadAuthorContract();                             // { contract, jevDecisions, sha256 }
+```
+
+The addendum states what only the host knows: the tools and their names, the initial state, how a
+document is delivered and reviewed, its output types, its SOP and how sections are named. Record the
+composed `sha256` with every document the author produced, so a pin says which contract authored it.

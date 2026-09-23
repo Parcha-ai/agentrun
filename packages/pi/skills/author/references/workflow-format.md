@@ -1,5 +1,7 @@
 # Workflow format
 
+The grammar, node kinds, edges and node-type discipline are the shared [author contract](dsl-contract.md), the same text every AgentRun host's author reads. This file is the Pi host's addendum: its tools, its tool result envelopes, its examples and its `agentrun` extension.
+
 AgentRun documents are JSON data: `v: 2`, `name`, `schemas`, optional `input: {schemaId}`, `output: {schemaId, path}`, and `root`. Schema identifiers refer to the document's own catalog. Define the input and expected output before adding nodes. The installed `@parcha/agentrun-dsl/schema` is the complete editor schema; execution performs additional semantic checks.
 
 ## Minimal typed answer

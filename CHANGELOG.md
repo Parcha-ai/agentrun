@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The author contract ships with `@parcha/agentrun-dsl`: `authoring/contract.md` (the grammar, every node kind and predicate, edges, node-type discipline, delivery) and `authoring/jev-decisions.md` (designing typed questions), read through `loadAuthorContract()` and composed with a host's addendum by `composeAuthorContract(addendum)` under one sha256 a host records with the documents it authored. The Pi skill's references carry generated copies (`scripts/generate-author-references.mjs`, checked by `check-generated`); `workflow-format.md` is now the Pi host's addendum over the shared contract, and `describe.authoring.workflow` returns both.
+
 ## 0.1.0-beta.2, 2026-09-23
 
 - `WorkflowDeps.hostPolicy`: application policy around generative nodes and completed steps, handed in by the host and unreachable from workflow documents. `systemBlocks` appends host text to a node's prompt; `submissionSchema` widens the adapter's transport schema with host-owned channels; `decodeSubmission` splits an accepted submission into the domain value and host state; `afterNode` enriches a completed step's state before commit and checkpoint. The domain value is always validated against the unchanged stage schema and is what a `verify` clause reviews; host state lives under the reserved `$host` state key (checkpointed and restored with the state, isolated per map item, branch and child, merged by delta across parallel branches), is excluded from a path-less output projection, and is returned as `result.host`. Validation rejects an `as` that names a `$`-prefixed key; a code node or `afterNode` patch writing `$host` fails with `reserved_state_key`. Events `host.decoded` and `host.patched` name the keys written. Absent, the engine behaves exactly as before.

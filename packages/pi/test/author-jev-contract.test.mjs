@@ -4,7 +4,7 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentRunExtension } from '../dist/extension.js';
-import { loadPiAuthorSkillBundle, loadPiJevGuide, loadPiWorkflowGuide } from '../dist/skill-bundle.js';
+import { loadPiAuthorSkillBundle, loadPiJevGuide, loadPiWorkflowGuide, loadPiWorkflowGuideParts } from '../dist/skill-bundle.js';
 
 const workflow = JSON.parse(await readFile(new URL('../skills/author/examples/read-source-decision.json', import.meta.url), 'utf8'));
 
@@ -25,7 +25,8 @@ test('native describe ships the same complete Jev guide as the experiment author
     assert.ok(loadPiAuthorSkillBundle().includes(loadPiJevGuide()));
     assert.equal(result.details.authoring.workflow, loadPiWorkflowGuide());
     assert.equal(JSON.parse(result.content[0].text).authoring.workflow, loadPiWorkflowGuide());
-    assert.ok(loadPiAuthorSkillBundle().includes(loadPiWorkflowGuide()));
+    const parts = loadPiWorkflowGuideParts();
+    assert.ok(loadPiAuthorSkillBundle().includes(parts.contract) && loadPiAuthorSkillBundle().includes(parts.host), 'the bundle carries both texts the guide is made of');
   } finally { await events.get('session_shutdown')(); }
 });
 

@@ -163,3 +163,16 @@ test('the sift and route reference fragments filter notes and stop uncertain rep
     }
   } finally { await service.dispose(); }
 });
+
+test('the skill references carry the dsl package\'s author contract and Jev guide verbatim, and the guide the extension describes begins with the contract', async () => {
+  const { loadAuthorContract } = await import('@parcha/agentrun-dsl');
+  const { loadPiWorkflowGuide, loadPiJevGuide } = await import('../dist/skill-bundle.js');
+  const shared = loadAuthorContract();
+  const strip = text => text.replace(/^<!-- Generated from [^\n]*-->\n\n/, '');
+  assert.equal(strip(await readFile(join(skillDir, 'references', 'dsl-contract.md'), 'utf8')), shared.contract);
+  assert.equal(strip(await readFile(join(skillDir, 'references', 'jev-decisions.md'), 'utf8')), shared.jevDecisions);
+  assert.equal(strip(loadPiJevGuide()), shared.jevDecisions);
+  const guide = loadPiWorkflowGuide();
+  assert.ok(strip(guide).startsWith(shared.contract.trim()), 'describe.authoring.workflow begins with the shared contract');
+  assert.ok(guide.includes('# Workflow format'), 'and continues with the Pi host addendum');
+});

@@ -1,5 +1,3 @@
-<!-- Generated from packages/dsl/authoring/jev-decisions.md by scripts/generate-author-references.mjs. Edit the source, not this copy. -->
-
 # Design Jev decisions in AgentRun
 
 Jev returns typed judgments and probabilities, not generated prose, tool calls or

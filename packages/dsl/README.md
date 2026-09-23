@@ -31,6 +31,7 @@ The package root exports a deliberate API. The beta retains agent, structured-ou
 
 | Group | Exports and purpose |
 | --- | --- |
+| Author contract | `loadAuthorContract`, `composeAuthorContract`; `AuthorContract`: the shipped grammar and question-design texts a host composes with its own addendum for a model that writes workflows. |
 | Typed authoring | `defineWorkflow`, `runTypedWorkflow`, `WorkflowSchemaConversionError`; `StandardJSONSchema`, `AuthoringSchema`, `TypedWorkflow`, `WorkflowInput`, `WorkflowOutput`, `TypedWorkflowRunResult`. |
 | Structural inspection | `inspectWorkflow`, `formatWorkflowTree`; `WorkflowInspection`, `WorkflowInspectionNode`. Reads structure and capability requirements; does not perform semantic validation or run code probes. |
 | Run and inspect | `runWorkflow`, `validateWorkflow`, `workflowSha256`, `dryRunWorkflow`; core contracts `Workflow`, `WorkflowNode`, `WorkflowDeps`, `WorkflowRunResult`, plus the named node, predicate, effect, effort and result types. |
