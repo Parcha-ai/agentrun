@@ -20,7 +20,8 @@ accepts is accepted here, and every theorem that assumes `validate` applies to i
 
 namespace AgentRun
 
-def startsWithDollar (s : String) : Bool := s.startsWith "$"
+/-- `s.startsWith("$")`, written with `front` so the kernel can evaluate it. -/
+@[irreducible] def startsWithDollar (s : String) : Bool := s.front == '$'
 
 mutual
 def tmplRefs : Tmpl → List Path
@@ -194,7 +195,7 @@ def dollarErrors : Node → List String
     | none => []
 
 def workspaceRelative (f : String) : Bool :=
-  !f.isEmpty && !f.startsWith "/" && !(f.splitOn "/").contains ".."
+  !f.isEmpty && f.front != '/' && !(f.splitOn "/").contains ".."
 
 /-- The produces lists of a child's top-level call steps. -/
 def topProduces : Node → List String

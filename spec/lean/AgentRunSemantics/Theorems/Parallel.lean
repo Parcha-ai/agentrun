@@ -197,7 +197,7 @@ theorem all_ok_eq : ∀ rs : List Outcome, (rs.filter (!·.isOk)).isEmpty = true
         simpa [Outcome.isOk] using h
       simp only [List.filterMap_cons, List.map_cons]
       exact congrArg _ (all_ok_eq rest h')
-    | escalated _ | failed _ => simp [List.filter_cons, Outcome.isOk] at h
+    | escalated _ | failed _ => simp [Outcome.isOk] at h
 
 theorem gather_ok_eq (O : Oracle) (rs : List Outcome) (outs : List State)
     (h : gather O rs = .ok outs) : rs = outs.map Outcome.ok := by

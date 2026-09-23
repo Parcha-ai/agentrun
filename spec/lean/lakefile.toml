@@ -1,6 +1,6 @@
 name = "AgentRunSemantics"
 version = "0.1.0"
-defaultTargets = ["AgentRunSemantics", "conformance"]
+defaultTargets = ["AgentRunSemantics", "Check", "conformance"]
 
 [[lean_lib]]
 name = "AgentRunSemantics"
@@ -8,3 +8,7 @@ name = "AgentRunSemantics"
 [[lean_exe]]
 name = "conformance"
 root = "Conformance"
+
+[[lean_lib]]
+name = "Check"
+roots = ["AgentRunSemantics.Check"]
