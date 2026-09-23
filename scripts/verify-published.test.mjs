@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyPublished } from './verify-published.mjs';
+import { verifyPublished, waitForInstallIndex } from './verify-published.mjs';
 import { releasePackageNames } from './release-preflight.mjs';
 
 const bytes = Buffer.from('verified package fixture bytes');
@@ -23,6 +23,31 @@ async function fixture(fn) {
   } finally { await rm(root, { recursive: true, force: true }); }
 }
 const found = async url => String(url).endsWith('.tgz') ? new Response(bytes) : Response.json(metadata);
+
+test('npm install index may lag the exact-version endpoint', async () => {
+  let calls = 0, waited = 0;
+  await waitForInstallIndex(packages[0], {
+    wait: async ms => { waited += ms; },
+    fetchImpl: async (url, options) => {
+      assert.equal(url, 'https://registry.npmjs.org/@parcha%2fagentrun-dsl');
+      assert.equal(options.headers.accept, 'application/vnd.npm.install-v1+json');
+      return Response.json({ versions: ++calls <= 8 ? {} : { [version]: metadata } });
+    },
+  });
+  assert.equal(waited, 40_000);
+});
+
+test('install index cannot approve an absent version or different archive', async () => {
+  let calls = 0;
+  await assert.rejects(waitForInstallIndex(packages[0], {
+    wait, fetchImpl: async () => { calls++; return Response.json({ versions: {} }); },
+  }), /has not exposed/);
+  assert.equal(calls, 61);
+  await assert.rejects(waitForInstallIndex(packages[0], {
+    wait: async () => assert.fail('integrity mismatch must not retry'),
+    fetchImpl: async () => Response.json({ versions: { [version]: { dist: { integrity: 'wrong' } } } }),
+  }), /integrity differs/);
+});
 
 test('partial release can resume only when the existing version matches exact verified bytes', () => fixture(async (root, receipt) => {
   const result = await verifyPublished(root, 'dsl', { allowAbsent: true, fetchImpl: found, wait });

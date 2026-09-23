@@ -25,6 +25,12 @@ Confirm publishing access to the `@parcha` npm organization. New packages need a
 
 Once each package exists, configure its trusted publisher for this repository's `release.yml` workflow. This workflow publishes directly, so the association must allow direct publishing. Configure the `npm-release` GitHub environment with maintainer review and allowed tags. Subsequent workflow releases use OIDC and provenance. See [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/) for publisher configuration.
 
+Before creating the release tag:
+
+1. Confirm who will start the workflow. A GitHub App needs **Actions: write** to dispatch or rerun it; repository contents access alone is insufficient. If the App lacks this permission, arrange a maintainer dispatch before starting the release.
+2. Confirm who can approve `npm-release`. If **Prevent self-review** is enabled, the person starting the workflow must have a different eligible reviewer. A sole reviewer who also dispatches needs self-review allowed; keep the required review and allowed-tag restrictions.
+3. Include any release-script or workflow fixes in the reviewed commit before tagging. A rerun uses the tagged source, not newer fixes on `main`. Never move an existing release tag.
+
 Complete the [public launch checklist](#public-launch) before announcing the release. Review source, repository refs and retained GitHub records before changing visibility. Source export checks do not review issues, pull requests or Actions artifacts.
 
 Create a reviewed beta tag whose version matches every package, such as `v0.1.0-beta.1`. At that exact tag:
@@ -39,7 +45,13 @@ The preflight checks tag identity, clean source, package versions, licenses and 
 
 Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag. The workflow requires a public repository, publishes the verified archives with the `beta` tag, and verifies registry integrity and a fresh installed consumer.
 
+An npm publish success can mean the package is still processing. The verifier allows 60 five-second waits for metadata, tarball, and npm install-index availability. The final installation uses a fresh cache and prefers online metadata, so an earlier cached index cannot hide a newly published version. It still fails immediately on authentication errors or mismatched integrity. Do not treat npm's acceptance message as a completed release.
+
 If publication stops partway, resume from the same tag and archive bytes. The workflow verifies an existing version before skipping it. A byte mismatch stops publication; never replace a published version with different bytes.
+
+If the visibility wait expires, check the exact version in the registry before retrying; it may already be published. Resume only after confirming its bytes match the verified archive. Do not change the version or start a separate publication to work around the delay.
+
+The release is complete only when all three published archives match the release plan and the fresh registry installation passes. Confirm the `beta-release-<run ID>` artifact contains the release plan, archives, and `published-all.json` with `status: passed` and `cleanRegistryInstall: true`. Artifact upload must include the hidden `.release/` directory. If an older workflow omitted the artifact, preserve equivalent verification receipts before reporting completion.
 
 After publication, test the README from an empty clone and exact-version npm installation outside the workspace. Remove private or unpublished notices only when those public paths work. Website deployment belongs to the separate website repository.
 

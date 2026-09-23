@@ -12,7 +12,7 @@ import { releasePackageNames } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 
-export async function registryResponse(url, { fetchImpl = fetch, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), retryNotFound = false, timeoutMs = 10_000 } = {}) {
+export async function registryResponse(url, { fetchImpl = fetch, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), retryNotFound = false, timeoutMs = 10_000, ready = async () => true } = {}) {
   const attempts = retryNotFound ? 61 : 6;
   for (let attempt = 0; attempt < attempts; attempt++) {
     let response;
@@ -22,11 +22,23 @@ export async function registryResponse(url, { fetchImpl = fetch, wait = ms => ne
       await wait(5000);
       continue;
     }
-    const transient = response.status === 429 || response.status >= 500 || (retryNotFound && response.status === 404);
+    const transient = response.status === 429 || response.status >= 500 || (retryNotFound && response.status === 404) || (response.ok && !await ready(response));
     if (!transient || attempt === attempts - 1) return response;
     await response.body?.cancel();
     await wait(5000);
   }
+}
+
+export async function waitForInstallIndex(pkg, { fetchImpl = fetch, wait } = {}) {
+  const response = await registryResponse(`https://registry.npmjs.org/${pkg.name.replace('/', '%2f')}`, {
+    fetchImpl: (url, options) => fetchImpl(url, { ...options, headers: { accept: 'application/vnd.npm.install-v1+json' } }),
+    wait, retryNotFound: true,
+    ready: async response => Object.hasOwn((await response.clone().json()).versions ?? {}, pkg.version),
+  });
+  assert.ok(response.ok, `Install index rejected ${pkg.name}: HTTP ${response.status}`);
+  const index = await response.json();
+  assert.ok(index.versions?.[pkg.version], `Install index has not exposed ${pkg.name}@${pkg.version} after bounded retries`);
+  assert.equal(index.versions[pkg.version].dist?.integrity, pkg.integrity, 'Install index integrity differs from verified bytes');
 }
 
 export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait } = {}) {
@@ -67,11 +79,13 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
       assert.equal(createHash('sha256').update(bytes).digest('hex'), pkg.sha256, 'Published tarball differs from verified archive');
       results.push({ name: pkg.name, version: pkg.version, sha256: pkg.sha256, status: 'matched' });
     }
+    receipt.packages = results;
     if (selected === 'all') {
+      for (const pkg of plan.packages) await waitForInstallIndex(pkg, { fetchImpl, wait });
       const consumer = await mkdtemp(join(tmpdir(), 'agentrun-registry-consumer-'));
       try {
         await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module' }));
-        await exec('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--registry=https://registry.npmjs.org/', ...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`)], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+        await exec('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--prefer-online', '--cache', join(consumer, '.npm-cache'), '--registry=https://registry.npmjs.org/', ...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`)], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
         const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
         for (const pkg of plan.packages) assert.equal(lock.packages[`node_modules/${pkg.name}`].integrity, pkg.integrity, 'Installed archive integrity mismatch');
         await writeFile(join(consumer, 'deny-network.mjs'), `import net from 'node:net'; import http from 'node:http'; import https from 'node:https'; import {syncBuiltinESMExports} from 'node:module';
