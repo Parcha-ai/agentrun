@@ -1,0 +1,50 @@
+{
+  "description": "Validation rejects parallel branches that declare the same key.",
+  "workflow": {
+    "v": 2,
+    "name": "bad-par",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "parallel",
+      "label": "p",
+      "branches": [
+        {
+          "node": "agent",
+          "label": "a",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "k"
+        },
+        {
+          "node": "agent",
+          "label": "b",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "k"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

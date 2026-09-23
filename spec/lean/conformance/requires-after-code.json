@@ -1,0 +1,73 @@
+{
+  "description": "FINDING: the validator stops checking requires after a code node; the run fails with required_nonempty.",
+  "workflow": {
+    "v": 2,
+    "name": "req-after-code",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "noop",
+          "code": "s => ({})"
+        },
+        {
+          "node": "agent",
+          "label": "answer",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "answer",
+          "requires": [
+            "missing"
+          ]
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {}
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "required_nonempty",
+      "label": "answer",
+      "path": "missing"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:noop",
+        "node.end:noop:ok"
+      ],
+      "/root/steps/1": [
+        "node.start:answer",
+        "node.end:answer:failed"
+      ]
+    }
+  }
+}

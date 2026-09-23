@@ -1,0 +1,106 @@
+{
+  "description": "A map runs its body per item and collects resultPath from each item state.",
+  "workflow": {
+    "v": 2,
+    "name": "map",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "map",
+      "label": "each",
+      "itemsPath": "items",
+      "as": "results",
+      "resultPath": "doubled",
+      "body": {
+        "node": "code",
+        "label": "double",
+        "code": "s => ({ doubled: s.item * 2, index: s.item_index })"
+      }
+    }
+  },
+  "input": {
+    "items": [
+      1,
+      2,
+      3
+    ]
+  },
+  "script": {
+    "code": {
+      "/root/items/0/body": {
+        "return": {
+          "doubled": 2,
+          "index": 0
+        }
+      },
+      "/root/items/1/body": {
+        "return": {
+          "doubled": 4,
+          "index": 1
+        }
+      },
+      "/root/items/2/body": {
+        "return": {
+          "doubled": 6,
+          "index": 2
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "items": [
+        1,
+        2,
+        3
+      ],
+      "results": [
+        2,
+        4,
+        6
+      ]
+    },
+    "output": {
+      "items": [
+        1,
+        2,
+        3
+      ],
+      "results": [
+        2,
+        4,
+        6
+      ]
+    },
+    "events": {
+      "/root/items/0/body": [
+        "node.start:double",
+        "node.end:double:ok"
+      ],
+      "/root/items/1/body": [
+        "node.start:double",
+        "node.end:double:ok"
+      ],
+      "/root/items/2/body": [
+        "node.start:double",
+        "node.end:double:ok"
+      ]
+    }
+  }
+}

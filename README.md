@@ -150,6 +150,8 @@ npm run eval:research
 
 Ordinary functions may be enough for a small fixed sequence. AgentRun adds a reusable workflow document with explicit execution rules. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 
+A formal model of the language lives in [`spec/lean`](spec/lean/README.md). It is written in Lean 4 and proves what validation and execution guarantee about `requires`, state writes, parallel merges, loop bounds and desugaring, for any model or tool behavior. Conformance cases run on both the model and this interpreter, so the two cannot drift apart. Its README lists what is modeled and the places where a commonly stated guarantee does not hold.
+
 To contribute, install the checkout, make a focused change, and run `npm run check` and `npm run verify:packages`. [Open an issue](https://github.com/Parcha-ai/agentrun/issues) for bugs or proposals.
 
 Code and documentation use [Apache-2.0](LICENSE). Copyright 2026 Parcha Labs, Inc. Dependencies retain their own licenses. Built by [Grep.ai](https://grep.ai).

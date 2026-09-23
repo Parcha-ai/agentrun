@@ -1,0 +1,107 @@
+{
+  "description": "A child runs on its own input and returns its validated output at the parent's as key.",
+  "workflow": {
+    "v": 2,
+    "name": "parent",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "finding"
+    },
+    "root": {
+      "node": "workflow",
+      "label": "research",
+      "workflow": {
+        "v": 2,
+        "name": "child",
+        "schemas": {
+          "CIn": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "question"
+            ]
+          },
+          "COut": {
+            "type": "object",
+            "properties": {
+              "v": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "input": {
+          "schemaId": "CIn"
+        },
+        "output": {
+          "schemaId": "COut",
+          "path": "finding"
+        },
+        "root": {
+          "node": "agent",
+          "label": "find",
+          "instructions": "Do it.",
+          "out": "COut",
+          "as": "finding"
+        }
+      },
+      "input": {
+        "question": "{q}"
+      },
+      "out": "V",
+      "as": "finding"
+    }
+  },
+  "input": {
+    "q": "why"
+  },
+  "script": {
+    "gen": {
+      "/root/workflow/root": {
+        "submission": {
+          "v": "because"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": "why",
+      "finding": {
+        "v": "because"
+      }
+    },
+    "output": {
+      "v": "because"
+    },
+    "events": {
+      "/root": [
+        "node.start:research",
+        "node.end:research:ok"
+      ],
+      "/root/workflow/root": [
+        "node.start:research/find",
+        "node.end:research/find:ok"
+      ]
+    }
+  }
+}

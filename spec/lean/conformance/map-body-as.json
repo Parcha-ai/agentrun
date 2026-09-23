@@ -1,0 +1,98 @@
+{
+  "description": "Without resultPath a map collects the body's as key.",
+  "workflow": {
+    "v": 2,
+    "name": "map-as",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "map",
+      "label": "each",
+      "itemsPath": "items",
+      "as": "results",
+      "body": {
+        "node": "agent",
+        "label": "summarize",
+        "instructions": "Do it.",
+        "out": "V",
+        "as": "summary"
+      }
+    }
+  },
+  "input": {
+    "items": [
+      "a",
+      "b"
+    ]
+  },
+  "script": {
+    "gen": {
+      "/root/items/0/body": {
+        "submission": {
+          "v": "A"
+        }
+      },
+      "/root/items/1/body": {
+        "submission": {
+          "v": "B"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "items": [
+        "a",
+        "b"
+      ],
+      "results": [
+        {
+          "v": "A"
+        },
+        {
+          "v": "B"
+        }
+      ]
+    },
+    "output": {
+      "items": [
+        "a",
+        "b"
+      ],
+      "results": [
+        {
+          "v": "A"
+        },
+        {
+          "v": "B"
+        }
+      ]
+    },
+    "events": {
+      "/root/items/0/body": [
+        "node.start:summarize",
+        "node.end:summarize:ok"
+      ],
+      "/root/items/1/body": [
+        "node.start:summarize",
+        "node.end:summarize:ok"
+      ]
+    }
+  }
+}

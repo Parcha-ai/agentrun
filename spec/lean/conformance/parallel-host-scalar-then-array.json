@@ -1,0 +1,105 @@
+{
+  "description": "FINDING: a scalar host write followed by an array write on the same key is silently replaced.",
+  "workflow": {
+    "v": 2,
+    "name": "par-host-sa",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "parallel",
+      "label": "both",
+      "branches": [
+        {
+          "node": "agent",
+          "label": "a",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "a"
+        },
+        {
+          "node": "agent",
+          "label": "b",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "b"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/branches/0": {
+        "submission": {
+          "v": "a"
+        },
+        "host": {
+          "k": "scalar"
+        }
+      },
+      "/root/branches/1": {
+        "submission": {
+          "v": "b"
+        },
+        "host": {
+          "k": [
+            "x"
+          ]
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": 1,
+      "$host": {
+        "k": [
+          "x"
+        ]
+      },
+      "a": {
+        "v": "a"
+      },
+      "b": {
+        "v": "b"
+      }
+    },
+    "output": {
+      "q": 1,
+      "a": {
+        "v": "a"
+      },
+      "b": {
+        "v": "b"
+      }
+    },
+    "events": {
+      "/root/branches/0": [
+        "node.start:a",
+        "node.end:a:ok"
+      ],
+      "/root/branches/1": [
+        "node.start:b",
+        "node.end:b:ok"
+      ]
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "description": "A tracked requires head produced upstream holds a concrete value; the run completes.",
+  "workflow": {
+    "v": 2,
+    "name": "req-ok",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "review"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "agent",
+          "label": "draft",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "draft"
+        },
+        {
+          "node": "agent",
+          "label": "review",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "review",
+          "requires": [
+            "draft",
+            "q"
+          ]
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": "x"
+  },
+  "script": {
+    "gen": {
+      "/root/steps/0": {
+        "submission": {
+          "v": "d"
+        }
+      },
+      "/root/steps/1": {
+        "submission": {
+          "v": "r"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": "x",
+      "draft": {
+        "v": "d"
+      },
+      "review": {
+        "v": "r"
+      }
+    },
+    "output": {
+      "v": "r"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:draft",
+        "node.end:draft:ok"
+      ],
+      "/root/steps/1": [
+        "node.start:review",
+        "node.end:review:ok"
+      ]
+    }
+  }
+}

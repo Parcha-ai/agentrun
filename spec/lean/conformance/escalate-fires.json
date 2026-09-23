@@ -1,0 +1,82 @@
+{
+  "description": "An escalate node whose predicate holds stops the run with its reason and the current state.",
+  "workflow": {
+    "v": 2,
+    "name": "esc",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "flag",
+          "code": "s => ({ risky: true })"
+        },
+        {
+          "node": "escalate",
+          "label": "gate",
+          "when": {
+            "predicate": "field_true",
+            "path": "risky"
+          },
+          "kind": "review",
+          "stage": "gate",
+          "summary": "Risky: {risky}"
+        },
+        {
+          "node": "agent",
+          "label": "never",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "never"
+        }
+      ]
+    }
+  },
+  "input": {},
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {
+          "risky": true
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "escalated",
+    "state": {
+      "risky": true
+    },
+    "escalation": {
+      "kind": "review",
+      "stage": "gate",
+      "label": "gate"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:flag",
+        "node.end:flag:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:gate:true"
+      ]
+    }
+  }
+}

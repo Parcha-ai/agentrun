@@ -1,0 +1,130 @@
+{
+  "description": "FINDING: a permissive child output schema lets undefined land at the parent's as; a later requires fails.",
+  "workflow": {
+    "v": 2,
+    "name": "parent-undef",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      },
+      "Undef": {}
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "workflow",
+          "label": "w",
+          "workflow": {
+            "v": 2,
+            "name": "child",
+            "schemas": {
+              "CIn": {
+                "type": "object",
+                "properties": {
+                  "question": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "question"
+                ]
+              },
+              "COut": {
+                "type": "object",
+                "properties": {
+                  "v": {
+                    "type": "string"
+                  }
+                }
+              },
+              "CR": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "string"
+                  }
+                }
+              },
+              "CAny": {}
+            },
+            "input": {
+              "schemaId": "CIn"
+            },
+            "output": {
+              "schemaId": "CAny",
+              "path": "r.a"
+            },
+            "root": {
+              "node": "agent",
+              "label": "r",
+              "instructions": "Do it.",
+              "out": "CR",
+              "as": "r"
+            }
+          },
+          "input": {
+            "question": "{q}"
+          },
+          "out": "Undef",
+          "as": "w"
+        },
+        {
+          "node": "agent",
+          "label": "b",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "b",
+          "requires": [
+            "w"
+          ]
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": "x"
+  },
+  "script": {
+    "gen": {
+      "/root/steps/0/workflow/root": {
+        "submission": {}
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "required_nonempty",
+      "label": "b",
+      "path": "w"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:w",
+        "node.end:w:ok"
+      ],
+      "/root/steps/0/workflow/root": [
+        "node.start:w/r",
+        "node.end:w/r:ok"
+      ],
+      "/root/steps/1": [
+        "node.start:b",
+        "node.end:b:failed"
+      ]
+    }
+  }
+}

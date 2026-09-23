@@ -1,0 +1,40 @@
+{
+  "description": "Validation rejects a tracked requires with no producer.",
+  "workflow": {
+    "v": 2,
+    "name": "bad-req",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "agent",
+      "label": "a",
+      "instructions": "Do it.",
+      "out": "V",
+      "as": "a",
+      "requires": [
+        "nothing"
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

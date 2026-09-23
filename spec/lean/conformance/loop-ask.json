@@ -1,0 +1,103 @@
+{
+  "description": "An ask predicate is evaluated by runJudge at each iteration's path.",
+  "workflow": {
+    "v": 2,
+    "name": "loop-ask",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "loop",
+      "label": "refine",
+      "maxIters": 3,
+      "until": {
+        "predicate": "ask",
+        "instructions": "Good enough?"
+      },
+      "body": {
+        "node": "agent",
+        "label": "draft",
+        "instructions": "Do it.",
+        "out": "V",
+        "as": "draft"
+      }
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/iterations/0/body": {
+        "submission": {
+          "v": "a"
+        }
+      },
+      "/root/iterations/1/body": {
+        "submission": {
+          "v": "b"
+        }
+      }
+    },
+    "judge": {
+      "/root/iterations/0": {
+        "answers": {
+          "holds": {
+            "type": "noul",
+            "noul": 0.3
+          }
+        }
+      },
+      "/root/iterations/1": {
+        "answers": {
+          "holds": {
+            "type": "noul",
+            "noul": 0.9
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": 1,
+      "draft": {
+        "v": "b"
+      }
+    },
+    "output": {
+      "q": 1,
+      "draft": {
+        "v": "b"
+      }
+    },
+    "events": {
+      "/root/iterations/0/body": [
+        "node.start:draft",
+        "node.end:draft:ok"
+      ],
+      "/root/iterations/1/body": [
+        "node.start:draft",
+        "node.end:draft:ok"
+      ],
+      "/root": [
+        "loop.exited:refine:condition_met:2"
+      ]
+    }
+  }
+}

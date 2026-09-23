@@ -1,0 +1,75 @@
+{
+  "description": "An unaliased code node that returns a non-object writes it under its label.",
+  "workflow": {
+    "v": 2,
+    "name": "primitive",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "list"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "count",
+          "code": "s => s.items.length"
+        },
+        {
+          "node": "code",
+          "label": "list",
+          "code": "s => [s.count, s.count + 1]"
+        }
+      ]
+    }
+  },
+  "input": {
+    "items": [
+      "a",
+      "b"
+    ]
+  },
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": 2
+      },
+      "/root/steps/1": {
+        "return": [
+          2,
+          3
+        ]
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "output_invalid"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:count",
+        "node.end:count:ok"
+      ],
+      "/root/steps/1": [
+        "node.start:list",
+        "node.end:list:ok"
+      ]
+    }
+  }
+}

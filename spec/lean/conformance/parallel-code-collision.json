@@ -1,0 +1,74 @@
+{
+  "description": "FINDING: code patches are invisible to declaredWrites; two branches writing k validate and then conflict.",
+  "workflow": {
+    "v": 2,
+    "name": "par-code",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "parallel",
+      "label": "both",
+      "branches": [
+        {
+          "node": "code",
+          "label": "c1",
+          "code": "s => ({ k: 1 })"
+        },
+        {
+          "node": "code",
+          "label": "c2",
+          "code": "s => ({ k: 2 })"
+        }
+      ]
+    }
+  },
+  "input": {},
+  "script": {
+    "code": {
+      "/root/branches/0": {
+        "return": {
+          "k": 1
+        }
+      },
+      "/root/branches/1": {
+        "return": {
+          "k": 2
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "parallel_write_conflict",
+      "label": "both",
+      "path": "k"
+    },
+    "events": {
+      "/root/branches/0": [
+        "node.start:c1",
+        "node.end:c1:ok"
+      ],
+      "/root/branches/1": [
+        "node.start:c2",
+        "node.end:c2:ok"
+      ]
+    }
+  }
+}

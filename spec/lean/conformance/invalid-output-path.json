@@ -1,0 +1,38 @@
+{
+  "description": "Validation rejects an output path with no producer.",
+  "workflow": {
+    "v": 2,
+    "name": "bad-out",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "nowhere"
+    },
+    "root": {
+      "node": "agent",
+      "label": "a",
+      "instructions": "Do it.",
+      "out": "V",
+      "as": "a"
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

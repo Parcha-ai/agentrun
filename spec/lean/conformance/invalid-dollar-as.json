@@ -1,0 +1,37 @@
+{
+  "description": "Validation rejects an as naming a $ key.",
+  "workflow": {
+    "v": 2,
+    "name": "bad-as",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "agent",
+      "label": "a",
+      "instructions": "Do it.",
+      "out": "V",
+      "as": "$x"
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

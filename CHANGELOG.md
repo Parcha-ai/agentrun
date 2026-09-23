@@ -6,6 +6,7 @@
 - The Pi package registers the dsl skill rendered with its own host addendum (`PI_HOST_ADDENDUM`, exported), built into `dist/skills/author`, so a session reads the Pi rules without calling `describe`. `describe` returns `authoring.language` and `authoring.host` beside the guides.
 - One vocabulary. `WORKFLOW_NODE_KINDS`, `NODE_FIELDS`, `WORKFLOW_PREDICATES` and the other vocabulary constants are exported, and the validator and the author contract both read them, so the contract names exactly what the validator admits.
 - Validation now refuses an `escalate.when` path or key that no input or earlier node produces, a `loop.until` path that neither the state before the loop nor its body produces, and a parallel branch that reads a key only a sibling branch writes. None of them could hold at runtime.
+- `spec/lean`: a Lean 4 model of the workflow language. It proves what validation guarantees about `requires`, which keys a node may write, that parallel merges are order-free for domain state, that loops respect `maxIters`, and that desugaring preserves meaning. A shared conformance corpus runs on the model and the interpreter. Nine findings where a stated guarantee does not hold are recorded as `todo` tests; behavior is unchanged.
 
 ### Breaking changes
 

@@ -1,0 +1,148 @@
+{
+  "description": "A pick renders one option per item and writes {index, item, none, option}.",
+  "workflow": {
+    "v": 2,
+    "name": "pick",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "pick",
+      "label": "choose",
+      "itemsPath": "people",
+      "describe": "{item.name}, born {item.year}",
+      "instructions": "Which one?",
+      "as": "chosen"
+    }
+  },
+  "input": {
+    "people": [
+      {
+        "name": "Ada",
+        "year": 1815
+      },
+      {
+        "name": "Alan",
+        "year": 1912
+      }
+    ]
+  },
+  "script": {
+    "judge": {
+      "/root": {
+        "answers": {
+          "pick": {
+            "type": "choice",
+            "choice": "item_1",
+            "probabilities": {
+              "item_0": 0.1,
+              "item_1": 0.9
+            },
+            "confidence": 0.8
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "people": [
+        {
+          "name": "Ada",
+          "year": 1815
+        },
+        {
+          "name": "Alan",
+          "year": 1912
+        }
+      ],
+      "chosen": {
+        "index": 1,
+        "item": {
+          "name": "Alan",
+          "year": 1912
+        },
+        "none": false,
+        "option": "Alan, born 1912"
+      },
+      "chosen$answers": {
+        "answers": {
+          "pick": {
+            "type": "choice",
+            "choice": "item_1",
+            "probabilities": {
+              "item_0": 0.1,
+              "item_1": 0.9
+            },
+            "confidence": 0.8
+          }
+        },
+        "confidence": {
+          "pick": 0.8
+        },
+        "weakest": "pick",
+        "min_confidence": 0.8
+      }
+    },
+    "output": {
+      "people": [
+        {
+          "name": "Ada",
+          "year": 1815
+        },
+        {
+          "name": "Alan",
+          "year": 1912
+        }
+      ],
+      "chosen": {
+        "index": 1,
+        "item": {
+          "name": "Alan",
+          "year": 1912
+        },
+        "none": false,
+        "option": "Alan, born 1912"
+      },
+      "chosen$answers": {
+        "answers": {
+          "pick": {
+            "type": "choice",
+            "choice": "item_1",
+            "probabilities": {
+              "item_0": 0.1,
+              "item_1": 0.9
+            },
+            "confidence": 0.8
+          }
+        },
+        "confidence": {
+          "pick": 0.8
+        },
+        "weakest": "pick",
+        "min_confidence": 0.8
+      }
+    },
+    "events": {
+      "/root": [
+        "node.start:choose",
+        "node.end:choose:ok"
+      ]
+    }
+  }
+}

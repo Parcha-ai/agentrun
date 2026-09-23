@@ -1,0 +1,57 @@
+{
+  "description": "A call whose args name a nested path that is absent fails with missing_interpolation.",
+  "workflow": {
+    "v": 2,
+    "name": "call-miss",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "call",
+      "label": "search",
+      "via": "tool",
+      "tool": "search",
+      "args": {
+        "query": "{q.deep}"
+      },
+      "out": "Any",
+      "as": "hits",
+      "deadline_s": 10
+    }
+  },
+  "input": {
+    "q": {
+      "shallow": 1
+    }
+  },
+  "script": {},
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "missing_interpolation",
+      "label": "search",
+      "path": "q.deep"
+    },
+    "events": {
+      "/root": [
+        "node.start:search",
+        "node.end:search:failed"
+      ]
+    }
+  }
+}

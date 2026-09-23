@@ -1,0 +1,88 @@
+{
+  "description": "FINDING: the same two host writes in the other branch order are a write conflict.",
+  "workflow": {
+    "v": 2,
+    "name": "par-host-as",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "parallel",
+      "label": "both",
+      "branches": [
+        {
+          "node": "agent",
+          "label": "b",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "b"
+        },
+        {
+          "node": "agent",
+          "label": "a",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "a"
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/branches/0": {
+        "submission": {
+          "v": "b"
+        },
+        "host": {
+          "k": [
+            "x"
+          ]
+        }
+      },
+      "/root/branches/1": {
+        "submission": {
+          "v": "a"
+        },
+        "host": {
+          "k": "scalar"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "parallel_write_conflict",
+      "label": "both",
+      "path": "$host.k"
+    },
+    "events": {
+      "/root/branches/0": [
+        "node.start:b",
+        "node.end:b:ok"
+      ],
+      "/root/branches/1": [
+        "node.start:a",
+        "node.end:a:ok"
+      ]
+    }
+  }
+}

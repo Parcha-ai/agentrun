@@ -1,0 +1,94 @@
+{
+  "description": "A loop whose predicate never holds stops at maxIters and keeps its state.",
+  "workflow": {
+    "v": 2,
+    "name": "loop-bound",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "init",
+          "code": "s => ({ n: 0 })"
+        },
+        {
+          "node": "loop",
+          "label": "count",
+          "maxIters": 2,
+          "until": {
+            "predicate": "field_true",
+            "path": "done"
+          },
+          "body": {
+            "node": "code",
+            "label": "inc",
+            "code": "s => ({ n: s.n + 1 })"
+          }
+        }
+      ]
+    }
+  },
+  "input": {},
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {
+          "n": 0
+        }
+      },
+      "/root/steps/1/iterations/0/body": {
+        "return": {
+          "n": 1
+        }
+      },
+      "/root/steps/1/iterations/1/body": {
+        "return": {
+          "n": 2
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "n": 2
+    },
+    "output": {
+      "n": 2
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:init",
+        "node.end:init:ok"
+      ],
+      "/root/steps/1/iterations/0/body": [
+        "node.start:inc",
+        "node.end:inc:ok"
+      ],
+      "/root/steps/1/iterations/1/body": [
+        "node.start:inc",
+        "node.end:inc:ok"
+      ],
+      "/root/steps/1": [
+        "loop.exited:count:bound_reached:2"
+      ]
+    }
+  }
+}
