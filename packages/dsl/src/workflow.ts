@@ -317,6 +317,27 @@ export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
   visit(node);
   return out;
 };
+/** The top-level keys a loop body writes, with engine sidecars; null when an unaliased code node makes them unknowable. */
+const loopBodyWrites = (body: WorkflowNode | undefined): Set<string> | null => {
+  const out = new Set<string>();
+  let known = true;
+  const visit = (n: any): void => {
+    if (!n || typeof n !== "object" || !known) return;
+    if (n.node === "code" && n.as === undefined) { known = false; return; }
+    if (n.node === "report") out.add("report_markdown");
+    else if (typeof n.as === "string" && n.as.trim()) out.add(n.as);
+    else if (["agent", "decide", "extract"].includes(n.node) && typeof n.label === "string") out.add(n.label);
+    if (n.node === "map" || n.node === "workflow") return;
+    if (Array.isArray(n.steps)) n.steps.forEach(visit);
+    if (Array.isArray(n.branches)) n.branches.forEach(visit);
+    else if (n.node === "route" && n.branches && typeof n.branches === "object") Object.values(n.branches).forEach((b: any) => visit(b?.body));
+    if (n.body) visit(n.body);
+  };
+  visit(body);
+  if (!known) return null;
+  for (const key of [...out]) out.add(`${key}$answers`).add(`${key}$verify`);
+  return out;
+};
 const routeBodies = (node: WorkflowNode): WorkflowNode[] => node.node === "route" ? Object.values(node.branches || {}).map((b) => b?.body).filter(Boolean) as WorkflowNode[] : [];
 const snapshotState = (state: Record<string, unknown>): Record<string, unknown> => {
   try { return structuredClone(state); }
@@ -620,14 +641,15 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     errors.push(`${path} (${label}): predicate path "${when.path}" is not produced by the code node that writes "${head}" (its shape has: ${missingAt && typeof missingAt === "object" ? Object.keys(missingAt).join(", ") : typeof missingAt}); the guard can never fire`);
   };
   // A mechanical predicate reads one state key; when no input key or earlier node writes it, the guard can never fire.
-  const checkPredicateHead = (pred: unknown, label: string, path: string, field: string): void => {
+  const checkPredicateHead = (pred: unknown, label: string, path: string, field: string, produced?: ReadonlySet<string>): void => {
     if (!reachability || reachability.unknowable || !pred || typeof pred !== "object") return;
+    const available = produced ?? reachability.available;
     const { predicate, path: at, key } = pred as { predicate?: unknown; path?: unknown; key?: unknown };
     const read = predicate === "no_new_items" ? key : predicate === "ask" ? undefined : at;
     if (typeof read !== "string" || !read.trim()) return;
     const head = read.split(".")[0];
-    if (!reachability.available.has(head)) errors.push(`${path} (${label}): ${field} reads "${read}" but no input key or earlier node produces "${head}"; the guard can never fire`);
-    else checkTypedPath(read, `${path} (${label}) ${field}`);
+    if (!available.has(head)) errors.push(`${path} (${label}): ${field} reads "${read}" but no input key or earlier node produces "${head}"; the guard can never fire`);
+    else if (!produced) checkTypedPath(read, `${path} (${label}) ${field}`);
   };
   const checkInterpolations = (value: unknown, label: string, path: string): void => {
     if (!reachability || reachability.unknowable || value === undefined) return;
@@ -822,6 +844,11 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (!Number.isInteger(node.maxIters) || node.maxIters < 1 || node.maxIters > 20) errors.push(`${path} (${node.label}): maxIters must be 1..20`);
         if (containsReportNode(node.body)) errors.push(`${path} (${node.label}): a report node cannot live inside a loop body — the report is rendered once, after the record is final`);
         checkPredicate(node.until, node.label, path, "until");
+        {
+          // `until` reads the state after the body: the keys before the loop plus every key the body writes.
+          const bodyWrites = loopBodyWrites(node.body);
+          if (reachability && !reachability.unknowable && bodyWrites) checkPredicateHead(node.until, node.label, path, "until", new Set([...reachability.available, ...bodyWrites]));
+        }
         if (reachability) reachability.unknowable = true;
         walk(node.body, `${path}.body`);
         return;

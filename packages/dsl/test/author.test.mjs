@@ -141,6 +141,7 @@ const backed = [
   ['`where` accepts only "sandbox"', doc({ node: 'call', label: 'c', via: 'tool', tool: 'lookup', out: 'Result', as: 'result', deadline_s: 5, where: 'host' }), /where accepts only "sandbox"/],
   ['Both are mechanical predicates whose paths are relative to the result and lie in its declared shape', doc({ node: 'call', label: 'c', via: 'tool', tool: 'lookup', out: 'Result', as: 'result', deadline_s: 5, poll: { until: { predicate: 'field_true', path: 'status' }, interval_s: 1, deadline_s: 10 } }), /not in the declared result shape/],
   ['takes `key`, not `path`', doc({ node: 'chain', steps: [extract(), { node: 'escalate', label: 'e', when: { predicate: 'no_new_items', key: 'nowhere' }, kind: 'k', stage: 's', summary: 'x' }] }), /reads "nowhere" but no input key or earlier node produces/],
+  ['`loop.until` and `escalate.when` take one of these', doc({ node: 'chain', steps: [{ node: 'loop', label: 'l', body: extract({ as: 'draft' }), until: { predicate: 'field_true', path: 'drfat.done' }, maxIters: 3 }, extract()] }), /until reads "drfat.done" but no input key or earlier node produces/],
   ['Each path or key reads a state value an input or an earlier node produced', doc({ node: 'chain', steps: [extract(), { node: 'escalate', label: 'e', when: { predicate: 'field_true', path: 'nowhere.flag' }, kind: 'k', stage: 's', summary: 'x' }] }), /the guard can never fire/],
   ['in (0.5, 1], default 0.6', doc({ node: 'chain', steps: [extract(), { node: 'escalate', label: 'e', when: { predicate: 'ask', instructions: 'Stop?', gte: 0.5 }, kind: 'k', stage: 's', summary: 'x' }] }), /ask.gte must be in \(0.5, 1\]/],
 ];
@@ -204,6 +205,12 @@ test('the author retains rejected and accepted versions and isolates host accept
   assert.deepEqual(request.tools, [], 'the author session has no tools');
   assert.equal(request.system[0], authorContract());
 }));
+
+test('a loop condition may read what its body writes', () => {
+  const loop = until => doc({ node: 'chain', steps: [{ node: 'loop', label: 'l', body: extract({ as: 'draft' }), until, maxIters: 3 }, extract()] });
+  assert.deepEqual(validateWorkflow(loop({ predicate: 'field_true', path: 'draft.count' }), { inputKeys: ['text'] }), { ok: true });
+  assert.deepEqual(validateWorkflow(loop({ predicate: 'field_true', path: 'text' }), { inputKeys: ['text'] }), { ok: true });
+});
 
 test('the author returns the reviewed candidate, never a different value the adapter returns', () => withTemp('agentrun-author-', async dir => {
   const runNode = async request => {
