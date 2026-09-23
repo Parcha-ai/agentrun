@@ -189,13 +189,16 @@ theorem F6_writes_beyond_as_or_label :
       ["root"] [] "" []).1 = .ok [("j", .obj []), ("j$answers", .obj [])] := by
   constructor <;> rfl
 
-/-! ## F9: predicates and `requires` read state paths differently -/
+/-! ## F9 (fixed): predicates read state paths the way `requires` and interpolation do -/
 
-/-- `predicate-array-index.json`: `requires` and interpolation index arrays (`scores.0` is 9),
-while a `gte` predicate on the same path never holds. -/
-theorem F9_predicate_path_stops_at_arrays :
+/-- `predicate-array-index.json`: `scores.0` is 9 for `requires`, interpolation and the `gte`
+predicate alike, so the gate fires. -/
+theorem F9_fixed_predicate_indexes_arrays :
     getPathS [("scores", .arr [.num 9])] ["scores", "0"] = some (.num 9) ∧
-    mechHolds (.obj [("scores", .arr [.num 9])]) (.gte ["scores", "0"] 5) = false := by
+    mechHolds (.obj [("scores", .arr [.num 9])]) (.gte ["scores", "0"] 5) = true := by
   decide +kernel
+
+/-- The predicate reader is the state reader: one resolver, by definition. -/
+theorem F9_fixed_one_resolver (v : Value) (p : Path) : getPathP v p = getPathV v p := rfl
 
 end AgentRun

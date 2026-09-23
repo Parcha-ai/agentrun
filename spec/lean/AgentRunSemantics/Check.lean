@@ -42,9 +42,9 @@ open AgentRun
 #guard_msgs in
 #print axioms T2_host_merge_order_dependent
 
-/-- info: 'AgentRun.T2_host_scalar_then_array' depends on axioms: [propext] -/
+/-- info: 'AgentRun.T2_host_mixed_shape_conflicts_either_order' depends on axioms: [propext] -/
 #guard_msgs in
-#print axioms T2_host_scalar_then_array
+#print axioms T2_host_mixed_shape_conflicts_either_order
 
 /-- info: 'AgentRun.T3_loop_ignores_late_iterations' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
@@ -98,6 +98,10 @@ open AgentRun
 #guard_msgs in
 #print axioms F6_writes_beyond_as_or_label
 
-/-- info: 'AgentRun.F9_predicate_path_stops_at_arrays' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'AgentRun.F9_fixed_predicate_indexes_arrays' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
-#print axioms F9_predicate_path_stops_at_arrays
+#print axioms F9_fixed_predicate_indexes_arrays
+
+/-- info: 'AgentRun.F9_fixed_one_resolver' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms F9_fixed_one_resolver

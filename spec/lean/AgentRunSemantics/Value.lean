@@ -67,7 +67,7 @@ def entries (s : State) : List (String × Value) :=
 
 end State
 
-/-! ## Paths: the two `getPath` functions of the TypeScript code -/
+/-! ## Paths: the one `getPath` of the TypeScript code (`predicates.ts`, shared by every reader) -/
 
 /-- A canonical array index as JavaScript reads a property key: `"0"`, `"12"`; not `"01"`
 or `"1e1"`. Written over `toList` so the kernel can evaluate it. -/
@@ -79,12 +79,12 @@ def arrayIndex (k : String) : Option Nat :=
   | cs => cs.foldl (fun acc c => acc.bind fun n =>
       if c.isDigit then some (n * 10 + (c.toNat - '0'.toNat)) else none) (some 0)
 
-/-- `getPath` in `workflow.ts`: `reduce((acc, key) => acc == null ? acc : acc[key])`.
-A `null` propagates as `null`; a missing key is `undefined` (`none`). Arrays index by a
-decimal segment. Property reads on strings (`length`, indexes) are not modeled. -/
+/-- `getPath` in `predicates.ts`, the resolver every state reader shares (`requires`,
+interpolation, `itemsPath`, `output.path`, `map.resultPath` and the predicates): a record by
+key, an array by a canonical index inside its bounds, and anything else (`null`, a string, a
+number, a missing key) to `undefined` (`none`). The empty path is the value itself. -/
 def getPathV : Value → Path → Option Value
   | v, [] => some v
-  | .null, _ :: _ => some .null
   | .obj kvs, k :: rest =>
     match lookup k kvs with
     | some v => getPathV v rest
@@ -104,27 +104,11 @@ def getPathS (s : State) : Path → Option Value
     | some v => getPathV v rest
     | none => none
 
-/-- The reduce used for `map.resultPath`: `value == null ? undefined : value[key]`. -/
-def getPathR : Value → Path → Option Value
-  | v, [] => some v
-  | .obj kvs, k :: rest => match lookup k kvs with
-    | some v => getPathR v rest
-    | none => none
-  | .arr xs, k :: rest =>
-    match arrayIndex k with
-    | some i => match xs[i]? with
-      | some v => getPathR v rest
-      | none => none
-    | none => none
-  | _, _ :: _ => none
+/-- The reader `map.resultPath` uses: the same resolver. -/
+abbrev getPathR : Value → Path → Option Value := getPathV
 
-/-- `getPath` in `predicates.ts`: records only. The empty path is the value itself. -/
-def getPathP : Value → Path → Option Value
-  | v, [] => some v
-  | .obj kvs, k :: rest => match lookup k kvs with
-    | some v => getPathP v rest
-    | none => none
-  | _, _ :: _ => none
+/-- The reader the predicates use: the same resolver. -/
+abbrev getPathP : Value → Path → Option Value := getPathV
 
 /-- Interpolation resolution: a literal `state.` prefix is tried as a path first, then as
 the optional alias (`interpolateValue` in `workflow.ts`). -/
