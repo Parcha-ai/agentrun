@@ -98,7 +98,7 @@ The [support integration guide](docs/support-quickstart.md) includes the config 
 With [Pi 0.87.0 installed](packages/pi/README.md#install), run these commands in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@0.1.0-beta.1 -l
+pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
@@ -146,7 +146,7 @@ npm run eval:research
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
 
-`0.1.0-beta.1` is published on npm. See [release instructions](docs/releasing.md), [contracts and limits](docs/guide.md#limits), and the [contribution guide](CONTRIBUTING.md). The website is maintained separately.
+The beta packages are published on npm. See [release instructions](docs/releasing.md), [contracts and limits](docs/guide.md#limits), and the [contribution guide](CONTRIBUTING.md). The website is maintained separately.
 
 Ordinary functions may be enough for a small fixed sequence. AgentRun adds a reusable workflow document with explicit execution rules. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 

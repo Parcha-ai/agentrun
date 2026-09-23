@@ -24,7 +24,7 @@ npm test
 npm start
 ```
 
-Choose an unused destination directory. The starter installs `@parcha/agentrun-dsl` and `@parcha/agentrun-jev` at `0.1.0-beta.1` from npm. No repository build or local tarballs are needed. Commit the generated lockfile with your application; use `npm ci --ignore-scripts` for reinstalls.
+Choose an unused destination directory. The starter installs `@parcha/agentrun-dsl` and `@parcha/agentrun-jev` from npm at the versions pinned in `package.json`. No repository build or local tarballs are needed. Commit the generated lockfile with your application; use `npm ci --ignore-scripts` for reinstalls.
 
 The output retains `review-policy` and `incident-policy`, then prints:
 

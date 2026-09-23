@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-pi",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Pi extension for building, running and evaluating AgentRun workflows",
   "type": "module",
   "license": "Apache-2.0",
@@ -36,8 +36,8 @@
     "@earendil-works/pi-ai": "0.87.0"
   },
   "dependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.1",
-    "@parcha/agentrun-jev": "0.1.0-beta.1",
+    "@parcha/agentrun-dsl": "0.1.0-beta.2",
+    "@parcha/agentrun-jev": "0.1.0-beta.2",
     "@earendil-works/pi-agent-core": "0.87.0",
     "@earendil-works/pi-coding-agent": "0.87.0",
     "@earendil-works/pi-tui": "0.87.0",
@@ -63,6 +63,7 @@
     "jev"
   ],
   "pi": {
+    "image": "https://raw.githubusercontent.com/Parcha-ai/agentrun/4f5e1b47e695f17c6f09500ca8c57a13ae8ba3b4/docs/assets/support-workflow.gif",
     "extensions": [
       "./dist/extension.js"
     ],

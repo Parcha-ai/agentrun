@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.2, unreleased
+
+- Update the npm READMEs with registry installation and native Pi setup.
+- Add the workflow animation to Pi package gallery metadata.
+- Keep all three packages and the starter on the same beta version.
+
+Runtime behavior and external dependency versions are unchanged from beta.1.
+
 ## 0.1.0-beta.1, 2026-09-23
 
 Initial beta of `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, and `@parcha/agentrun-pi`.
