@@ -728,7 +728,9 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       // `$`-prefixed state keys are engine-owned (`$host`, `<as>$verify`): no node may write one. A label
       // is the state key whenever `as` is omitted, so labels are held to the same rule.
       if (typeof (node as any).as === "string" && (node as any).as.startsWith("$")) errors.push(`${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
-      if (typeof (node as any).label === "string" && (node as any).label.startsWith("$")) errors.push(`${path} (${(node as any).label}): label must not begin with "$" — a label is a state key when "as" is omitted, and "$" keys are engine-owned`);
+      // Only an unaliased generative or code node writes under its label; every other label is a name, not a key.
+      const labelIsKey = ((node as any).node === "agent" || (node as any).node === "decide" || (node as any).node === "extract" || (node as any).node === "code") && (node as any).as === undefined;
+      if (labelIsKey && typeof (node as any).label === "string" && (node as any).label.startsWith("$")) errors.push(`${path} (${(node as any).label}): label must not begin with "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
     }
     switch (node.node) {
       case "chain":
