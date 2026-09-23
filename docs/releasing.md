@@ -45,7 +45,7 @@ The preflight checks tag identity, clean source, package versions, licenses and 
 
 Dispatch **Publish verified beta** with the workflow ref and `tag` input set to the same reviewed tag. The workflow requires a public repository, publishes the verified archives with the `beta` tag, and verifies registry integrity and a fresh installed consumer.
 
-An npm publish success can mean the package is still processing. The verifier allows 60 five-second waits for metadata and tarball availability. It still fails immediately on authentication errors or mismatched integrity. Do not treat npm's acceptance message as a completed release.
+An npm publish success can mean the package is still processing. The verifier allows 60 five-second waits for metadata, tarball, and npm install-index availability. The final installation uses a fresh cache and prefers online metadata, so an earlier cached index cannot hide a newly published version. It still fails immediately on authentication errors or mismatched integrity. Do not treat npm's acceptance message as a completed release.
 
 If publication stops partway, resume from the same tag and archive bytes. The workflow verifies an existing version before skipping it. A byte mismatch stops publication; never replace a published version with different bytes.
 
