@@ -20,9 +20,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Resolve a dotted state path the one way every reader does: a record by key, an array by a
+ *  non-negative integer index, anything else (a string, a number, a missing value) to undefined.
+ *  `requires`, interpolation, `itemsPath`, `output.path` and predicates all read through here, so a
+ *  path that names a value for one names it for all. */
 export function getPath(value: unknown, key: string): unknown {
   if (!key) return value;
-  return key.split(".").reduce<unknown>((current, part) => (isRecord(current) ? current[part] : undefined), value);
+  return key.split(".").reduce<unknown>((current, part) => {
+    if (isRecord(current)) return current[part];
+    if (Array.isArray(current)) return /^(0|[1-9][0-9]*)$/.test(part) ? current[Number(part)] : undefined;
+    return undefined;
+  }, value);
 }
 
 export function predicateMatches(predicate: StopPredicate | AcceptPredicate, value: unknown): boolean {
