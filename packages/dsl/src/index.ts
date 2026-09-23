@@ -10,7 +10,7 @@ export {
   EffectOutcomeUnknownError, EscalationSignal,
 } from "./workflow.js";
 export type {
-  Workflow, WorkflowNode, WorkflowDeps, WorkflowRunResult,
+  Workflow, WorkflowNode, WorkflowDeps, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CallRetryClass, CallPredicate, PollClause,
@@ -35,7 +35,12 @@ export {
   runWorkflowSlice, assertWorkflowCapabilities, desugarWorkflow,
   stageSchemaForNode, submissionSchemaForNode, mergeStageDelta,
   REPORT_SCHEMA, SHELL_RESULT_SCHEMA,
+  // Document helpers a host facade needs to speak about a workflow without re-implementing the walk.
+  childSteps, declaredWrites, terminalArtifactType, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
+  // Host-side data helpers the interpreter itself uses: the same normalization and reference shaping.
+  buildReferenceContext, normalizeStringNullsForSchema, parseCsvRows,
 } from "./workflow.js";
+export { compileTransform, compileTransformSyntax } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
