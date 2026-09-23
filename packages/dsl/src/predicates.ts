@@ -28,7 +28,13 @@ export function getPath(value: unknown, key: string): unknown {
   if (!key) return value;
   return key.split(".").reduce<unknown>((current, part) => {
     if (isRecord(current)) return current[part];
-    if (Array.isArray(current)) return /^(0|[1-9][0-9]*)$/.test(part) ? current[Number(part)] : undefined;
+    if (Array.isArray(current)) {
+      // Only a position inside the array resolves: a canonical integer below its length. Anything
+      // else (a property name, an out-of-range or non-canonical number) is not an element.
+      if (!/^(0|[1-9][0-9]*)$/.test(part)) return undefined;
+      const index = Number(part);
+      return Number.isSafeInteger(index) && index < current.length ? current[index] : undefined;
+    }
     return undefined;
   }, value);
 }

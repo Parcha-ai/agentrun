@@ -17,6 +17,10 @@ test("one path resolver: records by key, arrays by integer index, nothing else i
   assert.equal(getPath(state, "scores.length"), undefined, "an array exposes indexes, not properties");
   assert.equal(getPath(state, "scores.-1"), undefined);
   assert.equal(getPath(state, "scores.01"), undefined, "an index is a canonical integer");
+  assert.equal(getPath(state, "scores.2"), undefined, "a position past the end is not an element");
+  assert.equal(getPath(state, "scores.4294967295"), undefined, "a numeric property name outside the index range is not an element");
+  assert.equal(getPath(Object.assign([1], { 4294967295: "prop", "99999999999999999999": "huge" }), "4294967295"), undefined);
+  assert.equal(getPath(Object.assign([1], { "99999999999999999999": "huge" }), "99999999999999999999"), undefined, "a segment that rounds to another key never resolves");
   assert.equal(getPath(state, "text.0"), undefined, "a string is a value, never indexed");
   assert.equal(getPath(state, "n.toFixed"), undefined);
   assert.equal(getPath(state, "missing.anything"), undefined);
