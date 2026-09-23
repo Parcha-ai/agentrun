@@ -1,0 +1,44 @@
+{
+  "v": 2,
+  "name": "read-file",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "properties": { "path": { "type": "string", "minLength": 1 } },
+      "required": ["path"],
+      "additionalProperties": false
+    },
+    "ToolResult": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "enum": ["text", "image"] },
+              "text": { "type": "string" },
+              "data": { "type": "string" },
+              "mimeType": { "type": "string" }
+            },
+            "required": ["type"]
+          }
+        },
+        "details": {}
+      },
+      "required": ["content"]
+    }
+  },
+  "input": { "schemaId": "Input" },
+  "output": { "schemaId": "ToolResult", "path": "file" },
+  "root": {
+    "node": "call",
+    "label": "read-file",
+    "via": "tool",
+    "tool": "read",
+    "args": { "path": "{path}" },
+    "out": "ToolResult",
+    "as": "file",
+    "deadline_s": 10
+  }
+}

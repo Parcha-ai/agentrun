@@ -1,0 +1,37 @@
+{
+  "v": 2,
+  "name": "fictional-read-source-decision",
+  "schemas": {
+    "Input": { "type": "object", "properties": {
+      "question": { "type": "string", "minLength": 1 },
+      "paths": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+    }, "required": ["question", "paths"], "additionalProperties": false },
+    "ToolResult": { "type": "object", "properties": {
+      "content": { "type": "array", "items": { "type": "object", "properties": {
+        "type": { "const": "text" }, "text": { "type": "string" }
+      }, "required": ["type", "text"] } }, "details": {}
+    }, "required": ["content"] },
+    "Questions": { "type": "object", "properties": {
+      "matches": { "type": "boolean", "description": "Does the original source text satisfy the condition asked in question, taking account of its headings, scope and exclusions rather than keyword overlap?" }
+    }, "required": ["matches"], "additionalProperties": false },
+    "Results": { "type": "array", "items": { "type": "object", "properties": {
+      "path": { "type": "string" }, "source": { "$ref": "#/definitions/ToolResult" },
+      "probability": { "type": "number", "minimum": 0, "maximum": 1 }
+    }, "required": ["path", "source", "probability"], "additionalProperties": false } }
+  },
+  "input": { "schemaId": "Input" },
+  "output": { "schemaId": "Results", "path": "results" },
+  "root": {
+    "node": "map", "label": "read-and-judge-originals", "itemsPath": "paths", "maxConcurrency": 2,
+    "as": "results", "resultPath": "record",
+    "body": { "node": "chain", "steps": [
+      { "node": "call", "label": "read-original", "via": "tool", "tool": "read",
+        "args": { "path": "{item}" }, "out": "ToolResult", "as": "source", "deadline_s": 30 },
+      { "node": "judge", "label": "source-membership", "state": {
+        "question": "{question}", "source": "{source}"
+      }, "out": "Questions", "as": "decision" },
+      { "node": "code", "label": "retain-source-and-probability", "as": "record",
+        "code": "(s) => ({ path: s.item, source: s.source, probability: s['decision$answers'].answers.matches.noul })" }
+    ] }
+  }
+}

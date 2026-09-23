@@ -1,0 +1,6 @@
+{
+  "notes": [
+    "Requests now require the X-Workspace header. Older clients must send X-Workspace with their workspace slug.",
+    "The legacy /events endpoint has been removed. Send event queries to /v2/events instead."
+  ]
+}

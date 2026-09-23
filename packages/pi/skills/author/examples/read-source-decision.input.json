@@ -1,0 +1,4 @@
+{
+  "question": "Does the source announce a required client migration for the current release rather than a proposal?",
+  "paths": ["release-note.txt"]
+}

@@ -1,0 +1,5 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "allowImportingTsExtensions": true },
+  "include": ["typed-research.ts", "typed-research-fixtures.ts", "run-typed-research.ts"]
+}

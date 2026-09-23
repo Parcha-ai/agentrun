@@ -1,0 +1,48 @@
+{
+  "name": "agentrun-dsl-workspace",
+  "private": true,
+  "version": "0.1.0-beta.1",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node scripts/check-node.mjs && npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p examples/tsconfig.json",
+    "check": "npm run build && node scripts/generate-schema.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples",
+    "demo": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
+    "demo:triage": "node packages/dsl/dist/cli.js demo",
+    "verify:packages": "node scripts/verify-packages.mjs",
+    "test:release": "node --test scripts/*.test.mjs",
+    "test:examples": "node --test examples/*.test.mjs",
+    "demo:typed": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
+    "test:typed-example": "tsc -p examples/tsconfig.json && node --test examples/typed-research.test.mjs",
+    "demo:research": "node examples/research-live.mjs --summary",
+    "eval:research": "node examples/research-eval.mjs --summary",
+    "release:check": "node scripts/release-preflight.mjs",
+    "verify:source": "node scripts/verify-source.mjs",
+    "export:source": "node scripts/export-source.mjs",
+    "demo:support": "node scripts/check-node.mjs && node examples/run-support-answer.mjs",
+    "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ajv": "^8.18.0",
+    "typescript": "5.9.3",
+    "typescript-json-schema": "^0.68.0",
+    "zod": "4.6.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "license": "Apache-2.0"
+}

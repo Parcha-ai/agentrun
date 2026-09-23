@@ -1,0 +1,44 @@
+name: Package checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '22.23.2']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm run typecheck
+      - run: node scripts/generate-schema.mjs --check
+      - run: npm run export:source
+      - run: node scripts/check-generated.mjs
+      - run: npm test
+      - run: npm run test:release
+      - run: npm run test:examples
+      - run: node scripts/verify-packages.mjs
+      - if: matrix.node == '22.23.2'
+        run: npm run verify:source
+      - if: matrix.node == '22.19.0'
+        run: node scripts/check-typescript-floor.mjs
+      - name: Retain package verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-verification-${{ matrix.node }}
+          path: .release/
+          if-no-files-found: ignore

@@ -1,0 +1,60 @@
+export type StopPredicate =
+  | { predicate: "no_new_items"; key: string }
+  | { predicate: "field_true"; path: string }
+  | { predicate: "count_gte"; path: string; n: number }
+  | { predicate: "empty"; path: string }
+  | { predicate: "gte"; path: string; n: number }
+  | { predicate: "lt"; path: string; n: number };
+
+export type AcceptPredicate =
+  | StopPredicate
+  | { predicate: "field_equals"; path: string; value: string | number | boolean }
+  | { predicate: "in"; path: string; values: Array<string | number | boolean> };
+
+
+export const MECHANICAL_PREDICATE_NAMES: ReadonlySet<string> = new Set(["no_new_items", "field_true", "count_gte", "empty", "field_equals", "in", "gte", "lt"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function getPath(value: unknown, key: string): unknown {
+  if (!key) return value;
+  return key.split(".").reduce<unknown>((current, part) => (isRecord(current) ? current[part] : undefined), value);
+}
+
+export function predicateMatches(predicate: StopPredicate | AcceptPredicate, value: unknown): boolean {
+  switch (predicate.predicate) {
+    case "field_equals":
+      return getPath(value, predicate.path) === predicate.value;
+    case "field_true":
+      return getPath(value, predicate.path) === true;
+    case "in": {
+      const target = getPath(value, predicate.path);
+      return (typeof target === "string" || typeof target === "number" || typeof target === "boolean") && predicate.values.includes(target);
+    }
+    case "empty": {
+      const target = getPath(value, predicate.path);
+      return Array.isArray(target) ? target.length === 0 : target === "" || target === null || target === undefined;
+    }
+    case "count_gte": {
+      const target = getPath(value, predicate.path);
+      const count = Array.isArray(target) ? target.length : typeof target === "number" ? target : 0;
+      return count >= predicate.n;
+    }
+    case "no_new_items": {
+      const target = getPath(value, (predicate as { key: string }).key);
+      return Array.isArray(target) ? target.length === 0 : !target;
+    }
+    case "gte":
+    case "lt": {
+      const target = getPath(value, predicate.path);
+      if (typeof target !== "number" || !Number.isFinite(target)) return false;
+      return predicate.predicate === "gte" ? target >= predicate.n : target < predicate.n;
+    }
+    default:
+      throw new Error(
+        `agentrun: unsupported predicate "${String((predicate as any)?.predicate ?? "")}" — fail closed, never silently false`,
+      );
+  }
+}

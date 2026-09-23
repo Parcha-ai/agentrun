@@ -1,0 +1,125 @@
+{
+  "v": 2,
+  "name": "fictional-evidence-gate",
+  "schemas": {
+    "Record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim",
+        "evidence"
+      ],
+      "properties": {
+        "claim": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      }
+    },
+    "Input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record"
+      ],
+      "properties": {
+        "record": {
+          "$ref": "#/definitions/Record"
+        }
+      }
+    },
+    "Questions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supported"
+      ],
+      "properties": {
+        "supported": {
+          "type": "boolean",
+          "description": "Does the supplied evidence explicitly support every factual detail in the claim, without adding assumptions or contradicting it?"
+        }
+      }
+    },
+    "Gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "accepted"
+      ],
+      "properties": {
+        "record": {
+          "$ref": "#/definitions/Record"
+        },
+        "accepted": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "Result",
+    "path": "result"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "code",
+        "label": "retain-record",
+        "code": "(s) => ({ original: s.record })"
+      },
+      {
+        "node": "judge",
+        "label": "check-evidence",
+        "state": {
+          "record": "{original}"
+        },
+        "out": "Questions",
+        "as": "check"
+      },
+      {
+        "node": "code",
+        "label": "probability-gate",
+        "code": "(s) => { const p = s['check$answers']?.answers?.supported?.noul; return { accepted: typeof p === 'number' && Number.isFinite(p) && p >= 0.90 && p <= 1 }; }",
+        "as": "gate"
+      },
+      {
+        "node": "escalate",
+        "label": "request-better-evidence",
+        "when": {
+          "predicate": "field_equals",
+          "path": "gate.accepted",
+          "value": false
+        },
+        "kind": "needs_evidence",
+        "stage": "verification",
+        "summary": "Evidence did not meet the required yes-probability threshold."
+      },
+      {
+        "node": "code",
+        "label": "assemble-result",
+        "code": "(s) => ({ record: s.original, accepted: s.gate.accepted })",
+        "as": "result"
+      }
+    ]
+  }
+}

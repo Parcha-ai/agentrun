@@ -1,0 +1,73 @@
+{
+  "name": "@parcha/agentrun-pi",
+  "version": "0.1.0-beta.1",
+  "description": "Pi extension for building, running and evaluating AgentRun workflows",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/extension.js"
+    }
+  },
+  "bin": {
+    "agentrun-pi": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.87.0"
+  },
+  "dependencies": {
+    "@parcha/agentrun-dsl": "0.1.0-beta.1",
+    "@parcha/agentrun-jev": "0.1.0-beta.1",
+    "@earendil-works/pi-agent-core": "0.87.0",
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@earendil-works/pi-tui": "0.87.0",
+    "typebox": "1.3.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/pi"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
+  "keywords": [
+    "pi-package",
+    "workflow",
+    "agents",
+    "jev"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}

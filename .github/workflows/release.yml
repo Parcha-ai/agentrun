@@ -1,0 +1,85 @@
+name: Publish verified beta
+
+# Ordinary pushes, PRs and tags never publish. Configure each package's npm
+# trusted publisher for Parcha-ai/agentrun, release.yml, environment npm-release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Reviewed beta tag; also select this tag as the workflow dispatch ref'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-beta-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate requested tag
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+      - name: Install OIDC-capable npm
+        run: npm install --global npm@11.5.1 --ignore-scripts
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: node scripts/check-typescript-floor.mjs
+      - run: node scripts/generate-schema.mjs --check
+      - run: npm run export:source
+      - run: node scripts/check-generated.mjs
+      - run: npm run verify:packages
+      - run: npm run verify:source
+      - run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"
+      - name: Publish exact verified archives in dependency order
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          for package in dsl jev pi; do
+            if node scripts/verify-published.mjs --package "$package" --allow-absent; then
+              echo "Verified existing $package@$version; resuming without republishing."
+              continue
+            else
+              status=$?
+              if [ "$status" -ne 3 ]; then exit "$status"; fi
+            fi
+            # Exit 3 means an authoritative registry 404. Unknown failures and
+            # mismatched published bytes stop the release; they never publish.
+            archive="$(node -p 'JSON.parse(require("node:fs").readFileSync(".release/release-plan.json", "utf8")).packages.find(entry => entry.directory === process.argv[1]).filename' "$package")"
+            npm publish ".release/packages/$archive" --ignore-scripts --access public --tag beta --provenance --registry=https://registry.npmjs.org/
+            node scripts/verify-published.mjs --package "$package"
+          done
+      - name: Verify a fresh installation from the registry
+        run: node scripts/verify-published.mjs --package all
+      - name: Retain exact release archives and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-release-${{ github.run_id }}
+          path: .release/
+          if-no-files-found: ignore

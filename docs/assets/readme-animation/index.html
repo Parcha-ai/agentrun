@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AgentRun support workflow</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: WorkflowMono;
+        src: url("assets/mono.woff2") format("woff2");
+        font-weight: 400;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 960px;
+        height: 520px;
+        overflow: hidden;
+        background: #0e0e10;
+      }
+      #root {
+        width: 100%;
+        height: 100%;
+        position: relative;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+      }
+      .scene svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .scene svg text {
+        font-family: WorkflowMono, monospace;
+      }
+      #after {
+        clip-path: inset(0 100% 0 0);
+      }
+      #divider {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 2px;
+        height: 100%;
+        background: #ff9800;
+        opacity: 0;
+      }
+      .light {
+        fill: #fff0d6;
+        filter: drop-shadow(0 0 5px #ff9800);
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="12"
+      data-width="960"
+      data-height="520"
+    >
+      <div
+        id="comparison-scene"
+        class="clip"
+        data-start="0"
+        data-duration="12"
+        data-track-index="0"
+      >
+        <!-- The opaque after panel intentionally wipes over the before panel. -->
+        <div class="scene" id="before">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="960"
+            height="520"
+            viewBox="0 0 960 520"
+            role="img"
+            aria-labelledby="b-title b-desc"
+          >
+            <title id="b-title">AgentRun support workflow</title>
+            <desc id="b-desc">
+              Search for an answer, check it with Jev, and return it if it fits.
+              Otherwise, call an agent once, check again, and escalate
+              unresolved requests.
+            </desc>
+            <defs>
+              <marker
+                id="b-arrow"
+                markerWidth="7"
+                markerHeight="7"
+                refX="6"
+                refY="3.5"
+                orient="auto"
+              >
+                <path
+                  d="M0 0L7 3.5L0 7"
+                  fill="none"
+                  stroke="#72727d"
+                  stroke-width="1"
+                />
+              </marker>
+            </defs>
+            <style>
+              text {
+                font-family: monospace;
+                fill: #f0f0f2;
+                font-size: 19px;
+              }
+              .title {
+                font-size: 29px;
+              }
+              .small {
+                font-size: 15px;
+                fill: #aaaab4;
+              }
+              .label {
+                font-size: 13px;
+                letter-spacing: 2px;
+                fill: #aaaab4;
+              }
+              .node {
+                fill: #171719;
+                stroke: #555560;
+                stroke-width: 1.5;
+              }
+              .orange {
+                fill: #ff9800;
+              }
+              .violet {
+                fill: #c4b2fb;
+              }
+              .green {
+                fill: #93cbb5;
+              }
+              .edge {
+                fill: none;
+                stroke: #72727d;
+                stroke-width: 2;
+                marker-end: url(#b-arrow);
+              }
+              .decision {
+                stroke: #b7a0f0;
+              }
+              .result {
+                stroke: #7eb8a1;
+              }
+            </style>
+            <rect width="960" height="520" fill="#0e0e10" />
+            <text data-layout-allow-overlap x="42" y="48" class="label">
+              SUPPORT REQUESTS
+            </text>
+            <text data-layout-allow-overlap x="42" y="97" class="title">
+              Agent alone
+            </text>
+            <text data-layout-allow-overlap x="42" y="133" class="small">
+              The agent plans, uses tools, and checks each request.
+            </text>
+            <path
+              id="b-orbit"
+              class="edge"
+              d="M480 210C600 210 695 255 695 323C695 400 600 446 480 446C360 446 265 400 265 323C265 255 360 210 480 210"
+            />
+            <text data-layout-allow-overlap class="small" x="575" y="447">
+              What next?
+            </text>
+            <g id="b-plan">
+              <rect
+                class="node"
+                x="402"
+                y="178"
+                width="156"
+                height="76"
+                rx="6"
+              />
+              <text
+                data-layout-allow-overlap
+                class="label"
+                text-anchor="middle"
+                x="480.0"
+                y="204"
+              >
+                STEP 01
+              </text>
+              <text
+                data-layout-allow-overlap
+                text-anchor="middle"
+                x="480.0"
+                y="232"
+              >
+                Plan
+              </text>
+            </g>
+            <g id="b-tools">
+              <rect
+                class="node"
+                x="625"
+                y="295"
+                width="156"
+                height="76"
+                rx="6"
+              />
+              <text
+                data-layout-allow-overlap
+                class="label"
+                text-anchor="middle"
+                x="703.0"
+                y="321"
+              >
+                STEP 02
+              </text>
+              <text
+                data-layout-allow-overlap
+                text-anchor="middle"
+                x="703.0"
+                y="349"
+              >
+                Use tools
+              </text>
+            </g>
+            <g id="b-check">
+              <rect
+                class="node"
+                x="185"
+                y="295"
+                width="156"
+                height="76"
+                rx="6"
+              />
+              <text
+                data-layout-allow-overlap
+                class="label"
+                text-anchor="middle"
+                x="263.0"
+                y="321"
+              >
+                STEP 03
+              </text>
+              <text
+                data-layout-allow-overlap
+                text-anchor="middle"
+                x="263.0"
+                y="349"
+              >
+                Check
+              </text>
+            </g>
+            <text
+              data-layout-allow-overlap
+              x="480"
+              y="336"
+              text-anchor="middle"
+              class="orange"
+            >
+              Your agent
+            </text>
+            <text data-layout-allow-overlap class="small" x="42" y="488">
+              The next request starts another planning loop.
+            </text>
+          </svg>
+        </div>
+        <div class="scene" id="after">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="960"
+            height="520"
+            viewBox="0 0 960 520"
+            role="img"
+            aria-labelledby="a-title a-desc"
+          >
+            <title id="a-title">AgentRun support workflow</title>
+            <desc id="a-desc">
+              Search for an answer, check it with Jev, and return it if it fits.
+              Otherwise, call an agent once, check again, and escalate
+              unresolved requests.
+            </desc>
+            <defs>
+              <marker
+                id="a-arrow"
+                markerWidth="7"
+                markerHeight="7"
+                refX="6"
+                refY="3.5"
+                orient="auto"
+              >
+                <path
+                  d="M0 0L7 3.5L0 7"
+                  fill="none"
+                  stroke="#72727d"
+                  stroke-width="1"
+                />
+              </marker>
+            </defs>
+            <style>
+              text {
+                font-family: monospace;
+                fill: #f0f0f2;
+                font-size: 19px;
+              }
+              .title {
+                font-size: 29px;
+              }
+              .small {
+                font-size: 15px;
+                fill: #aaaab4;
+              }
+              .label {
+                font-size: 13px;
+                letter-spacing: 2px;
+                fill: #aaaab4;
+              }
+              .node {
+                fill: #171719;
+                stroke: #555560;
+                stroke-width: 1.5;
+              }
+              .orange {
+                fill: #ff9800;
+              }
+              .violet {
+                fill: #c4b2fb;
+              }
+              .green {
+                fill: #93cbb5;
+              }
+              .edge {
+                fill: none;
+                stroke: #72727d;
+                stroke-width: 2;
+                marker-end: url(#a-arrow);
+              }
+              .decision {
+                stroke: #b7a0f0;
+              }
+              .result {
+                stroke: #7eb8a1;
+              }
+            </style>
+            <rect width="960" height="520" fill="#0e0e10" />
+            <text x="42" y="48" class="label">SUPPORT REQUESTS</text>
+            <text x="42" y="97" class="title">With AgentRun</text>
+            <text x="42" y="133" class="small">
+              Reuse the steps. Investigate only when needed.
+            </text>
+            <path class="edge" d="M255 238H355" />
+            <path class="edge" d="M565 238H710" />
+            <text class="small green" x="609" y="220">fits</text>
+            <path class="edge" d="M460 276V370" />
+            <text class="small" x="480" y="330">needs context</text>
+            <path
+              class="edge"
+              d="M355 408H310V238H355"
+              stroke-dasharray="5 5"
+            />
+            <text class="small" x="215" y="343">recheck</text>
+            <g id="a-search">
+              <rect
+                class="node"
+                x="55"
+                y="200"
+                width="200"
+                height="76"
+                rx="6"
+              />
+              <text class="label" text-anchor="middle" x="155.0" y="226">
+                TOOL
+              </text>
+              <text text-anchor="middle" x="155.0" y="254">Find answer</text>
+            </g>
+            <g id="a-judge">
+              <rect
+                class="node decision"
+                x="355"
+                y="200"
+                width="210"
+                height="76"
+                rx="6"
+              />
+              <text class="label" text-anchor="middle" x="460.0" y="226">
+                JEV
+              </text>
+              <text text-anchor="middle" x="460.0" y="254">Does it fit?</text>
+            </g>
+            <g id="a-answer">
+              <rect
+                class="node result"
+                x="710"
+                y="200"
+                width="200"
+                height="76"
+                rx="6"
+              />
+              <text class="label" text-anchor="middle" x="810.0" y="226">
+                CODE
+              </text>
+              <text text-anchor="middle" x="810.0" y="254">Return answer</text>
+            </g>
+            <g id="a-agent">
+              <rect
+                class="node"
+                x="355"
+                y="370"
+                width="210"
+                height="76"
+                rx="6"
+              />
+              <text class="label" text-anchor="middle" x="460.0" y="396">
+                YOUR AGENT
+              </text>
+              <text text-anchor="middle" x="460.0" y="424">Investigate</text>
+            </g>
+            <text class="small" x="42" y="488">
+              One investigation max. Unresolved requests go to review.
+            </text>
+          </svg>
+        </div>
+        <div id="divider"></div>
+      </div>
+    </div>
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      const beforeSvg = document.querySelector("#before svg");
+      const afterSvg = document.querySelector("#after svg");
+      function dot(svg, id) {
+        const d = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "circle",
+        );
+        d.setAttribute("id", id);
+        d.setAttribute("class", "light");
+        d.setAttribute("r", "4");
+        svg.appendChild(d);
+        return d;
+      }
+      const orbit = document.querySelector("#b-orbit");
+      const points = Array.from({ length: 121 }, (_, i) => {
+        const p = orbit.getPointAtLength((orbit.getTotalLength() * i) / 120);
+        return { x: p.x, y: p.y };
+      });
+      const bdot = dot(beforeSvg, "loop-light");
+      tl.set(bdot, { x: points[0].x, y: points[0].y }, 0);
+      for (let i = 1; i < points.length; i++)
+        tl.to(
+          bdot,
+          { x: points[i].x, y: points[i].y, duration: 3.4 / 120, ease: "none" },
+          ((i - 1) * 3.4) / 120,
+        );
+      function glow(id, start, color) {
+        tl.to(
+          id + " rect",
+          { stroke: color, fill: "#24211b", duration: 0.18 },
+          start,
+        )
+          .to(
+            id,
+            { scale: 1.035, transformOrigin: "50% 50%", duration: 0.18 },
+            start,
+          )
+          .to(id, { scale: 1, duration: 0.28 }, start + 0.3)
+          .to(
+            id + " rect",
+            { stroke: color, fill: "#171719", duration: 0.28 },
+            start + 0.6,
+          );
+      }
+      glow("#b-plan", 0, "#ff9800");
+      glow("#b-tools", 0.7, "#ff9800");
+      glow("#b-check", 2.3, "#ff9800");
+      // Adapted from the HyperFrames before-after-wipe pattern: clipped after layer + divider.
+      tl.fromTo(
+        "#after",
+        { clipPath: "inset(0 100% 0 0)" },
+        { clipPath: "inset(0 0% 0 0)", duration: 1.05, ease: "sine.inOut" },
+        3.6,
+      );
+      tl.set("#divider", { opacity: 1 }, 3.6)
+        .fromTo(
+          "#divider",
+          { x: 0 },
+          { x: 960, duration: 1.05, ease: "sine.inOut" },
+          3.6,
+        )
+        .set("#divider", { opacity: 0 }, 4.65);
+      tl.set("#before", { opacity: 0 }, 4.65);
+      const light = dot(afterSvg, "flow-light");
+      tl.set(light, { opacity: 0 }, 0);
+      for (const start of [5.0, 8.0]) {
+        tl.set(light, { x: 55, y: 238, opacity: 1 }, start)
+          .to(light, { x: 255, duration: 0.5, ease: "none" }, start)
+          .to(light, { x: 355, duration: 0.35, ease: "none" }, start + 0.5);
+        glow("#a-search", start, "#ff9800");
+        glow("#a-judge", start + 0.85, "#c4b2fb");
+        tl.set(light, { opacity: 0 }, start + 0.85)
+          .set(light, { x: 565, opacity: 1 }, start + 1.45)
+          .to(light, { x: 710, duration: 0.45, ease: "none" }, start + 1.45)
+          .set(light, { opacity: 0 }, start + 1.9);
+        glow("#a-answer", start + 1.9, "#93cbb5");
+      }
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

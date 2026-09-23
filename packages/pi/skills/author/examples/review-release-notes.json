@@ -1,0 +1,123 @@
+{
+  "v": 2,
+  "name": "review-release-notes",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "properties": {
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "maxItems": 5
+        }
+      },
+      "required": [
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "Change": {
+      "type": "object",
+      "properties": {
+        "breakingChange": {
+          "type": "string",
+          "minLength": 1
+        },
+        "migrationAction": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "breakingChange",
+        "migrationAction"
+      ],
+      "additionalProperties": false
+    },
+    "Report": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "breakingChange": {
+                "type": "string",
+                "minLength": 1
+              },
+              "migrationAction": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "breakingChange",
+              "migrationAction"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "summary",
+        "changes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "Report",
+    "path": "report"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "map",
+        "label": "extract-each-release-note",
+        "itemsPath": "notes",
+        "as": "changes",
+        "maxConcurrency": 2,
+        "body": {
+          "node": "extract",
+          "label": "extract-change",
+          "instructions": "Extract the breaking change and its migration action from the supplied release note. Preserve the exact header name and required action. Do not invent a migration step.",
+          "state": {
+            "text": "{item}"
+          },
+          "requires": [
+            "item"
+          ],
+          "out": "Change",
+          "as": "change"
+        }
+      },
+      {
+        "node": "extract",
+        "label": "summarize-migration",
+        "instructions": "Summarize these migration actions for a client maintainer. Return the supplied changes unchanged alongside the summary. Do not invent steps.",
+        "state": {
+          "changes": "{changes}"
+        },
+        "requires": [
+          "changes"
+        ],
+        "out": "Report",
+        "as": "report"
+      }
+    ]
+  }
+}

@@ -1,0 +1,26 @@
+node_modules/
+packages/*/dist/
+*.tgz
+.env
+.env.*
+!.env.example
+.release/
+
+# Local authoring inputs and provider configuration
+candidates/
+pi.config.mjs
+.openai/
+
+# Local review evidence
+.desloppify/
+.cascade/
+.review/
+.reviews/
+*.review.*
+
+# Local support-workflow host configuration and input
+/support.config.mjs
+/request.json
+
+# Session notes stay outside the public source
+precap.md

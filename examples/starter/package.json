@@ -1,0 +1,21 @@
+{
+  "name": "agentrun-evidence-starter",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "npm run build && node --test dist/workflow.test.js"
+  },
+  "dependencies": {
+    "@parcha/agentrun-dsl": "0.1.0-beta.1",
+    "@parcha/agentrun-jev": "0.1.0-beta.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3"
+  }
+}

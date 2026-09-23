@@ -1,0 +1,1850 @@
+{
+  "$ref": "#/definitions/Workflow",
+  "definitions": {
+    "WorkflowNode": {
+      "title": "WorkflowNode",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "chain",
+              "title": "node"
+            },
+            "steps": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/WorkflowNode"
+              },
+              "title": "steps"
+            }
+          },
+          "required": [
+            "node",
+            "steps"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "code",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "code": {
+              "type": "string",
+              "title": "code"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            }
+          },
+          "required": [
+            "code",
+            "label",
+            "node"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "agent",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "instructions": {
+              "type": "string",
+              "title": "instructions"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "sopSection": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "title": "sopSection"
+            },
+            "out": {
+              "type": "string",
+              "title": "out"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "tools"
+            },
+            "effort": {
+              "enum": [
+                "high",
+                "low",
+                "medium",
+                "minimal"
+              ],
+              "type": "string",
+              "title": "effort"
+            },
+            "thinking": {
+              "description": "The author's thinking dial. There is deliberately no \"off\": thinking is never off.",
+              "enum": [
+                "high",
+                "low",
+                "medium"
+              ],
+              "type": "string",
+              "title": "thinking"
+            },
+            "verify": {
+              "type": "object",
+              "properties": {
+                "out": {
+                  "type": "string",
+                  "title": "out"
+                },
+                "state": {
+                  "$ref": "#/definitions/Record<string,unknown>",
+                  "title": "state"
+                },
+                "maxDrives": {
+                  "type": "number",
+                  "title": "maxDrives"
+                },
+                "override": {
+                  "type": "object",
+                  "properties": {
+                    "below": {
+                      "type": "number",
+                      "title": "below"
+                    }
+                  },
+                  "required": [
+                    "below"
+                  ],
+                  "title": "override"
+                }
+              },
+              "required": [
+                "out"
+              ],
+              "title": "verify"
+            },
+            "tier": {
+              "description": "The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),\nor the kind's default. A router that sends the few thin cases to `strong` buys depth only where the\ndecision is on the edge.",
+              "enum": [
+                "default",
+                "fast",
+                "strong"
+              ],
+              "type": "string",
+              "title": "tier"
+            }
+          },
+          "required": [
+            "instructions",
+            "label",
+            "node",
+            "out"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "decide",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "instructions": {
+              "type": "string",
+              "title": "instructions"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "sopSection": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "title": "sopSection"
+            },
+            "out": {
+              "type": "string",
+              "title": "out"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "tools"
+            },
+            "effort": {
+              "enum": [
+                "high",
+                "low",
+                "medium",
+                "minimal"
+              ],
+              "type": "string",
+              "title": "effort"
+            },
+            "thinking": {
+              "description": "The author's thinking dial. There is deliberately no \"off\": thinking is never off.",
+              "enum": [
+                "high",
+                "low",
+                "medium"
+              ],
+              "type": "string",
+              "title": "thinking"
+            },
+            "verify": {
+              "type": "object",
+              "properties": {
+                "out": {
+                  "type": "string",
+                  "title": "out"
+                },
+                "state": {
+                  "$ref": "#/definitions/Record<string,unknown>",
+                  "title": "state"
+                },
+                "maxDrives": {
+                  "type": "number",
+                  "title": "maxDrives"
+                },
+                "override": {
+                  "type": "object",
+                  "properties": {
+                    "below": {
+                      "type": "number",
+                      "title": "below"
+                    }
+                  },
+                  "required": [
+                    "below"
+                  ],
+                  "title": "override"
+                }
+              },
+              "required": [
+                "out"
+              ],
+              "title": "verify"
+            },
+            "tier": {
+              "description": "The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),\nor the kind's default. A router that sends the few thin cases to `strong` buys depth only where the\ndecision is on the edge.",
+              "enum": [
+                "default",
+                "fast",
+                "strong"
+              ],
+              "type": "string",
+              "title": "tier"
+            }
+          },
+          "required": [
+            "instructions",
+            "label",
+            "node",
+            "out"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "extract",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "instructions": {
+              "type": "string",
+              "title": "instructions"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "sopSection": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "title": "sopSection"
+            },
+            "out": {
+              "type": "string",
+              "title": "out"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "tools"
+            },
+            "effort": {
+              "enum": [
+                "high",
+                "low",
+                "medium",
+                "minimal"
+              ],
+              "type": "string",
+              "title": "effort"
+            },
+            "thinking": {
+              "description": "The author's thinking dial. There is deliberately no \"off\": thinking is never off.",
+              "enum": [
+                "high",
+                "low",
+                "medium"
+              ],
+              "type": "string",
+              "title": "thinking"
+            },
+            "verify": {
+              "type": "object",
+              "properties": {
+                "out": {
+                  "type": "string",
+                  "title": "out"
+                },
+                "state": {
+                  "$ref": "#/definitions/Record<string,unknown>",
+                  "title": "state"
+                },
+                "maxDrives": {
+                  "type": "number",
+                  "title": "maxDrives"
+                },
+                "override": {
+                  "type": "object",
+                  "properties": {
+                    "below": {
+                      "type": "number",
+                      "title": "below"
+                    }
+                  },
+                  "required": [
+                    "below"
+                  ],
+                  "title": "override"
+                }
+              },
+              "required": [
+                "out"
+              ],
+              "title": "verify"
+            },
+            "tier": {
+              "description": "The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),\nor the kind's default. A router that sends the few thin cases to `strong` buys depth only where the\ndecision is on the edge.",
+              "enum": [
+                "default",
+                "fast",
+                "strong"
+              ],
+              "type": "string",
+              "title": "tier"
+            }
+          },
+          "required": [
+            "instructions",
+            "label",
+            "node",
+            "out"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "report",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "instructions": {
+              "type": "string",
+              "title": "instructions"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "sopSection": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "title": "sopSection"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "tools"
+            },
+            "effort": {
+              "enum": [
+                "high",
+                "low",
+                "medium",
+                "minimal"
+              ],
+              "type": "string",
+              "title": "effort"
+            },
+            "thinking": {
+              "description": "The author's thinking dial. There is deliberately no \"off\": thinking is never off.",
+              "enum": [
+                "high",
+                "low",
+                "medium"
+              ],
+              "type": "string",
+              "title": "thinking"
+            }
+          },
+          "required": [
+            "instructions",
+            "label",
+            "node"
+          ]
+        },
+        {
+          "description": "The workflow's terminal deliverable. Types \"markdown\" and \"report\" use the report\nwriter; other non-empty types name a workspace file produced by an earlier call.\nFile existence and delivery are the host's responsibility.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "artifact",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "type": {
+              "description": "Host-defined file type, or \"markdown\"/\"report\" for prose.",
+              "type": "string",
+              "title": "type"
+            },
+            "path": {
+              "description": "File types: the workspace-relative primary file, produced by an earlier call.",
+              "type": "string",
+              "title": "path"
+            },
+            "instructions": {
+              "description": "Prose types: the report writer's fields.",
+              "type": "string",
+              "title": "instructions"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "sopSection": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "title": "sopSection"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "tools"
+            },
+            "effort": {
+              "enum": [
+                "high",
+                "low",
+                "medium",
+                "minimal"
+              ],
+              "type": "string",
+              "title": "effort"
+            },
+            "thinking": {
+              "description": "The author's thinking dial. There is deliberately no \"off\": thinking is never off.",
+              "enum": [
+                "high",
+                "low",
+                "medium"
+              ],
+              "type": "string",
+              "title": "thinking"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            }
+          },
+          "required": [
+            "label",
+            "node",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "map",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "itemsPath": {
+              "type": "string",
+              "title": "itemsPath"
+            },
+            "body": {
+              "$ref": "#/definitions/WorkflowNode",
+              "title": "body"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "resultPath": {
+              "type": "string",
+              "title": "resultPath"
+            },
+            "maxConcurrency": {
+              "type": "number",
+              "title": "maxConcurrency"
+            }
+          },
+          "required": [
+            "as",
+            "body",
+            "itemsPath",
+            "label",
+            "node"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "parallel",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "branches": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/WorkflowNode"
+              },
+              "title": "branches"
+            }
+          },
+          "required": [
+            "branches",
+            "label",
+            "node"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "loop",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "body": {
+              "$ref": "#/definitions/WorkflowNode",
+              "title": "body"
+            },
+            "until": {
+              "$ref": "#/definitions/Predicate",
+              "title": "until"
+            },
+            "maxIters": {
+              "type": "number",
+              "title": "maxIters"
+            }
+          },
+          "required": [
+            "body",
+            "label",
+            "maxIters",
+            "node",
+            "until"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "escalate",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "when": {
+              "$ref": "#/definitions/Predicate",
+              "title": "when"
+            },
+            "kind": {
+              "type": "string",
+              "title": "kind"
+            },
+            "stage": {
+              "type": "string",
+              "title": "stage"
+            },
+            "summary": {
+              "type": "string",
+              "title": "summary"
+            }
+          },
+          "required": [
+            "kind",
+            "label",
+            "node",
+            "stage",
+            "summary",
+            "when"
+          ]
+        },
+        {
+          "description": "A judgment as typed questions. `state` is what the questions see, interpolated by value from the\nworkflow state (a whole-string placeholder keeps its type); `out` is a flat schema of enums,\nbooleans and level-integers — the question set. The schema-valid value lands at `as`, the raw\nanswers with their confidences at `<as>$answers`. No tools, no turns, one request.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "judge",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "out": {
+              "type": "string",
+              "title": "out"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            }
+          },
+          "required": [
+            "as",
+            "label",
+            "node",
+            "out",
+            "state"
+          ]
+        },
+        {
+          "description": "One choice whose options are the items of a list. `describe` renders each item as its option\ntext (`{item.field}`); `allowNone` adds a none-of-these option. The result at `as` is\n{index, item, none, option}; confidence is `<as>$answers.confidence.pick` and the\ndistribution is `<as>$answers.answers.pick.probabilities`.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "pick",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "itemsPath": {
+              "type": "string",
+              "title": "itemsPath"
+            },
+            "describe": {
+              "type": "string",
+              "title": "describe"
+            },
+            "instructions": {
+              "type": "string",
+              "title": "instructions"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "allowNone": {
+              "type": "boolean",
+              "title": "allowNone"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            }
+          },
+          "required": [
+            "as",
+            "describe",
+            "instructions",
+            "itemsPath",
+            "label",
+            "node"
+          ]
+        },
+        {
+          "description": "The same question set (`out`, a judge schema) asked of every item of a list in ONE request: item i's\nquestions are prefixed `i.`; every answer lands in `as.answers[i]` and `as.values[i]`. `keep`\nfilters: items whose answer at `keep.path` (a question id, or `<id>.confidence`) is at least\n`keep.gte` (a boolean question keeps on yes) land in `as.items`, in the original order.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "sift",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "itemsPath": {
+              "type": "string",
+              "title": "itemsPath"
+            },
+            "describe": {
+              "type": "string",
+              "title": "describe"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "out": {
+              "type": "string",
+              "title": "out"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "keep": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "title": "path"
+                },
+                "gte": {
+                  "type": "number",
+                  "title": "gte"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "title": "keep"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            }
+          },
+          "required": [
+            "as",
+            "itemsPath",
+            "label",
+            "node",
+            "out"
+          ]
+        },
+        {
+          "description": "A choice among subgraphs. The options are the branch names, their criteria the branch\ndescriptions; the chosen branch runs on the state. `as` (optional) records the choice and its\ndistribution; `unsure` names the branch taken when confidence is below `gte`.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "route",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "instructions": {
+              "type": "string",
+              "title": "instructions"
+            },
+            "branches": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "criteria": {
+                    "type": "string",
+                    "title": "criteria"
+                  },
+                  "body": {
+                    "$ref": "#/definitions/WorkflowNode",
+                    "title": "body"
+                  }
+                },
+                "required": [
+                  "body"
+                ]
+              },
+              "title": "branches"
+            },
+            "unsure": {
+              "type": "object",
+              "properties": {
+                "branch": {
+                  "type": "string",
+                  "title": "branch"
+                },
+                "gte": {
+                  "type": "number",
+                  "title": "gte"
+                }
+              },
+              "required": [
+                "branch",
+                "gte"
+              ],
+              "title": "unsure"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            }
+          },
+          "required": [
+            "branches",
+            "instructions",
+            "label",
+            "node",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "call",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "via": {
+              "enum": [
+                "executor",
+                "shell",
+                "tool"
+              ],
+              "type": "string",
+              "title": "via"
+            },
+            "tool": {
+              "description": "`via: tool` — the host tool address.",
+              "type": "string",
+              "title": "tool"
+            },
+            "args": {
+              "description": "`via: tool` — typed args; `{dot.path}` interpolation by value.",
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "args"
+            },
+            "code": {
+              "description": "`via: executor` — the body run on the executor; must `return` JSON.",
+              "type": "string",
+              "title": "code"
+            },
+            "input": {
+              "description": "`via: executor` — the JSON value bound to `input` inside the body; interpolated.",
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "input"
+            },
+            "command": {
+              "description": "`via: shell` — the command, taken LITERALLY (it is code; `{…}` in it is the script's own\nsyntax). Values reach it through `env`.",
+              "type": "string",
+              "title": "command"
+            },
+            "env": {
+              "description": "`via: shell` — environment variables for the command, interpolated by value and passed to\nthe process directly (never through shell quoting): the way a long prompt or a JSON record\nreaches a script.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "title": "env"
+            },
+            "where": {
+              "description": "Reserved. Only `sandbox` is accepted today.",
+              "const": "sandbox",
+              "type": "string",
+              "title": "where"
+            },
+            "out": {
+              "description": "Schema id of the JSON result (`tool` and `executor`); `shell` results are the fixed ShellResult shape.",
+              "type": "string",
+              "title": "out"
+            },
+            "as": {
+              "description": "State key the result lands under.",
+              "type": "string",
+              "title": "as"
+            },
+            "produces": {
+              "description": "Workspace-relative files the node promises to create; verified after the effect. Each entry\ninterpolates `{dot.path}` by value, so a call inside a map can name its item's file.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "produces"
+            },
+            "deadline_s": {
+              "description": "Wall bound in seconds for one execution. Required: an unbounded effect is how a stalled provider becomes a stalled job.",
+              "type": "number",
+              "title": "deadline_s"
+            },
+            "retry": {
+              "type": "object",
+              "properties": {
+                "attempts": {
+                  "type": "number",
+                  "title": "attempts"
+                },
+                "backoff_s": {
+                  "type": "number",
+                  "title": "backoff_s"
+                },
+                "on": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/CallRetryClass"
+                  },
+                  "title": "on"
+                }
+              },
+              "required": [
+                "attempts"
+              ],
+              "title": "retry"
+            },
+            "poll": {
+              "description": "Repeat the call until its result settles (a queued job, an eventually consistent read).",
+              "type": "object",
+              "properties": {
+                "until": {
+                  "$ref": "#/definitions/AcceptPredicate",
+                  "title": "until"
+                },
+                "fail_when": {
+                  "description": "A predicate a `call` evaluates against ITS OWN RESULT: paths are result-relative.",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "no_new_items",
+                          "title": "predicate"
+                        },
+                        "key": {
+                          "type": "string",
+                          "title": "key"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "predicate"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "field_true",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "predicate"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "count_gte",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        },
+                        "n": {
+                          "type": "number",
+                          "title": "n"
+                        }
+                      },
+                      "required": [
+                        "n",
+                        "path",
+                        "predicate"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "empty",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "predicate"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "gte",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        },
+                        "n": {
+                          "type": "number",
+                          "title": "n"
+                        }
+                      },
+                      "required": [
+                        "n",
+                        "path",
+                        "predicate"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "lt",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        },
+                        "n": {
+                          "type": "number",
+                          "title": "n"
+                        }
+                      },
+                      "required": [
+                        "n",
+                        "path",
+                        "predicate"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "field_equals",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        },
+                        "value": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean"
+                          ],
+                          "title": "value"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "predicate",
+                        "value"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "in",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        },
+                        "values": {
+                          "type": "array",
+                          "items": {
+                            "type": [
+                              "string",
+                              "number",
+                              "boolean"
+                            ]
+                          },
+                          "title": "values"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "predicate",
+                        "values"
+                      ]
+                    }
+                  ],
+                  "title": "fail_when"
+                },
+                "interval_s": {
+                  "type": "number",
+                  "title": "interval_s"
+                },
+                "deadline_s": {
+                  "type": "number",
+                  "title": "deadline_s"
+                }
+              },
+              "required": [
+                "deadline_s",
+                "interval_s",
+                "until"
+              ],
+              "title": "poll"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            }
+          },
+          "required": [
+            "as",
+            "deadline_s",
+            "label",
+            "node",
+            "via"
+          ]
+        },
+        {
+          "description": "A child workflow invoked as one step of its parent. The child is embedded whole, so the parent\ndigest covers every child byte; `input` is interpolated by value and is the child's ENTIRE initial\nstate (no parent state leaks in); the child's validated output is checked against the parent's\n`out` schema and lands at `as`. The parent owns the terminal: a child never renders a report or\ndelivers an artifact. Children may otherwise compose all workflow primitives.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "workflow",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "workflow": {
+              "$ref": "#/definitions/Workflow",
+              "title": "workflow"
+            },
+            "input": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "input"
+            },
+            "out": {
+              "type": "string",
+              "title": "out"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            }
+          },
+          "required": [
+            "as",
+            "input",
+            "label",
+            "node",
+            "out",
+            "workflow"
+          ]
+        }
+      ]
+    },
+    "Record<string,unknown>": {
+      "title": "Record<string,unknown>",
+      "type": "object"
+    },
+    "Predicate": {
+      "title": "Predicate",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "no_new_items",
+              "title": "predicate"
+            },
+            "key": {
+              "type": "string",
+              "title": "key"
+            }
+          },
+          "required": [
+            "key",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "field_true",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            }
+          },
+          "required": [
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "count_gte",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "n": {
+              "type": "number",
+              "title": "n"
+            }
+          },
+          "required": [
+            "n",
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "empty",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            }
+          },
+          "required": [
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "gte",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "n": {
+              "type": "number",
+              "title": "n"
+            }
+          },
+          "required": [
+            "n",
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "lt",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "n": {
+              "type": "number",
+              "title": "n"
+            }
+          },
+          "required": [
+            "n",
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "field_equals",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "value": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "title": "value"
+            }
+          },
+          "required": [
+            "path",
+            "predicate",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "in",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "title": "values"
+            }
+          },
+          "required": [
+            "path",
+            "predicate",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "ask",
+              "title": "predicate"
+            },
+            "instructions": {
+              "type": "string",
+              "title": "instructions"
+            },
+            "state": {
+              "$ref": "#/definitions/Record<string,unknown>",
+              "title": "state"
+            },
+            "criteria": {
+              "type": "object",
+              "properties": {
+                "true": {
+                  "type": "string",
+                  "title": "true"
+                },
+                "false": {
+                  "type": "string",
+                  "title": "false"
+                }
+              },
+              "title": "criteria"
+            },
+            "gte": {
+              "type": "number",
+              "title": "gte"
+            }
+          },
+          "required": [
+            "instructions",
+            "predicate"
+          ]
+        }
+      ]
+    },
+    "CallRetryClass": {
+      "description": "`exit` is a shell command that ended with a non-zero status: retried only when the author\ndeclared retry, since re-running a command is the author's call.",
+      "title": "CallRetryClass",
+      "enum": [
+        "connection",
+        "exit",
+        "http_429",
+        "http_5xx",
+        "timeout"
+      ],
+      "type": "string"
+    },
+    "AcceptPredicate": {
+      "description": "A predicate a `call` evaluates against ITS OWN RESULT: paths are result-relative.",
+      "title": "AcceptPredicate",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "no_new_items",
+              "title": "predicate"
+            },
+            "key": {
+              "type": "string",
+              "title": "key"
+            }
+          },
+          "required": [
+            "key",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "field_true",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            }
+          },
+          "required": [
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "count_gte",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "n": {
+              "type": "number",
+              "title": "n"
+            }
+          },
+          "required": [
+            "n",
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "empty",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            }
+          },
+          "required": [
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "gte",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "n": {
+              "type": "number",
+              "title": "n"
+            }
+          },
+          "required": [
+            "n",
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "lt",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "n": {
+              "type": "number",
+              "title": "n"
+            }
+          },
+          "required": [
+            "n",
+            "path",
+            "predicate"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "field_equals",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "value": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ],
+              "title": "value"
+            }
+          },
+          "required": [
+            "path",
+            "predicate",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "in",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "title": "values"
+            }
+          },
+          "required": [
+            "path",
+            "predicate",
+            "values"
+          ]
+        }
+      ]
+    },
+    "Workflow": {
+      "title": "Workflow",
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "const": 2,
+          "title": "v"
+        },
+        "name": {
+          "type": "string",
+          "title": "name"
+        },
+        "schemas": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "title": "schemas"
+        },
+        "input": {
+          "description": "Initial state schema, enforced when present. Required for child workflows.",
+          "type": "object",
+          "properties": {
+            "schemaId": {
+              "type": "string",
+              "title": "schemaId"
+            }
+          },
+          "required": [
+            "schemaId"
+          ],
+          "title": "input"
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "schemaId": {
+              "type": "string",
+              "title": "schemaId"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            }
+          },
+          "required": [
+            "schemaId"
+          ],
+          "title": "output"
+        },
+        "root": {
+          "$ref": "#/definitions/WorkflowNode",
+          "title": "root"
+        }
+      },
+      "required": [
+        "name",
+        "output",
+        "root",
+        "schemas",
+        "v"
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentrun.ai/schema/v2/workflow.schema.json",
+  "title": "AgentRun DSL v2 workflow",
+  "$comment": "Generated from the public Workflow TypeScript type. This schema assists editors; validateWorkflow additionally enforces bounds, state references and node semantics. Generation: node scripts/generate-schema.mjs"
+}

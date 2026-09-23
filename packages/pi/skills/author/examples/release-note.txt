@@ -1,0 +1,10 @@
+FICTIONAL EXAMPLE — not a real product release
+
+# Current release
+
+Clients MUST send the X-Workspace header with their workspace slug.
+
+# Future proposals — not approved
+
+Changing the authentication mechanism remains a proposal. No authentication
+migration is required by this release.
