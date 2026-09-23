@@ -1,5 +1,5 @@
 {
-  "description": "FINDING: the same two host writes in the other branch order are a write conflict.",
+  "description": "An array host write and a scalar write on the same new key conflict, in this branch order as in the other.",
   "workflow": {
     "v": 2,
     "name": "par-host-as",

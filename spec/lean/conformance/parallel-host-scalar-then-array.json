@@ -1,5 +1,5 @@
 {
-  "description": "FINDING: a scalar host write followed by an array write on the same key is silently replaced.",
+  "description": "A scalar host write and an array write on the same new key conflict, in this branch order as in the other.",
   "workflow": {
     "v": 2,
     "name": "par-host-sa",
@@ -67,29 +67,12 @@
   },
   "expected": {
     "valid": true,
-    "outcome": "complete",
-    "state": {
-      "q": 1,
-      "$host": {
-        "k": [
-          "x"
-        ]
-      },
-      "a": {
-        "v": "a"
-      },
-      "b": {
-        "v": "b"
-      }
-    },
-    "output": {
-      "q": 1,
-      "a": {
-        "v": "a"
-      },
-      "b": {
-        "v": "b"
-      }
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "parallel_write_conflict",
+      "label": "both",
+      "path": "$host.k"
     },
     "events": {
       "/root/branches/0": [
