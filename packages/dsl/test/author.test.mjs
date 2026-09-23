@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  authorContract, authorWorkflow, renderAuthorHostAddendum, candidatePolicyErrors, validateWorkflow, applyHostOutputTypes, runWorkflow,
+  authorContract, renderAuthorContract, authorWorkflow, renderAuthorHostAddendum, candidatePolicyErrors, validateWorkflow, applyHostOutputTypes, runWorkflow,
   authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle, AUTHOR_SKILL_NAME,
   WORKFLOW_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, MECHANICAL_PREDICATES, PREDICATE_FIELDS,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES,
@@ -54,6 +54,22 @@ test('the contract renders the host addendum only when a host supplies one', () 
   assert.equal(renderAuthorHostAddendum(undefined), '');
   assert.match(addendum, /runs only these node kinds: `chain`, `extract`, `decide`, `agent`, `escalate`, `artifact`/);
 });
+
+test('the rendered contract carries the sha256 of exactly its text, and the author records it', () => withTemp('agentrun-author-digest-', async dir => {
+  const { createHash } = await import('node:crypto');
+  const plain = renderAuthorContract();
+  const hosted = renderAuthorContract({ host });
+  assert.equal(plain.text, authorContract());
+  assert.equal(hosted.text, authorContract({ host }));
+  for (const rendered of [plain, hosted]) assert.equal(rendered.sha256, createHash('sha256').update(rendered.text).digest('hex'));
+  assert.notEqual(plain.sha256, hosted.sha256, 'the addendum is part of the digest');
+  assert.equal(renderAuthorContract({ host }).sha256, hosted.sha256, 'the digest is stable for a given host');
+  const { runNode } = scriptedAuthor([workflow]);
+  const authored = await authorWorkflow({ request: 'Extract a count', outputDir: dir, runNode, inputKeys: ['text'] });
+  assert.equal(authored.contractSha256, plain.sha256);
+  assert.equal(JSON.parse(await readFile(join(authored.directory, 'request.json'))).contractSha256, plain.sha256);
+  assert.equal(JSON.parse(await readFile(join(authored.directory, 'result.json'))).contractSha256, plain.sha256);
+}));
 
 test('the contract names every node kind, field and predicate the validator admits, and nothing it ignores', () => {
   const contract = authorContract();

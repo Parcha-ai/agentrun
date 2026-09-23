@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -112,7 +112,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - ${code("loop")}: ${code("body")}, ${code("until")} (a predicate) and an integer ${code("maxIters")} from 1 to 20. At the bound the state passes through with ${code("until")} unmet; follow the loop with an escalate or gate on that condition.
 - ${code("escalate")}: ${code("when")} (a predicate), and non-empty ${code("kind")}, ${code("stage")} and ${code("summary")}. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.
 - ${code("workflow")}: ${code("label")}, ${code("workflow")} (a complete inline child), ${code("input")} (an object, interpolated, the child's entire initial state), ${code("out")} (a parent schema checked against the child's output) and ${code("as")}. The child declares ${code("input.schemaId")} in its own schemas and contains no report or artifact.
-- ${code("code")}: ${code("code")} is one synchronous function expression such as "(s) => ({ total: s.items.length })". It receives the full state. ${code("Date")}, ${code("Promise")}, timers, ${code("fetch")}, ${code("require")}, ${code("process")}, ${code("Function")} and ${code("globalThis")} are unavailable. It is trusted host JavaScript, not a sandbox. Use code for typed-state mechanics, never to read meaning from prose.
+- ${code("code")}: ${code("code")} is one synchronous function expression such as "(s) => ({ total: s.items.length })". It receives the full state; return new values and never mutate it. ${code("Date")}, ${code("Promise")}, timers, ${code("fetch")}, ${code("require")}, ${code("process")}, ${code("Function")} and ${code("globalThis")} are unavailable. It is trusted host JavaScript, not a sandbox. Use code for typed-state mechanics, never to read meaning from prose.
 - ${code("call")}: one side effect with no model in the loop. ${code("via")} is ${alternatives(CALL_TRANSPORTS)}; ${code("as")} and ${code("deadline_s")} (greater than 0, at most 3600) are required.
   - ${code("via: tool")} takes ${code("tool")} (a host tool address), ${code("args")} (an object) and ${code("out")} (the tool's result schema).
   - ${code("via: executor")} takes ${code("code")} (a body that returns its JSON result and uses only ${code("tools")} and ${code("input")}), ${code("input")} and ${code("out")}.
@@ -154,10 +154,17 @@ export function renderAuthorHostAddendum(host: AuthorHostAddendum | undefined): 
   return lines.join("\n");
 }
 
+/** The rendered author contract and the sha256 of exactly that text. A host records the digest with every
+ *  candidate it authors, so a workflow names the contract that wrote it. */
+export function renderAuthorContract(options: { host?: AuthorHostAddendum } = {}): { text: string; sha256: string } {
+  const addendum = renderAuthorHostAddendum(options.host);
+  const text = addendum ? `${LANGUAGE}\n\n${addendum}` : LANGUAGE;
+  return { text, sha256: createHash("sha256").update(text).digest("hex") };
+}
+
 /** The one author contract: the language every host shares, then the host's addendum when one is supplied. */
 export function authorContract(options: { host?: AuthorHostAddendum } = {}): string {
-  const addendum = renderAuthorHostAddendum(options.host);
-  return addendum ? `${LANGUAGE}\n\n${addendum}` : LANGUAGE;
+  return renderAuthorContract(options).text;
 }
 
 export interface CandidatePolicyOptions {
@@ -253,6 +260,8 @@ export interface AuthoredWorkflow {
   directory: string;
   candidates: number;
   checks: "structural" | "structural-and-host";
+  /** sha256 of the exact contract text the session received (`renderAuthorContract`). */
+  contractSha256: string;
 }
 
 /** Author one workflow and retain every candidate with its review in a new directory under `outputDir`.
@@ -262,9 +271,10 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
   const maxCandidates = options.maxCandidates ?? 4;
   if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) throw new Error("maxCandidates must be a positive integer");
   const inputKeys = options.inputKeys ?? (options.host?.initialState ? Object.keys(options.host.initialState) : []);
+  const contract = renderAuthorContract({ host: options.host });
   const directory = resolve(options.outputDir, `candidate-${randomUUID()}`);
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, "request.json"), JSON.stringify({ request: options.request, host: options.host?.name ?? null, inputKeys, rubricSections: options.rubricSections ?? {}, allowExecutableCandidates: options.allowExecutableCandidates ?? false, maxCandidates }, null, 2), { flag: "wx" });
+  await writeFile(join(directory, "request.json"), JSON.stringify({ request: options.request, host: options.host?.name ?? null, contractSha256: contract.sha256, inputKeys, rubricSections: options.rubricSections ?? {}, allowExecutableCandidates: options.allowExecutableCandidates ?? false, maxCandidates }, null, 2), { flag: "wx" });
   let candidates = 0;
   let acceptedPath: string | undefined;
   let accepted: Workflow | undefined;
@@ -272,7 +282,7 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
   try {
     await options.runNode({
       kind: "agent", label: "author-workflow", tools: [], signal: options.signal,
-      system: [authorContract({ host: options.host }), "Deliver each candidate as the value of the submit tool. A rejected candidate comes back with its errors; repair it in the same session.", `Executable candidates authorized: ${options.allowExecutableCandidates ?? false}.`, `All supplied rubric sections (authoritative): ${JSON.stringify(options.rubricSections ?? {})}`],
+      system: [contract.text, "Deliver each candidate as the value of the submit tool. A rejected candidate comes back with its errors; repair it in the same session.", `Executable candidates authorized: ${options.allowExecutableCandidates ?? false}.`, `All supplied rubric sections (authoritative): ${JSON.stringify(options.rubricSections ?? {})}`],
       user: `${options.request}\nAvailable input keys: ${JSON.stringify(inputKeys)}`,
       schema: { type: "object", additionalProperties: true },
       async review(value) {
@@ -299,8 +309,8 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
     // The result is the candidate review accepted, never whatever the adapter returns afterwards.
     if (!acceptedPath || !accepted) throw new Error("Author returned without a retained accepted candidate");
     const workflow = accepted;
-    await writeFile(join(directory, "result.json"), JSON.stringify({ status: "candidate", path: acceptedPath, candidates }, null, 2), { flag: "wx" });
-    return { workflow, path: acceptedPath, directory, candidates, checks };
+    await writeFile(join(directory, "result.json"), JSON.stringify({ status: "candidate", path: acceptedPath, candidates, contractSha256: contract.sha256 }, null, 2), { flag: "wx" });
+    return { workflow, path: acceptedPath, directory, candidates, checks, contractSha256: contract.sha256 };
   } catch (error) {
     await writeFile(join(directory, "result.json"), JSON.stringify({ status: "failed", candidates, message: error instanceof Error ? error.message : String(error) }, null, 2), { flag: "wx" });
     throw error;

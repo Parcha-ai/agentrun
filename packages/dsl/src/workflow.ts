@@ -612,6 +612,34 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     }
     return patches;
   };
+  // Everything the walk learns about the state at the current point, so parallel branches can each start from the same point.
+  type Knowledge = { available: Set<string> | null; unknowable: boolean; typed: Map<string, Record<string, unknown>>; probed: Map<string, unknown[]>; spread: Set<string>; files: Set<string> };
+  const snapshotKnowledge = (): Knowledge => ({
+    available: reachability ? new Set(reachability.available) : null, unknowable: reachability?.unknowable ?? true,
+    typed: new Map(typedOutputs), probed: new Map([...probedSubtrees].map(([key, values]) => [key, [...values]])),
+    spread: new Set(spreadTaintedKeys), files: new Set(producedFiles),
+  });
+  const restoreKnowledge = (knowledge: Knowledge): void => {
+    if (reachability && knowledge.available) { reachability.available = new Set(knowledge.available); reachability.unknowable = knowledge.unknowable; }
+    typedOutputs.clear(); for (const [key, value] of knowledge.typed) typedOutputs.set(key, value);
+    probedSubtrees.clear(); for (const [key, values] of knowledge.probed) probedSubtrees.set(key, [...values]);
+    spreadTaintedKeys.clear(); for (const key of knowledge.spread) spreadTaintedKeys.add(key);
+    producedFiles.clear(); for (const file of knowledge.files) producedFiles.add(file);
+  };
+  /** After a parallel node: each branch's own changes applied over the state before it; keys, files and shapes accumulate. */
+  const mergeKnowledge = (before: Knowledge, branches: Knowledge[]): void => {
+    restoreKnowledge(before);
+    for (const branch of branches) {
+      if (reachability && branch.available) for (const key of branch.available) reachability.available.add(key);
+      for (const [key, value] of branch.typed) if (before.typed.get(key) !== value) typedOutputs.set(key, value);
+      for (const key of before.typed.keys()) if (!branch.typed.has(key)) typedOutputs.delete(key);
+      for (const [key, values] of branch.probed) if (before.probed.get(key)?.length !== values.length || before.probed.get(key)?.some((v, i) => v !== values[i])) probedSubtrees.set(key, [...values]);
+      for (const key of branch.spread) spreadTaintedKeys.add(key);
+      for (const file of branch.files) producedFiles.add(file);
+    }
+    // The merged state depends on which branches ran how; later reachability checks stand down, as before.
+    if (reachability) reachability.unknowable = true;
+  };
   const checkPredicatePath = (when: { path?: string } | undefined, label: string, path: string): void => {
     if (!reachability || !when?.path) return;
     const head = String(when.path).split(".")[0];
@@ -831,12 +859,16 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           });
         }
         {
-          // Every branch starts from the state before the parallel node: a branch never reads a sibling's writes.
-          const before = reachability && !reachability.unknowable ? new Set(reachability.available) : null;
+          // Every branch starts from the state before the parallel node: a branch never sees a sibling's writes.
+          // All walk knowledge is restored per branch, then the branches' results merge (their writes are disjoint).
+          const before = snapshotKnowledge();
+          const after: Knowledge[] = [];
           (node.branches || []).forEach((branch, i) => {
-            if (reachability && before) { reachability.available = new Set(before); reachability.unknowable = false; }
+            restoreKnowledge(before);
             walk(branch, `${path}.branches[${i}]`);
+            after.push(snapshotKnowledge());
           });
+          if (after.length) mergeKnowledge(before, after);
           if (reachability) reachability.unknowable = true;
         }
         return;

@@ -46,7 +46,7 @@ export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
 
 export {
-  authorContract, renderAuthorHostAddendum, candidatePolicyErrors, applyHostOutputTypes, authorWorkflow,
+  authorContract, renderAuthorContract, renderAuthorHostAddendum, candidatePolicyErrors, applyHostOutputTypes, authorWorkflow,
   AUTHOR_SKILL_NAME, authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
 } from "./author.js";
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow } from "./author.js";
