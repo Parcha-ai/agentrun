@@ -36,7 +36,7 @@ export {
   stageSchemaForNode, submissionSchemaForNode, mergeStageDelta,
   REPORT_SCHEMA, SHELL_RESULT_SCHEMA,
   // Document helpers a host facade needs to speak about a workflow without re-implementing the walk.
-  childSteps, declaredWrites, terminalArtifactType, artifactNodeIsProse, schemaProblems,
+  childSteps, declaredWrites, terminalArtifactType, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
   // Host-side data helpers the interpreter itself uses: the same normalization and reference shaping.
   buildReferenceContext, normalizeStringNullsForSchema, parseCsvRows,
 } from "./workflow.js";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runWorkflow, WorkflowOutputInvalidError } from "../dist/index.js";
+import { runWorkflow, validateWorkflow, WorkflowOutputInvalidError, HOST_STATE_KEY } from "../dist/index.js";
 
 // A host policy is application code handed in through deps. These tests pin the boundary the engine
 // promises around it: the domain schema and the verifier always see the decoded domain value, host
@@ -77,7 +77,8 @@ test("systemBlocks and submissionSchema apply to the terminal node only; the dec
   assert.deepEqual(result.state.record, { label: "a", count: 1 });
   assert.deepEqual(result.output, { label: "a", count: 1 });
   assert.deepEqual(result.host, { concerns: [{ code: "thin_evidence", severity: "warning", stage: "decide" }], claims: [{ path: "label" }] });
-  assert.deepEqual(result.state.concerns, result.host.concerns);
+  assert.deepEqual(result.state[HOST_STATE_KEY], result.host);
+  assert.equal("concerns" in result.state, false, "host state never lands on a top-level domain key");
   const decoded = events.find((event) => event.type === "host.decoded");
   assert.deepEqual(decoded.detail.keys, ["concerns", "claims"]);
   assert.equal(decoded.label, "decide");
@@ -214,5 +215,55 @@ test("a child workflow applies the policy with its own context and keeps its hos
   assert.equal(contexts[0].workflow.name, "child");
   assert.match(contexts[0].executionPath, /^\/root\/steps\/0\/workflow\/root/);
   assert.equal("host" in result, false, "the child's host state does not cross the child's output contract");
-  assert.equal("concerns" in result.state, false);
+  assert.equal(HOST_STATE_KEY in result.state, false);
+});
+
+test("host state restored by recovery is still host state: excluded from output and returned on the result", async () => {
+  // The decide node never runs again: recovery hands back the checkpointed state, $host included.
+  const restored = { text: "x", record: { label: "a", count: 1 }, [HOST_STATE_KEY]: { concerns: [{ code: "c", severity: "info", stage: "first" }] } };
+  const wf = { ...workflow([decide({ label: "first" })], { schemaId: "State" }), schemas: { ...schemas, State: object({ text: { type: "string" }, record: schemas.Record }) } };
+  const result = await runWorkflow(wf, { text: "x" }, {
+    hostPolicy: policy(),
+    recovery: { supportsExecutionPaths: true, resume: async () => structuredClone(restored), commit: async () => {}, pollStartedAt: () => 0, wait: async () => {} },
+    runNode: async () => { throw new Error("a restored step must not redispatch"); },
+  });
+  assert.equal(result.status, "complete");
+  assert.deepEqual(result.output, { text: "x", record: { label: "a", count: 1 } });
+  assert.deepEqual(result.host, restored[HOST_STATE_KEY]);
+});
+
+test("the reserved host key cannot be written by a workflow, a code node, an afterNode patch, or the input", async () => {
+  const named = validateWorkflow(workflow([decide({ as: HOST_STATE_KEY })]));
+  assert.equal(named.ok, false);
+  assert.match(named.errors.join("\n"), /engine-owned "\$" state key/);
+  await assert.rejects(runWorkflow(workflow([{ node: "code", label: "smuggle", code: "() => ({ $host: { x: 1 }, record: { label: 'a', count: 1 } })" }]), { text: "x" }, {}),
+    (error) => error.reason === "reserved_state_key");
+  await assert.rejects(runWorkflow(workflow([decide()]), { text: "x" }, {
+    hostPolicy: { afterNode: () => ({ [HOST_STATE_KEY]: { x: 1 } }) },
+    runNode: async () => ({ label: "a", count: 1 }),
+  }), (error) => error.reason === "reserved_state_key");
+  await assert.rejects(runWorkflow(workflow([decide()]), { text: "x", [HOST_STATE_KEY]: {} }, { runNode: async () => ({ label: "a", count: 1 }) }),
+    (error) => error.code === "input_invalid");
+});
+
+test("parallel branches merge host state by delta: arrays append, equal values keep, conflicting scalars fail", async () => {
+  const widenEveryDecide = (stage, context) => (context.node.kind === "decide" ? { ...stage, properties: { ...stage.properties, concern: CHANNEL, claims: CLAIMS } } : stage);
+  const branches = [decide({ label: "left", as: "left" }), decide({ label: "right", as: "right" })];
+  const wf = { ...workflow([{ node: "parallel", label: "both", branches }], { schemaId: "State" }),
+    schemas: { ...schemas, State: object({ text: { type: "string" }, left: schemas.Record, right: schemas.Record }) } };
+  const result = await runWorkflow(wf, { text: "x" }, {
+    hostPolicy: policy({ submissionSchema: widenEveryDecide }),
+    runNode: async (params) => (params.label === "left"
+      ? { label: "l", count: 1, concern: { code: "L", severity: "info" }, claims: [{ path: "label" }] }
+      : { label: "r", count: 2, concern: { code: "R", severity: "warning" }, claims: [{ path: "label" }] }),
+  });
+  assert.equal(result.status, "complete");
+  assert.deepEqual(result.output, { text: "x", left: { label: "l", count: 1 }, right: { label: "r", count: 2 } });
+  assert.deepEqual(result.host.concerns.map((c) => c.code).sort(), ["L", "R"]);
+  assert.deepEqual(result.host.claims, [{ path: "label" }], "an equal value written by both branches is kept once");
+  // A non-array host key set to different values by two branches is a write conflict.
+  await assert.rejects(runWorkflow(wf, { text: "x" }, {
+    hostPolicy: { submissionSchema: widenEveryDecide, decodeSubmission: (submission, context) => { const { concern, claims, ...value } = submission; return { value, host: { owner: context.node.label } }; } },
+    runNode: async () => ({ label: "a", count: 1 }),
+  }), (error) => error.reason === "parallel_write_conflict" && /\$host\.owner/.test(error.message));
 });
