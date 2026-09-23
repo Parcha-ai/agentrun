@@ -1,5 +1,5 @@
 {
-  "description": "FINDING: requires and interpolation index arrays ({scores.0}); a predicate on the same path never holds.",
+  "description": "A predicate indexes arrays exactly as requires and interpolation do: gte on scores.0 fires for [9].",
   "workflow": {
     "v": 2,
     "name": "paths",
@@ -66,7 +66,7 @@
   },
   "expected": {
     "valid": true,
-    "outcome": "complete",
+    "outcome": "escalated",
     "state": {
       "scores": [
         9
@@ -75,13 +75,10 @@
         "v": "x"
       }
     },
-    "output": {
-      "scores": [
-        9
-      ],
-      "a": {
-        "v": "x"
-      }
+    "escalation": {
+      "kind": "k",
+      "stage": "s",
+      "label": "gate"
     },
     "events": {
       "/root/steps/0": [
@@ -89,7 +86,7 @@
         "node.end:a:ok"
       ],
       "/root/steps/1": [
-        "escalate.evaluated:gate:false"
+        "escalate.evaluated:gate:true"
       ]
     }
   }

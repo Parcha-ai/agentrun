@@ -8,6 +8,9 @@
 - Validation now refuses an `escalate.when` path or key that no input or earlier node produces, a `loop.until` path that neither the state before the loop nor its body produces, and a parallel branch that reads a key only a sibling branch writes. None of them could hold at runtime.
 - `spec/lean`: a Lean 4 model of the workflow language. It proves what validation guarantees about `requires`, which keys a node may write, that parallel merges are order-free for domain state, that loops respect `maxIters`, and that desugaring preserves meaning. A shared conformance corpus runs on the model and the interpreter. Nine findings where a stated guarantee does not hold are recorded as `todo` tests; behavior is unchanged.
 
+- One path resolver for every state reader. Predicates (`escalate.when`, `loop.until`, `sift.keep`) now index arrays the way `requires`, interpolation, `itemsPath` and `output.path` already did: `scores.0` reads `9` from `{scores: [9]}` everywhere, so a gate on an array index fires. A record is read by key, an array by a non-negative canonical integer index, and any other value (a string, a number, a missing value) resolves to `undefined`; an array exposes indexes, not properties. `getPath` is exported.
+- The parallel `$host` merge refuses a mixed-shape write in either branch order. An array append that meets a scalar a sibling wrote to the same new key is a `parallel_write_conflict`, as the reverse order already was; before, the append silently replaced the scalar. Appends from several branches still join in branch order, and equal writes remain one write.
+
 ### Breaking changes
 
 This is a prerelease, so there are no forwarding exports. Every removed `@parcha/agentrun-pi` export and its replacement:
