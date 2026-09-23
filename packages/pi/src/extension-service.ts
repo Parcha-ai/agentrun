@@ -3,11 +3,10 @@ import { JevError, isJevResponseReason } from '@parcha/agentrun-jev';
 import { PiRunError } from './runner.js';
 import { ToolInputValidationError } from './tool-input-error.js';
 import {
-  inspectWorkflow, runWorkflow, validateWorkflow, EffectOutcomeUnknownError,
+  inspectWorkflow, runWorkflow, validateWorkflow, candidatePolicyErrors, EffectOutcomeUnknownError,
   WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError, EffectDeadlineExceededError,
   type Workflow, type WorkflowDeps, type WorkflowInspection, type Escalation,
 } from '@parcha/agentrun-dsl';
-import { workflowPolicyErrors } from './admission.js';
 
 type Event = Parameters<NonNullable<WorkflowDeps['onEvent']>>[0];
 type Counts = { agent: number; judge: number; tool: number };
@@ -256,7 +255,7 @@ export class WorkflowExtensionService {
     const workflow = snapshot(value) as Workflow;
     const inspection = inspectWorkflow(workflow);
     if (inspection.nodes.length > extensionStructuralLimits.maxNodes) throw new ExtensionServiceError('bounds', 'A workflow may contain at most 200 nodes.');
-    const errors = workflowPolicyErrors(workflow, { allowExecutableCandidates: options.allowExecutableCandidates === true, rubricSections: this.rubricSections, allowedEffectTools: [...this.allowedTools] });
+    const errors = candidatePolicyErrors(workflow, { allowExecutableCandidates: options.allowExecutableCandidates === true, rubricSections: this.rubricSections, allowedEffectTools: [...this.allowedTools] });
     for (const entry of inspection.nodes) {
       const node = entry.path.split('/').slice(1).reduce<any>((item, key) => item[key.replace(/~1/g, '/').replace(/~0/g, '~')], workflow);
       if (node.node === 'artifact') errors.push('Artifact delivery is not available in this extension.');

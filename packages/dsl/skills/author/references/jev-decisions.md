@@ -1,7 +1,8 @@
 # Design Jev decisions in AgentRun
 
 Jev returns typed judgments and probabilities, not generated prose, tool calls or
-multi-step research. The host supplies its adapter and credentials. Do not write
+multi-step research. The host supplies its adapter and credentials; the workflow
+names the question. Do not write
 HTTP requests or SDK setup into workflow code. This guide maps the TypeSafe
 programming model to the installed DSL; the general TypeSafe skill is optional.
 
@@ -63,13 +64,13 @@ silently truncate it or replace it with an agent's interpretation. This explicit
 graph change changes request count; no automatic batching or truncation occurs.
 
 The fictional [read-source decision](../examples/read-source-decision.json) and
-[input](../examples/read-source-decision.input.json) demonstrate direct `read`
-results passed to Jev unchanged, followed by deterministic probability projection.
-Its paths are inputs, not a built-in corpus. Place the bundled fictional
-[release note](../examples/release-note.txt) at `release-note.txt` in the working
-directory (or change the input path to its location) before running that input.
-Adapt the tool and return schema to
-`describe`; an agent locator can produce those paths earlier in the same graph.
+[input](../examples/read-source-decision.input.json) show direct tool results passed
+to a judge unchanged, followed by deterministic probability projection in code. Its
+paths are inputs, not a built-in corpus: place the bundled fictional
+[release note](../examples/release-note.txt) in the working directory before running
+that input. Adapt the tool and its
+return schema to the tools the host actually names; an agent locator can produce the
+references earlier in the same graph.
 
 ## Use the installed primitives
 

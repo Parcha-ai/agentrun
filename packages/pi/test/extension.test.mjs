@@ -8,6 +8,7 @@ import { ModelRuntime, ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import agentRunExtension, { createAgentRunExtension } from '../dist/extension.js';
 import { demoWorkflow } from '../dist/demo.js';
+import { authorSkillDirectory } from '@parcha/agentrun-dsl';
 
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const waitUntil = async predicate => { while (!predicate()) await new Promise(resolve => setImmediate(resolve)); };
@@ -448,7 +449,7 @@ test('tool-set refresh reserves the run before awaiting disposal', async () => {
   const activeTools = [];
   const app = await harness({ cwd, activeTools, withModel: false });
   try {
-    const definition = JSON.parse(await readFile(new URL('../skills/author/examples/read-file.json', import.meta.url), 'utf8'));
+    const definition = JSON.parse(await readFile(join(authorSkillDirectory(), 'examples/read-file.json'), 'utf8'));
     await app.tool({ action: 'describe' }); // Create a session before the host tool-set changes.
     activeTools.push('read');
     await app.tool({ action: 'inspect', workflow: definition, input: { path: 'note.txt' } });

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0-beta.3, unreleased
+
+- One author. `@parcha/agentrun-dsl` now owns the author contract, the author skill and the candidate loop. `authorContract({ host? })` renders the language every author receives (`renderAuthorContract` also returns the sha256 of that exact text, which `authorWorkflow` records with every candidate as `contractSha256`), then an optional `AuthorHostAddendum` (`name`, `initialState`, `outputTypes`, `nodeKinds`, `rules`) that names a host's vocabulary without changing the language. `authorWorkflow` moved from `@parcha/agentrun-pi` and now takes the host's `runNode` adapter instead of Pi runner options; it enforces a declared addendum's node kinds and output types and validates against its initial state. `candidatePolicyErrors` is the shared author policy. `authorWorkflow` returns the candidate its review accepted; `applyHostOutputTypes` gives the interpreter view of a host's prose output types. The skill ships in the dsl package under `skills/author`, with the contract generated as `references/language.md`; `authorSkillDirectory`, `loadAuthorReference` and `loadAuthorSkillBundle` expose it.
+- The Pi package registers the dsl skill rendered with its own host addendum (`PI_HOST_ADDENDUM`, exported), built into `dist/skills/author`, so a session reads the Pi rules without calling `describe`. `describe` returns `authoring.language` and `authoring.host` beside the guides.
+- One vocabulary. `WORKFLOW_NODE_KINDS`, `NODE_FIELDS`, `WORKFLOW_PREDICATES` and the other vocabulary constants are exported, and the validator and the author contract both read them, so the contract names exactly what the validator admits.
+- Validation now refuses an `escalate.when` path or key that no input or earlier node produces, a `loop.until` path that neither the state before the loop nor its body produces, and a parallel branch that reads a key only a sibling branch writes. None of them could hold at runtime.
+
+### Breaking changes
+
+This is a prerelease, so there are no forwarding exports. Every removed `@parcha/agentrun-pi` export and its replacement:
+
+| Removed from `@parcha/agentrun-pi` | Replacement |
+| --- | --- |
+| `authorWorkflow(options)` with `options.pi: PiRunnerOptions` | `authorWorkflow` from `@parcha/agentrun-dsl`, with `runNode: createPiRunner({ ...options, tools: [], maxSubmissions })` in place of `pi` |
+| type `AuthorWorkflowOptions` | `AuthorWorkflowOptions` from `@parcha/agentrun-dsl` (`runNode` replaces `pi`; adds `host` and `signal`) |
+| type `AuthoredWorkflow` | `AuthoredWorkflow` from `@parcha/agentrun-dsl` (adds `contractSha256`) |
+| `AUTHOR_CONTRACT` (string) | `authorContract({ host? })`, or `renderAuthorContract({ host? })` for `{ text, sha256 }`, from `@parcha/agentrun-dsl` |
+| `loadPiAuthorSkillBundle()` | `loadAuthorSkillBundle()` from `@parcha/agentrun-dsl` |
+| the package's `skills/author` directory | the neutral skill at `authorSkillDirectory()` in `@parcha/agentrun-dsl`; the Pi-rendered copy ships at `dist/skills/author` |
+
+Validation is also stricter when the caller supplies an input contract (`input` or `inputKeys`). It refuses the three unreachable reads listed above, which a workflow validated without an input contract never triggers.
+
 ## 0.1.0-beta.2, 2026-09-23
 
 - `WorkflowDeps.hostPolicy`: application policy around generative nodes and completed steps, handed in by the host and unreachable from workflow documents. `systemBlocks` appends host text to a node's prompt; `submissionSchema` widens the adapter's transport schema with host-owned channels; `decodeSubmission` splits an accepted submission into the domain value and host state; `afterNode` enriches a completed step's state before commit and checkpoint. The domain value is always validated against the unchanged stage schema and is what a `verify` clause reviews; host state lives under the reserved `$host` state key (checkpointed and restored with the state, isolated per map item, branch and child, merged by delta across parallel branches), is excluded from a path-less output projection, and is returned as `result.host`. Validation rejects an `as` that names a `$`-prefixed key; a code node or `afterNode` patch writing `$host` fails with `reserved_state_key`. Events `host.decoded` and `host.patched` name the keys written. Absent, the engine behaves exactly as before.

@@ -39,7 +39,7 @@ For an offline Pi startup, use `pi --offline`. Without that flag, Pi may downloa
 /agentrun Find the main entry points in this repository and summarize how requests reach them.
 ```
 
-The command loads the packaged `agentrun-author` skill. Pi reads the available tools, builds a workflow, inspects its graph, then runs it with the task's input. You can also invoke `/skill:agentrun-author <task>` directly. Ask Pi to change a step or explain a result as you would in an ordinary conversation.
+The command loads the `agentrun-author` skill. Its source ships in `@parcha/agentrun-dsl`; this package registers it rendered with the Pi host rules, so the skill text itself states the trusted-run command, the missing SOP and the unavailable transports. Pi reads the available tools, builds a workflow, inspects its graph, then runs it with the task's input. You can also invoke `/skill:agentrun-author <task>` directly. Ask Pi to change a step or explain a result as you would in an ordinary conversation.
 
 | Command | What happens |
 | --- | --- |
@@ -81,7 +81,7 @@ A direct `call` to a Pi built-in returns a Pi tool result. Its `content` is an a
 Jev design guidance is bundled with the author skill and returned by `describe`
 under `authoring.jev`, including for hosts without a file-reading tool. No separate
 TypeSafe skill install is required for DSL authoring. The
-[source-read example](skills/author/examples/read-source-decision.json) preserves
+[source-read example](../dsl/skills/author/examples/read-source-decision.json) preserves
 original tool evidence through a Jev decision and deterministic projection; its
 fictional tests demonstrate wiring, not measured semantic accuracy. Explicit
 `tools: []` disables tools for an agent node; omission inherits the host allowlist.
@@ -174,23 +174,24 @@ The child model delivers `{value: result}` through its `submit` tool. Schema and
 
 ## SDK: retain candidates and check fixed fixtures
 
-The SDK author saves candidate files separately from the native extension's session-local workflow. Supply configured runner options and host-owned acceptance checks:
+`authorWorkflow` lives in `@parcha/agentrun-dsl` beside the language it teaches. It saves candidate files separately from the native extension's session-local workflow. Give it a Pi runner with no host tools, and bound its submissions by the candidate limit:
 
 ```js
-import { authorWorkflow } from '@parcha/agentrun-pi';
+import { authorWorkflow } from '@parcha/agentrun-dsl';
+import { createPiRunner } from '@parcha/agentrun-pi';
 
 const candidate = await authorWorkflow({
   request: 'Extract a numeric count from text',
   outputDir: './candidates',
   inputKeys: ['text'],
-  pi: options, // Your configured PiRunnerOptions.
+  runNode: createPiRunner({ ...options, tools: [], maxSubmissions: 4 }), // Your configured PiRunnerOptions.
   maxCandidates: 4,
   acceptance: workflow => checkAgainstYourFixtures(workflow),
 });
 console.log(candidate.path, candidate.checks);
 ```
 
-The host owns `checkAgainstYourFixtures`: return diagnostics, or `[]` to accept. Without that callback, acceptance is labeled `structural` and does not establish correct behavior. The author retains each submitted version and its feedback, never activates it, and cannot edit the host's acceptance checks.
+The host owns `checkAgainstYourFixtures`: return diagnostics, or `[]` to accept. Without that callback, acceptance is labeled `structural` and does not establish correct behavior. The author retains each submitted version and its feedback, never activates it, and cannot edit the host's acceptance checks. See [the author contract](../../docs/authoring.md#one-author-contract) for the host addendum.
 
 With `rubricSections`, every supplied section must appear on every generated LLM node, including child workflows. The author conservatively rejects Jev nodes, semantic `ask` predicates, and `verify` clauses under that policy; those need a separately reviewed question contract. Schema properties named `node`, `verify`, or `predicate` remain ordinary data. Supply the authoritative rubric as `deps.sop` when executing the candidate.
 
@@ -217,7 +218,7 @@ Pi is optional for `@parcha/agentrun-dsl`. This package brings the Pi coding-age
 
 The SDK dependencies remain pinned so standalone applications and the CLI have a complete runtime. When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader. The tested host is Pi 0.87.0; installed SDK pins do not make an older or newer host compatible. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) recommends peers for extension-only packages; this package also provides the standalone SDK.
 
-Candidate directories retain request text, rubric text, workflow versions, and feedback. Native Pi messages can contain workflow inputs and results. Choose storage and tool access appropriate for that data. The accompanying `skills/author/SKILL.md` describes the native and SDK authoring paths for agents.
+Candidate directories retain request text, rubric text, workflow versions, and feedback. Native Pi messages can contain workflow inputs and results. Choose storage and tool access appropriate for that data. The author skill in `@parcha/agentrun-dsl` describes the native and SDK authoring paths for agents.
 
 ## License
 

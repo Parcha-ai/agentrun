@@ -169,3 +169,24 @@ The [example tests](../examples/typed-research.test.mjs) exercise the same decis
 The serializable document is the integration boundary. A host can adopt typed authoring while retaining its interpreter, policies, pin hashes, and durable stores. New standalone node support does not automatically add that capability to an older host.
 
 See [host integration](host-integration.md) for the compatibility check and recovery requirements.
+
+## One author contract
+
+The package owns the author contract. `authorContract()` returns the language every AgentRun author receives, and the packaged skill ships the same text as [`references/language.md`](../packages/dsl/skills/author/references/language.md). Its node kinds, fields and predicates are rendered from the constants the validator admits, so the contract cannot teach a field the validator refuses or omit one it accepts. A host adds only an [addendum](host-integration.md#host-addendum-for-authoring): its initial state, output types, node kinds and rules.
+
+```ts
+import { renderAuthorContract, authorWorkflow } from '@parcha/agentrun-dsl';
+
+const host = {
+  name: 'Records host',
+  initialState: { question: 'the case request text' },
+  outputTypes: { case_report: { kind: 'prose', description: 'the reviewer-facing report' } },
+  rules: ['Cite the source a decision relies on.'],
+};
+const { text, sha256 } = renderAuthorContract({ host }); // record sha256 with every candidate
+const candidate = await authorWorkflow({ request, outputDir: './candidates', runNode, host });
+```
+
+`authorWorkflow` asks the host's `runNode` adapter for one session with no tools. It retains every candidate with its review, refuses candidates outside the addendum's node kinds or output types before validation, validates the rest against the addendum's initial state, and then runs the host's `acceptance` callback. Acceptance does not activate a candidate. The result, `request.json` and `result.json` carry `contractSha256`, the digest of the exact contract text the session received.
+
+The contract's grammar sentences are enforced by `validateWorkflow`, by engine admission (`sopSection` headings) or by `candidatePolicyErrors`; the package tests pair 49 of them with a candidate their check refuses. The guarantee is bounded by those checks, not a proof that every accepted workflow is correct. A few sentences state intent that no mechanical check can decide: keep the workflow small, the generative kinds' duties (transcribe, judge, gather, render), keep code away from prose, never paraphrase policy, never invent tools or results, and send uncertainty to an escalation or an explicit fallback. They stay because they define what the language is for. A host's acceptance checks and tool admission judge them.

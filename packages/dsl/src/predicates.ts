@@ -1,3 +1,5 @@
+import { MECHANICAL_PREDICATES } from "./vocabulary.js";
+
 export type StopPredicate =
   | { predicate: "no_new_items"; key: string }
   | { predicate: "field_true"; path: string }
@@ -12,7 +14,7 @@ export type AcceptPredicate =
   | { predicate: "in"; path: string; values: Array<string | number | boolean> };
 
 
-export const MECHANICAL_PREDICATE_NAMES: ReadonlySet<string> = new Set(["no_new_items", "field_true", "count_gte", "empty", "field_equals", "in", "gte", "lt"]);
+export const MECHANICAL_PREDICATE_NAMES: ReadonlySet<string> = new Set(MECHANICAL_PREDICATES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

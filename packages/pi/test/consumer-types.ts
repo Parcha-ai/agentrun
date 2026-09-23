@@ -1,4 +1,5 @@
-import { createPiRunner, authorWorkflow, type PiRunnerOptions, type PiEvent, type PiToolDefinition } from '../dist/index.js';
+import { authorWorkflow } from '@parcha/agentrun-dsl';
+import { createPiRunner, type PiRunnerOptions, type PiEvent, type PiToolDefinition } from '../dist/index.js';
 
 declare const options: PiRunnerOptions;
 const runner = createPiRunner(options);
@@ -11,4 +12,4 @@ const tool: PiToolDefinition<{ text: string }, { count: number }> = {
 void runner;
 void event;
 void tool;
-void authorWorkflow({ request: 'Extract a count', outputDir: './candidates', pi: options });
+void authorWorkflow({ request: 'Extract a count', outputDir: './candidates', runNode: createPiRunner({ ...options, tools: [], maxSubmissions: 4 }) });

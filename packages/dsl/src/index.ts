@@ -44,3 +44,15 @@ export { compileTransform, compileTransformSyntax } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
+
+export {
+  authorContract, renderAuthorContract, renderAuthorHostAddendum, candidatePolicyErrors, applyHostOutputTypes, authorWorkflow,
+  AUTHOR_SKILL_NAME, authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
+} from "./author.js";
+export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow } from "./author.js";
+export {
+  WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS,
+  MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS,
+  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES,
+} from "./vocabulary.js";
+export type { WorkflowNodeKind, WorkflowPredicateName } from "./vocabulary.js";

@@ -4,11 +4,12 @@ import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentRunExtension } from '../dist/extension.js';
-import { loadPiAuthorSkillBundle, loadPiJevGuide, loadPiWorkflowGuide } from '../dist/skill-bundle.js';
+import { join as joinPath } from 'node:path';
+import { authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle } from '@parcha/agentrun-dsl';
 
-const workflow = JSON.parse(await readFile(new URL('../skills/author/examples/read-source-decision.json', import.meta.url), 'utf8'));
+const workflow = JSON.parse(await readFile(joinPath(authorSkillDirectory(), 'examples/read-source-decision.json'), 'utf8'));
 
-test('native describe ships the same complete Jev guide as the experiment author bundle', async () => {
+test('native describe ships the packaged language, guides and the Pi host addendum', async () => {
   const tools = new Map(), events = new Map();
   createAgentRunExtension({ hostTools: () => [] })({
     registerTool: tool => tools.set(tool.name, tool), registerCommand() {},
@@ -20,12 +21,18 @@ test('native describe ships the same complete Jev guide as the experiment author
   try {
     const result = await tools.get('agentrun').execute('describe', { action: 'describe' }, undefined, undefined, ctx);
     assert.deepEqual(result.details.tools, []);
-    assert.equal(result.details.authoring.jev, loadPiJevGuide());
-    assert.equal(JSON.parse(result.content[0].text).authoring.jev, loadPiJevGuide());
-    assert.ok(loadPiAuthorSkillBundle().includes(loadPiJevGuide()));
-    assert.equal(result.details.authoring.workflow, loadPiWorkflowGuide());
-    assert.equal(JSON.parse(result.content[0].text).authoring.workflow, loadPiWorkflowGuide());
-    assert.ok(loadPiAuthorSkillBundle().includes(loadPiWorkflowGuide()));
+    assert.equal(result.details.authoring.jev, loadAuthorReference('jev-decisions'));
+    assert.equal(JSON.parse(result.content[0].text).authoring.jev, loadAuthorReference('jev-decisions'));
+    assert.ok(loadAuthorSkillBundle().includes(loadAuthorReference('jev-decisions')));
+    assert.equal(result.details.authoring.workflow, loadAuthorReference('workflow-format'));
+    assert.equal(JSON.parse(result.content[0].text).authoring.workflow, loadAuthorReference('workflow-format'));
+    assert.ok(loadAuthorSkillBundle().includes(loadAuthorReference('workflow-format')));
+    assert.equal(result.details.authoring.language, loadAuthorReference('language'));
+    assert.match(result.details.authoring.host, /^## Host: Pi extension/);
+    assert.match(result.details.authoring.host, /\/agentrun run --trusted/);
+    assert.match(result.details.authoring.host, /a host that configures its tools offers only those/);
+    assert.doesNotMatch(result.details.authoring.host, /`artifact`/);
+    assert.doesNotMatch(result.details.authoring.language, /\/agentrun|Pi extension/, 'the shared language carries no Pi vocabulary');
   } finally { await events.get('session_shutdown')(); }
 });
 

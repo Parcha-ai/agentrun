@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentRunExtension } from '../dist/extension.js';
-import { loadPiWorkflowGuide } from '../dist/skill-bundle.js';
+import { loadAuthorReference } from '@parcha/agentrun-dsl';
 
 // Fictional registered-extension integration; no provider, source corpus or network.
 function app(options = {}, hasUI = false) {
@@ -127,7 +127,7 @@ test('native describe delivers the complete shipped workflow contract to tool-on
   const h = app();
   try {
     const result = await h.tool({ action: 'describe' });
-    assert.equal(result.details.authoring.workflow, loadPiWorkflowGuide());
+    assert.equal(result.details.authoring.workflow, loadAuthorReference('workflow-format'));
     assert(result.details.authoring.workflow.length > 1000);
     assert.doesNotMatch(result.details.authoring.workflow, /\/(?:home|Users)\/|127\.0\.0\.1|\.cascade\//);
     assert.equal(result.details.authoring.onWorkflowEvent, undefined);

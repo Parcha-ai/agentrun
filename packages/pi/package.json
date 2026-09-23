@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-pi",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Pi extension for building, running and evaluating AgentRun workflows",
   "type": "module",
   "license": "Apache-2.0",
@@ -22,13 +22,12 @@
   },
   "files": [
     "dist",
-    "skills",
     "README.md",
     "LICENSE",
     "NOTICE"
   ],
   "scripts": {
-    "build": "node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json",
+    "build": "node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json && node ../../scripts/render-pi-skill.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs"
   },
@@ -36,8 +35,8 @@
     "@earendil-works/pi-ai": "0.87.0"
   },
   "dependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.2",
-    "@parcha/agentrun-jev": "0.1.0-beta.2",
+    "@parcha/agentrun-dsl": "0.1.0-beta.3",
+    "@parcha/agentrun-jev": "0.1.0-beta.3",
     "@earendil-works/pi-agent-core": "0.87.0",
     "@earendil-works/pi-coding-agent": "0.87.0",
     "@earendil-works/pi-tui": "0.87.0",
@@ -67,7 +66,7 @@
       "./dist/extension.js"
     ],
     "skills": [
-      "./skills"
+      "./dist/skills"
     ]
   }
 }

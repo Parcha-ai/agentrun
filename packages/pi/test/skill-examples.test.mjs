@@ -5,18 +5,19 @@ import { tmpdir } from 'node:os';
 import { resolve, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSkillsFromDir, parseFrontmatter } from '@earendil-works/pi-coding-agent';
-import { validateWorkflow } from '@parcha/agentrun-dsl';
+import { validateWorkflow, authorSkillDirectory } from '@parcha/agentrun-dsl';
 import agentRunExtension from '../dist/extension.js';
 import { WorkflowExtensionService } from '../dist/extension-service.js';
 
-const skillDir = fileURLToPath(new URL('../skills/author/', import.meta.url));
+const skillDir = authorSkillDirectory();
 const example = async name => JSON.parse(await readFile(join(skillDir, 'examples', name), 'utf8'));
 const inlineExample = async () => {
   const main = await readFile(join(skillDir, 'SKILL.md'), 'utf8');
   return JSON.parse(main.match(/```json\n([\s\S]*?)\n```/)[1]);
 };
 
-test('Pi discovers the author skill and all progressive references remain inside the shipped skill', async () => {
+test('Pi discovers the neutral and the Pi-rendered skill, and all progressive references remain inside each', async () => {
+  for (const skillDir of [authorSkillDirectory(), fileURLToPath(new URL('../dist/skills/author/', import.meta.url))]) {
   const loaded = loadSkillsFromDir({ dir: dirname(skillDir), source: 'test' });
   assert.deepEqual(loaded.diagnostics, []);
   const skill = loaded.skills.find(entry => entry.name === 'agentrun-author');
@@ -40,6 +41,7 @@ test('Pi discovers the author skill and all progressive references remain inside
     }
   }
   await checkLinks(skill.filePath);
+  }
 });
 
 test('the extraction example passes native admission and preserves its typed result and scoped prompt', async () => {

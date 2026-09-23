@@ -6,14 +6,16 @@ import {
   createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition,
   VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import { formatWorkflowTree, inspectWorkflow, type WorkflowDeps } from '@parcha/agentrun-dsl';
+import {
+  formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, loadAuthorReference, renderAuthorHostAddendum, type WorkflowDeps,
+} from '@parcha/agentrun-dsl';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
+import { PI_HOST_ADDENDUM } from './host-addendum.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
 import { WorkflowExtensionService, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
-import { loadPiJevGuide, loadPiWorkflowGuide } from './skill-bundle.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
 
 const constructors = {
@@ -115,7 +117,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     return current;
   };
   const readiness = (ctx: ExtensionContext, s: Session) => ({
-    skill: pi.getCommands().some(item => item.name === 'skill:agentrun-author' && item.source === 'skill'),
+    skill: pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill'),
     pi: !!ctx.model && ctx.modelRegistry.getAll().some(model => model.id === ctx.model?.id && model.provider === ctx.model?.provider && model.api === ctx.model?.api),
     jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim(), sop: false, running: s.busy, workflow: !!s.draft,
     mode: s.draft ? s.demo ? 'scripted' : 'live' : undefined,
@@ -296,7 +298,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
 
   pi.registerTool({
     name: 'agentrun', label: 'AgentRun workflow',
-    description: 'Use the agentrun-author skill to compose workflows. Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
+    description: `Use the ${AUTHOR_SKILL_NAME} skill to compose workflows.` + ' Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
       ? 'Only the explicit host-configured tools are available, including during trusted runs. Outer permission hooks are not inherited. '
       : 'Enabled read-only Pi built-ins are available to declared steps. Shell/write/edit need the trusted command for each run; custom extension tools and permission hooks are not inherited. The search tool reads fictional demo sources only. ') + 'Scripted demos stay scripted on rerun; use /agentrun demo live to switch. Saving workflows is not part of v1.',
     parameters: Type.Object({ action: Type.Union([Type.Literal('describe'), Type.Literal('inspect'), Type.Literal('run')]),
@@ -315,7 +317,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       const s = await state(ctx);
       if (args.action === 'describe') {
         const details = { tools: toolSet(ctx).map(t => ({ name: t.name, description: t.description, parameters: t.parameters })),
-          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: { workflow: loadPiWorkflowGuide(), jev: loadPiJevGuide() } };
+          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: { language: loadAuthorReference('language'), workflow: loadAuthorReference('workflow-format'), jev: loadAuthorReference('jev-decisions'), host: renderAuthorHostAddendum(PI_HOST_ADDENDUM) } };
         return textResult(JSON.stringify(details, null, 2), details);
       }
       if (args.action === 'run' && args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then run without a workflow argument.');
@@ -357,11 +359,11 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           show(s, `Unknown AgentRun command: ${raw}\n\n${help}`);
         } else {
           if (s.busy) throw new Error('A workflow is running. Stop it before starting another.');
-          if (!pi.getCommands().some(item => item.name === 'skill:agentrun-author' && item.source === 'skill')) {
+          if (!pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill')) {
             throw new Error('AgentRun authoring skill is unavailable. Enable package skills, then /reload. Run /agentrun status to check discovery.');
           }
           if (!readiness(ctx, s).pi) throw new Error(PI_MODEL_SETUP_MESSAGE);
-          pi.sendUserMessage(`/skill:agentrun-author ${raw}`, { expandPromptTemplates: true });
+          pi.sendUserMessage(`/skill:${AUTHOR_SKILL_NAME} ${raw}`, { expandPromptTemplates: true });
         }
       } catch (error) {
         commandError(s, error);

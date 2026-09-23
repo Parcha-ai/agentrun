@@ -50,6 +50,22 @@ A host often has policy that is not part of the workflow language: a duty paragr
 
 Keep the returned transport schema a superset of the stage schema. A decoder that drops a required domain field fails on the stage schema with `WorkflowOutputInvalidError`, and a review candidate that fails the transport schema is returned to the adapter as a rejection message so the same session can repair it.
 
+## Host addendum for authoring
+
+Authoring has the same split as execution. The package owns the language: `authorContract()` renders it, `validateWorkflow` enforces it, and both read one vocabulary of node kinds, fields and predicates. A host supplies only what is its own through an `AuthorHostAddendum`. The package renders the addendum once, after the language, and never contains host vocabulary itself.
+
+| Field | What the host declares | What the package does with it |
+| --- | --- | --- |
+| `name` | the host's name | the addendum's heading |
+| `initialState` | the keys the host seeds into state, each with what it holds | tells the author the seed; `authorWorkflow` validates candidates against exactly these keys |
+| `outputTypes` | its artifact types, each `prose` (the report writer under the host's name) or `file` (a produced file) | lists them; `candidatePolicyErrors` refuses any other artifact type; `applyHostOutputTypes` turns prose types into the report writer for validation, acceptance and execution |
+| `nodeKinds` | the node kinds it runs | lists them; `candidatePolicyErrors` refuses any other kind |
+| `rules` | host rules, one sentence each | renders them verbatim; the host enforces them in its acceptance callback or tool admission |
+
+`authorWorkflow` returns the candidate as authored. A host with prose output types validates and runs `applyHostOutputTypes(workflow, host)` and keeps the authored bytes for its digest.
+
+An addendum cannot change a language rule: it is appended after the language, which states that host rules add to it. Keep procedural knowledge a domain teaches in the host's expert data rather than in `rules`; the addendum is for what the host is, not what a domain learned. The Pi extension's addendum (`PI_HOST_ADDENDUM`) is a working example: its trusted-run command, its missing SOP text, and the transports it does not offer. A host registers the rendered contract, not the neutral skill: the Pi package builds `dist/skills/author` with the addendum appended to `SKILL.md` and its language reference, so a session reads the host rules without calling any tool. `describe` also returns the addendum as `authoring.host`. The package's own skill and its generated `language.md` stay host-neutral.
+
 ## Adopt the document with another interpreter
 
 `defineWorkflow` emits Workflow v2 JSON. Another interpreter can consume that document without importing this runtime, but a shared format number does not establish equivalent behavior.

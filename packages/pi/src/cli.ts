@@ -2,8 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runWorkflow, validateWorkflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
-import { authorWorkflow } from "./author.js";
+import { authorWorkflow, runWorkflow, validateWorkflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import { createPiRunner, type PiRunnerOptions } from "./runner.js";
 
 const help = `Usage:
@@ -42,7 +41,10 @@ async function main(args: string[]) {
   const config = await import(pathToFileURL(resolve(configPath)).href) as { default: PiRunnerOptions; deps?: WorkflowDeps };
   if (command === "author") {
     if (args.length !== 1) throw new Error(help);
-    const authored = await authorWorkflow({ request: args[0], outputDir, inputKeys, pi: config.default });
+    const maxCandidates = 4;
+    // The author session gets no host tools and stops at the candidate limit.
+    const runNode = createPiRunner({ ...config.default, tools: [], maxSubmissions: maxCandidates });
+    const authored = await authorWorkflow({ request: args[0], outputDir, inputKeys, runNode, maxCandidates });
     console.log(JSON.stringify({ path: authored.path, candidates: authored.candidates, checks: authored.checks }, null, 2));
   } else {
     if (args.length !== 2) throw new Error(help);
