@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { isProxy } from 'node:util/types';
 import { runWorkflow, EffectOutcomeUnknownError } from '../dist/index.js';
 
 const flow = extra => ({v:2,name:'observer-boundary',schemas:{Result:{type:'object',required:['count'],properties:{count:{type:'number'}}}},output:{schemaId:'Result',path:'result'},root:{node:'call',label:'effect',via:'tool',tool:'test.action',args:{},out:'Result',as:'result',deadline_s:1,...extra}});
@@ -150,5 +151,42 @@ test('observer mutations cannot alter selected or sifted source records', async 
     });
     assert.equal(result.state.items[0].name, 'original');
     assert.equal((kind === 'pick' ? result.output.item : result.output.items[0]).name, 'original');
+  }
+});
+
+
+test('trusted host preparation runs once per nested event and detaches before observers', async () => {
+  const leaf = { v: 2, name: 'leaf', schemas: { Any: { type: 'object' } }, input: { schemaId: 'Any' }, output: { schemaId: 'Any' },
+    root: { node: 'chain', steps: [{ node: 'code', label: 'leaf-step', code: 's => ({nested: {value: 1}})' }] } };
+  const candidate = { v: 2, name: 'parent', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any' },
+    root: { node: 'chain', steps: [{ node: 'workflow', label: 'child', workflow: leaf, input: {}, out: 'Any', as: 'child' }] } };
+  let prepared = 0, observed = 0;
+  const result = await runWorkflow(candidate, {}, {
+    prepareEvent: event => { prepared++; return structuredClone(event); },
+    onEvent: event => { observed++; if (event.type === 'code.patch') event.detail.nested.value = 99; },
+  });
+  assert(prepared > 0);
+  assert.equal(prepared, observed);
+  assert.equal(result.state.child.nested.value, 1);
+});
+
+test('trusted host can reject unsafe or oversized events before generic snapshot traversal', async () => {
+  for (const source of ["s => ({scratch:new Proxy({}, {ownKeys(){throw Error('trap must not run')}})})", 's => ({scratch:Array(200001).fill(0)})']) {
+    const candidate = { v: 2, name: 'host validation', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any' },
+      root: { node: 'code', label: 'emit', code: source } };
+    let rejected = 0;
+    const reason = Error('host refused observation');
+    await assert.rejects(runWorkflow(candidate, {}, {
+      prepareEvent: event => {
+        if (event.type === 'code.patch') {
+          assert(isProxy(event.detail.scratch) || event.detail.scratch.length === 200001);
+          rejected++;
+          throw reason;
+        }
+        return structuredClone(event);
+      },
+      onEvent: event => { assert.notEqual(event.type, 'code.patch'); },
+    }), error => error === reason);
+    assert.equal(rejected, 1);
   }
 });

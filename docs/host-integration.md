@@ -83,3 +83,17 @@ An addendum cannot change a language rule: it is appended after the language, wh
 `defineWorkflow` emits Workflow v2 JSON. Another interpreter can consume that document without importing this runtime, but a shared format number does not establish equivalent behavior.
 
 Validate against the interpreter that will execute the document. Test its supported nodes, input and output contracts, assembled SOP instructions, cancellation and recovery. Keep the current interpreter available until those checks pass. Activate changed definitions as new candidates and retain old receipts if rollback or reconciliation is needed.
+
+### Host preparation of observations
+
+A host with required trace validation can supply synchronous `prepareEvent(event)`.
+It receives the event before generic copying, must not mutate it, and must return a
+detached snapshot for `onEvent`. A thrown preparation error stops execution; ordinary
+observer exceptions remain best effort. This is a trusted host boundary, not a user
+callback or a sandbox. Without it the interpreter detaches JSON values and preserves
+unsafe non-JSON shapes for host validation.
+
+Pi uses this boundary to enforce its existing per-event byte, depth and value limits
+before copying a full oversized event. The generic DSL adds no payload or resource
+limit. Scoped location and child-label forwarding preserve the observation boundary,
+so one event is prepared once regardless of graph nesting.
