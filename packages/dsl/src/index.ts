@@ -12,7 +12,7 @@ export {
 export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem,
-  LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, WorkflowInvocation,
+  LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, DispatchNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CallRetryClass, CallPredicate, PollClause,
   ModelTier, WorkflowEffort, WorkflowThinking, VerifyClause,
   AskPredicate, MechanicalPredicate, Predicate,

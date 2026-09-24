@@ -1,0 +1,161 @@
+{
+  "description": "Route proceed at confidence 0.6 takes proceed; only proceed invokes an effect.",
+  "workflow": {
+    "v": 2,
+    "name": "jev-route-at-threshold",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "route",
+      "label": "decision",
+      "state": {
+        "request": "Use the complete supplied request and policy."
+      },
+      "instructions": "Choose proceed, withhold, or clarify from the supplied request.",
+      "as": "decision",
+      "unsure": {
+        "branch": "clarify",
+        "gte": 0.6
+      },
+      "branches": {
+        "proceed": {
+          "criteria": "The request calls for proceed.",
+          "body": {
+            "node": "call",
+            "label": "apply",
+            "via": "tool",
+            "tool": "apply_move",
+            "args": {},
+            "out": "Any",
+            "as": "result",
+            "deadline_s": 10
+          }
+        },
+        "withhold": {
+          "criteria": "The request calls for withhold.",
+          "body": {
+            "node": "code",
+            "label": "withhold",
+            "as": "result",
+            "code": "() => ({\"action\":\"withhold\",\"changed\":false})"
+          }
+        },
+        "clarify": {
+          "criteria": "The request calls for clarify.",
+          "body": {
+            "node": "code",
+            "label": "clarify",
+            "as": "result",
+            "code": "() => ({\"action\":\"clarify\",\"changed\":false})"
+          }
+        }
+      }
+    }
+  },
+  "input": {},
+  "script": {
+    "judge": {
+      "/root": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "proceed",
+            "probabilities": {
+              "proceed": 0.8,
+              "withhold": 0.1,
+              "clarify": 0.1
+            },
+            "confidence": 0.6
+          }
+        }
+      }
+    },
+    "effect": {
+      "/root/branches/proceed/body": {
+        "result": {
+          "action": "proceed",
+          "changed": true
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "decision": {
+        "branch": "proceed",
+        "taken": "proceed",
+        "unsure": false
+      },
+      "decision$answers": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "proceed",
+            "probabilities": {
+              "proceed": 0.8,
+              "withhold": 0.1,
+              "clarify": 0.1
+            },
+            "confidence": 0.6
+          }
+        },
+        "confidence": {
+          "branch": 0.6
+        },
+        "weakest": "branch",
+        "min_confidence": 0.6
+      },
+      "result": {
+        "action": "proceed",
+        "changed": true
+      }
+    },
+    "output": {
+      "decision": {
+        "branch": "proceed",
+        "taken": "proceed",
+        "unsure": false
+      },
+      "decision$answers": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "proceed",
+            "probabilities": {
+              "proceed": 0.8,
+              "withhold": 0.1,
+              "clarify": 0.1
+            },
+            "confidence": 0.6
+          }
+        },
+        "confidence": {
+          "branch": 0.6
+        },
+        "weakest": "branch",
+        "min_confidence": 0.6
+      },
+      "result": {
+        "action": "proceed",
+        "changed": true
+      }
+    },
+    "events": {
+      "/root": [
+        "route.chosen:decision:proceed"
+      ],
+      "/root/branches/proceed/body": [
+        "node.start:apply",
+        "node.end:apply:ok"
+      ]
+    }
+  }
+}

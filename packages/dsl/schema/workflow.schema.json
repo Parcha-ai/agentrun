@@ -1067,6 +1067,68 @@
           ]
         },
         {
+          "description": "Select a stored string decision without inference; non-string values always fail.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "dispatch",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "valuePath": {
+              "type": "string",
+              "title": "valuePath"
+            },
+            "branches": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "body": {
+                    "$ref": "#/definitions/WorkflowNode",
+                    "title": "body"
+                  }
+                },
+                "required": [
+                  "body"
+                ]
+              },
+              "title": "branches"
+            },
+            "otherwise": {
+              "type": "string",
+              "title": "otherwise"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
+            }
+          },
+          "required": [
+            "branches",
+            "label",
+            "node",
+            "valuePath"
+          ]
+        },
+        {
           "type": "object",
           "properties": {
             "node": {

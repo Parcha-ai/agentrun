@@ -1,0 +1,161 @@
+{
+  "description": "Route proceed at confidence 0.58 takes clarify; only proceed invokes an effect.",
+  "workflow": {
+    "v": 2,
+    "name": "jev-route-below-threshold",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "route",
+      "label": "decision",
+      "state": {
+        "request": "Use the complete supplied request and policy."
+      },
+      "instructions": "Choose proceed, withhold, or clarify from the supplied request.",
+      "as": "decision",
+      "unsure": {
+        "branch": "clarify",
+        "gte": 0.6
+      },
+      "branches": {
+        "proceed": {
+          "criteria": "The request calls for proceed.",
+          "body": {
+            "node": "call",
+            "label": "apply",
+            "via": "tool",
+            "tool": "apply_move",
+            "args": {},
+            "out": "Any",
+            "as": "result",
+            "deadline_s": 10
+          }
+        },
+        "withhold": {
+          "criteria": "The request calls for withhold.",
+          "body": {
+            "node": "code",
+            "label": "withhold",
+            "as": "result",
+            "code": "() => ({\"action\":\"withhold\",\"changed\":false})"
+          }
+        },
+        "clarify": {
+          "criteria": "The request calls for clarify.",
+          "body": {
+            "node": "code",
+            "label": "clarify",
+            "as": "result",
+            "code": "() => ({\"action\":\"clarify\",\"changed\":false})"
+          }
+        }
+      }
+    }
+  },
+  "input": {},
+  "script": {
+    "judge": {
+      "/root": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "proceed",
+            "probabilities": {
+              "proceed": 0.8,
+              "withhold": 0.1,
+              "clarify": 0.1
+            },
+            "confidence": 0.58
+          }
+        }
+      }
+    },
+    "code": {
+      "/root/branches/clarify/body": {
+        "return": {
+          "action": "clarify",
+          "changed": false
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "decision": {
+        "branch": "proceed",
+        "taken": "clarify",
+        "unsure": true
+      },
+      "decision$answers": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "proceed",
+            "probabilities": {
+              "proceed": 0.8,
+              "withhold": 0.1,
+              "clarify": 0.1
+            },
+            "confidence": 0.58
+          }
+        },
+        "confidence": {
+          "branch": 0.58
+        },
+        "weakest": "branch",
+        "min_confidence": 0.58
+      },
+      "result": {
+        "action": "clarify",
+        "changed": false
+      }
+    },
+    "output": {
+      "decision": {
+        "branch": "proceed",
+        "taken": "clarify",
+        "unsure": true
+      },
+      "decision$answers": {
+        "answers": {
+          "branch": {
+            "type": "choice",
+            "choice": "proceed",
+            "probabilities": {
+              "proceed": 0.8,
+              "withhold": 0.1,
+              "clarify": 0.1
+            },
+            "confidence": 0.58
+          }
+        },
+        "confidence": {
+          "branch": 0.58
+        },
+        "weakest": "branch",
+        "min_confidence": 0.58
+      },
+      "result": {
+        "action": "clarify",
+        "changed": false
+      }
+    },
+    "events": {
+      "/root": [
+        "route.chosen:decision:clarify"
+      ],
+      "/root/branches/clarify/body": [
+        "node.start:clarify",
+        "node.end:clarify:ok"
+      ]
+    }
+  }
+}
