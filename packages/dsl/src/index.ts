@@ -27,7 +27,7 @@ export {
 export type {
   SystemOneQuestion, SystemOneAnswer, SystemOneResult, SystemOneRetryClass, SystemOneResponseReason,
   CompiledQuestions, AnswersSidecar, DecisionReceipt, DecisionRequest, DecisionContext,
-  SystemOneUsage, SystemOnePricing, SystemOneAttempt, SystemOneMetadata, SystemOneResponse, SystemOneRequestFailure,
+  SystemOneUsage, SystemOnePricing, SystemOneAttempt, SystemOneMetadata, SystemOneResponse, SystemOneRequestFailure, SystemOneFailureReason,
 } from "./system-one.js";
 
 export { inspectWorkflow, formatWorkflowTree } from "./inspection.js";

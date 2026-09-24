@@ -6,7 +6,7 @@ import { validateAnswers, answerConfidence, answersSidecar, answersToValue, comp
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
-import { decisionMetadata, recordDecisionCall } from "./decision-receipts.js";
+import { decisionEventMetadata, decisionMetadata, recordDecisionCall } from "./decision-receipts.js";
 import type { DecisionContext, DecisionReceipt, DecisionRequest, SystemOneResponse } from "./system-one.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
@@ -1180,7 +1180,7 @@ async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>
   const p = answer?.type === "noul" ? answer.noul : NaN;
   if (!Number.isFinite(p)) throw new Error(`${at.kind} node "${at.label}": the ask predicate got no yes/no answer`);
   const gte = ask.gte ?? 0.6;
-  deps.onEvent?.({ type: "ask.evaluated", label: at.label, detail: { kind: at.kind, p_yes: +p.toFixed(4), gte, holds: p >= gte, ...decisionMetadata(result), decision_id: result.decision_id } });
+  deps.onEvent?.({ type: "ask.evaluated", label: at.label, detail: { kind: at.kind, p_yes: +p.toFixed(4), gte, holds: p >= gte, ...decisionEventMetadata(result), decision_id: result.decision_id } });
   return { holds: p >= gte, detail: { p_yes: p, gte } };
 }
 
@@ -1531,8 +1531,7 @@ const requireJudge = (deps: WorkflowDeps, kind: string, label: string): ((params
       (deps as LocatedDeps)[DECISION_WORKFLOW]!, deps.decisionContext, () => deps.runJudge!(params), deps.recordDecision,
       receipt => deps.onEvent?.({ type: "decision.receipt", label: params.label, detail: {
         version: receipt.version, id: receipt.id, status: receipt.status, run_id: receipt.run_id, attempt_id: receipt.attempt_id,
-        phase: receipt.phase, started_at: receipt.started_at, workflow_sha256: receipt.workflow_sha256, input_sha256: receipt.input_sha256,
-        questions_sha256: receipt.questions_sha256, elapsed_ms: receipt.elapsed_ms, ...receipt.metadata, error: receipt.error,
+        phase: receipt.phase, started_at: receipt.started_at, elapsed_ms: receipt.elapsed_ms, ...decisionEventMetadata(receipt.metadata), error: receipt.error,
       } }),
     );
   };
@@ -1568,7 +1567,7 @@ async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, wor
   const set = questionSetOf(workflow, node);
   const { answers, sidecar, metering } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), set.questions);
   const value = set.decode(answers);
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "judge", as: node.as, value, sidecar, ...metering } });
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "judge", as: node.as, value, sidecar, ...decisionEventMetadata(metering), decision_id: metering.decision_id } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
@@ -1595,7 +1594,7 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   const index = none ? null : Object.keys(options).indexOf(a.choice);
   if (index !== null && index < 0) throw new Error(`pick node "${node.label}": the choice "${a.choice}" names no item`);
   const value = { index, item: index === null ? null : items[index], none, option: none ? null : options[a.choice] };
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "pick", as: node.as, value, sidecar, ...metering } });
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "pick", as: node.as, value, sidecar, ...decisionEventMetadata(metering), decision_id: metering.decision_id } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
@@ -1628,7 +1627,7 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
     }
   }
   const value = { items: kept.map((i) => items[i]), values, answers: sidecars, kept };
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "sift", as: node.as, value, count: items.length, kept: kept.length, ...(metering ?? {}) } });
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "sift", as: node.as, value, count: items.length, kept: kept.length, ...(metering ? { ...decisionEventMetadata(metering), decision_id: metering.decision_id } : {}) } });
   return { ...state, [node.as]: value };
 }
 
@@ -1642,7 +1641,7 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
   const unsure = Boolean(node.unsure && a.confidence < node.unsure.gte);
   const taken = unsure ? node.unsure!.branch : a.choice;
   const value = { branch: a.choice, taken, unsure };
-  deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, ...metering } });
+  deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, ...decisionEventMetadata(metering), decision_id: metering.decision_id } });
   const routed = node.as ? { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar } : state;
   return runNodeOnState(node.branches[taken].body, routed, workflow, scopeExecution(deps, "branches", taken, "body"));
 }
@@ -2147,7 +2146,7 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
     reviewedCandidate = JSON.stringify(sub);
     const sidecar = answersSidecar(answers);
     drives.push({ drive, doubted, unmet, accepted, sidecar }); last = { answers, doubted, unmet };
-    deps.onEvent?.({ type: "verify.answered", label: node.label, detail: { drive, doubted, unmet, accepted, sidecar, ...decisionMetadata(result), decision_id: result.decision_id } });
+    deps.onEvent?.({ type: "verify.answered", label: node.label, detail: { drive, doubted, unmet, accepted, sidecar, ...decisionEventMetadata(result), decision_id: result.decision_id } });
     if (accepted) return { accepted: true as const };
     if (drive >= maxDrives) throw new WorkflowVerificationError(node.label, sub, drives, `exhausted ${maxDrives} review attempts; unmet: ${unmet.join(", ") || "none"}; doubted: ${doubted.join(", ") || "none"}`);
     const line = (id: string) => `${id}: ${String(schema[id]?.description ?? questions[id].instructions).replace(/\s+/g, " ").trim()}`;

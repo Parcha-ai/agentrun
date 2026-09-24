@@ -51,7 +51,8 @@ test('all semantic paths retain metadata before their answers affect the workflo
     const applied = events.find(e => ['judge.answered', 'route.chosen', 'ask.evaluated', 'verify.answered'].includes(e.type));
     assert.equal(applied.detail.decision_id, receipt.id);
     assert.deepEqual(applied.detail.usage, metadata.usage);
-    assert.equal(applied.detail.request_sha256, metadata.request_sha256);
+    assert.equal(applied.detail.request_sha256, undefined);
+    for (const key of ["input_sha256", "questions_sha256", "workflow_sha256", "request_sha256"]) assert.equal(decision.detail[key], undefined);
   }
 });
 

@@ -36,16 +36,23 @@ export type SystemOneMetadata = {
   request_sha256?: string | null;
   provider_request_id?: string | null;
   pricing?: SystemOnePricing | null;
-  transport_attempts?: SystemOneAttempt[];
+  transport_attempts?: SystemOneAttempt[] | null;
   replayed?: boolean;
 };
 export type SystemOneResponse = SystemOneMetadata & { answers: Record<string, SystemOneAnswer> };
 
 /** Sanitized adapters can attach metering even when their response cannot be consumed. */
 export type SystemOneRequestFailure = "configuration" | "invalid_request" | "invalid_response" | "http" | "connection" | "aborted" | "timeout";
+export type SystemOneFailureReason = SystemOneResponseReason | "response_shape" | "token_usage" | "model_identifier" |
+  "cost_range" | "answer_validation" | "max_tokens_exceeded" | "invalid_state" | "state_too_large" | "invalid_questions";
 export class SystemOneRequestError extends Error {
   metadata?: SystemOneMetadata;
-  constructor(message: string, readonly failureKind?: SystemOneRequestFailure) { super(message); }
+  readonly failureReason?: SystemOneFailureReason;
+  constructor(message: string, readonly failureKind?: SystemOneRequestFailure, reason?: SystemOneFailureReason) {
+    super(message);
+    if (reason && (isSystemOneResponseReason(reason) || ["response_shape", "token_usage", "model_identifier", "cost_range",
+      "answer_validation", "max_tokens_exceeded", "invalid_state", "state_too_large", "invalid_questions"].includes(reason))) this.failureReason = reason;
+  }
 }
 
 export type DecisionRequest = {
@@ -66,8 +73,8 @@ export type DecisionReceipt = {
   execution_path: string;
   label: string;
   kind: DecisionRequest["kind"];
-  input_sha256: string;
-  questions_sha256: string;
+  input_sha256: string | null;
+  questions_sha256: string | null;
   started_at: string;
   elapsed_ms: number;
   status: "answered" | "failed";
@@ -82,7 +89,7 @@ export type DecisionReceipt = {
     transport_attempts: SystemOneAttempt[] | null;
     replayed: boolean;
   };
-  error: { category: "invalid_response" | "adapter"; reason: SystemOneResponseReason | null; adapter_kind: SystemOneRequestFailure | null } | null;
+  error: { category: "invalid_response" | "adapter"; reason: SystemOneFailureReason | null; adapter_kind: SystemOneRequestFailure | null } | null;
 };
 
 export const SYSTEM_ONE_LIMITS = { maxChoiceOptions: 240, minScoreLevels: 2, maxScoreLevels: 10 } as const;

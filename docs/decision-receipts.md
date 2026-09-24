@@ -9,14 +9,16 @@ The request hash identifies content; it is never a billing deduplication key.
 `WorkflowDeps.recordDecision(receipt, request)` is an optional awaited host
 storage hook. The request contains exact state and questions and belongs in
 protected artifact storage. Receipts contain validated answers and metadata.
-General events contain receipt identity and metering, not the full input. A host
+General events contain opaque receipt identity and metering. Content hashes stay
+in protected storage because a deterministic digest can reveal low-entropy inputs. A host
 that configures the hook must persist before resolving it; a write failure stops
 the workflow before the judgment can control a subsequent action. Errors preserve
 both the original decision failure and a concurrent persistence failure.
 
 `decisionContext` supplies optional run, attempt and phase identifiers. The DSL
 computes the document hash itself. Unknown usage, price and provider identifiers
-remain null. Node labels never imply a phase. Hosts own storage, retention,
+remain null. Unserializable input hashes are null and the adapter still reports
+its structured invalid-input failure. Node labels never imply a phase. Hosts own storage, retention,
 recovery and accounting; the DSL does not introduce a billing service.
 
 The Jev adapter records each transport attempt with an independent UUID, outcome,

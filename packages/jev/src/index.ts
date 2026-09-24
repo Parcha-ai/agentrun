@@ -48,7 +48,7 @@ export class JevError extends SystemOneRequestError {
   readonly responseDiagnostic?: JevResponseDiagnostic;
   constructor(readonly code: JevErrorCode, message: string, readonly attempts: number = 0, readonly status?: number,
     readonly requestDiagnostic?: JevRequestDiagnostic, responseDiagnostic?: JevResponseDiagnostic) {
-    super(message, code);
+    super(message, code, responseDiagnostic?.reason ?? requestDiagnostic?.reason);
     this.name = "JevError";
     if (isJevResponseReason(responseDiagnostic?.reason)) this.responseDiagnostic = { reason: responseDiagnostic.reason };
   }

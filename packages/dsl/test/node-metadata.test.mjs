@@ -129,9 +129,6 @@ async function observe(c, workflow) {
       if (detail && typeof detail === "object") {
         for (const key of ["duration_ms", "elapsed_ms", "started_at", "decision_id"]) if (key in detail) detail[key] = "normalized";
         if (event.type === "decision.receipt") {
-          // The document digest intentionally includes host metadata; it is not executable state.
-          assert.equal(detail.workflow_sha256, workflowSha256(workflow));
-          detail.workflow_sha256 = "document hash";
           detail.id = "invocation id";
         }
       }

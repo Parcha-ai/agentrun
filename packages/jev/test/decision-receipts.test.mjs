@@ -50,6 +50,30 @@ test('cancellation retains the in-flight attempt as unknown', async () => {
   });
 });
 
+test('invalid JSON and adapter diagnostics survive the receipt boundary without exposing content hashes', async () => {
+  const flow = { v: 2, name: 'invalid input receipt', schemas: { result: { type: 'object', properties: { ready: { type: 'boolean', description: 'Is it ready?' } } } },
+    output: { schemaId: 'result' }, root: { node: 'judge', label: 'judge', state: { source: '{source}' }, out: 'result', as: 'result' } };
+  let calls = 0, receipt;
+  const events = [];
+  const deps = {
+    runJudge: createJevRunner({ ...settings, fetch: async () => { calls++; return response({ ...answer(), answers: {} }); } }),
+    recordDecision: async value => { receipt = value; }, onEvent: e => events.push(e),
+  };
+  await assert.rejects(runWorkflow(flow, { source: 1n }, deps), e => e.code === 'invalid_request');
+  assert.equal(calls, 0);
+  assert.equal(receipt.status, 'failed');
+  assert.equal(receipt.input_sha256, null);
+  assert.equal(receipt.error.reason, 'invalid_state');
+  assert.equal(receipt.error.adapter_kind, 'invalid_request');
+  await assert.rejects(runWorkflow(flow, { source: 'vip' }, deps), e => e.code === 'invalid_response');
+  assert.equal(receipt.error.reason, 'answer_keys');
+  assert.equal(receipt.error.adapter_kind, 'invalid_response');
+  assert.match(receipt.input_sha256, /^[a-f0-9]{64}$/);
+  for (const event of events.filter(e => e.type === 'decision.receipt')) {
+    for (const key of ['input_sha256', 'questions_sha256', 'request_sha256', 'workflow_sha256']) assert.equal(event.detail[key], undefined);
+  }
+});
+
 test('CPU end-to-end: local HTTP fixture through SDK, adapter, interpreter, durable callback and recovery', async t => {
   let calls = 0;
   const server = createServer(async (req, res) => {

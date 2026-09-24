@@ -9,7 +9,15 @@ export const decisionMetadata = (value: SystemOneMetadata = {}): DecisionReceipt
   request_sha256: value.request_sha256 ?? null, provider_request_id: value.provider_request_id ?? null,
   pricing: value.pricing ?? null, transport_attempts: value.transport_attempts ?? null, replayed: value.replayed ?? false,
 });
-const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+/** Content hashes stay in protected storage; they can reveal low-entropy inputs. */
+export const decisionEventMetadata = (value: SystemOneMetadata = {}) => {
+  const { request_sha256: _requestHash, ...metadata } = decisionMetadata(value);
+  return metadata;
+};
+const hash = (value: unknown): string | null => {
+  try { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+  catch { return null; } // Invalid JSON must reach the adapter's structured failure path.
+};
 
 /** Required persistence happens before a decision may affect workflow state or actions. */
 export async function recordDecisionCall(
@@ -41,7 +49,8 @@ export async function recordDecisionCall(
     metadata: structuredClone(decisionMetadata(result ?? (failure instanceof SystemOneRequestError ? failure.metadata : undefined))),
     error: failed ? {
       category: failure instanceof SystemOneError ? "invalid_response" : "adapter",
-      reason: failure instanceof SystemOneError ? failure.responseReason ?? null : null,
+      reason: failure instanceof SystemOneError ? failure.responseReason ?? null
+        : failure instanceof SystemOneRequestError ? failure.failureReason ?? null : null,
       adapter_kind: failure instanceof SystemOneRequestError ? failure.failureKind ?? null : null,
     } : null,
   };
