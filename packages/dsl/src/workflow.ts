@@ -2220,6 +2220,7 @@ export async function runWorkflow(workflow: Workflow, input: Record<string, unkn
   if (Object.prototype.hasOwnProperty.call(input, HOST_STATE_KEY)) throw new WorkflowInputInvalidError(workflow.name, [`input must not contain the reserved "${HOST_STATE_KEY}" key`]);
   try {
     const state = await runNodeOnState(workflow.root, snapshotState(input), workflow, deps);
+    if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
     const host = hostStateOf(state);
     const output = workflow.output.path
       ? getPath(state, workflow.output.path)
@@ -2264,6 +2265,7 @@ export async function runWorkflowSlice(
     let out = state;
     for (let i = a; i <= b; i++) out = await runNodeOnState(root[i], out, desugared,
       desugared.root.node === "chain" ? scopeExecution(deps, "steps", i) : deps);
+    if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
     return { status: "complete", state: out, focus: { from: labels[a], to: labels[b] } };
   } catch (error) {
     if (error instanceof EscalationSignal) return { status: "escalated", state: error.escalation.state, escalation: error.escalation };
