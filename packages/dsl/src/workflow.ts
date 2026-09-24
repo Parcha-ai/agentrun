@@ -1,3 +1,4 @@
+import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
@@ -1745,7 +1746,8 @@ async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>
       try {
         // TypeScript void callbacks can still return promises. Consume rejection without
         // awaiting telemetry or allowing it to replace an execution or recovery outcome.
-        const returned: unknown = observer(event);
+        // Observers receive snapshots, never objects shared with execution state.
+        const returned: unknown = observer(observerSnapshot(event));
         if (returned && typeof (returned as PromiseLike<unknown>).then === "function") {
           void Promise.resolve(returned).catch(() => {});
         }
