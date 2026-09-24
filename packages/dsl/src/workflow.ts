@@ -1,3 +1,4 @@
+import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
@@ -305,8 +306,14 @@ export type WorkflowDeps = {
   signal?: AbortSignal;
   /** Best-effort observation only: thrown errors and rejected promises are ignored.
    * Observers are never awaited. Use required checkpoints for durable lifecycle gates. */
-  onEvent?: (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => void;
+  onEvent?: (event: WorkflowEvent) => void;
+  /** Trusted host boundary: return a detached snapshot without mutating the input.
+   * Runs before generic copying; undefined or thrown errors omit the event.
+   * Required trace validation cancels through the host signal, preserving execution cleanup. */
+  prepareEvent?: (event: WorkflowEvent) => WorkflowEvent | undefined;
 };
+
+export type WorkflowEvent = { type: string; label: string; detail?: unknown; executionPath?: string };
 
 export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
   const out = new Set<string>();
@@ -1670,7 +1677,7 @@ function withExecutionLocation(deps: WorkflowDeps): WorkflowDeps {
     ...(deps.runNode ? { runNode: params => deps.runNode!({ ...params, executionPath: params.executionPath ?? path }) } : {}),
     ...(deps.runEffect ? { runEffect: params => deps.runEffect!({ ...params, executionPath: params.executionPath ?? path }) } : {}),
     ...(deps.runJudge ? { runJudge: params => deps.runJudge!({ ...params, executionPath: params.executionPath ?? path }) } : {}),
-    ...(deps.onEvent ? { onEvent: event => deps.onEvent!({ ...event, executionPath: event.executionPath ?? path }) } : {}),
+    ...(deps.onEvent ? { onEvent: forwardObserver(deps.onEvent, event => ({ ...event, executionPath: event.executionPath ?? path })) } : {}),
   };
 }
 
@@ -1728,7 +1735,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
       wait: (node, ms, item, path) => recovery.wait(relabel(node), ms, item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(relabel(node), results, error, path) } : {}),
     } } : {}),
-    ...(deps.onEvent ? { onEvent: event => deps.onEvent!({ ...event, label: `${prefix}/${event.label}` }) } : {}),
+    ...(deps.onEvent ? { onEvent: forwardObserver(deps.onEvent, event => ({ ...event, label: `${prefix}/${event.label}` })) } : {}),
   };
 }
 
@@ -1737,15 +1744,26 @@ const CHECKPOINTED_STRUCTURE_KINDS: ReadonlySet<string> = new Set(["map", "paral
 
 const guardedObservers = new WeakSet<NonNullable<WorkflowDeps["onEvent"]>>();
 
+function forwardObserver(observer: NonNullable<WorkflowDeps["onEvent"]>, transform: (event: WorkflowEvent) => WorkflowEvent): NonNullable<WorkflowDeps["onEvent"]> {
+  const forwarded = (event: WorkflowEvent) => observer(transform(event));
+  if (guardedObservers.has(observer)) guardedObservers.add(forwarded);
+  return forwarded;
+}
+
 async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   deps = withExecutionLocation(deps);
   const observer = deps.onEvent;
   if (observer && !guardedObservers.has(observer)) {
     const guarded: NonNullable<WorkflowDeps["onEvent"]> = event => {
+      let detached: WorkflowEvent | undefined;
+      try { detached = deps.prepareEvent ? deps.prepareEvent(event) : observerSnapshot(event); }
+      catch { return; }
+      if (detached === undefined) return;
       try {
         // TypeScript void callbacks can still return promises. Consume rejection without
         // awaiting telemetry or allowing it to replace an execution or recovery outcome.
-        const returned: unknown = observer(event);
+        // Observers receive snapshots, never objects shared with execution state.
+        const returned: unknown = observer(detached);
         if (returned && typeof (returned as PromiseLike<unknown>).then === "function") {
           void Promise.resolve(returned).catch(() => {});
         }
@@ -2202,6 +2220,7 @@ export async function runWorkflow(workflow: Workflow, input: Record<string, unkn
   if (Object.prototype.hasOwnProperty.call(input, HOST_STATE_KEY)) throw new WorkflowInputInvalidError(workflow.name, [`input must not contain the reserved "${HOST_STATE_KEY}" key`]);
   try {
     const state = await runNodeOnState(workflow.root, snapshotState(input), workflow, deps);
+    if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
     const host = hostStateOf(state);
     const output = workflow.output.path
       ? getPath(state, workflow.output.path)
@@ -2246,6 +2265,7 @@ export async function runWorkflowSlice(
     let out = state;
     for (let i = a; i <= b; i++) out = await runNodeOnState(root[i], out, desugared,
       desugared.root.node === "chain" ? scopeExecution(deps, "steps", i) : deps);
+    if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
     return { status: "complete", state: out, focus: { from: labels[a], to: labels[b] } };
   } catch (error) {
     if (error instanceof EscalationSignal) return { status: "escalated", state: error.escalation.state, escalation: error.escalation };

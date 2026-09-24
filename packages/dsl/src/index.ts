@@ -10,7 +10,7 @@ export {
   EffectOutcomeUnknownError, EscalationSignal,
 } from "./workflow.js";
 export type {
-  Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowRunResult, HostPolicy, HostPolicyContext,
+  Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowEvent, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CallRetryClass, CallPredicate, PollClause,
