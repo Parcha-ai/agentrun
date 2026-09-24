@@ -182,3 +182,22 @@ test('retention and event guards are independent finite host settings, and count
     assert.equal(second.trace.retainedEvents,0);assert.equal(second.trace.rejectedEvents,0);
   } finally {await service.dispose();}
 });
+
+test('rejected effect failure trace preserves the reconciliation handle', {timeout:2000}, async()=>{
+  const service=new WorkflowExtensionService({allowedTools:['fictional_tool'],limits:{maxEventBytes:300}});
+  service.prepare(graph([{node:'call',label:'effect',via:'tool',tool:'fictional_tool',args:{},out:'Result',as:'result',deadline_s:.01}]));
+  let settle,calls=0;const pending=new Promise(resolve=>{settle=resolve;});
+  try {
+    const report=await service.run({}, {deps:{runEffect:()=>{calls++;return pending;}}});
+    assert.equal(calls,1);assert.equal(report.status,'failed');assert.equal(report.error.code,'limit');
+    assert.ok(report.trace.rejectedEvents>0);
+    assert.ok(report.events.some(event=>event.type==='effect.attempt'));
+    assert.ok(report.events.every(event=>event.type!=='effect.failed'));
+    assert.equal(report.uncertainEffects.length,1);
+    assert.equal(report.uncertainEffects[0].outcome,'unknown');
+    assert.match(report.uncertainEffects[0].idempotencyKey,/^[a-f0-9]{64}$/);
+    const retained=service.inspect().lastReport;
+    settle({value:12});await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(service.inspect().lastReport,retained);
+  } finally {settle({value:12});await service.dispose();}
+});

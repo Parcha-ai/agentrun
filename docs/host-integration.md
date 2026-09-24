@@ -88,10 +88,13 @@ Validate against the interpreter that will execute the document. Test its suppor
 
 A host with required trace validation can supply synchronous `prepareEvent(event)`.
 It receives the event before generic copying, must not mutate it, and must return a
-detached snapshot for `onEvent`. A thrown preparation error stops execution; ordinary
-observer exceptions remain best effort. This is a trusted host boundary, not a user
-callback or a sandbox. Without it the interpreter detaches JSON values and preserves
-unsafe non-JSON shapes for host validation.
+detached snapshot for `onEvent`, or `undefined` to omit a rejected event. Preparation
+and observer exceptions cannot replace execution failures or interrupt recovery cleanup.
+For required trace validation, the host aborts its supplied signal before omitting the
+event. Cancellation stops subsequent work while preserving uncertain-effect handles and
+partial-result persistence. This is a trusted host boundary, not a user callback or a
+sandbox. Without it the interpreter detaches JSON values and preserves unsafe non-JSON
+shapes for host validation.
 
 Pi uses this boundary to enforce its existing per-event byte, depth and value limits
 before copying a full oversized event. The generic DSL adds no payload or resource
