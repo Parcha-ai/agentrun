@@ -187,6 +187,21 @@ theorem eval_events (O : Oracle) : ∀ (n : Node) (path : ExecPath) (addr : Addr
     · simp at he
     · split at he <;>
       · simp only [List.mem_singleton] at he; subst he; exact List.prefix_refl _
+  | .dispatch label vp branches otherwise as requires, path, addr, lp, s => by
+    simp only [eval]; intro e he
+    rcases h1 : checkRequires label addr s requires with x | _
+    · simp [h1] at he
+    simp only [h1] at he
+    rcases h2 : dispatchChoice s vp (branchNames branches) otherwise with x | ⟨value, taken, fallback⟩
+    · simp [h2] at he
+    simp only [h2] at he
+    split at he
+    · next o ev' heq =>
+      simp only [List.mem_append, List.mem_singleton] at he
+      rcases he with rfl | he
+      · exact List.prefix_refl _
+      · exact evalNamed_events O branches _ path addr lp _ _ heq e he
+    · simp only [List.mem_singleton] at he; subst he; exact List.prefix_refl _
   | .route label st branches unsure as requires, path, addr, lp, s => by
     simp only [eval]; intro e he
     rcases h1 : checkRequires label addr s requires with x | _

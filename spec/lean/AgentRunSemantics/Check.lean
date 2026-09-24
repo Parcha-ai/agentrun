@@ -105,3 +105,31 @@ open AgentRun
 /-- info: 'AgentRun.F9_fixed_one_resolver' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms F9_fixed_one_resolver
+
+/-- info: 'AgentRun.jev_route_below_threshold' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms jev_route_below_threshold
+
+/-- info: 'AgentRun.jev_route_at_or_above_threshold' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms jev_route_at_or_above_threshold
+
+/-- info: 'AgentRun.jev_route_undeclared_fails' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms jev_route_undeclared_fails
+
+/-- info: 'AgentRun.dispatch_declared_string' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms dispatch_declared_string
+
+/-- info: 'AgentRun.dispatch_missing_fallback' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms dispatch_missing_fallback
+
+/-- info: 'AgentRun.dispatch_missing_fails' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms dispatch_missing_fails
+
+/-- info: 'AgentRun.dispatch_selected_continuation' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms dispatch_selected_continuation

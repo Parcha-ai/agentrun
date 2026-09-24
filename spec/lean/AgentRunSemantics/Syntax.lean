@@ -92,6 +92,8 @@ inductive Node where
   /-- `questions` is the number of questions in `out` (for the per-request question guard). -/
   | sift (label : String) (itemsPath : Path) (state : Option Tmpl) (out : String)
       (questions : Nat) (keep : Bool) (as : String) (requires : List Path)
+  | dispatch (label : String) (valuePath : Path) (branches : List (String × Node))
+      (otherwise : Option String) (as : Option String) (requires : List Path)
   | route (label : String) (state : Tmpl) (branches : List (String × Node))
       (unsure : Option (String × Rat)) (as : Option String) (requires : List Path)
   | call (label : String) (via : Via) (input : Tmpl) (out : Option String) (as : String)
@@ -116,7 +118,7 @@ def Node.asField : Node → Option String
   | .judge _ _ _ as _ => some as
   | .pick _ _ _ _ _ as _ => some as
   | .sift _ _ _ _ _ _ as _ => some as
-  | .route _ _ _ _ as _ => as
+  | .route _ _ _ _ as _ | .dispatch _ _ _ _ as _ => as
   | .call _ _ _ _ as _ _ => some as
   | .workflow _ _ _ _ _ as => some as
   | _ => none

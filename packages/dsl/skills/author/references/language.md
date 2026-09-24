@@ -35,6 +35,7 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`
 - `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`
 - `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `as`, `requires`
+- `dispatch`: `label`, `valuePath`, `branches`, `otherwise`, `as`, `requires`
 
 Every kind also accepts `metadata`, an object the host owns and the engine never reads; set only the keys the host addendum names.
 
@@ -58,7 +59,7 @@ Their fields:
 
 ### Terminal nodes: report and artifact
 
-A workflow has at most one terminal node, a `report` or an `artifact`, and it is the last step of the root chain. No terminal node sits inside a map, loop, parallel branch, route branch or child workflow.
+A workflow has at most one terminal node, a `report` or an `artifact`, and it is the last step of the root chain. No terminal node sits inside a map, loop, parallel branch, route/dispatch branch or child workflow.
 - An `artifact` of type `markdown` or `report` is the report writer: give it the report's fields.
 - Any other `artifact` type names a file: `path` is the workspace-relative file an earlier shell call declared in `produces`, and the node has no model fields (`instructions`, `state`, `sopSection`, `tools`, `effort`, `thinking`).
 
@@ -74,6 +75,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 
 ### Control nodes
 
+- `dispatch`: `valuePath` selects an existing string and runs its matching named `branches` entry {body}, without inference. Optional `otherwise` names the branch for a missing/unknown value; without it those cases fail. Non-string values always fail. Optional `as` records {value, taken, fallback}.
 - `chain`: non-empty `steps`, run in order.
 - `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state.
 - `parallel`: at least two `branches`, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.

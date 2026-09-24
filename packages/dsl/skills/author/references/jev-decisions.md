@@ -83,6 +83,7 @@ references earlier in the same graph.
   context in `state`; each item also needs its own original evidence. Candidate
   coverage matters: no judge can recover a source absent from the candidate set.
 - `pick`: choose from known candidates, with `allowNone` when none may fit.
+- `dispatch`: select a branch from a stored string at `valuePath`, without inference.
 - `route`: choose a semantic branch. Its uncertainty gate concerns that new
   decision, not an earlier judge's probability.
 
@@ -98,6 +99,14 @@ raw `.answers.<property>.noul` number and compare in code. A Noul near 0.5 means
 uncertainty between yes and no, not medium intensity. Choice/Score confidence is
 distribution concentration, not proof that the workflow is right.
 
+For Noul, AgentRun's compatibility sidecar derives confidence as
+`2 * abs(p_yes - 0.5)`, rounded to four decimal places. It measures strength in
+either direction. At `p_yes = 0.78`, that confidence is `0.56`; at `p_yes = 0.01`,
+it is `0.98` even though the decoded answer is false. A confidence threshold alone
+does not establish that a condition holds. In `sift`, `keep.path: "eligible"`
+compares the yes-probability, while `"eligible.confidence"` can retain confident
+negative answers. Use the metric that matches the intended selection rule.
+
 Use thresholds appropriate to the task, with an explicit missing/uncertain path.
 An example threshold is not calibrated policy. Low probability can justify
 exclusion, another retrieval, cheap-agent repair or escalation, depending on the
@@ -106,6 +115,29 @@ uncertain. Preserve raw decisions so these policies can be inspected separately.
 
 Typed output proves an interface, not truth. Test source coverage, semantics and
 the downstream action independently. A fake-judge fixture proves wiring only.
+
+## Connect a decision to an action
+
+For each consequential judgment, record the question, source evidence, possible
+answers, consumed signal, decision rule and expected action. Keep these separate:
+
+- Meaning: an explicit `proceed`, `withhold` or `unclear` choice when those outcomes
+  differ. A low-confidence answer is not itself a business outcome.
+- Policy: code applies the declared rule to the relevant answer. A `route` already
+  asks Jev to select a branch; do not use another semantic `route` merely to dispatch
+  a stored judgment. Use `dispatch` with `valuePath` and named `branches` to consume a stored
+  string decision without another model call. Declare `otherwise` for missing or
+  unknown values when appropriate; non-string values always fail. For a common
+  tool, code can prepare validated arguments for one `call`.
+- Outcome: distinguish a completed action, a deliberate refusal and a request for
+  clarification. All can produce schema-valid outputs. Check the resulting state
+  or tool receipt against the requested outcome; process completion alone is
+  insufficient.
+
+Qualify an authored workflow with positive, negative, contradictory, missing-evidence
+and threshold-boundary cases. For fallbacks, measure both actual errors rescued and
+errors that passed without escalation; counting fallbacks does not establish value.
+Do not add a second model call when code can consume an existing answer.
 
 Maintained against TypeSafe's state, primitives/Noul, confidence and citation-check
 documentation, reviewed 2026-09-22. Upstream reference locations:

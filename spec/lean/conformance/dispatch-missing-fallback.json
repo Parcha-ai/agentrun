@@ -1,0 +1,84 @@
+{
+  "description": "Deterministic dispatch: missing-fallback; no semantic oracle is supplied.",
+  "workflow": {
+    "v": 2,
+    "name": "dispatch-missing-fallback",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "dispatch",
+      "label": "dispatch",
+      "valuePath": "decision",
+      "as": "applied",
+      "branches": {
+        "proceed": {
+          "body": {
+            "node": "code",
+            "label": "proceed",
+            "code": "s => ({result: 'proceed'})"
+          }
+        },
+        "withhold": {
+          "body": {
+            "node": "code",
+            "label": "withhold",
+            "code": "s => ({result: 'withhold'})"
+          }
+        },
+        "clarify": {
+          "body": {
+            "node": "code",
+            "label": "clarify",
+            "code": "s => ({result: 'clarify'})"
+          }
+        }
+      },
+      "otherwise": "clarify"
+    }
+  },
+  "input": {},
+  "script": {
+    "code": {
+      "/root/branches/clarify/body": {
+        "return": {
+          "result": "clarify"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "applied": {
+        "value": null,
+        "taken": "clarify",
+        "fallback": true
+      },
+      "result": "clarify"
+    },
+    "output": {
+      "applied": {
+        "value": null,
+        "taken": "clarify",
+        "fallback": true
+      },
+      "result": "clarify"
+    },
+    "events": {
+      "/root": [
+        "dispatch.chosen:dispatch:clarify"
+      ],
+      "/root/branches/clarify/body": [
+        "node.start:clarify",
+        "node.end:clarify:ok"
+      ]
+    }
+  }
+}

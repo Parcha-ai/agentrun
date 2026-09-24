@@ -18,6 +18,7 @@ def desugar : Node → Node
   | .parallel label branches => .parallel label (desugarList branches)
   | .map label itemsPath body as resultPath => .map label itemsPath (desugar body) as resultPath
   | .loop label body u n => .loop label (desugar body) u n
+  | .dispatch label vp branches otherwise as requires => .dispatch label vp (desugarNamed branches) otherwise as requires
   | .route label st branches unsure as requires => .route label st (desugarNamed branches) unsure as requires
   | .workflow label child root input out as => .workflow label child (desugar root) input out as
   | n => n

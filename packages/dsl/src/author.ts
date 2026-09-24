@@ -95,7 +95,7 @@ Their fields:
 
 ### Terminal nodes: report and artifact
 
-A workflow has at most one terminal node, a ${code("report")} or an ${code("artifact")}, and it is the last step of the root chain. No terminal node sits inside a map, loop, parallel branch, route branch or child workflow.
+A workflow has at most one terminal node, a ${code("report")} or an ${code("artifact")}, and it is the last step of the root chain. No terminal node sits inside a map, loop, parallel branch, route/dispatch branch or child workflow.
 - An ${code("artifact")} of type ${PROSE_ARTIFACT_TYPES.map((type) => code(type)).join(" or ")} is the report writer: give it the report's fields.
 - Any other ${code("artifact")} type names a file: ${code("path")} is the workspace-relative file an earlier shell call declared in ${code("produces")}, and the node has no model fields (${list(["instructions", "state", "sopSection", "tools", "effort", "thinking"])}).
 
@@ -111,6 +111,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 
 ### Control nodes
 
+- ${code("dispatch")}: ${code("valuePath")} selects an existing string and runs its matching named ${code("branches")} entry {body}, without inference. Optional ${code("otherwise")} names the branch for a missing/unknown value; without it those cases fail. Non-string values always fail. Optional ${code("as")} records {value, taken, fallback}.
 - ${code("chain")}: non-empty ${code("steps")}, run in order.
 - ${code("map")}: ${code("itemsPath")} (an upstream list), ${code("body")} and ${code("as")}. The body sees ${code("item")} and ${code("item_index")}; ${code("maxConcurrency")} is a positive integer (default 4); ${code("resultPath")} selects one path from each completed item's state.
 - ${code("parallel")}: at least two ${code("branches")}, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
@@ -215,7 +216,7 @@ export function candidatePolicyErrors(candidate: unknown, options: CandidatePoli
       case "chain": if (Array.isArray(node.steps)) node.steps.forEach(visit); break;
       case "parallel": if (Array.isArray(node.branches)) node.branches.forEach(visit); break;
       case "map": case "loop": visit(node.body); break;
-      case "route": {
+      case "dispatch": case "route": {
         const branches = record(node.branches);
         if (branches) Object.values(branches).forEach(branch => visit(record(branch)?.body));
         break;
@@ -238,7 +239,7 @@ export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddend
     if (node.node === "chain") return { ...node, steps: (node.steps || []).map(visit) };
     if (node.node === "parallel") return { ...node, branches: (node.branches || []).map(visit) };
     if (node.node === "map" || node.node === "loop") return { ...node, body: visit(node.body) };
-    if (node.node === "route") return { ...node, branches: Object.fromEntries(Object.entries(node.branches || {}).map(([name, branch]) => [name, { ...branch, body: visit(branch?.body) }])) };
+    if (node.node === "route" || node.node === "dispatch") return { ...node, branches: Object.fromEntries(Object.entries(node.branches || {}).map(([name, branch]) => [name, { ...branch, body: visit(branch?.body) }])) };
     return node;
   };
   return { ...candidate, root: visit(candidate.root) };

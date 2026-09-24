@@ -136,6 +136,9 @@ function localDiagnostic(error: unknown): ExtensionRunReport['error'] {
       empty_selection: 'The selection list is empty and none is not allowed. Handle missing evidence explicitly.',
       missing_map_result: 'A map body did not produce its resultPath. Select a path in the completed body state; a body with as is collected automatically when resultPath is omitted.',
       parallel_write_conflict: 'Parallel branches changed the same top-level state key. Give independent branches distinct output keys and combine them after the parallel node.',
+      dispatch_missing: "A stored decision is missing and no fallback is declared.",
+      dispatch_unknown: "A stored decision has no matching branch or fallback.",
+      dispatch_type: "A stored decision must be a string.",
       reserved_state_key: 'A node or host hook wrote an engine-owned "$"-prefixed state key such as $host. Choose another state key; host state is written only through decodeSubmission.',
     };
     return { code: error.code, stage: error.stage.slice(0, 200),

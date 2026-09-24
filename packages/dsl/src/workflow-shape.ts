@@ -95,7 +95,7 @@ export function workflowShapeErrors(value: unknown, complete = false): string[] 
   const node = (entry: unknown, path: string): void => {
     if (entry === undefined) return; // missing bodies already receive semantic diagnostics
     if (!record(entry, path)) return;
-    strings(entry, path, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier"]);
+    strings(entry, path, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "valuePath", "otherwise", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier"]);
     numeric(entry, path, ["maxConcurrency", "maxIters", "deadline_s"]);
     for (const key of ["requires", "tools", "produces"]) stringList(entry[key], `${path}.${key}`);
     if (entry.sopSection !== undefined && typeof entry.sopSection !== "string") stringList(entry.sopSection, `${path}.sopSection`);
@@ -129,7 +129,7 @@ export function workflowShapeErrors(value: unknown, complete = false): string[] 
       }
     }
     if (entry.node === "map" || entry.node === "loop") node(entry.body, `${path}.body`);
-    if (entry.node === "route") objectField(entry, path, "branches", (branches, at) => {
+    if (entry.node === "route" || entry.node === "dispatch") objectField(entry, path, "branches", (branches, at) => {
       for (const [name, branch] of Object.entries(branches)) if (record(branch, `${at}.${name}`)) {
         strings(branch, `${at}.${name}`, ["criteria"]);
         node(branch.body, `${at}.${name}.body`);

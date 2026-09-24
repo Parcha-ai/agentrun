@@ -44,6 +44,7 @@ export type WorkflowNode =
   | PickNode
   | SiftNode
   | RouteNode
+  | DispatchNode
   | CallNode
   | WorkflowInvocation;
 
@@ -66,6 +67,8 @@ export type SiftNode = { node: "sift"; label: string; itemsPath: string; describ
  *  descriptions; the chosen branch runs on the state. `as` (optional) records the choice and its
  *  distribution; `unsure` names the branch taken when confidence is below `gte`. */
 export type RouteNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; as?: string; requires?: string[]; metadata?: NodeMetadata };
+/** Select a stored string decision without inference; non-string values always fail. */
+export type DispatchNode = { node: "dispatch"; label: string; valuePath: string; branches: { [branch: string]: { body: WorkflowNode } }; otherwise?: string; as?: string; requires?: string[]; metadata?: NodeMetadata };
 
 /** A child workflow invoked as one step of its parent. The child is embedded whole, so the parent
  *  digest covers every child byte; `input` is interpolated by value and is the child's ENTIRE initial
@@ -114,7 +117,7 @@ export function desugarWorkflow(workflow: Workflow): Workflow {
     if (node.node === "chain") return { ...node, steps: (node.steps || []).map(visit) };
     if (node.node === "parallel") return { ...node, branches: (node.branches || []).map(visit) };
     if (node.node === "map" || node.node === "loop") return { ...node, body: visit(node.body) };
-    if (node.node === "route") return { ...node, branches: Object.fromEntries(Object.entries(node.branches || {}).map(([k, b]) => [k, { ...b, body: visit(b?.body) }])) };
+    if (node.node === "route" || node.node === "dispatch") return { ...node, branches: Object.fromEntries(Object.entries(node.branches || {}).map(([k, b]) => [k, { ...b, body: visit(b?.body) }])) };
     if (node.node === "workflow") return { ...node, workflow: desugarWorkflow(node.workflow) };
     return node;
   };
@@ -317,7 +320,7 @@ export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
     if (n.node === "map") return;
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
     if (Array.isArray(n.branches)) n.branches.forEach(visit);
-    else if (n.node === "route" && n.branches && typeof n.branches === "object") Object.values(n.branches).forEach((b: any) => visit(b?.body));
+    else if ((n.node === "route" || n.node === "dispatch") && n.branches && typeof n.branches === "object") Object.values(n.branches).forEach((b: any) => visit(b?.body));
     if (n.body) visit(n.body);
   };
   visit(node);
@@ -336,7 +339,7 @@ const loopBodyWrites = (body: WorkflowNode | undefined): Set<string> | null => {
     if (n.node === "map" || n.node === "workflow") return;
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
     if (Array.isArray(n.branches)) n.branches.forEach(visit);
-    else if (n.node === "route" && n.branches && typeof n.branches === "object") Object.values(n.branches).forEach((b: any) => visit(b?.body));
+    else if ((n.node === "route" || n.node === "dispatch") && n.branches && typeof n.branches === "object") Object.values(n.branches).forEach((b: any) => visit(b?.body));
     if (n.body) visit(n.body);
   };
   visit(body);
@@ -344,7 +347,7 @@ const loopBodyWrites = (body: WorkflowNode | undefined): Set<string> | null => {
   for (const key of [...out]) out.add(`${key}$answers`).add(`${key}$verify`);
   return out;
 };
-const routeBodies = (node: WorkflowNode): WorkflowNode[] => node.node === "route" ? Object.values(node.branches || {}).map((b) => b?.body).filter(Boolean) as WorkflowNode[] : [];
+const routeBodies = (node: WorkflowNode): WorkflowNode[] => (node.node === "route" || node.node === "dispatch") ? Object.values(node.branches || {}).map((b) => b?.body).filter(Boolean) as WorkflowNode[] : [];
 const snapshotState = (state: Record<string, unknown>): Record<string, unknown> => {
   try { return structuredClone(state); }
   catch (cause) { throw new Error("Workflow state must be structured-cloneable", { cause }); }
@@ -374,7 +377,7 @@ function containsReportNode(node: WorkflowNode | undefined): boolean {
   if (node.node === "chain") return (node.steps || []).some(containsReportNode);
   if (node.node === "parallel") return (node.branches || []).some(containsReportNode);
   if (node.node === "map" || node.node === "loop") return containsReportNode(node.body);
-  if (node.node === "route") return routeBodies(node).some(containsReportNode);
+  if (node.node === "route" || node.node === "dispatch") return routeBodies(node).some(containsReportNode);
   return false;
 }
 const PREDICATES: ReadonlySet<string> = new Set(WORKFLOW_PREDICATES);
@@ -946,6 +949,24 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (reachability && node.as) { reachability.available.add(node.as); typedOutputs.delete(node.as); probedSubtrees.set(node.as, [{ items: [], values: [], answers: [], kept: [] }]); }
         return;
       }
+      case "dispatch": {
+        const label = node.label || "dispatch";
+        if (typeof node.valuePath !== "string" || !node.valuePath.trim()) errors.push(`${path} (${label}): valuePath required`);
+        const names = node.branches && typeof node.branches === "object" && !Array.isArray(node.branches) ? Object.keys(node.branches) : [];
+        if (!names.length || names.some(name => !name.trim())) errors.push(`${path} (${label}): dispatch needs non-empty branch names`);
+        if (node.otherwise !== undefined && (typeof node.otherwise !== "string" || !names.includes(node.otherwise))) errors.push(`${path} (${label}): otherwise must name one of the branches`);
+        if (containsReportNode(node)) errors.push(`${path} (${label}): a report node cannot live inside a dispatch branch`);
+        if (node.as !== undefined && (typeof node.as !== "string" || !node.as.trim())) errors.push(`${path} (${label}): as must be a state key when present`);
+        checkRequires({ label, requires: node.requires }, path);
+        if (reachability) { if (typeof node.as === "string" && node.as.trim()) reachability.available.add(node.as); reachability.unknowable = true; }
+        for (const name of names) {
+          const branch = node.branches[name];
+          if (!branch || typeof branch !== "object" || !branch.body) { errors.push(`${path} (${label}): branch "${name}" needs a body`); continue; }
+          if (Object.keys(branch).some(key => key !== "body")) errors.push(`${path} (${label}): dispatch branches contain only body`);
+          walk(branch.body, `${path}.branches.${name}`);
+        }
+        return;
+      }
       case "route": {
         const label = node.label || "route";
         if (!node.state || typeof node.state !== "object" || Array.isArray(node.state) || !Object.keys(node.state).length) errors.push(`${path} (${label}): state must be a non-empty object map of what the question sees`);
@@ -1075,7 +1096,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       if (node.node === "chain") return (node.steps || []).reduce((n, s) => n + countReports(s), 0);
       if (node.node === "parallel") return (node.branches || []).reduce((n, b) => n + countReports(b), 0);
       if (node.node === "map" || node.node === "loop") return countReports(node.body);
-      if (node.node === "route") return routeBodies(node).reduce((n, b) => n + countReports(b), 0);
+      if (node.node === "route" || node.node === "dispatch") return routeBodies(node).reduce((n, b) => n + countReports(b), 0);
       return 0;
     };
     const total = countReports(workflow?.root);
@@ -1096,7 +1117,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       if (node.node === "chain") (node.steps || []).forEach(collect);
       if (node.node === "parallel") (node.branches || []).forEach(collect);
       if (node.node === "map" || node.node === "loop") collect(node.body);
-      if (node.node === "route") routeBodies(node).forEach(collect);
+      if (node.node === "route" || node.node === "dispatch") routeBodies(node).forEach(collect);
     };
     collect(workflow?.root);
     if (llmNodes.some((n) => n.node === "report")) {
@@ -1272,7 +1293,7 @@ export class WorkflowCodeError extends Error {
 export class WorkflowStateError extends Error {
   readonly code = "state_invalid";
   constructor(summary: string, readonly stage: string, readonly path: string,
-    readonly reason: "required_nonempty" | "missing_interpolation" | "expected_list" | "empty_selection" | "missing_map_result" | "parallel_write_conflict" | "reserved_state_key") {
+    readonly reason: "required_nonempty" | "missing_interpolation" | "expected_list" | "empty_selection" | "missing_map_result" | "parallel_write_conflict" | "reserved_state_key" | "dispatch_missing" | "dispatch_unknown" | "dispatch_type") {
     super(summary);
     this.name = "WorkflowStateError";
   }
@@ -1684,7 +1705,7 @@ function needsComposedRecovery(node: WorkflowNode, structured = false, child = f
   if (node.node === "chain") return node.steps.some(step => needsComposedRecovery(step, structured, child));
   if (node.node === "map" || node.node === "loop") return needsComposedRecovery(node.body, true, child);
   if (node.node === "parallel") return node.branches.some(branch => needsComposedRecovery(branch, structured, child));
-  if (node.node === "route") return routeBodies(node).some(branch => needsComposedRecovery(branch, true, child));
+  if (node.node === "route" || node.node === "dispatch") return routeBodies(node).some(branch => needsComposedRecovery(branch, true, child));
   return false;
 }
 
@@ -1733,7 +1754,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
 }
 
 const STEP_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report", "code", "call", "artifact", "workflow", "judge", "pick", "sift"]);
-const CHECKPOINTED_STRUCTURE_KINDS: ReadonlySet<string> = new Set(["map", "parallel", "loop", "route"]);
+const CHECKPOINTED_STRUCTURE_KINDS: ReadonlySet<string> = new Set(["map", "parallel", "loop", "route", "dispatch"]);
 
 const guardedObservers = new WeakSet<NonNullable<WorkflowDeps["onEvent"]>>();
 
@@ -2039,6 +2060,18 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
     case "sift": {
       return runSiftNode(node, state, workflow, deps);
     }
+    case "dispatch": {
+      assertNodeInputs(node, state);
+      const value = getPath(state, node.valuePath);
+      if (value !== undefined && typeof value !== "string") throw new WorkflowStateError(`dispatch node "${node.label}": valuePath must resolve to a string`, node.label, node.valuePath, "dispatch_type");
+      const matched = typeof value === "string" && Object.hasOwn(node.branches, value);
+      const taken = matched ? value : node.otherwise;
+      if (taken === undefined) throw new WorkflowStateError(`dispatch node "${node.label}": valuePath has no declared branch or fallback`, node.label, node.valuePath, value === undefined ? "dispatch_missing" : "dispatch_unknown");
+      const selection = { value: value ?? null, taken, fallback: !matched };
+      deps.onEvent?.({ type: "dispatch.chosen", label: node.label, detail: { as: node.as ?? null, value: selection } });
+      const dispatched = node.as ? { ...state, [node.as]: selection } : state;
+      return runNodeOnState(node.branches[taken].body, dispatched, workflow, scopeExecution(deps, "branches", taken, "body"));
+    }
     case "route": {
       return runRouteNode(node, state, workflow, deps);
     }
@@ -2181,7 +2214,7 @@ export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDep
   if (node.node === "chain") node.steps.forEach(n => assertWorkflowCapabilities(n, deps, workflow));
   if (node.node === "parallel") node.branches.forEach(n => assertWorkflowCapabilities(n, deps, workflow));
   if (node.node === "map" || node.node === "loop") assertWorkflowCapabilities(node.body, deps, workflow);
-  if (node.node === "route") Object.values(node.branches).forEach(b => assertWorkflowCapabilities(b.body, deps, workflow));
+  if (node.node === "route" || node.node === "dispatch") Object.values(node.branches).forEach(b => assertWorkflowCapabilities(b.body, deps, workflow));
   if (node.node === "workflow") assertWorkflowCapabilities(desugarWorkflow(node.workflow).root, deps, node.workflow);
 }
 

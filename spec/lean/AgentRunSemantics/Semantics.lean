@@ -60,7 +60,24 @@ inductive StateReason where
   | missingMapResult
   | parallelWriteConflict
   | reservedStateKey
+  | dispatchMissing
+  | dispatchUnknown
+  | dispatchType
   deriving Repr, DecidableEq
+
+/-- Selection reads state only. No oracle participates in dispatch. -/
+def dispatchChoice (s : State) (vp : Path) (names : List String) (otherwise : Option String) :
+    Except StateReason (Value × String × Bool) :=
+  match getPathS s vp with
+  | some (.str value) =>
+    if names.contains value then .ok (.str value, value, false)
+    else match otherwise with
+      | some b => .ok (.str value, b, true)
+      | none => .error .dispatchUnknown
+  | none => match otherwise with
+    | some b => .ok (.null, b, true)
+    | none => .error .dispatchMissing
+  | _ => .error .dispatchType
 
 inductive Err where
   /-- `WorkflowStateError` with reason `required_nonempty` (`assertNodeInputs`). `addr` and
@@ -602,6 +619,19 @@ def eval (O : Oracle) : Node → ExecPath → Addr → String → State → Run
                     ("answers", .arr (answers.map (·.2.1))),
                     ("kept", .arr (kept.map fun (i : Nat) => Value.num (i : Rat)))])), [])
         | _ => (.failed (.state .expectedList label itemsPath), [])
+  | .dispatch label vp branches otherwise as requires, path, addr, lp, s =>
+    match checkRequires label addr s requires with
+    | .error e => (.failed e, [])
+    | .ok () => match dispatchChoice s vp (branchNames branches) otherwise with
+      | .error reason => (.failed (.state reason label vp), [])
+      | .ok (value, taken, fallback) =>
+        let selected := match as with
+          | some k => s.set k (.obj [("value", value), ("taken", .str taken), ("fallback", .bool fallback)])
+          | none => s
+        let ev := [evt path s!"dispatch.chosen:{lp ++ label}:{taken}"]
+        match evalNamed O branches taken path addr lp selected with
+        | some (o, ev') => (o, ev ++ ev')
+        | none => (.failed (.engine label "the taken branch does not exist"), ev)
   | .route label st branches unsure as requires, path, addr, lp, s =>
     let ctx : Ctx := ⟨path, lp ++ label⟩
     match checkRequires label addr s requires with
