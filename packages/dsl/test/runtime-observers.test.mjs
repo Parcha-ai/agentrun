@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isProxy } from 'node:util/types';
-import { runWorkflow, EffectOutcomeUnknownError } from '../dist/index.js';
+import { runWorkflow, runWorkflowSlice, EffectOutcomeUnknownError } from '../dist/index.js';
 
 const flow = extra => ({v:2,name:'observer-boundary',schemas:{Result:{type:'object',required:['count'],properties:{count:{type:'number'}}}},output:{schemaId:'Result',path:'result'},root:{node:'call',label:'effect',via:'tool',tool:'test.action',args:{},out:'Result',as:'result',deadline_s:1,...extra}});
 const deferred = () => {let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
@@ -215,5 +215,25 @@ for (const boundary of ['effect.failed', 'map.failed']) {
     assert.match(failure.idempotencyKey,/^[a-f0-9]{64}$/);
     pending.resolve({count:7});
     assert.deepEqual(await failure.settlement,{status:'fulfilled',value:{count:7}});
+  });
+}
+
+for (const entry of ['workflow', 'slice']) for (const observer of ['prepareEvent', 'onEvent']) {
+  test(`${entry} cannot report complete after ${observer} cancels the final event`, async () => {
+    const controller = new AbortController(), reason = Error('host cancelled final delivery');
+    let calls = 0, commits = 0, terminalEvents = 0;
+    const callback = event => {
+      if (event.type === 'node.end') { terminalEvents++; controller.abort(reason); return undefined; }
+      return structuredClone(event);
+    };
+    const deps = {
+      signal:controller.signal, runEffect:async()=>{calls++;return {count:6};},
+      recovery:recovery({commit:async()=>{commits++;}}),
+      onEvent:()=>{}, [observer]:callback,
+    };
+    const result = entry === 'workflow' ? runWorkflow(flow(),{},deps)
+      : runWorkflowSlice(flow(),{}, {from:'effect'}, deps);
+    await assert.rejects(result,error=>error===reason);
+    assert.equal(calls,1);assert.equal(commits,1);assert.equal(terminalEvents,1);
   });
 }
