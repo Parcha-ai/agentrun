@@ -22,11 +22,12 @@ export type { DryRunOptions, DryRunResult } from "./dry-run.js";
 
 export {
   compileQuestions, validateAnswers, answersToValue, answersSidecar,
-  answerConfidence, synthesizeAnswers, SYSTEM_ONE_LIMITS, SystemOneError, isSystemOneResponseReason,
+  answerConfidence, synthesizeAnswers, SYSTEM_ONE_LIMITS, SystemOneError, SystemOneRequestError, isSystemOneResponseReason,
 } from "./system-one.js";
 export type {
   SystemOneQuestion, SystemOneAnswer, SystemOneResult, SystemOneRetryClass, SystemOneResponseReason,
-  CompiledQuestions, AnswersSidecar,
+  CompiledQuestions, AnswersSidecar, DecisionReceipt, DecisionRequest, DecisionContext,
+  SystemOneUsage, SystemOnePricing, SystemOneAttempt, SystemOneMetadata, SystemOneResponse, SystemOneRequestFailure, SystemOneFailureReason,
 } from "./system-one.js";
 
 export { inspectWorkflow, formatWorkflowTree } from "./inspection.js";

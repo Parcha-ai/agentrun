@@ -18,6 +18,80 @@ export type SystemOneResult = {
   request_sha256: string;
 };
 
+export type SystemOneUsage = { input_tokens: number; output_tokens: number };
+export type SystemOnePricing = { inputUsdPerMillionTokens: number; outputUsdPerMillionTokens: number };
+export type SystemOneAttempt = {
+  id: string;
+  number: number;
+  status: "answered" | "failed" | "unknown";
+  elapsed_ms: number;
+  http_status: number | null;
+  usage: SystemOneUsage | null;
+  cost_usd: number | null;
+};
+export type SystemOneMetadata = {
+  model?: string | null;
+  usage?: SystemOneUsage | null;
+  cost_usd?: number | null;
+  request_sha256?: string | null;
+  provider_request_id?: string | null;
+  pricing?: SystemOnePricing | null;
+  transport_attempts?: SystemOneAttempt[] | null;
+  replayed?: boolean;
+};
+export type SystemOneResponse = SystemOneMetadata & { answers: Record<string, SystemOneAnswer> };
+
+/** Sanitized adapters can attach metering even when their response cannot be consumed. */
+export type SystemOneRequestFailure = "configuration" | "invalid_request" | "invalid_response" | "http" | "connection" | "aborted" | "timeout";
+export type SystemOneFailureReason = SystemOneResponseReason | "response_shape" | "token_usage" | "model_identifier" |
+  "cost_range" | "answer_validation" | "max_tokens_exceeded" | "invalid_state" | "state_too_large" | "invalid_questions";
+export class SystemOneRequestError extends Error {
+  metadata?: SystemOneMetadata;
+  readonly failureReason?: SystemOneFailureReason;
+  constructor(message: string, readonly failureKind?: SystemOneRequestFailure, reason?: SystemOneFailureReason) {
+    super(message);
+    if (reason && (isSystemOneResponseReason(reason) || ["response_shape", "token_usage", "model_identifier", "cost_range",
+      "answer_validation", "max_tokens_exceeded", "invalid_state", "state_too_large", "invalid_questions"].includes(reason))) this.failureReason = reason;
+  }
+}
+
+export type DecisionRequest = {
+  label: string;
+  kind: "judge" | "pick" | "sift" | "route" | "ask";
+  executionPath: string;
+  state: unknown;
+  questions: Record<string, SystemOneQuestion>;
+};
+export type DecisionContext = { runId?: string; attemptId?: string; phase?: string };
+export type DecisionReceipt = {
+  version: 1;
+  id: string;
+  run_id: string | null;
+  attempt_id: string | null;
+  phase: string | null;
+  workflow_sha256: string;
+  execution_path: string;
+  label: string;
+  kind: DecisionRequest["kind"];
+  input_sha256: string | null;
+  questions_sha256: string | null;
+  started_at: string;
+  elapsed_ms: number;
+  status: "answered" | "failed";
+  answers: Record<string, SystemOneAnswer> | null;
+  metadata: {
+    model: string | null;
+    usage: SystemOneUsage | null;
+    cost_usd: number | null;
+    request_sha256: string | null;
+    provider_request_id: string | null;
+    pricing: SystemOnePricing | null;
+    transport_attempts: SystemOneAttempt[] | null;
+    replayed: boolean;
+  };
+  error: { category: "invalid_response" | "adapter"; reason: SystemOneFailureReason | null; adapter_kind: SystemOneRequestFailure | null } | null;
+};
+
 export const SYSTEM_ONE_LIMITS = { maxChoiceOptions: 240, minScoreLevels: 2, maxScoreLevels: 10 } as const;
 
 export const SYSTEM_ONE_DEFAULT_MODEL = "jev-latest";
