@@ -10,7 +10,7 @@ export {
   EffectOutcomeUnknownError, EscalationSignal,
 } from "./workflow.js";
 export type {
-  Workflow, WorkflowNode, WorkflowDeps, WorkflowRunResult, HostPolicy, HostPolicyContext,
+  Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CallRetryClass, CallPredicate, PollClause,
@@ -51,7 +51,7 @@ export {
 } from "./author.js";
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow } from "./author.js";
 export {
-  WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS,
+  WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
   MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";

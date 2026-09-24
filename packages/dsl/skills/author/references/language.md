@@ -36,6 +36,8 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`
 - `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `as`, `requires`
 
+Every kind also accepts `metadata`, an object the host owns and the engine never reads; set only the keys the host addendum names.
+
 ### Generative nodes: agent, decide, extract, report
 
 Each runs one adapter session. A kind is a preset (its duty, default effort and model tier), not a capability limit:

@@ -35,6 +35,10 @@ export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string
   route: ["node", "label", "state", "instructions", "branches", "unsure", "as", "requires"],
 };
 
+/** Fields every node kind accepts in addition to its own. `metadata` is the host's: an optional object of
+ *  host markers the engine admits, carries and hashes with the document, and never reads. */
+export const HOST_NODE_FIELDS = ["metadata"] as const;
+
 /** Accepted and ignored for older v2 documents; never taught. The engine invokes the adapter once per node. */
 export const IGNORED_NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]?: readonly string[] } = {
   agent: ["budget"],

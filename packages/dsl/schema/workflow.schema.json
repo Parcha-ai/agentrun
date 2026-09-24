@@ -18,6 +18,12 @@
                 "$ref": "#/definitions/WorkflowNode"
               },
               "title": "steps"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -44,6 +50,12 @@
             "as": {
               "type": "string",
               "title": "as"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -171,6 +183,12 @@
               ],
               "type": "string",
               "title": "tier"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -299,6 +317,12 @@
               ],
               "type": "string",
               "title": "tier"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -427,6 +451,12 @@
               ],
               "type": "string",
               "title": "tier"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -503,6 +533,12 @@
               ],
               "type": "string",
               "title": "thinking"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -590,6 +626,12 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -629,6 +671,12 @@
             "maxConcurrency": {
               "type": "number",
               "title": "maxConcurrency"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -657,6 +705,12 @@
                 "$ref": "#/definitions/WorkflowNode"
               },
               "title": "branches"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -688,6 +742,12 @@
             "maxIters": {
               "type": "number",
               "title": "maxIters"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -725,6 +785,12 @@
             "summary": {
               "type": "string",
               "title": "summary"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -767,6 +833,12 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -820,6 +892,12 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -887,6 +965,12 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -966,6 +1050,12 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -1299,6 +1389,12 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
@@ -1337,6 +1433,12 @@
             "as": {
               "type": "string",
               "title": "as"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
             }
           },
           "required": [
