@@ -24,6 +24,9 @@ export interface AuthorHostAddendum {
   outputTypes?: Readonly<Record<string, { kind: "prose" | "file"; description: string }>>;
   /** The node kinds the host runs. Declared, a candidate using any other kind is refused. */
   nodeKinds?: readonly WorkflowNodeKind[];
+  /** The node `metadata` keys an author may set, each with what it holds. Undeclared, an author sets no
+   *  metadata. The engine never reads them; the host enforces them in its own acceptance checks. */
+  metadataKeys?: Readonly<Record<string, string>>;
   /** Host rules, one sentence each. The host enforces them in its own acceptance checks. */
   rules?: readonly string[];
 }
@@ -69,6 +72,8 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 
 This is the complete set. Each kind accepts exactly these fields; any other field is an error.
 ${nodeFieldLines()}
+
+Every kind also accepts ${code("metadata")}, an object the host owns and the engine never reads; set only the keys the host addendum names.
 
 ### Generative nodes: ${GENERATIVE_NODE_KINDS.join(", ")}
 
@@ -148,6 +153,9 @@ export function renderAuthorHostAddendum(host: AuthorHostAddendum | undefined): 
   if (host.outputTypes && Object.keys(host.outputTypes).length) {
     const types = Object.entries(host.outputTypes).map(([type, spec]) => `${code(type)} (${spec.kind === "prose" ? "prose: the report writer, with the report's fields" : `file: ${code("path")} names the file an earlier shell call produced`}; ${spec.description})`);
     lines.push(`- A terminal artifact's ${code("type")} is one of: ${types.join("; ")}.`);
+  }
+  if (host.metadataKeys && Object.keys(host.metadataKeys).length) {
+    lines.push(`- A node's ${code("metadata")} may carry only these keys: ${Object.entries(host.metadataKeys).map(([key, description]) => `${code(key)} (${description})`).join("; ")}.`);
   }
   if (host.nodeKinds) lines.push(`- This host runs only these node kinds: ${list(host.nodeKinds)}. Author no other kind.`);
   for (const rule of host.rules ?? []) lines.push(`- ${rule}`);

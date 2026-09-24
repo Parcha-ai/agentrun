@@ -14,7 +14,7 @@ workflows validated with their invocation's input keys.
 Out of scope (need a JSON Schema engine or JavaScript): schema compilation and `$ref`s,
 question schemas, typed path checks, code compilation and probes, predicate paths checked
 against probed code shapes, numeric call bounds, unknown-key checks, the document shape
-schema. These rules are intended to be a subset of the TypeScript rules. The validator sweep
+schema (including the rule that a node's host `metadata`, when present, is an object). These rules are intended to be a subset of the TypeScript rules. The validator sweep
 checks that relationship on its corpus; it is not a proof of implementation equivalence.
 -/
 

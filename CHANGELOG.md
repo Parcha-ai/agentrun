@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.4 (unreleased)
+
+- Every node accepts an optional `metadata` object for host markers. Validation refuses a non-object value and names the node. Otherwise the engine never reads it. Desugaring, dry runs, runs and the author's candidate loop carry it verbatim, and it never reaches state, events, prompts, judge requests or effect idempotency keys. `workflowSha256` covers it because it hashes the whole document. `HOST_NODE_FIELDS` and the `NodeMetadata` type are exported, and the editor schema admits `metadata` on every node kind.
+- The author contract states once that `metadata` is host-owned and that authors set only the keys the host names. `AuthorHostAddendum.metadataKeys` names those keys. The host enforces them in its acceptance checks.
+- `spec/lean`: a conformance case with metadata on several node kinds. The model ignores the field by design.
+
 ## 0.1.0-beta.3, 2026-09-23
 
 - Pi can inspect workflow steps, save named definition revisions, and load them in another session. Saved definitions exclude run input and execution permission. Save and list show commands for loading the exact revision. Code runs require `/agentrun run --trusted` each time.

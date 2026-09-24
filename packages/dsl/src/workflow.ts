@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
-import { WORKFLOW_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
+import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
@@ -24,18 +24,22 @@ export type WorkflowEffort = "minimal" | "low" | "medium" | "high";
 /** The author's thinking dial. There is deliberately no "off": thinking is never off. */
 export type WorkflowThinking = "low" | "medium" | "high";
 
+/** Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the
+ *  document and never reads it; it never reaches state, events, prompts or effect identities. */
+export type NodeMetadata = { [key: string]: unknown };
+
 export type WorkflowNode =
-  | { node: "chain"; steps: WorkflowNode[] }
-  | { node: "code"; label: string; code: string; as?: string }
-  | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier }
-  | { node: "decide"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier }
-  | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier }
-  | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking }
+  | { node: "chain"; steps: WorkflowNode[]; metadata?: NodeMetadata }
+  | { node: "code"; label: string; code: string; as?: string; metadata?: NodeMetadata }
+  | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
+  | { node: "decide"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
+  | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
+  | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; metadata?: NodeMetadata }
   | ArtifactNode
-  | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number }
-  | { node: "parallel"; label: string; branches: WorkflowNode[] }
-  | { node: "loop"; label: string; body: WorkflowNode; until: Predicate; maxIters: number }
-  | { node: "escalate"; label: string; when: Predicate; kind: string; stage: string; summary: string }
+  | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number; metadata?: NodeMetadata }
+  | { node: "parallel"; label: string; branches: WorkflowNode[]; metadata?: NodeMetadata }
+  | { node: "loop"; label: string; body: WorkflowNode; until: Predicate; maxIters: number; metadata?: NodeMetadata }
+  | { node: "escalate"; label: string; when: Predicate; kind: string; stage: string; summary: string; metadata?: NodeMetadata }
   | JudgeNode
   | PickNode
   | SiftNode
@@ -47,28 +51,28 @@ export type WorkflowNode =
  *  workflow state (a whole-string placeholder keeps its type); `out` is a flat schema of enums,
  *  booleans and level-integers — the question set. The schema-valid value lands at `as`, the raw
  *  answers with their confidences at `<as>$answers`. No tools, no turns, one request. */
-export type JudgeNode = { node: "judge"; label: string; state: Record<string, unknown>; out: string; as: string; requires?: string[] };
+export type JudgeNode = { node: "judge"; label: string; state: Record<string, unknown>; out: string; as: string; requires?: string[]; metadata?: NodeMetadata };
 /** One choice whose options are the items of a list. `describe` renders each item as its option
  *  text (`{item.field}`); `allowNone` adds a none-of-these option. The result at `as` is
  *  {index, item, none, option}; confidence is `<as>$answers.confidence.pick` and the
  *  distribution is `<as>$answers.answers.pick.probabilities`. */
-export type PickNode = { node: "pick"; label: string; itemsPath: string; describe: string; instructions: string; state?: Record<string, unknown>; allowNone?: boolean; as: string; requires?: string[] };
+export type PickNode = { node: "pick"; label: string; itemsPath: string; describe: string; instructions: string; state?: Record<string, unknown>; allowNone?: boolean; as: string; requires?: string[]; metadata?: NodeMetadata };
 /** The same question set (`out`, a judge schema) asked of every item of a list in ONE request: item i's
  *  questions are prefixed `i.`; every answer lands in `as.answers[i]` and `as.values[i]`. `keep`
  *  filters: items whose answer at `keep.path` (a question id, or `<id>.confidence`) is at least
  *  `keep.gte` (a boolean question keeps on yes) land in `as.items`, in the original order. */
-export type SiftNode = { node: "sift"; label: string; itemsPath: string; describe?: string; state?: Record<string, unknown>; out: string; as: string; keep?: { path: string; gte?: number }; requires?: string[] };
+export type SiftNode = { node: "sift"; label: string; itemsPath: string; describe?: string; state?: Record<string, unknown>; out: string; as: string; keep?: { path: string; gte?: number }; requires?: string[]; metadata?: NodeMetadata };
 /** A choice among subgraphs. The options are the branch names, their criteria the branch
  *  descriptions; the chosen branch runs on the state. `as` (optional) records the choice and its
  *  distribution; `unsure` names the branch taken when confidence is below `gte`. */
-export type RouteNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; as?: string; requires?: string[] };
+export type RouteNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; as?: string; requires?: string[]; metadata?: NodeMetadata };
 
 /** A child workflow invoked as one step of its parent. The child is embedded whole, so the parent
  *  digest covers every child byte; `input` is interpolated by value and is the child's ENTIRE initial
  *  state (no parent state leaks in); the child's validated output is checked against the parent's
  *  `out` schema and lands at `as`. The parent owns the terminal: a child never renders a report or
  *  delivers an artifact. Children may otherwise compose all workflow primitives. */
-export type WorkflowInvocation = { node: "workflow"; label: string; workflow: Workflow; input: Record<string, unknown>; out: string; as: string };
+export type WorkflowInvocation = { node: "workflow"; label: string; workflow: Workflow; input: Record<string, unknown>; out: string; as: string; metadata?: NodeMetadata };
 
 /** `exit` is a shell command that ended with a non-zero status: retried only when the author
  *  declared retry, since re-running a command is the author's call. */
@@ -91,6 +95,7 @@ export type ArtifactNode = {
   effort?: WorkflowEffort;
   thinking?: WorkflowThinking;
   requires?: string[];
+  metadata?: NodeMetadata;
 };
 
 export type ArtifactState = { path: string; filename: string; type: string };
@@ -161,6 +166,7 @@ export type CallNode = {
   /** Repeat the call until its result settles (a queued job, an eventually consistent read). */
   poll?: PollClause;
   requires?: string[];
+  metadata?: NodeMetadata;
 };
 
 export const SHELL_RESULT_SCHEMA: Record<string, unknown> = {
@@ -348,7 +354,7 @@ const KINDS: ReadonlySet<string> = new Set(WORKFLOW_NODE_KINDS);
 type SameKinds<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 const kindsMatchType: SameKinds<WorkflowNodeKind, WorkflowNode["node"]> = true;
 void kindsMatchType;
-const KIND_KEYS: Readonly<Record<string, ReadonlySet<string>>> = Object.fromEntries(WORKFLOW_NODE_KINDS.map((kind) => [kind, new Set([...NODE_FIELDS[kind], ...(IGNORED_NODE_FIELDS[kind] ?? [])])]));
+const KIND_KEYS: Readonly<Record<string, ReadonlySet<string>>> = Object.fromEntries(WORKFLOW_NODE_KINDS.map((kind) => [kind, new Set([...NODE_FIELDS[kind], ...HOST_NODE_FIELDS, ...(IGNORED_NODE_FIELDS[kind] ?? [])])]));
 export const childSteps = (child: Workflow | undefined): WorkflowNode[] | null => {
   const root = child?.root;
   if (!root || typeof root !== "object") return null;

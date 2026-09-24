@@ -100,6 +100,10 @@ export function workflowShapeErrors(value: unknown, complete = false): string[] 
     for (const key of ["requires", "tools", "produces"]) stringList(entry[key], `${path}.${key}`);
     if (entry.sopSection !== undefined && typeof entry.sopSection !== "string") stringList(entry.sopSection, `${path}.sopSection`);
     for (const key of ["state", "args", "input", "env"]) objectField(entry, path, key);
+    // Host-owned and opaque: only its container is checked, never its keys or values.
+    if (entry.metadata !== undefined && !isRecord(entry.metadata)) {
+      errors.push(`${path} (${typeof entry.label === "string" && entry.label ? entry.label : String(entry.node)}): metadata must be a plain object of host markers`);
+    }
     for (const key of ["until", "when"]) objectField(entry, path, key, predicate);
     objectField(entry, path, "verify", (verify, at) => {
       strings(verify, at, ["out"]);

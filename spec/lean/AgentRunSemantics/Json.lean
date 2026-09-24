@@ -6,7 +6,9 @@ import AgentRunSemantics.Run
 
 Reads Workflow v2 JSON into the AST. Fields the model does not use are ignored; a field
 the model needs but cannot represent (a fractional `maxIters`, an unknown node kind) is a
-parse error, so a conformance case can never silently test less than it says.
+parse error, so a conformance case can never silently test less than it says. A node's
+host `metadata` is one of the ignored fields by design: the engine never reads it, so the
+model has nothing to represent.
 -/
 
 namespace AgentRun.JsonIn
