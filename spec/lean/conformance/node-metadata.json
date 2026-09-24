@@ -1,0 +1,182 @@
+{
+  "description": "Host metadata on several node kinds is carried and never read: it validates, runs, and appears in neither state nor events.",
+  "workflow": {
+    "v": 2,
+    "name": "node-metadata",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "metadata": {
+        "preset": "default"
+      },
+      "steps": [
+        {
+          "node": "extract",
+          "label": "facts",
+          "instructions": "Do it.",
+          "out": "V",
+          "as": "facts",
+          "metadata": {
+            "preset": "default",
+            "origin": "generated"
+          }
+        },
+        {
+          "node": "parallel",
+          "label": "both",
+          "metadata": {},
+          "branches": [
+            {
+              "node": "agent",
+              "label": "left",
+              "instructions": "Do it.",
+              "out": "V",
+              "as": "left",
+              "metadata": {
+                "nested": {
+                  "list": [
+                    1,
+                    "two",
+                    null,
+                    {
+                      "deep": true
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "node": "decide",
+              "label": "right",
+              "instructions": "Do it.",
+              "out": "V",
+              "as": "right",
+              "metadata": {
+                "as": "not-a-state-key",
+                "label": "not-a-label"
+              }
+            }
+          ]
+        },
+        {
+          "node": "code",
+          "label": "joined",
+          "code": "s => ({ joined: s.left.v + s.right.v })",
+          "metadata": {
+            "n": 3.5
+          }
+        },
+        {
+          "node": "report",
+          "label": "write",
+          "instructions": "Write it.",
+          "requires": [
+            "joined"
+          ],
+          "metadata": {
+            "preset": "default"
+          }
+        }
+      ]
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {
+    "gen": {
+      "/root/steps/0": {
+        "submission": {
+          "v": "f"
+        }
+      },
+      "/root/steps/1/branches/0": {
+        "submission": {
+          "v": "l"
+        }
+      },
+      "/root/steps/1/branches/1": {
+        "submission": {
+          "v": "r"
+        }
+      },
+      "/root/steps/3": {
+        "markdown": "A report long enough to satisfy the forty-character floor."
+      }
+    },
+    "code": {
+      "/root/steps/2": {
+        "return": "lr"
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "q": 1,
+      "facts": {
+        "v": "f"
+      },
+      "left": {
+        "v": "l"
+      },
+      "right": {
+        "v": "r"
+      },
+      "joined": "lr",
+      "report_markdown": "A report long enough to satisfy the forty-character floor."
+    },
+    "output": {
+      "q": 1,
+      "facts": {
+        "v": "f"
+      },
+      "left": {
+        "v": "l"
+      },
+      "right": {
+        "v": "r"
+      },
+      "joined": "lr",
+      "report_markdown": "A report long enough to satisfy the forty-character floor."
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:facts",
+        "node.end:facts:ok"
+      ],
+      "/root/steps/1/branches/0": [
+        "node.start:left",
+        "node.end:left:ok"
+      ],
+      "/root/steps/1/branches/1": [
+        "node.start:right",
+        "node.end:right:ok"
+      ],
+      "/root/steps/2": [
+        "node.start:joined",
+        "node.end:joined:ok"
+      ],
+      "/root/steps/3": [
+        "node.start:write",
+        "node.end:write:ok"
+      ]
+    }
+  }
+}
