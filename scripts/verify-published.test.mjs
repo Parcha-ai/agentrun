@@ -118,6 +118,7 @@ test('the install waits until both packuments of every package list the release 
   let polls = 0, waited = 0;
   const seen = new Set();
   const result = await waitForRegistryVersions(registry, packages, {
+    now: () => waited,
     wait: async ms => { waited += ms; polls++; },
     fetchImpl: async (url, init) => {
       const pkg = pkgFor(url);
@@ -154,4 +155,25 @@ test('packument authentication errors fail at once; network errors and 5xx are w
     fetchImpl: async url => { calls++; if (calls === 1) throw new Error('socket hang up'); if (calls === 2) return new Response(null, { status: 503 }); return packument(pkgFor(url), true); },
   });
   assert.deepEqual(result, { attempts: 2 });
+});
+
+test('an unreadable packument body is lag, not failure', async () => {
+  let calls = 0;
+  const result = await waitForRegistryVersions(registry, packages, {
+    wait: async () => {},
+    fetchImpl: async url => ++calls === 1 ? new Response('{"versions": {"0.1.0-bet', { headers: { 'content-type': 'application/json' } }) : packument(pkgFor(url), true),
+  });
+  assert.deepEqual(result, { attempts: 2 });
+});
+
+test('slow requests cannot stretch the wait past its wall budget', async () => {
+  let clock = 0, polls = 0;
+  await assert.rejects(waitForRegistryVersions(registry, packages, {
+    now: () => clock,
+    wait: async ms => { clock += ms; },
+    // Every probe of a poll runs together and times out after 10 s: one poll costs 10 s, not 60 s.
+    fetchImpl: async () => { if (++polls % 6 === 1) clock += 10_000; throw new Error('timeout'); },
+  }), /never listed .*request failed/);
+  assert.ok(clock <= 300_000 + 15_000, `waited ${clock} ms`);
+  assert.equal(polls / 6, 21);
 });
