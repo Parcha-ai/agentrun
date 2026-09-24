@@ -6,6 +6,8 @@ import { validateAnswers, answerConfidence, answersSidecar, answersToValue, comp
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
+import { decisionMetadata, recordDecisionCall } from "./decision-receipts.js";
+import type { DecisionContext, DecisionReceipt, DecisionRequest, SystemOneResponse } from "./system-one.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 
@@ -280,7 +282,10 @@ export type WorkflowDeps = {
     signal?: AbortSignal;
     state: unknown;
     questions: Record<string, SystemOneQuestion>;
-  }) => Promise<{ answers: Record<string, SystemOneAnswer>; model?: string | null; usage?: { input_tokens: number; output_tokens: number } | null; cost_usd?: number | null; request_sha256?: string }>;
+  }) => Promise<SystemOneResponse>;
+  decisionContext?: DecisionContext;
+  /** Awaited durable receipt sink. Exact request inputs require protected host storage. */
+  recordDecision?: (receipt: DecisionReceipt, request: DecisionRequest) => Promise<void>;
   syntheticEffects?: boolean;
   checkpoint?: (state: Record<string, unknown>, label: string, executionPath?: string) => Promise<void>;
   /** Critical recovery stores stop execution on write failure; omitted retains legacy best effort. */
@@ -1175,7 +1180,7 @@ async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>
   const p = answer?.type === "noul" ? answer.noul : NaN;
   if (!Number.isFinite(p)) throw new Error(`${at.kind} node "${at.label}": the ask predicate got no yes/no answer`);
   const gte = ask.gte ?? 0.6;
-  deps.onEvent?.({ type: "ask.evaluated", label: at.label, detail: { kind: at.kind, p_yes: +p.toFixed(4), gte, holds: p >= gte, model: result.model ?? null, cost_usd: result.cost_usd ?? null } });
+  deps.onEvent?.({ type: "ask.evaluated", label: at.label, detail: { kind: at.kind, p_yes: +p.toFixed(4), gte, holds: p >= gte, ...decisionMetadata(result), decision_id: result.decision_id } });
   return { holds: p >= gte, detail: { p_yes: p, gte } };
 }
 
@@ -1517,11 +1522,19 @@ function assertQuestionCount(deps: WorkflowDeps, count: number, label: string): 
   if (count > limit) throw new Error(`node "${label}": ${count} questions exceed maxQuestionsPerRequest (${limit}); reduce the collection/question set or raise the host limit`);
 }
 
-const requireJudge = (deps: WorkflowDeps, kind: string, label: string): NonNullable<WorkflowDeps["runJudge"]> => {
+const requireJudge = (deps: WorkflowDeps, kind: string, label: string): ((params: Parameters<NonNullable<WorkflowDeps["runJudge"]>>[0]) => Promise<SystemOneResponse & { decision_id: string }>) => {
   if (!deps.runJudge) throw new Error(`${kind} node "${label}": this runner has no System One runner (deps.runJudge)`);
   return async params => {
     assertQuestionCount(deps, Object.keys(params.questions).length, params.label);
-    return deps.runJudge!(params);
+    return recordDecisionCall(
+      { label: params.label, kind: params.kind, executionPath: params.executionPath ?? executionPath(deps), state: params.state, questions: params.questions },
+      (deps as LocatedDeps)[DECISION_WORKFLOW]!, deps.decisionContext, () => deps.runJudge!(params), deps.recordDecision,
+      receipt => deps.onEvent?.({ type: "decision.receipt", label: params.label, detail: {
+        version: receipt.version, id: receipt.id, status: receipt.status, run_id: receipt.run_id, attempt_id: receipt.attempt_id,
+        phase: receipt.phase, started_at: receipt.started_at, workflow_sha256: receipt.workflow_sha256, input_sha256: receipt.input_sha256,
+        questions_sha256: receipt.questions_sha256, elapsed_ms: receipt.elapsed_ms, ...receipt.metadata, error: receipt.error,
+      } }),
+    );
   };
 };
 
@@ -1543,19 +1556,19 @@ function questionSetOf(workflow: Workflow, node: { node: string; label: string; 
 const describeItem = (template: string, state: Record<string, unknown>, item: unknown, index: number): string =>
   interpolate(template, { ...state, item, item_index: index }).replace(/\s+/g, " ").trim();
 
-async function askQuestions(deps: WorkflowDeps, node: { node: "judge" | "pick" | "sift" | "route"; label: string }, asked: unknown, questions: Record<string, SystemOneQuestion>): Promise<{ answers: Record<string, SystemOneAnswer>; sidecar: AnswersSidecar; model: string | null; cost_usd: number | null }> {
+async function askQuestions(deps: WorkflowDeps, node: { node: "judge" | "pick" | "sift" | "route"; label: string }, asked: unknown, questions: Record<string, SystemOneQuestion>): Promise<{ answers: Record<string, SystemOneAnswer>; sidecar: AnswersSidecar; metering: DecisionReceipt["metadata"] & { decision_id: string } }> {
   const runJudge = requireJudge(deps, node.node, node.label);
   const result = await runJudge({ label: node.label, kind: node.node, state: asked, questions, signal: deps.signal });
   validateAnswers(questions, result.answers);
-  return { answers: result.answers, sidecar: answersSidecar(result.answers), model: result.model ?? null, cost_usd: result.cost_usd ?? null };
+  return { answers: result.answers, sidecar: answersSidecar(result.answers), metering: { ...decisionMetadata(result), decision_id: result.decision_id } };
 }
 
 async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
   const set = questionSetOf(workflow, node);
-  const { answers, sidecar, model, cost_usd } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), set.questions);
+  const { answers, sidecar, metering } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), set.questions);
   const value = set.decode(answers);
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "judge", as: node.as, value, sidecar, model, cost_usd } });
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "judge", as: node.as, value, sidecar, ...metering } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
@@ -1575,14 +1588,14 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
   const criteria: Record<string, string | null> = node.allowNone ? { ...options, [NONE]: "none of the items fits" } : options;
   const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state) }), candidates: options };
-  const { answers, sidecar, model, cost_usd } = await askQuestions(deps, node, asked, { pick: { type: "choice", instructions: node.instructions, criteria } });
+  const { answers, sidecar, metering } = await askQuestions(deps, node, asked, { pick: { type: "choice", instructions: node.instructions, criteria } });
   const a = answers.pick;
   if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
   const none = a.choice === NONE;
   const index = none ? null : Object.keys(options).indexOf(a.choice);
   if (index !== null && index < 0) throw new Error(`pick node "${node.label}": the choice "${a.choice}" names no item`);
   const value = { index, item: index === null ? null : items[index], none, option: none ? null : options[a.choice] };
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "pick", as: node.as, value, sidecar, model, cost_usd } });
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "pick", as: node.as, value, sidecar, ...metering } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
@@ -1595,14 +1608,14 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   assertQuestionCount(deps, items.length * ids.length, node.label);
   const [keepId, keepTail] = node.keep ? node.keep.path.split(".") : [];
   const values: Record<string, unknown>[] = []; const sidecars: AnswersSidecar[] = []; const kept: number[] = [];
-  let metering: { model: string | null; cost_usd: number | null } | null = null;
+  let metering: (DecisionReceipt["metadata"] & { decision_id: string }) | null = null;
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
     const named = items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
     const questions: Record<string, SystemOneQuestion> = {};
     for (let i = 0; i < items.length; i += 1) for (const id of ids) questions[`${i}.${id}`] = { ...set.questions[id], instructions: `For \`items[${i}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion;
-    const { answers, model, cost_usd } = await askQuestions(deps, node, { ...base, items: named }, questions);
-    metering = { model, cost_usd };
+    const { answers, metering: requestMetering } = await askQuestions(deps, node, { ...base, items: named }, questions);
+    metering = requestMetering;
     for (let i = 0; i < items.length; i += 1) {
       const mine: Record<string, SystemOneAnswer> = Object.create(null);
       for (const id of ids) { const a = answers[`${i}.${id}`]; if (!a) throw new Error(`sift node "${node.label}": no answer for item ${i} question "${id}"`); mine[id] = a; }
@@ -1623,22 +1636,23 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
   assertNodeInputs(node, state);
   const names = Object.keys(node.branches);
   const criteria: Record<string, string | null> = Object.fromEntries(names.map((n) => [n, node.branches[n]?.criteria?.trim() || null]));
-  const { answers, sidecar, model, cost_usd } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), { branch: { type: "choice", instructions: node.instructions, criteria } });
+  const { answers, sidecar, metering } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), { branch: { type: "choice", instructions: node.instructions, criteria } });
   const a = answers.branch;
   if (!a || a.type !== "choice" || !names.includes(a.choice)) throw new Error(`route node "${node.label}": the choice "${String((a as any)?.choice)}" names no branch`);
   const unsure = Boolean(node.unsure && a.confidence < node.unsure.gte);
   const taken = unsure ? node.unsure!.branch : a.choice;
   const value = { branch: a.choice, taken, unsure };
-  deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, model, cost_usd } });
+  deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, ...metering } });
   const routed = node.as ? { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar } : state;
   return runNodeOnState(node.branches[taken].body, routed, workflow, scopeExecution(deps, "branches", taken, "body"));
 }
 
 const EXECUTION_PATH = Symbol("workflow.executionPath");
+const DECISION_WORKFLOW = Symbol("workflow.decisionWorkflow");
 const SCOPED_EFFECTS = Symbol("workflow.scopedEffects");
 /** The map item a scoped copy of deps runs for, so host policy context can name it. */
 const MAP_ITEM = Symbol("workflow.mapItem");
-type LocatedDeps = WorkflowDeps & { [EXECUTION_PATH]?: string; [SCOPED_EFFECTS]?: boolean; [MAP_ITEM]?: MapItem };
+type LocatedDeps = WorkflowDeps & { [EXECUTION_PATH]?: string; [SCOPED_EFFECTS]?: boolean; [MAP_ITEM]?: MapItem; [DECISION_WORKFLOW]?: string };
 /** The reserved state key host policy writes under. Engine-owned like every `$`-prefixed key: no node may name it. */
 export const HOST_STATE_KEY = "$host";
 const hostStateOf = (state: Record<string, unknown>): Record<string, unknown> => {
@@ -2121,7 +2135,7 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
     if (outSchema) normalizeStringNullsForSchema(sub, outSchema);
     const asked = interpolateValue({ ...(clause.state ?? {}), submission: "{submission}" }, { ...state, submission: sub, ...(node.as ? { [node.as]: sub } : {}) }, node.label);
     const result = await runJudge({ label: `${node.label} (verify)`, kind: "judge", state: asked, questions, signal: deps.signal });
-  validateAnswers(questions, result.answers);
+    validateAnswers(questions, result.answers);
     const answers = result.answers; const doubted: string[] = []; const unmet: string[] = [];
     for (const [id, q] of Object.entries(questions)) {
       if (q.type !== "noul") continue;
@@ -2133,7 +2147,7 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
     reviewedCandidate = JSON.stringify(sub);
     const sidecar = answersSidecar(answers);
     drives.push({ drive, doubted, unmet, accepted, sidecar }); last = { answers, doubted, unmet };
-    deps.onEvent?.({ type: "verify.answered", label: node.label, detail: { drive, doubted, unmet, accepted, sidecar, model: result.model ?? null, cost_usd: result.cost_usd ?? null } });
+    deps.onEvent?.({ type: "verify.answered", label: node.label, detail: { drive, doubted, unmet, accepted, sidecar, ...decisionMetadata(result), decision_id: result.decision_id } });
     if (accepted) return { accepted: true as const };
     if (drive >= maxDrives) throw new WorkflowVerificationError(node.label, sub, drives, `exhausted ${maxDrives} review attempts; unmet: ${unmet.join(", ") || "none"}; doubted: ${doubted.join(", ") || "none"}`);
     const line = (id: string) => `${id}: ${String(schema[id]?.description ?? questions[id].instructions).replace(/\s+/g, " ").trim()}`;
@@ -2189,6 +2203,7 @@ export async function runWorkflow(workflow: Workflow, input: Record<string, unkn
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new WorkflowInputInvalidError(String(workflow?.name), ["input must be a JSON object"]);
   const valid = validateWorkflow(workflow);
   if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors);
+  deps = { ...deps, [DECISION_WORKFLOW]: workflowSha256(workflow) } as LocatedDeps;
   workflow = desugarWorkflow(workflow);
   if (workflow.input) {
     const validator = Compile(resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]) as never);
@@ -2226,6 +2241,7 @@ export async function runWorkflowSlice(
 ): Promise<{ status: "complete"; state: Record<string, unknown>; focus: { from: string; to: string } } | { status: "escalated"; state: Record<string, unknown>; escalation: Escalation }> {
   const valid = validateWorkflow(workflow);
   if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors);
+  deps = { ...deps, [DECISION_WORKFLOW]: workflowSha256(workflow) } as LocatedDeps;
   const desugared = desugarWorkflow(workflow);
   const root = desugared.root.node === "chain" ? desugared.root.steps : [desugared.root];
   const labels = root.map((n) => (n as { label?: string }).label ?? "");

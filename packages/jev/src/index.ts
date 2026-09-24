@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { APIConnectionError, APIError, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
-import { validateAnswers, SystemOneError, isSystemOneResponseReason } from "@parcha/agentrun-dsl";
-import type { WorkflowDeps, SystemOneResponseReason } from "@parcha/agentrun-dsl";
+import { validateAnswers, SystemOneError, SystemOneRequestError, isSystemOneResponseReason } from "@parcha/agentrun-dsl";
+import type { WorkflowDeps, SystemOneResponseReason, SystemOneMetadata, SystemOneAttempt } from "@parcha/agentrun-dsl";
 
 /** Injectable client boundary. Custom clients must honor signal and disable their own retries. */
 export interface JevClient {
@@ -44,11 +44,11 @@ export type JevRequestDiagnostic = {
 };
 
 /** Deliberately excludes provider bodies, headers, input state, and underlying causes. */
-export class JevError extends Error {
+export class JevError extends SystemOneRequestError {
   readonly responseDiagnostic?: JevResponseDiagnostic;
   constructor(readonly code: JevErrorCode, message: string, readonly attempts: number = 0, readonly status?: number,
     readonly requestDiagnostic?: JevRequestDiagnostic, responseDiagnostic?: JevResponseDiagnostic) {
-    super(message);
+    super(message, code);
     this.name = "JevError";
     if (isJevResponseReason(responseDiagnostic?.reason)) this.responseDiagnostic = { reason: responseDiagnostic.reason };
   }
@@ -120,6 +120,8 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
     if (signal.aborted) throw abortError();
     const timer = timeoutMs === null ? undefined : setTimeout(() => deadline.abort(), timeoutMs);
     const started = Date.now();
+    const transportAttempts: SystemOneAttempt[] = [];
+    const metadata: SystemOneMetadata = { model: null, pricing: pricing ?? null, usage: null, cost_usd: null, transport_attempts: transportAttempts };
     try {
       let body: string;
       let request: SystemOneRequest;
@@ -146,16 +148,23 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
       } catch {
         throw invalid("invalid_questions", "Jev requires a nonempty JSON question map; no request was sent.");
       }
+      metadata.request_sha256 = createHash("sha256").update(body).digest("hex");
       for (attempt = 1; ; attempt++) {
         if (signal.aborted) throw abortError();
+        const attemptStarted = performance.now();
+        const transport: SystemOneAttempt = { id: randomUUID(), number: attempt, status: "unknown", elapsed_ms: 0, http_status: null, usage: null, cost_usd: null };
+        transportAttempts.push(transport);
         let result: unknown;
         try {
           result = await abortable(client.systemOne(request, {
             signal, ...(timeoutMs === null ? {} : { timeout: Math.max(1, timeoutMs - (Date.now() - started)) }), retry: { maxRetries: 0 },
           }), signal, abortError);
         } catch (error) {
+          transport.elapsed_ms = Math.max(0, performance.now() - attemptStarted);
           if (signal.aborted) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
+          transport.http_status = Number.isInteger(status) && status! >= 100 && status! <= 599 ? status! : null;
+          transport.status = status === undefined ? "unknown" : "failed";
           const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError;
           if (retryable && attempt < maxAttempts) {
             await wait(Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1)), signal, abortError);
@@ -170,6 +179,20 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
           }
           if (error instanceof APIConnectionError) throw new JevError("connection", "Jev transport failed.", attempt);
           throw new JevError("invalid_request", "Jev could not process the request. Check question and transport configuration.", attempt);
+        }
+        transport.elapsed_ms = Math.max(0, performance.now() - attemptStarted);
+        transport.status = "failed";
+        // A returned response may be billed even when its answers fail validation.
+        if (record(result)) {
+          if (record(result.usage) && tokens(result.usage.input_tokens) && tokens(result.usage.output_tokens)) {
+            transport.usage = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens };
+            const estimate = pricing ? (transport.usage.input_tokens * pricing.inputUsdPerMillionTokens + transport.usage.output_tokens * pricing.outputUsdPerMillionTokens) / 1_000_000 : null;
+            transport.cost_usd = estimate !== null && Number.isFinite(estimate) ? estimate : null;
+            metadata.usage = transport.usage;
+            metadata.cost_usd = transport.cost_usd;
+          }
+          if (typeof result.model === "string" && result.model.trim()) metadata.model = result.model;
+          if (typeof result.request_id === "string" && result.request_id.trim()) metadata.provider_request_id = result.request_id;
         }
         if (!record(result)) throw new JevError("invalid_response", "Jev returned an invalid response.", attempt, undefined, undefined, { reason: "response_shape" });
         const answers = result.answers;
@@ -186,12 +209,17 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
         const metering = record(usage) ? { input_tokens: usage.input_tokens as number, output_tokens: usage.output_tokens as number } : null;
         const cost = pricing && metering ? (metering.input_tokens * pricing.inputUsdPerMillionTokens + metering.output_tokens * pricing.outputUsdPerMillionTokens) / 1_000_000 : null;
         if (cost !== null && !Number.isFinite(cost)) throw new JevError("invalid_response", "Jev cost estimate exceeded the numeric range.", attempt, undefined, undefined, { reason: "cost_range" });
+        transport.status = "answered";
         return {
+          ...metadata,
           answers, model: typeof result.model === "string" ? result.model : null,
           usage: metering, cost_usd: cost,
           request_sha256: createHash("sha256").update(body).digest("hex"),
         };
       }
+    } catch (error) {
+      if (error instanceof JevError) error.metadata = metadata;
+      throw error;
     } finally {
       clearTimeout(timer);
     }
