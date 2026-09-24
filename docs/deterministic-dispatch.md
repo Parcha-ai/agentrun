@@ -30,7 +30,9 @@ from an upstream schema or silently invent a default.
 
 The optional `as` records `{value, taken, fallback}` before the selected body
 executes; absent input is represented as null. No answer sidecar is created. The
-original judge answer remains unchanged. Existing `requires` checks run first.
+original judge answer remains unchanged. General `dispatch.chosen` events carry only
+the declared branch and fallback flag, never the unexpected source string.
+Existing `requires` checks run first.
 Branch bodies can themselves contain model calls or effects.
 
 Children execute at `/branches/<escaped-name>/body`. Dispatch checkpoints its

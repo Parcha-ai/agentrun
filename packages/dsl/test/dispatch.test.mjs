@@ -11,13 +11,16 @@ const dispatch = { node: 'dispatch', label: 'apply', valuePath: 'policy.action',
 } };
 const flow = (root = dispatch) => ({ v: 2, name: 'dispatch', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'result' }, root });
 
-test('dispatch selects exactly one effect from a stored choice and preserves the original answer', async () => {
+test('dispatch selects exactly one effect and preserves stored decisions despite observer mutation', async () => {
   for (const action of Object.keys(dispatch.branches)) {
     const calls = [], events = [];
     const original = { answers: { action: { type: 'choice', choice: action, confidence: .7 } } };
     const result = await runWorkflow(flow({ ...dispatch, otherwise: 'clarify' }), { policy: { action }, 'policy$answers': original }, {
       runEffect: async request => { calls.push(request); return { operation: request.node.tool }; },
-      runJudge: async () => { throw new Error('dispatch must never ask a model'); }, onEvent: e => events.push(e),
+      runJudge: async () => { throw new Error('dispatch must never ask a model'); }, onEvent: e => {
+        events.push(e);
+        if (e.type === 'dispatch.chosen') e.detail.value.taken = 'observer mutation';
+      },
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].node.tool, action);
@@ -42,6 +45,17 @@ test('missing and unknown values use explicit fallback; wrong types fail before 
     }), e => e instanceof WorkflowStateError && e.reason === reason);
     assert.equal(calls, 0);
   }
+});
+
+test('fallback observation exposes the declared branch without the unexpected source value', async () => {
+  const secret = 'private source text that is not a branch';
+  const events = [];
+  const result = await runWorkflow(flow({ ...dispatch, otherwise: 'clarify' }), { policy: { action: secret } }, {
+    runEffect: async p => p.input.selection, onEvent: e => { if (e.type === 'dispatch.chosen') events.push(e); },
+  });
+  assert.equal(result.state.applied.value, secret);
+  assert.deepEqual(events[0].detail.value, { taken: 'clarify', fallback: true });
+  assert.doesNotMatch(JSON.stringify(events), /private source text/);
 });
 
 test('selection names are own properties and escaped child paths survive recovery', async () => {

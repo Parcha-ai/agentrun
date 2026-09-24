@@ -2068,7 +2068,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const taken = matched ? value : node.otherwise;
       if (taken === undefined) throw new WorkflowStateError(`dispatch node "${node.label}": valuePath has no declared branch or fallback`, node.label, node.valuePath, value === undefined ? "dispatch_missing" : "dispatch_unknown");
       const selection = { value: value ?? null, taken, fallback: !matched };
-      deps.onEvent?.({ type: "dispatch.chosen", label: node.label, detail: { as: node.as ?? null, value: selection } });
+      deps.onEvent?.({ type: "dispatch.chosen", label: node.label, detail: { as: node.as ?? null, value: { taken, fallback: !matched } } });
       const dispatched = node.as ? { ...state, [node.as]: selection } : state;
       return runNodeOnState(node.branches[taken].body, dispatched, workflow, scopeExecution(deps, "branches", taken, "body"));
     }
