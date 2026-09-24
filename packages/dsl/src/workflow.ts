@@ -306,8 +306,13 @@ export type WorkflowDeps = {
   signal?: AbortSignal;
   /** Best-effort observation only: thrown errors and rejected promises are ignored.
    * Observers are never awaited. Use required checkpoints for durable lifecycle gates. */
-  onEvent?: (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => void;
+  onEvent?: (event: WorkflowEvent) => void;
+  /** Trusted host boundary: return a detached snapshot without mutating the input.
+   * Runs before generic copying; thrown validation errors stop execution. */
+  prepareEvent?: (event: WorkflowEvent) => WorkflowEvent;
 };
+
+export type WorkflowEvent = { type: string; label: string; detail?: unknown; executionPath?: string };
 
 export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
   const out = new Set<string>();
@@ -1671,7 +1676,7 @@ function withExecutionLocation(deps: WorkflowDeps): WorkflowDeps {
     ...(deps.runNode ? { runNode: params => deps.runNode!({ ...params, executionPath: params.executionPath ?? path }) } : {}),
     ...(deps.runEffect ? { runEffect: params => deps.runEffect!({ ...params, executionPath: params.executionPath ?? path }) } : {}),
     ...(deps.runJudge ? { runJudge: params => deps.runJudge!({ ...params, executionPath: params.executionPath ?? path }) } : {}),
-    ...(deps.onEvent ? { onEvent: event => deps.onEvent!({ ...event, executionPath: event.executionPath ?? path }) } : {}),
+    ...(deps.onEvent ? { onEvent: forwardObserver(deps.onEvent, event => ({ ...event, executionPath: event.executionPath ?? path })) } : {}),
   };
 }
 
@@ -1729,7 +1734,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
       wait: (node, ms, item, path) => recovery.wait(relabel(node), ms, item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(relabel(node), results, error, path) } : {}),
     } } : {}),
-    ...(deps.onEvent ? { onEvent: event => deps.onEvent!({ ...event, label: `${prefix}/${event.label}` }) } : {}),
+    ...(deps.onEvent ? { onEvent: forwardObserver(deps.onEvent, event => ({ ...event, label: `${prefix}/${event.label}` })) } : {}),
   };
 }
 
@@ -1738,16 +1743,28 @@ const CHECKPOINTED_STRUCTURE_KINDS: ReadonlySet<string> = new Set(["map", "paral
 
 const guardedObservers = new WeakSet<NonNullable<WorkflowDeps["onEvent"]>>();
 
+function forwardObserver(observer: NonNullable<WorkflowDeps["onEvent"]>, transform: (event: WorkflowEvent) => WorkflowEvent): NonNullable<WorkflowDeps["onEvent"]> {
+  const forwarded = (event: WorkflowEvent) => observer(transform(event));
+  if (guardedObservers.has(observer)) guardedObservers.add(forwarded);
+  return forwarded;
+}
+
 async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   deps = withExecutionLocation(deps);
   const observer = deps.onEvent;
   if (observer && !guardedObservers.has(observer)) {
     const guarded: NonNullable<WorkflowDeps["onEvent"]> = event => {
+      let detached: WorkflowEvent;
+      if (deps.prepareEvent) detached = deps.prepareEvent(event);
+      else {
+        try { detached = observerSnapshot(event); }
+        catch { return; }
+      }
       try {
         // TypeScript void callbacks can still return promises. Consume rejection without
         // awaiting telemetry or allowing it to replace an execution or recovery outcome.
         // Observers receive snapshots, never objects shared with execution state.
-        const returned: unknown = observer(observerSnapshot(event));
+        const returned: unknown = observer(detached);
         if (returned && typeof (returned as PromiseLike<unknown>).then === "function") {
           void Promise.resolve(returned).catch(() => {});
         }
