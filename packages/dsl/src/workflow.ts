@@ -308,8 +308,9 @@ export type WorkflowDeps = {
    * Observers are never awaited. Use required checkpoints for durable lifecycle gates. */
   onEvent?: (event: WorkflowEvent) => void;
   /** Trusted host boundary: return a detached snapshot without mutating the input.
-   * Runs before generic copying; thrown validation errors stop execution. */
-  prepareEvent?: (event: WorkflowEvent) => WorkflowEvent;
+   * Runs before generic copying; undefined or thrown errors omit the event.
+   * Required trace validation cancels through the host signal, preserving execution cleanup. */
+  prepareEvent?: (event: WorkflowEvent) => WorkflowEvent | undefined;
 };
 
 export type WorkflowEvent = { type: string; label: string; detail?: unknown; executionPath?: string };
@@ -1754,12 +1755,10 @@ async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>
   const observer = deps.onEvent;
   if (observer && !guardedObservers.has(observer)) {
     const guarded: NonNullable<WorkflowDeps["onEvent"]> = event => {
-      let detached: WorkflowEvent;
-      if (deps.prepareEvent) detached = deps.prepareEvent(event);
-      else {
-        try { detached = observerSnapshot(event); }
-        catch { return; }
-      }
+      let detached: WorkflowEvent | undefined;
+      try { detached = deps.prepareEvent ? deps.prepareEvent(event) : observerSnapshot(event); }
+      catch { return; }
+      if (detached === undefined) return;
       try {
         // TypeScript void callbacks can still return promises. Consume rejection without
         // awaiting telemetry or allowing it to replace an execution or recovery outcome.

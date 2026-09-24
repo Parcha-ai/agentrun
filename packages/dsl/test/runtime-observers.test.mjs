@@ -175,13 +175,15 @@ test('trusted host can reject unsafe or oversized events before generic snapshot
     const candidate = { v: 2, name: 'host validation', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any' },
       root: { node: 'code', label: 'emit', code: source } };
     let rejected = 0;
-    const reason = Error('host refused observation');
+    const reason = Error('host refused observation'), controller = new AbortController();
     await assert.rejects(runWorkflow(candidate, {}, {
+      signal: controller.signal,
       prepareEvent: event => {
         if (event.type === 'code.patch') {
           assert(isProxy(event.detail.scratch) || event.detail.scratch.length === 200001);
           rejected++;
-          throw reason;
+          controller.abort(reason);
+          return undefined;
         }
         return structuredClone(event);
       },
@@ -190,3 +192,28 @@ test('trusted host can reject unsafe or oversized events before generic snapshot
     assert.equal(rejected, 1);
   }
 });
+
+for (const boundary of ['effect.failed', 'map.failed']) {
+  test(`preparation rejection at ${boundary} preserves uncertain effects and partial recovery`, {timeout:1000}, async () => {
+    const pending = deferred(), controller = new AbortController(), traceError = Error('trace rejected');
+    const candidate = flow({deadline_s:.01});
+    candidate.output = {schemaId:'State'}; candidate.schemas.State = {type:'object'};
+    candidate.root = {node:'map',label:'group',itemsPath:'items',as:'results',maxConcurrency:1,body:candidate.root};
+    let failure, persisted, rejected = 0, calls = 0;
+    await assert.rejects(runWorkflow(candidate, {items:[0,1]}, {
+      signal:controller.signal, runEffect:()=>++calls===1?Promise.resolve({count:1}):pending.promise,
+      recovery:recovery({fail:async(_node, partial, error)=>{persisted={partial,error};}}),
+      prepareEvent:event=>{
+        if(event.type===boundary){rejected++;controller.abort(traceError);throw traceError;}
+        return structuredClone(event);
+      },
+      onEvent:event=>assert.notEqual(event.type,boundary),
+    }), error=>{failure=error;return error instanceof EffectOutcomeUnknownError;});
+    assert.equal(rejected,1); assert.equal(controller.signal.reason,traceError);
+    assert.equal(persisted.error,failure); assert.equal(persisted.partial.length,2);
+    assert.deepEqual(persisted.partial[0],{count:1}); assert.equal(Object.hasOwn(persisted.partial,1),false);
+    assert.match(failure.idempotencyKey,/^[a-f0-9]{64}$/);
+    pending.resolve({count:7});
+    assert.deepEqual(await failure.settlement,{status:'fulfilled',value:{count:7}});
+  });
+}

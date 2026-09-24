@@ -346,10 +346,10 @@ export class WorkflowExtensionService {
         controller.abort(diagnostic);
       }
     };
-    const prepareEvent = (event: Event): Event => {
+    const prepareEvent = (event: Event): Event | undefined => {
       if (closed) return { type: event.type, label: event.label };
       try { return snapshot(event, this.limits.maxEventBytes) as Event; }
-      catch (error) { rejectTrace(error); throw controller.signal.reason; }
+      catch (error) { rejectTrace(error); return undefined; }
     };
     const onEvent = (event: Event) => {
       if (closed) return;
