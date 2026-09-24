@@ -88,3 +88,67 @@ test('partial-result persistence failure retains original uncertain effect and s
   assert.equal(failure.cause,original);assert.deepEqual(failure.errors,[original,persistenceError]);
   pending.resolve({count:5});assert.deepEqual(await original.settlement,{status:'fulfilled',value:{count:5}});
 });
+
+
+test('mutating observer snapshots cannot change code, judge or route state and committed outcomes', async () => {
+  const candidate = {
+    v: 2, name: 'observer snapshots', schemas: {
+      Result: { type: 'object' },
+      Decision: { type: 'object', required: ['allowed'], properties: { allowed: { type: 'boolean', description: 'Is it allowed?' } } },
+    }, output: { schemaId: 'Result' }, root: { node: 'chain', steps: [
+      { node: 'code', label: 'seed', code: 's => ({record: {count: 1}})' },
+      { node: 'judge', label: 'judge', state: { record: '{record}' }, out: 'Decision', as: 'decision' },
+      { node: 'route', label: 'route', state: { record: '{record}' }, instructions: 'Choose the action.', as: 'routing', branches: {
+        proceed: { body: { node: 'code', label: 'perform', code: "s => ({performed: s.routing.taken, allowed: s.decision.allowed, count: s.record.count})" } },
+        withhold: { body: { node: 'code', label: 'withhold', code: "s => ({performed: 'withhold'})" } },
+      } },
+    ] },
+  };
+  const committed = [], snapshots = [];
+  const result = await runWorkflow(candidate, {}, {
+    runJudge: async p => ({ answers: p.kind === 'route'
+      ? { branch: { type: 'choice', choice: 'proceed', probabilities: { proceed: .95, withhold: .05 }, confidence: .9 } }
+      : { allowed: { type: 'noul', noul: .9 } } }),
+    recovery: recovery({ commit: async (_n, state) => committed.push(structuredClone(state)) }),
+    onEvent: event => {
+      snapshots.push(event);
+      if (event.type === 'code.patch' && event.detail.record) event.detail.record.count = 99;
+      if (event.type === 'judge.answered') {
+        event.detail.value.allowed = false;
+        event.detail.sidecar.answers.allowed.noul = .01;
+      }
+      if (event.type === 'route.chosen') {
+        event.detail.value.taken = 'withhold';
+        event.detail.sidecar.answers.branch.choice = 'withhold';
+      }
+    },
+  });
+  assert.equal(result.state.count, 1);
+  assert.equal(result.state.allowed, true);
+  assert.equal(result.state.performed, 'proceed');
+  assert.equal(result.state['decision$answers'].answers.allowed.noul, .9);
+  assert.equal(result.state['routing$answers'].answers.branch.choice, 'proceed');
+  assert.deepEqual(committed.at(-1), result.state);
+  for (const snapshot of snapshots) if (snapshot.detail && typeof snapshot.detail === 'object') snapshot.detail.changedAfterCompletion = true;
+  assert.equal(result.state.changedAfterCompletion, undefined);
+});
+
+test('observer mutations cannot alter selected or sifted source records', async () => {
+  for (const kind of ['pick', 'sift']) {
+    const candidate = { v: 2, name: kind, schemas: {
+      Result: { type: 'object' }, Question: { type: 'object', properties: { keep: { type: 'boolean', description: 'Keep this record?' } } },
+    }, output: { schemaId: 'Result', path: 'selected' }, root: kind === 'pick'
+      ? { node: 'pick', label: kind, itemsPath: 'items', describe: '{item.name}', instructions: 'Choose a record.', as: 'selected' }
+      : { node: 'sift', label: kind, itemsPath: 'items', out: 'Question', as: 'selected' } };
+    const result = await runWorkflow(candidate, { items: [{ name: 'original' }] }, {
+      runJudge: async () => ({ answers: kind === 'pick' ? { pick: { type: 'choice', choice: 'item_0', probabilities: { item_0: 1 }, confidence: 1 } } : { '0.keep': { type: 'noul', noul: .9 } } }),
+      onEvent: event => {
+        if (event.type !== 'judge.answered') return;
+        const item = kind === 'pick' ? event.detail.value.item : event.detail.value.items[0];
+        item.name = 'observer mutation';
+      },
+    });
+    assert.equal(result.state.items[0].name, 'original');
+    assert.equal((kind === 'pick' ? result.output.item : result.output.items[0]).name, 'original');
+  }
+});

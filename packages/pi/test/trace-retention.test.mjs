@@ -66,6 +66,10 @@ test('non-JSON, accessors, cycles, excessive depth and value count remain fail c
     ['s => ({result:{value:Number("fictional-secret")}})','trace_invalid_data'],
     ['s => {const x={};x.self=x;return {result:x};}','trace_invalid_data'],
     ['s => ({scratch:{get value(){throw new Error("GETTER_CALLED");}}})','trace_invalid_data'],
+    ['s => ({scratch:{get value(){return 42;}}})','trace_invalid_data'],
+    ['s => ({scratch:new Proxy({}, {ownKeys(){throw new Error("PROXY_CALLED");}})})','trace_invalid_data'],
+    ['s => ({scratch:() => 7})','trace_invalid_data'],
+    ['s => ({scratch:Object.create({inherited:1})})','trace_invalid_data'],
     ['s => {let x={};for(let i=0;i<140;i++)x={x};return {result:x};}','limit'],
     ['s => ({result:Array(100001).fill(0)})','limit'],
   ]){
