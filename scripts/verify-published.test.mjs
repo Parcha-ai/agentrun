@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyPublished } from './verify-published.mjs';
+import { verifyPublished, waitForRegistryVersions, PACKUMENT_ACCEPT } from './verify-published.mjs';
 import { releasePackageNames } from './release-preflight.mjs';
 
 const bytes = Buffer.from('verified package fixture bytes');
@@ -107,3 +107,73 @@ test('post-publish authentication and integrity failures are not propagation del
     assert.equal((await receipt()).status, 'failed');
   }
 }));
+
+// The beta.4 run: every per-version document was visible, but `npm install` read an abbreviated
+// packument that did not yet list pi, and failed with ETARGET a second after pi's check passed.
+const registry = 'https://registry.npmjs.org/';
+const packument = (pkg, listed) => Response.json({ name: pkg.name, versions: listed ? { [pkg.version]: {} } : {} });
+const pkgFor = url => packages.find(pkg => String(url) === `${registry}${encodeURIComponent(pkg.name)}`);
+
+test('the install waits until both packuments of every package list the release version', async () => {
+  let polls = 0, waited = 0;
+  const seen = new Set();
+  const result = await waitForRegistryVersions(registry, packages, {
+    now: () => waited,
+    wait: async ms => { waited += ms; polls++; },
+    fetchImpl: async (url, init) => {
+      const pkg = pkgFor(url);
+      assert.ok(pkg, `unexpected URL ${url}`);
+      seen.add(init.headers.accept);
+      // The full packument lists pi at once; the abbreviated one the installer reads lags 40 polls.
+      const lagging = pkg.directory === 'pi' && init.headers.accept === PACKUMENT_ACCEPT.abbreviated && polls < 40;
+      return packument(pkg, !lagging);
+    },
+  });
+  assert.deepEqual(result, { attempts: 41 });
+  assert.equal(waited, 200_000);
+  assert.deepEqual([...seen].sort(), Object.values(PACKUMENT_ACCEPT).sort());
+});
+
+test('a packument that never lists the version fails after the 60 x 5 s budget and names what is missing', async () => {
+  let waited = 0, calls = 0;
+  await assert.rejects(waitForRegistryVersions(registry, packages, {
+    wait: async ms => { waited += ms; },
+    fetchImpl: async (url, init) => { calls++; const pkg = pkgFor(url); return pkg.directory === 'jev' && init.headers.accept === PACKUMENT_ACCEPT.full ? new Response(null, { status: 404 }) : packument(pkg, pkg.directory !== 'pi'); },
+  }), /never listed @parcha\/agentrun-jev@0\.1\.0-beta\.1 \(full: HTTP 404\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(full\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(abbreviated\)/);
+  assert.equal(waited, 300_000);
+  assert.equal(calls, 61 * 6);
+});
+
+test('packument authentication errors fail at once; network errors and 5xx are waited out', async () => {
+  await assert.rejects(waitForRegistryVersions(registry, packages, {
+    wait: async () => { assert.fail('a permanent failure must not wait'); },
+    fetchImpl: async () => new Response(null, { status: 403 }),
+  }), /full packument of @parcha\/agentrun-dsl: HTTP 403/);
+  let calls = 0;
+  const result = await waitForRegistryVersions(registry, packages, {
+    wait: async () => {},
+    fetchImpl: async url => { calls++; if (calls === 1) throw new Error('socket hang up'); if (calls === 2) return new Response(null, { status: 503 }); return packument(pkgFor(url), true); },
+  });
+  assert.deepEqual(result, { attempts: 2 });
+});
+
+test('an unreadable packument body is lag, not failure', async () => {
+  let calls = 0;
+  const result = await waitForRegistryVersions(registry, packages, {
+    wait: async () => {},
+    fetchImpl: async url => ++calls === 1 ? new Response('{"versions": {"0.1.0-bet', { headers: { 'content-type': 'application/json' } }) : packument(pkgFor(url), true),
+  });
+  assert.deepEqual(result, { attempts: 2 });
+});
+
+test('slow requests cannot stretch the wait past its wall budget', async () => {
+  let clock = 0, polls = 0;
+  await assert.rejects(waitForRegistryVersions(registry, packages, {
+    now: () => clock,
+    wait: async ms => { clock += ms; },
+    // Every probe of a poll runs together and times out after 10 s: one poll costs 10 s, not 60 s.
+    fetchImpl: async () => { if (++polls % 6 === 1) clock += 10_000; throw new Error('timeout'); },
+  }), /never listed .*request failed/);
+  assert.ok(clock <= 300_000 + 15_000, `waited ${clock} ms`);
+  assert.equal(polls / 6, 21);
+});

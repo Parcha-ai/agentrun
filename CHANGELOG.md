@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.1.0-beta.4 (unreleased)
+## Unreleased
+
+- Release tooling: the final registry check now waits for npm to list every release version in both the full and the abbreviated packument before its one clean install. It uses the same 60 x 5 second budget as the per-package check. The beta.4 publish succeeded, but this step ran `npm install` one second after the Pi check passed and got `ETARGET`, so the run was marked failed.
+
+## 0.1.0-beta.4, 2026-09-24
 
 - Every node accepts an optional `metadata` object for host markers. Validation refuses a non-object value and names the node. Otherwise the engine never reads it. Desugaring, dry runs, runs and the author's candidate loop carry it verbatim, and it never reaches state, events, prompts, judge requests or effect idempotency keys. `workflowSha256` covers it because it hashes the whole document. `HOST_NODE_FIELDS` and the `NodeMetadata` type are exported, and the editor schema admits `metadata` on every node kind.
 - The author contract states once that `metadata` is host-owned and that authors set only the keys the host names. `AuthorHostAddendum.metadataKeys` names those keys. The host enforces them in its acceptance checks.

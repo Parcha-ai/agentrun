@@ -29,6 +29,38 @@ export async function registryResponse(url, { fetchImpl = fetch, wait = ms => ne
   }
 }
 
+// `npm install` resolves versions from the abbreviated packument (the install Accept header), which the
+// registry serves and caches separately from the per-version document checked above. Both packuments
+// must list every release version before the one clean install runs.
+export const PACKUMENT_ACCEPT = { full: 'application/json', abbreviated: 'application/vnd.npm.install-v1+json' };
+
+export async function waitForRegistryVersions(registry, packages, { fetchImpl = fetch, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now, timeoutMs = 10_000, attempts = 61, budgetMs = 300_000 } = {}) {
+  // One probe per package and view, run together so a poll costs at most one request timeout. Anything
+  // that can be registry lag (404, 429, 5xx, a failed request, an unreadable body) is retried; any other
+  // HTTP status is permanent. The wall budget also bounds time spent in requests, not just in waits.
+  const probe = async (pkg, view, accept) => {
+    let response;
+    try { response = await fetchImpl(`${registry}${encodeURIComponent(pkg.name)}`, { headers: { accept }, signal: AbortSignal.timeout(timeoutMs) }); }
+    catch { return `${pkg.name}@${pkg.version} (${view}: request failed)`; }
+    const transient = response.status === 404 || response.status === 429 || response.status >= 500;
+    if (!response.ok && !transient) throw new Error(`Registry rejected the ${view} packument of ${pkg.name}: HTTP ${response.status}`);
+    if (!response.ok) { await response.body?.cancel().catch(() => {}); return `${pkg.name}@${pkg.version} (${view}: HTTP ${response.status})`; }
+    let packument;
+    try { packument = await response.json(); }
+    catch { return `${pkg.name}@${pkg.version} (${view}: unreadable body)`; }
+    return packument?.versions && Object.hasOwn(packument.versions, pkg.version) ? null : `${pkg.name}@${pkg.version} (${view})`;
+  };
+  const started = now();
+  let missing = [];
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    missing = (await Promise.all(packages.flatMap(pkg => Object.entries(PACKUMENT_ACCEPT).map(([view, accept]) => probe(pkg, view, accept))))).filter(Boolean);
+    if (!missing.length) return { attempts: attempt + 1 };
+    if (attempt === attempts - 1 || now() - started >= budgetMs) break;
+    await wait(5000);
+  }
+  throw new Error(`Registry packuments never listed ${missing.join(', ')}`);
+}
+
 export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait } = {}) {
   assert.ok(['dsl', 'jev', 'pi', 'all'].includes(selected));
   assert.ok(!allowAbsent || selected !== 'all', 'Absence probes select exactly one package');
@@ -68,6 +100,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
       results.push({ name: pkg.name, version: pkg.version, sha256: pkg.sha256, status: 'matched' });
     }
     if (selected === 'all') {
+      receipt.registryVisible = await waitForRegistryVersions(plan.registry, plan.packages, { fetchImpl, wait });
       const consumer = await mkdtemp(join(tmpdir(), 'agentrun-registry-consumer-'));
       try {
         await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module' }));

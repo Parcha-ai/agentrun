@@ -12,8 +12,8 @@
     "test": "npm run build && node --test dist/workflow.test.js"
   },
   "dependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.3",
-    "@parcha/agentrun-jev": "0.1.0-beta.3",
+    "@parcha/agentrun-dsl": "0.1.0-beta.4",
+    "@parcha/agentrun-jev": "0.1.0-beta.4",
     "zod": "4.6.5"
   },
   "devDependencies": {
