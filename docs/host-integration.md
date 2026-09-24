@@ -50,6 +50,17 @@ A host often has policy that is not part of the workflow language: a duty paragr
 
 Keep the returned transport schema a superset of the stage schema. A decoder that drops a required domain field fails on the stage schema with `WorkflowOutputInvalidError`, and a review candidate that fails the transport schema is returned to the adapter as a rejection message so the same session can repair it.
 
+## Host metadata on nodes
+
+Every node accepts an optional `metadata` object. It belongs to the host: a place for the host's own markers on a node, such as the preset that generated it, that the host writes and reads back from the document. The engine treats it as opaque.
+
+- Validation checks only that `metadata`, when present, is a plain object. A string, array, number, boolean or `null` is refused with an error naming the node. Keys and values are any JSON and are never inspected.
+- The engine never reads it. Desugaring, `dryRunWorkflow`, `runWorkflow` and the author's candidate loop carry it through verbatim. It never enters state, events, prompts, judge requests or effect idempotency keys, so a run with metadata produces the same state and events as the same run without it.
+- `workflowSha256` hashes the whole document, so metadata is part of the digest. Changing a marker changes the digest.
+- Hooks that receive the node itself, such as `runEffect` and the recovery store, see it with its metadata.
+
+The author contract tells authors to set only the metadata keys the host addendum names. A host that wants authors to write a key declares it in `metadataKeys`; without that field, authors set none. Enforce the keys in your acceptance callback, as with `rules`.
+
 ## Host addendum for authoring
 
 Authoring has the same split as execution. The package owns the language: `authorContract()` renders it, `validateWorkflow` enforces it, and both read one vocabulary of node kinds, fields and predicates. A host supplies only what is its own through an `AuthorHostAddendum`. The package renders the addendum once, after the language, and never contains host vocabulary itself.
@@ -61,6 +72,7 @@ Authoring has the same split as execution. The package owns the language: `autho
 | `outputTypes` | its artifact types, each `prose` (the report writer under the host's name) or `file` (a produced file) | lists them; `candidatePolicyErrors` refuses any other artifact type; `applyHostOutputTypes` turns prose types into the report writer for validation, acceptance and execution |
 | `nodeKinds` | the node kinds it runs | lists them; `candidatePolicyErrors` refuses any other kind |
 | `rules` | host rules, one sentence each | renders them verbatim; the host enforces them in its acceptance callback or tool admission |
+| `metadataKeys` | the node `metadata` keys an author may set, each with what it holds | lists them; without it the contract tells authors to set no metadata; the host enforces the keys in its acceptance callback |
 
 `authorWorkflow` returns the candidate as authored. A host with prose output types validates and runs `applyHostOutputTypes(workflow, host)` and keeps the authored bytes for its digest.
 
