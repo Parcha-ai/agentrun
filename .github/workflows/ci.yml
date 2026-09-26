@@ -3,6 +3,7 @@ name: Package checks
 on:
   push:
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
