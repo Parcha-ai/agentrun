@@ -93,7 +93,7 @@ if (arguments_.includes('--inventory-only')) {
   process.exit(0);
 }
 
-const allowedRootFiles = new Set(['README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'package-lock.json', 'tsconfig.base.json']);
+const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'package-lock.json', 'tsconfig.base.json']);
 const allowedDirectories = new Set(['docs', 'examples', 'packages', 'scripts', 'spec', '.github']);
 const excludedComponents = new Set(['site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
 const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.html', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean']);
