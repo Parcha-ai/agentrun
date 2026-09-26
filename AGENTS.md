@@ -40,7 +40,7 @@ Tests import from `dist/`, so rebuild before running a single file with `node --
 
 The engine is policy-agnostic. It reaches the outside world only through three adapters:
 
-- `runNode` runs generative nodes (`agent`, `decide`, `extract`, `report`, `artifact`) in the host's agent.
+- `runNode` runs generative nodes (`agent`, `decide`, `extract`, `report`, and `markdown` or `report` artifacts) in the host's agent. A file `artifact` only names a file an earlier shell call produced.
 - `runJudge` answers typed questions (`judge`, `pick`, `sift`, `route`, `ask`, `verify`).
 - `runEffect` performs `call` nodes (tool, executor, shell).
 
