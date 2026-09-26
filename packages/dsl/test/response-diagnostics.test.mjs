@@ -44,10 +44,11 @@ test('valid primitive identity, fractional scores, arbitrary keys and tolerance 
     const s = score(); s.score += delta;
     assert.throws(() => validateAnswers({ x: scoreQuestion }, { x: s }), e => e.responseReason === 'score_consistency');
   }
-  for (const delta of [-0.02, 0.02]) {
+  // Two options, each within half a rounding step of its true value: the sum may drift by 0.01.
+  for (const delta of [-0.01, 0.01]) {
     const a = answer(); a.probabilities.no += delta; validateAnswers({ x: question }, { x: a });
   }
-  for (const delta of [-0.021, 0.021]) {
+  for (const delta of [-0.011, 0.011]) {
     const a = answer(); a.probabilities.no += delta;
     assert.throws(() => validateAnswers({ x: question }, { x: a }), e => e.responseReason === 'probability_mass');
   }
@@ -68,6 +69,12 @@ test('two-place rounding drift from System One is accepted without rewriting the
   assert.deepEqual(answers, before);
   const tie = { type: 'choice', instructions: 'Fictional tie', criteria: { a: null, b: null, c: null } };
   validateAnswers({ x: tie }, { x: { type: 'choice', choice: 'a', probabilities: { a: 0.33, b: 0.33, c: 0.33 }, confidence: 0 } });
+  // Eight equal options: 0.125 rounds to 0.13 and the reported sum is 1.04. 0.14 each cannot be a rounding.
+  const eight = { type: 'choice', instructions: 'Fictional eight-way tie', criteria };
+  const even = p => ({ type: 'choice', choice: 'news', confidence: 0, probabilities: Object.fromEntries(Object.keys(criteria).map(k => [k, p])) });
+  validateAnswers({ x: eight }, { x: even(0.13) });
+  assert.throws(() => validateAnswers({ x: eight }, { x: even(0.14) }), e => e.responseReason === 'probability_mass');
+  assert.throws(() => validateAnswers({ x: eight }, { x: even(0.11) }), e => e.responseReason === 'probability_mass');
 });
 
 test('public reason membership and legacy constructor positions are stable', () => {
