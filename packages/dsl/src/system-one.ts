@@ -152,6 +152,11 @@ export class SystemOneError extends Error {
 
 const unit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 
+// System One rounds each probability to two places, so a distribution can sum to 0.99 or 1.01
+// (three-way ties: 3 × 0.33). Drift up to 0.02 is accepted as reported, never rescaled: answers
+// pass through validation unchanged. The 1e-9 absorbs binary float error in the sum itself.
+const PROBABILITY_MASS_TOLERANCE = 0.02;
+
 export function validateAnswers(questions: Record<string, SystemOneQuestion>, answers: unknown): asserts answers is Record<string, SystemOneAnswer> {
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) throw new SystemOneError("System One response carries no answers", null, undefined, "answers_shape");
   const answerKeys = Object.keys(answers);
@@ -167,7 +172,7 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
     const probabilityKeys = Object.keys(a.probabilities);
     if (Array.isArray(a.probabilities) || probabilityKeys.length !== expectedKeys.length || expectedKeys.some(key => !Object.hasOwn(a.probabilities, key))) throw new SystemOneError("System One answer: probabilities must contain exactly the declared options", null, undefined, "probability_keys");
     const mass = Object.values(a.probabilities as Record<string, number>).reduce((sum, p) => sum + p, 0);
-    if (Math.abs(mass - 1) > 1e-5) throw new SystemOneError("System One answer: probabilities must sum to 1", null, undefined, "probability_mass");
+    if (Math.abs(mass - 1) > PROBABILITY_MASS_TOLERANCE + 1e-9) throw new SystemOneError("System One answer: probabilities must sum to 1", null, undefined, "probability_mass");
     if (q.type === "score") {
       if (!a.legend || typeof a.legend !== "object" || Array.isArray(a.legend) || Object.keys(a.legend).length !== expectedKeys.length || q.criteria.some((text, index) => a.legend[String(index)] !== text)) throw new SystemOneError("System One answer: legend must match the score criteria", null, undefined, "score_legend");
       const weighted = expectedKeys.reduce((sum, key) => sum + Number(key) * a.probabilities[key], 0);

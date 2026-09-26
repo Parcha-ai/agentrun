@@ -38,20 +38,36 @@ test('valid primitive identity, fractional scores, arbitrary keys and tolerance 
   const answers = { [secret]: answer(), score: score(), n: { type: 'noul', noul: 0 } };
   const before = structuredClone(answers); validateAnswers(questions, answers); assert.deepEqual(answers, before);
   for (const delta of [-0.000009, 0.000009]) {
-    const a = answer(); a.probabilities.no += delta; validateAnswers({ x: question }, { x: a });
     const s = score(); s.score += delta; validateAnswers({ x: scoreQuestion }, { x: s });
   }
   for (const delta of [-0.000011, 0.000011]) {
-    const a = answer(); a.probabilities.no += delta;
-    assert.throws(() => validateAnswers({ x: question }, { x: a }), e => e.responseReason === 'probability_mass');
     const s = score(); s.score += delta;
     assert.throws(() => validateAnswers({ x: scoreQuestion }, { x: s }), e => e.responseReason === 'score_consistency');
+  }
+  for (const delta of [-0.02, 0.02]) {
+    const a = answer(); a.probabilities.no += delta; validateAnswers({ x: question }, { x: a });
+  }
+  for (const delta of [-0.021, 0.021]) {
+    const a = answer(); a.probabilities.no += delta;
+    assert.throws(() => validateAnswers({ x: question }, { x: a }), e => e.responseReason === 'probability_mass');
   }
   for (const noul of [-1, NaN, Infinity, undefined]) assert.throws(() => validateAnswers({ x: { type: 'noul' } }, { x: { type: 'noul', noul } }), e => e.responseReason === 'noul_probability');
   // Preserve the existing object test: diagnostics must not add an answer-array guard.
   const unusual = []; unusual.type = 'noul'; unusual.noul = 0.5;
   validateAnswers({ x: { type: 'noul' } }, { x: unusual });
   assert.throws(() => validateAnswers({ x: question }, { x: { ...answer(), probabilities: [0.6, 0.4] } }), e => e.responseReason === 'probability_keys');
+});
+
+test('two-place rounding drift from System One is accepted without rewriting the answer', () => {
+  // Verbatim jev-1.13.0 answer refused by 0.1.0-beta.4: the probabilities sum to 0.99 (#25).
+  const criteria = { official_source: 'a', news: 'b', legal_analysis: 'c', court_opinion: 'd', social_primary: 'e', official_travel: 'f', transportation: 'g', web_source: 'h' };
+  const questions = { '11.source_class': { type: 'choice', instructions: 'Who published this page?', criteria } };
+  const answers = JSON.parse('{"11.source_class":{"type":"choice","choice":"web_source","confidence":0.5,"probabilities":{"transportation":0,"official_source":0.38,"web_source":0.56,"news":0.01,"legal_analysis":0,"official_travel":0,"social_primary":0.04,"court_opinion":0}}}');
+  const before = structuredClone(answers);
+  validateAnswers(questions, answers);
+  assert.deepEqual(answers, before);
+  const tie = { type: 'choice', instructions: 'Fictional tie', criteria: { a: null, b: null, c: null } };
+  validateAnswers({ x: tie }, { x: { type: 'choice', choice: 'a', probabilities: { a: 0.33, b: 0.33, c: 0.33 }, confidence: 0 } });
 });
 
 test('public reason membership and legacy constructor positions are stable', () => {

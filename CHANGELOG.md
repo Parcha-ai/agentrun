@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `validateAnswers` accepts a choice or score distribution whose probabilities sum to within 0.02 of 1. The previous limit was 1e-5. System One rounds each probability to two places, so about 1% of real eight-option choices summed to 0.99. The validator refused them as `probability_mass`, and the Jev adapter then failed the whole request. Probabilities are still passed through unchanged, never rescaled. A distribution further from 1 is still refused. `score_consistency` is unchanged. ([#25](https://github.com/Parcha-ai/agentrun/issues/25))
 - Release tooling: the final registry check now waits for npm to list every release version in both the full and the abbreviated packument before its one clean install. It uses the same 60 x 5 second budget as the per-package check. The beta.4 publish succeeded, but this step ran `npm install` one second after the Pi check passed and got `ETARGET`, so the run was marked failed.
 
 ## 0.1.0-beta.4, 2026-09-24
