@@ -44,7 +44,16 @@ test('valid primitive identity, fractional scores, arbitrary keys and tolerance 
     const s = score(); s.score += delta;
     assert.throws(() => validateAnswers({ x: scoreQuestion }, { x: s }), e => e.responseReason === 'score_consistency');
   }
-  // Two options, each within half a rounding step of its true value: the sum may drift by 0.01.
+  // Full-precision values carry no rounding allowance: the sum must be 1 within 1e-5.
+  const precise = () => ({ ...answer(), probabilities: { yes: 0.6123, no: 0.3877 } });
+  for (const delta of [-0.000009, 0.000009]) {
+    const a = precise(); a.probabilities.no += delta; validateAnswers({ x: question }, { x: a });
+  }
+  for (const delta of [-0.000011, 0.000011]) {
+    const a = precise(); a.probabilities.no += delta;
+    assert.throws(() => validateAnswers({ x: question }, { x: a }), e => e.responseReason === 'probability_mass');
+  }
+  // Two two-place options, each within half a rounding step of its true value: the sum may drift by 0.01.
   for (const delta of [-0.01, 0.01]) {
     const a = answer(); a.probabilities.no += delta; validateAnswers({ x: question }, { x: a });
   }
@@ -75,6 +84,11 @@ test('two-place rounding drift from System One is accepted without rewriting the
   validateAnswers({ x: eight }, { x: even(0.13) });
   assert.throws(() => validateAnswers({ x: eight }, { x: even(0.14) }), e => e.responseReason === 'probability_mass');
   assert.throws(() => validateAnswers({ x: eight }, { x: even(0.11) }), e => e.responseReason === 'probability_mass');
+  // 0.009 is not a two-place value, so no rounding explains 200 of them summing to 1.8.
+  const wide = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`o${i}`, null]));
+  const flat = p => ({ type: 'choice', choice: 'o0', confidence: 0, probabilities: Object.fromEntries(Object.keys(wide).map(k => [k, p])) });
+  assert.throws(() => validateAnswers({ x: { type: 'choice', instructions: 'Fictional', criteria: wide } }, { x: flat(0.009) }), e => e.responseReason === 'probability_mass');
+  validateAnswers({ x: { type: 'choice', instructions: 'Fictional', criteria: wide } }, { x: flat(0.005) });
 });
 
 test('public reason membership and legacy constructor positions are stable', () => {

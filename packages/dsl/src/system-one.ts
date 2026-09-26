@@ -152,15 +152,20 @@ export class SystemOneError extends Error {
 
 const unit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 
-// System One reports each probability rounded to two places, so the reported sum drifts from 1 by
-// up to half a step per option (3 × 0.33 = 0.99; 8 × 0.13 = 1.04). A distribution is accepted when
-// it could be that rounding of one summing to 1: each true value within ±0.005 of the reported one
-// and inside [0, 1]. Answers are accepted as reported, never rescaled. The 1e-9 absorbs float error.
+// System One reports probabilities rounded to two places, so the reported sum drifts from 1 by up to
+// half a step per option (3 × 0.33 = 0.99; 8 × 0.13 = 1.04). A distribution is accepted when it could
+// be that rounding of one summing to 1: a value on the two-place grid may be off by ±0.005 (within
+// [0, 1]); any other value is taken as exact. With no grid values this is |sum − 1| ≤ 1e-5, the
+// check for full-precision distributions. Answers are accepted as reported, never rescaled.
 const ROUNDING_HALF_STEP = 0.005;
+const onTwoPlaceGrid = (p: number) => Math.abs(p * 100 - Math.round(p * 100)) < 1e-9;
 function roundedFromUnitMass(probabilities: number[]): boolean {
   let low = 0, high = 0;
-  for (const p of probabilities) { low += Math.max(0, p - ROUNDING_HALF_STEP); high += Math.min(1, p + ROUNDING_HALF_STEP); }
-  return low <= 1 + 1e-9 && high >= 1 - 1e-9;
+  for (const p of probabilities) {
+    const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
+    low += Math.max(0, p - step); high += Math.min(1, p + step);
+  }
+  return low <= 1 + 1e-5 && high >= 1 - 1e-5;
 }
 
 export function validateAnswers(questions: Record<string, SystemOneQuestion>, answers: unknown): asserts answers is Record<string, SystemOneAnswer> {
