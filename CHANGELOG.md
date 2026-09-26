@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.5, 2026-09-26
 
 - `validateAnswers` accepts a choice or score distribution when it could be the two-place rounding of a distribution that sums to 1. A value on the two-place grid may differ from its true value by up to 0.005, within [0, 1]. Any other value is taken as exact. A full-precision distribution is therefore still held to the 1e-5 check. System One rounds each probability to two places, so about 1% of real eight-option choices summed to 0.99. The validator refused them as `probability_mass`, and the Jev adapter then failed the whole request. The allowed drift now grows with the number of rounded options: eight equal options report 0.13 each and sum to 1.04. Probabilities are still passed through unchanged, never rescaled. A distribution that no rounding explains is still refused. `score_consistency` is unchanged. ([#25](https://github.com/Parcha-ai/agentrun/issues/25))
 - Release tooling: the final registry check now waits for npm to list every release version in both the full and the abbreviated packument before its one clean install. It uses the same 60 x 5 second budget as the per-package check. The beta.4 publish succeeded, but this step ran `npm install` one second after the Pi check passed and got `ETARGET`, so the run was marked failed.
