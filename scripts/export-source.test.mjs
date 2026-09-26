@@ -106,7 +106,7 @@ test('root and package license notices are scanned and retained byte-for-byte', 
 
 test('contributor guidance at the root is archived and receipted; unlisted root files are skipped', async t => {
   const f = await fixture(t);
-  const guidance = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'AGENTS.md'];
+  const guidance = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'AGENTS.md', 'CLAUDE.md'];
   for (const path of guidance) await f.write(path, `Guidance fixture: ${path}\n`);
   await f.write('UNLISTED.md', 'Unlisted root fixture\n');
   await f.run();
