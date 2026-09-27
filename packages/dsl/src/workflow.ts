@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
-import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
+import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
@@ -77,6 +77,8 @@ export type WorkflowInvocation = { node: "workflow"; label: string; workflow: Wo
 /** `exit` is a shell command that ended with a non-zero status: retried only when the author
  *  declared retry, since re-running a command is the author's call. */
 export type CallRetryClass = "timeout" | "http_5xx" | "http_429" | "connection" | "exit";
+/** A failed effect's closed code (EFFECT_FAILURE_CODES). */
+export type EffectFailureCode = typeof EFFECT_FAILURE_CODES[number];
 /** The workflow's terminal deliverable. Types "markdown" and "report" use the report
  * writer; other non-empty types name a workspace file produced by an earlier call.
  * File existence and delivery are the host's responsibility. */
@@ -162,7 +164,8 @@ export type CallNode = {
   produces?: string[];
   /** Wall bound in seconds for one execution. Required: an unbounded effect is how a stalled provider becomes a stalled job. */
   deadline_s: number;
-  retry?: { attempts: number; backoff_s?: number; on?: CallRetryClass[] };
+  /** `on` names retry classes or effect failure codes; absent, the transient retry classes. */
+  retry?: { attempts: number; backoff_s?: number; on?: (CallRetryClass | EffectFailureCode)[] };
   /** Repeat the call until its result settles (a queued job, an eventually consistent read). */
   poll?: PollClause;
   requires?: string[];
@@ -368,10 +371,20 @@ export const childSteps = (child: Workflow | undefined): WorkflowNode[] | null =
   return root.node === "chain" ? (Array.isArray(root.steps) ? root.steps : null) : [root];
 };
 
+/** The code a retry class implies when the failure names none. */
+const codeOfRetryClass = (retryClass: CallRetryClass | null): EffectFailureCode | null =>
+  retryClass === null ? null : retryClass === "timeout" ? "effect_timeout" : retryClass === "exit" ? "effect_exit" : "effect_transport";
+
+/** A failed effect: its retry class (null when the failure is not transient by nature), its closed code,
+ *  and what the host observed (`detail`, written onto the attempt's `effect.failed` event). */
 export class EffectFailure extends Error {
-  constructor(message: string, public readonly retryClass: CallRetryClass | null = null) {
-    super(message);
+  readonly code: EffectFailureCode | null;
+  readonly detail?: Record<string, unknown>;
+  constructor(message: string, public readonly retryClass: CallRetryClass | null = null, options: { code?: EffectFailureCode | null; detail?: Record<string, unknown>; cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "EffectFailure";
+    this.code = options.code === undefined ? codeOfRetryClass(retryClass) : options.code;
+    if (options.detail) this.detail = options.detail;
   }
 }
 
@@ -511,6 +524,8 @@ export function workflowDocumentError(value: unknown): string | undefined {
 /** Set executeCode:false for untrusted author feedback: check syntax and mechanical contracts
  * without evaluating authored expressions or probing transforms. This is not execution admission;
  * trusted/default validation and runtime output checks remain authoritative. */
+const RETRY_ON_NAMES: readonly string[] = [...CALL_RETRY_CLASSES, ...EFFECT_FAILURE_CODES];
+
 export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true } | { ok: false; errors: string[] } {
   const bounded = workflowDocumentError(workflow);
   if (bounded) return { ok: false, errors: [bounded] };
@@ -1045,7 +1060,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           const r = node.retry;
           if (!r || !Number.isInteger(r.attempts) || r.attempts < 1 || r.attempts > 5) errors.push(`${path} (${label}): retry.attempts must be 1..5`);
           if (r?.backoff_s !== undefined && !(Number.isFinite(r.backoff_s) && r.backoff_s >= 0 && r.backoff_s <= 60)) errors.push(`${path} (${label}): retry.backoff_s must be 0..60`);
-          if (r?.on !== undefined && (!Array.isArray(r.on) || r.on.some((c) => !(CALL_RETRY_CLASSES as readonly string[]).includes(String(c))))) errors.push(`${path} (${label}): retry.on may name only timeout|http_5xx|http_429|connection|exit`);
+          if (r?.on !== undefined && (!Array.isArray(r.on) || r.on.some((c) => !RETRY_ON_NAMES.includes(String(c))))) errors.push(`${path} (${label}): retry.on may name only ${RETRY_ON_NAMES.join("|")}`);
         }
         if (node.poll !== undefined) {
           const p = node.poll;
@@ -1469,9 +1484,11 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
           ? new EffectFailure(cutByPoll ? `call node "${node.label}" poll exceeded its ${node.poll?.deadline_s}s deadline` : `call node "${node.label}" exceeded its ${node.deadline_s}s deadline`, "timeout")
           : error;
         const retryClass = lastError instanceof EffectFailure ? lastError.retryClass : null;
+        // The failure's code: an EffectFailure's closed code, else the typed error's own code.
+        const code = lastError instanceof EffectFailure ? lastError.code : typeof (lastError as { code?: unknown })?.code === "string" ? (lastError as { code: string }).code : null;
         // Durable admission is uncertain after failure; only the host can reconcile it.
-        const retryable = !deps.signal?.aborted && !deps.recovery && retryClass !== null && retryOn.has(retryClass) && attempt < attempts;
-        deps.onEvent?.({ type: "effect.failed", label: node.label, detail: { via: node.via, attempt, retry_class: retryClass, retrying: retryable, ...(lastError instanceof EffectOutcomeUnknownError ? { outcome: "unknown", interruption: lastError.interruption, idempotency_key: idempotencyKey } : {}), message: String((lastError as Error)?.message || lastError).slice(0, 300) } });
+        const retryable = !deps.signal?.aborted && !deps.recovery && ((retryClass !== null && retryOn.has(retryClass)) || (code !== null && retryOn.has(code))) && attempt < attempts;
+        deps.onEvent?.({ type: "effect.failed", label: node.label, detail: { ...(lastError instanceof EffectFailure ? lastError.detail : undefined), via: node.via, attempt, code, retry_class: retryClass, retrying: retryable, ...(lastError instanceof EffectOutcomeUnknownError ? { outcome: "unknown", interruption: lastError.interruption, idempotency_key: idempotencyKey } : {}), message: String((lastError as Error)?.message || lastError).slice(0, 300) } });
         if (!retryable || (budgetUntilMs !== undefined && Date.now() >= budgetUntilMs)) break;
         const delay = Math.min((node.retry?.backoff_s ?? 1) * 1000 * attempt, budgetUntilMs === undefined ? Infinity : Math.max(0, budgetUntilMs - Date.now()));
         await sleep(delay, deps.signal);

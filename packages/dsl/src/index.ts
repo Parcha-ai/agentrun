@@ -13,7 +13,7 @@ export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, WorkflowInvocation,
-  ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, CallPredicate, PollClause,
+  ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, WorkflowEffort, WorkflowThinking, VerifyClause,
   AskPredicate, MechanicalPredicate, Predicate,
 } from "./workflow.js";
@@ -40,7 +40,7 @@ export {
   // Host-side data helpers the interpreter itself uses: the same normalization and reference shaping.
   buildReferenceContext, normalizeStringNullsForSchema, parseCsvRows,
 } from "./workflow.js";
-export { compileTransform, compileTransformSyntax } from "./code-exec.js";
+export { compileTransform, compileTransformSyntax, deniedGlobalReferences } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
@@ -53,6 +53,6 @@ export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions,
 export {
   WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
   MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS,
-  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES,
+  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";
 export type { WorkflowNodeKind, WorkflowPredicateName } from "./vocabulary.js";

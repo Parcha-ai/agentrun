@@ -85,7 +85,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
   - `via: tool` takes `tool` (a host tool address), `args` (an object) and `out` (the tool's result schema).
   - `via: executor` takes `code` (a body that returns its JSON result and uses only `tools` and `input`), `input` and `out`.
   - `via: shell` takes `command` (literal) and `env` (UPPER_CASE names to strings, interpolated by value; the way long values reach a command). Its result has the fixed shape {code, stdout, stderr, truncated?}: no `out`. Only a shell call may declare `produces` (workspace-relative files, checked after the effect).
-  - `retry` {attempts: 1..5, backoff_s?: 0..60, on?: [timeout, http_5xx, http_429, connection, exit]}. `where` accepts only "sandbox".
+  - `retry` {attempts: 1..5, backoff_s?: 0..60, on?: [timeout, http_5xx, http_429, connection, exit, effect_timeout, effect_exit, effect_transport, effect_not_granted, effect_produces_missing, effect_path_escape, effect_code_unsafe, output_invalid, state_invalid, effect_unknown_transport]}. `where` accepts only "sandbox".
   - `poll` {until, fail_when?, interval_s: 0.1..300, deadline_s: from the call's deadline_s to 7200} repeats the call until `until` holds on its own result; `fail_when` fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape.
   - Validation and dry runs never perform effects: they synthesize the declared result, and a shell result's stdout is "{}".
 
