@@ -13,7 +13,7 @@ export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, WorkflowInvocation,
-  ArtifactNode, ArtifactState, CallNode, CallRetryClass, CallPredicate, PollClause,
+  ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, CallPredicate, PollClause,
   ModelTier, WorkflowEffort, WorkflowThinking, VerifyClause,
   AskPredicate, MechanicalPredicate, Predicate,
 } from "./workflow.js";

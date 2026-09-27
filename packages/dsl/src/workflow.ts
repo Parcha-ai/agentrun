@@ -176,6 +176,7 @@ export const SHELL_RESULT_SCHEMA: Record<string, unknown> = {
 };
 
 export type LlmNode = Extract<WorkflowNode, { node: "agent" | "decide" | "extract" | "report" }>;
+export type CodeNode = Extract<WorkflowNode, { node: "code" }>;
 
 export const REPORT_SCHEMA: Record<string, unknown> = {
   type: "object",
@@ -272,6 +273,12 @@ export type WorkflowDeps = {
     item?: MapItem;
     executionPath?: string;
   }) => Promise<unknown>;
+  /** The host's executor for `code` nodes. Present, the interpreter hands it the node, the state and
+   *  the context the transform would receive and uses what it resolves to as the transform's result
+   *  (the same patch rules and state checks apply); a rejection fails the node as the host typed it.
+   *  Absent, the interpreter compiles and runs the transform in this process (`compileTransform`),
+   *  which is not a sandbox: a host that runs code from an untrusted author supplies this. */
+  runCode?: (node: CodeNode, state: Record<string, unknown>, ctx: { sop: string; label: string; executionPath: string; item?: MapItem; signal?: AbortSignal }) => Promise<unknown>;
   runJudge?: (params: {
     label: string;
     kind: "judge" | "pick" | "sift" | "route" | "ask";
@@ -1730,6 +1737,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
     ...(deps.runNode ? { runNode: params => deps.runNode!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
     ...(deps.runEffect ? { runEffect: params => deps.runEffect!({ ...params, node: relabel(params.node) }) } : {}),
     ...(deps.runJudge ? { runJudge: params => deps.runJudge!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
+    ...(deps.runCode ? { runCode: (node, state, ctx) => deps.runCode!(relabel(node), state, { ...ctx, label: `${prefix}/${ctx.label}` }) } : {}),
     ...(recovery ? { recovery: {
       supportsExecutionPaths: recovery.supportsExecutionPaths,
       resume: (node, state, item, path) => recovery.resume(relabel(node), state, item, path),
@@ -1832,10 +1840,15 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
     }
     case "code": {
       let out: unknown;
-      try {
-        const fn = compileTransform(node.code);
-        out = fn(state, { sop: deps.sop || "" });
-      } catch (cause) { throw new WorkflowCodeError(node.label, cause); }
+      if (deps.runCode) {
+        const item = (deps as LocatedDeps)[MAP_ITEM];
+        out = await deps.runCode(node, state, { sop: deps.sop || "", label: node.label, executionPath: executionPath(deps), ...(item ? { item } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
+      } else {
+        try {
+          const fn = compileTransform(node.code);
+          out = fn(state, { sop: deps.sop || "" });
+        } catch (cause) { throw new WorkflowCodeError(node.label, cause); }
+      }
       const patch = node.as ? { [node.as]: out } : (out && typeof out === "object" && !Array.isArray(out) ? out as Record<string, unknown> : { [node.label]: out });
       if (Object.prototype.hasOwnProperty.call(patch, HOST_STATE_KEY)) throw new WorkflowStateError(`code node "${node.label}" wrote the reserved "${HOST_STATE_KEY}" state key`, node.label, HOST_STATE_KEY, "reserved_state_key");
       deps.onEvent?.({ type: "code.patch", label: node.label, detail: patch });
@@ -2197,14 +2210,16 @@ export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDep
 
 export async function runWorkflow(workflow: Workflow, input: Record<string, unknown>, deps: WorkflowDeps): Promise<WorkflowRunResult> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new WorkflowInputInvalidError(String(workflow?.name), ["input must be a JSON object"]);
-  const valid = validateWorkflow(workflow);
+  // A host that executes code nodes itself never has them executed here, not even as validation probes.
+  const executeCode = deps.runCode ? false : undefined;
+  const valid = validateWorkflow(workflow, { executeCode });
   if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors);
   workflow = desugarWorkflow(workflow);
   if (workflow.input) {
     const validator = Compile(resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]) as never);
     if (!validator.Check(input)) throw new WorkflowInputInvalidError(workflow.name, schemaProblems(validator, input));
   }
-  const reachable = validateWorkflow(workflow, { inputKeys: Object.keys(input) });
+  const reachable = validateWorkflow(workflow, { executeCode, inputKeys: Object.keys(input) });
   if (!reachable.ok) throw new WorkflowInvalidError(workflow.name, reachable.errors);
   assertWorkflowCapabilities(workflow.root, deps, workflow);
   if (needsComposedRecovery(workflow.root)) deps = { ...deps, [SCOPED_EFFECTS]: true } as LocatedDeps;
@@ -2234,7 +2249,7 @@ export async function runWorkflowSlice(
   focus: { from: string; to?: string; seed?: Record<string, unknown> },
   deps: WorkflowDeps,
 ): Promise<{ status: "complete"; state: Record<string, unknown>; focus: { from: string; to: string } } | { status: "escalated"; state: Record<string, unknown>; escalation: Escalation }> {
-  const valid = validateWorkflow(workflow);
+  const valid = validateWorkflow(workflow, { executeCode: deps.runCode ? false : undefined });
   if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors);
   const desugared = desugarWorkflow(workflow);
   const root = desugared.root.node === "chain" ? desugared.root.steps : [desugared.root];
