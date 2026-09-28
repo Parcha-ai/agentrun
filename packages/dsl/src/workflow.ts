@@ -1484,11 +1484,14 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
           ? new EffectFailure(cutByPoll ? `call node "${node.label}" poll exceeded its ${node.poll?.deadline_s}s deadline` : `call node "${node.label}" exceeded its ${node.deadline_s}s deadline`, "timeout")
           : error;
         const retryClass = lastError instanceof EffectFailure ? lastError.retryClass : null;
-        // The failure's code: an EffectFailure's closed code, else the typed error's own code.
-        const code = lastError instanceof EffectFailure ? lastError.code : typeof (lastError as { code?: unknown })?.code === "string" ? (lastError as { code: string }).code : null;
+        // The row's `code` is closed: an EffectFailure's code when it is one of EFFECT_FAILURE_CODES, else
+        // null. Any other typed error's own code (an unknown outcome, a host's receipts failure) rides
+        // beside it as `error_code`, never as `code`.
+        const code = lastError instanceof EffectFailure && (EFFECT_FAILURE_CODES as readonly (string | null)[]).includes(lastError.code) ? lastError.code : null;
+        const errorCode = code === null && typeof (lastError as { code?: unknown })?.code === "string" ? (lastError as { code: string }).code : null;
         // Durable admission is uncertain after failure; only the host can reconcile it.
         const retryable = !deps.signal?.aborted && !deps.recovery && ((retryClass !== null && retryOn.has(retryClass)) || (code !== null && retryOn.has(code))) && attempt < attempts;
-        deps.onEvent?.({ type: "effect.failed", label: node.label, detail: { ...(lastError instanceof EffectFailure ? lastError.detail : undefined), via: node.via, attempt, code, retry_class: retryClass, retrying: retryable, ...(lastError instanceof EffectOutcomeUnknownError ? { outcome: "unknown", interruption: lastError.interruption, idempotency_key: idempotencyKey } : {}), message: String((lastError as Error)?.message || lastError).slice(0, 300) } });
+        deps.onEvent?.({ type: "effect.failed", label: node.label, detail: { ...(lastError instanceof EffectFailure ? lastError.detail : undefined), via: node.via, attempt, code, ...(errorCode !== null ? { error_code: errorCode } : {}), retry_class: retryClass, retrying: retryable, ...(lastError instanceof EffectOutcomeUnknownError ? { outcome: "unknown", interruption: lastError.interruption, idempotency_key: idempotencyKey } : {}), message: String((lastError as Error)?.message || lastError).slice(0, 300) } });
         if (!retryable || (budgetUntilMs !== undefined && Date.now() >= budgetUntilMs)) break;
         const delay = Math.min((node.retry?.backoff_s ?? 1) * 1000 * attempt, budgetUntilMs === undefined ? Infinity : Math.max(0, budgetUntilMs - Date.now()));
         await sleep(delay, deps.signal);

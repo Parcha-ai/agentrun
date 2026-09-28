@@ -93,3 +93,18 @@ test('the denied-global lint names what a body reaches for, and not what it only
   assert.deepEqual(deniedGlobalReferences('(s) => { /* process */ // fetch\n return { ok: /process|fetch/.test(s.text) }; }'), []);
   assert.deepEqual(deniedGlobalReferences('(s) => ({ total: s.items.length / 2 })'), []);
 });
+
+test('the effect.failed row\'s code is closed: an open code rides as error_code, and an unknown outcome under recovery carries none', async () => {
+  const rows = [];
+  const onEvent = (event) => { if (event.type === 'effect.failed') rows.push(event.detail); };
+  // A host error with its own string code, and an EffectFailure forged with a code outside the list.
+  class ReceiptsFailure extends Error { code = 'RECEIPT_WRITE_FAILED'; }
+  await assert.rejects(runWorkflow(flow(shell()), {}, { onEvent, runEffect: async () => { throw new ReceiptsFailure('row lost'); } }));
+  await assert.rejects(runWorkflow(flow(shell()), {}, { onEvent, runEffect: async () => { throw new EffectFailure('forged', null, { code: 'effect_exploded' }); } }));
+  // An adapter still pending at its deadline under recovery: the outcome is unknown.
+  const recovery = { supportsExecutionPaths: true, resume: async () => undefined, commit: async () => {}, pollStartedAt: () => Date.now(), wait: async () => {} };
+  await assert.rejects(runWorkflow(flow({ ...shell(), deadline_s: 0.05 }), {}, { onEvent, recovery, runEffect: () => new Promise(() => {}) }));
+  assert.deepEqual(rows.map((row) => [row.code, row.error_code ?? null]), [[null, 'RECEIPT_WRITE_FAILED'], [null, 'effect_exploded'], [null, 'effect_outcome_unknown']]);
+  assert.equal(rows[2].outcome, 'unknown');
+  for (const row of rows) assert.ok(row.code === null || EFFECT_FAILURE_CODES.includes(row.code));
+});
