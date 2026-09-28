@@ -1,5 +1,5 @@
 import { Compile } from "typebox/compile";
-import { runWorkflow, validateWorkflow, WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, type Workflow } from "./workflow.js";
+import { runWorkflow, validateWorkflow, WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, type Workflow, type WorkflowDeps } from "./workflow.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 import { synthesizeAnswers } from "./system-one.js";
 
@@ -116,10 +116,13 @@ export type DryRunOptions = {
   sop?: string;
   probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, unknown> };
   input?: Record<string, unknown>;
+  /** The host's executor for `code` nodes (WorkflowDeps.runCode). Present, the dry run validates
+   *  with executeCode:false and hands every code node to it, so no code body runs in this process. */
+  runCode?: WorkflowDeps["runCode"];
 };
 
 export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {}): Promise<DryRunResult> {
-  const valid = validateWorkflow(workflow, opts.input === undefined ? undefined : { input: opts.input });
+  const valid = validateWorkflow(workflow, { ...(opts.input === undefined ? {} : { input: opts.input }), ...(opts.runCode ? { executeCode: false } : {}) });
   if (!valid.ok) return { ok: false, problems: [new WorkflowInvalidError(String(workflow?.name), valid.errors).message] };
   const skipped: string[] = [];
   const scanSchemas = (plan: Workflow): void => {
@@ -155,6 +158,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
   try {
     const result = await runWorkflow(workflow, input, {
       sop: opts.sop,
+      ...(opts.runCode ? { runCode: opts.runCode } : {}),
       onEvent: (event) => { if (typeof event.label === "string") currentLabel = event.label; },
       runNode: async ({ schema, review }) => {
         const candidate = synthesizeInstance(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas);

@@ -70,3 +70,39 @@ test('absent: the interpreter runs the transform itself, in this process', async
   assert.deepEqual(ok.output, { n: 3 });
   await assert.rejects(runWorkflow(flow({ node: 'chain', steps: [unsafe, finish] }), {}, {}), error => error instanceof WorkflowCodeError);
 });
+
+test('a dry run with the seam present hands every code node to the host and never runs a body in this process; absent, it runs them in-process as before', async () => {
+  const { dryRunWorkflow } = await import('../dist/index.js');
+  const doc = flow({ node: 'chain', steps: [
+    { node: 'extract', label: 'plan', instructions: 'plan', out: 'Plan', as: 'plan' },
+    { node: 'code', label: 'count', code: '(s) => ({ n: s.plan.items.length })', as: 'counted' },
+    { node: 'code', label: 'finish', code: '(s) => ({ final: { n: s.counted.n } })' },
+  ] }, { schemas: { Plan: { type: 'object', required: ['items'], properties: { items: { type: 'array', items: { type: 'string' } } } } } });
+  // The in-process executor builds each body's factory with the Function constructor and calls it to
+  // evaluate the body. Syntax checking builds the factory and never calls it; a dry run with the seam
+  // must never call one, validation probes included.
+  const Real = globalThis.Function;
+  let compiled = 0;
+  const seen = [];
+  globalThis.Function = new Proxy(Real, { construct(target, args) {
+    const factory = Reflect.construct(target, args);
+    // Only a code node's body is counted (its factory's source holds the body); the validator compiler builds functions too.
+    const body = String(args.at(-1));
+    if (!body.includes('s.plan.items.length') && !body.includes('s.counted.n')) return factory;
+    return new Proxy(factory, { apply(fn, self, callArgs) { compiled += 1; return Reflect.apply(fn, self, callArgs); } });
+  } });
+  try {
+    const withSeam = await dryRunWorkflow(doc, { runCode: async (node, state) => { seen.push(node.label); return node.label === 'count' ? { n: state.plan.items.length } : { final: { n: state.counted.n } }; } });
+    assert.deepEqual(withSeam, { ok: true });
+    assert.deepEqual(seen, ['count', 'finish']);
+    assert.equal(compiled, 0, 'no code body was evaluated in this process');
+  } finally { globalThis.Function = Real; }
+  // Absent, the dry run runs the bodies itself, and the counter sees it.
+  globalThis.Function = new Proxy(Real, { construct(target, args) { const factory = Reflect.construct(target, args); return String(args.at(-1)).includes('s.counted.n') ? new Proxy(factory, { apply(fn, self, callArgs) { compiled += 1; return Reflect.apply(fn, self, callArgs); } }) : factory; } });
+  try { assert.deepEqual(await dryRunWorkflow(doc), { ok: true }); } finally { globalThis.Function = Real; }
+  assert.ok(compiled > 0, 'without the seam the bodies were evaluated here');
+  // A host rejection is a dry-run problem, as any failure on the deterministic path is.
+  const refused = await dryRunWorkflow(doc, { runCode: async () => { throw Object.assign(new Error('sandbox refused the body'), { code: 'effect_code_unsafe' }); } });
+  assert.equal(refused.ok, false);
+  assert.match(refused.problems[0], /sandbox refused the body/);
+});
