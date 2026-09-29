@@ -185,6 +185,8 @@
               "title": "tier"
             },
             "budget_usd": {
+              "description": "The most the node asks to spend, in dollars.",
+              "exclusiveMinimum": 0,
               "type": "number",
               "title": "budget_usd"
             },

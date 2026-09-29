@@ -33,7 +33,9 @@ export type NodeMetadata = { [key: string]: unknown };
 export type WorkflowNode =
   | { node: "chain"; steps: WorkflowNode[]; metadata?: NodeMetadata }
   | { node: "code"; label: string; code: string; as?: string; metadata?: NodeMetadata }
-  | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; budget_usd?: number; context?: AgentContext; metadata?: NodeMetadata }
+  | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier;
+      /** The most the node asks to spend, in dollars. @exclusiveMinimum 0 */
+      budget_usd?: number; context?: AgentContext; metadata?: NodeMetadata }
   | { node: "decide"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; metadata?: NodeMetadata }

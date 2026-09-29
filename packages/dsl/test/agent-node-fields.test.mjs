@@ -41,3 +41,27 @@ test('the interpreter hands both to the host, and omits them when the node decla
   assert.deepEqual(seen[0], { budgetUsd: 0.5, context: 'fork', has: ['budgetUsd', 'context'] });
   assert.deepEqual(seen[1], { budgetUsd: undefined, context: undefined, has: [] });
 });
+
+test('the shipped schema bounds budget_usd as the validator does, above 0', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const schema = JSON.parse(await readFile(new URL('../schema/workflow.schema.json', import.meta.url), 'utf8'));
+  const found = [];
+  const walk = (value) => {
+    if (Array.isArray(value)) return value.forEach(walk);
+    if (!value || typeof value !== 'object') return;
+    if (value.properties?.budget_usd) found.push(value.properties.budget_usd);
+    Object.values(value).forEach(walk);
+  };
+  walk(schema);
+  assert.ok(found.length > 0, 'the agent node schema names budget_usd');
+  for (const property of found) assert.equal(property.exclusiveMinimum, 0);
+});
+
+test('an older document with budget still loads, and an author writing budget is told budget_usd', async () => {
+  const { candidatePolicyErrors } = await import('../dist/index.js');
+  const older = flow({ budget: 3 });
+  assert.equal(validateWorkflow(older).ok, true, 'budget on an agent is accepted and ignored, as before');
+  const errors = candidatePolicyErrors(older, {});
+  assert.ok(errors.some((e) => /task: budget is not read; declare budget_usd/.test(e)), errors.join('\n'));
+  assert.deepEqual(candidatePolicyErrors(flow({ budget_usd: 3 }), {}).filter((e) => /budget/.test(e)), []);
+});
