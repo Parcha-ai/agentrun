@@ -9,6 +9,7 @@
 - `retry.on` names failure codes as well as retry classes. A code in the list retries a failure with that code, and a code not in it does not. The default list and the named classes retry as before.
 - Every `effect.failed` event carries `code` and the host's `detail`. The row's `code` is closed: it is the `EffectFailure`'s code when that code is in `EFFECT_FAILURE_CODES`, else null. Any other typed error's own code, such as an unknown outcome or a host's receipts failure, rides beside it as `error_code`.
 - `deniedGlobalReferences(source)` (exported) names the `DENIED_GLOBALS` a code body reaches for. It skips comments, string and template text, regular expressions and property reads. A host uses it to refuse untrusted code before it runs; it is a lint, not a boundary.
+- The author contract's Predicates section shows a predicate's shape with an example, `{"predicate": "field_true", "path": "review.approved"}`. A predicate object with no `predicate` field is refused with that shape, naming the predicate the object used as a key (`{"field_true": {...}}`), where the validator said `unknown predicate "undefined"`. A learner spent 30 attempts on that message (GRE-2809).
 
 ## 0.1.0-beta.5, 2026-09-26
 

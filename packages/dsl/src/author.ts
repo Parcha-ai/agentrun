@@ -130,6 +130,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ## Predicates
 
 ${code("loop.until")} and ${code("escalate.when")} take one of these; ${code("poll")} takes only the first ${MECHANICAL_PREDICATES.length}. Each path or key reads a state value an input or an earlier node produced.
+A predicate is one JSON object that names itself in its ${code("predicate")} field beside its own fields, for example ${code('{"predicate": "field_true", "path": "review.approved"}')}.
 ${predicateLines()}
 
 ## Authority

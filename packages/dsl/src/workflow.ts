@@ -796,6 +796,13 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
   };
   const checkPredicate = (pred: unknown, label: string, path: string, field: string, mechanicalOnly = false): boolean => {
     const name = (pred as any)?.predicate;
+    // A predicate with no `predicate` field is the shape mistaken, not an unknown name: say the shape
+    // (GRE-2809), naming a predicate the object used as a key when it did.
+    if (pred && typeof pred === "object" && !Array.isArray(pred) && name === undefined) {
+      const keyed = Object.keys(pred).find((key) => PREDICATES.has(key));
+      errors.push(`${path} (${label}): ${field}: a predicate names itself in its "predicate" field beside its own fields, e.g. {"predicate": "${keyed ?? "field_true"}", "path": "..."}${keyed ? `, not {"${keyed}": {...}}` : ""}`);
+      return false;
+    }
     if (!pred || !PREDICATES.has(name) || (mechanicalOnly && !MECHANICAL_PREDICATE_NAMES.has(name))) { errors.push(`${path} (${label}): ${field}: unknown predicate "${name}"${mechanicalOnly && name === "ask" ? " (a poll reads a value, never asks a question)" : ""}`); return false; }
     errors.push(...predicateShapeErrors(pred as any).map((e) => `${path} (${label}): ${field}: ${e}`));
     if (name === "ask") checkStateMap((pred as any).state, label, path, `${field}.state`);

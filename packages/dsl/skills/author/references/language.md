@@ -93,6 +93,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ## Predicates
 
 `loop.until` and `escalate.when` take one of these; `poll` takes only the first 8. Each path or key reads a state value an input or an earlier node produced.
+A predicate is one JSON object that names itself in its `predicate` field beside its own fields, for example `{"predicate": "field_true", "path": "review.approved"}`.
 - `field_equals` {path, value}: holds when the value at `path` equals `value` (a string, number or boolean)
 - `field_true` {path}: holds when the value at `path` is `true`
 - `in` {path, values}: holds when the value at `path` is one of `values` (a non-empty list of strings, numbers or booleans)
