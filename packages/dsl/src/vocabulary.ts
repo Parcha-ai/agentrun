@@ -18,7 +18,7 @@ const GENERATIVE_FIELDS = ["node", "label", "state", "instructions", "sopSection
 export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string[] } = {
   chain: ["node", "steps"],
   code: ["node", "label", "code", "as"],
-  agent: GENERATIVE_FIELDS,
+  agent: [...GENERATIVE_FIELDS, "budget_usd", "context"],
   decide: GENERATIVE_FIELDS,
   extract: GENERATIVE_FIELDS,
   report: ["node", "label", "state", "instructions", "sopSection", "requires", "tools", "effort", "thinking"],
@@ -68,6 +68,9 @@ export const EFFORT_LEVELS = ["minimal", "low", "medium", "high"] as const;
 /** There is no "off": every generative node thinks. */
 export const THINKING_LEVELS = ["low", "medium", "high"] as const;
 export const MODEL_TIERS = ["fast", "default", "strong"] as const;
+/** An `agent` node's context: `fresh` sees its instructions and state only; `fork` asks the host to start
+ *  the node from the caller's transcript, where the host can (a host refuses it where it cannot). */
+export const AGENT_CONTEXTS = ["fresh", "fork"] as const;
 export const CALL_TRANSPORTS = ["tool", "executor", "shell"] as const;
 export const CALL_RETRY_CLASSES = ["timeout", "http_5xx", "http_429", "connection", "exit"] as const;
 /** The closed codes a failed effect carries: a call's, or a code node's that a host runs out of process.
