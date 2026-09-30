@@ -8,6 +8,7 @@ import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
+import { setLongTimeout } from "./long-timer.js";
 
 /** The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),
  *  or the kind's default. A router that sends the few thin cases to `strong` buys depth only where the
@@ -1353,8 +1354,8 @@ function canonicalJson(value: unknown): string {
 
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) { reject(signal.reason ?? new Error("workflow aborted")); return; }
-  const aborted = () => { clearTimeout(timer); reject(signal?.reason ?? new Error("workflow aborted")); };
-  const timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, ms);
+  const aborted = () => { timer.clear(); reject(signal?.reason ?? new Error("workflow aborted")); };
+  const timer = setLongTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, ms);
   signal?.addEventListener("abort", aborted, { once: true });
 });
 
@@ -1424,7 +1425,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       };
       const onAbort = () => interrupt("cancelled", deps.signal?.reason);
       deps.signal?.addEventListener("abort", onAbort, { once: true });
-      const timer = setTimeout(() => interrupt("deadline"), attemptMs);
+      const timer = setLongTimeout(() => interrupt("deadline"), attemptMs);
       try {
         deps.onEvent?.({ type: "effect.attempt", label: node.label, detail: { via: node.via, attempt, idempotency_key: idempotencyKey } });
         Promise.resolve().then(() => {
@@ -1459,7 +1460,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         const delay = Math.min((node.retry?.backoff_s ?? 1) * 1000 * attempt, budgetUntilMs === undefined ? Infinity : Math.max(0, budgetUntilMs - Date.now()));
         await sleep(delay, deps.signal);
       } finally {
-        clearTimeout(timer);
+        timer.clear();
         if (interruptionCheck) clearImmediate(interruptionCheck);
         deps.signal?.removeEventListener("abort", onAbort);
       }
