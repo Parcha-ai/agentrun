@@ -80,6 +80,8 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 | `T3_runWorkflow_total` | `Theorems/Loop.lean` | Every run ends `complete`, `escalated` or `failed`. The content is that `eval` is structurally recursive, which the kernel checks, with each loop's fuel being its `maxIters`. |
 | `T4_eval_desugar` | `Theorems/Desugar.lean` | Running a desugared node is running the node, for every oracle. |
 | `T4_validate_desugar`, `T4_runWorkflow_desugar` | `Theorems/Desugar.lean` | Validation and `runWorkflow` cannot tell a workflow from its desugaring. |
+| `jev_route_below_threshold`, `jev_route_at_or_above_threshold`, `jev_route_undeclared_fails` | `Theorems/Jev.lean` | Route applies its declared confidence policy, preserves the original choice, and evaluates only the selected body; an undeclared answer fails first. |
+| `dispatch_declared_string`, `dispatch_missing_fallback`, `dispatch_missing_fails`, `dispatch_selected_continuation` | `Theorems/Dispatch.lean` | A stored string selects its declared body; missing values follow the explicit fallback or fail; selection itself makes no oracle call. |
 
 Two limits apply to what these results establish:
 

@@ -272,6 +272,8 @@ def mayWrite : Node → String → Bool
   | .judge _ _ _ as _, k => as == k || (as ++ "$answers") == k
   | .pick _ _ _ _ _ as _, k => as == k || (as ++ "$answers") == k
   | .sift _ _ _ _ _ _ as _, k => as == k
+  | .dispatch _ _ bs _ as _, k =>
+    (match as with | some a => a == k | none => false) || mayWriteNamed bs k
   | .route _ _ bs _ as _, k =>
     (match as with
       | some a => a == k || (a ++ "$answers") == k
@@ -423,6 +425,25 @@ theorem frame (O : Oracle) (k : String) (hA : O.afterNode = none ∨ k = hostKey
     simp only [mayWrite, beq_eq_false_iff_ne] at hw
     peel_ok
     all_goals rw [State.get_set_ne _ _ hw]
+  | .dispatch label vp branches otherwise as requires, path, addr, lp, s, s', ev, hw, h => by
+    simp only [eval] at h
+    simp only [mayWrite, Bool.or_eq_false_iff] at hw
+    rcases h1 : checkRequires label addr s requires with x | _
+    · rw [h1] at h; simp at h
+    rw [h1] at h; dsimp only at h
+    rcases h2 : dispatchChoice s vp (branchNames branches) otherwise with x | ⟨value, taken, fallback⟩
+    · rw [h2] at h; simp at h
+    rw [h2] at h; dsimp only at h
+    split at h
+    · rename_i o ev' heq
+      simp only [Prod.mk.injEq] at h; obtain ⟨rfl, -⟩ := h
+      rw [frameNamed O k hA branches _ path addr lp _ hw.2 _ _ heq]
+      cases as with
+      | none => rfl
+      | some a =>
+        simp only [beq_eq_false_iff_ne] at hw
+        exact State.get_set_ne _ _ hw.1
+    · simp at h
   | .route label st branches unsure as requires, path, addr, lp, s, s', ev, hw, h => by
     simp only [eval] at h
     simp only [mayWrite, Bool.or_eq_false_iff] at hw

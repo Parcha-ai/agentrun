@@ -3,7 +3,7 @@
 
 export const WORKFLOW_NODE_KINDS = [
   "chain", "code", "agent", "decide", "extract", "report", "artifact", "map", "parallel", "loop",
-  "escalate", "call", "workflow", "judge", "pick", "sift", "route",
+  "escalate", "call", "workflow", "judge", "pick", "sift", "route", "dispatch",
 ] as const;
 export type WorkflowNodeKind = typeof WORKFLOW_NODE_KINDS[number];
 
@@ -32,6 +32,7 @@ export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string
   judge: ["node", "label", "state", "out", "as", "requires"],
   pick: ["node", "label", "itemsPath", "describe", "instructions", "state", "allowNone", "as", "requires"],
   sift: ["node", "label", "itemsPath", "describe", "state", "out", "as", "keep", "requires"],
+  dispatch: ["node", "label", "valuePath", "branches", "otherwise", "as", "requires"],
   route: ["node", "label", "state", "instructions", "branches", "unsure", "as", "requires"],
 };
 

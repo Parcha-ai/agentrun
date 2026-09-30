@@ -10,4 +10,6 @@ import AgentRunSemantics.Theorems.Loop
 import AgentRunSemantics.Theorems.Writes
 import AgentRunSemantics.Theorems.Parallel
 import AgentRunSemantics.Theorems.Requires
+import AgentRunSemantics.Theorems.Jev
+import AgentRunSemantics.Theorems.Dispatch
 import AgentRunSemantics.Findings

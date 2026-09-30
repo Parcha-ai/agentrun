@@ -21,7 +21,7 @@ function withMetadata(workflow) {
     const out = { ...node, metadata: MARK(path) };
     if (Array.isArray(node.steps)) out.steps = node.steps.map((step, i) => visit(step, `${path}/steps/${i}`));
     if (node.node === "parallel" && Array.isArray(node.branches)) out.branches = node.branches.map((b, i) => visit(b, `${path}/branches/${i}`));
-    if (node.node === "route" && node.branches) out.branches = Object.fromEntries(Object.entries(node.branches).map(([k, b]) => [k, { ...b, body: visit(b.body, `${path}/branches/${k}`) }]));
+    if ((node.node === "route" || node.node === "dispatch") && node.branches) out.branches = Object.fromEntries(Object.entries(node.branches).map(([k, b]) => [k, { ...b, body: visit(b.body, `${path}/branches/${k}`) }]));
     if (node.body) out.body = visit(node.body, `${path}/body`);
     if (node.node === "workflow" && node.workflow) out.workflow = withMetadata(node.workflow);
     return out;

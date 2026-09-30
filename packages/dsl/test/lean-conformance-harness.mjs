@@ -9,7 +9,7 @@ import {
 } from "../dist/index.js";
 
 export const CASES_DIR = fileURLToPath(new URL("../../../spec/lean/conformance/", import.meta.url));
-const COMPARED = new Set(["node.start", "node.end", "loop.exited", "escalate.evaluated", "route.chosen"]);
+const COMPARED = new Set(["node.start", "node.end", "loop.exited", "escalate.evaluated", "route.chosen", "dispatch.chosen"]);
 
 export function loadCases() {
   return readdirSync(CASES_DIR).filter((f) => f.endsWith(".json")).sort()
@@ -24,6 +24,7 @@ function eventText(e) {
     case "node.end": return `node.end:${e.label}:${e.detail.status}`;
     case "loop.exited": return `loop.exited:${e.label}:${e.detail.reason}:${e.detail.iterations}`;
     case "escalate.evaluated": return `escalate.evaluated:${e.label}:${e.detail.fired}`;
+    case "dispatch.chosen": return `dispatch.chosen:${e.label}:${e.detail.value.taken}`;
     case "route.chosen": return `route.chosen:${e.label}:${e.detail.value.taken}`;
   }
 }
@@ -46,7 +47,7 @@ export function nodeAt(workflow, executionPath) {
     if (part === "steps") node = node.steps[Number(parts[++i])];
     else if (part === "branches") {
       const key = parts[++i];
-      node = node.node === "route" ? node.branches[key] : node.branches[Number(key)];
+      node = (node.node === "route" || node.node === "dispatch") ? node.branches[key] : node.branches[Number(key)];
     } else if (part === "items" || part === "iterations") i++;
     else if (part === "body") node = node.body;
     else if (part === "workflow") { node = node.workflow.root; i++; }

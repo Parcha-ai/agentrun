@@ -74,6 +74,12 @@ theorem walk_checked : ∀ (n : Node) (addr : Addr) (env : VEnv) (a : Addr),
     · rw [checkedAt_prefix _ _ _ h]; exact List.prefix_refl _
     · obtain ⟨name, _, hn⟩ := walkNamed_checked bs addr _ a h
       exact prefix_trans_seg hn
+  | .dispatch _ _ bs _ _ _, addr, env, a, h => by
+    simp only [walk, List.mem_append] at h
+    rcases h with h | h
+    · rw [checkedAt_prefix _ _ _ h]; exact List.prefix_refl _
+    · obtain ⟨name, _, hn⟩ := walkNamed_checked bs addr _ a h
+      exact prefix_trans_seg hn
   | .call .., addr, env, a, h => by simp only [walk] at h; rw [checkedAt_prefix _ _ _ h]; exact List.prefix_refl _
   | .workflow _ _ root _ _ _, addr, env, a, h => by
     simp only [walk, finishCore] at h
@@ -322,6 +328,7 @@ theorem walk_untracked : ∀ (n : Node) (addr : Addr) (env : VEnv), env.avail = 
   | .pick .., _, env, h => by simp [walk, addAvail, h]
   | .sift .., _, env, h => by simp [walk, addAvail, h]
   | .route .., _, _, _ => rfl
+  | .dispatch .., _, _, _ => rfl
   | .call .., _, env, h => by simp [walk, addAvail, h]
   | .workflow .., _, env, h => by simp [walk, addAvail, h]
 theorem walkList_untracked : ∀ (ns : List Node) (i : Nat) (addr : Addr) (env : VEnv), env.avail = none →
@@ -569,6 +576,34 @@ theorem req_sound (O : Oracle) (hO : ∀ id, O.schemaOk id none = false) :
       obtain ⟨s0, ev0, hr, -, hmono⟩ := stepWrap_ok _ _ _ _ _ _ h
       peel_ok
       all_goals covers_step
+  | .dispatch label vp branches otherwise as requires, path, addr, lp, env, s, herr, hc => by
+    have hnodup : (branchNames branches).Nodup := by
+      rcases Decidable.em (branchNames branches).Nodup with hn | hn
+      · exact hn
+      · simp [walk, hn] at herr
+    simp only [walk, List.append_eq_nil_iff] at herr
+    refine ⟨fun l a p h => ?_, fun s' ev h => by simp only [walk]; exact covers_none _⟩
+    simp only [eval] at h
+    rcases h1 : checkRequires label addr s requires with e | _
+    · rw [h1] at h; simp only [Outcome.failed.injEq] at h
+      obtain ⟨rfl, hna⟩ := own_requires label addr s requires env.avail hc herr.1.2 e h1 l a p h
+      refine ⟨List.prefix_refl _, ?_⟩
+      simp only [walk, List.mem_append, not_or]
+      exact ⟨hna, fun hm => by obtain ⟨_, _, hp⟩ := walkNamed_checked _ _ _ _ hm; exact not_prefix_self_seg hp⟩
+    · rw [h1] at h; dsimp only at h
+      rcases h2 : dispatchChoice s vp (branchNames branches) otherwise with reason | ⟨value, taken, fallback⟩
+      · rw [h2] at h; simp at h
+      rw [h2] at h; dsimp only at h
+      split at h
+      · rename_i o ev' heq
+        simp only at h
+        obtain ⟨⟨nm, _, hp⟩, hna⟩ := req_named O hO branches _ path addr lp { env with avail := none } _ _
+          herr.2 rfl hnodup heq l a p h
+        refine ⟨prefix_trans_seg hp, ?_⟩
+        simp only [walk, List.mem_append, not_or]
+        refine ⟨fun hm => ?_, hna⟩
+        rw [checkedAt_prefix _ _ _ hm] at hp; exact not_prefix_self_seg hp
+      · simp at h
   | .route label st branches unsure as requires, path, addr, lp, env, s, herr, hc => by
     have hnodup : (branchNames branches).Nodup := by
       rcases Decidable.em (branchNames branches).Nodup with hn | hn

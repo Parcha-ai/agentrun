@@ -37,6 +37,10 @@ theorem eval_desugar (O : Oracle) : ∀ (n : Node) (path : ExecPath) (addr : Add
   | .judge .., _, _, _, _ => rfl
   | .pick .., _, _, _, _ => rfl
   | .sift .., _, _, _, _ => rfl
+  | .dispatch label st branches unsure as requires, path, addr, lp, s => by
+    simp only [desugar, eval]
+    have hn : branchNames (desugarNamed branches) = branchNames branches := names_desugarNamed branches
+    simp only [hn, evalNamed_desugar O branches]
   | .route label st branches unsure as requires, path, addr, lp, s => by
     simp only [desugar, eval]
     have hn : branchNames (desugarNamed branches) = branchNames branches := names_desugarNamed branches
@@ -86,7 +90,7 @@ theorem desugar_idem : ∀ n : Node, desugar (desugar n) = desugar n
   | .judge .. => rfl
   | .pick .. => rfl
   | .sift .. => rfl
-  | .route _ _ bs _ _ _ => by simp only [desugar, desugarNamed_idem bs]
+  | .route _ _ bs _ _ _ | .dispatch _ _ bs _ _ _ => by simp only [desugar, desugarNamed_idem bs]
   | .call .. => rfl
   | .workflow _ _ root _ _ _ => by simp only [desugar, desugar_idem root]
 theorem desugarList_idem : ∀ ns : List Node, desugarList (desugarList ns) = desugarList ns

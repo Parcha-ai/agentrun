@@ -103,12 +103,12 @@ export class WorkflowObservation {
       const decision = this.data.decisions.findLast(item => item.path === path && item.accepted === undefined);
       if (decision) decision.accepted = true;
     }
-    if (event.type === 'route.chosen' || event.type === 'loop.exited' || event.type === 'map.failed' || event.type === 'map.escalated') {
+    if (event.type === 'route.chosen' || event.type === 'dispatch.chosen' || event.type === 'loop.exited' || event.type === 'map.failed' || event.type === 'map.escalated') {
       if (!Object.hasOwn(this.data.notes, path) && Object.keys(this.data.notes).length >= 200) { this.data.omitted++; return; }
-      this.data.notes[path] = event.type === 'route.chosen' ? `Selected branch: ${readable(detail?.value, 500)}`
+      this.data.notes[path] = (event.type === 'route.chosen' || event.type === 'dispatch.chosen') ? `Selected branch: ${readable(detail?.value, 500)}`
         : event.type === 'loop.exited' ? `${detail?.iterations} iterations · ${detail?.reason === 'condition_met' ? 'stop condition met' : 'iteration bound reached; not proof of success'}`
         : `${detail?.completed} of ${detail?.of} items completed · ${event.type === 'map.failed' ? 'failed' : 'needs attention'}`;
-      if (event.type === 'route.chosen' && typeof detail?.value?.taken === 'string') this.data.routes![path] = detail.value.taken;
+      if ((event.type === 'route.chosen' || event.type === 'dispatch.chosen') && typeof detail?.value?.taken === 'string') this.data.routes![path] = detail.value.taken;
     }
   }
 

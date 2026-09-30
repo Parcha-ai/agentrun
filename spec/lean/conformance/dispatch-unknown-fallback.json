@@ -1,0 +1,88 @@
+{
+  "description": "Deterministic dispatch: unknown-fallback; no semantic oracle is supplied.",
+  "workflow": {
+    "v": 2,
+    "name": "dispatch-unknown-fallback",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "dispatch",
+      "label": "dispatch",
+      "valuePath": "decision",
+      "as": "applied",
+      "branches": {
+        "proceed": {
+          "body": {
+            "node": "code",
+            "label": "proceed",
+            "code": "s => ({result: 'proceed'})"
+          }
+        },
+        "withhold": {
+          "body": {
+            "node": "code",
+            "label": "withhold",
+            "code": "s => ({result: 'withhold'})"
+          }
+        },
+        "clarify": {
+          "body": {
+            "node": "code",
+            "label": "clarify",
+            "code": "s => ({result: 'clarify'})"
+          }
+        }
+      },
+      "otherwise": "clarify"
+    }
+  },
+  "input": {
+    "decision": "unrecognized"
+  },
+  "script": {
+    "code": {
+      "/root/branches/clarify/body": {
+        "return": {
+          "result": "clarify"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "decision": "unrecognized",
+      "applied": {
+        "value": "unrecognized",
+        "taken": "clarify",
+        "fallback": true
+      },
+      "result": "clarify"
+    },
+    "output": {
+      "decision": "unrecognized",
+      "applied": {
+        "value": "unrecognized",
+        "taken": "clarify",
+        "fallback": true
+      },
+      "result": "clarify"
+    },
+    "events": {
+      "/root": [
+        "dispatch.chosen:dispatch:clarify"
+      ],
+      "/root/branches/clarify/body": [
+        "node.start:clarify",
+        "node.end:clarify:ok"
+      ]
+    }
+  }
+}

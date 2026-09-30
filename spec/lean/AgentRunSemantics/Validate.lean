@@ -65,7 +65,7 @@ def containsReport : Node → Bool
   | .chain steps => containsReportList steps
   | .parallel _ branches => containsReportList branches
   | .map _ _ body _ _ | .loop _ body _ _ => containsReport body
-  | .route _ _ branches _ _ _ => containsReportNamed branches
+  | .route _ _ branches _ _ _ | .dispatch _ _ branches _ _ _ => containsReportNamed branches
   | _ => false
 def containsReportList : List Node → Bool
   | [] => false
@@ -82,7 +82,7 @@ def countReports : Node → Nat
   | .chain steps => countReportsList steps
   | .parallel _ branches => countReportsList branches
   | .map _ _ body _ _ | .loop _ body _ _ => countReports body
-  | .route _ _ branches _ _ _ => countReportsNamed branches
+  | .route _ _ branches _ _ _ | .dispatch _ _ branches _ _ _ => countReportsNamed branches
   | _ => 0
 def countReportsList : List Node → Nat
   | [] => 0
@@ -100,7 +100,7 @@ def Node.declaredAs : Node → Option String
   | .judge _ _ _ as _ => some as
   | .pick _ _ _ _ _ as _ => some as
   | .sift _ _ _ _ _ _ as _ => some as
-  | .route _ _ _ _ as _ => as
+  | .route _ _ _ _ as _ | .dispatch _ _ _ _ as _ => as
   | .call _ _ _ _ as _ _ => some as
   | .workflow _ _ _ _ _ as => some as
   | _ => none
@@ -115,7 +115,7 @@ def declaredWrites : Node → List String
   | .chain steps => declaredWritesList steps
   | .parallel _ branches => declaredWritesList branches
   | .loop _ body _ _ => declaredWrites body
-  | .route _ _ branches _ as _ => (match as with
+  | .route _ _ branches _ as _ | .dispatch _ _ branches _ as _ => (match as with
       | some k => if k.isEmpty then [] else [k]
       | none => []) ++ declaredWritesNamed branches
   | n => match n.declaredAs with
@@ -316,6 +316,23 @@ def walk : Node → Addr → VEnv → VOut
         (if env.schemas.contains out then [] else ["out schema not in workflow.schemas"]) ++
         (if as.isEmpty then ["as required"] else []) ++ requiresErrors env.avail requires
       checked := checkedAt env.avail addr }
+  | n@(.dispatch _ vp branches otherwise as requires), addr, env =>
+    let names := branchNames branches
+    let r := walkNamed branches addr { env with avail := none }
+    { r with
+      errors := dollarErrors n ++
+        (if vp.isEmpty then ["valuePath required"] else []) ++
+        (if names.isEmpty || names.any String.isEmpty then ["dispatch needs non-empty branch names"] else []) ++
+        (if names.Nodup then [] else ["dispatch branch names must be distinct"]) ++
+        (match otherwise with
+          | some b => if names.contains b then [] else ["otherwise must name one of the branches"]
+          | none => []) ++
+        (if containsReport n then ["a report node cannot live inside a dispatch branch"] else []) ++
+        (match as with
+          | some k => if k.isEmpty then ["as must be a state key when present"] else []
+          | none => []) ++ requiresErrors env.avail requires ++ r.errors
+      checked := checkedAt env.avail addr ++ r.checked
+      avail := none }
   | n@(.route _ st branches unsure as requires), addr, env =>
     let names := branchNames branches
     let r := walkNamed branches addr { env with avail := none }

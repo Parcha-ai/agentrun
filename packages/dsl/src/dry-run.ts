@@ -129,7 +129,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
       if (node.node === "chain") node.steps.forEach(visit);
       if (node.node === "parallel") node.branches.forEach(visit);
       if (node.node === "map" || node.node === "loop") visit(node.body);
-      if (node.node === "route") Object.values(node.branches).forEach(branch => visit(branch.body));
+      if (node.node === "route" || node.node === "dispatch") Object.values(node.branches).forEach(branch => visit(branch.body));
     };
     visit(plan.root);
   };

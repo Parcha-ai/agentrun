@@ -81,8 +81,8 @@ export function inspectWorkflow(value: unknown): WorkflowInspection {
       case "parallel": node.branches.forEach((branch, index) => visit(branch, owner, `${path}/branches/${index}`, `parallel ${index + 1}`, path)); break;
       case "map": visit(node.body, owner, `${path}/body`, `each ${node.itemsPath}`, path); break;
       case "loop": visit(node.body, owner, `${path}/body`, `up to ${node.maxIters} iterations`, path); break;
-      case "route": Object.entries(node.branches).forEach(([name, branch]) =>
-        visit(branch.body, owner, `${path}/branches/${pointer(name)}/body`, `route ${name}`, path)); break;
+      case "dispatch": case "route": Object.entries(node.branches).forEach(([name, branch]) =>
+        visit(branch.body, owner, `${path}/branches/${pointer(name)}/body`, `${node.node} ${name}`, path)); break;
       case "workflow": visit(node.workflow.root, node.workflow, `${path}/workflow/root`, `workflow ${node.workflow.name}`, path); break;
     }
   };
@@ -108,7 +108,7 @@ export function formatWorkflowTree(inspection: WorkflowInspection): string {
     const list = children.get(parent) ?? [];
     list.forEach((node, index) => {
       const last = index === list.length - 1;
-      const relation = /^(parallel |each |up to |route |workflow )/.test(node.relation) ? `${safe(node.relation)}: ` : "";
+      const relation = /^(parallel |each |up to |route |dispatch |workflow )/.test(node.relation) ? `${safe(node.relation)}: ` : "";
       const value = node.outputSchema ? ` (${safe(node.outputSchema)})` : node.kind === "map"
         ? ` (array; ${node.resultPath ? `select ${safe(node.resultPath)}` : "whole item state"})`
         : node.kind === "code" ? " (returned value)" : "";

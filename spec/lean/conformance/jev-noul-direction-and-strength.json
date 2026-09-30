@@ -1,0 +1,175 @@
+{
+  "description": "Noul probability, decoded Boolean, and derived confidence have different meanings; a strong negative is not permission and an irrelevant uncertain answer need not block a relevant one.",
+  "workflow": {
+    "v": 2,
+    "name": "jev-noul-direction-and-strength",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "Questions": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "affirmative",
+          "negative",
+          "irrelevant"
+        ],
+        "properties": {
+          "affirmative": {
+            "type": "boolean",
+            "description": "Does the supplied evidence support the affirmative condition?"
+          },
+          "negative": {
+            "type": "boolean",
+            "description": "Does the supplied evidence support the negative condition?"
+          },
+          "irrelevant": {
+            "type": "boolean",
+            "description": "Does the supplied evidence support the irrelevant condition?"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "judge",
+          "label": "interpret",
+          "state": {
+            "request": "Use the complete supplied request and policy."
+          },
+          "out": "Questions",
+          "as": "judgment"
+        },
+        {
+          "node": "code",
+          "label": "project",
+          "as": "projection",
+          "code": "(s) => ({ affirmativeMeetsProbabilityPolicy: s['judgment$answers'].answers.affirmative.noul >= 0.7, affirmativeMeetsConfidencePolicy: s['judgment$answers'].confidence.affirmative >= 0.6, negativeValue: s.judgment.negative, negativeMeetsConfidencePolicy: s['judgment$answers'].confidence.negative >= 0.6 })"
+        }
+      ]
+    }
+  },
+  "input": {},
+  "script": {
+    "judge": {
+      "/root/steps/0": {
+        "answers": {
+          "affirmative": {
+            "type": "noul",
+            "noul": 0.78
+          },
+          "negative": {
+            "type": "noul",
+            "noul": 0.01
+          },
+          "irrelevant": {
+            "type": "noul",
+            "noul": 0.5
+          }
+        }
+      }
+    },
+    "code": {
+      "/root/steps/1": {
+        "return": {
+          "affirmativeMeetsProbabilityPolicy": true,
+          "affirmativeMeetsConfidencePolicy": false,
+          "negativeValue": false,
+          "negativeMeetsConfidencePolicy": true
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "judgment": {
+        "affirmative": true,
+        "negative": false,
+        "irrelevant": true
+      },
+      "judgment$answers": {
+        "answers": {
+          "affirmative": {
+            "type": "noul",
+            "noul": 0.78
+          },
+          "negative": {
+            "type": "noul",
+            "noul": 0.01
+          },
+          "irrelevant": {
+            "type": "noul",
+            "noul": 0.5
+          }
+        },
+        "confidence": {
+          "affirmative": 0.56,
+          "negative": 0.98,
+          "irrelevant": 0
+        },
+        "weakest": "irrelevant",
+        "min_confidence": 0
+      },
+      "projection": {
+        "affirmativeMeetsProbabilityPolicy": true,
+        "affirmativeMeetsConfidencePolicy": false,
+        "negativeValue": false,
+        "negativeMeetsConfidencePolicy": true
+      }
+    },
+    "output": {
+      "judgment": {
+        "affirmative": true,
+        "negative": false,
+        "irrelevant": true
+      },
+      "judgment$answers": {
+        "answers": {
+          "affirmative": {
+            "type": "noul",
+            "noul": 0.78
+          },
+          "negative": {
+            "type": "noul",
+            "noul": 0.01
+          },
+          "irrelevant": {
+            "type": "noul",
+            "noul": 0.5
+          }
+        },
+        "confidence": {
+          "affirmative": 0.56,
+          "negative": 0.98,
+          "irrelevant": 0
+        },
+        "weakest": "irrelevant",
+        "min_confidence": 0
+      },
+      "projection": {
+        "affirmativeMeetsProbabilityPolicy": true,
+        "affirmativeMeetsConfidencePolicy": false,
+        "negativeValue": false,
+        "negativeMeetsConfidencePolicy": true
+      }
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:interpret",
+        "node.end:interpret:ok"
+      ],
+      "/root/steps/1": [
+        "node.start:project",
+        "node.end:project:ok"
+      ]
+    }
+  }
+}

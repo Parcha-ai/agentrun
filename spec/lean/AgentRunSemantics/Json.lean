@@ -157,6 +157,10 @@ partial def node (schemas : Json) (j : Json) : P Node := do
       (optTmpl j "state") (strD j "as") (requires j))
   | "sift" => pure (.sift label (splitPath (strD j "itemsPath")) (optTmpl j "state") (strD j "out")
       (questionCount schemas (strD j "out")) (get? j "keep").isSome (strD j "as") (requires j))
+  | "dispatch" =>
+    let bs ← (fields ((get? j "branches").getD .null)).mapM fun (name, b) => do
+      pure (name, ← node schemas ((get? b "body").getD .null))
+    pure (.dispatch label (splitPath (strD j "valuePath")) bs (optStr j "otherwise") (optStr j "as") (requires j))
   | "route" =>
     let bs ← (fields ((get? j "branches").getD .null)).mapM fun (name, b) => do
       pure (name, ← node schemas ((get? b "body").getD .null))

@@ -1,0 +1,59 @@
+{
+  "description": "Deterministic dispatch: unknown-fails; no semantic oracle is supplied.",
+  "workflow": {
+    "v": 2,
+    "name": "dispatch-unknown-fails",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "dispatch",
+      "label": "dispatch",
+      "valuePath": "decision",
+      "as": "applied",
+      "branches": {
+        "proceed": {
+          "body": {
+            "node": "code",
+            "label": "proceed",
+            "code": "s => ({result: 'proceed'})"
+          }
+        },
+        "withhold": {
+          "body": {
+            "node": "code",
+            "label": "withhold",
+            "code": "s => ({result: 'withhold'})"
+          }
+        },
+        "clarify": {
+          "body": {
+            "node": "code",
+            "label": "clarify",
+            "code": "s => ({result: 'clarify'})"
+          }
+        }
+      }
+    }
+  },
+  "input": {
+    "decision": "unrecognized"
+  },
+  "script": {},
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "dispatch_unknown",
+      "label": "dispatch",
+      "path": "decision"
+    },
+    "events": {}
+  }
+}
