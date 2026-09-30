@@ -8,6 +8,7 @@ import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
+import { setLongTimeout, type LongTimer } from "./long-timer.js";
 
 /** The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),
  *  or the kind's default. A router that sends the few thin cases to `strong` buys depth only where the
@@ -1394,8 +1395,8 @@ function canonicalJson(value: unknown): string {
 
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) { reject(signal.reason ?? new Error("workflow aborted")); return; }
-  const aborted = () => { clearTimeout(timer); reject(signal?.reason ?? new Error("workflow aborted")); };
-  const timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, ms);
+  const aborted = () => { timer.clear(); reject(signal?.reason ?? new Error("workflow aborted")); };
+  const timer = setLongTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, ms);
   signal?.addEventListener("abort", aborted, { once: true });
 });
 
@@ -1467,9 +1468,10 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       deps.signal?.addEventListener("abort", onAbort, { once: true });
       // libuv may fire a timer up to 1 ms before the requested instant. Re-read the monotonic
       // clock and re-arm for the remainder, so the deadline never interrupts an effect early.
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      // setLongTimeout keeps a deadline past Node's 2^31-1 ms timer limit from overflowing.
+      let timer: LongTimer | undefined;
       const armDeadline = (ms: number) => {
-        timer = setTimeout(() => {
+        timer = setLongTimeout(() => {
           const remainingMs = attemptDeadlineMs - performance.now();
           if (remainingMs > 0) armDeadline(Math.ceil(remainingMs));
           else interrupt("deadline");
@@ -1515,7 +1517,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         const delay = Math.min((node.retry?.backoff_s ?? 1) * 1000 * attempt, budgetUntilMs === undefined ? Infinity : Math.max(0, budgetUntilMs - Date.now()));
         await sleep(delay, deps.signal);
       } finally {
-        clearTimeout(timer);
+        timer?.clear();
         if (interruptionCheck) clearImmediate(interruptionCheck);
         deps.signal?.removeEventListener("abort", onAbort);
       }
