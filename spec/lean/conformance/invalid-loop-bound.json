@@ -1,5 +1,5 @@
 {
-  "description": "Validation rejects a loop bound outside 1..20.",
+  "description": "Validation rejects a loop bound below the floor of 1 (there is no upper ceiling).",
   "workflow": {
     "v": 2,
     "name": "bad-loop",
@@ -22,7 +22,7 @@
     "root": {
       "node": "loop",
       "label": "l",
-      "maxIters": 21,
+      "maxIters": 0,
       "until": {
         "predicate": "field_true",
         "path": "d"

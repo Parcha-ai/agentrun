@@ -53,7 +53,7 @@ Their fields:
 - `tools` names tools the host offers. `[]` means no tools; omitting `tools` offers every tool the host allows. Never name a tool the host did not offer.
 - `effort` is minimal|low|medium|high; `thinking` is low|medium|high (never off); `tier` is fast|default|strong. They are requests to the host: resource ceilings are the host's, and nodes carry no budgets.
 - `sopSection` names one heading of the host's SOP, or a list of them, as the exact text after "## ". The node receives those sections verbatim.
-- `verify` reviews a submission before it is accepted: {"out": a question schema with at least one boolean question, "state"?, "maxDrives"?: 1..4 (default 2), "override"?: {"below": a number in (0, 1), default 0.3}}. A boolean question named after a submission field doubts that field when its yes-probability is below `override.below`; any other boolean question is a requirement met at 0.5. A rejected submission returns to the same session with the reasons.
+- `verify` reviews a submission before it is accepted: {"out": a question schema with at least one boolean question, "state"?, "maxDrives"?: an integer >= 1 (default 2; the author picks the number, there is no upper limit), "override"?: {"below": a number in (0, 1), default 0.3}}. A boolean question named after a submission field doubts that field when its yes-probability is below `override.below`; any other boolean question is a requirement met at 0.5. A rejected submission returns to the same session with the reasons.
 - When the workflow has a report, no decide or extract `out` schema carries `report_markdown`.
 
 ### Terminal nodes: report and artifact
@@ -77,16 +77,16 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - `chain`: non-empty `steps`, run in order.
 - `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state.
 - `parallel`: at least two `branches`, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
-- `loop`: `body`, `until` (a predicate) and an integer `maxIters` from 1 to 20. At the bound the state passes through with `until` unmet; follow the loop with an escalate or gate on that condition.
+- `loop`: `body`, `until` (a predicate) and an integer `maxIters` of at least 1 (the author picks the number; there is no upper limit). At the bound the state passes through with `until` unmet; follow the loop with an escalate or gate on that condition.
 - `escalate`: `when` (a predicate), and non-empty `kind`, `stage` and `summary`. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.
 - `workflow`: `label`, `workflow` (a complete inline child), `input` (an object, interpolated, the child's entire initial state), `out` (a parent schema checked against the child's output) and `as`. The child declares `input.schemaId` in its own schemas and contains no report or artifact.
 - `code`: `code` is one synchronous function expression such as "(s) => ({ total: s.items.length })". It receives the full state; return new values and never mutate it. `Date`, `Promise`, timers, `fetch`, `require`, `process`, `Function` and `globalThis` are unavailable. It is trusted host JavaScript, not a sandbox. Use code for typed-state mechanics, never to read meaning from prose.
-- `call`: one side effect with no model in the loop. `via` is tool|executor|shell; `as` and `deadline_s` (greater than 0, at most 3600) are required.
+- `call`: one side effect with no model in the loop. `via` is tool|executor|shell; `as` and `deadline_s` (a finite number greater than 0; the author picks the number, there is no upper limit) are required — an unbounded effect is how a stalled provider becomes a stalled job.
   - `via: tool` takes `tool` (a host tool address), `args` (an object) and `out` (the tool's result schema).
   - `via: executor` takes `code` (a body that returns its JSON result and uses only `tools` and `input`), `input` and `out`.
   - `via: shell` takes `command` (literal) and `env` (UPPER_CASE names to strings, interpolated by value; the way long values reach a command). Its result has the fixed shape {code, stdout, stderr, truncated?}: no `out`. Only a shell call may declare `produces` (workspace-relative files, checked after the effect).
-  - `retry` {attempts: 1..5, backoff_s?: 0..60, on?: [timeout, http_5xx, http_429, connection, exit]}. `where` accepts only "sandbox".
-  - `poll` {until, fail_when?, interval_s: 0.1..300, deadline_s: from the call's deadline_s to 7200} repeats the call until `until` holds on its own result; `fail_when` fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape.
+  - `retry` {attempts: an integer >= 1, backoff_s?: a number >= 0, on?: [timeout, http_5xx, http_429, connection, exit]}. `where` accepts only "sandbox".
+  - `poll` {until, fail_when?, interval_s: >= 0.1 (a busy-loop guard), deadline_s: at least the call's deadline_s} repeats the call until `until` holds on its own result; `fail_when` fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape. No field has an upper limit; the author picks the numbers.
   - Validation and dry runs never perform effects: they synthesize the declared result, and a shell result's stdout is "{}".
 
 ## Predicates

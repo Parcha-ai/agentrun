@@ -51,17 +51,18 @@ Children can contain maps, loops, routes, parallel branches and other children, 
 
 ## Bounds
 
-These are the current beta's validation limits. Hosts may impose tighter budgets; the bounds below are not configurable unless an override is named.
+These are the current beta's validation rules. The numeric knobs below carry no upper ceiling: the author picks the number, and a host may set its own default, but the validator never caps how high it goes. What remains are lower bounds and structural requirements — a floor a value must sit at or above, a field that must be present — plus the parser's own safety guards, and the System-One question shape (a bounded multiple choice). Hosts may still impose their own budgets as defaults.
 
 | Setting | Bound |
 | --- | --- |
 | Document traversal | At most 100,000 visited values and 128 levels of object nesting; cycles, accessors and proxies rejected |
-| `loop.maxIters` | Integer 1–20 |
-| `verify.maxDrives` | Integer 1–4; default 2 |
-| `call.deadline_s` | Greater than 0 and at most 3,600 seconds |
-| `call.retry.attempts` | Integer 1–5, including the first attempt |
-| `call.poll.interval_s` | 0.1–300 seconds |
-| `call.poll.deadline_s` | At least the call deadline and at most 7,200 seconds |
+| `loop.maxIters` | Integer >= 1 |
+| `verify.maxDrives` | Integer >= 1; default 2 |
+| `call.deadline_s` | Required; a finite number greater than 0 seconds |
+| `call.retry.attempts` | Integer >= 1, including the first attempt |
+| `call.retry.backoff_s` | Finite number >= 0 |
+| `call.poll.interval_s` | Finite number, at least 0.1 seconds (busy-loop guard) |
+| `call.poll.deadline_s` | Finite number, at least the call deadline |
 | Choice options / route branches | At most 240; `pick.allowNone` reserves one option |
 | Score rubric | 2–10 levels, indexed from 0 |
 | Questions per judgment request | Default 256; override with host-owned `WorkflowDeps.maxQuestionsPerRequest` |

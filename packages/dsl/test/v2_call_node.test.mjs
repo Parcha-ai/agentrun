@@ -35,12 +35,12 @@ test("validator: the declared result schema seeds the predicate check", () => {
 
 test("validator: every field is checked; the rejections name the node", () => {
   const cases = [
-    [submitCall({ deadline_s: undefined }), /deadline_s must be greater than 0 and at most 3600/],
+    [submitCall({ deadline_s: undefined }), /deadline_s is required and must be a finite number greater than 0/],
     [submitCall({ via: "http" }), /via must be tool\|executor\|shell/],
     [submitCall({ out: "Nope" }), /out schema "Nope" not in workflow\.schemas/],
     [submitCall({ produces: ["a.mp4"] }), /only a via shell call may declare produces/],
     [submitCall({ args: { prompt: "{nothere.x}" } }), /interpolates \{nothere\.x\} but no upstream node produces "nothere"/],
-    [submitCall({ retry: { attempts: 9 } }), /retry\.attempts must be 1\.\.5/],
+    [submitCall({ retry: { attempts: 0 } }), /retry\.attempts must be an integer >= 1/],
     [submitCall({ retry: { attempts: 2, on: ["http_404"] } }), /retry\.on may name only/],
     [submitCall({ retry: { attempts: 2, on: ["exit"] } }), null],
     [submitCall({ where: "host" }), /where accepts only "sandbox"/],

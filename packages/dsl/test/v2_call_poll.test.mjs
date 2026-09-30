@@ -25,8 +25,8 @@ test("validator: a poll with result-relative predicates is accepted; every claus
     [statusCall({}, poll({ until: { predicate: "in", path: "status", values: [] } })), /in needs a non-empty values list/],
     [statusCall({}, poll({ until: { predicate: "field_equals", path: "state", value: "DONE" } })), /poll\.until path "state" is not in the declared result shape \(status, detail\)/],
     [statusCall({}, poll({ fail_when: { predicate: "field_true", path: "detail.nope" } })), /poll\.fail_when path "detail\.nope" is not in the declared result shape/],
-    [statusCall({}, poll({ interval_s: 0 })), /poll\.interval_s must be 0\.1\.\.300/],
-    [statusCall({}, poll({ deadline_s: 2 })), /poll\.deadline_s must be at least deadline_s/],
+    [statusCall({}, poll({ interval_s: 0 })), /poll\.interval_s must be a finite number of at least 0\.1/],
+    [statusCall({}, poll({ deadline_s: 2 })), /poll\.deadline_s must be a finite number at least deadline_s/],
     [statusCall({}, "soon"), /poll must be an object/],
     [{ node: "loop", label: "l", body: { node: "code", label: "c", code: "(s) => ({ items: [] })" }, until: { predicate: "in", path: "items", values: [] }, max_iterations: 2 }, /until: in needs a non-empty values list/],
   ];
