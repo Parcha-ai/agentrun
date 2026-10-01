@@ -43,7 +43,7 @@ export type WorkflowNode =
   | ArtifactNode
   | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number; metadata?: NodeMetadata }
   | { node: "parallel"; label: string; branches: WorkflowNode[]; metadata?: NodeMetadata }
-  | { node: "loop"; label: string; body: WorkflowNode; until: Predicate; maxIters: number; metadata?: NodeMetadata }
+  | { node: "loop"; label: string; body: WorkflowNode; until: Predicate; maxIters: number; expect_iters?: number; metadata?: NodeMetadata }
   | { node: "escalate"; label: string; when: Predicate; kind: string; stage: string; summary: string; metadata?: NodeMetadata }
   | JudgeNode
   | PickNode
@@ -922,6 +922,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         return;
       case "loop":
         if (!Number.isInteger(node.maxIters) || node.maxIters < 1) errors.push(`${path} (${node.label}): maxIters must be an integer >= 1`);
+        if (node.expect_iters !== undefined && (!Number.isInteger(node.expect_iters) || node.expect_iters < 1)) errors.push(`${path} (${node.label}): expect_iters must be an integer >= 1`);
         if (containsReportNode(node.body)) errors.push(`${path} (${node.label}): a report node cannot live inside a loop body — the report is rendered once, after the record is final`);
         checkPredicate(node.until, node.label, path, "until");
         {

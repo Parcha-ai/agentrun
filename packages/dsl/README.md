@@ -59,6 +59,7 @@ These are the current beta's validation rules. The numeric knobs below carry no 
 | --- | --- |
 | Document traversal | At most 100,000 visited values and 128 levels of object nesting; cycles, accessors and proxies rejected |
 | `loop.maxIters` | Integer >= 1 |
+| `loop.expect_iters` | Integer >= 1, optional (gate prices the loop at this; default the floor) |
 | `verify.maxDrives` | Integer >= 1; default 2 |
 | `call.deadline_s` | Required; a finite number greater than 0 seconds |
 | `call.retry.attempts` | Integer >= 1, including the first attempt |

@@ -27,7 +27,7 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `artifact`: `label`, `state`, `type`, `path`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
 - `map`: `label`, `itemsPath`, `body`, `as`, `resultPath`, `maxConcurrency`
 - `parallel`: `label`, `branches`
-- `loop`: `label`, `body`, `until`, `maxIters`
+- `loop`: `label`, `body`, `until`, `maxIters`, `expect_iters`
 - `escalate`: `label`, `when`, `kind`, `stage`, `summary`
 - `call`: `label`, `via`, `tool`, `args`, `code`, `input`, `command`, `env`, `where`, `out`, `as`, `produces`, `deadline_s`, `retry`, `poll`, `requires`
 - `workflow`: `label`, `workflow`, `input`, `out`, `as`
@@ -78,7 +78,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - `chain`: non-empty `steps`, run in order.
 - `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state.
 - `parallel`: at least two `branches`, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
-- `loop`: `body`, `until` (a predicate) and an integer `maxIters` of at least 1 (no maximum). At the bound the state passes through with `until` unmet; follow the loop with an escalate or gate on that condition.
+- `loop`: `body`, `until` (a predicate) and an integer `maxIters` of at least 1 (no maximum), optionally an integer `expect_iters` of at least 1 (priced passes). At the bound the state passes through with `until` unmet; follow the loop with an escalate or gate on that condition.
 - `escalate`: `when` (a predicate), and non-empty `kind`, `stage` and `summary`. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.
 - `workflow`: `label`, `workflow` (a complete inline child), `input` (an object, interpolated, the child's entire initial state), `out` (a parent schema checked against the child's output) and `as`. The child declares `input.schemaId` in its own schemas and contains no report or artifact.
 - `code`: `code` is one synchronous function expression such as "(s) => ({ total: s.items.length })". It receives the full state; return new values and never mutate it. `Date`, `Promise`, timers, `fetch`, `require`, `process`, `Function` and `globalThis` are unavailable. It is trusted host JavaScript, not a sandbox. Use code for typed-state mechanics, never to read meaning from prose.
