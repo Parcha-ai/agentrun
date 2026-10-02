@@ -155,14 +155,14 @@ test("validator falsifiers: unknown kind, bad code, missing schema, unbounded lo
       { node: "wat", label: "x" },
       { node: "code", label: "broken", code: "not js ((" },
       { node: "decide", label: "d", instructions: "i", out: "Missing" },
-      { node: "loop", label: "l", maxIters: 999, until: { predicate: "nope" }, body: { node: "code", label: "c", code: "(s) => s" } },
+      { node: "loop", label: "l", maxIters: 0, until: { predicate: "nope" }, body: { node: "code", label: "c", code: "(s) => s" } },
       { node: "escalate", label: "e", when: { predicate: "field_true", path: "x" }, kind: "", stage: "s", summary: "t" },
     ],
   });
   const result = validateWorkflow(bad);
   assert.equal(result.ok, false);
   const text = result.errors.join("\n");
-  for (const needle of ['unknown node kind "wat"', "broken", 'out schema "Missing"', "maxIters must be 1..20", 'unknown predicate "nope"', "kind, stage, summary required"]) {
+  for (const needle of ['unknown node kind "wat"', "broken", 'out schema "Missing"', "maxIters must be an integer >= 1", 'unknown predicate "nope"', "kind, stage, summary required"]) {
     assert.match(text, new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `missing error: ${needle}`);
   }
 });

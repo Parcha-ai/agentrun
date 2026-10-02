@@ -181,18 +181,19 @@ Verification questions assess the evidence given to them. They are not an indepe
 
 ### Numeric limits
 
-These are engine bounds, not provider capacity guarantees. Hosts can impose tighter budgets. Node transport limits remain part of the v2 contract; changes require a versioned candidate.
+These are engine rules, not provider capacity guarantees. The numeric knobs below carry no upper ceiling — the author picks the number and a host may set a default, but the validator never caps how high it goes. What the validator keeps are lower bounds (a floor a value must sit at or above), structural requirements (a field that must be present), the System-One question shape (a bounded multiple choice), and the parser's own safety guards. Hosts can still impose tighter budgets as defaults.
 
 | Setting | Bound / default |
 | --- | --- |
-| `loop.maxIters` | Integer 1–20, required |
+| `loop.maxIters` | Integer >= 1, required |
 | `map.maxConcurrency` | Positive safe integer; default 4 |
-| `call.deadline_s` | Greater than 0, at most 3600 seconds |
-| `call.retry.attempts` | Integer 1–5 when retry is declared |
-| `call.poll.interval_s` | 0.1–300 seconds |
-| `call.poll.deadline_s` | At least `call.deadline_s`, at most 7200 seconds |
-| `verify.maxDrives` | Integer 1–4; default 2 |
-| Choice options (`pick`, `route`, question enums) | At most 240 |
+| `call.deadline_s` | Required; finite, greater than 0 seconds |
+| `call.retry.attempts` | Integer >= 1 when retry is declared |
+| `call.retry.backoff_s` | Finite, >= 0 seconds when declared |
+| `call.poll.interval_s` | Finite, at least 0.1 seconds (busy-loop guard) |
+| `call.poll.deadline_s` | Finite, at least `call.deadline_s` |
+| `verify.maxDrives` | Integer >= 1; default 2 |
+| Choice options (`pick`, `route`, question enums) | At most 240 (System-One question shape) |
 | `deps.maxQuestionsPerRequest` | Positive safe integer; default 256 |
 
 The question guard applies before an adapter request. Static judge/verifier question sets are checked during admission; `sift` checks items × questions at execution because its collection may be produced by earlier nodes. It does not batch or retry an oversized request. Reduce the collection or explicitly raise the host guard after checking provider capacity. The Jev adapter has no default byte ceiling; its host may explicitly set `maxStateBytes`. Provider token context limits still apply to the assembled state and questions; bytes are not a tokenizer. See the [current model contract](https://docs.typesafe.ai/models). “System One” names the TypeSafe family of typed judgments; Noul means the probability of yes.
