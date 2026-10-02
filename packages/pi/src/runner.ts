@@ -66,6 +66,8 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
     if (signals.some(s => s.aborted)) throw new PiRunError("aborted", 0, 0);
     const requested = request.tools ?? [...names];
     for (const name of requested) if (!names.has(name)) throw new Error(`Pi tool was not explicitly registered: ${name}`);
+    // Every Pi node starts a fresh session, so there is no caller transcript to fork.
+    if (request.context === "fork") throw new Error(`Pi node "${request.label}" asks for context: "fork", but the Pi runner starts every node in a fresh session and has no caller transcript to fork. Declare context: "fresh", or run it on a host that supports fork.`);
     const validator = Compile(request.schema as never);
     const parameters = submitParameters(request.schema);
     const envelopeValidator = Compile(parameters as never);

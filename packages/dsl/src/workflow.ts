@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
-import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
+import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
@@ -13,6 +13,8 @@ export { resolveSchemaForWorkflow } from "./schema-references.js";
  *  or the kind's default. A router that sends the few thin cases to `strong` buys depth only where the
  *  decision is on the edge. */
 export type ModelTier = "fast" | "default" | "strong";
+/** An `agent` node's context (`AGENT_CONTEXTS`). */
+export type AgentContext = "fresh" | "fork";
 export type VerifyClause = { out: string; state?: Record<string, unknown>; maxDrives?: number; override?: { below: number } };
 export type AskPredicate = { predicate: "ask"; instructions: string; state?: Record<string, unknown>; criteria?: { true?: string; false?: string }; gte?: number };
 export type MechanicalPredicate = AcceptPredicate;
@@ -31,7 +33,9 @@ export type NodeMetadata = { [key: string]: unknown };
 export type WorkflowNode =
   | { node: "chain"; steps: WorkflowNode[]; metadata?: NodeMetadata }
   | { node: "code"; label: string; code: string; as?: string; metadata?: NodeMetadata }
-  | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
+  | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier;
+      /** The most the node asks to spend, in dollars. @exclusiveMinimum 0 */
+      budget_usd?: number; context?: AgentContext; metadata?: NodeMetadata }
   | { node: "decide"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; metadata?: NodeMetadata }
@@ -264,6 +268,12 @@ export type WorkflowDeps = {
      *  session with the message as the next tool result. The engine verifies returned submissions even if the runner ignores this hook. */
     review?: (candidate: unknown) => Promise<{ accepted: true } | { accepted: false; message: string }>;
     tier?: ModelTier;
+    /** An `agent` node's `budget_usd`: the most the node asks to spend, recorded; enforcement belongs to the host.
+     *  No runner stops a run on money. A host may cap it by what it has left. */
+    budgetUsd?: number;
+    /** An `agent` node's `context`. `fork` asks the host to start the session from the caller's transcript;
+     *  a host that has none to fork refuses it. */
+    context?: AgentContext;
   }) => Promise<unknown>;
   runEffect?: (params: {
     node: CallNode;
@@ -787,6 +797,13 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
   };
   const checkPredicate = (pred: unknown, label: string, path: string, field: string, mechanicalOnly = false): boolean => {
     const name = (pred as any)?.predicate;
+    // A predicate with no `predicate` field is the shape mistaken, not an unknown name: say the shape
+    // (GRE-2809), naming a predicate the object used as a key when it did.
+    if (pred && typeof pred === "object" && !Array.isArray(pred) && name === undefined) {
+      const keyed = Object.keys(pred).find((key) => PREDICATES.has(key));
+      errors.push(`${path} (${label}): ${field}: a predicate names itself in its "predicate" field beside its own fields, e.g. {"predicate": "${keyed ?? "field_true"}", "path": "..."}${keyed ? `, not {"${keyed}": {...}}` : ""}`);
+      return false;
+    }
     if (!pred || !PREDICATES.has(name) || (mechanicalOnly && !MECHANICAL_PREDICATE_NAMES.has(name))) { errors.push(`${path} (${label}): ${field}: unknown predicate "${name}"${mechanicalOnly && name === "ask" ? " (a poll reads a value, never asks a question)" : ""}`); return false; }
     errors.push(...predicateShapeErrors(pred as any).map((e) => `${path} (${label}): ${field}: ${e}`));
     if (name === "ask") checkStateMap((pred as any).state, label, path, `${field}.state`);
@@ -845,6 +862,8 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if ((node as any).tools !== undefined && (!Array.isArray((node as any).tools) || (node as any).tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) errors.push(`${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
         checkRequires(node, path);
         if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) errors.push(`${path} (${node.label}): tier must be fast|default|strong`);
+        if (node.node === "agent" && node.budget_usd !== undefined && !(typeof node.budget_usd === "number" && Number.isFinite(node.budget_usd) && node.budget_usd > 0)) errors.push(`${path} (${node.label}): budget_usd must be a number of dollars greater than 0`);
+        if (node.node === "agent" && node.context !== undefined && !(AGENT_CONTEXTS as readonly string[]).includes(String(node.context))) errors.push(`${path} (${node.label}): context must be ${AGENT_CONTEXTS.join("|")}`);
         if (node.node !== "report" && (node as any).verify !== undefined) {
           const v = (node as any).verify as VerifyClause;
           if (!v || typeof v !== "object" || typeof v.out !== "string") errors.push(`${path} (${node.label}): verify needs an out (a question schema id)`);
@@ -1925,6 +1944,8 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       kind: node.node, label: node.label,
       ...(review ? { review } : {}),
       ...((node as any).tier ? { tier: (node as any).tier } : {}),
+      ...(node.node === "agent" && node.budget_usd !== undefined ? { budgetUsd: node.budget_usd } : {}),
+      ...(node.node === "agent" && node.context !== undefined ? { context: node.context } : {}),
       system: [sopSlice, deps.skill, node.instructions, ...(policy?.systemBlocks && context ? policy.systemBlocks(context) : [])].filter(Boolean) as string[],
       user: JSON.stringify(promptState),
       schema: transportSchema,

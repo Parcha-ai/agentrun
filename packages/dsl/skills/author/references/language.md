@@ -20,7 +20,7 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 This is the complete set. Each kind accepts exactly these fields; any other field is an error.
 - `chain`: `steps`
 - `code`: `label`, `code`, `as`
-- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
+- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `budget_usd`, `context`
 - `decide`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
 - `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
 - `report`: `label`, `state`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
@@ -51,7 +51,8 @@ Their fields:
 - `out` names the schema the submission must satisfy; the value lands at `as`.
 - `requires` lists state paths that must hold evidence before the node runs, each produced upstream: missing values, null, blank strings, empty arrays and empty objects stop the run; `false` and `0` pass.
 - `tools` names tools the host offers. `[]` means no tools; omitting `tools` offers every tool the host allows. Never name a tool the host did not offer.
-- `effort` is minimal|low|medium|high; `thinking` is low|medium|high (never off); `tier` is fast|default|strong. They are requests to the host: resource ceilings are the host's, and nodes carry no budgets.
+- `effort` is minimal|low|medium|high; `thinking` is low|medium|high (never off); `tier` is fast|default|strong. They are requests to the host: resource ceilings are the host's.
+- An `agent` node may carry `budget_usd`, the most it asks to spend in dollars (above 0), which the host caps by what it has left, and `context`, fresh|fork: `fresh` (the default) sees only its instructions and state; `fork` asks the host to start it from the caller's transcript, which a host refuses where it has none.
 - `sopSection` names one heading of the host's SOP, or a list of them, as the exact text after "## ". The node receives those sections verbatim.
 - `verify` reviews a submission before it is accepted: {"out": a question schema with at least one boolean question, "state"?, "maxDrives"?: 1..4 (default 2), "override"?: {"below": a number in (0, 1), default 0.3}}. A boolean question named after a submission field doubts that field when its yes-probability is below `override.below`; any other boolean question is a requirement met at 0.5. A rejected submission returns to the same session with the reasons.
 - When the workflow has a report, no decide or extract `out` schema carries `report_markdown`.
@@ -92,6 +93,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ## Predicates
 
 `loop.until` and `escalate.when` take one of these; `poll` takes only the first 8. Each path or key reads a state value an input or an earlier node produced.
+A predicate is one JSON object that names itself in its `predicate` field beside its own fields, for example `{"predicate": "field_true", "path": "review.approved"}`.
 - `field_equals` {path, value}: holds when the value at `path` equals `value` (a string, number or boolean)
 - `field_true` {path}: holds when the value at `path` is `true`
 - `in` {path, values}: holds when the value at `path` is one of `values` (a non-empty list of strings, numbers or booleans)

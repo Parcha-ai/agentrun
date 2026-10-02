@@ -7,7 +7,7 @@ import { validateWorkflow, type Workflow, type WorkflowDeps, type WorkflowNode }
 import { SYSTEM_ONE_LIMITS } from "./system-one.js";
 import {
   WORKFLOW_NODE_KINDS, NODE_FIELDS, WORKFLOW_PREDICATES, PREDICATE_FIELDS, MECHANICAL_PREDICATES,
-  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
+  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
   GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, type WorkflowNodeKind,
 } from "./vocabulary.js";
 
@@ -88,7 +88,8 @@ Their fields:
 - ${code("out")} names the schema the submission must satisfy; the value lands at ${code("as")}.
 - ${code("requires")} lists state paths that must hold evidence before the node runs, each produced upstream: missing values, null, blank strings, empty arrays and empty objects stop the run; ${code("false")} and ${code("0")} pass.
 - ${code("tools")} names tools the host offers. ${code("[]")} means no tools; omitting ${code("tools")} offers every tool the host allows. Never name a tool the host did not offer.
-- ${code("effort")} is ${alternatives(EFFORT_LEVELS)}; ${code("thinking")} is ${alternatives(THINKING_LEVELS)} (never off); ${code("tier")} is ${alternatives(MODEL_TIERS)}. They are requests to the host: resource ceilings are the host's, and nodes carry no budgets.
+- ${code("effort")} is ${alternatives(EFFORT_LEVELS)}; ${code("thinking")} is ${alternatives(THINKING_LEVELS)} (never off); ${code("tier")} is ${alternatives(MODEL_TIERS)}. They are requests to the host: resource ceilings are the host's.
+- An ${code("agent")} node may carry ${code("budget_usd")}, the most it asks to spend in dollars (above 0), which the host caps by what it has left, and ${code("context")}, ${alternatives(AGENT_CONTEXTS)}: ${code("fresh")} (the default) sees only its instructions and state; ${code("fork")} asks the host to start it from the caller's transcript, which a host refuses where it has none.
 - ${code("sopSection")} names one heading of the host's SOP, or a list of them, as the exact text after "## ". The node receives those sections verbatim.
 - ${code("verify")} reviews a submission before it is accepted: {"out": a question schema with at least one boolean question, "state"?, "maxDrives"?: 1..4 (default 2), "override"?: {"below": a number in (0, 1), default 0.3}}. A boolean question named after a submission field doubts that field when its yes-probability is below ${code("override.below")}; any other boolean question is a requirement met at 0.5. A rejected submission returns to the same session with the reasons.
 - When the workflow has a report, no decide or extract ${code("out")} schema carries ${code("report_markdown")}.
@@ -129,6 +130,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ## Predicates
 
 ${code("loop.until")} and ${code("escalate.when")} take one of these; ${code("poll")} takes only the first ${MECHANICAL_PREDICATES.length}. Each path or key reads a state value an input or an earlier node produced.
+A predicate is one JSON object that names itself in its ${code("predicate")} field beside its own fields, for example ${code('{"predicate": "field_true", "path": "review.approved"}')}.
 ${predicateLines()}
 
 ## Authority
@@ -200,6 +202,8 @@ export function candidatePolicyErrors(candidate: unknown, options: CandidatePoli
     const kind = node.node;
     if (kinds && !kinds.has(String(kind))) errors.push(`${String(node.label ?? kind)}: this host does not run ${String(kind)} nodes`);
     if (!options.allowExecutableCandidates && ["code", "call", "artifact"].includes(String(kind)) && !(kind === "call" && node.via === "tool" && typeof node.tool === "string" && options.allowedEffectTools?.includes(node.tool))) errors.push(`${kind} requires allowExecutableCandidates`);
+    // `budget` on an agent is accepted for older documents and never read: an author writes budget_usd.
+    if (kind === "agent" && Object.hasOwn(node, "budget")) errors.push(`${String(node.label ?? kind)}: budget is not read; declare budget_usd, the dollars the node asks to spend`);
     if (sections.length && (JUDGMENT_NODE_KINDS as readonly string[]).includes(String(kind))) errors.push(`${String(kind)} cannot carry supplied SOP sections; use an LLM node with sopSection`);
     const llm = (GENERATIVE_NODE_KINDS as readonly string[]).includes(String(kind));
     const predicate = kind === "loop" ? record(node.until) : kind === "escalate" ? record(node.when) : undefined;
