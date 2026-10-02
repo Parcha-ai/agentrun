@@ -268,7 +268,8 @@ export type WorkflowDeps = {
      *  session with the message as the next tool result. The engine verifies returned submissions even if the runner ignores this hook. */
     review?: (candidate: unknown) => Promise<{ accepted: true } | { accepted: false; message: string }>;
     tier?: ModelTier;
-    /** An `agent` node's `budget_usd`: the most the node asks to spend. The host caps it by what it has left. */
+    /** An `agent` node's `budget_usd`: the most the node asks to spend, recorded; enforcement belongs to the host.
+     *  No runner stops a run on money. A host may cap it by what it has left. */
     budgetUsd?: number;
     /** An `agent` node's `context`. `fork` asks the host to start the session from the caller's transcript;
      *  a host that has none to fork refuses it. */

@@ -113,6 +113,14 @@ test('unregistered tool requests fail before a session starts', async () => {
   await assert.rejects(createPiRunner(run.options)({ ...request, tools: ['bash'] }), /not explicitly registered/);
   assert.equal(run.seen.sessions, 0);
 });
+test('a fork request fails before a session starts; fresh and budget_usd run as usual', async () => {
+  const forked = scripted([{ count: 1 }]);
+  await assert.rejects(createPiRunner(forked.options)({ ...request, context: 'fork' }), /asks for context: "fork", but the Pi runner starts every node in a fresh session/);
+  assert.equal(forked.seen.sessions, 0);
+  const fresh = scripted([{ count: 1 }]);
+  assert.deepEqual(await createPiRunner(fresh.options)({ ...request, context: 'fresh', budgetUsd: 0.5 }), { count: 1 });
+  assert.equal(fresh.seen.sessions, 1);
+});
 test('production adapter rejects a structural runtime stub before any SDK work', () => {
   assert.throws(() => createPiRunner({ model: {}, modelRuntime: { getModel() {}, getAvailableSnapshot() { return []; } } }), /ModelRuntime instance/);
 });
