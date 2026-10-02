@@ -14,6 +14,7 @@
 - The author contract's Predicates section shows a predicate's shape with an example, `{"predicate": "field_true", "path": "review.approved"}`. A predicate object with no `predicate` field is refused with that shape, naming the predicate the object used as a key (`{"field_true": {...}}`), where the validator said `unknown predicate "undefined"`. A learner spent 30 attempts on that message (GRE-2809).
 - Workflow behaviour knobs have no upper ceiling: `loop.maxIters`, `call.deadline_s`, `retry.attempts`, `retry.backoff_s`, `poll.interval_s`, `poll.deadline_s` and `verify.maxDrives` keep only their floors. `deadline_s` stays required and above 0, `poll.interval_s` stays at least 0.1, and the parser guards (nesting 128, 100000 values, schema depth 12) are unchanged. The validator now accepts values it refused before; it refuses nothing it accepted. The author contract states each as "no maximum".
 - Deadline, poll-interval and retry-backoff waits past Node's 2^31-1 ms (~24.8 day) timer limit fire on time: they re-arm in chunks (`setLongTimeout`) instead of overflowing into a near-immediate fire. A call deadline still re-reads the monotonic clock before it aborts.
+- A `loop` node may declare `expect_iters`, the number of passes a host's run gate prices it at: an optional integer of at least 1 with no upper bound, not clamped to `maxIters`. When it is absent, a host prices one pass. `maxIters` stays the bound, and the child's budget is the real stop. The validator refuses a non-integer or a value below 1 and names the node.
 
 ## 0.1.0-beta.5, 2026-09-26
 
