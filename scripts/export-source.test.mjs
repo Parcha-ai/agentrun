@@ -104,6 +104,21 @@ test('root and package license notices are scanned and retained byte-for-byte', 
   assert.ok(receipt.findings.some(finding => finding.path === 'packages/pi/NOTICE'));
 });
 
+test('contributor guidance at the root is archived and receipted; unlisted root files are skipped', async t => {
+  const f = await fixture(t);
+  const guidance = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'AGENTS.md', 'CLAUDE.md'];
+  for (const path of guidance) await f.write(path, `Guidance fixture: ${path}\n`);
+  await f.write('UNLISTED.md', 'Unlisted root fixture\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  for (const path of guidance) {
+    const archived = await exec('tar', ['-xOf', join(f.root, '.release/agentrun-dsl-source.tar.gz'), `agentrun-dsl-source/${path}`]);
+    assert.equal(archived.stdout, `Guidance fixture: ${path}\n`);
+    assert.ok(receipt.files.some(file => file.path === path), path);
+  }
+  assert.doesNotMatch(await f.listing(), /UNLISTED\.md/);
+  assert.ok(!receipt.files.some(file => file.path === 'UNLISTED.md'));
+});
 
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
