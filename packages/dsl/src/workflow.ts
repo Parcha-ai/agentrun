@@ -1391,7 +1391,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       if (remainingMs <= 0 && !deps.recovery) throw new EffectFailure(`call node "${node.label}" poll exceeded its ${node.poll?.deadline_s}s deadline`, "timeout");
       const controller = new AbortController();
       const attemptMs = Math.max(1, Math.min(node.deadline_s * 1000, remainingMs <= 0 && deps.recovery ? Infinity : remainingMs));
-      const attemptDeadlineMs = Date.now() + attemptMs;
+      const attemptDeadlineMs = performance.now() + attemptMs;
       let settled: EffectSettlement | undefined;
       let unknownOutcome: EffectOutcomeUnknownError | undefined;
       let interruptionCheck: ReturnType<typeof setImmediate> | undefined;
@@ -1424,12 +1424,22 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       };
       const onAbort = () => interrupt("cancelled", deps.signal?.reason);
       deps.signal?.addEventListener("abort", onAbort, { once: true });
-      const timer = setTimeout(() => interrupt("deadline"), attemptMs);
+      // libuv may fire a timer up to 1 ms before the requested instant. Re-read the monotonic
+      // clock and re-arm for the remainder, so the deadline never interrupts an effect early.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const armDeadline = (ms: number) => {
+        timer = setTimeout(() => {
+          const remainingMs = attemptDeadlineMs - performance.now();
+          if (remainingMs > 0) armDeadline(Math.ceil(remainingMs));
+          else interrupt("deadline");
+        }, ms);
+      };
+      armDeadline(attemptMs);
       try {
         deps.onEvent?.({ type: "effect.attempt", label: node.label, detail: { via: node.via, attempt, idempotency_key: idempotencyKey } });
         Promise.resolve().then(() => {
           if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
-          if (controller.signal.aborted || Date.now() >= attemptDeadlineMs) {
+          if (controller.signal.aborted || performance.now() >= attemptDeadlineMs) {
             throw new EffectFailure(`call node "${node.label}" deadline elapsed before effect admission`, "timeout");
           }
           return deps.runEffect!({ node: effectNode, schema, input, produces, attempt, idempotencyKey, signal: controller.signal });
@@ -1439,7 +1449,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         if (outcome.status === "rejected") throw outcome.reason;
         result = outcome.value;
         if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
-        if (controller.signal.aborted || Date.now() >= attemptDeadlineMs) throw new EffectDeadlineExceededError(node.label, result);
+        if (controller.signal.aborted || performance.now() >= attemptDeadlineMs) throw new EffectDeadlineExceededError(node.label, result);
         failed = false;
         lastError = undefined;
         break;

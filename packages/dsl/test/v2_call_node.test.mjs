@@ -128,6 +128,33 @@ test("runner: the deadline aborts the effect and reads as a timeout class", asyn
   assert.equal(failed?.detail?.retry_class, "timeout");
 });
 
+test("runner: a deadline timer that fires early re-arms for the remainder and never aborts before the deadline", async (t) => {
+  // libuv can fire a timer up to 1 ms before the requested instant. The clock and the timers are
+  // both faked, so the early firing is exact and the test never sleeps.
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let effectSignal;
+  let started;
+  const effectStarted = new Promise((resolve) => { started = resolve; });
+  const run = runWorkflow(wf([planNode, submitCall({ deadline_s: 1 }), assemble]), { question: "q" }, {
+    runNode: async () => ({ prompt: "p", seconds: 5 }),
+    runEffect: ({ signal }) => new Promise((_, reject) => {
+      effectSignal = signal;
+      signal.addEventListener("abort", () => reject(new Error("aborted by signal")));
+      started();
+    }),
+  });
+  await effectStarted;
+  now = 999.69;
+  t.mock.timers.tick(1000);
+  assert.equal(effectSignal.aborted, false, "the timer fired at 999.69 ms of a 1 s deadline");
+  now = 1000;
+  t.mock.timers.tick(1);
+  assert.equal(effectSignal.aborted, true);
+  await assert.rejects(run, /exceeded its 1s deadline/);
+});
+
 test("runner: a result that violates the declared schema fails loud with the node name", async () => {
   await assert.rejects(
     runWorkflow(wf([planNode, submitCall(), assemble]), { question: "q" }, {
