@@ -110,7 +110,7 @@ test("a non-object metadata is refused and the error names the node", () => {
   for (const good of [{}, { preset: "default" }, { a: [1, { b: null }], "$host": "anything", "": 0 }]) assert.deepEqual(validateWorkflow(doc(good)), { ok: true }, JSON.stringify(good));
 });
 
-/** One scripted run recording everything the engine emits or asks for; functions and timings are dropped. */
+/** One scripted run; functions, timings and invocation identity are normalized. */
 async function observe(c, workflow) {
   const need = (kind, path) => {
     const entry = c.script?.[kind]?.[path];
@@ -124,7 +124,16 @@ async function observe(c, workflow) {
     runJudge: async ({ signal, ...request }) => { log.push(["runJudge", request]); return { answers: need("judge", request.executionPath).answers }; },
     runEffect: async ({ signal, node, ...request }) => { log.push(["runEffect", request, node.label]); return need("effect", request.executionPath).result; },
     checkpoint: async (state, label, executionPath) => { log.push(["checkpoint", structuredClone(state), label, executionPath]); },
-    onEvent: (event) => log.push(["event", { ...event, detail: event.detail && typeof event.detail === "object" && "duration_ms" in event.detail ? { ...event.detail, duration_ms: 0 } : event.detail }]),
+    onEvent: (event) => {
+      const detail = event.detail && typeof event.detail === "object" ? { ...event.detail } : event.detail;
+      if (detail && typeof detail === "object") {
+        for (const key of ["duration_ms", "elapsed_ms", "started_at", "decision_id"]) if (key in detail) detail[key] = "normalized";
+        if (event.type === "decision.receipt") {
+          detail.id = "invocation id";
+        }
+      }
+      log.push(["event", { ...event, detail }]);
+    },
   };
   const hostChannel = Object.values(c.script?.gen ?? {}).some((entry) => entry.host !== undefined);
   if (hostChannel || c.script?.after) deps.hostPolicy = {
@@ -137,7 +146,7 @@ async function observe(c, workflow) {
   return JSON.stringify({ result, log });
 }
 
-test("a run with metadata on every node produces byte-equal state, output, events, checkpoints and adapter requests", async () => {
+test("metadata preserves state, output, behavior events, checkpoints and adapter requests", async () => {
   let ran = 0, completed = 0;
   for (const { file, case: c } of CORPUS) {
     if (!validateWorkflow(c.workflow, { input: c.input }).ok) continue;
