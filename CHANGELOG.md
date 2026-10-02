@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A call node's deadline never interrupts its effect early. Node timers can fire up to 1 ms before the requested instant, so a 1 s deadline could abort an effect at 999.7 ms. When the deadline timer fires before the deadline, it reads the monotonic clock and re-arms for the remainder. The attempt deadline is measured on `performance.now()` instead of `Date.now()`.
 - Package verification: the production `npm audit` gate accepts GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p and GHSA-q2hr-2g5m-vwhr until 2026-12-01, and only for brace-expansion installed under `@earendil-works/pi-coding-agent`. That package's `npm-shrinkwrap.json` pins brace-expansion 5.0.9 in every release through 1.0.0, and a consumer cannot override a dependency's shrinkwrap ([earendil-works/pi#10288](https://github.com/earendil-works/pi/issues/10288)). Any other high or critical advisory still fails the gate, and so do these once the exception expires. The receipt records the raw counts and the accepted entries; the release preflight still refuses high advisories.
 
 ## 0.1.0-beta.5, 2026-09-26
