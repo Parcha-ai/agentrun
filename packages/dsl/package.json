@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-dsl",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.8",
   "description": "Composable, typed workflows for agents",
   "type": "module",
   "license": "Apache-2.0",
