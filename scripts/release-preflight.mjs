@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { auditBlockers } from './audit-exceptions.mjs';
 
 const exec = promisify(execFile);
 export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi' };
@@ -37,6 +38,24 @@ export function checkManifest(manifest, directory, version, license) {
   if (directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-jev'], version, 'Pi must use the exact Jev release version');
 }
 
+// A high or critical advisory blocks publication unless a scoped, expiring exception in
+// audit-exceptions.mjs accepts it, re-checked here against the raw report at publication time.
+export async function checkReleaseAudit(root, counts, now = Date.now()) {
+  if (!counts?.high && !counts?.critical) {
+    assert.equal(counts?.high, 0, 'High dependency advisories block publication');
+    assert.equal(counts?.critical, 0, 'Critical dependency advisories block publication');
+    return;
+  }
+  let audit;
+  try { audit = await json(join(root, '.release/npm-audit.json')); }
+  catch (error) { if (error.code === 'ENOENT') assert.fail('High dependency advisories block publication; .release/npm-audit.json is missing'); throw error; }
+  assert.deepEqual(audit.metadata?.vulnerabilities, counts, 'The audit report differs from the verification receipt');
+  const { accepted, blocking } = auditBlockers(audit, now);
+  assert.equal(accepted.length + blocking.length, counts.high + counts.critical, 'npm audit counts high or critical advisories it does not list');
+  assert.ok(!blocking.some(entry => entry.severity === 'critical'), 'Critical dependency advisories block publication');
+  assert.deepEqual(blocking, [], 'High dependency advisories block publication');
+}
+
 export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   const workspace = await json(join(root, 'package.json'));
   assert.match(workspace.version, /^\d+\.\d+\.\d+-beta\.\d+$/, 'Only an explicit beta version can be released');
@@ -58,8 +77,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   const receipt = await json(join(root, '.release/verification.json'));
   assert.equal(receipt.status, 'passed', 'Clean package verification must pass first');
   assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, network: 'prohibited' }, 'All three installed package smoke checks are required');
-  assert.equal(receipt.audit?.vulnerabilities?.high, 0, 'High dependency advisories block publication');
-  assert.equal(receipt.audit?.vulnerabilities?.critical, 0, 'Critical dependency advisories block publication');
+  await checkReleaseAudit(root, receipt.audit?.vulnerabilities);
   assert.equal(receipt.packages?.length, releasePackages.length, 'Expected exactly three verified packages');
   const temporary = await mkdtemp(join(tmpdir(), 'agentrun-release-preflight-'));
   const packages = [];
