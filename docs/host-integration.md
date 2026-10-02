@@ -25,7 +25,7 @@ Adapters receive a cancellation signal. Honor it in tool and model calls and bou
 
 `EffectOutcomeUnknownError` retains a settlement promise for an effect still pending at cutoff. An `AggregateError` can contain several uncertain effects. Preserve those errors and reconcile their receipts before retrying. See the [effect and cancellation contracts](guide.md#limits).
 
-`onEvent` is best effort and cannot gate persistence. Use required checkpoint hooks when a failed write must stop execution. The DSL provides hooks, not a durable scheduler or exactly-once delivery.
+`onEvent` is best effort and cannot gate persistence. JSON event data is a detached snapshot: observer mutations cannot change execution state or recovery records. Accessors are never evaluated while copying; unsafe non-JSON values remain invalid for required host trace validation rather than becoming valid data or disappearing. Use required checkpoint hooks when a failed write must stop execution. The DSL provides hooks, not a durable scheduler or exactly-once delivery.
 
 ## Recovery and versions
 
@@ -83,3 +83,20 @@ An addendum cannot change a language rule: it is appended after the language, wh
 `defineWorkflow` emits Workflow v2 JSON. Another interpreter can consume that document without importing this runtime, but a shared format number does not establish equivalent behavior.
 
 Validate against the interpreter that will execute the document. Test its supported nodes, input and output contracts, assembled SOP instructions, cancellation and recovery. Keep the current interpreter available until those checks pass. Activate changed definitions as new candidates and retain old receipts if rollback or reconciliation is needed.
+
+### Host preparation of observations
+
+A host with required trace validation can supply synchronous `prepareEvent(event)`.
+It receives the event before generic copying, must not mutate it, and must return a
+detached snapshot for `onEvent`, or `undefined` to omit a rejected event. Preparation
+and observer exceptions cannot replace execution failures or interrupt recovery cleanup.
+For required trace validation, the host aborts its supplied signal before omitting the
+event. Cancellation stops subsequent work while preserving uncertain-effect handles and
+partial-result persistence. This is a trusted host boundary, not a user callback or a
+sandbox. Without it the interpreter detaches JSON values and preserves unsafe non-JSON
+shapes for host validation.
+
+Pi uses this boundary to enforce its existing per-event byte, depth and value limits
+before copying a full oversized event. The generic DSL adds no payload or resource
+limit. Scoped location and child-label forwarding preserve the observation boundary,
+so one event is prepared once regardless of graph nesting.

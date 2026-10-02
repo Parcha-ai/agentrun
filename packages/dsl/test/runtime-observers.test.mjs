@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runWorkflow, EffectOutcomeUnknownError } from '../dist/index.js';
+import { isProxy } from 'node:util/types';
+import { runWorkflow, runWorkflowSlice, EffectOutcomeUnknownError } from '../dist/index.js';
 
 const flow = extra => ({v:2,name:'observer-boundary',schemas:{Result:{type:'object',required:['count'],properties:{count:{type:'number'}}}},output:{schemaId:'Result',path:'result'},root:{node:'call',label:'effect',via:'tool',tool:'test.action',args:{},out:'Result',as:'result',deadline_s:1,...extra}});
 const deferred = () => {let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
@@ -88,3 +89,151 @@ test('partial-result persistence failure retains original uncertain effect and s
   assert.equal(failure.cause,original);assert.deepEqual(failure.errors,[original,persistenceError]);
   pending.resolve({count:5});assert.deepEqual(await original.settlement,{status:'fulfilled',value:{count:5}});
 });
+
+
+test('mutating observer snapshots cannot change code, judge or route state and committed outcomes', async () => {
+  const candidate = {
+    v: 2, name: 'observer snapshots', schemas: {
+      Result: { type: 'object' },
+      Decision: { type: 'object', required: ['allowed'], properties: { allowed: { type: 'boolean', description: 'Is it allowed?' } } },
+    }, output: { schemaId: 'Result' }, root: { node: 'chain', steps: [
+      { node: 'code', label: 'seed', code: 's => ({record: {count: 1}})' },
+      { node: 'judge', label: 'judge', state: { record: '{record}' }, out: 'Decision', as: 'decision' },
+      { node: 'route', label: 'route', state: { record: '{record}' }, instructions: 'Choose the action.', as: 'routing', branches: {
+        proceed: { body: { node: 'code', label: 'perform', code: "s => ({performed: s.routing.taken, allowed: s.decision.allowed, count: s.record.count})" } },
+        withhold: { body: { node: 'code', label: 'withhold', code: "s => ({performed: 'withhold'})" } },
+      } },
+    ] },
+  };
+  const committed = [], snapshots = [];
+  const result = await runWorkflow(candidate, {}, {
+    runJudge: async p => ({ answers: p.kind === 'route'
+      ? { branch: { type: 'choice', choice: 'proceed', probabilities: { proceed: .95, withhold: .05 }, confidence: .9 } }
+      : { allowed: { type: 'noul', noul: .9 } } }),
+    recovery: recovery({ commit: async (_n, state) => committed.push(structuredClone(state)) }),
+    onEvent: event => {
+      snapshots.push(event);
+      if (event.type === 'code.patch' && event.detail.record) event.detail.record.count = 99;
+      if (event.type === 'judge.answered') {
+        event.detail.value.allowed = false;
+        event.detail.sidecar.answers.allowed.noul = .01;
+      }
+      if (event.type === 'route.chosen') {
+        event.detail.value.taken = 'withhold';
+        event.detail.sidecar.answers.branch.choice = 'withhold';
+      }
+    },
+  });
+  assert.equal(result.state.count, 1);
+  assert.equal(result.state.allowed, true);
+  assert.equal(result.state.performed, 'proceed');
+  assert.equal(result.state['decision$answers'].answers.allowed.noul, .9);
+  assert.equal(result.state['routing$answers'].answers.branch.choice, 'proceed');
+  assert.deepEqual(committed.at(-1), result.state);
+  for (const snapshot of snapshots) if (snapshot.detail && typeof snapshot.detail === 'object') snapshot.detail.changedAfterCompletion = true;
+  assert.equal(result.state.changedAfterCompletion, undefined);
+});
+
+test('observer mutations cannot alter selected or sifted source records', async () => {
+  for (const kind of ['pick', 'sift']) {
+    const candidate = { v: 2, name: kind, schemas: {
+      Result: { type: 'object' }, Question: { type: 'object', properties: { keep: { type: 'boolean', description: 'Keep this record?' } } },
+    }, output: { schemaId: 'Result', path: 'selected' }, root: kind === 'pick'
+      ? { node: 'pick', label: kind, itemsPath: 'items', describe: '{item.name}', instructions: 'Choose a record.', as: 'selected' }
+      : { node: 'sift', label: kind, itemsPath: 'items', out: 'Question', as: 'selected' } };
+    const result = await runWorkflow(candidate, { items: [{ name: 'original' }] }, {
+      runJudge: async () => ({ answers: kind === 'pick' ? { pick: { type: 'choice', choice: 'item_0', probabilities: { item_0: 1 }, confidence: 1 } } : { '0.keep': { type: 'noul', noul: .9 } } }),
+      onEvent: event => {
+        if (event.type !== 'judge.answered') return;
+        const item = kind === 'pick' ? event.detail.value.item : event.detail.value.items[0];
+        item.name = 'observer mutation';
+      },
+    });
+    assert.equal(result.state.items[0].name, 'original');
+    assert.equal((kind === 'pick' ? result.output.item : result.output.items[0]).name, 'original');
+  }
+});
+
+
+test('trusted host preparation runs once per nested event and detaches before observers', async () => {
+  const leaf = { v: 2, name: 'leaf', schemas: { Any: { type: 'object' } }, input: { schemaId: 'Any' }, output: { schemaId: 'Any' },
+    root: { node: 'chain', steps: [{ node: 'code', label: 'leaf-step', code: 's => ({nested: {value: 1}})' }] } };
+  const candidate = { v: 2, name: 'parent', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any' },
+    root: { node: 'chain', steps: [{ node: 'workflow', label: 'child', workflow: leaf, input: {}, out: 'Any', as: 'child' }] } };
+  let prepared = 0, observed = 0;
+  const result = await runWorkflow(candidate, {}, {
+    prepareEvent: event => { prepared++; return structuredClone(event); },
+    onEvent: event => { observed++; if (event.type === 'code.patch') event.detail.nested.value = 99; },
+  });
+  assert(prepared > 0);
+  assert.equal(prepared, observed);
+  assert.equal(result.state.child.nested.value, 1);
+});
+
+test('trusted host can reject unsafe or oversized events before generic snapshot traversal', async () => {
+  for (const source of ["s => ({scratch:new Proxy({}, {ownKeys(){throw Error('trap must not run')}})})", 's => ({scratch:Array(200001).fill(0)})']) {
+    const candidate = { v: 2, name: 'host validation', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any' },
+      root: { node: 'code', label: 'emit', code: source } };
+    let rejected = 0;
+    const reason = Error('host refused observation'), controller = new AbortController();
+    await assert.rejects(runWorkflow(candidate, {}, {
+      signal: controller.signal,
+      prepareEvent: event => {
+        if (event.type === 'code.patch') {
+          assert(isProxy(event.detail.scratch) || event.detail.scratch.length === 200001);
+          rejected++;
+          controller.abort(reason);
+          return undefined;
+        }
+        return structuredClone(event);
+      },
+      onEvent: event => { assert.notEqual(event.type, 'code.patch'); },
+    }), error => error === reason);
+    assert.equal(rejected, 1);
+  }
+});
+
+for (const boundary of ['effect.failed', 'map.failed']) {
+  test(`preparation rejection at ${boundary} preserves uncertain effects and partial recovery`, {timeout:1000}, async () => {
+    const pending = deferred(), controller = new AbortController(), traceError = Error('trace rejected');
+    const candidate = flow({deadline_s:.01});
+    candidate.output = {schemaId:'State'}; candidate.schemas.State = {type:'object'};
+    candidate.root = {node:'map',label:'group',itemsPath:'items',as:'results',maxConcurrency:1,body:candidate.root};
+    let failure, persisted, rejected = 0, calls = 0;
+    await assert.rejects(runWorkflow(candidate, {items:[0,1]}, {
+      signal:controller.signal, runEffect:()=>++calls===1?Promise.resolve({count:1}):pending.promise,
+      recovery:recovery({fail:async(_node, partial, error)=>{persisted={partial,error};}}),
+      prepareEvent:event=>{
+        if(event.type===boundary){rejected++;controller.abort(traceError);throw traceError;}
+        return structuredClone(event);
+      },
+      onEvent:event=>assert.notEqual(event.type,boundary),
+    }), error=>{failure=error;return error instanceof EffectOutcomeUnknownError;});
+    assert.equal(rejected,1); assert.equal(controller.signal.reason,traceError);
+    assert.equal(persisted.error,failure); assert.equal(persisted.partial.length,2);
+    assert.deepEqual(persisted.partial[0],{count:1}); assert.equal(Object.hasOwn(persisted.partial,1),false);
+    assert.match(failure.idempotencyKey,/^[a-f0-9]{64}$/);
+    pending.resolve({count:7});
+    assert.deepEqual(await failure.settlement,{status:'fulfilled',value:{count:7}});
+  });
+}
+
+for (const entry of ['workflow', 'slice']) for (const observer of ['prepareEvent', 'onEvent']) {
+  test(`${entry} cannot report complete after ${observer} cancels the final event`, async () => {
+    const controller = new AbortController(), reason = Error('host cancelled final delivery');
+    let calls = 0, commits = 0, terminalEvents = 0;
+    const callback = event => {
+      if (event.type === 'node.end') { terminalEvents++; controller.abort(reason); return undefined; }
+      return structuredClone(event);
+    };
+    const deps = {
+      signal:controller.signal, runEffect:async()=>{calls++;return {count:6};},
+      recovery:recovery({commit:async()=>{commits++;}}),
+      onEvent:()=>{}, [observer]:callback,
+    };
+    const result = entry === 'workflow' ? runWorkflow(flow(),{},deps)
+      : runWorkflowSlice(flow(),{}, {from:'effect'}, deps);
+    await assert.rejects(result,error=>error===reason);
+    assert.equal(calls,1);assert.equal(commits,1);assert.equal(terminalEvents,1);
+  });
+}

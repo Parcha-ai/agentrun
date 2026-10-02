@@ -333,10 +333,28 @@ export class WorkflowExtensionService {
       try { activeSignal.throwIfAborted(); calls[kind]++; const promise = run(); return await (race ? abortable(promise, activeSignal) : promise); }
       finally { occupied--; queue.shift()?.(); }
     };
+    const rejectTrace = (error: unknown) => {
+      rejectedEvents++; traceTruncated = true;
+      if (!signal.aborted) {
+        // Snapshot rejects unsafe/non-JSON values separately from resource bounds.
+        // Keep fail-closed cancellation; never echo values or arbitrary error text.
+        const diagnostic = error instanceof ExtensionServiceError && error.code === 'data'
+          ? new ExtensionServiceError('trace_invalid_data', 'Workflow trace contains non-JSON data. Numbers must be finite; objects and arrays must be plain, acyclic and free of accessors or symbols.')
+          : error instanceof ExtensionServiceError && error.code === 'bounds'
+            ? new ExtensionServiceError('limit', 'Workflow trace exceeded its JSON byte, depth or value-count limit.')
+            : new ExtensionServiceError('trace_capture_failed', 'Workflow trace capture failed. Unsafe event details are omitted.');
+        controller.abort(diagnostic);
+      }
+    };
+    const prepareEvent = (event: Event): Event | undefined => {
+      if (closed) return { type: event.type, label: event.label };
+      try { return snapshot(event, this.limits.maxEventBytes) as Event; }
+      catch (error) { rejectTrace(error); return undefined; }
+    };
     const onEvent = (event: Event) => {
       if (closed) return;
       try {
-        const clean = sanitize(snapshot(event, this.limits.maxEventBytes)) as Event;
+        const clean = sanitize(event) as Event;
         const size = Buffer.byteLength(JSON.stringify(clean));
         if (size > this.limits.maxEventBytes) throw new ExtensionServiceError('bounds', 'Workflow event exceeds its serialized byte limit.');
         receivedEvents++; receivedBytes += size;
@@ -359,22 +377,12 @@ export class WorkflowExtensionService {
           try { void Promise.resolve(options.onEvent(snapshot(clean, this.limits.maxEventBytes))).catch(() => {}); } catch { /* UI observation is not execution. */ }
         }
       } catch (error) {
-        rejectedEvents++; traceTruncated = true;
-        if (!signal.aborted) {
-          // Snapshot rejects unsafe/non-JSON values separately from resource bounds.
-          // Keep fail-closed cancellation; never echo values or arbitrary error text.
-          const diagnostic = error instanceof ExtensionServiceError && error.code === 'data'
-            ? new ExtensionServiceError('trace_invalid_data', 'Workflow trace contains non-JSON data. Numbers must be finite; objects and arrays must be plain, acyclic and free of accessors or symbols.')
-            : error instanceof ExtensionServiceError && error.code === 'bounds'
-              ? new ExtensionServiceError('limit', 'Workflow trace exceeded its JSON byte, depth or value-count limit.')
-              : new ExtensionServiceError('trace_capture_failed', 'Workflow trace capture failed. Unsafe event details are omitted.');
-          controller.abort(diagnostic);
-        }
+        rejectTrace(error);
       }
     };
     const sections = Object.entries(this.rubricSections);
     const deps: WorkflowDeps = {
-      signal, onEvent,
+      signal, onEvent, prepareEvent,
       ...(options.deps.skill ? { skill: options.deps.skill } : {}),
       ...(sections.length ? { sop: sections.map(([name, text]) => `## ${name}\n${text}`).join('\n\n') } : options.deps.sop ? { sop: options.deps.sop } : {}),
       ...(options.deps.maxQuestionsPerRequest ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
