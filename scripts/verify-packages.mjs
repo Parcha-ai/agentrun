@@ -189,6 +189,7 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,network:'prohibited'}));
   assert.ok(audit.metadata?.vulnerabilities, 'npm audit could not produce a vulnerability report');
   const { accepted, blocking } = auditBlockers(audit);
   receipt.audit = { vulnerabilities: audit.metadata.vulnerabilities, accepted, exitCode: auditRun.exitCode };
+  assert.equal(accepted.length + blocking.length, audit.metadata.vulnerabilities.high + audit.metadata.vulnerabilities.critical, 'npm audit counts high or critical advisories it does not list; see .release/npm-audit.json');
   assert.deepEqual(blocking, [], 'Production dependencies have high or critical advisories; see .release/npm-audit.json');
   receipt.checks.push(accepted.length ? `Production dependency audit contains no high or critical advisories beyond the accepted, expiring exceptions (${accepted.map(entry => `${entry.package} until ${entry.expires}`).join(', ')}).` : 'Production dependency audit contains no high or critical advisories.');
   await writeFile(join(consumer, 'consumer.ts'), `import { runWorkflow, desugarWorkflow, defineWorkflow, runTypedWorkflow, type Workflow, type WorkflowDeps, type Predicate, type CallPredicate } from '@parcha/agentrun-dsl';
