@@ -144,6 +144,7 @@ const backed = [
   ['Branches write disjoint keys', doc({ node: 'parallel', label: 'p', branches: [extract(), extract()] }), /parallel branches must write disjoint keys/],
   ['never read a sibling\'s writes', doc({ node: 'chain', steps: [{ node: 'parallel', label: 'p', branches: [extract({ as: 'first' }), extract({ as: 'second', requires: ['first'] })] }, extract()] }), /requires "first" but no upstream node produces it/],
   ['an integer `maxIters` of at least 1', doc({ node: 'loop', label: 'l', body: extract(), until: { predicate: 'field_true', path: 'result.count' }, maxIters: 0 }), /maxIters must be an integer >= 1/],
+  ['an integer `expect_iters` of at least 1', doc({ node: 'loop', label: 'l', body: extract(), until: { predicate: 'field_true', path: 'result.count' }, maxIters: 3, expect_iters: 0 }), /expect_iters must be an integer >= 1/],
   ['non-empty `kind`, `stage` and `summary`', doc({ node: 'escalate', label: 'e', when: { predicate: 'field_true', path: 'text' }, kind: '', stage: 's', summary: 'x' }), /kind, stage, summary required/],
   ['The child declares `input.schemaId` in its own schemas', doc({ node: 'workflow', label: 'c', workflow: { v: 2, name: 'child', schemas: { Result }, output: { schemaId: 'Result', path: 'result' }, root: extract() }, input: { text: '{text}' }, out: 'Result', as: 'result' }), /must declare input.schemaId/],
   ['contains no report or artifact', doc({ node: 'workflow', label: 'c', workflow: { v: 2, name: 'child', schemas: { Result, In: { type: 'object' } }, input: { schemaId: 'In' }, output: { schemaId: 'Result', path: 'result' }, root: { node: 'report', label: 'r', instructions: 'Render.' } }, input: {}, out: 'Result', as: 'result' }), /cannot render a report/],
@@ -222,6 +223,14 @@ test('the author retains rejected and accepted versions and isolates host accept
   assert.deepEqual(request.tools, [], 'the author session has no tools');
   assert.equal(request.system[0], authorContract());
 }));
+
+test('expect_iters is optional, an integer >= 1 with no upper bound, and does not clamp to maxIters', () => {
+  const loop = (extra) => doc({ node: 'chain', steps: [{ node: 'loop', label: 'l', body: extract({ as: 'draft' }), until: { predicate: 'field_true', path: 'draft.done' }, maxIters: 10000, ...extra }, extract()] });
+  assert.deepEqual(validateWorkflow(loop({}), { inputKeys: ['text'] }), { ok: true });
+  assert.deepEqual(validateWorkflow(loop({ expect_iters: 3 }), { inputKeys: ['text'] }), { ok: true });
+  assert.deepEqual(validateWorkflow(loop({ expect_iters: 10000 }), { inputKeys: ['text'] }), { ok: true });
+  assert.equal(validateWorkflow(loop({ expect_iters: 1.5 }), { inputKeys: ['text'] }).ok, false);
+});
 
 test('a loop condition may read what its body writes', () => {
   const loop = until => doc({ node: 'chain', steps: [{ node: 'loop', label: 'l', body: extract({ as: 'draft' }), until, maxIters: 3 }, extract()] });

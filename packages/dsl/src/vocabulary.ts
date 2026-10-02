@@ -25,7 +25,7 @@ export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string
   artifact: ["node", "label", "state", "type", "path", "instructions", "sopSection", "requires", "tools", "effort", "thinking"],
   map: ["node", "label", "itemsPath", "body", "as", "resultPath", "maxConcurrency"],
   parallel: ["node", "label", "branches"],
-  loop: ["node", "label", "body", "until", "maxIters"],
+  loop: ["node", "label", "body", "until", "maxIters", "expect_iters"],
   escalate: ["node", "label", "when", "kind", "stage", "summary"],
   call: ["node", "label", "via", "tool", "args", "code", "input", "command", "env", "where", "out", "as", "produces", "deadline_s", "retry", "poll", "requires"],
   workflow: ["node", "label", "workflow", "input", "out", "as"],
