@@ -162,6 +162,18 @@ test('only the scoped, unexpired audit exception admits a high advisory to publi
   await assert.rejects(checkReleaseAudit(root, counts, before), /npm audit counts high or critical advisories it does not list/);
 }));
 
+test('the release path runs the audit exception check on the receipt it publishes', { skip: Date.now() >= Date.parse('2026-12-01T00:00:00Z') && 'the brace-expansion exception has expired' }, () => fixture(async root => {
+  const counts = { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 };
+  const path = join(root, '.release/verification.json');
+  await putJson(path, { ...JSON.parse(await readFile(path)), audit: { vulnerabilities: counts } });
+  const vulnerabilities = { 'brace-expansion': { severity: 'high', nodes: ['node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion'],
+    via: ['GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p', 'GHSA-q2hr-2g5m-vwhr'].map(id => ({ url: `https://github.com/advisories/${id}`, severity: 'high' })) } };
+  await putJson(join(root, '.release/npm-audit.json'), { vulnerabilities, metadata: { vulnerabilities: { ...counts, high: 2, total: 2 } } });
+  await assert.rejects(preflight(root), /differs from the verification receipt/);
+  await putJson(join(root, '.release/npm-audit.json'), { vulnerabilities, metadata: { vulnerabilities: counts } });
+  assert.equal((await preflight(root)).status, 'passed');
+}));
+
 test('Pi release rejects a missing, stale, or ranged Jev dependency', () => {
   for (const dependency of [undefined, '0.0.1', '^' + version]) {
     const candidate = manifest('pi');
