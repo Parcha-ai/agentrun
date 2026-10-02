@@ -288,7 +288,7 @@ def walk : Node → Addr → VEnv → VOut
   | n@(.loop _ body u maxIters), addr, env =>
     let r := walk body (addr ++ [.body]) { env with avail := none }
     { r with
-      errors := dollarErrors n ++ (if 1 ≤ maxIters && maxIters ≤ 20 then [] else ["maxIters must be 1..20"]) ++
+      errors := dollarErrors n ++ (if 1 ≤ maxIters then [] else ["maxIters must be an integer >= 1"]) ++
         (if containsReport body then ["a report node cannot live inside a loop body"] else []) ++
         predErrors u ++ interpErrors env.avail (predRefs u) ++ r.errors
       avail := none }

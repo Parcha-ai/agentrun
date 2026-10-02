@@ -8,6 +8,7 @@ import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
+import { setLongTimeout, type LongTimer } from "./long-timer.js";
 
 /** The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),
  *  or the kind's default. A router that sends the few thin cases to `strong` buys depth only where the
@@ -871,7 +872,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
             const qs = checkQuestionSchema(v.out, node.label, path);
             if (qs && !Object.values(qs).some((q) => q.type === "noul")) errors.push(`${path} (${node.label}): verify.out "${v.out}" carries no yes/no question — a verifier decides by yes/no (a boolean named after a submission field verifies it; any other boolean is a requirement)`);
             if (v.state !== undefined) checkStateMap(v.state, node.label, path, "verify.state");
-            if (v.maxDrives !== undefined && (!Number.isInteger(v.maxDrives) || v.maxDrives < 1 || v.maxDrives > 4)) errors.push(`${path} (${node.label}): verify.maxDrives must be an integer 1..4`);
+            if (v.maxDrives !== undefined && (!Number.isInteger(v.maxDrives) || v.maxDrives < 1)) errors.push(`${path} (${node.label}): verify.maxDrives must be an integer >= 1`);
             if (v.override !== undefined && (typeof v.override?.below !== "number" || v.override.below <= 0 || v.override.below >= 1)) errors.push(`${path} (${node.label}): verify.override.below must be in (0, 1)`);
           }
         }
@@ -920,7 +921,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         }
         return;
       case "loop":
-        if (!Number.isInteger(node.maxIters) || node.maxIters < 1 || node.maxIters > 20) errors.push(`${path} (${node.label}): maxIters must be 1..20`);
+        if (!Number.isInteger(node.maxIters) || node.maxIters < 1) errors.push(`${path} (${node.label}): maxIters must be an integer >= 1`);
         if (containsReportNode(node.body)) errors.push(`${path} (${node.label}): a report node cannot live inside a loop body — the report is rendered once, after the record is final`);
         checkPredicate(node.until, node.label, path, "until");
         {
@@ -1072,13 +1073,13 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         }
         if (!node.as?.trim()) errors.push(`${path} (${label}): as required`);
         if (node.where !== undefined && node.where !== "sandbox") errors.push(`${path} (${label}): where accepts only "sandbox"`);
-        if (!(Number.isFinite(node.deadline_s) && node.deadline_s > 0 && node.deadline_s <= 3600)) errors.push(`${path} (${label}): deadline_s must be greater than 0 and at most 3600 seconds`);
+        if (!(Number.isFinite(node.deadline_s) && node.deadline_s > 0)) errors.push(`${path} (${label}): deadline_s is required and must be a finite number greater than 0 seconds`);
         if (node.produces !== undefined && (!Array.isArray(node.produces) || !node.produces.length || node.produces.some((f) => typeof f !== "string" || !f.trim() || f.startsWith("/") || f.split("/").includes("..")))) errors.push(`${path} (${label}): produces must be non-empty workspace-relative paths`);
         else for (const f of node.produces || []) producedFiles.add(f);
         if (node.retry !== undefined) {
           const r = node.retry;
-          if (!r || !Number.isInteger(r.attempts) || r.attempts < 1 || r.attempts > 5) errors.push(`${path} (${label}): retry.attempts must be 1..5`);
-          if (r?.backoff_s !== undefined && !(Number.isFinite(r.backoff_s) && r.backoff_s >= 0 && r.backoff_s <= 60)) errors.push(`${path} (${label}): retry.backoff_s must be 0..60`);
+          if (!r || !Number.isInteger(r.attempts) || r.attempts < 1) errors.push(`${path} (${label}): retry.attempts must be an integer >= 1`);
+          if (r?.backoff_s !== undefined && !(Number.isFinite(r.backoff_s) && r.backoff_s >= 0)) errors.push(`${path} (${label}): retry.backoff_s must be a finite number >= 0`);
           if (r?.on !== undefined && (!Array.isArray(r.on) || r.on.some((c) => !RETRY_ON_NAMES.includes(String(c))))) errors.push(`${path} (${label}): retry.on may name only ${RETRY_ON_NAMES.join("|")}`);
         }
         if (node.poll !== undefined) {
@@ -1092,8 +1093,8 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
               const predPath = (pred as { path?: string }).path;
               if (resultShape && typeof resultShape === "object" && predPath && resultPathMissing(resultShape, predPath)) errors.push(`${path} (${label}): poll.${name} path "${predPath}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); the poll could never settle`);
             }
-            if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1 && p.interval_s <= 300)) errors.push(`${path} (${label}): poll.interval_s must be 0.1..300 seconds`);
-            if (!(Number.isFinite(p.deadline_s) && p.deadline_s >= (Number(node.deadline_s) || 0) && p.deadline_s <= 7200)) errors.push(`${path} (${label}): poll.deadline_s must be at least deadline_s and at most 7200 seconds`);
+            if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1)) errors.push(`${path} (${label}): poll.interval_s must be a finite number of at least 0.1 seconds`);
+            if (!(Number.isFinite(p.deadline_s) && p.deadline_s >= (Number(node.deadline_s) || 0))) errors.push(`${path} (${label}): poll.deadline_s must be a finite number at least deadline_s`);
           }
         }
         checkRequires({ label, requires: node.requires }, path);
@@ -1394,8 +1395,8 @@ function canonicalJson(value: unknown): string {
 
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) { reject(signal.reason ?? new Error("workflow aborted")); return; }
-  const aborted = () => { clearTimeout(timer); reject(signal?.reason ?? new Error("workflow aborted")); };
-  const timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, ms);
+  const aborted = () => { timer.clear(); reject(signal?.reason ?? new Error("workflow aborted")); };
+  const timer = setLongTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, ms);
   signal?.addEventListener("abort", aborted, { once: true });
 });
 
@@ -1467,9 +1468,10 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       deps.signal?.addEventListener("abort", onAbort, { once: true });
       // libuv may fire a timer up to 1 ms before the requested instant. Re-read the monotonic
       // clock and re-arm for the remainder, so the deadline never interrupts an effect early.
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      // setLongTimeout keeps a deadline past Node's 2^31-1 ms timer limit from overflowing.
+      let timer: LongTimer | undefined;
       const armDeadline = (ms: number) => {
-        timer = setTimeout(() => {
+        timer = setLongTimeout(() => {
           const remainingMs = attemptDeadlineMs - performance.now();
           if (remainingMs > 0) armDeadline(Math.ceil(remainingMs));
           else interrupt("deadline");
@@ -1515,7 +1517,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         const delay = Math.min((node.retry?.backoff_s ?? 1) * 1000 * attempt, budgetUntilMs === undefined ? Infinity : Math.max(0, budgetUntilMs - Date.now()));
         await sleep(delay, deps.signal);
       } finally {
-        clearTimeout(timer);
+        timer?.clear();
         if (interruptionCheck) clearImmediate(interruptionCheck);
         deps.signal?.removeEventListener("abort", onAbort);
       }

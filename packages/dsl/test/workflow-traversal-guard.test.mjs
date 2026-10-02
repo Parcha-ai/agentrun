@@ -38,7 +38,7 @@ test('traversal guard retains numeric semantic diagnostics and leaves caller inp
     const before = structuredClone(candidate);
     const result = validateWorkflow(candidate);
     assert.equal(result.ok, false);
-    assert.match(result.errors.join('\n'), /poll.deadline_s must be at least deadline_s and at most 7200/);
+    assert.match(result.errors.join('\n'), /poll.deadline_s must be a finite number at least deadline_s/);
     assert.deepEqual(candidate, before);
   }
   const result = validateWorkflow(workflow({ ...call(), poll: 'soon' }));
