@@ -70,5 +70,13 @@ export const THINKING_LEVELS = ["low", "medium", "high"] as const;
 export const MODEL_TIERS = ["fast", "default", "strong"] as const;
 export const CALL_TRANSPORTS = ["tool", "executor", "shell"] as const;
 export const CALL_RETRY_CLASSES = ["timeout", "http_5xx", "http_429", "connection", "exit"] as const;
+/** The closed codes a failed effect carries: a call's, or a code node's that a host runs out of process.
+ *  `retry.on` names these or the retry classes above. A retry class implies its code (timeout is
+ *  effect_timeout, exit is effect_exit, the transient transport classes are effect_transport); a host
+ *  that types a failure itself names the code. */
+export const EFFECT_FAILURE_CODES = [
+  "effect_timeout", "effect_exit", "effect_transport", "effect_not_granted", "effect_produces_missing",
+  "effect_path_escape", "effect_code_unsafe", "output_invalid", "state_invalid", "effect_unknown_transport",
+] as const;
 /** Artifact types the engine itself treats as prose (the report writer). Every other type names a file. */
 export const PROSE_ARTIFACT_TYPES = ["markdown", "report"] as const;

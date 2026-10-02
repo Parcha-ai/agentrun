@@ -1150,6 +1150,7 @@
               "title": "deadline_s"
             },
             "retry": {
+              "description": "`on` names retry classes or effect failure codes; absent, the transient retry classes.",
               "type": "object",
               "properties": {
                 "attempts": {
@@ -1163,7 +1164,24 @@
                 "on": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/definitions/CallRetryClass"
+                    "enum": [
+                      "connection",
+                      "effect_code_unsafe",
+                      "effect_exit",
+                      "effect_not_granted",
+                      "effect_path_escape",
+                      "effect_produces_missing",
+                      "effect_timeout",
+                      "effect_transport",
+                      "effect_unknown_transport",
+                      "exit",
+                      "http_429",
+                      "http_5xx",
+                      "output_invalid",
+                      "state_invalid",
+                      "timeout"
+                    ],
+                    "type": "string"
                   },
                   "title": "on"
                 }
@@ -1680,18 +1698,6 @@
           ]
         }
       ]
-    },
-    "CallRetryClass": {
-      "description": "`exit` is a shell command that ended with a non-zero status: retried only when the author\ndeclared retry, since re-running a command is the author's call.",
-      "title": "CallRetryClass",
-      "enum": [
-        "connection",
-        "exit",
-        "http_429",
-        "http_5xx",
-        "timeout"
-      ],
-      "type": "string"
     },
     "AcceptPredicate": {
       "description": "A predicate a `call` evaluates against ITS OWN RESULT: paths are result-relative.",

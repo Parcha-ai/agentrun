@@ -7,7 +7,7 @@ import { validateWorkflow, type Workflow, type WorkflowDeps, type WorkflowNode }
 import { SYSTEM_ONE_LIMITS } from "./system-one.js";
 import {
   WORKFLOW_NODE_KINDS, NODE_FIELDS, WORKFLOW_PREDICATES, PREDICATE_FIELDS, MECHANICAL_PREDICATES,
-  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, PROSE_ARTIFACT_TYPES,
+  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
   GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, type WorkflowNodeKind,
 } from "./vocabulary.js";
 
@@ -122,7 +122,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
   - ${code("via: tool")} takes ${code("tool")} (a host tool address), ${code("args")} (an object) and ${code("out")} (the tool's result schema).
   - ${code("via: executor")} takes ${code("code")} (a body that returns its JSON result and uses only ${code("tools")} and ${code("input")}), ${code("input")} and ${code("out")}.
   - ${code("via: shell")} takes ${code("command")} (literal) and ${code("env")} (UPPER_CASE names to strings, interpolated by value; the way long values reach a command). Its result has the fixed shape {code, stdout, stderr, truncated?}: no ${code("out")}. Only a shell call may declare ${code("produces")} (workspace-relative files, checked after the effect).
-  - ${code("retry")} {attempts: 1..5, backoff_s?: 0..60, on?: [${CALL_RETRY_CLASSES.join(", ")}]}. ${code("where")} accepts only "sandbox".
+  - ${code("retry")} {attempts: 1..5, backoff_s?: 0..60, on?: [${[...CALL_RETRY_CLASSES, ...EFFECT_FAILURE_CODES].join(", ")}]}. ${code("where")} accepts only "sandbox".
   - ${code("poll")} {until, fail_when?, interval_s: 0.1..300, deadline_s: from the call's deadline_s to 7200} repeats the call until ${code("until")} holds on its own result; ${code("fail_when")} fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape.
   - Validation and dry runs never perform effects: they synthesize the declared result, and a shell result's stdout is "{}".
 
