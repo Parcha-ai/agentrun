@@ -7,6 +7,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/prom
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { auditBlockers } from './audit-exceptions.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -186,9 +187,10 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,network:'prohibited'}));
   const audit = JSON.parse(auditRun.stdout);
   await writeFile(join(receiptDir, 'npm-audit.json'), JSON.stringify(audit, null, 2) + '\n');
   assert.ok(audit.metadata?.vulnerabilities, 'npm audit could not produce a vulnerability report');
-  receipt.audit = { vulnerabilities: audit.metadata.vulnerabilities, exitCode: auditRun.exitCode };
-  assert.equal(audit.metadata.vulnerabilities.high + audit.metadata.vulnerabilities.critical, 0, 'Production dependencies have high or critical advisories; see .release/npm-audit.json');
-  receipt.checks.push('Production dependency audit contains no high or critical advisories.');
+  const { accepted, blocking } = auditBlockers(audit);
+  receipt.audit = { vulnerabilities: audit.metadata.vulnerabilities, accepted, exitCode: auditRun.exitCode };
+  assert.deepEqual(blocking, [], 'Production dependencies have high or critical advisories; see .release/npm-audit.json');
+  receipt.checks.push(accepted.length ? `Production dependency audit contains no high or critical advisories beyond the accepted, expiring exceptions (${accepted.map(entry => `${entry.package} until ${entry.expires}`).join(', ')}).` : 'Production dependency audit contains no high or critical advisories.');
   await writeFile(join(consumer, 'consumer.ts'), `import { runWorkflow, desugarWorkflow, defineWorkflow, runTypedWorkflow, type Workflow, type WorkflowDeps, type Predicate, type CallPredicate } from '@parcha/agentrun-dsl';
 import { z } from 'zod';
 import { createJevRunner, type JevOptions } from '@parcha/agentrun-jev';

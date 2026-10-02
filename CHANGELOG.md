@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Package verification: the production `npm audit` gate accepts GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p and GHSA-q2hr-2g5m-vwhr until 2026-12-01, and only for brace-expansion installed under `@earendil-works/pi-coding-agent`. That package's `npm-shrinkwrap.json` pins brace-expansion 5.0.9 in every release through 1.0.0, and a consumer cannot override a dependency's shrinkwrap ([earendil-works/pi#10288](https://github.com/earendil-works/pi/issues/10288)). Any other high or critical advisory still fails the gate, and so do these once the exception expires. The receipt records the raw counts and the accepted entries; the release preflight still refuses high advisories.
+
 ## 0.1.0-beta.5, 2026-09-26
 
 - `validateAnswers` accepts a choice or score distribution when it could be the two-place rounding of a distribution that sums to 1. A value on the two-place grid may differ from its true value by up to 0.005, within [0, 1]. Any other value is taken as exact. A full-precision distribution is therefore still held to the 1e-5 check. System One rounds each probability to two places, so about 1% of real eight-option choices summed to 0.99. The validator refused them as `probability_mass`, and the Jev adapter then failed the whole request. The allowed drift now grows with the number of rounded options: eight equal options report 0.13 each and sum to 1.04. Probabilities are still passed through unchanged, never rescaled. A distribution that no rounding explains is still refused. `score_consistency` is unchanged. ([#25](https://github.com/Parcha-ai/agentrun/issues/25))
