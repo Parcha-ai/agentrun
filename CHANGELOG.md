@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.9, 2026-10-04
 
 - `validateAnswers` accepts a Score whose `score` could be the two-place rounding of its distribution's weighted level, by the same rule as the probability mass: a value on the two-place grid may be off by up to 0.005, and any other value is taken as exact. The unrounded probabilities lie within their rounding intervals and still sum to 1, which bounds the weighted level, and the score must meet those bounds. jev-1.13 rounds both the probabilities and the score, so valid Score answers were refused as `score_consistency`. A full-precision score with full-precision probabilities is still held to 1e-5, and a score no rounding explains is still refused. A score that isn't a number still fails as `score_range`. Answers are accepted as reported, never recomputed. (GRE-3057)
 - A Jev HTTP failure that Jev classifies as `max_tokens_exceeded` now says so in the error message: `Jev returned HTTP 400: the request exceeds the model's token budget (max_tokens_exceeded). Send fewer or shorter items per request.` Before, the message was only `Jev returned HTTP 400.` and the reason sat in `responseDiagnostic`, which a host that logs only the message never showed. The Pi extension's run report says the same in its message. Only the structured reason is named. The provider's response body still never reaches the message, the report or the trace, because it can echo the request's input. An unclassified failure keeps its plain message. (GRE-3058)
