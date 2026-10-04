@@ -155,6 +155,54 @@ test("runner: a deadline timer that fires early re-arms for the remainder and ne
   await assert.rejects(run, /exceeded its 1s deadline/);
 });
 
+test("runner: runEffect receives deadlineAt, the attempt's deadline instant exactly as the timer was armed", async (t) => {
+  let now = 500;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // Each attempt arms its own deadline; the first fails at once with a retryable class, the second
+  // starts 250 ms later on the clock and is cut by its deadline.
+  const seen = [];
+  let effectSignal, started, failedOnce;
+  const secondStarted = new Promise((resolve) => { started = resolve; });
+  const firstFailed = new Promise((resolve) => { failedOnce = resolve; });
+  const run = runWorkflow(wf([planNode, submitCall({ deadline_s: 1, retry: { attempts: 2, backoff_s: 0 } }), assemble]), { question: "q" }, {
+    runNode: async () => ({ prompt: "p", seconds: 5 }),
+    runEffect: ({ attempt, deadlineAt, signal }) => {
+      seen.push({ attempt, deadlineAt });
+      if (attempt === 1) { now = 750; failedOnce(); return Promise.reject(new EffectFailure("transient", "http_5xx")); }
+      effectSignal = signal;
+      started();
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted by signal"))));
+    },
+  });
+  await firstFailed;
+  // The zero backoff is a faked timer too: let the failure settle, then release it.
+  for (let i = 0; i < 20 && seen.length < 2; i += 1) { await new Promise((resolve) => setImmediate(resolve)); t.mock.timers.tick(0); }
+  await secondStarted;
+  assert.deepEqual(seen, [{ attempt: 1, deadlineAt: 1500 }, { attempt: 2, deadlineAt: 1750 }]);
+  now = 1749.9;
+  t.mock.timers.tick(1000);
+  assert.equal(effectSignal.aborted, false, "not before deadlineAt");
+  now = seen[1].deadlineAt;
+  t.mock.timers.tick(1);
+  assert.equal(effectSignal.aborted, true, "the timer fires at deadlineAt");
+  await assert.rejects(run, /exceeded its 1s deadline/);
+});
+
+test("runner: deadlineAt reaches runEffect through a map unchanged", async (t) => {
+  t.mock.method(performance, "now", () => 0);
+  const seen = [];
+  const mapped = { node: "map", label: "each", itemsPath: "plan.prompts", as: "jobs", resultPath: "job",
+    body: { node: "call", label: "submit", via: "tool", tool: "jobs.submit", args: { prompt: "{item}" }, out: "Submit", as: "job", deadline_s: 2 } };
+  const workflow = { v: 2, name: "t", schemas: { ...SCHEMAS, Plan: { type: "object", required: ["prompts"], properties: { prompts: { type: "array", items: { type: "string" } } } }, Jobs: { type: "array" } },
+    output: { schemaId: "Jobs", path: "jobs" }, root: { node: "chain", steps: [{ ...planNode }, mapped] } };
+  await runWorkflow(workflow, { question: "q" }, {
+    runNode: async () => ({ prompts: ["a", "b"] }),
+    runEffect: async ({ deadlineAt, item }) => { seen.push([item?.index, deadlineAt]); return { request_id: "r", status: "ok" }; },
+  });
+  assert.deepEqual(seen.sort((a, b) => a[0] - b[0]), [[0, 2000], [1, 2000]]);
+});
+
 test("runner: a result that violates the declared schema fails loud with the node name", async () => {
   await assert.rejects(
     runWorkflow(wf([planNode, submitCall(), assemble]), { question: "q" }, {

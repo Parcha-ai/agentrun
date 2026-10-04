@@ -122,7 +122,8 @@ async function observe(c, workflow) {
   const deps = {
     runNode: async ({ signal, review, ...request }) => { log.push(["runNode", request]); const e = need("gen", request.executionPath); return request.kind === "report" ? { report_markdown: e.markdown } : e.submission; },
     runJudge: async ({ signal, ...request }) => { log.push(["runJudge", request]); return { answers: need("judge", request.executionPath).answers }; },
-    runEffect: async ({ signal, node, ...request }) => { log.push(["runEffect", request, node.label]); return need("effect", request.executionPath).result; },
+    // deadlineAt is a clock instant, like duration_ms below: present and finite, compared as a marker.
+    runEffect: async ({ signal, node, deadlineAt, ...request }) => { assert.ok(Number.isFinite(deadlineAt)); log.push(["runEffect", { ...request, deadlineAt: "instant" }, node.label]); return need("effect", request.executionPath).result; },
     checkpoint: async (state, label, executionPath) => { log.push(["checkpoint", structuredClone(state), label, executionPath]); },
     onEvent: (event) => log.push(["event", { ...event, detail: event.detail && typeof event.detail === "object" && "duration_ms" in event.detail ? { ...event.detail, duration_ms: 0 } : event.detail }]),
   };
