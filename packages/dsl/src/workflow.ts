@@ -289,6 +289,10 @@ export type WorkflowDeps = {
     attempt: number;
     idempotencyKey: string;
     signal: AbortSignal;
+    /** The attempt's deadline instant on this process's `performance.now()` clock, exactly as the
+     *  interpreter armed its deadline timer, so the host measures its own kill and duration against
+     *  the instant the timer fires. Absent when the call has no deadline. */
+    deadlineAt?: number;
     item?: MapItem;
     executionPath?: string;
   }) => Promise<unknown>;
@@ -1497,7 +1501,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
           if (controller.signal.aborted || performance.now() >= attemptDeadlineMs) {
             throw new EffectFailure(`call node "${node.label}" deadline elapsed before effect admission`, "timeout");
           }
-          return deps.runEffect!({ node: effectNode, schema, input, produces, attempt, idempotencyKey, signal: controller.signal });
+          return deps.runEffect!({ node: effectNode, schema, input, produces, attempt, idempotencyKey, signal: controller.signal, ...(Number.isFinite(attemptDeadlineMs) ? { deadlineAt: attemptDeadlineMs } : {}) });
         }).then(value => finish({ status: "fulfilled", value }), reason => finish({ status: "rejected", reason }));
         const outcome = await Promise.race([settlement, interrupted]);
         if (outcome.status === "unknown") throw outcome.error;
