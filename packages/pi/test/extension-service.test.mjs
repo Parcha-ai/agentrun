@@ -55,6 +55,14 @@ test('a host that sets maxStateBytesPerRequest at the adapter limit gets the sam
   assert.equal(complete.status, 'complete');
   assert.equal(requests, 2, 'two items fit one 48 KiB state, the third goes in a second request');
   assert.deepEqual(complete.output.decision.kept, [0, 1, 2]);
+  for (const invalid of [0, NaN]) {
+    const refused = await service.run(input, { deps: { runJudge: judge, maxStateBytesPerRequest: invalid } });
+    // Forwarded, the interpreter refuses the setting (an opaque execution failure). Dropped, the sift would
+    // run as one oversized request and the adapter would refuse it as jev_state_too_large instead.
+    assert.equal(refused.status, 'failed');
+    assert.equal(refused.error.code, 'execution_failed', `maxStateBytesPerRequest ${invalid} is forwarded and refused, not dropped`);
+  }
+  assert.equal(requests, 2);
 });
 
 test('preflight shares admission but neither executes factories nor grants trust or changes prepared state', async () => {

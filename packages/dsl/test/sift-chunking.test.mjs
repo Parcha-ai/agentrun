@@ -89,6 +89,45 @@ test('the sift state is in every request, and an item that cannot fit alone is r
   assert.deepEqual(fits.output.kept, [0, 3]);
 });
 
+test('a sift state too large on its own is named as the state, not blamed on an item', async () => {
+  const log = [];
+  const input = { brief: 'b'.repeat(500), items: items(3) };
+  await assert.rejects(
+    runWorkflow(wf({ state: { brief: '{brief}' } }), input, { runJudge: judge(log), maxStateBytesPerRequest: 300 }),
+    /sift node "screen": its state alone, before any item, is \d+ bytes, over maxStateBytesPerRequest \(300\)/,
+  );
+  assert.equal(log.length, 0);
+});
+
+test('a split sift keeps at most four requests in flight', async () => {
+  let inFlight = 0, most = 0, requests = 0;
+  const runJudge = async (params) => {
+    inFlight++; requests++; most = Math.max(most, inFlight);
+    await new Promise((resolve) => setImmediate(resolve));
+    inFlight--;
+    return judge([])(params);
+  };
+  const result = await runWorkflow(wf(), { items: items(10 * 256) }, { runJudge });
+  assert.equal(requests, 10);
+  assert.equal(most, 4);
+  assert.equal(result.output.kept.length, Math.ceil(2560 / 3));
+});
+
+test('the first failed request stops dispatch, cancels the requests in flight, and fails the sift once they settle', async () => {
+  let started = 0, settled = 0, aborted = 0;
+  const runJudge = (params) => {
+    const n = started++;
+    return new Promise((resolve, reject) => {
+      if (n === 1) { setImmediate(() => { settled++; reject(new Error('judge refused chunk 1')); }); return; }
+      params.signal.addEventListener('abort', () => { aborted++; settled++; reject(new Error('cancelled')); }, { once: true });
+    });
+  };
+  await assert.rejects(runWorkflow(wf(), { items: items(10 * 256) }, { runJudge }), /judge refused chunk 1/);
+  assert.equal(started, 4, 'no request starts after the failure');
+  assert.equal(aborted, 3, 'the other requests in flight are cancelled');
+  assert.equal(settled, 4, 'the sift fails only after every started request settled');
+});
+
 test('an invalid state byte limit is refused before any node runs', async () => {
   for (const limit of [0, -1, 1.5, NaN, Infinity]) {
     await assert.rejects(runWorkflow(wf(), { items: items(2) }, { runJudge: judge([]), maxStateBytesPerRequest: limit }), /maxStateBytesPerRequest must be a positive safe integer/);

@@ -380,8 +380,9 @@ export class WorkflowExtensionService {
       signal, onEvent,
       ...(options.deps.skill ? { skill: options.deps.skill } : {}),
       ...(sections.length ? { sop: sections.map(([name, text]) => `## ${name}\n${text}`).join('\n\n') } : options.deps.sop ? { sop: options.deps.sop } : {}),
-      ...(options.deps.maxQuestionsPerRequest ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
-      ...(options.deps.maxStateBytesPerRequest ? { maxStateBytesPerRequest: options.deps.maxStateBytesPerRequest } : {}),
+      // Forward any set limit, so the interpreter rejects an invalid one rather than running without it.
+      ...(options.deps.maxQuestionsPerRequest !== undefined ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
+      ...(options.deps.maxStateBytesPerRequest !== undefined ? { maxStateBytesPerRequest: options.deps.maxStateBytesPerRequest } : {}),
       ...(options.deps.runNode ? { runNode: params => dispatch('agent', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runNode!({ ...params, tools: params.tools ?? [...this.allowedTools] })), true) } : {}),
       ...(options.deps.runJudge ? { runJudge: params => dispatch('judge', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runJudge!(params)), true) } : {}),
       ...(options.deps.runEffect ? { runEffect: params => dispatch('tool', params.signal, () => {

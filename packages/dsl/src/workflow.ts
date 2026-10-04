@@ -1594,6 +1594,9 @@ function assertQuestionCount(deps: WorkflowDeps, count: number, label: string): 
 }
 
 const utf8Bytes = (text: string): number => Buffer.byteLength(text, "utf8");
+/** A split sift's requests in flight at once: the same default as `map.maxConcurrency`. A host that
+ *  needs fewer bounds its own `runJudge`. */
+const SIFT_REQUESTS_IN_FLIGHT = 4;
 
 /** Splits a sift's items, in order, into requests that each fit the host's question limit and, when set,
  *  its state byte limit: the UTF-8 length of the JSON state the judge receives, as the Jev adapter
@@ -1605,6 +1608,7 @@ function siftChunks(deps: WorkflowDeps, label: string, questionsPerItem: number,
   if (questionsPerItem > maxQuestions) throw new Error(`node "${label}": ${questionsPerItem} questions exceed maxQuestionsPerRequest (${maxQuestions}); reduce the question set or raise the host limit`);
   const perRequest = Math.floor(maxQuestions / questionsPerItem);
   const emptyBytes = maxBytes === null ? 0 : utf8Bytes(JSON.stringify({ ...base, items: [] }));
+  if (maxBytes !== null && emptyBytes > maxBytes) throw new Error(`sift node "${label}": its state alone, before any item, is ${emptyBytes} bytes, over maxStateBytesPerRequest (${maxBytes}); every request carries that state, so make the sift's state smaller or raise the host limit`);
   const chunks: number[][] = [];
   let chunk: number[] = [], bytes = emptyBytes;
   for (let i = 0; i < named.length; i += 1) {
@@ -1647,9 +1651,9 @@ function questionSetOf(workflow: Workflow, node: { node: string; label: string; 
 const describeItem = (template: string, state: Record<string, unknown>, item: unknown, index: number): string =>
   interpolate(template, { ...state, item, item_index: index }).replace(/\s+/g, " ").trim();
 
-async function askQuestions(deps: WorkflowDeps, node: { node: "judge" | "pick" | "sift" | "route"; label: string }, asked: unknown, questions: Record<string, SystemOneQuestion>): Promise<{ answers: Record<string, SystemOneAnswer>; sidecar: AnswersSidecar; model: string | null; cost_usd: number | null }> {
+async function askQuestions(deps: WorkflowDeps, node: { node: "judge" | "pick" | "sift" | "route"; label: string }, asked: unknown, questions: Record<string, SystemOneQuestion>, signal: AbortSignal | undefined = deps.signal): Promise<{ answers: Record<string, SystemOneAnswer>; sidecar: AnswersSidecar; model: string | null; cost_usd: number | null }> {
   const runJudge = requireJudge(deps, node.node, node.label);
-  const result = await runJudge({ label: node.label, kind: node.node, state: asked, questions, signal: deps.signal });
+  const result = await runJudge({ label: node.label, kind: node.node, state: asked, questions, signal });
   validateAnswers(questions, result.answers);
   return { answers: result.answers, sidecar: answersSidecar(result.answers), model: result.model ?? null, cost_usd: result.cost_usd ?? null };
 }
@@ -1704,12 +1708,30 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
     const named = items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
     const chunks = siftChunks(deps, node.label, ids.length, base, named);
     // Each chunk is its own request: item ids stay global (item_<i>), `items[j]` indexes the chunk.
-    // A sift that fits in one request sends exactly the request it always did.
-    const results = await Promise.all(chunks.map(async (chunk) => {
+    // A sift that fits in one request sends exactly the request it always did. Several requests run at
+    // most SIFT_REQUESTS_IN_FLIGHT at a time; the first failure stops dispatch, cancels the requests in
+    // flight, and is thrown once they settle.
+    const ask = (chunk: number[], signal: AbortSignal | undefined) => {
       const questions: Record<string, SystemOneQuestion> = {};
       chunk.forEach((i, j) => { for (const id of ids) questions[`${j}.${id}`] = { ...set.questions[id], instructions: `For \`items[${j}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion; });
-      return askQuestions(deps, node, { ...base, items: chunk.map((i) => named[i]) }, questions);
-    }));
+      return askQuestions(deps, node, { ...base, items: chunk.map((i) => named[i]) }, questions, signal);
+    };
+    let results: Awaited<ReturnType<typeof ask>>[];
+    if (chunks.length === 1) results = [await ask(chunks[0], deps.signal)];
+    else {
+      const stop = new AbortController();
+      const signal = deps.signal ? AbortSignal.any([deps.signal, stop.signal]) : stop.signal;
+      results = new Array(chunks.length);
+      let next = 0, failure: { error: unknown } | undefined;
+      await Promise.all(Array.from({ length: Math.min(SIFT_REQUESTS_IN_FLIGHT, chunks.length) }, async () => {
+        while (!failure && next < chunks.length) {
+          const c = next++;
+          try { results[c] = await ask(chunks[c], signal); }
+          catch (error) { failure ??= { error }; stop.abort(); }
+        }
+      }));
+      if (failure) throw failure.error;
+    }
     const models = new Set(results.map((r) => r.model));
     metering = {
       model: models.size === 1 ? results[0].model : null,
