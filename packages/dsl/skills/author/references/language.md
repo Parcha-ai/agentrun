@@ -69,7 +69,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - A question schema is a flat object. Each property's `description` is its question. A boolean yields a yes-probability; a string enum (at most 240 options, optional per-option `criteria`) yields a choice; an integer with `criteria`: [level descriptions] (2 to 10 levels, minimum 0, maximum the last level index) yields a score. Nothing else is a question.
 - `judge`: a non-empty `state` map, `out` (a question schema) and `as`. The decoded value lands at `as`, the raw answers at `<as>$answers`.
 - `pick`: `itemsPath`, `describe` (the option text per item, such as "{item.name}"), `instructions` (the one question) and `as`; `allowNone` adds a none-of-these option. The result is {index, item, none, option}.
-- `sift`: `itemsPath`, `out` (a question schema asked of every item in one request) and `as`. `keep` {path: a question id or <id>.confidence, never a choice, gte?} keeps passing items, in order, at `<as>.items`.
+- `sift`: `itemsPath`, `out` (a question schema asked of every item; the host splits the items across requests when they exceed its limits) and `as`. `keep` {path: a question id or <id>.confidence, never a choice, gte?} keeps passing items, in order, at `<as>.items`.
 - `route`: a non-empty `state` map, `instructions` (the one question) and 2 to 240 named `branches`, each {criteria?, body}. `unsure` {branch: one of the branches, gte: a number in (0, 1]} takes that branch when the choice's confidence is below `gte`. `as` records the choice.
 - A decoded boolean is true at yes-probability 0.5. To hold a different threshold, read `<as>$answers.answers.<id>.noul` in a code node.
 

@@ -250,6 +250,10 @@ export type HostPolicy = {
 
 export type WorkflowDeps = {
   maxQuestionsPerRequest?: number;
+  /** Most UTF-8 bytes of JSON state one judge request may carry (the Jev adapter's `maxStateBytes`
+   *  measure). A `sift` that would exceed it, or `maxQuestionsPerRequest`, is split into several
+   *  requests. Absent = no byte limit. */
+  maxStateBytesPerRequest?: number;
   /** Host application policy; see `HostPolicy`. Absent = the engine's own behavior, unchanged. */
   hostPolicy?: HostPolicy;
   runNode?: (params: {
@@ -1570,10 +1574,55 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
   return { ...state, [node.as]: result };
 }
 
-function assertQuestionCount(deps: WorkflowDeps, count: number, label: string): void {
+function questionLimit(deps: WorkflowDeps): number {
   const limit = deps.maxQuestionsPerRequest ?? 256;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("maxQuestionsPerRequest must be a positive safe integer");
+  return limit;
+}
+
+function stateByteLimit(deps: WorkflowDeps): number | null {
+  const limit = deps.maxStateBytesPerRequest;
+  if (limit === undefined) return null;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("maxStateBytesPerRequest must be a positive safe integer");
+  return limit;
+}
+
+function assertQuestionCount(deps: WorkflowDeps, count: number, label: string): void {
+  const limit = questionLimit(deps);
+  stateByteLimit(deps);
   if (count > limit) throw new Error(`node "${label}": ${count} questions exceed maxQuestionsPerRequest (${limit}); reduce the collection/question set or raise the host limit`);
+}
+
+const utf8Bytes = (text: string): number => Buffer.byteLength(text, "utf8");
+/** A split sift's requests in flight at once: the same default as `map.maxConcurrency`. A host that
+ *  needs fewer bounds its own `runJudge`. */
+const SIFT_REQUESTS_IN_FLIGHT = 4;
+
+/** Splits a sift's items, in order, into requests that each fit the host's question limit and, when set,
+ *  its state byte limit: the UTF-8 length of the JSON state the judge receives, as the Jev adapter
+ *  measures it. Sizes are exact: JSON of `{...base, items: [a, b]}` is JSON of `{...base, items: []}`
+ *  plus each item's JSON plus one comma between items. */
+function siftChunks(deps: WorkflowDeps, label: string, questionsPerItem: number, base: Record<string, unknown>, named: unknown[]): number[][] {
+  const maxQuestions = questionLimit(deps);
+  const maxBytes = stateByteLimit(deps);
+  if (questionsPerItem > maxQuestions) throw new Error(`node "${label}": ${questionsPerItem} questions exceed maxQuestionsPerRequest (${maxQuestions}); reduce the question set or raise the host limit`);
+  const perRequest = Math.floor(maxQuestions / questionsPerItem);
+  const emptyBytes = maxBytes === null ? 0 : utf8Bytes(JSON.stringify({ ...base, items: [] }));
+  if (maxBytes !== null && emptyBytes > maxBytes) throw new Error(`sift node "${label}": its state alone, before any item, is ${emptyBytes} bytes, over maxStateBytesPerRequest (${maxBytes}); every request carries that state, so make the sift's state smaller or raise the host limit`);
+  const chunks: number[][] = [];
+  let chunk: number[] = [], bytes = emptyBytes;
+  for (let i = 0; i < named.length; i += 1) {
+    const itemBytes = maxBytes === null ? 0 : utf8Bytes(JSON.stringify(named[i]));
+    if (maxBytes !== null && emptyBytes + itemBytes > maxBytes) throw new Error(`sift node "${label}": item ${i} alone makes a ${emptyBytes + itemBytes}-byte judge state, over maxStateBytesPerRequest (${maxBytes}); send less of each item (a code step before the sift) or raise the host limit`);
+    const grown = bytes + itemBytes + (chunk.length ? 1 : 0);
+    if (chunk.length && (chunk.length >= perRequest || (maxBytes !== null && grown > maxBytes))) {
+      chunks.push(chunk); chunk = []; bytes = emptyBytes;
+    }
+    bytes += itemBytes + (chunk.length ? 1 : 0);
+    chunk.push(i);
+  }
+  if (chunk.length) chunks.push(chunk);
+  return chunks;
 }
 
 const requireJudge = (deps: WorkflowDeps, kind: string, label: string): NonNullable<WorkflowDeps["runJudge"]> => {
@@ -1602,9 +1651,9 @@ function questionSetOf(workflow: Workflow, node: { node: string; label: string; 
 const describeItem = (template: string, state: Record<string, unknown>, item: unknown, index: number): string =>
   interpolate(template, { ...state, item, item_index: index }).replace(/\s+/g, " ").trim();
 
-async function askQuestions(deps: WorkflowDeps, node: { node: "judge" | "pick" | "sift" | "route"; label: string }, asked: unknown, questions: Record<string, SystemOneQuestion>): Promise<{ answers: Record<string, SystemOneAnswer>; sidecar: AnswersSidecar; model: string | null; cost_usd: number | null }> {
+async function askQuestions(deps: WorkflowDeps, node: { node: "judge" | "pick" | "sift" | "route"; label: string }, asked: unknown, questions: Record<string, SystemOneQuestion>, signal: AbortSignal | undefined = deps.signal): Promise<{ answers: Record<string, SystemOneAnswer>; sidecar: AnswersSidecar; model: string | null; cost_usd: number | null }> {
   const runJudge = requireJudge(deps, node.node, node.label);
-  const result = await runJudge({ label: node.label, kind: node.node, state: asked, questions, signal: deps.signal });
+  const result = await runJudge({ label: node.label, kind: node.node, state: asked, questions, signal });
   validateAnswers(questions, result.answers);
   return { answers: result.answers, sidecar: answersSidecar(result.answers), model: result.model ?? null, cost_usd: result.cost_usd ?? null };
 }
@@ -1651,20 +1700,50 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   if (!Array.isArray(items)) throw new WorkflowStateError(`sift node "${node.label}": ${node.itemsPath} is not a list`, node.label, node.itemsPath, "expected_list");
   const set = questionSetOf(workflow, node);
   const ids = Object.keys(set.questions);
-  assertQuestionCount(deps, items.length * ids.length, node.label);
   const [keepId, keepTail] = node.keep ? node.keep.path.split(".") : [];
   const values: Record<string, unknown>[] = []; const sidecars: AnswersSidecar[] = []; const kept: number[] = [];
-  let metering: { model: string | null; cost_usd: number | null } | null = null;
+  let metering: { model: string | null; cost_usd: number | null; requests?: number } | null = null;
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
     const named = items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
-    const questions: Record<string, SystemOneQuestion> = {};
-    for (let i = 0; i < items.length; i += 1) for (const id of ids) questions[`${i}.${id}`] = { ...set.questions[id], instructions: `For \`items[${i}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion;
-    const { answers, model, cost_usd } = await askQuestions(deps, node, { ...base, items: named }, questions);
-    metering = { model, cost_usd };
+    const chunks = siftChunks(deps, node.label, ids.length, base, named);
+    // Each chunk is its own request: item ids stay global (item_<i>), `items[j]` indexes the chunk.
+    // A sift that fits in one request sends exactly the request it always did. Several requests run at
+    // most SIFT_REQUESTS_IN_FLIGHT at a time; the first failure stops dispatch, cancels the requests in
+    // flight, and is thrown once they settle.
+    const ask = (chunk: number[], signal: AbortSignal | undefined) => {
+      const questions: Record<string, SystemOneQuestion> = {};
+      chunk.forEach((i, j) => { for (const id of ids) questions[`${j}.${id}`] = { ...set.questions[id], instructions: `For \`items[${j}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion; });
+      return askQuestions(deps, node, { ...base, items: chunk.map((i) => named[i]) }, questions, signal);
+    };
+    let results: Awaited<ReturnType<typeof ask>>[];
+    if (chunks.length === 1) results = [await ask(chunks[0], deps.signal)];
+    else {
+      const stop = new AbortController();
+      const signal = deps.signal ? AbortSignal.any([deps.signal, stop.signal]) : stop.signal;
+      results = new Array(chunks.length);
+      let next = 0, failure: { error: unknown } | undefined;
+      await Promise.all(Array.from({ length: Math.min(SIFT_REQUESTS_IN_FLIGHT, chunks.length) }, async () => {
+        while (!failure && next < chunks.length) {
+          const c = next++;
+          try { results[c] = await ask(chunks[c], signal); }
+          catch (error) { failure ??= { error }; stop.abort(); }
+        }
+      }));
+      if (failure) throw failure.error;
+    }
+    const models = new Set(results.map((r) => r.model));
+    metering = {
+      model: models.size === 1 ? results[0].model : null,
+      cost_usd: results.every((r) => r.cost_usd !== null) ? results.reduce((sum, r) => sum + (r.cost_usd as number), 0) : null,
+      ...(chunks.length > 1 ? { requests: chunks.length } : {}),
+    };
+    const at: [number, number][] = [];
+    chunks.forEach((chunk, c) => chunk.forEach((i, j) => { at[i] = [c, j]; }));
+    const answerOf = (i: number, id: string): SystemOneAnswer | undefined => results[at[i][0]].answers[`${at[i][1]}.${id}`];
     for (let i = 0; i < items.length; i += 1) {
       const mine: Record<string, SystemOneAnswer> = Object.create(null);
-      for (const id of ids) { const a = answers[`${i}.${id}`]; if (!a) throw new Error(`sift node "${node.label}": no answer for item ${i} question "${id}"`); mine[id] = a; }
+      for (const id of ids) { const a = answerOf(i, id); if (!a) throw new Error(`sift node "${node.label}": no answer for item ${i} question "${id}"`); mine[id] = a; }
       values.push(set.decode(mine, ` answers for item ${i}`)); sidecars.push(answersSidecar(mine));
       if (!node.keep) { kept.push(i); continue; }
       const a = mine[keepId];

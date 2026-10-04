@@ -69,9 +69,10 @@ These are the current beta's validation rules. The numeric knobs below carry no 
 | Choice options / route branches | At most 240; `pick.allowNone` reserves one option |
 | Score rubric | 2–10 levels, indexed from 0 |
 | Questions per judgment request | Default 256; override with host-owned `WorkflowDeps.maxQuestionsPerRequest` |
+| Judge state bytes per request | No default; host-owned `WorkflowDeps.maxStateBytesPerRequest` (UTF-8 JSON bytes) |
 | Jev context | Selected provider's token limits; an adapter host may configure an additional byte guard |
 
-The question-count guard applies after collection expansion, including `sift` items multiplied by their questions. It is a host budget guard, not a claim about a provider's service limit.
+The question-count guard applies after collection expansion, including `sift` items multiplied by their questions. It is a host budget guard, not a claim about a provider's service limit. A `sift` over either limit is split, in item order, into requests that each fit, run up to four at a time. Each request carries the sift's `state` and only its own items.
 
 `System One` names TypeSafe's typed-question interface used by the judgment types. A `noul` answer is a truth probability from 0 to 1; `answersToValue` turns values at least 0.5 into `true`. Choice and score confidence comes from the adapter response; Noul confidence is `2 × |probability − 0.5|`. Neither is a calibration guarantee.
 

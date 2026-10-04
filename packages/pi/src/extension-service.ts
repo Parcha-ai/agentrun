@@ -152,7 +152,7 @@ function localDiagnostic(error: unknown): ExtensionRunReport['error'] {
     if (reason === 'state_too_large' && Number.isSafeInteger(stateBytes) && Number.isSafeInteger(maxStateBytes)
       && stateBytes! > maxStateBytes! && maxStateBytes! > 0) return {
       code: 'jev_state_too_large', stage, stateBytes, maxStateBytes,
-      message: `Jev state at ${stage} is ${stateBytes} UTF-8 bytes; configured host limit is ${maxStateBytes}. No request was sent. A sift batches every item in one state; select original context explicitly or use per-item judgments without losing headers or qualifiers.` };
+      message: `Jev state at ${stage} is ${stateBytes} UTF-8 bytes; configured host limit is ${maxStateBytes}. No request was sent. A sift splits its items across requests only when the host sets maxStateBytesPerRequest; otherwise send less of each item or use per-item judgments without losing headers or qualifiers.` };
     if (reason === 'invalid_state' || reason === 'invalid_questions') return { code: `jev_${reason}`, stage,
       message: reason === 'invalid_state' ? 'Jev state must be JSON-serializable text, an object, an array or null. No request was sent.'
         : 'Jev needs a nonempty JSON question map. No request was sent.' };
@@ -380,7 +380,9 @@ export class WorkflowExtensionService {
       signal, onEvent,
       ...(options.deps.skill ? { skill: options.deps.skill } : {}),
       ...(sections.length ? { sop: sections.map(([name, text]) => `## ${name}\n${text}`).join('\n\n') } : options.deps.sop ? { sop: options.deps.sop } : {}),
-      ...(options.deps.maxQuestionsPerRequest ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
+      // Forward any set limit, so the interpreter rejects an invalid one rather than running without it.
+      ...(options.deps.maxQuestionsPerRequest !== undefined ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
+      ...(options.deps.maxStateBytesPerRequest !== undefined ? { maxStateBytesPerRequest: options.deps.maxStateBytesPerRequest } : {}),
       ...(options.deps.runNode ? { runNode: params => dispatch('agent', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runNode!({ ...params, tools: params.tools ?? [...this.allowedTools] })), true) } : {}),
       ...(options.deps.runJudge ? { runJudge: params => dispatch('judge', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runJudge!(params)), true) } : {}),
       ...(options.deps.runEffect ? { runEffect: params => dispatch('tool', params.signal, () => {

@@ -26,7 +26,7 @@ test('host-bounded sift gives safe local feedback, then explicit per-item revisi
   assert.equal(failed.status, 'failed'); assert.equal(failed.error.code, 'jev_state_too_large');
   assert.equal(failed.error.stage, 'check-originals');
   assert.ok(failed.error.stateBytes > failed.error.maxStateBytes); assert.equal(failed.error.maxStateBytes, 49152);
-  assert.match(failed.error.message, /sift batches every item/);
+  assert.match(failed.error.message, /splits its items across requests only when the host sets maxStateBytesPerRequest/);
   assert.doesNotMatch(JSON.stringify(failed), /private-source-sentinel/); assert.equal(requests, 0);
   assert.equal(failed.calls.judge, 1, 'service counts adapter admission, not HTTP transport');
   const repaired = structuredClone(source);
@@ -36,6 +36,33 @@ test('host-bounded sift gives safe local feedback, then explicit per-item revisi
   const complete = await service.run(input, { deps: { runJudge: judge } });
   assert.equal(complete.status, 'complete'); assert.equal(requests, 3); assert.equal(complete.calls.judge, 3);
   assert.deepEqual(complete.output.decisions, [{ accept: true }, { accept: true }, { accept: true }]);
+});
+
+test('a host that sets maxStateBytesPerRequest at the adapter limit gets the same sift split into requests that fit', async () => {
+  let requests = 0;
+  const judge = createJevRunner({ maxStateBytes: 48 * 1024, client: { async systemOne(request) {
+    requests++;
+    return { answers: Object.fromEntries(Object.keys(request.questions).map(id => [id, { type: 'noul', noul: .9 }])) };
+  } } });
+  const service = new WorkflowExtensionService();
+  const source = workflow({ node: 'sift', label: 'check-originals', itemsPath: 'originals', state: { question: '{question}' }, out: 'Result', as: 'decision' });
+  source.schemas.Batch = { type: 'object' }; source.output = { schemaId: 'Batch' };
+  const input = { question: 'Does the fictional evidence apply?', originals: Array.from({ length: 3 }, (_, i) => ({
+    document: `fictional-${i}`, page: i, text: 'private-source-sentinel' + 'é'.repeat(10000),
+  })) };
+  service.preflight(source, input); service.prepare(source);
+  const complete = await service.run(input, { deps: { runJudge: judge, maxStateBytesPerRequest: 48 * 1024 } });
+  assert.equal(complete.status, 'complete');
+  assert.equal(requests, 2, 'two items fit one 48 KiB state, the third goes in a second request');
+  assert.deepEqual(complete.output.decision.kept, [0, 1, 2]);
+  for (const invalid of [0, NaN]) {
+    const refused = await service.run(input, { deps: { runJudge: judge, maxStateBytesPerRequest: invalid } });
+    // Forwarded, the interpreter refuses the setting (an opaque execution failure). Dropped, the sift would
+    // run as one oversized request and the adapter would refuse it as jev_state_too_large instead.
+    assert.equal(refused.status, 'failed');
+    assert.equal(refused.error.code, 'execution_failed', `maxStateBytesPerRequest ${invalid} is forwarded and refused, not dropped`);
+  }
+  assert.equal(requests, 2);
 });
 
 test('preflight shares admission but neither executes factories nor grants trust or changes prepared state', async () => {
