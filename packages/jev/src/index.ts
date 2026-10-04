@@ -165,8 +165,11 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
             const capacity = error instanceof APIError && record(error.body) && record(error.body.detail)
               && error.body.detail.error_type === "max_tokens_exceeded";
-            throw new JevError("http", safeStatus === undefined ? "Jev returned an HTTP failure." : `Jev returned HTTP ${safeStatus}.`, attempt, safeStatus, undefined,
-              capacity ? { reason: "max_tokens_exceeded" } : undefined);
+            // Only the structured reason is named; the provider's body text never reaches the message.
+            const returned = safeStatus === undefined ? "Jev returned an HTTP failure" : `Jev returned HTTP ${safeStatus}`;
+            throw new JevError("http", capacity
+              ? `${returned}: the request exceeds the model's token budget (max_tokens_exceeded). Send fewer or shorter items per request.`
+              : `${returned}.`, attempt, safeStatus, undefined, capacity ? { reason: "max_tokens_exceeded" } : undefined);
           }
           if (error instanceof APIConnectionError) throw new JevError("connection", "Jev transport failed.", attempt);
           throw new JevError("invalid_request", "Jev could not process the request. Check question and transport configuration.", attempt);

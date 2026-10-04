@@ -38,7 +38,12 @@ test('HTTP statuses and exact structured capacity code survive without provider 
       calls++; return new Response(JSON.stringify({ detail: { error_type: 'max_tokens_exceeded', message: secret }, extra: secret }), { status,
         headers: { 'content-type': 'application/json', 'x-typesafe-request-id': secret } });
     } });
-    await assert.rejects(runner(params), error => { assert.equal(error.status, status); assert.equal(error.responseDiagnostic.reason, 'max_tokens_exceeded'); safe(error); return true; });
+    await assert.rejects(runner(params), error => {
+      assert.equal(error.status, status); assert.equal(error.responseDiagnostic.reason, 'max_tokens_exceeded'); safe(error);
+      // The message names the structured reason, so a host that only logs the message still shows why.
+      assert.equal(error.message, `Jev returned HTTP ${status}: the request exceeds the model's token budget (max_tokens_exceeded). Send fewer or shorter items per request.`);
+      return true;
+    });
     assert.equal(calls, 1);
   }
 });
@@ -48,7 +53,7 @@ test('generic adapter does not parse broker messages, unknown codes or wrong pat
     { detail: { error_type: secret } }, { error: { message: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } },
     { error: { detail: { error_type: 'max_tokens_exceeded' } } }]) {
     const run = createJevRunner({ maxAttempts: 3, client: { async systemOne() { throw new APIError(400, body, new Headers({ private: secret })); } } });
-    await assert.rejects(run(params), error => { assert.equal(error.code, 'http'); assert.equal(error.status, 400); assert.equal(error.responseDiagnostic, undefined); safe(error); return true; });
+    await assert.rejects(run(params), error => { assert.equal(error.code, 'http'); assert.equal(error.status, 400); assert.equal(error.responseDiagnostic, undefined); assert.equal(error.message, 'Jev returned HTTP 400.'); safe(error); return true; });
   }
 });
 
