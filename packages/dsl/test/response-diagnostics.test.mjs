@@ -106,13 +106,17 @@ test('a Score rounded to two places is accepted when some unrounded distribution
   // True distribution 0.004, 0.006, 0.1949, 0.7951 has score 2.7811. Rounded: 0, 0.01, 0.19, 0.80 and 2.78,
   // whose reported weighted level is 2.79, 0.01 away from the score. beta.8 refused this as score_consistency.
   validateAnswers({ x: four }, { x: reported(2.78, [0, 0.01, 0.19, 0.8]) });
-  // No rounding of those probabilities reaches 2.60 or 2.95: the score contradicts its distribution.
-  for (const s of [2.6, 2.95]) {
+  // Unrounded probabilities that round to these and sum to 1 give a weighted level in [2.77, 2.80]:
+  // mass beyond each low end (0.015 in all) goes to the highest levels for the maximum, the lowest for
+  // the minimum. Widening each probability alone, ignoring the sum, would wrongly reach 2.76–2.82.
+  for (const s of [2.6, 2.95, 2.83, 2.76]) {
     assert.throws(() => validateAnswers({ x: four }, { x: reported(s, [0, 0.01, 0.19, 0.8]) }), e => e.responseReason === 'score_consistency');
   }
   // A full-precision score next to rounded probabilities gets no allowance of its own.
-  validateAnswers({ x: four }, { x: reported(2.8149, [0, 0.01, 0.19, 0.8]) });
-  assert.throws(() => validateAnswers({ x: four }, { x: reported(2.8251, [0, 0.01, 0.19, 0.8]) }), e => e.responseReason === 'score_consistency');
+  validateAnswers({ x: four }, { x: reported(2.7949, [0, 0.01, 0.19, 0.8]) });
+  for (const s of [2.8051, 2.8149, 2.7649]) {
+    assert.throws(() => validateAnswers({ x: four }, { x: reported(s, [0, 0.01, 0.19, 0.8]) }), e => e.responseReason === 'score_consistency');
+  }
 });
 
 test('public reason membership and legacy constructor positions are stable', () => {

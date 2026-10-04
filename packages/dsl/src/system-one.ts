@@ -167,18 +167,28 @@ function roundedFromUnitMass(probabilities: number[]): boolean {
   }
   return low <= 1 + 1e-5 && high >= 1 - 1e-5;
 }
-// A Score's weighted level drifts the same way: each rounded probability moves Σ level·p by up to
-// level × 0.005, and a score on the grid is itself off by up to 0.005. The score is accepted when
-// those two intervals meet; with no grid values this is |score − Σ level·p| ≤ 1e-5. A score that is
-// not a number contradicts nothing here and is left to the range check, as before.
+// A Score's weighted level drifts the same way. The unrounded probabilities lie within their rounding
+// intervals and sum to 1, so Σ level·p lies between two bounds: start every level at its interval's
+// low end, then give the rest of the unit mass to the lowest levels (the minimum) or the highest (the
+// maximum), each up to its interval's high end. A score on the grid is itself off by up to 0.005. The
+// score is accepted when its interval meets [min, max]; with no grid values this is
+// |score − Σ level·p| ≤ 1e-5. A score that is not a number contradicts nothing here and is left to
+// the range check, as before.
 function scoreContradictsDistribution(score: number, probabilities: Record<string, number>): boolean {
-  let low = 0, high = 0;
-  for (const [level, p] of Object.entries(probabilities)) {
+  const levels = Object.entries(probabilities).map(([level, p]) => {
     const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
-    low += Number(level) * Math.max(0, p - step); high += Number(level) * Math.min(1, p + step);
-  }
+    return { level: Number(level), low: Math.max(0, p - step), high: Math.min(1, p + step) };
+  }).sort((a, b) => a.level - b.level);
+  const floor = levels.reduce((sum, l) => sum + l.level * l.low, 0);
+  const spare = Math.max(0, 1 - levels.reduce((sum, l) => sum + l.low, 0));
+  const fill = (order: typeof levels) => {
+    let rest = spare, weighted = floor;
+    for (const l of order) { const add = Math.min(rest, l.high - l.low); weighted += l.level * add; rest -= add; }
+    return weighted;
+  };
+  const min = fill(levels), max = fill([...levels].reverse());
   const step = onTwoPlaceGrid(score) ? ROUNDING_HALF_STEP : 0;
-  return score - step > high + 1e-5 || score + step < low - 1e-5;
+  return score - step > max + 1e-5 || score + step < min - 1e-5;
 }
 
 export function validateAnswers(questions: Record<string, SystemOneQuestion>, answers: unknown): asserts answers is Record<string, SystemOneAnswer> {
