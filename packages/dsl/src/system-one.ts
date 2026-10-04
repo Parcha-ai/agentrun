@@ -167,6 +167,19 @@ function roundedFromUnitMass(probabilities: number[]): boolean {
   }
   return low <= 1 + 1e-5 && high >= 1 - 1e-5;
 }
+// A Score's weighted level drifts the same way: each rounded probability moves Σ level·p by up to
+// level × 0.005, and a score on the grid is itself off by up to 0.005. The score is accepted when
+// those two intervals meet; with no grid values this is |score − Σ level·p| ≤ 1e-5. A score that is
+// not a number contradicts nothing here and is left to the range check, as before.
+function scoreContradictsDistribution(score: number, probabilities: Record<string, number>): boolean {
+  let low = 0, high = 0;
+  for (const [level, p] of Object.entries(probabilities)) {
+    const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
+    low += Number(level) * Math.max(0, p - step); high += Number(level) * Math.min(1, p + step);
+  }
+  const step = onTwoPlaceGrid(score) ? ROUNDING_HALF_STEP : 0;
+  return score - step > high + 1e-5 || score + step < low - 1e-5;
+}
 
 export function validateAnswers(questions: Record<string, SystemOneQuestion>, answers: unknown): asserts answers is Record<string, SystemOneAnswer> {
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) throw new SystemOneError("System One response carries no answers", null, undefined, "answers_shape");
@@ -185,8 +198,7 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
     if (!roundedFromUnitMass(Object.values(a.probabilities as Record<string, number>))) throw new SystemOneError("System One answer: probabilities must sum to 1", null, undefined, "probability_mass");
     if (q.type === "score") {
       if (!a.legend || typeof a.legend !== "object" || Array.isArray(a.legend) || Object.keys(a.legend).length !== expectedKeys.length || q.criteria.some((text, index) => a.legend[String(index)] !== text)) throw new SystemOneError("System One answer: legend must match the score criteria", null, undefined, "score_legend");
-      const weighted = expectedKeys.reduce((sum, key) => sum + Number(key) * a.probabilities[key], 0);
-      if (Math.abs(weighted - a.score) > 1e-5) throw new SystemOneError("System One answer: score must match its weighted distribution", null, undefined, "score_consistency");
+      if (scoreContradictsDistribution(a.score, a.probabilities)) throw new SystemOneError("System One answer: score must match its weighted distribution", null, undefined, "score_consistency");
     }
     if (q.type === "choice" && !(typeof a.choice === "string" && Object.prototype.hasOwnProperty.call(q.criteria, a.choice))) throw new SystemOneError("System One answer: choice is not an option", null, undefined, "choice_option");
     if (q.type === "score" && !(typeof a.score === "number" && Number.isFinite(a.score) && a.score >= 0 && a.score <= q.criteria.length - 1)) throw new SystemOneError("System One answer: score is outside its levels", null, undefined, "score_range");
