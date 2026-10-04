@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `validateAnswers` accepts a Score whose `score` could be the two-place rounding of its distribution's weighted level, by the same rule as the probability mass: a value on the two-place grid may be off by up to 0.005, and any other value is taken as exact. The unrounded probabilities lie within their rounding intervals and still sum to 1, which bounds the weighted level, and the score must meet those bounds. jev-1.13 rounds both the probabilities and the score, so valid Score answers were refused as `score_consistency`. A full-precision score with full-precision probabilities is still held to 1e-5, and a score no rounding explains is still refused. A score that isn't a number still fails as `score_range`. Answers are accepted as reported, never recomputed. (GRE-3057)
+
 ## 0.1.0-beta.8, 2026-10-02
 
 - A call node's deadline never interrupts its effect early. Node timers can fire up to 1 ms before the requested instant, so a 1 s deadline could abort an effect at 999.7 ms. When the deadline timer fires before the deadline, it reads the monotonic clock and re-arms for the remainder. The attempt deadline is measured on `performance.now()` instead of `Date.now()`.

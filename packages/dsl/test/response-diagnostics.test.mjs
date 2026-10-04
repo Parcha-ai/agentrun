@@ -37,11 +37,13 @@ test('valid primitive identity, fractional scores, arbitrary keys and tolerance 
   const questions = { [secret]: question, score: scoreQuestion, n: { type: 'noul' } };
   const answers = { [secret]: answer(), score: score(), n: { type: 'noul', noul: 0 } };
   const before = structuredClone(answers); validateAnswers(questions, answers); assert.deepEqual(answers, before);
+  // Full-precision values carry no rounding allowance: the score must match Σ level·p within 1e-5.
+  const preciseScore = () => ({ ...score(), score: 0.3877, probabilities: { 0: 0.6123, 1: 0.3877 } });
   for (const delta of [-0.000009, 0.000009]) {
-    const s = score(); s.score += delta; validateAnswers({ x: scoreQuestion }, { x: s });
+    const s = preciseScore(); s.score += delta; validateAnswers({ x: scoreQuestion }, { x: s });
   }
   for (const delta of [-0.000011, 0.000011]) {
-    const s = score(); s.score += delta;
+    const s = preciseScore(); s.score += delta;
     assert.throws(() => validateAnswers({ x: scoreQuestion }, { x: s }), e => e.responseReason === 'score_consistency');
   }
   // Full-precision values carry no rounding allowance: the sum must be 1 within 1e-5.
@@ -89,6 +91,32 @@ test('two-place rounding drift from System One is accepted without rewriting the
   const flat = p => ({ type: 'choice', choice: 'o0', confidence: 0, probabilities: Object.fromEntries(Object.keys(wide).map(k => [k, p])) });
   assert.throws(() => validateAnswers({ x: { type: 'choice', instructions: 'Fictional', criteria: wide } }, { x: flat(0.009) }), e => e.responseReason === 'probability_mass');
   validateAnswers({ x: { type: 'choice', instructions: 'Fictional', criteria: wide } }, { x: flat(0.005) });
+});
+
+test('a Score rounded to two places is accepted when some unrounded distribution explains it', () => {
+  const criteria = ['None', 'Some', 'Most', 'All'];
+  const four = { type: 'score', instructions: 'Fictional coverage', criteria };
+  const legend = Object.fromEntries(criteria.map((text, i) => [String(i), text]));
+  const reported = (score, p) => ({ type: 'score', score, confidence: 0.6, legend, probabilities: Object.fromEntries(p.map((v, i) => [String(i), v])) });
+  // jev-1.13.0 shape from GRE-3057: the weighted level of the reported probabilities is exactly the score.
+  const sample = JSON.parse('{"type":"score","score":2.81,"confidence":0.62,"legend":{"0":"None","1":"Some","2":"Most","3":"All"},"probabilities":{"0":0.0,"1":0.0,"2":0.19,"3":0.81}}');
+  const before = structuredClone(sample);
+  validateAnswers({ x: four }, { x: sample });
+  assert.deepEqual(sample, before);
+  // True distribution 0.004, 0.006, 0.1949, 0.7951 has score 2.7811. Rounded: 0, 0.01, 0.19, 0.80 and 2.78,
+  // whose reported weighted level is 2.79, 0.01 away from the score. beta.8 refused this as score_consistency.
+  validateAnswers({ x: four }, { x: reported(2.78, [0, 0.01, 0.19, 0.8]) });
+  // Unrounded probabilities that round to these and sum to 1 give a weighted level in [2.77, 2.80]:
+  // mass beyond each low end (0.015 in all) goes to the highest levels for the maximum, the lowest for
+  // the minimum. Widening each probability alone, ignoring the sum, would wrongly reach 2.76–2.82.
+  for (const s of [2.6, 2.95, 2.83, 2.76]) {
+    assert.throws(() => validateAnswers({ x: four }, { x: reported(s, [0, 0.01, 0.19, 0.8]) }), e => e.responseReason === 'score_consistency');
+  }
+  // A full-precision score next to rounded probabilities gets no allowance of its own.
+  validateAnswers({ x: four }, { x: reported(2.7949, [0, 0.01, 0.19, 0.8]) });
+  for (const s of [2.8051, 2.8149, 2.7649]) {
+    assert.throws(() => validateAnswers({ x: four }, { x: reported(s, [0, 0.01, 0.19, 0.8]) }), e => e.responseReason === 'score_consistency');
+  }
 });
 
 test('public reason membership and legacy constructor positions are stable', () => {

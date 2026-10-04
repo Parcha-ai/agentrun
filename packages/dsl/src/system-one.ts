@@ -167,6 +167,29 @@ function roundedFromUnitMass(probabilities: number[]): boolean {
   }
   return low <= 1 + 1e-5 && high >= 1 - 1e-5;
 }
+// A Score's weighted level drifts the same way. The unrounded probabilities lie within their rounding
+// intervals and sum to 1, so Σ level·p lies between two bounds: start every level at its interval's
+// low end, then give the rest of the unit mass to the lowest levels (the minimum) or the highest (the
+// maximum), each up to its interval's high end. A score on the grid is itself off by up to 0.005. The
+// score is accepted when its interval meets [min, max]; with no grid values this is
+// |score − Σ level·p| ≤ 1e-5. A score that is not a number contradicts nothing here and is left to
+// the range check, as before.
+function scoreContradictsDistribution(score: number, probabilities: Record<string, number>): boolean {
+  const levels = Object.entries(probabilities).map(([level, p]) => {
+    const step = onTwoPlaceGrid(p) ? ROUNDING_HALF_STEP : 0;
+    return { level: Number(level), low: Math.max(0, p - step), high: Math.min(1, p + step) };
+  }).sort((a, b) => a.level - b.level);
+  const floor = levels.reduce((sum, l) => sum + l.level * l.low, 0);
+  const spare = Math.max(0, 1 - levels.reduce((sum, l) => sum + l.low, 0));
+  const fill = (order: typeof levels) => {
+    let rest = spare, weighted = floor;
+    for (const l of order) { const add = Math.min(rest, l.high - l.low); weighted += l.level * add; rest -= add; }
+    return weighted;
+  };
+  const min = fill(levels), max = fill([...levels].reverse());
+  const step = onTwoPlaceGrid(score) ? ROUNDING_HALF_STEP : 0;
+  return score - step > max + 1e-5 || score + step < min - 1e-5;
+}
 
 export function validateAnswers(questions: Record<string, SystemOneQuestion>, answers: unknown): asserts answers is Record<string, SystemOneAnswer> {
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) throw new SystemOneError("System One response carries no answers", null, undefined, "answers_shape");
@@ -185,8 +208,7 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
     if (!roundedFromUnitMass(Object.values(a.probabilities as Record<string, number>))) throw new SystemOneError("System One answer: probabilities must sum to 1", null, undefined, "probability_mass");
     if (q.type === "score") {
       if (!a.legend || typeof a.legend !== "object" || Array.isArray(a.legend) || Object.keys(a.legend).length !== expectedKeys.length || q.criteria.some((text, index) => a.legend[String(index)] !== text)) throw new SystemOneError("System One answer: legend must match the score criteria", null, undefined, "score_legend");
-      const weighted = expectedKeys.reduce((sum, key) => sum + Number(key) * a.probabilities[key], 0);
-      if (Math.abs(weighted - a.score) > 1e-5) throw new SystemOneError("System One answer: score must match its weighted distribution", null, undefined, "score_consistency");
+      if (scoreContradictsDistribution(a.score, a.probabilities)) throw new SystemOneError("System One answer: score must match its weighted distribution", null, undefined, "score_consistency");
     }
     if (q.type === "choice" && !(typeof a.choice === "string" && Object.prototype.hasOwnProperty.call(q.criteria, a.choice))) throw new SystemOneError("System One answer: choice is not an option", null, undefined, "choice_option");
     if (q.type === "score" && !(typeof a.score === "number" && Number.isFinite(a.score) && a.score >= 0 && a.score <= q.criteria.length - 1)) throw new SystemOneError("System One answer: score is outside its levels", null, undefined, "score_range");
