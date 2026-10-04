@@ -27,6 +27,7 @@
     "verify:source": "node scripts/verify-source.mjs",
     "export:source": "node scripts/export-source.mjs",
     "demo:support": "node scripts/check-node.mjs && node examples/run-support-answer.mjs",
+    "demo:rank": "node scripts/check-node.mjs && node examples/run-rank-candidates.mjs",
     "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
   },
   "devDependencies": {

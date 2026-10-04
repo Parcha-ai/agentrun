@@ -118,6 +118,7 @@ Pi uses the packaged skill to build, inspect, and run the workflow. Run `/reload
 | --- | --- |
 | [Support answers](docs/support-quickstart.md) | Search, Jev checks, optional investigation, review fallback |
 | [Research a decision](examples/typed-research.ts) | Nested workflows, parallel research, evidence selection, report writing |
+| [Rank a list](examples/rank-candidates.mjs) | A reusable workflow: Jev scores, code sorts and applies quotas, duplicates are dropped, long lists split themselves |
 | [Standalone TypeScript starter](examples/starter/README.md) | Install the packages in your own app; search and screen evidence |
 
 <a id="run-it"></a>
