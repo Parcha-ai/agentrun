@@ -98,7 +98,10 @@ async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>): P
         if (error.code === 'invalid_response' && isJevResponseReason(reason) && reason !== 'max_tokens_exceeded') diagnostic.reason = reason;
         if (error.code === 'http') {
           if (Number.isInteger(error.status) && error.status! >= 100 && error.status! <= 599) diagnostic.status = error.status;
-          if (reason === 'max_tokens_exceeded') diagnostic.reason = reason;
+          if (reason === 'max_tokens_exceeded') {
+            diagnostic.reason = reason;
+            diagnostic.message = 'Jev refused the request: it exceeds the model\'s token budget. Send fewer or shorter items per request. No judgment was accepted; provider details are omitted.';
+          }
         }
       }
     } else if (error instanceof PiRunError) {

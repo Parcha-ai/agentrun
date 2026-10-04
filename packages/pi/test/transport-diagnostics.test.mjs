@@ -56,6 +56,7 @@ test('all fixed Jev reasons reach native reports and presentation without arbitr
     assert.equal(report.error.reason, reason); assert.equal(report.error.stage, 'check-source'); safe(report);
     const formatted = formatRunReport(report); assert(formatted.includes(`Reason: ${reason}`)); assert.doesNotMatch(formatted, new RegExp(secret));
     assert.equal(formatted.includes('HTTP status: 400'), http);
+    assert.equal(/exceeds the model's token budget/.test(report.error.message), http);
     await service.dispose();
   }
 });
