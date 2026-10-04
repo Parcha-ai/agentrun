@@ -183,18 +183,22 @@ test('map.resultPath returns only the selected item result; missing paths fail a
   assert.equal(validateWorkflow(flow({ ...map, resultPath: '' })).ok, false);
 });
 
-test('sift guards expanded question count at 256 before dispatch and permits a deliberate host override', async () => {
+test('sift splits an expanded question count over 256 into requests that each fit, and a host override keeps one', async () => {
   const Questions = object({ first: { type: 'boolean', description: 'Does the first condition hold?' }, second: { type: 'boolean', description: 'Does the second condition hold?' } });
   const candidate = flow({ node: 'sift', label: 'screen', itemsPath: 'items', out: 'Questions', as: 'screened' }, { Questions });
-  let calls = 0;
-  const deps = { runJudge: async params => { calls++; return scriptedJudge(params); } };
+  const sizes = [];
+  const deps = { runJudge: async params => { sizes.push(Object.keys(params.questions).length); return scriptedJudge(params); } };
   const input = { items: Array.from({ length: 129 }, (_, index) => ({ index })) };
-  await assert.rejects(runWorkflow(candidate, input, deps), /258 questions exceed maxQuestionsPerRequest \(256\)/);
-  assert.equal(calls, 0);
+  const split = await runWorkflow(candidate, input, deps);
+  assert.equal(split.status, 'complete');
+  assert.deepEqual(sizes, [256, 2]);
+  assert.equal(split.state.screened.values.length, 129);
+  sizes.length = 0;
   assert.equal((await runWorkflow(candidate, { items: input.items.slice(0, 128) }, deps)).status, 'complete');
-  assert.equal(calls, 1);
+  assert.deepEqual(sizes, [256]);
+  sizes.length = 0;
   assert.equal((await runWorkflow(candidate, input, { ...deps, maxQuestionsPerRequest: 258 })).status, 'complete');
-  assert.equal(calls, 2);
+  assert.deepEqual(sizes, [258]);
 });
 
 test('invalid question limits and statically oversized judge schemas fail before prior effects', async () => {
