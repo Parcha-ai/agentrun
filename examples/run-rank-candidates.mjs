@@ -22,6 +22,7 @@ export async function main(args) {
   const live = args.includes('--live');
   const inputAt = args.indexOf('--input');
   if (inputAt >= 0 && !live) throw new Error('--input requires --live: the scripted judge only knows the fictional proposals.');
+  if (inputAt >= 0 && (!args[inputAt + 1] || args[inputAt + 1].startsWith('-'))) throw new Error('--input needs the path of a JSON file.');
   const input = inputAt >= 0 ? JSON.parse(await readFile(args[inputAt + 1], 'utf8')) : request;
   let runJudge, requests = [];
   if (live) {

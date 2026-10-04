@@ -22,44 +22,52 @@ export const rankCandidates = {
       },
       {
         node: 'code', label: 'shortlist',
-        // Keep candidates at or above the minimum score, best first (earlier wins a tie), and pair up
-        // the best 2 × top of them for the duplicate check.
+        // Keep candidates at or above the minimum score, best first (earlier wins a tie). The best
+        // 2 × top of them are considered for the list, and every two of those are paired for the
+        // duplicate check. Candidates are tracked by position, so a repeated id cannot mix two up.
         code: `s => {
           const scored = s.candidates.map((candidate, index) => ({ candidate, index, score: s.fit.answers[index].answers.fit.score }));
-          const cut = scored.filter(c => c.score < s.minScore).map(c => ({ id: c.candidate.id, reason: 'below the minimum score' }));
           const pool = scored.filter(c => c.score >= s.minScore).sort((a, b) => b.score - a.score || a.index - b.index);
           const considered = pool.slice(0, s.top * 2);
-          const pairs = [];
+          const cut = [
+            ...scored.filter(c => c.score < s.minScore).map(c => ({ id: c.candidate.id, reason: 'below the minimum score' })),
+            ...pool.slice(s.top * 2).map(c => ({ id: c.candidate.id, reason: 'outside the best ' + s.top * 2 })),
+          ];
+          const pairs = [], paired = [];
           for (let i = 0; i < considered.length; i++) for (let j = i + 1; j < considered.length; j++) {
             pairs.push({ keep: considered[i].candidate, other: considered[j].candidate });
+            paired.push([i, j]);
           }
-          return { pool, pairs, cut };
+          return { considered, pairs, paired, cut };
         }`,
       },
       {
         // Each pair is one item, so 2 × top candidates make top × (2 × top − 1) questions.
+        // `duplicates.kept` lists the positions in `pairs` that were judged the same.
         node: 'sift', label: 'find-duplicates', itemsPath: 'pairs',
         out: 'Same', as: 'duplicates', keep: { path: 'same', gte: 0.8 },
       },
       {
         node: 'code', label: 'rank',
-        // Walk the pool best first. A candidate is cut when a better one that stays covers the same
-        // ground, when its bucket is full, or when the list is full.
+        // Walk the considered candidates best first. One is cut when a better one that stays covers
+        // the same ground, when the list is full, or when its bucket is full. Only considered
+        // candidates can be chosen, so every pair that could end up on the list was checked.
         code: `s => {
           const cut = [...s.cut];
-          const ranked = [];
-          const perBucket = {};
-          for (const { candidate, score } of s.pool) {
-            const twin = s.duplicates.items.find(pair => pair.other.id === candidate.id && ranked.some(r => r.id === pair.keep.id));
-            const taken = perBucket[candidate.bucket] ?? 0;
-            if (twin) cut.push({ id: candidate.id, reason: 'duplicate of ' + twin.keep.id });
+          const ranked = [], chosen = new Set(), perBucket = new Map();
+          const same = s.duplicates.kept.map(k => s.paired[k]);
+          s.considered.forEach(({ candidate, score }, position) => {
+            const twin = same.find(([better, worse]) => worse === position && chosen.has(better));
+            const taken = perBucket.get(candidate.bucket) ?? 0;
+            if (twin) cut.push({ id: candidate.id, reason: 'duplicate of ' + s.considered[twin[0]].candidate.id });
             else if (ranked.length >= s.top) cut.push({ id: candidate.id, reason: 'beyond the top ' + s.top });
             else if (taken >= s.perBucket) cut.push({ id: candidate.id, reason: 'bucket ' + candidate.bucket + ' is full' });
             else {
-              perBucket[candidate.bucket] = taken + 1;
+              chosen.add(position);
+              perBucket.set(candidate.bucket, taken + 1);
               ranked.push({ id: candidate.id, title: candidate.title, bucket: candidate.bucket, score });
             }
-          }
+          });
           return { ranking: { ranked, cut } };
         }`,
       },

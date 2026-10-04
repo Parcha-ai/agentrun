@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { runWorkflow, validateWorkflow } from '../packages/dsl/dist/index.js';
 import { rankCandidates } from './rank-candidates.mjs';
 import { createScriptedJudge, fitScores, request } from './rank-candidates-fixtures.mjs';
+import { main } from './run-rank-candidates.mjs';
 
 test('ranks the proposals: best first, a duplicate and a full bucket cut with their reasons', async () => {
   assert.deepEqual(validateWorkflow(rankCandidates, { input: request }), { ok: true });
@@ -60,15 +61,48 @@ test('600 candidates need no batching in the workflow: the sift splits itself an
   // The same ranking computed directly from the scores.
   const expected = [];
   const perBucket = {};
-  for (const c of candidates.map((c, index) => ({ ...c, index, score: scores[c.id] })).filter(c => c.score >= 1).sort((a, b) => b.score - a.score || a.index - b.index)) {
+  const best = candidates.map((c, index) => ({ ...c, index, score: scores[c.id] })).filter(c => c.score >= 1).sort((a, b) => b.score - a.score || a.index - b.index);
+  for (const c of best.slice(0, 80)) {
     if (expected.length < 40 && (perBucket[c.bucket] ?? 0) < 8) { perBucket[c.bucket] = (perBucket[c.bucket] ?? 0) + 1; expected.push(c.id); }
   }
   assert.deepEqual(result.output.ranked.map(r => r.id), expected);
   assert.equal(result.output.ranked.length, 40);
   assert.equal(result.output.ranked.length + result.output.cut.length, 600);
+  assert.equal(result.output.cut.filter(c => c.reason === 'outside the best 80').length, best.length - 80);
 });
 
 test('the fixture scores are the scores the workflow ranks by', async () => {
   const result = await runWorkflow(rankCandidates, { ...request, top: 12, perBucket: 12, minScore: 0 }, { runJudge: createScriptedJudge({ duplicates: [] }).runJudge });
   assert.deepEqual(Object.fromEntries(result.output.ranked.map(r => [r.id, r.score])), fitScores);
+});
+
+test('only candidates that were checked against each other can be chosen', async () => {
+  // top 2 considers the best four. Three of them are the same talk, so one list slot stays empty
+  // rather than going to p06, which was never compared with the others.
+  const duplicates = [['p01', 'p03'], ['p01', 'p02'], ['p03', 'p02']];
+  const result = await runWorkflow(rankCandidates, { ...request, top: 2, perBucket: 2 }, { runJudge: createScriptedJudge({ duplicates }).runJudge });
+  assert.deepEqual(result.output.ranked.map(r => r.id), ['p01', 'p09']);
+  assert.deepEqual(result.output.cut.filter(c => ['p03', 'p02', 'p04'].includes(c.id)), [
+    { id: 'p04', reason: 'outside the best 4' }, { id: 'p03', reason: 'duplicate of p01' }, { id: 'p02', reason: 'duplicate of p01' },
+  ]);
+  const short = await runWorkflow(rankCandidates, { ...request, top: 2, perBucket: 1 }, { runJudge: createScriptedJudge({ duplicates }).runJudge });
+  assert.deepEqual(short.output.ranked.map(r => r.id), ['p01'], 'p09 shares the full bucket; nothing unchecked fills the slot');
+});
+
+test('a bucket named like an object method is counted, and candidates that share an id stay distinct', async () => {
+  const candidates = [
+    { id: 'a', bucket: 'toString', title: 'First', summary: 'One.' },
+    { id: 'a', bucket: 'toString', title: 'Second', summary: 'Two.' },
+    { id: 'b', bucket: 'toString', title: 'Third', summary: 'Three.' },
+    { id: 'c', bucket: 'constructor', title: 'Fourth', summary: 'Four.' },
+  ];
+  const scores = { a: 2.5, b: 2.4, c: 2.3 };
+  const result = await runWorkflow(rankCandidates, { brief: request.brief, candidates, top: 3, perBucket: 2, minScore: 1 }, { runJudge: createScriptedJudge({ scores, duplicates: [] }).runJudge });
+  assert.deepEqual(result.output.ranked.map(r => r.title), ['First', 'Second', 'Fourth']);
+  assert.deepEqual(result.output.cut, [{ id: 'b', reason: 'bucket toString is full' }]);
+});
+
+test('the runner says what --input needs', async () => {
+  await assert.rejects(main(['--live', '--input']), /--input needs the path of a JSON file/);
+  await assert.rejects(main(['--input', 'request.json']), /--input requires --live/);
 });
