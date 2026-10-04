@@ -6,6 +6,7 @@ const proposal = (id, bucket, title, summary) => ({ id, bucket, title, summary }
 export const request = {
   brief: 'A one-day programme for engineers who run agent workflows in production: what breaks, how to see it, and how to keep cost and latency in hand.',
   top: 5,
+  consider: 10,
   perBucket: 2,
   minScore: 1.5,
   candidates: [

@@ -23,15 +23,16 @@ export const rankCandidates = {
       {
         node: 'code', label: 'shortlist',
         // Keep candidates at or above the minimum score, best first (earlier wins a tie). The best
-        // 2 × top of them are considered for the list, and every two of those are paired for the
-        // duplicate check. Candidates are tracked by position, so a repeated id cannot mix two up.
+        // `consider` of them can make the list, and every two of those are paired for the duplicate
+        // check: consider × (consider − 1) / 2 questions, which is why the caller sets it. Candidates
+        // are tracked by position, so a repeated id cannot mix two up.
         code: `s => {
           const scored = s.candidates.map((candidate, index) => ({ candidate, index, score: s.fit.answers[index].answers.fit.score }));
           const pool = scored.filter(c => c.score >= s.minScore).sort((a, b) => b.score - a.score || a.index - b.index);
-          const considered = pool.slice(0, s.top * 2);
+          const considered = pool.slice(0, s.consider);
           const cut = [
             ...scored.filter(c => c.score < s.minScore).map(c => ({ id: c.candidate.id, reason: 'below the minimum score' })),
-            ...pool.slice(s.top * 2).map(c => ({ id: c.candidate.id, reason: 'outside the best ' + s.top * 2 })),
+            ...pool.slice(s.consider).map(c => ({ id: c.candidate.id, reason: 'outside the best ' + s.consider + ' considered' })),
           ];
           const pairs = [], paired = [];
           for (let i = 0; i < considered.length; i++) for (let j = i + 1; j < considered.length; j++) {
@@ -42,7 +43,7 @@ export const rankCandidates = {
         }`,
       },
       {
-        // Each pair is one item, so 2 × top candidates make top × (2 × top − 1) questions.
+        // Each pair is one item.
         // `duplicates.kept` lists the positions in `pairs` that were judged the same.
         node: 'sift', label: 'find-duplicates', itemsPath: 'pairs',
         out: 'Same', as: 'duplicates', keep: { path: 'same', gte: 0.8 },
@@ -51,7 +52,9 @@ export const rankCandidates = {
         node: 'code', label: 'rank',
         // Walk the considered candidates best first. One is cut when a better one that stays covers
         // the same ground, when the list is full, or when its bucket is full. Only considered
-        // candidates can be chosen, so every pair that could end up on the list was checked.
+        // candidates can be chosen, so every pair that could end up on the list was checked. When
+        // duplicates and quotas leave fewer than `top`, the list is shorter and `cut` says why: raise
+        // `consider` to compare more candidates.
         code: `s => {
           const cut = [...s.cut];
           const ranked = [], chosen = new Set(), perBucket = new Map();
@@ -84,11 +87,12 @@ function contracts() {
   return {
     Request: {
       type: 'object', additionalProperties: false,
-      required: ['brief', 'candidates', 'top', 'perBucket', 'minScore'],
+      required: ['brief', 'candidates', 'top', 'consider', 'perBucket', 'minScore'],
       properties: {
         brief: text,
         candidates: { type: 'array', items: candidate },
         top: { type: 'integer', minimum: 1 },
+        consider: { type: 'integer', minimum: 1 },
         perBucket: { type: 'integer', minimum: 1 },
         minScore: { type: 'number', minimum: 0, maximum: 3 },
       },

@@ -11,7 +11,8 @@ export const help = `Rank a list with the rank-candidates AgentRun workflow.
 
 No flags: the fictional talk proposals with a scripted judge, no live calls.
 --live: Jev answers the questions. Configure TYPESAFE_API_KEY on the server.
---input: JSON { "brief", "candidates": [{ "id", "title", "bucket", "summary" }], "top", "perBucket", "minScore" }.
+--input: JSON { "brief", "candidates": [{ "id", "title", "bucket", "summary" }], "top", "consider", "perBucket", "minScore" }.
+         "consider" is how many of the best candidates are compared with each other and can make the list.
 --help: show this help.
 
 Build the AgentRun source first. Get a key: https://console.typesafe.ai/keys

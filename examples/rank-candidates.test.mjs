@@ -34,7 +34,7 @@ test('another workflow calls it as one step', async () => {
     input: { schemaId: 'Request' }, output: { schemaId: 'Plan', path: 'plan' },
     root: { node: 'chain', steps: [
       { node: 'workflow', label: 'rank-proposals', workflow: rankCandidates, out: 'Ranking', as: 'ranking',
-        input: { brief: '{brief}', candidates: '{candidates}', top: '{top}', perBucket: '{perBucket}', minScore: '{minScore}' } },
+        input: { brief: '{brief}', candidates: '{candidates}', top: '{top}', consider: '{consider}', perBucket: '{perBucket}', minScore: '{minScore}' } },
       { node: 'code', label: 'plan', code: 's => ({ plan: { talks: s.ranking.ranked.map(r => r.title) } })' },
     ] },
   };
@@ -49,7 +49,7 @@ test('600 candidates need no batching in the workflow: the sift splits itself an
   const candidates = Array.from({ length: 600 }, (_, i) => ({ id: `c${i}`, bucket: `b${i % 7}`, title: `Candidate ${i}`, summary: `Fictional summary ${i}.` }));
   // A fixed pseudo-random score per candidate, between 0 and 3.
   const scores = Object.fromEntries(candidates.map((c, i) => [c.id, Math.round(((i * 7919) % 301)) / 100]));
-  const input = { brief: request.brief, candidates, top: 40, perBucket: 8, minScore: 1 };
+  const input = { brief: request.brief, candidates, top: 40, consider: 80, perBucket: 8, minScore: 1 };
   const { runJudge, requests } = createScriptedJudge({ scores, duplicates: [] });
   const result = await runWorkflow(rankCandidates, input, { runJudge });
   assert.equal(result.status, 'complete');
@@ -68,25 +68,29 @@ test('600 candidates need no batching in the workflow: the sift splits itself an
   assert.deepEqual(result.output.ranked.map(r => r.id), expected);
   assert.equal(result.output.ranked.length, 40);
   assert.equal(result.output.ranked.length + result.output.cut.length, 600);
-  assert.equal(result.output.cut.filter(c => c.reason === 'outside the best 80').length, best.length - 80);
+  assert.equal(result.output.cut.filter(c => c.reason === 'outside the best 80 considered').length, best.length - 80);
 });
 
 test('the fixture scores are the scores the workflow ranks by', async () => {
-  const result = await runWorkflow(rankCandidates, { ...request, top: 12, perBucket: 12, minScore: 0 }, { runJudge: createScriptedJudge({ duplicates: [] }).runJudge });
+  const result = await runWorkflow(rankCandidates, { ...request, top: 12, consider: 12, perBucket: 12, minScore: 0 }, { runJudge: createScriptedJudge({ duplicates: [] }).runJudge });
   assert.deepEqual(Object.fromEntries(result.output.ranked.map(r => [r.id, r.score])), fitScores);
 });
 
 test('only candidates that were checked against each other can be chosen', async () => {
-  // top 2 considers the best four. Three of them are the same talk, so one list slot stays empty
-  // rather than going to p06, which was never compared with the others.
+  // Four are considered. Three of them are the same talk, so a list slot is never filled by a
+  // candidate that was not compared with the others.
   const duplicates = [['p01', 'p03'], ['p01', 'p02'], ['p03', 'p02']];
-  const result = await runWorkflow(rankCandidates, { ...request, top: 2, perBucket: 2 }, { runJudge: createScriptedJudge({ duplicates }).runJudge });
+  const result = await runWorkflow(rankCandidates, { ...request, top: 2, consider: 4, perBucket: 2 }, { runJudge: createScriptedJudge({ duplicates }).runJudge });
   assert.deepEqual(result.output.ranked.map(r => r.id), ['p01', 'p09']);
   assert.deepEqual(result.output.cut.filter(c => ['p03', 'p02', 'p04'].includes(c.id)), [
-    { id: 'p04', reason: 'outside the best 4' }, { id: 'p03', reason: 'duplicate of p01' }, { id: 'p02', reason: 'duplicate of p01' },
+    { id: 'p04', reason: 'outside the best 4 considered' }, { id: 'p03', reason: 'duplicate of p01' }, { id: 'p02', reason: 'duplicate of p01' },
   ]);
-  const short = await runWorkflow(rankCandidates, { ...request, top: 2, perBucket: 1 }, { runJudge: createScriptedJudge({ duplicates }).runJudge });
+  const narrow = { ...request, top: 2, consider: 4, perBucket: 1 };
+  const short = await runWorkflow(rankCandidates, narrow, { runJudge: createScriptedJudge({ duplicates }).runJudge });
   assert.deepEqual(short.output.ranked.map(r => r.id), ['p01'], 'p09 shares the full bucket; nothing unchecked fills the slot');
+  // The caller widens the window: p04 is now compared with the others and takes the second slot.
+  const wide = await runWorkflow(rankCandidates, { ...narrow, consider: 5 }, { runJudge: createScriptedJudge({ duplicates }).runJudge });
+  assert.deepEqual(wide.output.ranked.map(r => r.id), ['p01', 'p04']);
 });
 
 test('a bucket named like an object method is counted, and candidates that share an id stay distinct', async () => {
@@ -97,7 +101,7 @@ test('a bucket named like an object method is counted, and candidates that share
     { id: 'c', bucket: 'constructor', title: 'Fourth', summary: 'Four.' },
   ];
   const scores = { a: 2.5, b: 2.4, c: 2.3 };
-  const result = await runWorkflow(rankCandidates, { brief: request.brief, candidates, top: 3, perBucket: 2, minScore: 1 }, { runJudge: createScriptedJudge({ scores, duplicates: [] }).runJudge });
+  const result = await runWorkflow(rankCandidates, { brief: request.brief, candidates, top: 3, consider: 4, perBucket: 2, minScore: 1 }, { runJudge: createScriptedJudge({ scores, duplicates: [] }).runJudge });
   assert.deepEqual(result.output.ranked.map(r => r.title), ['First', 'Second', 'Fourth']);
   assert.deepEqual(result.output.cut, [{ id: 'b', reason: 'bucket toString is full' }]);
 });
