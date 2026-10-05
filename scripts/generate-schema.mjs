@@ -35,6 +35,15 @@ function portable(value) {
 const clean = portable(schema);
 clean.definitions = Object.fromEntries(Object.entries(clean.definitions ?? {}).map(([name, value]) => [names.get(name) ?? name, value]));
 Object.assign(schema, clean);
+// TypeScript marks each route form's foreign fields as `never`, which the generator drops. Restore the
+// exclusion so an editor refuses a route that mixes the form Jev chooses with the form state chooses,
+// as validateWorkflow does.
+const routeForms = (schema.definitions?.WorkflowNode?.anyOf ?? []).filter(form => form.properties?.node?.const === 'route');
+const exclude = (form, fields) => { form.not = { anyOf: fields.map(field => ({ required: [field] })) }; };
+const judged = routeForms.find(form => form.properties.instructions), byValue = routeForms.find(form => form.properties.valuePath);
+if (routeForms.length !== 2 || !judged || !byValue) throw new Error('Expected the two route forms in the Workflow schema');
+exclude(judged, ['valuePath', 'otherwise']);
+exclude(byValue, ['state', 'instructions', 'unsure']);
 schema.$id = 'https://agentrun.ai/schema/v2/workflow.schema.json';
 schema.title = 'AgentRun DSL v2 workflow';
 schema.$comment = 'Generated from the public Workflow TypeScript type. This schema assists editors; validateWorkflow additionally enforces bounds, state references and node semantics. Generation: node scripts/generate-schema.mjs';

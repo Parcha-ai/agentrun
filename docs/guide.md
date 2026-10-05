@@ -129,7 +129,7 @@ For an authoritative SOP, supply complete `rubricSections` during authoring and 
 | `judge` | Ask a flat set of typed questions. |
 | `pick` | Choose one item, optionally none, retaining the distribution. |
 | `sift` | Ask questions about a collection and retain selected items. |
-| `route` | Choose a branch by meaning, with an explicit uncertain fallback. |
+| `route` | Run one of several branches. Jev chooses by meaning, with an explicit uncertain fallback, or a `valuePath` names a branch the workflow already decided, with no model call. |
 | `agent`, `decide`, `extract` | Obtain a schema-checked result from an agent adapter. |
 | `code` | Apply a trusted JavaScript state transformation. |
 | `call` | Delegate a bounded tool, executor, or shell effect to the host. |
@@ -138,6 +138,26 @@ For an authoritative SOP, supply complete `rubricSections` during authoring and 
 | `report`, `artifact` | Declare terminal prose or file metadata; the host owns delivery. |
 
 Start with `chain`, `agent`/`extract`, `judge`, `code`, and `escalate`. Add collection and concurrency nodes when the workflow needs them. `report`, `artifact`, shell/executor transports, recovery and slices are advanced host integration; the host implements tools, delivery and storage.
+
+### Jev, code, or route by value
+
+Ask Jev what needs judgment: whether an answer resolves a request, whether two records describe the same thing, which category a ticket belongs to. Compute in code what is certain from the data: lookups, arithmetic, exact matches, and the threshold you apply to Jev's probabilities. Once a decision is in state, route by it instead of asking again:
+
+```js
+{ node: 'judge', label: 'classify', state: { ticket: '{ticket}' }, out: 'Kind', as: 'kind' },
+{ node: 'code', label: 'policy', code: `s => ({ action:
+    s['kind$answers'].confidence.kind >= 0.9 ? s.kind.kind : 'clarify' })` },
+{ node: 'route', label: 'act', valuePath: 'action', otherwise: 'clarify',
+  branches: { refund: { body: refundSteps }, bug: { body: bugSteps },
+              question: { body: docSteps }, clarify: { body: followUp } } }
+```
+
+The route asks nothing. It runs the branch the string at `valuePath` names:
+- A missing value or an unknown name takes `otherwise`. Without `otherwise`, the route fails before any branch runs.
+- A number, boolean or object is never treated as a branch name.
+- `as` records `{value, taken, fallback}`.
+
+A second `route` with `instructions` would cost another request, and it could choose differently from the judge, past your threshold. Use the Jev form of `route` when the choice itself is the judgment and nothing has decided it yet.
 
 ### State, instructions and collection results
 

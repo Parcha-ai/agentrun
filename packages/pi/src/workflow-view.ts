@@ -197,6 +197,7 @@ export function workflowView(workflow: unknown, options: {
       ...(source.requires?.length ? [`Requires: ${source.requires.join(', ')}`] : []),
       ...(source.state !== undefined ? ['Input binding:', readable(source.state)] : []),
       ...(source.instructions ? ['Instructions:', readable(source.instructions)] : []),
+      ...(typeof source.valuePath === 'string' ? [`Branch chosen by state at ${readable(source.valuePath, 200)}; no model is asked.`, ...(typeof source.otherwise === 'string' ? [`Otherwise: ${readable(source.otherwise, 200)}`] : [])] : []),
       ...(source.tools?.length ? [`Tools: ${source.tools.join(', ')}`] : []),
       ...(source.tool ? [`Tool: ${source.tool}`] : []),
       ...(source.args ? ['Tool arguments:', readable(source.args)] : []),

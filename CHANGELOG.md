@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `route` can run the branch a workflow has already decided. With `valuePath` in place of `state` and `instructions`, the string at that path names the branch, and no model is asked.
+  - A missing value or a name that matches no branch takes `otherwise` (a branch). Without one, the route fails before any branch runs, as `route_missing` or `route_unknown`. A value that is not a string fails as `route_type` and is never converted into a name.
+  - `as` records `{value, taken, fallback}`. There is no `$answers` sidecar, and the `route.chosen` event names only the branch taken.
+  - A route by value needs no `runJudge` adapter.
+  - The two forms never mix. The validator refuses `state`, `instructions`, `unsure` or branch `criteria` beside `valuePath`, refuses `otherwise` without it, and refuses a `valuePath` that no earlier node or input produces.
+  - Before, a workflow that had already decided either asked a second `route`, which costs a request and can contradict the decision, or ran each branch as a `map` over a list of zero or one items.
+  - The support example now uses it.
+  - The author contract and the Jev guide say when to ask Jev, when to compute in code, and when to route by value.
+  - The Lean model gains the form, with four theorems and six conformance cases. The Jev guide no longer says a `sift` always sends one request.
+
 ## 0.1.0-beta.9, 2026-10-04
 
 - `runEffect` receives `deadlineAt`: the attempt's deadline instant on this process's `performance.now()` clock, exactly as the interpreter armed its deadline timer, so a host can measure its own kill and an effect's duration against the instant the timer fires instead of a start time it stamps a moment later. Each attempt carries its own instant, and a host's composed and mapped calls receive it unchanged. It is absent only for a call with no deadline. Nothing else changes.

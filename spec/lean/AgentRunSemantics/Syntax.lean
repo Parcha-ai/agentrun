@@ -94,6 +94,10 @@ inductive Node where
       (questions : Nat) (keep : Bool) (as : String) (requires : List Path)
   | route (label : String) (state : Tmpl) (branches : List (String × Node))
       (unsure : Option (String × Rat)) (as : Option String) (requires : List Path)
+  /-- A `route` with `valuePath`: the string already in state at that path names the branch.
+  No oracle participates. -/
+  | routeValue (label : String) (valuePath : Path) (branches : List (String × Node))
+      (otherwise : Option String) (as : Option String) (requires : List Path)
   | call (label : String) (via : Via) (input : Tmpl) (out : Option String) (as : String)
       (produces : List String) (requires : List Path)
   /-- A child workflow invocation: the child's header and root are embedded. -/
@@ -116,7 +120,7 @@ def Node.asField : Node → Option String
   | .judge _ _ _ as _ => some as
   | .pick _ _ _ _ _ as _ => some as
   | .sift _ _ _ _ _ _ as _ => some as
-  | .route _ _ _ _ as _ => as
+  | .route _ _ _ _ as _ | .routeValue _ _ _ _ as _ => as
   | .call _ _ _ _ as _ _ => some as
   | .workflow _ _ _ _ _ as => some as
   | _ => none

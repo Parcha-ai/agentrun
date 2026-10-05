@@ -95,7 +95,7 @@ export function workflowShapeErrors(value: unknown, complete = false): string[] 
   const node = (entry: unknown, path: string): void => {
     if (entry === undefined) return; // missing bodies already receive semantic diagnostics
     if (!record(entry, path)) return;
-    strings(entry, path, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier"]);
+    strings(entry, path, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier", "valuePath", "otherwise"]);
     numeric(entry, path, ["maxConcurrency", "maxIters", "expect_iters", "deadline_s"]);
     for (const key of ["requires", "tools", "produces"]) stringList(entry[key], `${path}.${key}`);
     if (entry.sopSection !== undefined && typeof entry.sopSection !== "string") stringList(entry.sopSection, `${path}.sopSection`);

@@ -60,6 +60,9 @@ inductive StateReason where
   | missingMapResult
   | parallelWriteConflict
   | reservedStateKey
+  | routeMissing
+  | routeUnknown
+  | routeType
   deriving Repr, DecidableEq
 
 inductive Err where
@@ -457,6 +460,21 @@ def codePatch (label : String) (as : Option String) (out : Value) : List (String
 /-- Keys of a list of named branches. -/
 def branchNames (bs : List (String × Node)) : List String := bs.map (·.1)
 
+/-- A route by value reads state only: a declared string selects its own branch, a missing value or
+an unknown string takes `otherwise` when declared, and any other value fails. No oracle participates. -/
+def routeValueChoice (s : State) (vp : Path) (names : List String) (otherwise : Option String) :
+    Except StateReason (Value × String × Bool) :=
+  match getPathS s vp with
+  | some (.str value) =>
+    if names.contains value then .ok (.str value, value, false)
+    else match otherwise with
+      | some b => .ok (.str value, b, true)
+      | none => .error .routeUnknown
+  | none => match otherwise with
+    | some b => .ok (.null, b, true)
+    | none => .error .routeMissing
+  | _ => .error .routeType
+
 mutual
 /-- Run one node on a state. `path` is the execution path, `addr` the static address,
 `lp` the label prefix of enclosing child invocations. -/
@@ -628,6 +646,19 @@ def eval (O : Oracle) : Node → ExecPath → Addr → String → State → Run
             match evalNamed O branches taken path addr lp routed with
             | some (o, ev') => (o, ev ++ ev')
             | none => (.failed (.engine label "the taken branch does not exist"), ev)
+  | .routeValue label vp branches otherwise as requires, path, addr, lp, s =>
+    match checkRequires label addr s requires with
+    | .error e => (.failed e, [])
+    | .ok () => match routeValueChoice s vp (branchNames branches) otherwise with
+      | .error reason => (.failed (.state reason label vp), [])
+      | .ok (value, taken, fallback) =>
+        let routed := match as with
+          | some k => s.set k (.obj [("value", value), ("taken", .str taken), ("fallback", .bool fallback)])
+          | none => s
+        let ev := [evt path s!"route.chosen:{lp ++ label}:{taken}"]
+        match evalNamed O branches taken path addr lp routed with
+        | some (o, ev') => (o, ev ++ ev')
+        | none => (.failed (.engine label "the taken branch does not exist"), ev)
   | .call label _ input _ as _ requires, path, addr, lp, s =>
     let ctx : Ctx := ⟨path, lp ++ label⟩
     stepWrap O true ctx <|

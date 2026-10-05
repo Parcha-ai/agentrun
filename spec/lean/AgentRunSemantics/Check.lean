@@ -105,3 +105,19 @@ open AgentRun
 /-- info: 'AgentRun.F9_fixed_one_resolver' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms F9_fixed_one_resolver
+
+/-- info: 'AgentRun.route_value_declared_string' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms route_value_declared_string
+
+/-- info: 'AgentRun.route_value_missing_fallback' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms route_value_missing_fallback
+
+/-- info: 'AgentRun.route_value_missing_fails' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms route_value_missing_fails
+
+/-- info: 'AgentRun.route_value_selected_continuation' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms route_value_selected_continuation
