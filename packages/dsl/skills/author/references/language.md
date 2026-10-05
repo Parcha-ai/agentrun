@@ -34,7 +34,7 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `judge`: `label`, `state`, `out`, `as`, `requires`
 - `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`
 - `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`
-- `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `as`, `requires`
+- `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `valuePath`, `otherwise`, `as`, `requires`
 
 Every kind also accepts `metadata`, an object the host owns and the engine never reads; set only the keys the host addendum names.
 
@@ -70,7 +70,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - `judge`: a non-empty `state` map, `out` (a question schema) and `as`. The decoded value lands at `as`, the raw answers at `<as>$answers`.
 - `pick`: `itemsPath`, `describe` (the option text per item, such as "{item.name}"), `instructions` (the one question) and `as`; `allowNone` adds a none-of-these option. The result is {index, item, none, option}.
 - `sift`: `itemsPath`, `out` (a question schema asked of every item; the host splits the items across requests when they exceed its limits) and `as`. `keep` {path: a question id or <id>.confidence, never a choice, gte?} keeps passing items, in order, at `<as>.items`.
-- `route`: a non-empty `state` map, `instructions` (the one question) and 2 to 240 named `branches`, each {criteria?, body}. `unsure` {branch: one of the branches, gte: a number in (0, 1]} takes that branch when the choice's confidence is below `gte`. `as` records the choice.
+- `route` runs one of 2 or more named `branches`. Jev chooses: a non-empty `state` map, `instructions` (the one question) and up to 240 branches, each {criteria?, body}; `unsure` {branch, gte: a number in (0, 1]} takes that branch when the choice's confidence is below `gte`. Or the workflow already holds the choice: `valuePath` names the state string that is the branch, each branch is {body}, no question is asked, and `otherwise` (a branch) takes a missing or unknown name, which otherwise fails; a non-string fails. `as` records the choice.
 - A decoded boolean is true at yes-probability 0.5. To hold a different threshold, read `<as>$answers.answers.<id>.noul` in a code node.
 
 ### Control nodes
@@ -111,6 +111,7 @@ A predicate is one JSON object that names itself in its `predicate` field beside
 - When the host supplies rubric sections, they are authoritative source text: every generative node's `sopSection` lists all of them, a merged judgment inherits the union of its parents' sections, and policy is never paraphrased into instructions. Judgment nodes, `ask` predicates and `verify` clauses are then refused until the host reviews a separate question contract.
 - Acceptance checks are the host's. Never change a check, fixture or threshold to pass.
 - Bound loops and parallelism. Uncertainty escalates or takes an explicit fallback such as `route.unsure` or a threshold gate.
+- Ask Jev only what needs judgment; compute what is certain in code. Once a judge and code have decided, route by `valuePath`: asking a route again can contradict that decision.
 
 ## Example
 

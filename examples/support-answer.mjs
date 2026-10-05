@@ -16,38 +16,40 @@ export const workflow = {
       checkAnswer('check-existing-answer'),
       {
         node: 'code', label: 'choose-next-step',
-        // A zero-or-one queue bounds this workflow to one agent attempt.
-        code: `s => ({ investigate: s.answer.text.trim().length > 0 &&
+        // Code makes the decision from Jev's answer and its confidence.
+        code: `s => ({ next: s.answer.text.trim().length > 0 &&
           s.answer.sources.length > 0 && s.fit.answersRequest === 'yes' &&
-          s['fit$answers'].confidence.answersRequest >= 0.8 ? [] : [s.request] })`,
+          s['fit$answers'].confidence.answersRequest >= 0.8 ? 'reuse' : 'investigate' })`,
       },
       {
-        node: 'map', label: 'investigate-if-needed',
-        itemsPath: 'investigate', maxConcurrency: 1,
-        as: 'investigations', resultPath: 'checked',
-        body: { node: 'chain', steps: [
-          {
-            node: 'agent', label: 'investigate',
-            instructions: 'Investigate this request using the allowed support tools. Return an answer grounded in what you find, with source references. State any unresolved gaps. Do not send a reply or modify the account.',
-            state: { request: '{request}', existingAnswer: '{answer}' },
-            tools: ['support_read'], out: 'Answer', as: 'answer',
-          },
-          checkAnswer('recheck-agent-answer'),
-          {
-            node: 'code', label: 'retain-investigation',
+        // Route by the decision just made. No second question to Jev, and at most one agent attempt.
+        node: 'route', label: 'reuse-or-investigate', valuePath: 'next',
+        branches: {
+          reuse: { body: {
+            node: 'code', label: 'keep-existing-answer',
             code: `s => ({ checked: { answer: s.answer, fit: s.fit,
               confidence: s['fit$answers'].confidence.answersRequest } })`,
-          },
-        ] },
+          } },
+          investigate: { body: { node: 'chain', steps: [
+            {
+              node: 'agent', label: 'investigate',
+              instructions: 'Investigate this request using the allowed support tools. Return an answer grounded in what you find, with source references. State any unresolved gaps. Do not send a reply or modify the account.',
+              state: { request: '{request}', existingAnswer: '{answer}' },
+              tools: ['support_read'], out: 'Answer', as: 'answer',
+            },
+            checkAnswer('recheck-agent-answer'),
+            {
+              node: 'code', label: 'retain-investigation',
+              code: `s => ({ checked: { answer: s.answer, fit: s.fit,
+                confidence: s['fit$answers'].confidence.answersRequest } })`,
+            },
+          ] } },
+        },
       },
       {
         node: 'code', label: 'validate-answer',
-        code: `s => {
-          const checked = s.investigations[0] ?? { answer: s.answer, fit: s.fit,
-            confidence: s['fit$answers'].confidence.answersRequest };
-          return { answer: checked.answer, needsReview:
-            checked.fit.answersRequest !== 'yes' || checked.confidence < 0.8 };
-        }`,
+        code: `s => ({ answer: s.checked.answer,
+          needsReview: s.checked.fit.answersRequest !== 'yes' || s.checked.confidence < 0.8 })`,
       },
       {
         node: 'escalate', label: 'review-unresolved-request',

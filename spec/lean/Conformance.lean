@@ -193,6 +193,9 @@ def reasonName : StateReason → String
   | .missingMapResult => "missing_map_result"
   | .parallelWriteConflict => "parallel_write_conflict"
   | .reservedStateKey => "reserved_state_key"
+  | .routeMissing => "route_missing"
+  | .routeUnknown => "route_unknown"
+  | .routeType => "route_type"
 
 def errJson : Err → List (String × String)
   | .required l _ p _ => [("kind", "state"), ("reason", "required_nonempty"), ("label", l), ("path", ".".intercalate p)]

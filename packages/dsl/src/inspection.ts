@@ -1,4 +1,4 @@
-import { workflowDocumentError, workflowSha256, type Workflow, type WorkflowNode } from "./workflow.js";
+import { routesByValue, workflowDocumentError, workflowSha256, type Workflow, type WorkflowNode } from "./workflow.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
 
 export type WorkflowInspectionNode = {
@@ -62,7 +62,7 @@ export function inspectWorkflow(value: unknown): WorkflowInspection {
     });
     if (["agent", "decide", "extract", "report"].includes(node.node) ||
       node.node === "artifact" && ["markdown", "report"].includes(node.type)) adapters.add("runNode");
-    if (["judge", "pick", "sift", "route"].includes(node.node) ||
+    if (["judge", "pick", "sift"].includes(node.node) || node.node === "route" && !routesByValue(node) ||
       "verify" in node && node.verify || node.node === "loop" && node.until.predicate === "ask" ||
       node.node === "escalate" && node.when.predicate === "ask") adapters.add("runJudge");
     if (node.node === "call") {

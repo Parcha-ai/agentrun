@@ -68,10 +68,18 @@ export type PickNode = { node: "pick"; label: string; itemsPath: string; describ
  *  filters: items whose answer at `keep.path` (a question id, or `<id>.confidence`) is at least
  *  `keep.gte` (a boolean question keeps on yes) land in `as.items`, in the original order. */
 export type SiftNode = { node: "sift"; label: string; itemsPath: string; describe?: string; state?: Record<string, unknown>; out: string; as: string; keep?: { path: string; gte?: number }; requires?: string[]; metadata?: NodeMetadata };
-/** A choice among subgraphs. The options are the branch names, their criteria the branch
+/** Run one of several named branches. Jev chooses it from `instructions` and `state`, or the workflow
+ *  already holds the choice as a string at `valuePath` and no model is asked. */
+export type RouteNode = RouteByJudgmentNode | RouteByValueNode;
+/** A choice among subgraphs that Jev makes. The options are the branch names, their criteria the branch
  *  descriptions; the chosen branch runs on the state. `as` (optional) records the choice and its
  *  distribution; `unsure` names the branch taken when confidence is below `gte`. */
-export type RouteNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; as?: string; requires?: string[]; metadata?: NodeMetadata };
+export type RouteByJudgmentNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; as?: string; requires?: string[]; metadata?: NodeMetadata };
+/** A route by a value already in state: the string at `valuePath` names the branch. A missing value or
+ *  an unknown name takes `otherwise` when declared and fails before any branch otherwise; a value that is
+ *  not a string always fails. `as` records `{value, taken, fallback}`. */
+export type RouteByValueNode = { node: "route"; label: string; valuePath: string; branches: { [branch: string]: { body: WorkflowNode } }; otherwise?: string; as?: string; requires?: string[]; metadata?: NodeMetadata };
+export const routesByValue = (node: RouteNode): node is RouteByValueNode => typeof (node as { valuePath?: unknown }).valuePath === "string";
 
 /** A child workflow invoked as one step of its parent. The child is embedded whole, so the parent
  *  digest covers every child byte; `input` is interpolated by value and is the child's ENTIRE initial
@@ -1006,25 +1014,45 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       }
       case "route": {
         const label = node.label || "route";
-        if (!node.state || typeof node.state !== "object" || Array.isArray(node.state) || !Object.keys(node.state).length) errors.push(`${path} (${label}): state must be a non-empty object map of what the question sees`);
-        else checkStateMap(node.state, label, path);
-        if (typeof node.instructions !== "string" || !node.instructions.trim()) errors.push(`${path} (${label}): instructions (the one question) required`);
-        const names = node.branches && typeof node.branches === "object" && !Array.isArray(node.branches) ? Object.keys(node.branches) : [];
-        if (names.length < 2) errors.push(`${path} (${label}): route needs at least two named branches`);
-        if (names.length > SYSTEM_ONE_LIMITS.maxChoiceOptions) errors.push(`${path} (${label}): route takes at most ${SYSTEM_ONE_LIMITS.maxChoiceOptions} branches`);
-        if (node.unsure !== undefined) {
-          const u = node.unsure as { branch?: unknown; gte?: unknown };
-          if (!u || typeof u.branch !== "string" || !names.includes(u.branch)) errors.push(`${path} (${label}): unsure.branch must name one of the branches`);
-          if (!(typeof u?.gte === "number" && u.gte > 0 && u.gte <= 1)) errors.push(`${path} (${label}): unsure.gte must be in (0, 1]`);
+        const raw = node as unknown as Record<string, unknown>;
+        // Two forms, never mixed: Jev chooses (state + instructions) or state already holds the choice (valuePath).
+        const byValue = raw.valuePath !== undefined;
+        const names = raw.branches && typeof raw.branches === "object" && !Array.isArray(raw.branches) ? Object.keys(raw.branches) : [];
+        if (byValue) {
+          const valuePath = raw.valuePath;
+          if (typeof valuePath !== "string" || !valuePath.trim()) errors.push(`${path} (${label}): valuePath must be the state path of the branch name`);
+          for (const key of ["state", "instructions", "unsure"] as const) if (raw[key] !== undefined) errors.push(`${path} (${label}): ${key} belongs to a route Jev chooses; a route by valuePath asks no question`);
+          if (names.length < 2) errors.push(`${path} (${label}): route needs at least two named branches`);
+          if (names.some(name => !name.trim())) errors.push(`${path} (${label}): branch names must be non-empty`);
+          if (raw.otherwise !== undefined && (typeof raw.otherwise !== "string" || !names.includes(raw.otherwise))) errors.push(`${path} (${label}): otherwise must name one of the branches`);
+          if (typeof valuePath === "string" && valuePath.trim() && reachability && !reachability.unknowable) {
+            const head = valuePath.split(".")[0];
+            if (!reachability.available.has(head)) errors.push(`${path} (${label}): valuePath "${valuePath}" has no upstream producer; route by the key an earlier node writes`);
+            else checkTypedPath(valuePath, `${path} (${label}) valuePath`);
+          }
+        } else {
+          const judged = node as RouteByJudgmentNode;
+          if (!judged.state || typeof judged.state !== "object" || Array.isArray(judged.state) || !Object.keys(judged.state).length) errors.push(`${path} (${label}): state must be a non-empty object map of what the question sees, or route by a valuePath the workflow already holds`);
+          else checkStateMap(judged.state, label, path);
+          if (typeof judged.instructions !== "string" || !judged.instructions.trim()) errors.push(`${path} (${label}): instructions (the one question) required`);
+          if (raw.otherwise !== undefined) errors.push(`${path} (${label}): otherwise belongs to a route by valuePath; a route Jev chooses takes unsure for its fallback`);
+          if (names.length < 2) errors.push(`${path} (${label}): route needs at least two named branches`);
+          if (names.length > SYSTEM_ONE_LIMITS.maxChoiceOptions) errors.push(`${path} (${label}): route takes at most ${SYSTEM_ONE_LIMITS.maxChoiceOptions} branches`);
+          if (judged.unsure !== undefined) {
+            const u = judged.unsure as { branch?: unknown; gte?: unknown };
+            if (!u || typeof u.branch !== "string" || !names.includes(u.branch)) errors.push(`${path} (${label}): unsure.branch must name one of the branches`);
+            if (!(typeof u?.gte === "number" && u.gte > 0 && u.gte <= 1)) errors.push(`${path} (${label}): unsure.gte must be in (0, 1]`);
+          }
         }
         if (containsReportNode(node)) errors.push(`${path} (${label}): a report node cannot live inside a route branch — the report is rendered once, after the record is final`);
         if (node.as !== undefined && (typeof node.as !== "string" || !node.as.trim())) errors.push(`${path} (${label}): as must be a state key when present`);
         checkRequires({ label, requires: node.requires }, path);
-        if (reachability) { if (typeof node.as === "string" && node.as.trim()) { reachability.available.add(node.as); reachability.available.add(`${node.as}$answers`); } reachability.unknowable = true; }
+        if (reachability) { if (typeof node.as === "string" && node.as.trim()) { reachability.available.add(node.as); if (!byValue) reachability.available.add(`${node.as}$answers`); } reachability.unknowable = true; }
         for (const name of names) {
-          const branch = (node.branches as any)[name];
+          const branch = (raw.branches as Record<string, any>)[name];
           if (!branch || typeof branch !== "object" || !branch.body) { errors.push(`${path} (${label}): branch "${name}" needs a body`); continue; }
-          if (branch.criteria !== undefined && typeof branch.criteria !== "string") errors.push(`${path} (${label}): branch "${name}" criteria must be a string`);
+          if (byValue && branch.criteria !== undefined) errors.push(`${path} (${label}): branch "${name}" criteria are for Jev; a route by valuePath matches the branch name exactly`);
+          else if (branch.criteria !== undefined && typeof branch.criteria !== "string") errors.push(`${path} (${label}): branch "${name}" criteria must be a string`);
           walk(branch.body, `${path}.branches.${name}`);
         }
         return;
@@ -1330,7 +1358,7 @@ export class WorkflowCodeError extends Error {
 export class WorkflowStateError extends Error {
   readonly code = "state_invalid";
   constructor(summary: string, readonly stage: string, readonly path: string,
-    readonly reason: "required_nonempty" | "missing_interpolation" | "expected_list" | "empty_selection" | "missing_map_result" | "parallel_write_conflict" | "reserved_state_key") {
+    readonly reason: "required_nonempty" | "missing_interpolation" | "expected_list" | "empty_selection" | "missing_map_result" | "parallel_write_conflict" | "reserved_state_key" | "route_missing" | "route_unknown" | "route_type") {
     super(summary);
     this.name = "WorkflowStateError";
   }
@@ -1770,6 +1798,19 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
 
 async function runRouteNode(node: RouteNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
+  if (routesByValue(node)) {
+    // The choice is already in state: no model is asked, and nothing is coerced into a branch name.
+    const value = getPath(state, node.valuePath);
+    if (value !== undefined && typeof value !== "string") throw new WorkflowStateError(`route node "${node.label}": ${node.valuePath} is not a string; a route by value reads a branch name`, node.label, node.valuePath, "route_type");
+    const matched = typeof value === "string" && Object.hasOwn(node.branches, value);
+    const taken = matched ? value : node.otherwise;
+    if (taken === undefined) throw new WorkflowStateError(`route node "${node.label}": ${node.valuePath} ${value === undefined ? "is missing" : "names no branch"} and the route declares no otherwise`, node.label, node.valuePath, value === undefined ? "route_missing" : "route_unknown");
+    const selection = { value: value ?? null, taken, fallback: !matched };
+    // The event names only a declared branch, never an unexpected source string.
+    deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", by: "value", as: node.as ?? null, value: { taken, fallback: !matched } } });
+    const routed = node.as ? { ...state, [node.as]: selection } : state;
+    return runNodeOnState(node.branches[taken].body, routed, workflow, scopeExecution(deps, "branches", taken, "body"));
+  }
   const names = Object.keys(node.branches);
   const criteria: Record<string, string | null> = Object.fromEntries(names.map((n) => [n, node.branches[n]?.criteria?.trim() || null]));
   const { answers, sidecar, model, cost_usd } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), { branch: { type: "choice", instructions: node.instructions, criteria } });
@@ -2343,7 +2384,7 @@ export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDep
   const missing = (capability: string) => { throw new Error(`${node.node} node "${"label" in node ? node.label : node.node}" requires ${capability}`); };
   if ((["agent", "decide", "extract", "report"].includes(node.node) || node.node === "artifact" && artifactNodeIsProse(node)) && !deps.runNode) missing("runNode");
   if (node.node === "call" && !deps.runEffect) missing("runEffect");
-  if ((["judge", "pick", "sift", "route"].includes(node.node) || "verify" in node && node.verify ||
+  if ((["judge", "pick", "sift"].includes(node.node) || node.node === "route" && !routesByValue(node) || "verify" in node && node.verify ||
       node.node === "loop" && (node.until as AskPredicate)?.predicate === "ask" ||
       node.node === "escalate" && (node.when as AskPredicate)?.predicate === "ask") && !deps.runJudge) missing("runJudge");
   if (node.node === "chain") node.steps.forEach(n => assertWorkflowCapabilities(n, deps, workflow));

@@ -1,0 +1,94 @@
+{
+  "description": "A route by value: unknown-fallback; no semantic oracle is supplied.",
+  "workflow": {
+    "v": 2,
+    "name": "route-value-unknown-fallback",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "route",
+      "label": "route",
+      "valuePath": "policy.action",
+      "as": "applied",
+      "branches": {
+        "proceed": {
+          "body": {
+            "node": "code",
+            "label": "proceed",
+            "code": "s => ({result: 'proceed'})"
+          }
+        },
+        "withhold": {
+          "body": {
+            "node": "code",
+            "label": "withhold",
+            "code": "s => ({result: 'withhold'})"
+          }
+        },
+        "clarify": {
+          "body": {
+            "node": "code",
+            "label": "clarify",
+            "code": "s => ({result: 'clarify'})"
+          }
+        }
+      },
+      "otherwise": "clarify"
+    }
+  },
+  "input": {
+    "policy": {
+      "action": "unrecognized"
+    }
+  },
+  "script": {
+    "code": {
+      "/root/branches/clarify/body": {
+        "return": {
+          "result": "clarify"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "policy": {
+        "action": "unrecognized"
+      },
+      "applied": {
+        "value": "unrecognized",
+        "taken": "clarify",
+        "fallback": true
+      },
+      "result": "clarify"
+    },
+    "output": {
+      "policy": {
+        "action": "unrecognized"
+      },
+      "applied": {
+        "value": "unrecognized",
+        "taken": "clarify",
+        "fallback": true
+      },
+      "result": "clarify"
+    },
+    "events": {
+      "/root": [
+        "route.chosen:route:clarify"
+      ],
+      "/root/branches/clarify/body": [
+        "node.start:clarify",
+        "node.end:clarify:ok"
+      ]
+    }
+  }
+}

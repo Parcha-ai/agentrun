@@ -107,7 +107,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 - ${code("judge")}: a non-empty ${code("state")} map, ${code("out")} (a question schema) and ${code("as")}. The decoded value lands at ${code("as")}, the raw answers at ${code("<as>$answers")}.
 - ${code("pick")}: ${code("itemsPath")}, ${code("describe")} (the option text per item, such as "{item.name}"), ${code("instructions")} (the one question) and ${code("as")}; ${code("allowNone")} adds a none-of-these option. The result is {index, item, none, option}.
 - ${code("sift")}: ${code("itemsPath")}, ${code("out")} (a question schema asked of every item; the host splits the items across requests when they exceed its limits) and ${code("as")}. ${code("keep")} {path: a question id or <id>.confidence, never a choice, gte?} keeps passing items, in order, at ${code("<as>.items")}.
-- ${code("route")}: a non-empty ${code("state")} map, ${code("instructions")} (the one question) and 2 to ${SYSTEM_ONE_LIMITS.maxChoiceOptions} named ${code("branches")}, each {criteria?, body}. ${code("unsure")} {branch: one of the branches, gte: a number in (0, 1]} takes that branch when the choice's confidence is below ${code("gte")}. ${code("as")} records the choice.
+- ${code("route")} runs one of 2 or more named ${code("branches")}. Jev chooses: a non-empty ${code("state")} map, ${code("instructions")} (the one question) and up to ${SYSTEM_ONE_LIMITS.maxChoiceOptions} branches, each {criteria?, body}; ${code("unsure")} {branch, gte: a number in (0, 1]} takes that branch when the choice's confidence is below ${code("gte")}. Or the workflow already holds the choice: ${code("valuePath")} names the state string that is the branch, each branch is {body}, no question is asked, and ${code("otherwise")} (a branch) takes a missing or unknown name, which otherwise fails; a non-string fails. ${code("as")} records the choice.
 - A decoded boolean is true at yes-probability 0.5. To hold a different threshold, read ${code("<as>$answers.answers.<id>.noul")} in a code node.
 
 ### Control nodes
@@ -140,6 +140,7 @@ ${predicateLines()}
 - When the host supplies rubric sections, they are authoritative source text: every generative node's ${code("sopSection")} lists all of them, a merged judgment inherits the union of its parents' sections, and policy is never paraphrased into instructions. Judgment nodes, ${code("ask")} predicates and ${code("verify")} clauses are then refused until the host reviews a separate question contract.
 - Acceptance checks are the host's. Never change a check, fixture or threshold to pass.
 - Bound loops and parallelism. Uncertainty escalates or takes an explicit fallback such as ${code("route.unsure")} or a threshold gate.
+- Ask Jev only what needs judgment; compute what is certain in code. Once a judge and code have decided, route by ${code("valuePath")}: asking a route again can contradict that decision.
 
 ## Example
 

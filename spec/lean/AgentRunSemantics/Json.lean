@@ -160,6 +160,8 @@ partial def node (schemas : Json) (j : Json) : P Node := do
   | "route" =>
     let bs ← (fields ((get? j "branches").getD .null)).mapM fun (name, b) => do
       pure (name, ← node schemas ((get? b "body").getD .null))
+    if (get? j "valuePath").isSome then
+      return .routeValue label (splitPath (strD j "valuePath")) bs (optStr j "otherwise") (optStr j "as") (requires j)
     let unsure ← match get? j "unsure" with
       | some u => pure (some (← str u "branch", ← rat u "gte"))
       | none => pure none

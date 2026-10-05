@@ -90,6 +90,25 @@ test('real scripted route maps execution paths and marks only genuinely unselect
   assert.doesNotMatch(view.summary.join('\n'), /Agent model/);
 });
 
+test('a route by value shows the state path that chose it, the branch taken and the branches it skipped', async () => {
+  const branch = name => ({ body: { node: 'code', label: `do-${name}`, code: `s => ({ result: '${name}' })` } });
+  const workflow = { v: 2, name: 'Fictional value route', schemas: { Result: { type: 'object' } }, output: { schemaId: 'Result' },
+    root: { node: 'route', label: 'act', valuePath: 'decision.action', otherwise: 'clarify', as: 'applied',
+      branches: { refund: branch('refund'), bug: branch('bug'), clarify: branch('clarify') } } };
+  const observed = new WorkflowObservation();
+  const report = await runWorkflow(workflow, { decision: { action: 'bug' } }, observed.observe({ onEvent: event => observed.record(event) }));
+  assert.equal(report.status, 'complete');
+  const view = workflowView(workflow, { observation: observed.data, report, mode: 'scripted', model: 'unknown/unknown' });
+  assert.equal(view.nodes.find(node => node.label === 'do-bug').status, 'succeeded');
+  assert.equal(view.nodes.find(node => node.label === 'do-refund').status, 'skipped (branch not selected)');
+  assert.equal(view.nodes.find(node => node.label === 'do-clarify').status, 'skipped (branch not selected)');
+  const details = view.nodes.find(node => node.kind === 'route').details.join('\n');
+  assert.match(details, /Branch chosen by state at decision\.action; no model is asked\./);
+  assert.match(details, /Otherwise: clarify/);
+  assert.match(details, /Selected branch: .*"taken": ?"bug"/s);
+  assert.equal(observed.data.decisions.length, 0, 'no judgment was made');
+});
+
 test('a fired escalation is visible as the selected stage, with its original event intact', async () => {
   const observed = new WorkflowObservation();
   const events = [];

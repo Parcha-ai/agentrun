@@ -140,6 +140,9 @@ function localDiagnostic(error: unknown): ExtensionRunReport['error'] {
       missing_map_result: 'A map body did not produce its resultPath. Select a path in the completed body state; a body with as is collected automatically when resultPath is omitted.',
       parallel_write_conflict: 'Parallel branches changed the same top-level state key. Give independent branches distinct output keys and combine them after the parallel node.',
       reserved_state_key: 'A node or host hook wrote an engine-owned "$"-prefixed state key such as $host. Choose another state key; host state is written only through decodeSubmission.',
+      route_missing: 'A route by valuePath found no value at that path and declares no otherwise. Make the earlier step always write a branch name, or add otherwise for the missing case.',
+      route_unknown: 'A route by valuePath found a value that names none of its branches and declares no otherwise. Write only declared branch names upstream, or add otherwise for the rest.',
+      route_type: 'A route by valuePath found a value that is not a string. It reads a branch name and never converts numbers, booleans or objects; map them to a branch name in a code step first.',
     };
     return { code: error.code, stage: error.stage.slice(0, 200),
       // Parallel patch keys may be computed from source values, unlike authored paths.

@@ -47,9 +47,11 @@ longest question and 64k for state plus all questions combined; check the select
 model's current contract. Oversized provider requests remain
 errors, not permission to truncate evidence or silently retry a different graph.
 
-`sift` sends **all items together in one request**. Shared `state` is added to
-that batch; it does not replace or narrow each item. `describe` adds an item
-summary, but the full original item is still sent. A tool envelope can contain
+`sift` sends its items together, in as few requests as the host's limits allow:
+when the items exceed `maxQuestionsPerRequest` or the host's
+`maxStateBytesPerRequest`, it splits them in order into requests that each fit.
+Shared `state` is added to every request; it does not replace or narrow each item.
+`describe` adds an item summary, but the full original item is still sent. A tool envelope can contain
 the same text in both `content` and `details`, so character limits on individual
 reads do not establish the final serialized size.
 
@@ -61,7 +63,7 @@ of sending duplicate representations. Retain the full reviewed rule, relevant
 headers, units, dates, exclusions and neighboring rows. If an individual original
 is still too large, retrieve or partition it at meaningful boundaries; do not
 silently truncate it or replace it with an agent's interpretation. This explicit
-graph change changes request count; no automatic batching or truncation occurs.
+graph change changes request count; nothing is truncated.
 
 The fictional [read-source decision](../examples/read-source-decision.json) and
 [input](../examples/read-source-decision.input.json) show direct tool results passed
@@ -83,8 +85,18 @@ references earlier in the same graph.
   context in `state`; each item also needs its own original evidence. Candidate
   coverage matters: no judge can recover a source absent from the candidate set.
 - `pick`: choose from known candidates, with `allowNone` when none may fit.
-- `route`: choose a semantic branch. Its uncertainty gate concerns that new
-  decision, not an earlier judge's probability.
+- `route`: run one of several branches. With `instructions` and `state`, Jev
+  chooses a semantic branch, and its `unsure` gate concerns that new decision, not
+  an earlier judge's probability. With `valuePath`, the workflow already holds the
+  choice and no question is asked.
+
+Route by value when the decision exists. A common shape: a `judge` answers the
+question, a `code` step applies your thresholds to its raw probabilities and
+writes an action string, and a `route` with `valuePath` runs that action's branch.
+Asking a second `route` instead costs another request and can choose differently
+from the judge, past your thresholds. Use Jev where the answer needs judgment and
+code where it is certain from the data: exact matches, lookups, arithmetic and a
+threshold already decided.
 
 Batch independent questions over the same state. They cannot read each other's
 answers. Use another step when a decision is needed to retrieve new evidence or

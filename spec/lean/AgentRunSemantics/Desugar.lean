@@ -19,6 +19,7 @@ def desugar : Node → Node
   | .map label itemsPath body as resultPath => .map label itemsPath (desugar body) as resultPath
   | .loop label body u n => .loop label (desugar body) u n
   | .route label st branches unsure as requires => .route label st (desugarNamed branches) unsure as requires
+  | .routeValue label vp branches otherwise as requires => .routeValue label vp (desugarNamed branches) otherwise as requires
   | .workflow label child root input out as => .workflow label child (desugar root) input out as
   | n => n
 def desugarList : List Node → List Node

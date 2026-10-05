@@ -7,12 +7,12 @@ export {
   runWorkflow, validateWorkflow, workflowSha256,
   WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError,
   WorkflowVerificationError, EffectFailure, EffectDeadlineExceededError,
-  EffectOutcomeUnknownError, EscalationSignal,
+  EffectOutcomeUnknownError, EscalationSignal, routesByValue,
 } from "./workflow.js";
 export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowEvent, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem,
-  LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, WorkflowInvocation,
+  LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
   AskPredicate, MechanicalPredicate, Predicate,

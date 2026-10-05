@@ -32,7 +32,7 @@ export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string
   judge: ["node", "label", "state", "out", "as", "requires"],
   pick: ["node", "label", "itemsPath", "describe", "instructions", "state", "allowNone", "as", "requires"],
   sift: ["node", "label", "itemsPath", "describe", "state", "out", "as", "keep", "requires"],
-  route: ["node", "label", "state", "instructions", "branches", "unsure", "as", "requires"],
+  route: ["node", "label", "state", "instructions", "branches", "unsure", "valuePath", "otherwise", "as", "requires"],
 };
 
 /** Fields every node kind accepts in addition to its own. `metadata` is the host's: an optional object of

@@ -1001,7 +1001,7 @@
           ]
         },
         {
-          "description": "A choice among subgraphs. The options are the branch names, their criteria the branch\ndescriptions; the chosen branch runs on the state. `as` (optional) records the choice and its\ndistribution; `unsure` names the branch taken when confidence is below `gte`.",
+          "description": "A choice among subgraphs that Jev makes. The options are the branch names, their criteria the branch\ndescriptions; the chosen branch runs on the state. `as` (optional) records the choice and its\ndistribution; `unsure` names the branch taken when confidence is below `gte`.",
           "type": "object",
           "properties": {
             "node": {
@@ -1083,6 +1083,68 @@
             "label",
             "node",
             "state"
+          ]
+        },
+        {
+          "description": "A route by a value already in state: the string at `valuePath` names the branch. A missing value or\nan unknown name takes `otherwise` when declared and fails before any branch otherwise; a value that is\nnot a string always fails. `as` records `{value, taken, fallback}`.",
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "const": "route",
+              "title": "node"
+            },
+            "label": {
+              "type": "string",
+              "title": "label"
+            },
+            "valuePath": {
+              "type": "string",
+              "title": "valuePath"
+            },
+            "branches": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "body": {
+                    "$ref": "#/definitions/WorkflowNode",
+                    "title": "body"
+                  }
+                },
+                "required": [
+                  "body"
+                ]
+              },
+              "title": "branches"
+            },
+            "otherwise": {
+              "type": "string",
+              "title": "otherwise"
+            },
+            "as": {
+              "type": "string",
+              "title": "as"
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "requires"
+            },
+            "metadata": {
+              "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "metadata"
+            }
+          },
+          "required": [
+            "branches",
+            "label",
+            "node",
+            "valuePath"
           ]
         },
         {

@@ -43,7 +43,7 @@ A theorem sees only what the engine does with an oracle's answer. Behavior insid
 | Oracle | Folds together | Invisible to the theorems |
 | --- | --- | --- |
 | `gen`, `report` (`runNode`) | The adapter session, `normalizeStringNullsForSchema`, the transport schema, `decodeSubmission`, stage-schema validation, `mergeStageDelta`'s filter to declared properties, and the whole `verify` loop with its `runJudge` drives | Which properties the filter drops, whether a submission is schema-valid, how many review drives ran and what they saw, and the `$verify` record's contents. The model only knows the value lands at the node's key, plus `$verify` and `$host` |
-| `judge`, `pick`, `sift`, `route`, `ask` (`runJudge`) | `validateAnswers`, `answersToValue`, the sidecar, sift's keep threshold, the question-count guard for static question sets | Answer validation failures other than as an adapter error, how confidences become values, and which items sift keeps and why |
+| `judge`, `pick`, `sift`, `route` without `valuePath`, `ask` (`runJudge`) | `validateAnswers`, `answersToValue`, the sidecar, sift's keep threshold, the question-count guard for static question sets | Answer validation failures other than as an adapter error, how confidences become values, and which items sift keeps and why |
 | `effect` (`runEffect`) | Attempts, retry classes, backoff, deadlines, polling (`until`, `fail_when`, `interval_s`), memo reads and writes, the result schema check, `EffectOutcomeUnknownError` and late settlement | Every timing and retry property, and whether a poll ends. A `call` is one atomic answer, so F8 cannot be expressed in the model |
 | `code` | Compiling and running the JavaScript transform | Anything the code does besides returning a value. Validation's code probes are not modeled |
 | `schemaOk` | TypeBox `Check` against resolved schemas | Every schema-content rule |
@@ -80,6 +80,8 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 | `T3_runWorkflow_total` | `Theorems/Loop.lean` | Every run ends `complete`, `escalated` or `failed`. The content is that `eval` is structurally recursive, which the kernel checks, with each loop's fuel being its `maxIters`. |
 | `T4_eval_desugar` | `Theorems/Desugar.lean` | Running a desugared node is running the node, for every oracle. |
 | `T4_validate_desugar`, `T4_runWorkflow_desugar` | `Theorems/Desugar.lean` | Validation and `runWorkflow` cannot tell a workflow from its desugaring. |
+| `route_value_declared_string`, `route_value_missing_fallback`, `route_value_missing_fails` | `Theorems/RouteValue.lean` | A route by `valuePath` selects the branch its stored string names, even when a fallback exists; a missing value takes only the declared `otherwise`, and without one the route fails. |
+| `route_value_selected_continuation` | `Theorems/RouteValue.lean` | After its `requires` check, a route by value records `{value, taken, fallback}` and runs only the selected branch. No oracle is asked; the branch body may do anything. |
 
 Two limits apply to what these results establish:
 
