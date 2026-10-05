@@ -1,0 +1,54 @@
+{
+  "description": "Validation rejects a route whose valuePath is empty.",
+  "workflow": {
+    "v": 2,
+    "name": "route-value-blank-path",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "route",
+      "label": "route",
+      "valuePath": "",
+      "as": "applied",
+      "branches": {
+        "proceed": {
+          "body": {
+            "node": "code",
+            "label": "proceed",
+            "code": "s => ({result: 'proceed'})"
+          }
+        },
+        "withhold": {
+          "body": {
+            "node": "code",
+            "label": "withhold",
+            "code": "s => ({result: 'withhold'})"
+          }
+        },
+        "clarify": {
+          "body": {
+            "node": "code",
+            "label": "clarify",
+            "code": "s => ({result: 'clarify'})"
+          }
+        }
+      },
+      "otherwise": "clarify"
+    }
+  },
+  "input": {
+    "policy": {
+      "action": "withhold"
+    }
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

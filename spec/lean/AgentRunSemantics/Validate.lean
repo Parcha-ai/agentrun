@@ -342,7 +342,8 @@ def walk : Node → Addr → VEnv → VOut
     let r := walkNamed branches addr { env with avail := none }
     { r with
       errors := dollarErrors n ++
-        (if vp.isEmpty then ["valuePath must be the state path of the branch name"] else []) ++
+        -- The JSON reader splits on "."; joined back, the path is what TypeScript trims and checks.
+        (if (String.intercalate "." vp).trim.isEmpty then ["valuePath must be the state path of the branch name"] else []) ++
         (if names.length < 2 then ["route needs at least two named branches"] else []) ++
         (if names.any String.isEmpty then ["branch names must be non-empty"] else []) ++
         (if names.Nodup then [] else ["route branch names must be distinct"]) ++

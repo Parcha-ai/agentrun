@@ -74,11 +74,11 @@ export type RouteNode = RouteByJudgmentNode | RouteByValueNode;
 /** A choice among subgraphs that Jev makes. The options are the branch names, their criteria the branch
  *  descriptions; the chosen branch runs on the state. `as` (optional) records the choice and its
  *  distribution; `unsure` names the branch taken when confidence is below `gte`. */
-export type RouteByJudgmentNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; as?: string; requires?: string[]; metadata?: NodeMetadata };
+export type RouteByJudgmentNode = { node: "route"; label: string; state: Record<string, unknown>; instructions: string; branches: { [branch: string]: { criteria?: string; body: WorkflowNode } }; unsure?: { branch: string; gte: number }; valuePath?: never; otherwise?: never; as?: string; requires?: string[]; metadata?: NodeMetadata };
 /** A route by a value already in state: the string at `valuePath` names the branch. A missing value or
  *  an unknown name takes `otherwise` when declared and fails before any branch otherwise; a value that is
  *  not a string always fails. `as` records `{value, taken, fallback}`. */
-export type RouteByValueNode = { node: "route"; label: string; valuePath: string; branches: { [branch: string]: { body: WorkflowNode } }; otherwise?: string; as?: string; requires?: string[]; metadata?: NodeMetadata };
+export type RouteByValueNode = { node: "route"; label: string; valuePath: string; branches: { [branch: string]: { body: WorkflowNode } }; otherwise?: string; state?: never; instructions?: never; unsure?: never; as?: string; requires?: string[]; metadata?: NodeMetadata };
 export const routesByValue = (node: RouteNode): node is RouteByValueNode => typeof (node as { valuePath?: unknown }).valuePath === "string";
 
 /** A child workflow invoked as one step of its parent. The child is embedded whole, so the parent

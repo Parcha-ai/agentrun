@@ -24,6 +24,20 @@ test('generated dictionary fields validate branch bodies and allow custom schema
   candidate.root={node:'route',label:'route',state:{value:'example'},instructions:'Choose',branches:{a:{body:{node:'code',label:'return',code:'s => s'}},b:{body:{node:'imaginary'}}}};
   assert.equal(check(candidate),false);
 });
+test('the editor schema accepts each route form and refuses a route that mixes them, as the validator does',()=>{
+  const body={node:'code',label:'return',code:'s => s'};
+  const judged={node:'route',label:'route',state:{value:'example'},instructions:'Choose',branches:{a:{body},b:{body}}};
+  const byValue={node:'route',label:'route',valuePath:'decision',otherwise:'b',branches:{a:{body},b:{body}}};
+  for(const root of [judged,byValue]){
+    const candidate=structuredClone(supportTriage);candidate.root=root;
+    assert.equal(check(candidate),true,JSON.stringify(check.errors));
+  }
+  for(const root of [{...byValue,state:{value:'x'}},{...byValue,instructions:'Choose'},{...byValue,unsure:{branch:'a',gte:0.8}},
+    {...judged,valuePath:'decision'},{...judged,otherwise:'b'}]){
+    const candidate=structuredClone(supportTriage);candidate.root=root;
+    assert.equal(check(candidate),false,JSON.stringify(root));
+  }
+});
 test('generated schema contains no machine paths or TypeScript import identifiers',()=>{
   assert.doesNotMatch(bytes,/\/home\/|\/tmp\/|import\(\\"/);
 });

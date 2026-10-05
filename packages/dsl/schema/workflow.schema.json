@@ -1083,7 +1083,21 @@
             "label",
             "node",
             "state"
-          ]
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "valuePath"
+                ]
+              },
+              {
+                "required": [
+                  "otherwise"
+                ]
+              }
+            ]
+          }
         },
         {
           "description": "A route by a value already in state: the string at `valuePath` names the branch. A missing value or\nan unknown name takes `otherwise` when declared and fails before any branch otherwise; a value that is\nnot a string always fails. `as` records `{value, taken, fallback}`.",
@@ -1145,7 +1159,26 @@
             "label",
             "node",
             "valuePath"
-          ]
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "state"
+                ]
+              },
+              {
+                "required": [
+                  "instructions"
+                ]
+              },
+              {
+                "required": [
+                  "unsure"
+                ]
+              }
+            ]
+          }
         },
         {
           "type": "object",
