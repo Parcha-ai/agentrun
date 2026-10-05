@@ -1032,7 +1032,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           }
         } else {
           const judged = node as RouteByJudgmentNode;
-          if (!judged.state || typeof judged.state !== "object" || Array.isArray(judged.state) || !Object.keys(judged.state).length) errors.push(`${path} (${label}): state must be a non-empty object map of what the question sees, or route by a valuePath the workflow already holds`);
+          if (!judged.state || typeof judged.state !== "object" || Array.isArray(judged.state) || !Object.keys(judged.state).length) errors.push(`${path} (${label}): state must be a non-empty object map of what the question sees`);
           else checkStateMap(judged.state, label, path);
           if (typeof judged.instructions !== "string" || !judged.instructions.trim()) errors.push(`${path} (${label}): instructions (the one question) required`);
           if (raw.otherwise !== undefined) errors.push(`${path} (${label}): otherwise belongs to a route by valuePath; a route Jev chooses takes unsure for its fallback`);

@@ -205,7 +205,9 @@ export function candidatePolicyErrors(candidate: unknown, options: CandidatePoli
     if (!options.allowExecutableCandidates && ["code", "call", "artifact"].includes(String(kind)) && !(kind === "call" && node.via === "tool" && typeof node.tool === "string" && options.allowedEffectTools?.includes(node.tool))) errors.push(`${kind} requires allowExecutableCandidates`);
     // `budget` on an agent is accepted for older documents and never read: an author writes budget_usd.
     if (kind === "agent" && Object.hasOwn(node, "budget")) errors.push(`${String(node.label ?? kind)}: budget is not read; declare budget_usd, the dollars the node asks to spend`);
-    if (sections.length && (JUDGMENT_NODE_KINDS as readonly string[]).includes(String(kind))) errors.push(`${String(kind)} cannot carry supplied SOP sections; use an LLM node with sopSection`);
+    // A route by valuePath asks no question, so like code it carries no rubric.
+    const asksJev = (JUDGMENT_NODE_KINDS as readonly string[]).includes(String(kind)) && !(kind === "route" && node.valuePath !== undefined);
+    if (sections.length && asksJev) errors.push(`${String(kind)} cannot carry supplied SOP sections; use an LLM node with sopSection`);
     const llm = (GENERATIVE_NODE_KINDS as readonly string[]).includes(String(kind));
     const predicate = kind === "loop" ? record(node.until) : kind === "escalate" ? record(node.when) : undefined;
     if (sections.length && (predicate?.predicate === "ask" || (llm && node.verify !== undefined))) errors.push("Semantic predicates and verify clauses require a separately reviewed question contract when rubric sections are supplied");

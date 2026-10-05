@@ -87,6 +87,11 @@ test('a route by value needs no judge; policy, capability checks, writes and ins
   assert.deepEqual(inspection.requires.tools, ['clarify', 'proceed', 'withhold']);
   assert.deepEqual([...declaredWrites(route)].sort(), ['applied', 'result']);
   assert.equal(candidatePolicyErrors(flow(), {}).filter(e => /allowExecutableCandidates/.test(e)).length, 3);
+  // With host rubric sections, a route Jev chooses is a question and is refused; a route by value asks nothing.
+  const sections = { allowExecutableCandidates: true, rubricSections: { Policy: 'Fictional rubric.' } };
+  assert.deepEqual(candidatePolicyErrors(flow(), sections), []);
+  const judged = { node: 'route', label: 'apply', state: { request: '{policy}' }, instructions: 'Which action?', branches: { proceed: { body: effect('proceed') }, withhold: { body: effect('withhold') } } };
+  assert.ok(candidatePolicyErrors(flow(judged), sections).some(e => /route cannot carry supplied SOP sections/.test(e)));
   await assert.rejects(runWorkflow(flow(), { policy: { action: 'proceed' } }, {}), /requires runEffect/);
   const result = await runWorkflow(flow(), { policy: { action: 'proceed' } }, { runEffect: async p => ({ operation: p.node.tool }) });
   assert.equal(result.output.operation, 'proceed', 'runs without a runJudge adapter');
