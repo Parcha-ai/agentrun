@@ -5,11 +5,11 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifyPublished, waitForRegistryVersions, PACKUMENT_ACCEPT } from './verify-published.mjs';
-import { releasePackageNames } from './release-preflight.mjs';
+import { releasePackageNames, releasePackages } from './release-preflight.mjs';
 
 const bytes = Buffer.from('verified package fixture bytes');
 const version = '0.1.0-beta.1';
-const packages = ['dsl', 'jev', 'pi'].map(directory => ({ directory, name: releasePackageNames[directory], version,
+const packages = releasePackages.map(directory => ({ directory, name: releasePackageNames[directory], version,
   sha256: createHash('sha256').update(bytes).digest('hex'), integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` }));
 const metadata = { name: packages[0].name, version, dist: { integrity: packages[0].integrity, tarball: 'https://registry.npmjs.org/example.tgz' } };
 const wait = async () => {};
@@ -141,7 +141,7 @@ test('a packument that never lists the version fails after the 60 x 5 s budget a
     fetchImpl: async (url, init) => { calls++; const pkg = pkgFor(url); return pkg.directory === 'jev' && init.headers.accept === PACKUMENT_ACCEPT.full ? new Response(null, { status: 404 }) : packument(pkg, pkg.directory !== 'pi'); },
   }), /never listed @parcha\/agentrun-jev@0\.1\.0-beta\.1 \(full: HTTP 404\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(full\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(abbreviated\)/);
   assert.equal(waited, 300_000);
-  assert.equal(calls, 61 * 6);
+  assert.equal(calls, 61 * 2 * packages.length);
 });
 
 test('packument authentication errors fail at once; network errors and 5xx are waited out', async () => {
@@ -172,8 +172,8 @@ test('slow requests cannot stretch the wait past its wall budget', async () => {
     now: () => clock,
     wait: async ms => { clock += ms; },
     // Every probe of a poll runs together and times out after 10 s: one poll costs 10 s, not 60 s.
-    fetchImpl: async () => { if (++polls % 6 === 1) clock += 10_000; throw new Error('timeout'); },
+    fetchImpl: async () => { if (++polls % (2 * packages.length) === 1) clock += 10_000; throw new Error('timeout'); },
   }), /never listed .*request failed/);
   assert.ok(clock <= 300_000 + 15_000, `waited ${clock} ms`);
-  assert.equal(polls / 6, 21);
+  assert.equal(polls / (2 * packages.length), 21);
 });

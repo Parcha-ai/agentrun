@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 
 const exec = promisify(execFile);
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-archil': '@parcha/pi-durable-archil' };
 export const releasePackages = Object.keys(releasePackageNames);
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
@@ -34,7 +34,7 @@ export function checkManifest(manifest, directory, version, license) {
   assert.equal(manifest.publishConfig?.access, 'public', 'Publication must explicitly be public');
   assert.equal(manifest.publishConfig?.tag, 'beta', 'This release workflow only publishes beta');
   if (manifest.publishConfig.registry !== undefined) assert.equal(manifest.publishConfig.registry, 'https://registry.npmjs.org/', 'Unexpected publication registry');
-  if (directory !== 'dsl') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
+  if (directory === 'jev' || directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
   if (directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-jev'], version, 'Pi must use the exact Jev release version');
 }
 
@@ -76,9 +76,9 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   }
   const receipt = await json(join(root, '.release/verification.json'));
   assert.equal(receipt.status, 'passed', 'Clean package verification must pass first');
-  assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, network: 'prohibited' }, 'All three installed package smoke checks are required');
+  assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, archil: true, network: 'prohibited' }, 'All installed package smoke checks are required');
   await checkReleaseAudit(root, receipt.audit?.vulnerabilities);
-  assert.equal(receipt.packages?.length, releasePackages.length, 'Expected exactly three verified packages');
+  assert.equal(receipt.packages?.length, releasePackages.length, `Expected exactly ${releasePackages.length} verified packages`);
   const temporary = await mkdtemp(join(tmpdir(), 'agentrun-release-preflight-'));
   const packages = [];
   try {

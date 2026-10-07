@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { releasePackageNames } from './release-preflight.mjs';
+import { releasePackageNames, releasePackages } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 
@@ -62,7 +62,7 @@ export async function waitForRegistryVersions(registry, packages, { fetchImpl = 
 }
 
 export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait } = {}) {
-  assert.ok(['dsl', 'jev', 'pi', 'all'].includes(selected));
+  assert.ok([...releasePackages, 'all'].includes(selected));
   assert.ok(!allowAbsent || selected !== 'all', 'Absence probes select exactly one package');
   const receiptPath = join(root, `.release/published-${selected}.json`);
   await mkdir(join(root, '.release'), { recursive: true });
@@ -72,7 +72,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
     const plan = JSON.parse(await readFile(join(root, '.release/release-plan.json'), 'utf8'));
     assert.equal(plan.status, 'passed');
     assert.equal(plan.registry, 'https://registry.npmjs.org/');
-    assert.deepEqual(plan.packages.map(pkg => pkg.directory), ['dsl', 'jev', 'pi']);
+    assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
     for (const pkg of plan.packages) {
       assert.equal(pkg.name, releasePackageNames[pkg.directory]);
       assert.match(pkg.version, /^\d+\.\d+\.\d+-beta\.\d+$/);
@@ -113,7 +113,8 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
         await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
     import {runTriageDemo} from '@parcha/agentrun-dsl/demo';
     import {createJevRunner} from '@parcha/agentrun-jev'; import {createPiRunner} from '@parcha/agentrun-pi';
-    assert.equal(typeof createJevRunner,'function');assert.equal(typeof createPiRunner,'function');
+    import {openDurableRun} from '@parcha/pi-durable-archil';
+    assert.equal(typeof createJevRunner,'function');assert.equal(typeof createPiRunner,'function');assert.equal(typeof openDurableRun,'function');
     for(const scenario of ['billing','technical','ambiguous']){const {result}=await runTriageDemo(scenario);assert.equal(result.status,scenario==='ambiguous'?'escalated':'complete');}\n`);
         await exec(process.execPath, ['--import', './deny-network.mjs', 'smoke.mjs'], { cwd: consumer, timeout: 30_000, maxBuffer: 1024 * 1024 });
       } finally { await rm(consumer, { recursive: true, force: true }); }
@@ -131,7 +132,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|all [--allow-absent]');
+  assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-archil|all [--allow-absent]');
   assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === '--allow-absent'));
   const selected = process.argv[3];
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
