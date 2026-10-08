@@ -142,6 +142,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
 | [`@parcha/pi-durable-archil`](packages/pi-durable-archil/README.md) | Run pi-durable agents on an Archil disk: one owner per run, a fence, and a supervisor |
+| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures (not yet published) |
 
 This release is `0.1.0-beta.4`. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
 

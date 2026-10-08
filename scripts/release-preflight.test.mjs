@@ -6,7 +6,9 @@ import { promisify } from 'node:util';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkManifest, checkReleaseAudit, checkReleaseDispatch, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { fileURLToPath } from 'node:url';
+import { readFileSync, readdirSync } from 'node:fs';
+import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -27,10 +29,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.\n`;
-const manifest = directory => ({ name: releasePackageNames[directory], version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
+const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
   repository: { type: 'git', url: 'git+https://github.com/Parcha-ai/agentrun.git', directory: `packages/${directory}` },
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
-  ...(directory === 'dsl' || directory === 'pi-durable-archil' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
+  ...(directory === 'dsl' || directory === 'pi-durable-archil' || directory === 'pi-browser' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 let baseline;
@@ -39,7 +41,7 @@ before(async () => {
   await mkdir(join(baseline, '.release/packages'), { recursive: true });
   await putJson(join(baseline, 'package.json'), { version, license: 'MIT', private: true });
   await writeFile(join(baseline, 'LICENSE'), license);
-  for (const directory of releasePackages) {
+  for (const directory of listedPackages) {
     const cwd = join(baseline, 'packages', directory);
     await mkdir(join(cwd, 'dist'), { recursive: true });
     await putJson(join(cwd, 'package.json'), manifest(directory));
@@ -50,13 +52,13 @@ before(async () => {
 });
 async function recordPackages(root) {
   const packages = [];
-  for (const directory of releasePackages) {
+  for (const directory of listedPackages) {
     const [packed] = JSON.parse((await exec('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', join(root, '.release/packages')], { cwd: join(root, 'packages', directory) })).stdout);
     const sha256 = createHash('sha256').update(await readFile(join(root, '.release/packages', packed.filename))).digest('hex');
     packages.push({ name: packed.name, version, filename: packed.filename, sha256 });
   }
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -135,7 +137,7 @@ test('incomplete or unsuccessful verification cannot approve release', () => fix
   await putJson(path, { ...receipt, runtimeSmoke: { core: true, jev: true, network: 'prohibited' } });
   await assert.rejects(preflight(root), /All installed package smoke checks/);
   await putJson(path, { ...receipt, packages: receipt.packages.slice(0, 2) });
-  await assert.rejects(preflight(root), /exactly 4 verified packages/);
+  await assert.rejects(preflight(root), /exactly 5 verified packages/);
   await putJson(path, { ...receipt, status: 'failed' });
   await assert.rejects(preflight(root), /verification must pass/);
   await putJson(path, { ...receipt, audit: { vulnerabilities: { high: 1, critical: 0 } } });
@@ -190,7 +192,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await putJson(join(root, 'package.json'), { version, license: 'Apache-2.0', private: true });
   await writeFile(join(root, 'LICENSE'), apache);
   await writeFile(join(root, 'NOTICE'), notice);
-  for (const directory of releasePackages) {
+  for (const directory of listedPackages) {
     const cwd = join(root, 'packages', directory);
     await putJson(join(cwd, 'package.json'), { ...manifest(directory), license: 'Apache-2.0', files: ['dist', 'LICENSE', 'NOTICE'] });
     await writeFile(join(cwd, 'LICENSE'), apache);
@@ -200,10 +202,123 @@ test('Apache release preserves the approved root license and notices in every ar
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
   assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-archil']);
+  await writeFile(join(root, 'packages/pi-durable-archil/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
+  await recordPackages(root);
+  assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
+  // The root header must survive whole: a truncated header, or text run on from it without a blank line, is not an appended notice.
+  for (const edited of ['Copyright 2026 Example\n\nThird-party notice.\n', `${notice.trimEnd()} and others\n\nThird-party notice.\n`, `${notice.trimEnd()}\nThird-party notice.\n`]) {
+    await writeFile(join(root, 'packages/pi-durable-archil/NOTICE'), edited);
+    await recordPackages(root);
+    await assert.rejects(preflight(root), /mismatched NOTICE/, edited);
+  }
+  await writeFile(join(root, 'packages/pi-durable-archil/NOTICE'), notice);
+  await recordPackages(root);
   await writeFile(join(root, 'LICENSE'), 'Apache License\nVersion 2.0, January 2004\n' + 'x'.repeat(1000));
   await assert.rejects(preflight(root), /Apache license text is incomplete/);
   await writeFile(join(root, 'LICENSE'), apache);
   await writeFile(join(root, 'packages/pi/NOTICE'), 'Different attribution\n');
   await recordPackages(root);
   await assert.rejects(preflight(root), /mismatched NOTICE/);
+}));
+
+const repoPackages = () => readdirSync(new URL('../packages', import.meta.url)).filter(name => !name.startsWith('.')).sort();
+const repoManifest = name => JSON.parse(readFileSync(new URL(`../packages/${name}/package.json`, import.meta.url), 'utf8'));
+
+test('the publish set is the explicit release map minus the held packages, and a package marked private is never in it', () => {
+  for (const name of listedPackages) {
+    const held = repoManifest(name).private === true;
+    assert.equal(heldPackages.includes(name), held, `${name}: held exactly when its manifest says private`);
+    assert.equal(releasePackages.includes(name), !held, `${name}: published exactly when it is not held`);
+  }
+  assert.deepEqual(releasePackages, listedPackages.filter(name => !heldPackages.includes(name)));
+  // A held package keeps what a published one has, so lifting the hold removes the flag and nothing else.
+  for (const name of heldPackages) assert.equal(repoManifest(name).publishConfig?.access, 'public');
+});
+
+test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-archil', 'pi-browser'], 'dsl before jev and pi, the packages that depend on none of them after');
+  const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
+  for (const directory of listedPackages) {
+    for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
+      if (names.has(dependency)) assert.ok(listedPackages.indexOf(names.get(dependency)) < listedPackages.indexOf(directory), `${dependency} is published before ${releasePackageNames[directory]}, which depends on it`);
+    }
+  }
+  assert.ok(releasePackages.every((directory, index) => index === 0 || listedPackages.indexOf(releasePackages[index - 1]) < listedPackages.indexOf(directory)), 'the publish set keeps that order');
+});
+
+test('a workspace package that is neither private nor in the release map fails the preflight; a private one does not', () => fixture(async root => {
+  const extra = join(root, 'packages', 'pi-newcomer');
+  await mkdir(extra, { recursive: true });
+  await putJson(join(extra, 'package.json'), { name: '@parcha/pi-newcomer', version, license: 'MIT' });
+  await assert.rejects(preflight(root), /pi-newcomer is neither private nor named in releasePackageNames/);
+  await putJson(join(extra, 'package.json'), { name: '@parcha/pi-newcomer', version, license: 'MIT', private: true });
+  assert.deepEqual((await preflight(root)).packages.map(pkg => pkg.directory), releasePackages, 'a private package needs no entry and is not published');
+  assert.deepEqual(repoPackages(), [...listedPackages].sort(), 'the repository lists every package it has');
+}));
+
+// The workflow's publish step, up to its loop: run in a directory whose scripts/release-preflight.mjs is the one given.
+const publishStep = () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const start = workflow.indexOf('set -euo pipefail', workflow.indexOf('Publish exact verified archives in dependency order'));
+  const end = workflow.indexOf('for package in $packages; do');
+  assert.ok(start > 0 && end > start, 'the publish step reads its packages into a variable before looping');
+  return `${workflow.slice(start, end)}echo "would publish: $packages"\n`;
+};
+const runPublishStep = async (preflightModule) => {
+  const run = cwd => exec('bash', ['-c', publishStep()], { cwd, env: { ...process.env, RELEASE_TAG: `v${version}` } }).then(out => ({ status: 0, ...out }), error => ({ status: error.code, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }));
+  if (preflightModule === null) return run(fileURLToPath(new URL('..', import.meta.url)));
+  const dir = await mkdtemp(join(tmpdir(), 'agentrun-publish-step-'));
+  try {
+    await mkdir(join(dir, 'scripts'));
+    await writeFile(join(dir, 'scripts/release-preflight.mjs'), preflightModule);
+    return await run(dir);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+};
+
+test('the release workflow reads the publish set into a variable, so a failed read fails the step instead of publishing nothing', async () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /packages="\$\(node --input-type=module -e "import \{ releasePackages \} from '\.\/scripts\/release-preflight\.mjs'; console\.log\(releasePackages\.join\(' '\)\)"\)"\n\s+\[ -n "\$packages" \] \|\| \{ echo 'empty publish set' >&2; exit 1; \}\n\s+for package in \$packages; do/);
+  assert.doesNotMatch(workflow, /for package in \$\(/, 'errexit does not apply to a command substitution in a for-list');
+  for (const name of listedPackages) assert.doesNotMatch(workflow, new RegExp(`for package in [^\\n]*\\b${name}\\b`), `${name} is not hard-coded in the publish loop`);
+  // Run for real: the repository's own module prints the publish set; a module that throws, or prints nothing, stops the step before the loop.
+  const ok = await runPublishStep(null);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, new RegExp(`would publish: ${releasePackages.join(' ')}\\n`));
+  const thrown = await runPublishStep("throw new Error('the import failed');\n");
+  assert.notEqual(thrown.status, 0, 'an import that throws fails the step');
+  assert.doesNotMatch(thrown.stdout, /would publish/);
+  const empty = await runPublishStep('export const releasePackages = [];\n');
+  assert.notEqual(empty.status, 0, 'an empty publish set fails the step');
+  assert.match(empty.stderr, /empty publish set/);
+  assert.doesNotMatch(empty.stdout, /would publish/);
+});
+
+test('the held and published sets come from the tree being checked, not from the checkout the script runs in', () => fixture(async root => {
+  const set = async (directory, change) => { const path = join(root, 'packages', directory, 'package.json'); const current = JSON.parse(await readFile(path, 'utf8')); const { private: _, ...rest } = current; await putJson(path, { ...rest, ...change }); };
+  // A tree in which the browser package is no longer held publishes it, last, though this checkout still holds it.
+  await set('pi-browser', {});
+  await recordPackages(root);
+  const lifted = await preflight(root);
+  assert.deepEqual(lifted.packages.map(pkg => pkg.directory), listedPackages, 'a package unheld in the checked tree is in the plan');
+  // And a package held in the checked tree is out of it, at the workspace version, though this checkout publishes it.
+  await set('pi-durable-archil', { private: true });
+  await recordPackages(root);
+  const held = await preflight(root);
+  assert.deepEqual(held.packages.map(pkg => pkg.directory), listedPackages.filter(directory => directory !== 'pi-durable-archil'));
+  await set('pi-durable-archil', { private: true, version: '0.1.0-beta.2' });
+  await assert.rejects(preflight(root), /Held package @parcha\/pi-durable-archil must be at the workspace version/);
+}));
+
+test('a held package is checked at the workspace version, never published', () => fixture(async root => {
+  assert.ok(heldPackages.length > 0, 'the repository holds a package while publishing is on hold; delete this test with the last hold');
+  const [held] = heldPackages;
+  const plan = await preflight(root);
+  assert.ok(!plan.packages.some(pkg => pkg.directory === held || pkg.name === releasePackageNames[held]), 'a held package at the workspace version passes and is not in the publish set');
+  assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
+  const path = join(root, 'packages', held, 'package.json');
+  const current = JSON.parse(await readFile(path, 'utf8'));
+  await putJson(path, { ...current, version: '0.1.0-beta.2' });
+  await assert.rejects(preflight(root), /Held package .* must be at the workspace version 0\.1\.0-beta\.1, found 0\.1\.0-beta\.2/);
+  await putJson(path, { ...current, version });
+  assert.equal((await preflight(root)).packages.length, releasePackages.length);
 }));

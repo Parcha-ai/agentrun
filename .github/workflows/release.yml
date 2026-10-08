@@ -60,7 +60,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          for package in dsl jev pi pi-durable-archil; do
+          # The publish set is scripts/release-preflight.mjs's `releasePackages`: the named packages except a held one (a package whose
+          # manifest says "private": true), so lifting a hold changes one flag and no list. It is read into a variable first: errexit
+          # does not apply to a command substitution in a for-list, so a failed import there would run the loop zero times and pass.
+          packages="$(node --input-type=module -e "import { releasePackages } from './scripts/release-preflight.mjs'; console.log(releasePackages.join(' '))")"
+          [ -n "$packages" ] || { echo 'empty publish set' >&2; exit 1; }
+          for package in $packages; do
             if node scripts/verify-published.mjs --package "$package" --allow-absent; then
               echo "Verified existing $package@$version; resuming without republishing."
               continue

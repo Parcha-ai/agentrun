@@ -40,8 +40,31 @@ const forbid = [
   ['credential URL', /https?:\/\/[^\s/:]+:[^\s/@]+@/],
 ];
 
+// Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
+// those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
+// still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
+// Files beyond the common allowlist, by package. The browser package ships its vendored Stagehand facade's provenance file beside the compiled
+// copy, so a reader of the tarball can check what was copied; no other package may carry it.
+const allowedExtraFiles = {
+  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
+};
+const allowedEndpoints = {
+  'pi-browser': [
+    // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
+    ['dist/driver/stagehand.js', 'http://127.0.0.1:9/v1/traces'],
+    ['dist/driver/stagehand.d.ts', 'http://127.0.0.1:9/v1/traces'],
+    // The DevTools endpoint of the Chrome the provider started itself, on the free port it chose.
+    ['dist/providers/cdp.js', 'http://127.0.0.1:${port}'],
+    ['dist/providers/cdp.js', 'http://127.0.0.1:${local.port}'],
+    // The fake provider in the test kit (`./testing`) serves its pages from a loopback server of its own.
+    ['dist/testing/backend.js', 'http://127.0.0.1:${server.address().port}'],
+  ],
+};
+
+const usedEndpoints = new Set();
+
 try {
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-archil'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-archil', 'pi-browser'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -53,7 +76,7 @@ try {
     const names = (await run('tar', ['-tzf', tarball])).stdout.trim().split('\n');
     for (const name of names) {
       assert.ok(name.startsWith('package/') && !name.split('/').includes('..'), `Unsafe archive path in ${manifest.name}`);
-      assert.ok(name.endsWith('/') || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|bin\/archil-scoped|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
+      assert.ok(name.endsWith('/') || (allowedExtraFiles[directory] ?? []).includes(name) || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|bin\/archil-scoped|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
       assert.ok(!/(?:^|\/)(?:\.env(?:\..*)?|node_modules|\.git|\.cascade|\.release|test|tests)(?:\/|$)/.test(name), `Unexpected packed path: ${name}`);
       assert.ok(!/\.(?:pem|key|p12|pfx|map)$/.test(name), `Unexpected packed file: ${name}`);
     }
@@ -65,7 +88,9 @@ try {
     for (const name of names.filter(n => !n.endsWith('/'))) {
       const content = await readFile(join(extracted, name), 'utf8');
       const decoded = content.replace(/(?:%[0-9a-f]{2})+/gi, value => { try { return decodeURIComponent(value); } catch { return value; } });
-      for (const [kind, pattern] of forbid) assert.ok(!pattern.test(content) && !pattern.test(decoded), `${kind} found in ${manifest.name}/${name}; content omitted`);
+      const scanned = (allowedEndpoints[directory] ?? []).reduce((text, [file, literal]) => (name === `package/${file}` && text.includes(literal) ? (usedEndpoints.add(`${file} ${literal}`), text.replaceAll(literal, '')) : text), content);
+      const scannedDecoded = scanned.replace(/(?:%[0-9a-f]{2})+/gi, value => { try { return decodeURIComponent(value); } catch { return value; } });
+      for (const [kind, pattern] of forbid) assert.ok(!pattern.test(scanned) && !pattern.test(scannedDecoded), `${kind} found in ${manifest.name}/${name}; content omitted`);
       if (name.endsWith('.js') || name.endsWith('.d.ts')) {
         const imports = [...content.matchAll(/(?:from\s*|import\s*\(\s*|import\s*|require\s*\(\s*)['"]([^'"]+)['"]/g)].map(match => match[1]);
         for (const dependency of imports) {
@@ -82,6 +107,7 @@ try {
     const fileHash = createHash('sha256').update(await readFile(tarball)).digest('hex');
     receipt.packages.push({ name: manifest.name, version: manifest.version, filename: packed.filename, sha256: fileHash, files: names, size: packed.size, unpackedSize: packed.unpackedSize, license: manifest.license });
     tarballs.push(tarball);
+    for (const [file, literal] of allowedEndpoints[directory] ?? []) assert.ok(usedEndpoints.has(`${file} ${literal}`), `Allowed endpoint literal no longer in ${manifest.name}: ${file} ${literal}`);
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
@@ -158,6 +184,10 @@ import { createJevRunner } from '@parcha/agentrun-jev';
 import * as pi from '@parcha/agentrun-pi';
 import * as archil from '@parcha/pi-durable-archil';
 import * as archilLease from '@parcha/pi-durable-archil/lease';
+import * as browser from '@parcha/pi-browser';
+import * as browserAgent from '@parcha/pi-browser/coding-agent';
+import * as browserTesting from '@parcha/pi-browser/testing';
+import * as browserCdp from '@parcha/pi-browser/providers/cdp';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -178,11 +208,12 @@ const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async opti
 assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
 assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
 assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archilLease.openRunLease,'function'); assert.ok(existsSync(archil.ARCHIL_SCOPED)); assert.equal('supervise' in archilLease,false);
+assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
-  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, network: 'prohibited' });
+  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, network: 'prohibited' });
   receipt.runtimeSmoke = smoke;
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
   receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
@@ -243,6 +274,13 @@ const incomplete: RunRef = { region: 'aws-us-east-1', id: 'r1' };
 void [durable, incomplete];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'archil-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'browser-consumer.ts'), `import { BROWSER_TOOLS, type BrowserPolicy } from '@parcha/pi-browser';
+import { createBrowserExtension } from '@parcha/pi-browser/coding-agent';
+import { FakeBackend } from '@parcha/pi-browser/testing';
+const browser: [typeof BROWSER_TOOLS, typeof createBrowserExtension, typeof FakeBackend, BrowserPolicy | undefined] = [BROWSER_TOOLS, createBrowserExtension, FakeBackend, undefined];
+void browser;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'browser-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

@@ -1,6 +1,10 @@
 # Release a beta
 
-The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, and `@parcha/pi-durable-archil`. They share a version and are published in that order (the last does not depend on the others). Publication is manual; pushes, pull requests and tags do not publish packages.
+The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, and `@parcha/pi-durable-archil`. They share a version and are published in that order (the last does not depend on the others). `@parcha/pi-browser` is in the repository but held; see [Held packages](#held-packages). Publication is manual; pushes, pull requests and tags do not publish packages.
+
+## Held packages
+
+The packages a release may publish are named, in publication order, in `releasePackageNames` in `scripts/release-preflight.mjs`: dependencies first (`dsl`, then `jev` and `pi`), then the packages that depend on none of them. That list is the gate for a new package: `release-preflight` fails when a workspace package is neither private nor named there, so a package is never published by accident. A package whose manifest says `"private": true` is held. It is built, tested, typechecked and checked by `verify-packages` and `verify:tarball`, and it is bumped with the workspace version in every release PR like the rest (`release-preflight` fails if its version differs from the workspace's), but it is skipped at publication: the publish set (`releasePackages`, which `verify-published` and the workflow's publish loop read) is the named packages that are not held. `@parcha/pi-browser` is held while publishing it is on hold. Lifting a hold is one commit that removes `"private": true` from the package's manifest, after its npm bootstrap and trusted publisher exist (see "Prepare publication").
 
 ## Verify the source and packages
 

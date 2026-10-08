@@ -1,0 +1,33 @@
+AgentRun
+Copyright 2026 Parcha Labs, Inc.
+
+This package contains two pieces of Stagehand 4.1.0 (https://github.com/browserbase/stagehand), both under its MIT license,
+whose text follows:
+
+- The Chrome launch flags in src/providers/cdp.ts, copied from packages/sdk-ts/src/browser/localBrowser.ts
+  (DEFAULT_CHROME_FLAGS).
+- The files in src/vendor/stagehand-facade (compiled to dist/vendor/stagehand-facade), copied from
+  packages/integrations/core/src/facade at commit cd7b230778cf92269e4cb90e80d97f5113781c51. UPSTREAM.json, shipped
+  beside them as src/vendor/stagehand-facade/UPSTREAM.json, records each file's upstream blob and SHA-256.
+
+MIT License
+
+Copyright (c) 2024 Browserbase Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

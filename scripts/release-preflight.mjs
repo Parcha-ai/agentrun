@@ -3,15 +3,26 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 
 const exec = promisify(execFile);
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-archil': '@parcha/pi-durable-archil' };
-export const releasePackages = Object.keys(releasePackageNames);
+// The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
+// packages that depend on none of them after. This list is the gate for a new package: a workspace package that is not private and not
+// named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-archil': '@parcha/pi-durable-archil', 'pi-browser': '@parcha/pi-browser' };
+export const listedPackages = Object.keys(releasePackageNames);
+// A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
+// version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
+const here = dirname(fileURLToPath(import.meta.url));
+const isHeld = directory => JSON.parse(readFileSync(join(here, '..', 'packages', directory, 'package.json'), 'utf8')).private === true;
+export const heldPackages = listedPackages.filter(isHeld);
+/** What a release publishes, in order: the listed packages that are not held. */
+export const releasePackages = listedPackages.filter(directory => !heldPackages.includes(directory));
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -76,13 +87,28 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   }
   const receipt = await json(join(root, '.release/verification.json'));
   assert.equal(receipt.status, 'passed', 'Clean package verification must pass first');
-  assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, archil: true, network: 'prohibited' }, 'All installed package smoke checks are required');
+  assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, archil: true, browser: true, network: 'prohibited' }, 'All installed package smoke checks are required');
   await checkReleaseAudit(root, receipt.audit?.vulnerabilities);
-  assert.equal(receipt.packages?.length, releasePackages.length, `Expected exactly ${releasePackages.length} verified packages`);
+  assert.equal(receipt.packages?.length, listedPackages.length, `Expected exactly ${listedPackages.length} verified packages`);
+  // The gate for a new package: every workspace package that is not private is named in releasePackageNames.
+  for (const directory of await readdir(join(root, 'packages'))) {
+    const manifest = await json(join(root, 'packages', directory, 'package.json')).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (manifest && manifest.private !== true) assert.ok(listedPackages.includes(directory), `Workspace package ${directory} is neither private nor named in releasePackageNames (scripts/release-preflight.mjs); add it there, or mark it private, before a release`);
+  }
+  // Held and published are read from the tree being checked, not from the checkout this script runs in: a package is held when its manifest in
+  // `root` says private. (The constants exported above are the same reading of this checkout, for the workflow.)
+  const heldHere = [];
+  for (const directory of listedPackages) if ((await json(join(root, 'packages', directory, 'package.json'))).private === true) heldHere.push(directory);
+  const releaseHere = listedPackages.filter(directory => !heldHere.includes(directory));
+  // A held package is bumped with the workspace like the rest and skipped only at publication.
+  for (const directory of heldHere) {
+    const held = await json(join(root, 'packages', directory, 'package.json'));
+    assert.equal(held.version, workspace.version, `Held package ${releasePackageNames[directory]} must be at the workspace version ${workspace.version}, found ${held.version}`);
+  }
   const temporary = await mkdtemp(join(tmpdir(), 'agentrun-release-preflight-'));
   const packages = [];
   try {
-    for (const directory of releasePackages) {
+    for (const directory of releaseHere) {
       const manifest = await json(join(root, 'packages', directory, 'package.json'));
       checkManifest(manifest, directory, workspace.version, workspace.license);
       const verified = receipt.packages.find(entry => entry.name === manifest.name);
@@ -96,7 +122,13 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
       const packedManifest = JSON.parse(await command('tar', ['-xOf', archive, 'package/package.json'], root));
       assert.deepEqual(packedManifest, manifest, 'Packed metadata differs from the release source');
       assert.equal((await command('tar', ['-xOf', archive, 'package/LICENSE'], root)).trim(), license.trim(), `Missing or mismatched LICENSE in ${manifest.name}`);
-      if (notice !== undefined) assert.equal((await command('tar', ['-xOf', archive, 'package/NOTICE'], root)).trim(), notice.trim(), `Missing or mismatched NOTICE in ${manifest.name}`);
+      // A package may carry third-party notices after the repository's NOTICE (pi-browser keeps Stagehand's MIT licence), never instead of
+      // it: the packed NOTICE is the root NOTICE exactly, or the root NOTICE, a blank line, and more. A truncated or edited root header
+      // is not a prefix that passes.
+      if (notice !== undefined) {
+        const packedNotice = (await command('tar', ['-xOf', archive, 'package/NOTICE'], root)).trim();
+        assert.ok(packedNotice === notice.trim() || packedNotice.startsWith(`${notice.trim()}\n\n`), `Missing or mismatched NOTICE in ${manifest.name}`);
+      }
       // Bind the checked source/build to the already verified bytes. Publish these exact archives, never a fresh pack.
       const [repacked] = JSON.parse(await command('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', temporary], join(root, 'packages', directory)));
       assert.equal(digest(await readFile(join(temporary, repacked.filename))), verified.sha256, 'Current package contents differ from the verified archive');
