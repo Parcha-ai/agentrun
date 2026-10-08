@@ -40,7 +40,9 @@ export type StartAttempt = { attempt: number };
 export interface HostDriver {
   /**
    * Start an instance of the run that mounts with `mountToken` (a reusable token, minted for this attempt). A driver may
-   * key the start on `attempt`, so a retry of the same attempt finds the instance it already started.
+   * key the start on `attempt`, so a retry of the same attempt finds the instance it already started; it then returns
+   * that instance's handle with `adopted: true`, and the supervisor removes the token it minted for this start, which no
+   * instance used.
    */
   start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle>;
   status(handle: HostHandle): Promise<HostStatus>;
@@ -190,7 +192,10 @@ export type EnsureResult =
       /** The run directory did not exist and was created with `create`'s owner. */
       created: boolean;
       handle: HostHandle;
+      /** The token user minted for this start; with `adopted` it was not used and is already removed. */
       token: { identifier: string; nickname: string };
+      /** The driver found the instance an earlier start of this attempt made (another supervisor, a retried call). */
+      adopted?: true;
       /** Whether the start mark (runs/<id>/start.json) was written; without it the next tick has no start grace. */
       startMark: boolean;
       /** Failed starts right before this one (0 after a start that wrote run.json), and what was seen of the last one. */
@@ -454,6 +459,10 @@ async function startInstance(
     if (startMark) await writeMark(prev ?? { generation: why.generation, at, by, failures: 0, lastExit: null });
     throw new SuperviseError("HOST_START_FAILED", `starting an instance of ${runPath(ref.id)} failed: ${(err as Error)?.message ?? err}`, { cause: err });
   }
+  // An adopted instance mounts with the token of the start that made it; this one's goes now, not at a later sweep, which
+  // keeps a run's users while it holds a delegation.
+  const adopted = handle.adopted === true;
+  if (adopted) await removeMountToken(opts.control, token.identifier).catch(() => {});
   return {
     action: "started",
     reason: why.reason,
@@ -463,6 +472,7 @@ async function startInstance(
     created: why.created,
     handle,
     token: { identifier: token.identifier, nickname: token.nickname },
+    ...(adopted ? { adopted: true as const } : {}),
     startMark,
     failures,
     lastExit,

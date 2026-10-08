@@ -42,8 +42,10 @@
 - `dockerHost` (`supervise --host docker --image IMAGE`): one container per instance, from the image `docker/Dockerfile`
   builds (Node 24, the archil client 0.8.42 checked by sha256 per architecture, FUSE, tini, the run user `pda`, this
   package). Nothing on the machine that runs the supervisor needs root, FUSE or the archil client.
-  - `docker create` named `pda-<run>-g<attempt>`: a retry of the same attempt adopts a running container and replaces a
-    dead one. `--device /dev/fuse --cap-add SYS_ADMIN`, `--security-opt no-new-privileges`, no restart policy, and
+  - `docker create` named `pda-<run>-<disk key>-g<attempt>` (the disk key is 8 hex digits of the disk and region) and
+    labeled `pda.fleet`, `pda.run`, `pda.disk`, `pda.region`: a retry of the same attempt adopts a running container that
+    carries all four labels, and the supervisor removes the token it minted for that start; a dead one is replaced, and a
+    container by that name with other labels is refused. `--device /dev/fuse --cap-add SYS_ADMIN`, `--security-opt no-new-privileges`, no restart policy, and
     `--security-opt apparmor=unconfined` only where the daemon applies AppArmor (Docker's default profile denies mount(2);
     `apparmor: "auto"`, the default, decides from `docker info` and reports why once through `note`).
   - The mount token is copied into the created container as a root-only file (`docker cp -` of a tar built in memory),

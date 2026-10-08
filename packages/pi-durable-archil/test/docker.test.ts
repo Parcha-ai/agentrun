@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { containerStatus, dockerHost, tarOneFile, type DockerHostOptions } from "../src/hosts/docker.ts";
+import { containerStatus, diskKey, dockerHost, tarOneFile, type DockerHostOptions } from "../src/hosts/docker.ts";
 import { main } from "../src/cli.ts";
 import { PdaError } from "../src/errors.ts";
 import type { HostHandle } from "../src/supervise.ts";
@@ -17,6 +17,8 @@ import type { HostHandle } from "../src/supervise.ts";
 const FAKE = fileURLToPath(new URL("./fixtures/fake-docker.mjs", import.meta.url));
 const TOKEN = "tok-secret-0123456789abcdef";
 const ref = { disk: "dsk-1", region: "aws-us-east-1", id: "run-1" };
+/** The container name dockerHost gives run `id` on ref's disk at attempt `g`. */
+const nm = (id: string, g: number | string, r: { disk: string; region: string } = ref) => `pda-${id}-${diskKey(r)}-g${g}`;
 
 type Call = { argv: string[]; stdin: string };
 type Container = { id: string; name: string; image: string; cmd: string[]; labels: Record<string, string>; env: string[]; flags: [string, string][]; files: Record<string, string>; state: { Status: string; ExitCode: number } };
@@ -59,11 +61,11 @@ test("start: create with FUSE, AppArmor unconfined, no new privileges and no res
     const notes: string[] = [];
     const h = await host(fake, { mountRoot: "/mnt/x", runArgs: ["--heartbeat-ms=1000"], env: { A: "1" }, note: (l) => notes.push(l) }).start(ref, TOKEN, { attempt: 3 });
     assert.deepEqual(notes, ["the docker daemon applies AppArmor, whose default profile denies the mount archil needs: containers run with --security-opt apparmor=unconfined"]);
-    assert.equal(h.name, "pda-run-1-g3");
+    assert.equal(h.name, nm("run-1", 3));
     assert.deepEqual({ driver: h.driver, fleet: h.fleet, daemon: h.daemon, mountpoint: h.mountpoint, image: h.image }, { driver: "docker", fleet: "t", daemon: "daemon-1", mountpoint: "/mnt/x/runs/run-1", image: "pda-image:test" });
     const verbs = fake.calls().map((c) => c.argv[0]);
     assert.deepEqual(verbs.filter((v) => v !== "info" && v !== "ps"), ["create", "cp", "start"], "create, copy the token in, start");
-    const c = fake.byName("pda-run-1-g3")!;
+    const c = fake.byName(nm("run-1", 3))!;
     const flags = c.flags.map(([f, v]) => `${f} ${v}`);
     for (const want of ["--device /dev/fuse", "--cap-add SYS_ADMIN", "--security-opt apparmor=unconfined", "--security-opt no-new-privileges", "--restart no", "--label pda.fleet=t", "--label pda.run=run-1", "--label pda.attempt=3", "--env A=1"]) {
       assert.ok(flags.includes(want), `create has ${want}: ${flags.join(", ")}`);
@@ -71,7 +73,7 @@ test("start: create with FUSE, AppArmor unconfined, no new privileges and no res
     assert.equal(c.image, "pda-image:test");
     assert.deepEqual(c.cmd, ["run", "--disk", "dsk-1", "--region", "aws-us-east-1", "--id", "run-1", "--mount-root", "/mnt/x", "--archil", "/usr/local/sbin/archil-scoped", "--run-as", "pda", "--heartbeat-ms=1000", "--token-stdin"]);
     const holder = JSON.parse(c.env.find((e) => e.startsWith("PDA_HOLDER="))!.slice("PDA_HOLDER=".length));
-    assert.deepEqual(holder, { driver: "docker", fleet: "t", daemon: "daemon-1", name: "pda-run-1-g3", mountpoint: "/mnt/x/runs/run-1", image: "pda-image:test" });
+    assert.deepEqual(holder, { driver: "docker", fleet: "t", daemon: "daemon-1", name: nm("run-1", 3), mountpoint: "/mnt/x/runs/run-1", image: "pda-image:test" });
     // The token: only in the tar `docker cp -` reads from stdin, as /run/pda/token, mode 0600, owned by root.
     const cp = fake.calls().find((x) => x.argv[0] === "cp")!;
     assert.deepEqual(cp.argv, ["cp", "-", `${c.id}:/run/pda`]);
@@ -95,18 +97,18 @@ test("start: the app's directory is mounted read-only at /opt/pda/app, its node_
     mkdirSync(join(appRoot, "examples", "x"), { recursive: true });
     writeFileSync(join(appRoot, "examples", "x", "app.ts"), "export default () => ({})\n");
     await host(fake, { app: join(appRoot, "examples", "x", "app.ts"), appRoot }).start(ref, TOKEN, { attempt: 1 });
-    let c = fake.byName("pda-run-1-g1")!;
+    let c = fake.byName(nm("run-1", 1))!;
     let mounts = c.flags.filter(([f]) => f === "--mount").map(([, v]) => v);
     assert.deepEqual(mounts, [`type=bind,source=${appRoot},target=/opt/pda/app,readonly`]);
     assert.deepEqual(c.cmd.slice(c.cmd.indexOf("--app"), c.cmd.indexOf("--app") + 2), ["--app", "/opt/pda/app/examples/x/app.ts"]);
     mkdirSync(join(appRoot, "node_modules"));
     await host(fake, { app: join(appRoot, "examples", "x", "app.ts"), appRoot }).start({ ...ref, id: "run-2" }, TOKEN, { attempt: 1 });
-    c = fake.byName("pda-run-2-g1")!;
+    c = fake.byName(nm("run-2", 1))!;
     mounts = c.flags.filter(([f]) => f === "--mount").map(([, v]) => v);
     assert.deepEqual(mounts[1], "type=tmpfs,target=/opt/pda/app/node_modules,tmpfs-size=4096,tmpfs-mode=0555");
     // Default root: the module's own directory.
     await host(fake, { app: join(appRoot, "examples", "x", "app.ts") }).start({ ...ref, id: "run-3" }, TOKEN, { attempt: 1 });
-    c = fake.byName("pda-run-3-g1")!;
+    c = fake.byName(nm("run-3", 1))!;
     assert.ok(c.cmd.includes("/opt/pda/app/app.ts"));
     assert.throws(() => host(fake, { app: "/elsewhere/app.ts", appRoot }), (e: unknown) => e instanceof PdaError && e.code === "INVALID_ARGUMENT");
     assert.throws(() => host(fake, { app: "/a,b/app.ts" }), (e: unknown) => e instanceof PdaError && /comma/.test((e as Error).message));
@@ -122,12 +124,12 @@ test("start: AppArmor only where the daemon applies it (auto), or as named, or l
     // A daemon that applies no AppArmor (Docker Desktop, OrbStack): no option, and the note says so.
     const notes: string[] = [];
     await host(fake, { note: (l) => notes.push(l) }).start({ ...ref, id: "run-0" }, TOKEN, { attempt: 1 });
-    assert.ok(!fake.byName("pda-run-0-g1")!.flags.some(([, v]) => v.startsWith("apparmor=")));
+    assert.ok(!fake.byName(nm("run-0", 1))!.flags.some(([, v]) => v.startsWith("apparmor=")));
     assert.deepEqual(notes, ["the docker daemon applies no AppArmor profile: containers get no AppArmor option"]);
     await host(fake, { apparmor: "pda-fuse" }).start(ref, TOKEN, { attempt: 1 });
-    assert.ok(fake.byName("pda-run-1-g1")!.flags.some(([f, v]) => f === "--security-opt" && v === "apparmor=pda-fuse"));
+    assert.ok(fake.byName(nm("run-1", 1))!.flags.some(([f, v]) => f === "--security-opt" && v === "apparmor=pda-fuse"));
     await host(fake, { apparmor: false }).start({ ...ref, id: "run-2" }, TOKEN, { attempt: 1 });
-    assert.ok(!fake.byName("pda-run-2-g1")!.flags.some(([, v]) => v.startsWith("apparmor=")));
+    assert.ok(!fake.byName(nm("run-2", 1))!.flags.some(([, v]) => v.startsWith("apparmor=")));
     await assert.rejects(dockerHost({ docker: fake.bin }).start(ref, TOKEN), (e: unknown) => e instanceof PdaError && e.code === "INVALID_ARGUMENT");
     await assert.rejects(host(fake).start(ref, "a\nb"), (e: unknown) => e instanceof PdaError && e.code === "INVALID_ARGUMENT");
   } finally {
@@ -143,6 +145,8 @@ test("start again for the same attempt: a running container is adopted (no secon
     const before = fake.calls().length;
     const again = await driver.start(ref, "another-token", { attempt: 2 });
     assert.equal(again.name, first.name);
+    assert.equal(again.adopted, true, "the handle says the start was adopted, so the supervisor removes the unused token");
+    assert.equal(first.adopted, undefined);
     const after = fake.calls().slice(before).map((c) => c.argv[0]);
     assert.ok(!after.includes("cp") && !after.includes("start"), `adopted without a token or a start: ${after}`);
     assert.ok(!carried(fake.calls()).some((t) => t.includes("another-token")), "the second token went nowhere");
@@ -153,7 +157,40 @@ test("start again for the same attempt: a running container is adopted (no secon
     assert.equal(Object.keys(fake.read().containers).length, 1);
     // A container of that name in another fleet is never touched.
     fake.write((s) => void (Object.values(s.containers)[0].labels["pda.fleet"] = "other"));
-    await assert.rejects(driver.start(ref, TOKEN, { attempt: 2 }), (e: unknown) => e instanceof PdaError && e.code === "START_FAILED" && /not fleet t's/.test((e as Error).message));
+    await assert.rejects(driver.start(ref, TOKEN, { attempt: 2 }), (e: unknown) => e instanceof PdaError && e.code === "START_FAILED" && /not this run's/.test((e as Error).message));
+  } finally {
+    fake.remove();
+  }
+});
+
+test("the same run id on two disks (or regions) gets two containers; a container of another disk's run is never adopted or removed", async () => {
+  const fake = fakeDaemon();
+  try {
+    const driver = host(fake);
+    const other = { ...ref, disk: "dsk-2" };
+    const a = await driver.start(ref, TOKEN, { attempt: 1 });
+    const b = await driver.start(other, TOKEN, { attempt: 1 });
+    const c = await driver.start({ ...ref, region: "aws-us-west-2" }, TOKEN, { attempt: 1 });
+    assert.equal(new Set([a.name, b.name, c.name]).size, 3);
+    assert.equal(b.adopted, undefined, "not adopted across disks");
+    for (const h of [a, b]) {
+      const labels = fake.byName(String(h.name))!.labels;
+      assert.equal(labels["pda.disk"], h === a ? "dsk-1" : "dsk-2");
+      assert.equal(labels["pda.region"], "aws-us-east-1");
+    }
+    // A start on dsk-1 collects that run's ended containers only.
+    fake.write((s) => {
+      for (const x of Object.values(s.containers)) x.state = { Status: "exited", ExitCode: 137 };
+    });
+    await driver.start(ref, TOKEN, { attempt: 2 });
+    assert.ok(fake.byName(String(b.name)), "dsk-2's container stays");
+    assert.ok(!fake.byName(String(a.name)), "dsk-1's ended container went");
+    // A container with this run's name but another disk's labels is refused, never adopted.
+    fake.write((s) => {
+      const x = Object.values(s.containers).find((y) => y.name === nm("run-1", 2))!;
+      x.labels["pda.disk"] = "dsk-9";
+    });
+    await assert.rejects(driver.start(ref, TOKEN, { attempt: 2 }), (e: unknown) => e instanceof PdaError && e.code === "START_FAILED" && /not this run's/.test((e as Error).message));
   } finally {
     fake.remove();
   }
@@ -176,18 +213,18 @@ test("start without an attempt names the container by time; a start removes the 
   try {
     const driver = host(fake);
     const loose = await driver.start(ref, TOKEN);
-    assert.match(String(loose.name), /^pda-run-1-t[0-9a-z]+$/);
+    assert.match(String(loose.name), new RegExp(`^pda-run-1-${diskKey(ref)}-t[0-9a-z]+$`));
     fake.write((s) => {
       for (const c of Object.values(s.containers)) c.state = { Status: "exited", ExitCode: 137 };
     });
     await driver.start(ref, TOKEN, { attempt: 1 });
     await driver.start({ ...ref, id: "other" }, TOKEN, { attempt: 1 });
     fake.write((s) => {
-      for (const c of Object.values(s.containers)) if (c.name === "pda-run-1-g1") c.state = { Status: "exited", ExitCode: 75 };
+      for (const c of Object.values(s.containers)) if (c.name === nm("run-1", 1)) c.state = { Status: "exited", ExitCode: 75 };
     });
     await driver.start(ref, TOKEN, { attempt: 2 });
     const names = Object.values(fake.read().containers).map((c) => `${c.name}:${c.state.Status}`).sort();
-    assert.deepEqual(names, ["pda-other-g1:running", "pda-run-1-g2:running"], "attempt 1 (exited 75) and the loose one went; another run's stayed");
+    assert.deepEqual(names, [`${nm("other", 1)}:running`, `${nm("run-1", 2)}:running`].sort(), "attempt 1 (exited 75) and the loose one went; another run's stayed");
   } finally {
     fake.remove();
   }

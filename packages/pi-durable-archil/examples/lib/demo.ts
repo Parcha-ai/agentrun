@@ -463,7 +463,9 @@ export async function cleanup(opts: DemoOptions, handles: HostHandle[], hosts: H
   if (opts.host === "docker") {
     // Every container of this run in the demo's fleet goes (a killed one stays exited until then); the mounts went with them.
     const driver = dockerHost({ fleet: opts.fleet });
-    const listed = spawnSync("docker", ["ps", "-a", "--filter", `label=pda.fleet=${opts.fleet}`, "--filter", `label=pda.run=${opts.id}`, "--format", "{{.Names}}"], { encoding: "utf8" });
+    const labels = { "pda.fleet": opts.fleet, "pda.run": opts.id, "pda.disk": opts.disk, "pda.region": opts.region };
+    const filters = Object.entries(labels).flatMap(([k, v]) => ["--filter", `label=${k}=${v}`]);
+    const listed = spawnSync("docker", ["ps", "-a", ...filters, "--format", "{{.Names}}"], { encoding: "utf8" });
     const names = new Set([...handles.map((h) => String(h.name)), ...listed.stdout.split("\n").map((n) => n.trim()).filter(Boolean)]);
     for (const handle of handles) await driver.stop(handle).catch((e: unknown) => note("cleanup", `stop ${String(handle.name)}: ${(e as Error).message}`));
     for (const name of names) spawnSync("docker", ["rm", "-f", name], { encoding: "utf8" });

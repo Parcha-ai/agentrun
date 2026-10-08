@@ -203,7 +203,7 @@ async function phaseMount() {
 
 /** An instance started through dockerHost, then `docker stop`: does the drain check the delegation in? */
 async function phaseDrain() {
-  const { dockerHost } = await import("../../src/hosts/docker.ts");
+  const { diskKey, dockerHost } = await import("../../src/hosts/docker.ts");
   const { mintMountToken } = await import("../../src/claim.ts");
   const { scratchDisk } = await import("./_archil.ts");
   const { join, dirname } = await import("node:path");
@@ -236,11 +236,12 @@ async function phaseDrain() {
     const ticks = () => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter((l) => l.includes('"tick"')).length : 0);
     const rounds: Record<string, unknown>[] = [];
     for (let round = 1; round <= Number(process.env.PDA_DOCKER_DRAIN_ROUNDS ?? 1); round++) {
-      const name = `${NAME_PREFIX}-drain-${id}-g${round}`;
+      const ref = { disk: scratchDiskId(), region: REGION, id };
+      const name = `${NAME_PREFIX}-drain-${id}-${diskKey(ref)}-g${round}`;
       containers.push(name);
       ledger.container(name, "probe: drain");
       const before = ticks();
-      await driver.start({ disk: scratchDiskId(), region: REGION, id }, t.token, { attempt: round });
+      await driver.start(ref, t.token, { attempt: round });
       for (let i = 0; i < 200 && ticks() < before + 3; i++) await sleep(250);
       const st = docker(["stop", "-t", "20", name], { timeoutMs: 60_000 });
       // Right after `docker stop` returns, the delegation's state every 50 ms for 3 s.

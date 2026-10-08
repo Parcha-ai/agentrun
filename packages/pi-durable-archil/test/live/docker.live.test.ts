@@ -19,7 +19,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeMountToken, type ControlApi, type RunRef } from "../../src/claim.ts";
-import { dockerHost } from "../../src/hosts/docker.ts";
+import { diskKey, dockerHost } from "../../src/hosts/docker.ts";
 import { ensureRunning, readRunStatus, type EnsureOptions, type EnsureResult, type HostDriver, type HostHandle } from "../../src/supervise.ts";
 import { LIVE as ARCHIL_LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { deletePrefix, delegationsOn, docker, fleetContainers, FLEET, IMAGE, LEDGER, ledger, NAME_PREFIX, removeContainer } from "./_docker.ts";
@@ -97,7 +97,7 @@ test("T13 on dockerHost: kill A, resume on B; freeze B, resume on C, B exits 75 
   // The ledger gets each container's name before `docker create` runs.
   const driver: HostDriver & { describe: typeof inner.describe } = {
     start: (r, token, attempt) => {
-      ledger.container(`${PREFIX}${r.id}-g${attempt?.attempt}`, "t13 instance");
+      ledger.container(`${PREFIX}${r.id}-${diskKey(r)}-g${attempt?.attempt}`, "t13 instance");
       return inner.start(r, token, attempt);
     },
     status: (h) => inner.status(h),

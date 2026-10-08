@@ -272,9 +272,12 @@ the driver), and the thawed instance exited 75. A driver for another compute (a 
 
 `dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
 container is one incarnation.
-- **Start.** `docker create` named `pda-<run>-g<generation>`: a retry of the same generation adopts a running container and
-  replaces a dead one. Flags: `--device /dev/fuse --cap-add SYS_ADMIN` for the mount, `--security-opt no-new-privileges`,
-  no restart policy (the supervisor decides), and `--security-opt apparmor=unconfined` only where the Docker daemon applies
+- **Start.** `docker create` named `pda-<run>-<disk key>-g<attempt>` (the disk key is 8 hex digits of the disk and region,
+  so equal run ids on two disks never share a container) and labeled `pda.fleet`, `pda.run`, `pda.disk` and `pda.region`.
+  A retry of the same attempt adopts a running container that carries all four labels (the supervisor then removes the
+  token it minted for that start) and replaces a dead one; a container by that name with other labels is refused.
+  Flags: `--device /dev/fuse --cap-add SYS_ADMIN` for the mount, `--security-opt no-new-privileges`, no restart policy
+  (the supervisor decides), and `--security-opt apparmor=unconfined` only where the Docker daemon applies
   AppArmor (`docker info` lists it; Docker Engine on Ubuntu and Debian), because Docker's default profile denies mount(2).
   The supervisor prints that decision and its reason once. Docker Desktop and OrbStack apply no AppArmor and get no option.
 - **The mount token** is copied into the created container as a root-only file, which the entrypoint removes before the

@@ -5,15 +5,18 @@
 //
 // One container is one incarnation: no restart policy; the supervisor decides. A container that dies takes its FUSE
 // daemon and its mount with it (the mount lives in the container's mount namespace, never on the host), so the claim
-// is orphaned and the next supervisor tick revokes it and starts a new container. The name `<prefix><run>-g<attempt>`
-// is the idempotency key of a start: a retry of the same attempt adopts a container that is running, and replaces one
-// that never started or already exited.
+// is orphaned and the next supervisor tick revokes it and starts a new container. The name
+// `<prefix><run>-<disk key>-g<attempt>` (the disk key a short hash of the disk and its region, so runs of the same id on
+// two disks never share a container) is the idempotency key of a start: a retry of the same attempt adopts a container
+// that is running, which the handle reports (`adopted`, so the supervisor removes the token it minted for this start), and
+// replaces one that never started or already exited.
 //
 // The mount token never appears in the container's configuration (`docker inspect` shows its environment and argv): the
 // driver copies it into the created container as a root-only file (`docker cp -`, a tar stream built in memory, so it
 // never touches the host's file system), the image's entrypoint makes that file the instance's stdin and removes it
 // before the instance starts, and the instance closes its stdin once read. The API key stays with the supervisor.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
@@ -77,6 +80,14 @@ const NAME_SAFE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
 const SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const NO_SUCH = /No such (container|object)/i;
 const IN_USE = /Conflict|already in use/i;
+
+/** Eight hex digits of the run's disk and region: part of each container's name, so equal run ids on two disks differ. */
+export function diskKey(ref: Pick<RunRef, "disk" | "region">): string {
+  return createHash("sha256").update(`${ref.disk}\0${ref.region}`).digest("hex").slice(0, 8);
+}
+
+/** A run's labels, all of which a container must carry to count as that run's (adoption, cleanup). */
+const runLabels = (fleet: string, ref: RunRef) => ({ "pda.fleet": fleet, "pda.run": ref.id, "pda.disk": ref.disk, "pda.region": ref.region });
 
 /** The docker CLI with the caller's PATH (Docker Desktop installs outside the system paths) and HOME (its contexts). */
 export const runDocker: DockerRunner = (argv, opts = {}) =>
@@ -240,8 +251,7 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
       "create",
       "--name", name,
       "--hostname", name.slice(0, 63).replace(/[^A-Za-z0-9-]/g, "-").replace(/-+$/, ""),
-      "--label", `pda.fleet=${fleet}`,
-      "--label", `pda.run=${ref.id}`,
+      ...Object.entries(runLabels(fleet, ref)).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
       ...(attempt === null ? [] : ["--label", `pda.attempt=${attempt}`]),
       // FUSE: the device and the capability mount(2) needs; the container's root holds them, the commands never do.
       "--device", "/dev/fuse",
@@ -268,7 +278,9 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
       // The same attempt again: a running container is a start that already happened (a racing supervisor, or a retry
       // after a timeout), so it is adopted; one that never started or already exited is replaced.
       const found = await inspect(name);
-      if (found && found.labels["pda.fleet"] !== fleet) throw new DockerHostError("START_FAILED", `container ${name} exists and is not fleet ${fleet}'s`);
+      if (found && Object.entries(runLabels(fleet, ref)).some(([k, v]) => found.labels[k] !== v)) {
+        throw new DockerHostError("START_FAILED", `container ${name} exists and is not this run's (fleet ${fleet}, ${ref.disk} in ${ref.region})`);
+      }
       if (found && containerStatus(found.state) === "running") return { adopted: true };
       await remove(name);
     }
@@ -280,7 +292,8 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
    * attempt that never started. Best effort; never a running or paused one, never the one just started.
    */
   async function collect(ref: RunRef, attempt: number | null, keep: string): Promise<void> {
-    const r = await run(["ps", "-a", "--filter", `label=pda.fleet=${fleet}`, "--filter", `label=pda.run=${ref.id}`, "--format", "{{.ID}}\t{{.State}}\t{{.Label \"pda.attempt\"}}"], { timeoutMs: 30_000 }).catch(() => null);
+    const filters = Object.entries(runLabels(fleet, ref)).flatMap(([k, v]) => ["--filter", `label=${k}=${v}`]);
+    const r = await run(["ps", "-a", ...filters, "--format", "{{.ID}}\t{{.State}}\t{{.Label \"pda.attempt\"}}"], { timeoutMs: 30_000 }).catch(() => null);
     if (!r || !ok(r)) return;
     for (const line of r.stdout.split("\n").filter(Boolean)) {
       const [id, state, label] = line.split("\t");
@@ -300,11 +313,12 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
       if (!opts.image) throw new DockerHostError("INVALID_ARGUMENT", "dockerHost needs an image to start an instance");
       if (!token || /[\r\n]/.test(token)) throw new DockerHostError("INVALID_ARGUMENT", "no mount token, or one with a line break");
       const attempt = attemptInfo?.attempt ?? null;
-      const name = `${prefix}${ref.id}-${attempt === null ? `t${Date.now().toString(36)}` : `g${attempt}`}`;
+      const name = `${prefix}${ref.id}-${diskKey(ref)}-${attempt === null ? `t${Date.now().toString(36)}` : `g${attempt}`}`;
       if (!NAME_SAFE.test(name)) throw new DockerHostError("INVALID_ARGUMENT", `container name ${name} is not safe`);
       const handle: HostHandle = { driver: "docker", fleet, daemon: await daemon(), name, mountpoint: posix.join(mountRoot, runPath(ref.id)), image: opts.image };
       const made = await create(ref, name, attempt, handle);
-      if ("adopted" in made) return handle;
+      // An earlier start of this attempt made the container: the token given to this start was not used.
+      if ("adopted" in made) return { ...handle, adopted: true };
       try {
         const cp = await run(["cp", "-", `${made.id}:${TOKEN_DIR}`], { input: tarOneFile(TOKEN_FILE, Buffer.from(`${token}\n`)), timeoutMs: 60_000 });
         if (!ok(cp)) throw new DockerHostError("START_FAILED", `docker cp of the mount token into ${name}: ${firstLine(cp)}`);

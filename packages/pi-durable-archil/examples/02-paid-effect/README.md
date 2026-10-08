@@ -47,7 +47,7 @@ node examples/02-paid-effect/demo.ts kill   --host docker    # about 17 seconds
 node examples/02-paid-effect/demo.ts freeze --host docker    # about 27 seconds
 ```
 
-Each instance is a container (`pda-demo-<run>-g<generation>`), and the paid API listens on this machine where the
+Each instance is a container (`pda-demo-<run>-<disk key>-g<attempt>`), and the paid API listens on this machine where the
 containers reach it as `host.docker.internal`. `kill` is `docker kill`. `freeze` is `docker pause`: host B's supervisor
 talks to the same Docker daemon, so once the lease expires it stops the paused container (STONITH; `docker stop` thaws the
 container to deliver SIGTERM, and the instance drains) before it revokes the claim. With two daemons, the frozen host
