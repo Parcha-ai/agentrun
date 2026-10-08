@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
@@ -255,11 +256,58 @@ test('a workspace package that is neither private nor in the release map fails t
   assert.deepEqual(repoPackages(), [...listedPackages].sort(), 'the repository lists every package it has');
 }));
 
-test('the release workflow publishes the release set and names no package of its own', () => {
+// The workflow's publish step, up to its loop: run in a directory whose scripts/release-preflight.mjs is the one given.
+const publishStep = () => {
   const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /for package in \$\(node --input-type=module -e "import \{ releasePackages \} from '\.\/scripts\/release-preflight\.mjs'; console\.log\(releasePackages\.join\(' '\)\)"\); do/);
+  const start = workflow.indexOf('set -euo pipefail', workflow.indexOf('Publish exact verified archives in dependency order'));
+  const end = workflow.indexOf('for package in $packages; do');
+  assert.ok(start > 0 && end > start, 'the publish step reads its packages into a variable before looping');
+  return `${workflow.slice(start, end)}echo "would publish: $packages"\n`;
+};
+const runPublishStep = async (preflightModule) => {
+  const run = cwd => exec('bash', ['-c', publishStep()], { cwd, env: { ...process.env, RELEASE_TAG: `v${version}` } }).then(out => ({ status: 0, ...out }), error => ({ status: error.code, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }));
+  if (preflightModule === null) return run(fileURLToPath(new URL('..', import.meta.url)));
+  const dir = await mkdtemp(join(tmpdir(), 'agentrun-publish-step-'));
+  try {
+    await mkdir(join(dir, 'scripts'));
+    await writeFile(join(dir, 'scripts/release-preflight.mjs'), preflightModule);
+    return await run(dir);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+};
+
+test('the release workflow reads the publish set into a variable, so a failed read fails the step instead of publishing nothing', async () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /packages="\$\(node --input-type=module -e "import \{ releasePackages \} from '\.\/scripts\/release-preflight\.mjs'; console\.log\(releasePackages\.join\(' '\)\)"\)"\n\s+\[ -n "\$packages" \] \|\| \{ echo 'empty publish set' >&2; exit 1; \}\n\s+for package in \$packages; do/);
+  assert.doesNotMatch(workflow, /for package in \$\(/, 'errexit does not apply to a command substitution in a for-list');
   for (const name of listedPackages) assert.doesNotMatch(workflow, new RegExp(`for package in [^\\n]*\\b${name}\\b`), `${name} is not hard-coded in the publish loop`);
+  // Run for real: the repository's own module prints the publish set; a module that throws, or prints nothing, stops the step before the loop.
+  const ok = await runPublishStep(null);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, new RegExp(`would publish: ${releasePackages.join(' ')}\\n`));
+  const thrown = await runPublishStep("throw new Error('the import failed');\n");
+  assert.notEqual(thrown.status, 0, 'an import that throws fails the step');
+  assert.doesNotMatch(thrown.stdout, /would publish/);
+  const empty = await runPublishStep('export const releasePackages = [];\n');
+  assert.notEqual(empty.status, 0, 'an empty publish set fails the step');
+  assert.match(empty.stderr, /empty publish set/);
+  assert.doesNotMatch(empty.stdout, /would publish/);
 });
+
+test('the held and published sets come from the tree being checked, not from the checkout the script runs in', () => fixture(async root => {
+  const set = async (directory, change) => { const path = join(root, 'packages', directory, 'package.json'); const current = JSON.parse(await readFile(path, 'utf8')); const { private: _, ...rest } = current; await putJson(path, { ...rest, ...change }); };
+  // A tree in which the browser package is no longer held publishes it, last, though this checkout still holds it.
+  await set('pi-browser', {});
+  await recordPackages(root);
+  const lifted = await preflight(root);
+  assert.deepEqual(lifted.packages.map(pkg => pkg.directory), listedPackages, 'a package unheld in the checked tree is in the plan');
+  // And a package held in the checked tree is out of it, at the workspace version, though this checkout publishes it.
+  await set('pi-durable-archil', { private: true });
+  await recordPackages(root);
+  const held = await preflight(root);
+  assert.deepEqual(held.packages.map(pkg => pkg.directory), listedPackages.filter(directory => directory !== 'pi-durable-archil'));
+  await set('pi-durable-archil', { private: true, version: '0.1.0-beta.2' });
+  await assert.rejects(preflight(root), /Held package @parcha\/pi-durable-archil must be at the workspace version/);
+}));
 
 test('a held package is checked at the workspace version, never published', () => fixture(async root => {
   assert.ok(heldPackages.length > 0, 'the repository holds a package while publishing is on hold; delete this test with the last hold');

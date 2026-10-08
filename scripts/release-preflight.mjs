@@ -95,16 +95,20 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
     const manifest = await json(join(root, 'packages', directory, 'package.json')).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     if (manifest && manifest.private !== true) assert.ok(listedPackages.includes(directory), `Workspace package ${directory} is neither private nor named in releasePackageNames (scripts/release-preflight.mjs); add it there, or mark it private, before a release`);
   }
+  // Held and published are read from the tree being checked, not from the checkout this script runs in: a package is held when its manifest in
+  // `root` says private. (The constants exported above are the same reading of this checkout, for the workflow.)
+  const heldHere = [];
+  for (const directory of listedPackages) if ((await json(join(root, 'packages', directory, 'package.json'))).private === true) heldHere.push(directory);
+  const releaseHere = listedPackages.filter(directory => !heldHere.includes(directory));
   // A held package is bumped with the workspace like the rest and skipped only at publication.
-  for (const directory of heldPackages) {
+  for (const directory of heldHere) {
     const held = await json(join(root, 'packages', directory, 'package.json'));
-    assert.equal(held.private, true, `${releasePackageNames[directory]} is held and must stay private`);
     assert.equal(held.version, workspace.version, `Held package ${releasePackageNames[directory]} must be at the workspace version ${workspace.version}, found ${held.version}`);
   }
   const temporary = await mkdtemp(join(tmpdir(), 'agentrun-release-preflight-'));
   const packages = [];
   try {
-    for (const directory of releasePackages) {
+    for (const directory of releaseHere) {
       const manifest = await json(join(root, 'packages', directory, 'package.json'));
       checkManifest(manifest, directory, workspace.version, workspace.license);
       const verified = receipt.packages.find(entry => entry.name === manifest.name);

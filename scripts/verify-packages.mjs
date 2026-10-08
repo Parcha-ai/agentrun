@@ -43,6 +43,11 @@ const forbid = [
 // Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
 // those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
 // still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
+// Files beyond the common allowlist, by package. The browser package ships its vendored Stagehand facade's provenance file beside the compiled
+// copy, so a reader of the tarball can check what was copied; no other package may carry it.
+const allowedExtraFiles = {
+  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
+};
 const allowedEndpoints = {
   'pi-browser': [
     // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
@@ -71,7 +76,7 @@ try {
     const names = (await run('tar', ['-tzf', tarball])).stdout.trim().split('\n');
     for (const name of names) {
       assert.ok(name.startsWith('package/') && !name.split('/').includes('..'), `Unsafe archive path in ${manifest.name}`);
-      assert.ok(name.endsWith('/') || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|bin\/archil-scoped|src\/vendor\/stagehand-facade\/UPSTREAM\.json|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
+      assert.ok(name.endsWith('/') || (allowedExtraFiles[directory] ?? []).includes(name) || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|bin\/archil-scoped|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
       assert.ok(!/(?:^|\/)(?:\.env(?:\..*)?|node_modules|\.git|\.cascade|\.release|test|tests)(?:\/|$)/.test(name), `Unexpected packed path: ${name}`);
       assert.ok(!/\.(?:pem|key|p12|pfx|map)$/.test(name), `Unexpected packed file: ${name}`);
     }
