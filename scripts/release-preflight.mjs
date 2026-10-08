@@ -14,7 +14,7 @@ const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
 // packages that depend on none of them after. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-archil': '@parcha/pi-durable-archil', 'pi-browser': '@parcha/pi-browser' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser' };
 export const listedPackages = Object.keys(releasePackageNames);
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.

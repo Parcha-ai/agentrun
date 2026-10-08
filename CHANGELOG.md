@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+- `@parcha/pi-durable-archil` is renamed `@parcha/pi-durable-disk` (directory `packages/pi-durable-disk`, command `pi-durable-disk`, image `pi-durable-disk`), for branding: other disks may follow. Renamed from `@parcha/pi-durable-archil`; the `0.1.0-beta.10` and `0.1.0-beta.11` entries below name it as it was published. It supports Archil only. Archil-specific names stay: `bin/archil-scoped`, `ARCHIL_API_KEY`, `archilEnv`, `ArchilCodingTools`, the `archil` client.
+  - Install paths named after the package move too: `/usr/local/lib/pi-durable-disk/archil-scoped`, `/run/pi-durable-disk` (the token directory), `/etc/sudoers.d/pi-durable-disk`; an existing host's sudoers drop-in and wrapper copy need the new paths.
 - The release workflow waits up to 20 minutes, not 5, for npm to show a version it has just published, and backs off (5 s rising by half to 30 s) instead of polling every 5 s. npm showed `@parcha/agentrun-dsl@0.1.0-beta.11` 16 minutes after accepting it (published 16:35:56Z, visible 16:52:12Z), so run 37809477150 failed after about 5 minutes with `Registry rejected @parcha/agentrun-dsl: HTTP 404`; the rerun, 37812713360, resumed and passed. Beta.10 took about 5 minutes.
   - 404 (only where the version must exist), 429, 5xx and a failed request stay transient; any other status stays final; the per-request timeout is unchanged. The waits for the version's document, its tarball and the install metadata share the schedule and each get the 20 minutes.
-- `@parcha/pi-durable-archil` finds a holder that the Archil control API lists without a path, by the inode its run directory resolves to through `Disk.exec`; before, such a holder read as none, so the supervisor started into it and its run directory could not be deleted. Its CHANGELOG has the details.
+- `@parcha/pi-durable-disk` finds a holder that the Archil control API lists without a path, by the inode its run directory resolves to through `Disk.exec`; before, such a holder read as none, so the supervisor started into it and its run directory could not be deleted. Its CHANGELOG has the details.
 
 ## 0.1.0-beta.11, 2026-10-08
 
