@@ -37,7 +37,7 @@ class FakeControl implements SupervisorControl {
   users = new Map<string, { nickname: string; ttl: string; oneUse: boolean; token: string }>();
   calls: Call[] = [];
   fail: Partial<Record<"getObject" | "putMark" | "revoke" | "list" | "addUser" | "exec", unknown>> = {};
-  /** The inode each `runs/<id>` names, as `exec` reports it (`stat`); a path not listed is absent. */
+  /** The inode each `runs/<id>` names, as `exec` reports it (`find -inum`); a path not listed is absent. */
   inodes = new Map<string, number>();
   #n = 0;
   #log(op: string, arg?: unknown) {
@@ -96,8 +96,9 @@ class FakeControl implements SupervisorControl {
   async exec(command: string) {
     this.#log("exec", command);
     if (this.fail.exec) throw this.fail.exec;
-    const path = [...this.inodes.keys()].find((p) => command.includes(`'${p}'`));
-    return { exitCode: 0, stdout: path === undefined ? "absent\n" : `${this.inodes.get(path)}\n` };
+    const asked = new Set([...command.matchAll(/-inum (\d+)/g)].map((m) => Number(m[1])));
+    const lines = [...this.inodes].filter(([, inode]) => asked.has(inode)).map(([path, inode]) => `${inode} ${path.slice("runs/".length)}\n`);
+    return { exitCode: 0, stdout: lines.join("") };
   }
 }
 
@@ -1074,6 +1075,29 @@ test("token sweep: a released run whose live holder is listed without a path kee
   control.fail.exec = new Error("504 Gateway Time-out");
   const blind = await sweepTokens({ listUsers: async () => [user("u-paused", "paused", 20 * 60_000)], control, prefix: "pda-", now: () => NOW });
   assert.deepEqual(blind.removed, [], "a run that cannot be told apart from the pathless holder keeps its users");
+});
+
+test("superviseRuns: five runs and one pathless orphan cost one exec per pass, and only its run is revoked", async () => {
+  const { control, host, opts } = rig();
+  const refs = ["r1", "r2", "r3", "r4", "r5"].map((id) => ({ ...REF, id }));
+  for (const r of refs) control.objects.set(`runs/${r.id}/run.json`, JSON.stringify({ ...running({ heartbeatAt: ago(1_000) }), run: r.id }));
+  control.delegations = [deleg({ clientId: "c-x", inodeId: 99, path: undefined, isOrphaned: true })];
+  for (const [i, r] of refs.entries()) control.inodes.set(`runs/${r.id}`, 90 + i + (r.id === "r3" ? 7 : 0));
+  const out = await superviseRuns(refs, host, opts());
+  assert.deepEqual(out.map((o) => [o.run, o.action, (o as { reason?: string }).reason]), [
+    ["r1", "started", "none"],
+    ["r2", "started", "none"],
+    ["r3", "started", "orphaned"],
+    ["r4", "started", "none"],
+    ["r5", "started", "none"],
+  ]);
+  assert.equal(control.ops().filter((op) => op === "exec").length, 1, "one exec for the pass, not one per run");
+  await superviseRuns(refs, host, opts());
+  assert.equal(control.ops().filter((op) => op === "exec").length, 1, "the orphan is revoked, so the next pass needs none");
+  control.delegations.push(deleg({ clientId: "c-gone", inodeId: 500, path: undefined, isOrphaned: true }));
+  await superviseRuns(refs, host, opts());
+  assert.equal(control.ops().filter((op) => op === "exec").length, 2, "a pass with a pathless entry on no run directory: one exec");
+  assert.equal(control.delegations.length, 1, "an inode on no run directory is no run's: nothing revokes it");
 });
 
 test("token sweep with expired: expired users go whatever their run, held included; an unparseable nickname goes only when expired", async () => {

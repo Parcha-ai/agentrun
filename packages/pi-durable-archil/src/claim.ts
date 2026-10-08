@@ -182,17 +182,17 @@ export async function removeMountToken(control: ControlApi, identifier: string):
 /**
  * Delegations on `runs/<id>` and anything under it; never a sibling or a parent. The control API resolves a delegation's
  * path best-effort: it can list one with no path, live or orphaned, on a never-reused run. So when nothing matches by
- * path and some entry has none, `runs/<id>` is resolved to its inode now (`runInode`), and the pathless entries on that
- * inode are the run's. A pathless entry that cannot be attributed fails CONTROL_API_FAILED: an unseen holder must never
- * read as none, or a caller starts over it.
+ * path and some entry has none, the pathless entries are attributed by inode (`pathlessResolver`): those on the inode
+ * `runs/<id>` names now are the run's. A pathless entry that cannot be attributed fails CONTROL_API_FAILED: an unseen
+ * holder must never read as none, or a caller starts over it.
  */
-export async function findDelegations(control: Pick<ControlApi, "listDelegations" | "exec">, id: string): Promise<Delegation[]> {
+export async function findDelegations(control: Pick<ControlApi, "listDelegations" | "exec">, id: string, resolve?: PathlessResolver): Promise<Delegation[]> {
   runPath(id);
-  return matchDelegations(await control.listDelegations(), id, control);
+  return matchDelegations(await control.listDelegations(), id, resolve ?? pathlessResolver(control));
 }
 
-/** `findDelegations` over a listing the caller already holds (one listing, many runs). */
-export async function matchDelegations(all: readonly Delegation[], id: string, control: Pick<ControlApi, "exec">): Promise<Delegation[]> {
+/** `findDelegations` over a listing the caller already holds; share `resolve` across the runs of one listing or pass. */
+export async function matchDelegations(all: readonly Delegation[], id: string, resolve: PathlessResolver): Promise<Delegation[]> {
   const path = runPath(id);
   const byPath = all.filter((d) => {
     const p = d.path?.replace(/^\/+/, "");
@@ -200,30 +200,76 @@ export async function matchDelegations(all: readonly Delegation[], id: string, c
   });
   const pathless = all.filter((d) => !d.path);
   if (byPath.length > 0 || pathless.length === 0) return byPath;
-  const inode = await runInode(control, id);
-  return inode === null ? [] : pathless.filter((d) => d.inodeId === inode);
+  const names = await resolve(pathless);
+  return pathless.filter((d) => names.get(d.inodeId) === id);
 }
 
-const ABSENT = "absent";
+/** The run id whose directory each inode is, or null when it is no run directory (deleted, or not under `runs/`). */
+export type PathlessResolver = (pathless: readonly Delegation[]) => Promise<ReadonlyMap<number, string | null>>;
 
 /**
- * The inode `runs/<id>` names now, or null when it does not exist: `stat` through `exec`, whose inode numbers are the
- * control API's inode ids. Resolved at each call, never recorded, so a deleted and recreated run directory (a new inode)
- * is matched as it is now.
+ * Attributes pathless delegations by inode: one `exec` maps every inode not seen before to the run directory that has
+ * it (`find runs -inum`, whose inode numbers are the control API's inode ids). Share one across a listing or a supervisor
+ * pass: it costs one exec per batch of new inodes, never one per run. The output names only the inodes asked for, so it
+ * stays small however many runs the disk holds. A failed exec fails this call and every later one, with no new exec.
+ * Inodes on no run directory are reported once on stderr: they block nothing, and only a revoke by client and inode
+ * removes them.
  */
-export async function runInode(control: Pick<ControlApi, "exec">, id: string): Promise<number | null> {
-  const path = runPath(id);
-  if (!control.exec) throw new ClaimError("CONTROL_API_FAILED", `a delegation with no path may be ${path}'s, and the control API has no exec to resolve the run's inode`);
+export function pathlessResolver(control: Pick<ControlApi, "exec">): PathlessResolver {
+  const known = new Map<number, string | null>();
+  let failed: ClaimError | null = null;
+  let queue: Promise<unknown> = Promise.resolve();
+  return (pathless) => {
+    const call = queue.then(async () => {
+      if (failed) throw failed;
+      const fresh = [...new Set(pathless.map((d) => d.inodeId))].filter((inode) => !known.has(inode));
+      if (fresh.length === 0) return known;
+      let names: Map<number, string>;
+      try {
+        names = await runDirsByInode(control, fresh);
+      } catch (err) {
+        failed = err instanceof ClaimError ? err : new ClaimError("CONTROL_API_FAILED", "attributing pathless delegations failed", { cause: err });
+        throw failed;
+      }
+      for (const inode of fresh) known.set(inode, names.get(inode) ?? null);
+      const unlinked = pathless.filter((d) => fresh.includes(d.inodeId) && !names.has(d.inodeId));
+      if (unlinked.length) {
+        const sample = unlinked.slice(0, 10).map((d) => ({ clientId: d.clientId, inodeId: d.inodeId, orphaned: d.isOrphaned }));
+        process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "pathless delegations on no run directory", count: unlinked.length, delegations: sample })}\n`);
+      }
+      return known;
+    });
+    queue = call.catch(() => {});
+    return call;
+  };
+}
+
+/**
+ * One exec: the run directories among `inodes`, by inode. `exec` runs at the disk root in shared mode. "No `runs/`" is
+ * told from "unreadable" by listing the disk root first: an unreadable root or `runs/` fails the exec, never reads as
+ * no run directory.
+ */
+async function runDirsByInode(control: Pick<ControlApi, "exec">, inodes: readonly number[]): Promise<Map<number, string>> {
+  if (!control.exec) throw new ClaimError("CONTROL_API_FAILED", "a delegation with no path may be a run's, and the control API has no exec to attribute it");
+  if (!inodes.every((i) => Number.isSafeInteger(i) && i >= 0)) throw new ClaimError("CONTROL_API_FAILED", "a pathless delegation has no valid inode id");
+  const test = inodes.map((i) => `-inum ${i}`).join(" -o ");
   let r: { exitCode: number; stdout: string };
   try {
-    r = await control.exec(`if [ -e '${path}' ]; then stat -c %i -- '${path}'; else echo ${ABSENT}; fi`);
+    r = await control.exec(
+      `top=$(find . -mindepth 1 -maxdepth 1 -name runs -print) || exit 3; [ -n "$top" ] || exit 0; ` +
+        `find runs -mindepth 1 -maxdepth 1 -type d \\( ${test} \\) -printf '%i %f\\n'`,
+    );
   } catch (err) {
-    throw new ClaimError("CONTROL_API_FAILED", `resolving ${path} to its inode failed`, { cause: err });
+    throw new ClaimError("CONTROL_API_FAILED", "resolving pathless delegations to run directories failed", { cause: err });
   }
-  const out = String(r.stdout ?? "").trim();
-  if (r.exitCode === 0 && out === ABSENT) return null;
-  if (r.exitCode !== 0 || !/^\d+$/.test(out)) throw new ClaimError("CONTROL_API_FAILED", `resolving ${path} to its inode: exit ${r.exitCode}, ${JSON.stringify(out.slice(0, 80))}`);
-  return Number(out);
+  if (r.exitCode !== 0) throw new ClaimError("CONTROL_API_FAILED", `resolving pathless delegations to run directories: exit ${r.exitCode}`);
+  const names = new Map<number, string>();
+  for (const line of String(r.stdout ?? "").split("\n").filter(Boolean)) {
+    const m = /^(\d+) (.+)$/.exec(line);
+    if (!m) throw new ClaimError("CONTROL_API_FAILED", `resolving pathless delegations: unexpected line ${JSON.stringify(line.slice(0, 80))}`);
+    names.set(Number(m[1]), m[2]);
+  }
+  return names;
 }
 
 /** Revoke every delegation on the run through the control API. The old holder's next fsync returns EIO. */

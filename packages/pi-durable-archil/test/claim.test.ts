@@ -15,8 +15,9 @@ import {
   mintMountToken,
   parseTokenNickname,
   removeMountToken,
+  matchDelegations,
+  pathlessResolver,
   revoke,
-  runInode,
   runPath,
   takeOver,
   tokenNickname,
@@ -279,7 +280,22 @@ test("a delegation listed without a path is the run's when it sits on the inode 
   assert.deepEqual((await revoke(control, "r1")).map((d) => d.clientId), ["x"]);
   assert.deepEqual(calls.revoke, [dels[0]]);
   assert.deepEqual((await control.listDelegations()).map((d) => d.clientId), ["y", "z"], "another run's pathless delegation is left alone");
-  assert.equal(await runInode(control, "r2"), root.inode("r2"));
+  const names = await pathlessResolver(control)([pathless("y", root.inode("r2")), pathless("z", 999_999_999)]);
+  assert.deepEqual([names.get(root.inode("r2")), names.get(999_999_999)], ["r2", null]);
+});
+
+test("one exec per listing: five runs and one pathless orphan, attributed through one shared resolver", async () => {
+  const ids = ["r1", "r2", "r3", "r4", "r5"];
+  const root = disposeAfter(diskRoot(ids));
+  const all = [pathless("x", root.inode("r3"))];
+  const { control } = fakeControl(all);
+  control.exec = root.exec;
+  const resolve = pathlessResolver(control);
+  const found = await Promise.all(ids.map(async (id) => [id, (await matchDelegations(all, id, resolve)).map((d) => d.clientId)]));
+  assert.deepEqual(found, [["r1", []], ["r2", []], ["r3", ["x"]], ["r4", []], ["r5", []]]);
+  assert.equal(root.commands.length, 1, "one exec for the whole listing");
+  for (const id of ids) await matchDelegations(all, id, resolve);
+  assert.equal(root.commands.length, 1, "inodes already resolved cost nothing");
 });
 
 test("the inode is resolved only when nothing matches by path and some entry has no path", async () => {
@@ -298,12 +314,33 @@ test("the inode is resolved only when nothing matches by path and some entry has
   }
 });
 
-test("a run directory that does not exist holds no pathless delegation", async () => {
-  const root = disposeAfter(diskRoot([]));
-  const { control } = fakeControl([pathless("x", 12345)]);
-  control.exec = root.exec;
-  assert.equal(await runInode(control, "r1"), null);
-  assert.deepEqual(await findDelegations(control, "r1"), []);
+test("a pathless delegation on no run directory is no run's, and is reported once on stderr", async () => {
+  for (const ids of [["r1"], []]) {
+    const root = disposeAfter(diskRoot(ids));
+    const { control } = fakeControl([pathless("x", 12345)]);
+    control.exec = root.exec;
+    const { value, error, lines } = await stderrOf(() => findDelegations(control, "r1"));
+    assert.equal(error, undefined);
+    assert.deepEqual(value, [], ids.length ? "runs/ exists without it" : "no runs/ at all");
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0]).delegations, [{ clientId: "x", inodeId: 12345, orphaned: true }]);
+  }
+});
+
+test("an unreadable disk root or runs directory fails closed (CONTROL_API_FAILED), never reads as no run directory", { skip: process.getuid?.() === 0 }, async () => {
+  const isApi = (e: unknown) => e instanceof ClaimError && e.code === "CONTROL_API_FAILED";
+  for (const [what, target, mode] of [["runs/", "runs", 0o000], ["the disk root", ".", 0o300]] as const) {
+    const root = disposeAfter(diskRoot(["r1"]));
+    const { control } = fakeControl([pathless("x", root.inode("r1"))]);
+    control.exec = root.exec;
+    const dir = join(root.dir, target);
+    chmodSync(dir, mode);
+    try {
+      await assert.rejects(findDelegations(control, "r1"), isApi, what);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  }
 });
 
 test("a pathless delegation that cannot be attributed is CONTROL_API_FAILED, never none", async () => {
@@ -320,6 +357,13 @@ test("a pathless delegation that cannot be attributed is CONTROL_API_FAILED, nev
     await assert.rejects(findDelegations(control, "r1"), isApi, why);
     await assert.rejects(revoke(control, "r1"), isApi, why);
   }
+  // A resolver whose exec failed fails every later call at once: a pass never retries it per run.
+  let calls = 0;
+  const { control } = fakeControl([pathless("x", 7)]);
+  control.exec = async () => (calls++, Promise.reject(new Error("503")));
+  const resolve = pathlessResolver(control);
+  for (const id of ["r1", "r2", "r3"]) await assert.rejects(matchDelegations([pathless("x", 7)], id, resolve), isApi);
+  assert.equal(calls, 1);
 });
 
 // ---- acquire ----------------------------------------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { Delegation, Disk } from "disk";
 import { LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ledger, LEDGER } from "./_p1-ledger.ts";
-import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, removeMountToken, revoke, runInode, takeOver, unmountClaim, type AcquireOptions, type Claim, type ControlApi } from "../../src/claim.ts";
+import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, revoke, takeOver, unmountClaim, type AcquireOptions, type Claim, type ControlApi } from "../../src/claim.ts";
 import { ClaimError, exitCodeFor, FencedError, HeldError } from "../../src/errors.ts";
 
 const BASE = "/mnt/pda/p1";
@@ -598,7 +598,7 @@ test("a run id reused three times, its third holder killed: the orphan is found 
     if (!orphan) await sleep(100);
   }
   assert.ok(orphan, "the killed holder's delegation is found");
-  assert.equal(await runInode(control, id), orphan.inodeId, "exec stat resolves runs/<id> to the delegation's inode");
+  assert.equal((await pathlessResolver(control)([orphan])).get(orphan.inodeId), id, "exec find names the delegation's inode as runs/<id>");
   // The control API lists a path best-effort; here every path is withheld, as when it lists none.
   const hidden: ControlApi = { ...wrapControl(), listDelegations: async () => (await disk.listDelegations()).map((d) => ({ ...d, path: undefined })) };
   const found = await findDelegations(hidden, id);
