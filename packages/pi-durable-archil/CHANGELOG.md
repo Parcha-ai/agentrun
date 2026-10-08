@@ -1,10 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.10, 2026-10-08
 
-First release of `@parcha/pi-durable-archil`, versioned with the other packages in this repository (the release PR dates this
-section and gives it the workspace version). It is the package developed as `pi-durable-archil` 0.2.0 before it was imported;
-its notes follow, and its earlier history is not here.
+First release of `@parcha/pi-durable-archil`, versioned with the other packages in this repository. It is the package developed
+as `pi-durable-archil` 0.2.0 before it was imported; its notes follow, and its earlier history is not here.
 
 Not in this release: `serve` (wake a released run on a request, `requestRun`), sleep parking (an instance that only waits
 releases its host and is started again at the deadline), `fork` of a sealed run, a Docker host driver and a Docker

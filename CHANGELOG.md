@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.10, 2026-10-08
 
 - New package, `@parcha/pi-durable-archil`: a [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) host on an [Archil](https://archil.com) disk. One exclusive mount of a run's directory is the claim; revoking it fences a lost or hung holder; a heartbeat lease, a stateless supervisor and host drivers (`localHost`, `daytonaHost`) restart a run on another host, where pi-durable resumes from its last commit and never repeats a tool call whose intent it had committed.
   - It does not depend on the other packages and is published last. Its README and `packages/pi-durable-archil/CHANGELOG.md` have the details.
