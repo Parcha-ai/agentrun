@@ -5,6 +5,7 @@
 //   supervise  ensureRunning for each run, once or `--every 30s`; `--check` proves this host's fence first
 //   status     run.json over S3, the run's delegations, and the holder's state if this host can see it
 //   release    unmount the run's mount on this host (flush, check the delegation in; a dead mount is cleaned)
+//   fork       copy a released, sealed run into a new run; its first open is generation 1
 // The API key is read from the environment variable named by `--api-key-env` (default ARCHIL_API_KEY) and only by the
 // supervisor commands; `run` never needs it and a host driver never passes it on.
 import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -12,7 +13,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, TOKEN_PREFIX, unmountClaim, type RunRef } from "./claim.ts";
-import { exitCodeFor, PdaError } from "./errors.ts";
+import { exitCodeFor, FencedError, PdaError } from "./errors.ts";
+import { fork } from "./fork.ts";
+import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
+import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
 import { localHost } from "./hosts/local-host.ts";
 import {
   checkHost,
@@ -39,16 +43,19 @@ class UsageError extends PdaError {
 const USAGE = `usage:
   pi-durable-archil run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
-                        [--token-stdin]
+                        [--token-stdin] [--serve PORT] [--serve-host H] [--serve-url URL] [--serve-token-file F]
+                        [--park-threshold 60s] [--park-idle 60s] [--drain-timeout 25s]
   pi-durable-archil supervise --disk D --region R (--id ID ... | --all) [--every 30s] [--check]
                         [--driver systemd|child] [--mount-root DIR] [--host-name NAME] [--unit-prefix P]
                         [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
                         [--start-grace 90s] [--start-backoff-max 10m] [--stop-timeout 30s] [--token-ttl 24h] [--token-prefix P] [--demand] [--create] [--env K=V ...] [--log-dir DIR]
                         [--archil BIN] [--control-timeout 10s] [--sweep-tokens] [--token-grace 15m]
-                        [--api-key-env NAME]
+                        [--park-threshold 60s] [--api-key-env NAME]
   pi-durable-archil supervise --check --disk D --region R [--mount-root DIR] [--user U] [--group G] [--check-id-prefix P]
   pi-durable-archil status --disk D --region R --id ID [--host-name NAME] [--api-key-env NAME]
-  pi-durable-archil release --id ID [--mount-root DIR]`;
+  pi-durable-archil release --id ID [--mount-root DIR]
+  pi-durable-archil fork --disk D --region R --id ID --new-id NEW [--mount-root DIR] [--archil BIN] [--token-prefix P]
+                        [--api-key-env NAME]`;
 
 /** "30s", "500ms", "2m", "1h", or plain milliseconds. */
 /**
@@ -167,10 +174,14 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
  * driver's handle as run.json's holder, the mount token from stdin (read once, then stdin is closed), and the lease
  * periods. The app loads before anything mounts; a missing or throwing module, or a failed `onOpen`, is AppError (exit 1,
  * so the unit retries within systemd's start limit; a restart in place reuses the claim). A fence of any kind kills the
- * run's commands and exits 75 inside openDurableRun. SIGTERM drains and exits 0: with `--on-sigterm resume` (default)
- * the run is first written sleeping with `wakeAt` now, so the supervisor starts it again at its next tick and a deploy or
- * an operator stop never strands it; with `pause` it seals paused (`run.release()` alone) and waits for a demand. Either
- * way `run.release()` closes, barriers, seals and unmounts.
+ * run's commands and exits 75 inside openDurableRun.
+ *
+ * `--serve` listens before the run opens and writes its address into the holder, so a client finds it in run.json; an
+ * address that is not loopback needs `--serve-token-file` (a 0600 file holding the bearer token), and a wildcard bind
+ * (0.0.0.0, ::) needs `--serve-url`, the address clients reach, which is what run.json then carries. `--park-threshold`
+ * parks the run when its work only waits longer than that, and with `--serve` an idle run parks too after `--park-idle`
+ * (default the threshold), since a request can wake it. `--drain-timeout` bounds the drain on SIGTERM. What happens
+ * between the open and the exit is `serveUntilDone`.
  */
 async function runInstance(values: Record<string, unknown>): Promise<number> {
   need(values, "disk", "region", "id", "app");
@@ -179,6 +190,14 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
   const ms = (name: string) => (typeof values[name] === "string" ? parseDuration(values[name] as string) : undefined);
   const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
+  const parkMs = ms("park-threshold") || undefined;
+  const drainMs = ms("drain-timeout") ?? 0;
+  const servePort = str(values.serve);
+  if (servePort !== undefined && !/^\d{1,5}$/.test(servePort)) throw new UsageError("--serve takes a port number (0: any free port)");
+  const serveHost = str(values["serve-host"], "127.0.0.1")!;
+  const tokenFile = str(values["serve-token-file"]);
+  if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
+  const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
   const root = join(mountRoot, runPath(ref.id));
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
@@ -189,10 +208,19 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     log("app failed", { code: (err as PdaError).code, message: (err as Error).message });
     return exitCodeFor(err);
   }
-  const { onOpen, ...harness } = app;
+  const { onOpen, root: rootOptions, wake: appWake, ...harness } = app;
   const holder = JSON.parse(process.env.PDA_HOLDER ?? "{}") as Record<string, Json>;
   const cgroup = watchdogOwnsCgroup(holder);
   if (cgroup.warning) log("cgroup not owned", { warning: cgroup.warning });
+  // The server is up before the run opens (its address goes into the holder); parking starts after.
+  let parking: Parking | undefined;
+  let server: RunServer | undefined;
+  if (servePort !== undefined) {
+    const url = str(values["serve-url"]);
+    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
+    holder.serve = server.url;
+  }
+  const idleMs = ms("park-idle") ?? (server ? parkMs : undefined);
   const steps: Record<string, number> = {};
   let run: DurableRun;
   try {
@@ -208,18 +236,44 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     });
   } catch (err) {
     log("open failed", { code: (err as PdaError).code, exitCode: exitCodeFor(err), message: (err as Error).message, steps });
+    await server?.close();
     return exitCodeFor(err);
   }
-  log("running", { generation: run.generation, steps });
-  return serveUntilDone(run, onOpen, onSigterm, log);
+  server?.attach(run);
+  log("running", { generation: run.generation, steps, ...(server ? { serve: server.url } : {}) });
+  return serveUntilDone(run, onOpen, onSigterm, log, process, {
+    drainMs,
+    ...(server ? { server } : {}),
+    ...(appWake ? { wake: appWake } : {}),
+    ...(parkMs === undefined ? {} : { park: { thresholdMs: parkMs, ...(idleMs === undefined ? {} : { idleMs }) } }),
+    onParking: (p) => void (parking = p),
+  });
+}
+
+/** What the instance does besides the app between its open and its exit. */
+export interface InstanceLife {
+  /** How long a drain waits for running work before the release; 0 (default) releases at once. */
+  readonly drainMs?: number;
+  /** Park the run when its work allows (`watchParking`); absent, the instance stays up through every wait. */
+  readonly park?: { readonly thresholdMs: number; readonly idleMs?: number };
+  /** The serve front: its open requests keep the instance up, and a park or a drain stops its submissions. */
+  readonly server?: RunServer;
+  /** The app's wake hook; default run.json `sleeping` with `wakeAt`. */
+  readonly wake?: (run: DurableRun, at: number | null) => Promise<void>;
+  /** Handed the parking watch once it runs. */
+  readonly onParking?: (parking: Parking) => void;
 }
 
 /**
- * The instance's life after the run opened: the app's `onOpen` runs, and SIGTERM or SIGINT drains (`resume` writes the
- * run sleeping with `wakeAt` now first) and releases; the drain's outcome is the exit code. A rejection of `onOpen` is
- * the app failing (exit 1), except once a drain began: the drain closes the Harness under the app, whose work then
- * rejects ("Session is closed"), and ending the process there would cut the release before its unmount (a container's
- * FUSE daemon dies with the process, leaving the delegation orphaned).
+ * The instance's life after the run opened: the app's `onOpen` runs; the run parks when `life.park` allows (the wake
+ * written, the run released, exit 0); SIGTERM or SIGINT drains and releases, and the drain's outcome is the exit code.
+ * A drain stops new submissions and waits up to `life.drainMs` for running work; with `resume` it then writes the run
+ * sleeping with its wake (the deadline its work waits for, null when idle and idle parking is on, otherwise now), so
+ * the supervisor starts it again and a deploy never strands it; a wake hook that refuses falls back to a due wake.
+ * `pause` seals it paused. A rejection of `onOpen` is the app failing (exit 1), except once a drain or a park's release
+ * began: closing the Harness under the app makes its work reject ("Session is closed"), and ending the process there
+ * would cut the release before its unmount (a container's FUSE daemon dies with the process, leaving the delegation
+ * orphaned).
  */
 export function serveUntilDone(
   run: Pick<DurableRun, "setStatus" | "release" | "record">,
@@ -227,30 +281,69 @@ export function serveUntilDone(
   onSigterm: string | undefined,
   log: (event: string, extra?: Record<string, unknown>) => void,
   signals: Pick<NodeJS.EventEmitter, "once"> = process,
+  life: InstanceLife = {},
 ): Promise<number> {
+  // Parking and a drain with a limit read the Harness; a caller that asks for them passes the whole run.
+  const durable = run as DurableRun;
+  const drainMs = life.drainMs ?? 0;
   return new Promise<number>((done) => {
-    let draining = false;
-    const drain = async (signal: string) => {
-      if (draining) return;
-      draining = true;
-      log("draining", { signal, onSigterm });
+    let releasing = false;
+    let parking: Parking | undefined;
+    const sleeping = (at: number | null) => run.setStatus("sleeping", { reason: "drained" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
+    const shutdown = async (signal: string) => {
+      if (releasing) return;
+      releasing = true;
+      log("draining", { signal, onSigterm, drainMs });
       try {
-        if (onSigterm === "resume") await run.setStatus("sleeping", { reason: "drained" }, { wakeAt: new Date().toISOString() });
+        if (await parking?.stop()) return done(0);
+        life.server?.pause();
+        const state: BusyState = drainMs > 0 ? await drain(durable, { deadline: Date.now() + drainMs }) : { kind: "busy" };
+        if (onSigterm === "resume") {
+          const at = state.kind === "waiting" ? state.until : state.kind === "idle" && life.park?.idleMs !== undefined ? null : Date.now();
+          await (life.wake ? life.wake(durable, at) : sleeping(at)).catch((err: unknown) => {
+            if (err instanceof FencedError || durable.fenced) throw err;
+            return sleeping(Date.now());
+          });
+        }
         await run.release();
-        log("released", { record: run.record as unknown as Json });
+        log("released", { drained: state.kind, record: run.record as unknown as Json });
         done(0);
       } catch (err) {
         log("release failed", { code: (err as PdaError).code, message: (err as Error).message });
         done(exitCodeFor(err));
       }
     };
-    signals.once("SIGTERM", () => void drain("SIGTERM"));
-    signals.once("SIGINT", () => void drain("SIGINT"));
+    signals.once("SIGTERM", () => void shutdown("SIGTERM"));
+    signals.once("SIGINT", () => void shutdown("SIGINT"));
+    if (life.park) {
+      parking = watchParking(durable, {
+        ...life.park,
+        // The release follows the wake at once, so from here on the app's work may reject under it.
+        wake: async (_target, at) => {
+          await (life.wake ?? recordWake)(durable, at);
+          releasing = true;
+        },
+        keepAwake: () => (life.server?.active ?? 0) > 0,
+        ...(life.server ? { quiesce: () => life.server!.pause() } : {}),
+        log: (event, detail) => log(event, detail),
+      });
+      life.onParking?.(parking);
+      parking.parked.then(
+        (parked) => {
+          log("parked", { wakeAt: parked.wakeAt === null ? null : new Date(parked.wakeAt).toISOString(), blocked: parked.blocked, generation: durable.generation });
+          done(0);
+        },
+        (err: unknown) => {
+          log("park release failed", { code: (err as PdaError).code, message: (err as Error).message });
+          done(exitCodeFor(err));
+        },
+      );
+    }
     // onOpen may return at once (work submitted) or run for the instance's life.
     Promise.resolve()
-      .then(() => onOpen?.(run as DurableRun))
+      .then(() => onOpen?.(durable))
       .catch((err: unknown) => {
-        if (draining) return;
+        if (releasing) return;
         const e = new AppError(`onOpen failed: ${(err as Error).message}`, { cause: err });
         log("app failed", { code: e.code, message: e.message });
         done(exitCodeFor(e));
@@ -290,6 +383,7 @@ function driverFrom(values: Record<string, unknown>): HostDriver {
     restart: values["no-restart"] ? false : undefined,
     logDir: str(values["log-dir"]),
     archil: str(values.archil),
+    ...(values["park-threshold"] === undefined ? {} : { parkThresholdMs: parseDuration(str(values["park-threshold"])!) || null }),
   });
 }
 
@@ -404,6 +498,20 @@ async function release(values: Record<string, unknown>): Promise<number> {
   return 0;
 }
 
+async function forkRun(values: Record<string, unknown>): Promise<number> {
+  need(values, "disk", "region", "id", "new-id");
+  const disk = await control(values);
+  const result = await fork({ disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! }, str(values["new-id"])!, {
+    control: disk,
+    mountRoot: str(values["mount-root"], DEFAULT_MOUNT_ROOT)!,
+    host: { archil: str(values.archil) },
+    tokenPrefix: str(values["token-prefix"]),
+    onResource: (kind, id, detail) => emit({ event: "fork-resource", kind, id, detail }),
+  });
+  emit({ event: "forked", ...result });
+  return 0;
+}
+
 const COMMON = { disk: { type: "string" }, region: { type: "string" }, id: { type: "string" }, "mount-root": { type: "string" }, "api-key-env": { type: "string" }, "host-name": { type: "string" } } as const;
 
 export async function main(argv: string[]): Promise<number> {
@@ -421,6 +529,13 @@ export async function main(argv: string[]): Promise<number> {
             "lease-margin-ms": { type: "string" },
             "on-sigterm": { type: "string" },
             "token-stdin": { type: "boolean" },
+            serve: { type: "string" },
+            "serve-host": { type: "string" },
+            "serve-token-file": { type: "string" },
+            "serve-url": { type: "string" },
+            "park-threshold": { type: "string" },
+            "park-idle": { type: "string" },
+            "drain-timeout": { type: "string" },
           }),
         );
       case "supervise":
@@ -454,12 +569,15 @@ export async function main(argv: string[]): Promise<number> {
             "control-timeout": { type: "string" },
             "sweep-tokens": { type: "boolean" },
             "token-grace": { type: "string" },
+            "park-threshold": { type: "string" },
           }),
         );
       case "status":
         return await status(parse(rest, COMMON));
       case "release":
         return await release(parse(rest, COMMON));
+      case "fork":
+        return await forkRun(parse(rest, { ...COMMON, "new-id": { type: "string" }, archil: { type: "string" }, "token-prefix": { type: "string" } }));
       default:
         throw new UsageError(command ? `unknown command ${command}` : "no command");
     }

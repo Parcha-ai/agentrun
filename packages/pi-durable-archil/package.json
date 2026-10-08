@@ -53,6 +53,7 @@
     "test:live": "node --test --test-concurrency=1 'test/live/*.test.ts'",
     "test:live:claim": "node --test --test-concurrency=1 test/live/claim.live.test.ts",
     "test:live:env": "node --test --test-concurrency=1 test/live/env.live.test.ts",
+    "test:live:lifecycle": "node --test --test-concurrency=1 test/live/lifecycle.live.test.ts",
     "test:live:run": "node --test --test-concurrency=1 test/live/run.live.test.ts",
     "test:live:store": "node --test --test-concurrency=1 test/live/store.live.test.ts",
     "test:live:supervise": "node --test --test-concurrency=1 test/live/supervise.live.test.ts",

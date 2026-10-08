@@ -77,7 +77,10 @@ test("systemd start: a transient unit that kills its control group, restarts in 
     assert.deepEqual(holder, { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit, mountpoint: w.mp });
     assert.ok(!a.some((x) => /ImportCredential|LoadCredential|SetCredential|TOKEN/.test(x)), "no systemd credential the run's user could read");
     const cmd = a.slice(a.indexOf("--") + 1);
-    assert.deepEqual(cmd, ["/usr/bin/node", "/pkg/cli.ts", "run", "--disk", REF.disk, "--region", REF.region, "--id", "r1", "--mount-root", w.mountRoot, "--archil", ARCHIL_SCOPED, "--heartbeat-ms", "1000", "--token-stdin"]);
+    assert.deepEqual(cmd, [
+      "/usr/bin/node", "/pkg/cli.ts", "run", "--disk", REF.disk, "--region", REF.region, "--id", "r1", "--mount-root", w.mountRoot, "--archil", ARCHIL_SCOPED,
+      "--park-threshold", "60000ms", "--drain-timeout", "25000ms", "--heartbeat-ms", "1000", "--token-stdin",
+    ], "parks waits over 60 s; drains for the stop timeout less a 5 s close reserve");
     assert.deepEqual(empty.argv.slice(0, 4), ["/usr/bin/sudo", "-n", "/bin/sh", "-c"]);
     assert.ok(empty.argv[4].includes("mv -f") && empty.argv.at(-1) === file, "once started, the path holds an empty file (a restart in place reads nothing)");
     assert.equal(empty.input ?? "", "", "nothing is written into the replacement");
@@ -88,6 +91,18 @@ test("systemd start: a transient unit that kills its control group, restarts in 
     if (prevKey === undefined) delete process.env.ARCHIL_API_KEY;
     else process.env.ARCHIL_API_KEY = prevKey;
   }
+});
+
+test("the park threshold and the drain follow the driver's options", async () => {
+  const w = world();
+  const flags = async (o: Parameters<typeof localHost>[0]) => {
+    const { calls, exec } = recorder();
+    await localHost({ exec, mountRoot: w.mountRoot, user: "1000", group: "1000", command: ["/n", "/c"], ...o }).start(REF, TOKEN);
+    const a = calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv;
+    return a.slice(a.indexOf("--") + 1).join(" ");
+  };
+  assert.match(await flags({ parkThresholdMs: null, stopTimeoutMs: 5_000 }), /--archil \S+ --drain-timeout 2500ms --token-stdin$/, "no parking; half of a short stop timeout");
+  assert.match(await flags({ parkThresholdMs: 120_000, stopTimeoutMs: 90_000 }), /--park-threshold 120000ms --drain-timeout 85000ms /);
 });
 
 test("systemd start that fails: the credential file is still removed and the error is typed", async () => {

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `@parcha/pi-durable-archil` wakes a released run on a request (`run --serve`, `requestRun`), parks a run whose work only waits (its host is released and the supervisor starts it again at the deadline), drains on SIGTERM, and forks a sealed run (`fork`). Its CHANGELOG has the details.
+
 ## 0.1.0-beta.10, 2026-10-08
 
 - New package, `@parcha/pi-durable-archil`: a [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) host on an [Archil](https://archil.com) disk. One exclusive mount of a run's directory is the claim; revoking it fences a lost or hung holder; a heartbeat lease, a stateless supervisor and host drivers (`localHost`, `daytonaHost`) restart a run on another host, where pi-durable resumes from its last commit and never repeats a tool call whose intent it had committed.

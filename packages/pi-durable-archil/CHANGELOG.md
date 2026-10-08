@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+**Serve, sleep parking and fork**
+- `run --serve PORT` puts an HTTP front on the open run: `POST /submit` (pi's submit with the caller's `requestId`, which pi
+  deduplicates per conversation in the run's store, so a retry that reaches the next incarnation, even on another host, gets
+  the same submission and, with `wait: true`, its answer), `POST /abort`, `GET /events` (pi's agent events as server-sent
+  events) and `GET /status`. The instance listens before it opens and writes its address into `run.json`'s holder
+  (`holder.serve`); it answers 503 `OPENING`, `PARKING` or `RELEASED` while it opens, parks or is gone.
+- A bearer token: optional on 127.0.0.1, required on any other `--serve-host` (`SERVE_TOKEN_REQUIRED` before anything binds).
+  It is read from a file of mode 0600 (`--serve-token-file`, never argv or the environment) and compared in constant time
+  on every route. A wildcard bind (0.0.0.0, ::) also needs `--serve-url`, the address clients reach, which is what
+  `run.json` carries (`SERVE_URL_REQUIRED`).
+- `requestRun(ref, request, { host, ensure, token })`, the client: it finds the instance through `run.json`, sends while the
+  holder's lease is fresh (a request is dropped when the lease lapses under it), and otherwise calls `ensureRunning` with
+  demand. After a start, its own or one the supervisor reports `starting`, it waits for that generation instead of asking
+  again, so one cold request makes one start.
+- Sleep parking (`run --park-threshold`; the local driver passes 60 s, `supervise --park-threshold 0` turns it off): after
+  every commit the instance classifies pi's tasks; when everything that could run only sleeps in a retry or deferred-poll wait
+  longer than the threshold, it writes `run.json` `sleeping` with `wakeAt` (the deadline), releases and exits 0, and the
+  supervisor starts it at `wakeAt`. With `--serve`, a run with no live work parks after `--park-idle` with `wakeAt` null (a
+  request wakes it). Open requests and event streams keep the instance up; a blocked task does not. The deadline is read from
+  pi's retry and poll checkpoint in one function; any other shape counts as busy.
+- The app module's `wake` hook replaces how the wake is recorded: a refusal keeps the instance up through the wait, while a
+  failed `run.json` write is a fence (exit 75; the lease path resumes the run and pi sleeps out the remainder). `root` gives
+  the options for the root conversation serve creates.
+- A drain on SIGTERM: no new submissions, then up to `--drain-timeout` (the local driver: its stop timeout minus the smaller
+  of 5 s and half of it) for running work; the wake it writes is now, the wait's deadline, or null when idle. Work cut at the
+  deadline resumes on the next open (safe tools rerun, unsafe ones report the interruption). The app's work rejecting when a
+  park's release closes the Harness under it does not end the instance before its release, as for a drain.
+- `leaseParkTarget(lease, harness)`: parking for a Harness a host opened over `openRunLease` (the wake through the lease's
+  `setStatus`; the release closes the host's Harness, then the lease).
+- `fork --id A --new-id B` (`fork(ref, newId, { control, mountRoot })`): copies a released, sealed run (paused, sleeping, done
+  or failed, with no delegation) under two short exclusive mounts of its own into a new run that starts `paused` at
+  generation 0 with the source's `sealedSeq`, so its first open is generation 1 and a lossy copy is refused
+  (`STORE_BEHIND_SEAL`). The source is only read. `run.json`, `owner.lock`, the start mark and `tmp/` are not copied. A fork
+  owns the new run's directory only while it holds that directory's mount: one that fails after that empties it through
+  its own mount and removes it; one that lost the directory to another fork or start leaves it alone.
+
 ## 0.1.0-beta.10, 2026-10-08
 
 First release of `@parcha/pi-durable-archil`, versioned with the other packages in this repository. It is the package developed

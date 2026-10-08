@@ -26,6 +26,11 @@ test("usage errors exit 2: no command, unknown command, unknown flag, missing re
     assert.equal(await main(["run", "--disk", "d"]), 2);
     assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x"]), 2, "run needs --app");
     assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--on-sigterm", "wait"]), 2, "--on-sigterm is resume or pause");
+    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--serve", "http"]), 2, "--serve takes a port");
+    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--park-threshold", "soon"]), 2);
+    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--serve", "0", "--serve-host", "0.0.0.0"]), 2, "off loopback, serve needs a token file");
+    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--serve", "0", "--serve-host", "0.0.0.0", "--serve-token-file", "/nonexistent"]), 2, "an unusable token file");
+    assert.equal(await main(["fork", "--disk", "d", "--region", "r", "--id", "x"]), 2, "fork needs --new-id");
     assert.equal(await main(["supervise", "--disk", "d", "--region", "r", "--id", "x", "--api-key-env", "PDA_TEST_NO_SUCH_KEY"]), 2);
   } finally {
     process.stderr.write = quiet;

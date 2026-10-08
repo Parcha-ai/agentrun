@@ -19,6 +19,7 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { EXIT_FENCED, EXIT_HELD, PdaError } from "../errors.ts";
+import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
 import type { HostDriver, HostHandle, HostStatus, Json } from "../supervise.ts";
 
 export type Ran = { code: number | null; timedOut: boolean; stdout: string; stderr: string };
@@ -45,8 +46,16 @@ export interface LocalHostOptions {
   env?: Record<string, string>;
   /** The archil wrapper the instance mounts through (it takes the token on stdin); default this package's `bin/archil-scoped`. */
   archil?: string;
-  /** TimeoutStopSec: SIGTERM, then SIGKILL of the whole control group after this. Default 30 s. */
+  /**
+   * TimeoutStopSec: SIGTERM, then SIGKILL of the whole control group after this. Default 30 s. The instance drains for
+   * this long minus a close reserve (half of it, at most 5 s) before it releases.
+   */
   stopTimeoutMs?: number;
+  /**
+   * The instance parks a run whose live work only waits longer than this, which must be at least twice this driver's
+   * start time (about 1.5 s). Default 60 s. null: never park, the instance stays up through every wait.
+   */
+  parkThresholdMs?: number | null;
   /** Restart=on-failure, except after a terminal exit (`TERMINAL_EXITS`: 65, 70, 75, 76). */
   restart?: boolean;
   /** Child mode: append the instance's output to `<logDir>/<unit>.log`. */
@@ -165,7 +174,14 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
   const mountpointOf = (ref: RunRef) => join(mountRoot, runPath(ref.id));
   const mounted = async (mp: string) => (await readFile(procMounts, "utf8")).split("\n").some((l) => l.split(" ")[1] === mp);
 
-  const runFlags = (ref: RunRef) => ["run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, ...(opts.runArgs ?? [])];
+  const parkMs = opts.parkThresholdMs === undefined ? LOCAL_PARK_THRESHOLD_MS : opts.parkThresholdMs;
+  const drainMs = Math.max(0, stopTimeoutMs - Math.min(5_000, stopTimeoutMs / 2));
+  const runFlags = (ref: RunRef) => [
+    "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil,
+    ...(parkMs ? ["--park-threshold", `${parkMs}ms`] : []),
+    "--drain-timeout", `${Math.floor(drainMs)}ms`,
+    ...(opts.runArgs ?? []),
+  ];
   const holderEnv = (h: Record<string, Json>) => JSON.stringify(h);
 
   const tokenFile = (unit: string) => join(TOKEN_DIR, `${unit}.mount-token`);

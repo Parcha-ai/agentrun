@@ -23,7 +23,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 | Eviction and resume | Any host that claims the directory reopens the store and `resume()`s | pi and this package |
 | Alarms | On the same host, the host's process supervisor restarts the instance; across hosts, `supervise`. pi's own retry and poll waits stay in process | this package |
 | A container to exec in | Tools run as child processes of the instance, against the run's `work/` directory on the same mount | the host |
-| Hibernate and wake on request | Not in this release (`serve`, sleep parking). Today a drained instance writes `sleeping` and the supervisor starts it again | this package |
+| Hibernate and wake on request | The instance parks (releases the claim) while everything waits, and `requestRun` starts it again on a request: `serve`, parking, below | this package |
 
 ## Requirements
 
@@ -44,7 +44,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 - `@earendil-works/pi-durable` and `@earendil-works/chord`, `^1.0.4`, as peer dependencies.
 
 Not covered yet: a Kubernetes host driver (the `HostDriver` interface is below) and running the loop where FUSE is
-unavailable. Not in this release: `serve` (wake on request), sleep parking, `fork`, and a Docker quickstart.
+unavailable. Not in this release: a Docker quickstart.
 
 ## Install
 
@@ -133,10 +133,11 @@ or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit re
 
 | Command | What it does |
 |---|---|
-| `run --disk D --region R --id ID --app MODULE` | The instance a host driver starts: claim the run, open it, resume it. `--token-stdin` reads the mount token from stdin. Lease flags: `--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`. `--on-sigterm resume` (default) or `pause` |
+| `run --disk D --region R --id ID --app MODULE` | The instance a host driver starts: claim the run, open it, resume it. `--token-stdin` reads the mount token from stdin. Lease flags: `--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`. `--on-sigterm resume` (default) or `pause`. `--serve PORT`, `--park-threshold`, `--park-idle`, `--drain-timeout` (below) |
 | `supervise --disk D --region R (--id ID ... \| --all) [--every 30s] --app MODULE` | One decision per run, once or in a loop: nothing to do, start, or revoke and start; `--app` is the module each started instance runs. `--create` makes the run directory. `--check` proves this host's fence first. `--sweep-tokens` removes expired token users. Prints one JSON line per decision |
 | `status --disk D --region R --id ID` | `run.json` over the S3 API, the run's delegations and the holder's state |
 | `release --id ID` | Unmount the run's mount on this host (a dead mount is cleaned) |
+| `fork --id A --new-id B` | Copy a released, sealed run into a new run (see Serve, parking and fork) |
 
 The supervisor passes the app on (`--app MODULE`, made absolute), other flags for the instance as `--run-arg=--heartbeat-ms=2000`,
 and the instance's environment as `--env KEY=VALUE`. The API key is read from the environment variable named by
@@ -230,6 +231,48 @@ supervises that no live mount needs: the run holds no delegation, its `run.json`
 users. `supervise --sweep-tokens` also removes the expired users of any run, and with no `--id` cleans every released run under
 the token prefix.
 
+### Serve, parking and fork
+
+`pi-durable-archil run --serve PORT` (0: any free port; `--serve-host`, default 127.0.0.1; any other address needs
+`--serve-token-file`, see Security, and a wildcard such as 0.0.0.0 also needs `--serve-url`, the address clients reach) puts
+a small HTTP front on the open run, so a client talks to the run, not to a host:
+
+| Request | What it does |
+|---|---|
+| `POST /submit {requestId, content, conversationId?, whenBusy?, wait?}` | pi's `submit`. pi deduplicates `requestId` per conversation in the run's store, so a retry that reaches the next incarnation, even on another host, gets the same submission, and with `wait: true` its answer. The same `requestId` on another conversation is a new submission there |
+| `POST /abort {submissionId? \| conversationId?}` | pi's abort |
+| `GET /events` | pi's agent events as server-sent events |
+| `GET /status` | the run's status |
+
+The instance writes its address into `run.json` (`holder.serve`) and answers 503 (`OPENING`, `PARKING`, `RELEASED`) while it
+opens, parks or is gone. The app module may add `root` (the options for pi's `root()`, which the serve root conversation
+gets) and `wake`. `requestRun(ref, { method, path, body }, { host, ensure, token? })` is the client, the equivalent of a
+Durable Object stub's `fetch`: it reads `run.json` over S3 and sends to the running holder while its lease is fresh (a
+request whose holder's lease lapses meanwhile is dropped: a frozen instance accepts connections and never answers).
+Otherwise it calls `ensureRunning` with demand, waits for the instance it started, or for the one the supervisor reports
+`starting`, to write its generation, and retries until `timeoutMs`.
+
+**Parking.** With `--park-threshold` (the local driver passes 60 s; `supervise --park-threshold 0` turns it off) the instance
+classifies pi's tasks after every commit. When everything that could run only sleeps in a retry or a deferred-poll wait longer
+than the threshold, it writes `run.json` `sleeping` with `wakeAt` (the deadline), releases the claim and exits 0, and the
+supervisor starts it at `wakeAt`. With `--serve`, a run with no live work also parks after `--park-idle` (default: the
+threshold) with `wakeAt` null, so only a request wakes it. Open requests and event streams keep the instance up; a blocked task
+(one no definition can run) does not. An app's `wake` hook replaces how the wake is recorded: a refusal keeps the instance up
+through the wait (pi's own timer ends it), while a failed `run.json` write is a fence (exit 75, resumed after the lease). On
+SIGTERM the instance stops taking submissions and drains for up to `--drain-timeout` (the local driver: its stop timeout minus
+the smaller of 5 s and half of it), then writes its wake (now, the wait's deadline, or null when idle) and releases. Work cut
+at the deadline resumes on the next open: safe tools rerun, unsafe ones report the interruption. The parking follows the
+lifecycle of Rivet's pi-durable host (rivet-dev/agents, Apache-2.0); no code was copied.
+
+**Fork.** `pi-durable-archil fork --id A --new-id B` (or `fork(ref, newId, { control, mountRoot })` on the supervisor side)
+copies a released, sealed run (paused, sleeping, done or failed, with no delegation) under two short exclusive mounts of its
+own into a new run that starts `paused` at generation 0 with the source's `sealedSeq`. Its first open is generation 1, and a
+lossy copy is refused (`STORE_BEHIND_SEAL`). The source is only read (store, `run.json` and workspace stay byte-identical;
+only the claim probe `.claim` is rewritten by the mount); `run.json`, `owner.lock`, the supervisor's start mark
+`start.json` and `tmp/` are not copied. A fork owns the new run's directory only while it holds that directory's mount: one
+that fails after that empties the directory through its own mount and removes it, and one that lost the directory to another
+fork or start leaves it alone.
+
 ### Setting up a host for production
 
 The Quickstart runs the supervisor as your own user. On a production host the instance and the agent's tools run as an
@@ -283,7 +326,8 @@ mount token reaches the journal, and that nothing is left behind. It needs syste
 | A second instance on the same host | The owner lock (an exclusive SQLite lock on `owner.lock`) is refused, exit 76 | none |
 | Two supervisors race | The mount admits one claimant; the other instance exits 76 | none |
 | The store is behind its `run.json` seal | `STORE_BEHIND_SEAL`: `run.json` is marked failed and the instance exits 65; the supervisor does not restart it | none started |
-| SIGTERM (a deploy) | The instance drains: close, kill commands, barrier, seal `sleeping` with `wakeAt` now, unmount, exit 0; the next supervise tick restarts it | interrupted work resumes on the next open |
+| SIGTERM (a deploy) | The instance stops taking submissions and drains for up to `--drain-timeout`, writes `sleeping` with its wake (now; the deadline when everything only waits; null when idle and woken by requests), then closes, kills its commands, barriers, seals and unmounts, exit 0; the supervisor starts it again at the wake | work cut at the drain's deadline resumes on the next open: safe tools rerun, unsafe ones report the interruption |
+| Everything the run does is a retry or poll wait longer than the park threshold | The instance writes `sleeping` with `wakeAt` (the deadline), releases and exits 0; the supervisor starts it at `wakeAt` and pi's timer sleeps whatever is left; a `run.json` write that fails is a fence (exit 75) and the lease path resumes the run | nothing is lost: the wait is a checkpoint in the store |
 
 What a revoke cannot do: no fence reaches a third party. A paid API that already has a request has it. The package
 guarantees that this runtime does not start an effect twice; an effect your model decides to retry is a new call, so give a
@@ -320,6 +364,11 @@ to 6.3 s with a 6 s test lease (90 to 120 s with the defaults).
   so a link a command swaps in after the check is refused too. This covers the file tools only; a command still runs as
   the run user and can reach anything that user can, which is what an app's own command sandbox is for. `archilEnv(claim, {
   confineFiles: false })` turns it off where `/proc/self/fd` is unavailable.
+- **`--serve` authenticates only with a bearer token.** On 127.0.0.1 (the default) the token is optional. A non-loopback
+  `--serve-host` requires `--serve-token-file`, a file of mode 0600 holding the token (never argv or the environment); every
+  request must send `authorization: Bearer <token>`, and it is compared in constant time. The file is readable by the run
+  user, so by the agent's own commands: it guards the network, not the agent. Put TLS in front of anything that leaves the
+  machine.
 - **A revocation is the most dangerous operation.** It happens only for an orphaned client, a dead host or an expired
   lease, and every takeover writes the new `generation` and the previous holder into `run.json` and the supervisor's log.
 
@@ -354,7 +403,9 @@ empty.
 `openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, write `run.json`, open
 the store, check the seal, open and resume the Harness, keep the lease. `acquire`, `ensureRunning`, `localHost`,
 `archilEnv`, `openArchilStore` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported
-for apps that compose their own lifecycle. The `.d.ts` files in `dist/` are the reference.
+for apps that compose their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`,
+`busyState`, and `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. The `.d.ts` files in `dist/`
+are the reference.
 
 A host that owns its own pi-durable Harness and store connections imports the narrow entry instead:
 `@parcha/pi-durable-archil/lease` holds `openRunLease` (the claim, the owner lock, `run.json` with its heartbeat, the lease
