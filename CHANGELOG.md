@@ -3,6 +3,8 @@
 ## Unreleased
 
 - `@parcha/pi-durable-archil` wakes a released run on a request (`run --serve`, `requestRun`), parks a run whose work only waits (its host is released and the supervisor starts it again at the deadline), drains on SIGTERM, and forks a sealed run (`fork`). Its CHANGELOG has the details.
+- `@parcha/pi-durable-archil` gains `dockerHost`, a host driver that runs each instance in a container of the package's image (`packages/pi-durable-archil/docker/Dockerfile`), so a machine with Docker (macOS included) needs no root, FUSE or archil client; `packages/pi-durable-archil/examples/docker-quickstart.sh` runs the paid-effect example that way. Its CHANGELOG has the details.
+  - The image installs the checkout's own package version, from the workspace (`npm pack` of the package into `docker/package`) or from npm, and its own dependencies come from `docker/runtime/package-lock.json`, which is not a workspace and not part of the root lockfile.
 
 ## 0.1.0-beta.10, 2026-10-08
 

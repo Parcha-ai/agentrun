@@ -251,7 +251,11 @@ test("restart in place: a non-terminal exit restarts the instance after 1 s with
   const lines = await waitFor("two incarnations", () => (w.lines().length >= 2 ? w.lines() : null), 15_000);
   assert.equal(lines[0].token, TOKEN);
   assert.equal(lines[1].token, "", "only the first incarnation gets the token");
-  const state = readState(w.box, String(h.name))!;
+  // The launcher records a spawn after the child's spawn event, so the second line can come first.
+  const state = await waitFor("the launcher's record of the second spawn", () => {
+    const s = readState(w.box, String(h.name));
+    return s && s.spawned >= 2 ? s : null;
+  }, 15_000);
   assert.equal(state.restarts, 1);
   assert.equal(state.spawned, 2);
   assert.equal(await w.host.status(h), "running");

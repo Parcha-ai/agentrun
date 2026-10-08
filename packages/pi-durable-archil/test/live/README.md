@@ -6,6 +6,7 @@ export ARCHIL_API_KEY=...                # an Archil API key for the account tha
 export PDA_LIVE_DISK=dsk-...            # the scratch disk (never a disk with data you want to keep)
 export PDA_LIVE_REGION=aws-us-east-1    # its region (default aws-us-east-1)
 npm run test:live                       # all of them, or one: test:live:claim | env | lifecycle | run | store | supervise
+npm run test:live:docker                # the docker host driver (T13); needs Docker and the image, see below
 ```
 
 The key may come from anything that puts `ARCHIL_API_KEY` in the environment of the command (a secrets manager's run wrapper,
@@ -30,3 +31,12 @@ The Daytona suite (`daytona.live.test.ts`, `_p9.ts`) and `examples/verify-produc
 standalone checkout allows: they copy this directory and run `npm ci` in it. In the agentrun workspace the dependencies are
 hoisted to the repository root and this directory has no lockfile of its own, so both need an install step of their own
 before they can run from here. They have not been run from the workspace.
+
+The docker suite (`test:live:docker`, also run by `test:live` when `PDA_LIVE_DOCKER=1`) runs the instances in containers of
+the package's image on this machine's Docker daemon; nothing on the host mounts. `docker.live.test.ts` is T13 for
+`dockerHost`; `docker-park.live.test.ts` parks a run in a container under `supervise --host docker` and checks that the
+exited container stays exited until the supervisor starts the next one at the wake (about 3 minutes). Build the image from
+this directory first:
+`rm -f docker/package/*.tgz && npm pack --pack-destination docker/package && docker build -f docker/Dockerfile -t pi-durable-archil:local .`
+(`PDA_DOCKER_IMAGE` names another image). Its containers are labeled `pda.fleet=$PDA_DOCKER_FLEET` (default `live`) and
+named `pda-<fleet>-...`, its run directories `runs/<fleet>-...`; the suite removes only those.

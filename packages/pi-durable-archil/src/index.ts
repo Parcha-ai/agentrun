@@ -6,6 +6,7 @@ export * from "./env.ts";
 export * from "./errors.ts";
 export * from "./fork.ts";
 export * from "./hosts/daytona.ts";
+export * from "./hosts/docker.ts";
 export * from "./hosts/local-host.ts";
 export * from "./park.ts";
 export * from "./run.ts";

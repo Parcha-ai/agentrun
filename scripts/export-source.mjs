@@ -143,7 +143,7 @@ async function collect(relative = '') {
     if (entry.isDirectory()) { await collect(path); continue; }
     if (!entry.isFile()) throw new Error(`Source export refuses special file: ${path}`);
     const ext = extension(path);
-    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-archil)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-archil/bin/archil-scoped' || path === 'spec/lean/lean-toolchain';
+    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-archil)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-archil/bin/archil-scoped' || path === 'packages/pi-durable-archil/docker/Dockerfile' || path === 'packages/pi-durable-archil/.dockerignore' || path === 'spec/lean/lean-toolchain';
     if (!isText && !binaryExtensions.has(ext)) throw new Error(`Unreviewed source-export file type: ${path}`);
     const bytes = await readFile(join(root, path));
     if (isText) {

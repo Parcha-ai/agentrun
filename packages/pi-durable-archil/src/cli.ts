@@ -12,11 +12,13 @@ import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, TOKEN_PREFIX, unmountClaim, type RunRef } from "./claim.ts";
+import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, TOKEN_PREFIX, unmountClaim, type Claim, type RunRef } from "./claim.ts";
+import { archilEnv } from "./env.ts";
 import { exitCodeFor, FencedError, PdaError } from "./errors.ts";
 import { fork } from "./fork.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
 import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
+import { dockerHost } from "./hosts/docker.ts";
 import { localHost } from "./hosts/local-host.ts";
 import {
   checkHost,
@@ -43,16 +45,18 @@ class UsageError extends PdaError {
 const USAGE = `usage:
   pi-durable-archil run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
-                        [--token-stdin] [--serve PORT] [--serve-host H] [--serve-url URL] [--serve-token-file F]
-                        [--park-threshold 60s] [--park-idle 60s] [--drain-timeout 25s]
+                        [--token-stdin] [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
+                        [--serve-token-file F] [--park-threshold 60s] [--park-idle 60s] [--drain-timeout 25s]
   pi-durable-archil supervise --disk D --region R (--id ID ... | --all) [--every 30s] [--check]
-                        [--driver systemd|child] [--mount-root DIR] [--host-name NAME] [--unit-prefix P]
+                        [--host local|docker] [--driver systemd|child] [--mount-root DIR] [--host-name NAME] [--unit-prefix P]
                         [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
                         [--start-grace 90s] [--start-backoff-max 10m] [--stop-timeout 30s] [--token-ttl 24h] [--token-prefix P] [--demand] [--create] [--env K=V ...] [--log-dir DIR]
                         [--archil BIN] [--control-timeout 10s] [--sweep-tokens] [--token-grace 15m]
                         [--park-threshold 60s] [--api-key-env NAME]
+                        with --host docker: --image IMAGE [--app-root DIR] [--fleet F] [--name-prefix P] [--run-as USER]
+                        [--docker-arg ARG ...] [--apparmor auto|PROFILE|none] [--docker BIN]
   pi-durable-archil supervise --check --disk D --region R [--mount-root DIR] [--user U] [--group G] [--check-id-prefix P]
-  pi-durable-archil status --disk D --region R --id ID [--host-name NAME] [--api-key-env NAME]
+  pi-durable-archil status --disk D --region R --id ID [--host-name NAME] [--api-key-env NAME] [--docker BIN]
   pi-durable-archil release --id ID [--mount-root DIR]
   pi-durable-archil fork --disk D --region R --id ID --new-id NEW [--mount-root DIR] [--archil BIN] [--token-prefix P]
                         [--api-key-env NAME]`;
@@ -120,6 +124,24 @@ const ownerOf = (values: Record<string, unknown>) => ({
   gid: idOf(str(values.group), "/etc/group", process.getgid?.() ?? 0),
 });
 
+/** `--run-as NAME|UID[:GID]`: the user the agent's commands run as, with its group and home from /etc/passwd when listed. */
+export function runUser(spec: string, passwd = "/etc/passwd"): { uid: number; gid: number; home: string; name: string } {
+  const rows = (() => {
+    try {
+      return readFileSync(passwd, "utf8").split("\n").map((l) => l.split(":"));
+    } catch {
+      return [];
+    }
+  })();
+  const m = /^(\d+)(?::(\d+))?$/.exec(spec);
+  const row = rows.find((f) => f.length >= 6 && (m ? f[2] === m[1] : f[0] === spec));
+  if (!m && !row) throw new UsageError(`no such user: ${spec}`);
+  const uid = m ? Number(m[1]) : Number(row![2]);
+  const gid = m?.[2] !== undefined ? Number(m[2]) : row ? Number(row[3]) : uid;
+  if (uid === 0) throw new UsageError("--run-as names root: the agent's commands would run as root, next to the archil daemon that holds the mount token");
+  return { uid, gid, home: row?.[5] || "/", name: row?.[0] ?? String(uid) };
+}
+
 const need = (v: Record<string, unknown>, ...keys: string[]) => {
   for (const k of keys) if (typeof v[k] !== "string" || v[k] === "") throw new UsageError(`--${k} is required`);
 };
@@ -186,6 +208,8 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
 async function runInstance(values: Record<string, unknown>): Promise<number> {
   need(values, "disk", "region", "id", "app");
   const ref: RunRef = { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! };
+  const runAs = typeof values["run-as"] === "string" ? runUser(values["run-as"]) : undefined;
+  if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");
   const onSigterm = str(values["on-sigterm"], "resume");
   if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
   const ms = (name: string) => (typeof values[name] === "string" ? parseDuration(values[name] as string) : undefined);
@@ -229,6 +253,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       mountRoot,
       host: { archil: str(values.archil) },
       harness,
+      ...(runAs
+        ? { env: (c: Claim) => archilEnv(c, { runAs: { uid: runAs.uid, gid: runAs.gid }, shellEnv: { HOME: runAs.home, USER: runAs.name, LOGNAME: runAs.name } }) }
+        : {}),
       holder,
       ownCgroup: cgroup.owns,
       lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),
@@ -286,7 +313,14 @@ export function serveUntilDone(
   // Parking and a drain with a limit read the Harness; a caller that asks for them passes the whole run.
   const durable = run as DurableRun;
   const drainMs = life.drainMs ?? 0;
-  return new Promise<number>((done) => {
+  return new Promise<number>((settle) => {
+    // The run's heartbeat and lease timers are unref'd (a library caller's process may end); an instance stays up, with or
+    // without work, until it parks, drains or fails, so an ended event loop never exits it without a release.
+    const keepAlive = setInterval(() => {}, 2 ** 31 - 1);
+    const done = (code: number) => {
+      clearInterval(keepAlive);
+      settle(code);
+    };
     let releasing = false;
     let parking: Parking | undefined;
     const sleeping = (at: number | null) => run.setStatus("sleeping", { reason: "drained" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
@@ -361,8 +395,11 @@ export function instanceRunArgs(values: Record<string, unknown>): string[] {
   return [...(typeof values.app === "string" ? ["--app", resolve(values.app)] : []), ...((values["run-arg"] as string[] | undefined) ?? [])];
 }
 
+/** `--park-threshold` for either driver: absent keeps the driver's default, 0 turns parking off. */
+const parkThreshold = (values: Record<string, unknown>): { parkThresholdMs?: number | null } =>
+  values["park-threshold"] === undefined ? {} : { parkThresholdMs: parseDuration(str(values["park-threshold"])!) || null };
+
 function driverFrom(values: Record<string, unknown>): HostDriver {
-  const runArgs = instanceRunArgs(values);
   const env = Object.fromEntries(
     ((values.env as string[] | undefined) ?? []).map((kv) => {
       const i = kv.indexOf("=");
@@ -370,6 +407,30 @@ function driverFrom(values: Record<string, unknown>): HostDriver {
       return [kv.slice(0, i), kv.slice(i + 1)];
     }),
   );
+  const host = str(values.host, "local");
+  if (host === "docker") {
+    if (typeof values.image !== "string" || !values.image) throw new UsageError("--host docker needs --image");
+    const apparmor = str(values.apparmor);
+    return dockerHost({
+      image: values.image,
+      docker: str(values.docker),
+      fleet: str(values.fleet),
+      namePrefix: str(values["name-prefix"]),
+      mountRoot: str(values["mount-root"]),
+      app: str(values.app),
+      appRoot: str(values["app-root"]),
+      runArgs: (values["run-arg"] as string[] | undefined) ?? [],
+      runAs: str(values["run-as"]),
+      env,
+      dockerArgs: (values["docker-arg"] as string[] | undefined) ?? [],
+      apparmor: apparmor === "none" ? false : apparmor,
+      note: (line) => emit({ event: "docker", note: line }),
+      stopTimeoutMs: values["stop-timeout"] ? parseDuration(str(values["stop-timeout"])!) : undefined,
+      ...parkThreshold(values),
+    });
+  }
+  if (host !== "local") throw new UsageError(`--host is local or docker, got ${host}`);
+  const runArgs = instanceRunArgs(values);
   return localHost({
     env,
     mode: str(values.driver, "systemd") as "systemd" | "child",
@@ -383,9 +444,10 @@ function driverFrom(values: Record<string, unknown>): HostDriver {
     restart: values["no-restart"] ? false : undefined,
     logDir: str(values["log-dir"]),
     archil: str(values.archil),
-    ...(values["park-threshold"] === undefined ? {} : { parkThresholdMs: parseDuration(str(values["park-threshold"])!) || null }),
+    ...parkThreshold(values),
   });
 }
+
 
 /** Root executes the archil wrapper through sudo, so anyone who can write it is root. */
 function wrapperWarnings(path: string): string[] {
@@ -403,6 +465,10 @@ function wrapperWarnings(path: string): string[] {
 
 async function supervise(values: Record<string, unknown>): Promise<number> {
   need(values, "disk", "region");
+  const docker = str(values.host, "local") === "docker";
+  if (!docker && str(values.host, "local") !== "local") throw new UsageError(`--host is local or docker, got ${str(values.host)}`);
+  if (docker && values.check) throw new UsageError("--check proves this host's own mounts; with --host docker the containers mount, so it does not apply");
+  if (docker && (typeof values.image !== "string" || !values.image)) throw new UsageError("--host docker needs --image");
   const disk = await control(values);
   const controlTimeoutMs = values["control-timeout"] ? parseDuration(str(values["control-timeout"])!) : CONTROL_TIMEOUT_MS;
   if (values.check) {
@@ -437,7 +503,9 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
     tokenTtl: str(values["token-ttl"]),
     tokenPrefix: str(values["token-prefix"]),
     demand: Boolean(values.demand),
-    create: values.create ? ownerOf(values) : undefined,
+    // In a container the instance is root and its commands are the run user: the run's root belongs to root, and the
+    // instance gives `work/` to the run user (run --run-as).
+    create: values.create ? (docker && values.user === undefined ? { uid: 0, gid: 0 } : ownerOf(values)) : undefined,
     controlTimeoutMs,
   };
   let failures = 0;
@@ -486,8 +554,16 @@ async function status(values: Record<string, unknown>): Promise<number> {
   const run = await readRunStatus(disk, id);
   const { findDelegations } = await import("./claim.ts");
   const delegations = await findDelegations(disk, id);
-  const holderStatus = run?.holder ? await localHost({ hostName: str(values["host-name"]), mode: "systemd", user: process.getuid?.() === 0 ? 0 : undefined }).status(run.holder) : null;
-  emit({ run: id, runJson: run as unknown as Json, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), holderStatus });
+  let holderStatus: string | null = null;
+  let container: Json = null;
+  if (run?.holder?.driver === "docker") {
+    const info = await dockerHost({ fleet: String(run.holder.fleet), docker: str(values.docker) }).describe(run.holder).catch(() => null);
+    holderStatus = info?.status ?? "unknown";
+    container = info as unknown as Json;
+  } else if (run?.holder) {
+    holderStatus = await localHost({ hostName: str(values["host-name"]), mode: "systemd", user: process.getuid?.() === 0 ? 0 : undefined }).status(run.holder);
+  }
+  emit({ run: id, runJson: run as unknown as Json, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), holderStatus, ...(container ? { container } : {}) });
   return 0;
 }
 
@@ -536,6 +612,7 @@ export async function main(argv: string[]): Promise<number> {
             "park-threshold": { type: "string" },
             "park-idle": { type: "string" },
             "drain-timeout": { type: "string" },
+            "run-as": { type: "string" },
           }),
         );
       case "supervise":
@@ -570,10 +647,19 @@ export async function main(argv: string[]): Promise<number> {
             "sweep-tokens": { type: "boolean" },
             "token-grace": { type: "string" },
             "park-threshold": { type: "string" },
+            host: { type: "string" },
+            image: { type: "string" },
+            docker: { type: "string" },
+            fleet: { type: "string" },
+            "name-prefix": { type: "string" },
+            "app-root": { type: "string" },
+            "run-as": { type: "string" },
+            "docker-arg": { type: "string", multiple: true },
+            apparmor: { type: "string" },
           }),
         );
       case "status":
-        return await status(parse(rest, COMMON));
+        return await status(parse(rest, { ...COMMON, docker: { type: "string" } }));
       case "release":
         return await release(parse(rest, COMMON));
       case "fork":

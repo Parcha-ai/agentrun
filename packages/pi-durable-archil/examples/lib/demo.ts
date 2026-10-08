@@ -1,14 +1,17 @@
 // Shared by the example demos: the options every demo takes, a check that this host can run them, the supervisor as a
 // child process (the same `pi-durable-archil supervise` you would run yourself), host faults, and cleanup.
 //
-// "Host A" and "host B" are two mount roots on this machine. Each has its own FUSE client, so to Archil they are two
-// machines: a kill takes host A's instance and its FUSE daemon together, which is what losing a VM does to a mount.
+// With `--host local` (the default), "host A" and "host B" are two mount roots on this machine. Each has its own FUSE
+// client, so to Archil they are two machines: a kill takes host A's instance and its FUSE daemon together, which is what
+// losing a VM does to a mount. With `--host docker`, every instance is a container of the package's image (one machine
+// each, nothing on this machine needs root): a kill is `docker kill`, a freeze `docker pause`.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, rmdirSync, statSync, accessSync, constants } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, statSync, accessSync, constants } from "node:fs";
+import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { ARCHIL_SCOPED, localHost, runPath, unmountClaim } from "@parcha/pi-durable-archil";
+import { ARCHIL_SCOPED, dockerHost, localHost, runPath, unmountClaim } from "@parcha/pi-durable-archil";
 import type { HostHandle } from "@parcha/pi-durable-archil";
 
 export interface DemoOptions {
@@ -25,6 +28,11 @@ export interface DemoOptions {
   scenario: string;
   /** Run as root and start the instances as this unprivileged user (the production setup). Default: the invoking user. */
   user: string | null;
+  /** `local`: systemd units on this machine. `docker`: a container of `image` per instance. */
+  host: "local" | "docker";
+  image: string;
+  /** Labels the demo's containers `pda.fleet=<fleet>` and names them `pda-<fleet>-...`. */
+  fleet: string;
 }
 
 /** The lease the demos use: short, so a frozen host is replaced in seconds. Production defaults are 20 s, 90 s and 15 s. */
@@ -42,6 +50,9 @@ export const USAGE = `options:
   --archil PATH       the archil wrapper (default $ARCHIL_WRAPPER, else ${INSTALLED_WRAPPER} if it exists, else the package's own bin/archil-scoped)
   --id RUN            the run id (default <example>-<random>)
   --user NAME         run as root and start instances as this unprivileged user, as a production host does
+  --host local|docker local: systemd units on this Linux host (default); docker: one container per instance, no root needed
+  --image IMAGE       with --host docker: the image (default pi-durable-archil:local, built from docker/Dockerfile)
+  --fleet NAME        with --host docker: containers are labeled pda.fleet=NAME and named pda-NAME-... (default demo)
   --keep              keep the run's directory on the disk (default: delete it at the end)`;
 
 export function parseOptions(example: string, scenarios: string[], argv: string[]): DemoOptions {
@@ -57,6 +68,9 @@ export function parseOptions(example: string, scenarios: string[], argv: string[
       archil: { type: "string" },
       id: { type: "string" },
       user: { type: "string" },
+      host: { type: "string" },
+      image: { type: "string" },
+      fleet: { type: "string" },
       keep: { type: "boolean" },
     },
   });
@@ -65,6 +79,8 @@ export function parseOptions(example: string, scenarios: string[], argv: string[
   const disk = values.disk ?? process.env.ARCHIL_DISK;
   const region = values.region ?? process.env.ARCHIL_REGION;
   if (!disk || !region) usage(`--disk and --region (or $ARCHIL_DISK and $ARCHIL_REGION) are required\n${USAGE}`);
+  const host = values.host ?? "local";
+  if (host !== "local" && host !== "docker") usage(`--host is local or docker\n${USAGE}`);
   return {
     disk,
     region,
@@ -75,6 +91,9 @@ export function parseOptions(example: string, scenarios: string[], argv: string[
     keep: Boolean(values.keep),
     scenario,
     user: values.user ?? null,
+    host,
+    image: values.image ?? "pi-durable-archil:local",
+    fleet: values.fleet ?? "demo",
   };
 }
 
@@ -110,6 +129,11 @@ export function preflight(opts: DemoOptions): string[] {
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (major < 22 || (major === 22 && minor < 19)) problems.push(`Node ${process.versions.node} is too old: the package needs 22.19 or later`);
   if (!process.env[opts.apiKeyEnv]) problems.push(`$${opts.apiKeyEnv} is empty: export the Archil API key there (the supervisor reads it; no instance does)`);
+  if (opts.host === "docker") {
+    if (spawnSync("docker", ["info", "--format", "{{.ID}}"], { encoding: "utf8" }).status !== 0) problems.push("docker does not answer: start Docker Desktop, OrbStack, Colima or the docker service");
+    else if (spawnSync("docker", ["image", "inspect", opts.image], { encoding: "utf8" }).status !== 0) problems.push(`no image ${opts.image}: build it with docker build -f docker/Dockerfile -t ${opts.image} .`);
+    return problems;
+  }
   if (!existsSync("/dev/fuse")) problems.push("/dev/fuse is missing: this host cannot mount FUSE (install fuse and libfuse2, or use a VM, not a container without the device)");
   if (!existsSync("/usr/bin/archil")) problems.push("/usr/bin/archil is missing: install the archil client (curl -s https://archil.com/install | sh)");
   if (!existsSync("/usr/bin/setpriv")) problems.push("/usr/bin/setpriv is missing: install util-linux");
@@ -161,6 +185,8 @@ export function shareWith(opts: DemoOptions, dir: string): void {
 /** An `open` event from an instance: with `--user` it must not be running as root (the demo then exits 1). */
 export function instanceUid(opts: DemoOptions, event: Record<string, unknown>): string {
   const uid = Number(event.uid);
+  // In a container the instance is root by design: its machine is the container, and its commands run as `pda`.
+  if (opts.host === "docker") return uid === 0 ? "root in its container (its commands run as pda, uid 1500)" : `uid ${uid}`;
   if (opts.user && uid === 0) {
     process.exitCode = 1;
     return "uid 0, ROOT: an instance must run as an unprivileged user";
@@ -182,9 +208,63 @@ export interface HostSpec {
   env: Record<string, string>;
   /** Host A has no restarter in the demos: after a kill nothing starts it again, as with a VM that is gone. */
   restart: boolean;
+  /** With --host docker: extra `docker create` flags (a bind mount for the app's log, a host name). */
+  dockerArgs?: string[];
+}
+
+/** The package's root: with --host docker it is mounted read-only into every container, so the example apps load there. */
+export const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * A scratch directory the app's log goes to. With --host docker the instances write it from their containers, so it is
+ * under the package (a path Docker Desktop, OrbStack and Colima share by default) and bind-mounted at the same path.
+ */
+export function scratchDir(opts: DemoOptions, prefix: string): string {
+  if (opts.host !== "docker") return mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(PACKAGE_ROOT, ".tmp"), { recursive: true });
+  return mkdtempSync(join(PACKAGE_ROOT, ".tmp", prefix));
+}
+
+/**
+ * Where a container reaches a server the demo runs on this machine: the address to listen on here and the URL host the
+ * instances use. Docker Desktop and OrbStack forward host.docker.internal to this machine's loopback; on Linux it names
+ * the docker bridge's gateway (`--add-host ...:host-gateway`), so the server listens there.
+ */
+export function hostFromContainers(opts: DemoOptions): { listen: string; urlHost: string; dockerArgs: string[] } {
+  if (opts.host !== "docker") return { listen: "127.0.0.1", urlHost: "127.0.0.1", dockerArgs: [] };
+  if (process.platform !== "linux") return { listen: "127.0.0.1", urlHost: "host.docker.internal", dockerArgs: [] };
+  const gateway = spawnSync("docker", ["network", "inspect", "bridge", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"], { encoding: "utf8" }).stdout.trim();
+  const local = Object.values(networkInterfaces()).flat().some((i) => i?.address === gateway);
+  if (!gateway || !local) fail(`cannot find the docker bridge's gateway on this machine (got ${JSON.stringify(gateway)})`);
+  return { listen: gateway, urlHost: "host.docker.internal", dockerArgs: ["--add-host=host.docker.internal:host-gateway"] };
 }
 
 export function superviseArgs(opts: DemoOptions, host: HostSpec, extra: string[] = []): string[] {
+  const lease = [
+    "--lease-expiry", `${DEMO_LEASE.expiryMs}ms`,
+    `--run-arg=--heartbeat-ms=${DEMO_LEASE.heartbeatMs}`,
+    `--run-arg=--lease-expiry-ms=${DEMO_LEASE.expiryMs}`,
+    `--run-arg=--lease-margin-ms=${DEMO_LEASE.marginMs}`,
+  ];
+  if (opts.host === "docker") {
+    return [
+      "supervise",
+      "--disk", opts.disk,
+      "--region", opts.region,
+      "--api-key-env", opts.apiKeyEnv,
+      "--id", opts.id,
+      "--host", "docker",
+      "--image", opts.image,
+      "--fleet", opts.fleet,
+      "--name-prefix", `pda-${opts.fleet}-`,
+      // The example apps import from the package (test/fixtures among them), so the whole checkout is the app's root.
+      ...(extra.includes("--app") ? ["--app-root", PACKAGE_ROOT] : []),
+      ...lease,
+      ...Object.entries(host.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
+      ...(host.dockerArgs ?? []).map((a) => `--docker-arg=${a}`),
+      ...extra,
+    ];
+  }
   const flags = [
     "supervise",
     "--disk", opts.disk,
@@ -196,11 +276,8 @@ export function superviseArgs(opts: DemoOptions, host: HostSpec, extra: string[]
     "--unit-prefix", `pda-demo-${host.name === "host-a" ? "a" : "b"}-`,
     "--archil", opts.archil,
     ...(opts.user ? ["--user", opts.user] : []),
-    "--lease-expiry", `${DEMO_LEASE.expiryMs}ms`,
     ...(host.restart ? [] : ["--no-restart"]),
-    `--run-arg=--heartbeat-ms=${DEMO_LEASE.heartbeatMs}`,
-    `--run-arg=--lease-expiry-ms=${DEMO_LEASE.expiryMs}`,
-    `--run-arg=--lease-margin-ms=${DEMO_LEASE.marginMs}`,
+    ...lease,
     ...Object.entries(host.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
     ...extra,
   ];
@@ -250,7 +327,7 @@ export function superviseLoop(opts: DemoOptions, host: HostSpec, every: string, 
       buf = buf.slice(i + 1);
       if (!text.startsWith("{")) continue;
       const line = JSON.parse(text) as Line;
-      if (line.action !== "healthy" && line.action !== "pending") note("supervise", describe(line));
+      if (line.action !== "healthy" && line.action !== "pending" && line.action !== "starting") note("supervise", describe(line));
       lines.push(line);
     }
   });
@@ -267,7 +344,9 @@ export function superviseLoop(opts: DemoOptions, host: HostSpec, every: string, 
 function describe(l: Line): string {
   const { at: _at, ms: _ms, ...rest } = l as Record<string, unknown>;
   const handle = l.handle as HostHandle | undefined;
-  if (l.action === "started") return `started ${handle?.unit} on ${handle?.host} (${String(l.reason)}${(l.revoked as unknown[] | undefined)?.length ? `, revoked ${(l.revoked as unknown[]).length} delegation` : ""})`;
+  if (l.event === "docker") return String(l.note);
+  const where = handle?.driver === "docker" ? `container ${handle?.name}` : `${handle?.unit} on ${handle?.host}`;
+  if (l.action === "started") return `started ${where} (${String(l.reason)}${(l.revoked as unknown[] | undefined)?.length ? `, revoked ${(l.revoked as unknown[]).length} delegation` : ""})`;
   if (l.action === "terminal") return `run is ${String(l.status)}`;
   return JSON.stringify(rest).slice(0, 200);
 }
@@ -337,9 +416,18 @@ function cgroupPids(name: string): number[] {
 /**
  * `kill`: SIGKILL the instance and its FUSE daemon at once, which is what a power cut does to a mount. `freeze`: SIGSTOP
  * the FUSE daemon, a host whose mount hangs while the host looks alive. `thaw`: SIGCONT it. The signal goes to every
- * process in the control group (`systemctl kill` can refuse a unit whose main process is already gone).
+ * process in the control group (`systemctl kill` can refuse a unit whose main process is already gone). A container
+ * (`--host docker`): `docker kill`, and `docker pause` / `docker unpause`, which freeze and thaw the whole machine.
  */
-export function fault(kind: "kill" | "freeze" | "thaw", unit: string): void {
+export function fault(kind: "kill" | "freeze" | "thaw", target: HostHandle): void {
+  if (target.driver === "docker") {
+    const verb = kind === "kill" ? "kill" : kind === "freeze" ? "pause" : "unpause";
+    note("fault", `${kind}: docker ${verb} ${String(target.name)}`);
+    const r = spawnSync("docker", [verb, String(target.name)], { encoding: "utf8" });
+    if (r.status !== 0) fail(`docker ${verb} failed: ${r.stderr}`);
+    return;
+  }
+  const unit = String(target.unit);
   const scopes = fuseScopes(unit);
   if (scopes.length === 0) fail(`no FUSE daemon found for ${unit}`);
   const signal = kind === "kill" ? "SIGKILL" : kind === "freeze" ? "SIGSTOP" : "SIGCONT";
@@ -350,8 +438,15 @@ export function fault(kind: "kill" | "freeze" | "thaw", unit: string): void {
   if (r.status !== 0) fail(`kill failed: ${r.stderr}`);
 }
 
-/** The unit's main exit status, once it has exited. */
-export function exitStatus(unit: string): { active: string; status: number | null } {
+/** The instance's exit status once it has exited (`active` is systemd's word, or the container's running state as one). */
+export function exitStatus(target: HostHandle): { active: string; status: number | null } {
+  if (target.driver === "docker") {
+    const r = spawnSync("docker", ["inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", String(target.name)], { encoding: "utf8" });
+    const [state, code] = r.stdout.trim().split(" ");
+    if (r.status !== 0 || state === undefined) return { active: "unknown", status: null };
+    return { active: state === "running" || state === "paused" || state === "restarting" ? "active" : "inactive", status: state === "exited" ? Number(code) : null };
+  }
+  const unit = String(target.unit);
   const r = spawnSync("systemctl", ["show", `${unit}.service`, "--property=ActiveState,ExecMainStatus"], { encoding: "utf8" });
   const f = Object.fromEntries(r.stdout.split("\n").filter(Boolean).map((l) => l.split("=") as [string, string]));
   return { active: f.ActiveState ?? "unknown", status: f.ExecMainStatus === undefined ? null : Number(f.ExecMainStatus) };
@@ -365,14 +460,25 @@ export function exitStatus(unit: string): { active: string; status: number | nul
  */
 export async function cleanup(opts: DemoOptions, handles: HostHandle[], hosts: HostSpec[], finished: boolean): Promise<void> {
   say("cleanup");
-  for (const handle of handles) {
+  if (opts.host === "docker") {
+    // Every container of this run in the demo's fleet goes (a killed one stays exited until then); the mounts went with them.
+    const driver = dockerHost({ fleet: opts.fleet });
+    const labels = { "pda.fleet": opts.fleet, "pda.run": opts.id, "pda.disk": opts.disk, "pda.region": opts.region };
+    const filters = Object.entries(labels).flatMap(([k, v]) => ["--filter", `label=${k}=${v}`]);
+    const listed = spawnSync("docker", ["ps", "-a", ...filters, "--format", "{{.Names}}"], { encoding: "utf8" });
+    const names = new Set([...handles.map((h) => String(h.name)), ...listed.stdout.split("\n").map((n) => n.trim()).filter(Boolean)]);
+    for (const handle of handles) await driver.stop(handle).catch((e: unknown) => note("cleanup", `stop ${String(handle.name)}: ${(e as Error).message}`));
+    for (const name of names) spawnSync("docker", ["rm", "-f", name], { encoding: "utf8" });
+    note("cleanup", `removed ${[...names].join(", ") || "no containers"}`);
+  }
+  for (const handle of opts.host === "docker" ? [] : handles) {
     const host = hosts.find((h) => h.name === handle.host)!;
     const driver = localHost({ mountRoot: host.mountRoot, hostName: host.name, archil: opts.archil, unitPrefix: `pda-demo-${host.name === "host-a" ? "a" : "b"}-`, ...(opts.user ? { user: opts.user } : {}) });
     await driver.stop(handle).catch((e: unknown) => note("cleanup", `stop ${String(handle.unit)}: ${(e as Error).message}`));
     note("cleanup", `stopped ${String(handle.unit)}`);
   }
   // A killed host leaves a dead mount behind (its daemon is gone); `unmountClaim` cleans it with `fusermount -u`.
-  for (const host of hosts) {
+  for (const host of opts.host === "docker" ? [] : hosts) {
     const mountpoint = join(host.mountRoot, runPath(opts.id));
     if (readFileSync("/proc/self/mounts", "utf8").split("\n").some((l) => l.split(" ")[1] === mountpoint)) {
       const via = await unmountClaim(mountpoint).catch((e: unknown) => `failed: ${(e as Error).message}`);

@@ -5,12 +5,11 @@
 // Host A starts the run. After the third answer the demo powers host A off (its instance and its FUSE daemon die at
 // once). Host B's supervisor finds the dead client's claim orphaned, revokes it, starts a new instance, and the chat
 // goes on from the last committed message. Every command the demo runs is printed.
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  cleanup, instanceUid, fail, fault, followLog, note, parseOptions, preflight, report, say, shareWith, startedUnit, superviseLoop, superviseOnce, USAGE, waitFor,
+  cleanup, instanceUid, fail, fault, followLog, note, parseOptions, preflight, report, say, scratchDir, shareWith, startedUnit, superviseLoop, superviseOnce, USAGE, waitFor,
   type HostSpec,
 } from "../lib/demo.ts";
 import type { HostHandle } from "@parcha/pi-durable-archil";
@@ -21,14 +20,16 @@ if (process.argv.includes("--help")) {
 }
 const opts = parseOptions("chat", ["kill"], process.argv.slice(2));
 
-const dir = mkdtempSync(join(tmpdir(), "pda-chat-"));
+const dir = scratchDir(opts, "pda-chat-");
 shareWith(opts, dir);
 const logFile = join(dir, "chat.jsonl");
 const app = fileURLToPath(new URL("./app.ts", import.meta.url));
 const env = { EXAMPLE_LOG: logFile, CHAT_PACE_MS: "1500", NODE_NO_WARNINGS: "1" };
 const runFlags = ["--app", app];
-const hostA: HostSpec = { name: "host-a", mountRoot: opts.mountRoots.a, env, restart: false };
-const hostB: HostSpec = { name: "host-b", mountRoot: opts.mountRoots.b, env, restart: true };
+// With --host docker the instances write the app's log from their containers: the scratch directory is mounted in.
+const dockerArgs = [`--mount=type=bind,source=${dir},target=${dir}`];
+const hostA: HostSpec = { name: "host-a", mountRoot: opts.mountRoots.a, env, restart: false, dockerArgs };
+const hostB: HostSpec = { name: "host-b", mountRoot: opts.mountRoots.b, env, restart: true, dockerArgs };
 
 const handles: HostHandle[] = [];
 let finished = false;
@@ -48,7 +49,7 @@ try {
   await waitFor("three answers", () => log.events.filter((e) => e.event === "answered").length >= 3, 120_000);
 
   say("host A loses power: its instance and its FUSE daemon are killed at once");
-  fault("kill", String(handleA.unit));
+  fault("kill", handleA);
 
   say("host B: a supervisor on another machine sees the dead client, revokes its claim and starts an instance");
   const loop = superviseLoop(opts, hostB, "2s", runFlags);

@@ -102,6 +102,8 @@ class FakeHost implements HostDriver {
   statusOf: HostStatus = "running";
   stopBehavior: "ok" | "hang" | "throw" = "ok";
   startThrows = false;
+  /** Answer the next start as a driver does that found the instance an earlier start of this attempt made. */
+  adopts = false;
   readonly control: FakeControl;
   constructor(control: FakeControl) {
     this.control = control;
@@ -109,6 +111,7 @@ class FakeHost implements HostDriver {
   async start(_ref: typeof REF, token: string): Promise<HostHandle> {
     this.control.calls.push({ op: "host.start", at: performance.now(), arg: token });
     if (this.startThrows) throw new Error("no capacity");
+    if (this.adopts) return { driver: "fake", n: this.started.length, adopted: true };
     this.started.push({ token, at: performance.now() });
     return { driver: "fake", n: this.started.length };
   }
@@ -476,6 +479,19 @@ test("a driver that cannot start: the unused token user is removed and the error
   host.startThrows = false;
   const again = await ensureRunning(REF, host, opts());
   assert.ok(again.action === "started", "the next tick starts at once");
+});
+
+test("a driver that adopts the instance an earlier start of this attempt made: the token minted for this start is removed at once", async () => {
+  const { control, host, opts } = rig();
+  host.adopts = true;
+  const r = await ensureRunning(REF, host, opts());
+  assert.ok(r.action === "started" && r.adopted === true, JSON.stringify(r));
+  assert.equal(control.users.size, 0, "no token user is left for a start that used none");
+  assert.deepEqual(control.ops().slice(-2), ["host.start", "removeUser"]);
+  host.adopts = false;
+  const fresh = await ensureRunning(REF, host, opts({ now: () => NOW + 3_600_000 }));
+  assert.ok(fresh.action === "started" && fresh.adopted === undefined, JSON.stringify(fresh));
+  assert.equal(control.users.size as number, 1, "a start that is not adopted keeps its token");
 });
 
 test("control API failures are typed and stop the decision", async () => {

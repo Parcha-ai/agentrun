@@ -20,7 +20,7 @@ Two ways to lose a host:
 
 ## Run it
 
-You need the Quickstart's setup from the [top-level README](../../README.md#quickstart-kill-a-host-watch-the-run-resume-on-another)
+You need the Quickstart's setup from the [top-level README](../../README.md#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another)
 (the root-owned wrapper and the two mount roots, once per machine), a scratch disk and its API key. No model key: the model is
 pi-ai's faux provider.
 
@@ -34,6 +34,24 @@ node examples/02-paid-effect/demo.ts freeze    # about 25 seconds (it waits for 
 The demo creates `runs/paid-<random>/` on the disk, removes it and the run's token users when it ends (`--keep` leaves the
 directory), and prints every command it runs. `node examples/02-paid-effect/demo.ts --help` lists the options (mount roots,
 the wrapper path, `--id`, `--api-key-env`).
+
+### With Docker (macOS or Linux, no root)
+
+`examples/docker-quickstart.sh` does everything below: it builds the image and runs `kill`. By hand, from
+`packages/pi-durable-archil` after the workspace's `npm ci --ignore-scripts` at the repository root:
+
+```sh
+rm -f docker/package/*.tgz && npm run build && npm pack --pack-destination docker/package
+docker build -f docker/Dockerfile -t pi-durable-archil:local .
+node examples/02-paid-effect/demo.ts kill   --host docker    # about 17 seconds
+node examples/02-paid-effect/demo.ts freeze --host docker    # about 27 seconds
+```
+
+Each instance is a container (`pda-demo-<run>-<disk key>-g<attempt>`), and the paid API listens on this machine where the
+containers reach it as `host.docker.internal`. `kill` is `docker kill`. `freeze` is `docker pause`: host B's supervisor
+talks to the same Docker daemon, so once the lease expires it stops the paused container (STONITH; `docker stop` thaws the
+container to deliver SIGTERM, and the instance drains) before it revokes the claim. With two daemons, the frozen host
+would instead exit 75 when thawed, as `freeze` without Docker shows.
 
 ## What you should see
 
