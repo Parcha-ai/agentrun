@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyPublished, waitForRegistryVersions, PACKUMENT_ACCEPT } from './verify-published.mjs';
+import { verifyPublished, waitForRegistryVersions, registryBackoffMs, PACKUMENT_ACCEPT } from './verify-published.mjs';
 import { releasePackageNames, releasePackages } from './release-preflight.mjs';
 
 const bytes = Buffer.from('verified package fixture bytes');
@@ -71,28 +71,41 @@ test('invalid release plans also replace prior successful verification evidence'
   assert.equal((await receipt()).status, 'failed');
 }));
 
-test('published metadata and tarball can become visible after the old 25-second window', () => fixture(async (root, receipt) => {
+// The beta.11 run: npm showed the first package 16 minutes after it accepted it (published 16:35:56Z, visible 16:52:12Z), and the old
+// wait, 61 tries 5 s apart, gave up at about 5 minutes with "Registry rejected @parcha/agentrun-dsl: HTTP 404". Beta.10 took about 5.
+test('a version npm shows only 16 minutes after publishing is still verified', () => fixture(async (root, receipt) => {
   let metadataCalls = 0, tarballCalls = 0, waited = 0;
   const result = await verifyPublished(root, 'dsl', {
+    now: () => waited,
     wait: async ms => { waited += ms; },
     fetchImpl: async url => {
       if (String(url).endsWith('.tgz')) return ++tarballCalls <= 7 ? new Response(null, { status: 404 }) : new Response(bytes);
-      return ++metadataCalls <= 40 ? new Response(null, { status: 404 }) : Response.json(metadata);
+      metadataCalls++;
+      return waited < 976_000 ? new Response(null, { status: 404 }) : Response.json(metadata);
     },
   });
   assert.equal(result.status, 'passed');
-  assert.equal(waited, 235_000);
+  assert.ok(waited >= 976_000, `waited only ${waited} ms`);
+  assert.ok(metadataCalls > 30 && metadataCalls < 60, `${metadataCalls} metadata requests for 16 minutes: backed off, not every 5 s`);
   assert.equal((await receipt()).packages[0].status, 'matched');
 }));
 
-test('a published version that never becomes visible fails after bounded retries', () => fixture(async (root, receipt) => {
+test('the wait backs off from 5 s to 30 s', () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 40].map(registryBackoffMs), [5000, 7500, 11250, 16875, 25313, 30000, 30000, 30000]);
+});
+
+test('a published version that never becomes visible fails after 20 minutes of backed-off retries', () => fixture(async (root, receipt) => {
   let calls = 0, waited = 0;
+  const delays = [];
   await assert.rejects(verifyPublished(root, 'dsl', {
-    wait: async ms => { waited += ms; },
+    wait: async ms => { waited += ms; delays.push(ms); },
     fetchImpl: async () => { calls++; return new Response(null, { status: 404 }); },
   }), /HTTP 404/);
-  assert.equal(calls, 61);
-  assert.equal(waited, 300_000);
+  assert.equal(calls, delays.length + 1);
+  assert.deepEqual(delays.slice(0, 6), [5000, 7500, 11250, 16875, 25313, 30000]);
+  assert.ok(delays.slice(5).every(ms => ms === 30_000));
+  assert.ok(waited <= 20 * 60_000 && waited > 20 * 60_000 - 30_000, `waited ${waited} ms`);
+  assert.ok(calls < 60, `${calls} requests in 20 minutes`);
   assert.equal((await receipt()).status, 'failed');
 }));
 
@@ -124,24 +137,25 @@ test('the install waits until both packuments of every package list the release 
       const pkg = pkgFor(url);
       assert.ok(pkg, `unexpected URL ${url}`);
       seen.add(init.headers.accept);
-      // The full packument lists pi at once; the abbreviated one the installer reads lags 40 polls.
-      const lagging = pkg.directory === 'pi' && init.headers.accept === PACKUMENT_ACCEPT.abbreviated && polls < 40;
+      // The full packument lists pi at once; the abbreviated one the installer reads lags 16 minutes, as npm did for beta.11's dsl.
+      const lagging = pkg.directory === 'pi' && init.headers.accept === PACKUMENT_ACCEPT.abbreviated && waited < 976_000;
       return packument(pkg, !lagging);
     },
   });
-  assert.deepEqual(result, { attempts: 41 });
-  assert.equal(waited, 200_000);
+  assert.equal(result.attempts, polls + 1);
+  assert.ok(waited >= 976_000 && waited < 976_000 + 30_000, `waited ${waited} ms`);
   assert.deepEqual([...seen].sort(), Object.values(PACKUMENT_ACCEPT).sort());
 });
 
-test('a packument that never lists the version fails after the 60 x 5 s budget and names what is missing', async () => {
+test('a packument that never lists the version fails after the 20 minute budget and names what is missing', async () => {
   let waited = 0, calls = 0;
   await assert.rejects(waitForRegistryVersions(registry, packages, {
     wait: async ms => { waited += ms; },
     fetchImpl: async (url, init) => { calls++; const pkg = pkgFor(url); return pkg.directory === 'jev' && init.headers.accept === PACKUMENT_ACCEPT.full ? new Response(null, { status: 404 }) : packument(pkg, pkg.directory !== 'pi'); },
   }), /never listed @parcha\/agentrun-jev@0\.1\.0-beta\.1 \(full: HTTP 404\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(full\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(abbreviated\)/);
-  assert.equal(waited, 300_000);
-  assert.equal(calls, 61 * 2 * packages.length);
+  assert.ok(waited <= 20 * 60_000 && waited > 20 * 60_000 - 30_000, `waited ${waited} ms`);
+  const polls = calls / (2 * packages.length);
+  assert.ok(Number.isInteger(polls) && polls > 30 && polls < 60, `${polls} polls in 20 minutes`);
 });
 
 test('packument authentication errors fail at once; network errors and 5xx are waited out', async () => {
@@ -174,6 +188,7 @@ test('slow requests cannot stretch the wait past its wall budget', async () => {
     // Every probe of a poll runs together and times out after 10 s: one poll costs 10 s, not 60 s.
     fetchImpl: async () => { if (++polls % (2 * packages.length) === 1) clock += 10_000; throw new Error('timeout'); },
   }), /never listed .*request failed/);
-  assert.ok(clock <= 300_000 + 15_000, `waited ${clock} ms`);
-  assert.equal(polls / (2 * packages.length), 21);
+  assert.ok(clock <= 20 * 60_000 + 10_000, `waited ${clock} ms`);
+  const polled = polls / (2 * packages.length);
+  assert.ok(polled > 20 && polled < 60, `${polled} polls`);
 });

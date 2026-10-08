@@ -12,20 +12,33 @@ import { releasePackageNames, releasePackages } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 
-export async function registryResponse(url, { fetchImpl = fetch, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), retryNotFound = false, timeoutMs = 10_000 } = {}) {
-  const attempts = retryNotFound ? 61 : 6;
-  for (let attempt = 0; attempt < attempts; attempt++) {
+// npm can take well over five minutes to show a version it has just accepted (beta.10: about 5 minutes; beta.11: 16 minutes for the
+// first package). A wait for registry visibility therefore gets a wall budget of 20 minutes, polled with a backoff of 5 s rising by half
+// each time to 30 s, so a slow registry is asked a few dozen times, not every 5 s.
+export const REGISTRY_WAIT_MS = 20 * 60_000;
+export const registryBackoffMs = attempt => Math.min(30_000, Math.round(5000 * 1.5 ** attempt));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// 404 is registry lag only when the caller says the version must exist (`retryNotFound`); 429, 5xx and a failed request always are, and
+// every other status is final. Without `retryNotFound` a request is tried six times; with it, until `budgetMs` of wall time is spent.
+// `elapsed` counts the time spent in requests as well as in waits, and the waits an injected `wait` was asked for, so a test clock works.
+export async function registryResponse(url, { fetchImpl = fetch, wait = sleep, now = Date.now, retryNotFound = false, timeoutMs = 10_000, budgetMs = REGISTRY_WAIT_MS } = {}) {
+  const started = now();
+  let waited = 0;
+  for (let attempt = 0; ; attempt++) {
+    const delay = registryBackoffMs(attempt);
+    const exhausted = () => retryNotFound ? Math.max(waited, now() - started) + delay > budgetMs : attempt === 5;
     let response;
     try { response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) }); }
     catch (error) {
-      if (attempt === attempts - 1) throw error;
-      await wait(5000);
+      if (exhausted()) throw error;
+      await wait(delay); waited += delay;
       continue;
     }
     const transient = response.status === 429 || response.status >= 500 || (retryNotFound && response.status === 404);
-    if (!transient || attempt === attempts - 1) return response;
+    if (!transient || exhausted()) return response;
     await response.body?.cancel();
-    await wait(5000);
+    await wait(delay); waited += delay;
   }
 }
 
@@ -34,10 +47,10 @@ export async function registryResponse(url, { fetchImpl = fetch, wait = ms => ne
 // must list every release version before the one clean install runs.
 export const PACKUMENT_ACCEPT = { full: 'application/json', abbreviated: 'application/vnd.npm.install-v1+json' };
 
-export async function waitForRegistryVersions(registry, packages, { fetchImpl = fetch, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now, timeoutMs = 10_000, attempts = 61, budgetMs = 300_000 } = {}) {
+export async function waitForRegistryVersions(registry, packages, { fetchImpl = fetch, wait = sleep, now = Date.now, timeoutMs = 10_000, budgetMs = REGISTRY_WAIT_MS } = {}) {
   // One probe per package and view, run together so a poll costs at most one request timeout. Anything
   // that can be registry lag (404, 429, 5xx, a failed request, an unreadable body) is retried; any other
-  // HTTP status is permanent. The wall budget also bounds time spent in requests, not just in waits.
+  // HTTP status is permanent. The wall budget also bounds time spent in requests, not just in waits, and polls back off like `registryResponse`.
   const probe = async (pkg, view, accept) => {
     let response;
     try { response = await fetchImpl(`${registry}${encodeURIComponent(pkg.name)}`, { headers: { accept }, signal: AbortSignal.timeout(timeoutMs) }); }
@@ -51,17 +64,19 @@ export async function waitForRegistryVersions(registry, packages, { fetchImpl = 
     return packument?.versions && Object.hasOwn(packument.versions, pkg.version) ? null : `${pkg.name}@${pkg.version} (${view})`;
   };
   const started = now();
+  let waited = 0;
   let missing = [];
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     missing = (await Promise.all(packages.flatMap(pkg => Object.entries(PACKUMENT_ACCEPT).map(([view, accept]) => probe(pkg, view, accept))))).filter(Boolean);
     if (!missing.length) return { attempts: attempt + 1 };
-    if (attempt === attempts - 1 || now() - started >= budgetMs) break;
-    await wait(5000);
+    const delay = registryBackoffMs(attempt);
+    if (Math.max(waited, now() - started) + delay > budgetMs) break;
+    await wait(delay); waited += delay;
   }
   throw new Error(`Registry packuments never listed ${missing.join(', ')}`);
 }
 
-export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait } = {}) {
+export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait, now } = {}) {
   assert.ok([...releasePackages, 'all'].includes(selected));
   assert.ok(!allowAbsent || selected !== 'all', 'Absence probes select exactly one package');
   const receiptPath = join(root, `.release/published-${selected}.json`);
@@ -79,7 +94,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
     }
     const results = [];
     for (const pkg of plan.packages.filter(pkg => selected === 'all' || selected === pkg.directory)) {
-      const metadataResponse = await registryResponse(`${plan.registry}${encodeURIComponent(pkg.name)}/${pkg.version}`, { fetchImpl, wait, retryNotFound: !allowAbsent });
+      const metadataResponse = await registryResponse(`${plan.registry}${encodeURIComponent(pkg.name)}/${pkg.version}`, { fetchImpl, wait, now, retryNotFound: !allowAbsent });
       if (allowAbsent && metadataResponse.status === 404) {
         receipt.status = 'absent';
         receipt.tag = plan.tag;
@@ -93,14 +108,14 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
       assert.equal(metadata.dist.integrity, pkg.integrity, 'Published integrity differs from verified bytes');
       const url = new URL(metadata.dist.tarball);
       assert.equal(url.origin, 'https://registry.npmjs.org');
-      const response = await registryResponse(url, { fetchImpl, wait, retryNotFound: true, timeoutMs: 30_000 });
+      const response = await registryResponse(url, { fetchImpl, wait, now, retryNotFound: true, timeoutMs: 30_000 });
       assert.ok(response.ok, 'Published tarball download failed');
       const bytes = Buffer.from(await response.arrayBuffer());
       assert.equal(createHash('sha256').update(bytes).digest('hex'), pkg.sha256, 'Published tarball differs from verified archive');
       results.push({ name: pkg.name, version: pkg.version, sha256: pkg.sha256, status: 'matched' });
     }
     if (selected === 'all') {
-      receipt.registryVisible = await waitForRegistryVersions(plan.registry, plan.packages, { fetchImpl, wait });
+      receipt.registryVisible = await waitForRegistryVersions(plan.registry, plan.packages, { fetchImpl, wait, now });
       const consumer = await mkdtemp(join(tmpdir(), 'agentrun-registry-consumer-'));
       try {
         await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module' }));
