@@ -1,0 +1,165 @@
+#!/bin/sh
+# archil, with `mount` started in its own transient scope (<unit>-fuse-<n>.scope) when the caller runs inside a system
+# service, so the FUSE daemon that `archil mount` forks lives outside the instance unit's control group: stopping or
+# restarting the instance (KillMode=control-group) kills every command it started but never its mount, and an
+# in-place restart finds its claim still held. Any other verb, and any caller outside a system service, runs
+# archil unchanged. Run through sudo; install it root-owned, since root executes it.
+#
+# `mount` reads its token as one line on stdin and hands it to archil only in the environment of that exec. The token
+# is never an argument and never in an environment sudo sees: sudo logs every variable it preserves. An empty line or
+# no line refuses the mount.
+#
+# `retire <root>/runs/<run> <tag>` is for a kernel that refuses every unmount of a FUSE mount it still lists (Sysbox, as
+# Daytona runs sandboxes: umount2 fails with ENOENT). It moves the run's fuse.archil mount aside to
+# <root>/.released/<run>-<tag> and SIGKILLs its daemon, the process whose argument vector is this archil's `mount`
+# naming exactly that mountpoint, so the run's path is free for its next mount. The caller checks the delegation in
+# first; a dead mount has none left. Nothing else is moved or signalled.
+#
+# `stray <root>/runs/<run> <tag>` is for a run's mountpoint that is no mount and not empty (files a process wrote by
+# path after the run's mount vanished), which archil refuses to mount over. The directory is moved, whole, to
+# <root>/.stray/<run>-<tag> and replaced by an empty one with its owner and mode, made inside .stray first and renamed
+# into place. Nothing in it is read, copied or brought into the run; the output names only the entry counts.
+#
+# `stale <root>/runs/<run>` is for an archil daemon left on a run's mountpoint with no mount in the table (a client that
+# dropped its mount after an authentication failure, or whose mount was lazily unmounted while a process still held a
+# reference into it, keeps its process and the mountpoint's control socket), which makes every later mount there fail
+# with "an older Archil process is still running". It SIGKILLs the daemons whose argument vector is this archil's `mount`
+# naming exactly that mountpoint, and refuses while a mount is listed there (a live mount's daemon is never stale).
+#
+# The run's user may own <root>, so root never follows a link there: <root> and <root>/runs must be their own real
+# paths, the holding directory (.released or .stray) a real directory owned by root (made 0700 when absent), and the
+# destination new (never one that exists).
+set -eu
+ARCHIL=/usr/bin/archil
+MOUNT=/usr/bin/mount
+MOUNTS=/proc/self/mounts
+PROC=/proc
+KILL=kill
+OWNER=0
+
+listed() { awk -v m="$1" -v t="$2" '$2 == m && (t == "" || $3 == t) { f = 1 } END { exit !f }' "$MOUNTS"; }
+
+# The run's path and, for a verb that moves it, the tag: a plain <root>/runs/<run>, a one-segment tag, no link in <root>
+# or <root>/runs. Sets mp, tag and root.
+run_path() {
+  mp=$1 tag=${2-}
+  case "$mp" in */./*|*/../*|*/.|*/..|*//*) echo "archil-scoped: $mp is not a plain path" >&2; exit 2 ;; esac
+  printf '%s\n' "$mp" | grep -Eqx '/[A-Za-z0-9._/-]+/runs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}' || { echo "archil-scoped: $mp is not <root>/runs/<run>" >&2; exit 2; }
+  [ "$#" -lt 2 ] || printf '%s\n' "$tag" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9._-]{0,63}' || { echo "archil-scoped: tag $tag is not one safe path segment" >&2; exit 2; }
+  root=${mp%/runs/*}
+  for p in "$root" "$root/runs"; do
+    [ "$(realpath -e "$p" 2>/dev/null)" = "$p" ] || { echo "archil-scoped: $p is not its own real path (a link, or missing)" >&2; exit 2; }
+  done
+}
+
+# <root>/<name> as a real directory owned by root, made 0700 when absent. Sets held.
+holding() {
+  held="$root/$1"
+  if [ ! -e "$held" ] && [ ! -L "$held" ]; then
+    mkdir -m 0700 "$held" || { echo "archil-scoped: cannot create $held" >&2; exit 6; }
+  fi
+  if [ -L "$held" ] || [ ! -d "$held" ] || [ "$(stat -c %u "$held")" != "$OWNER" ]; then
+    echo "archil-scoped: $held is not a real directory owned by root" >&2
+    exit 6
+  fi
+}
+
+# The archil daemons of $mp: processes whose argument vector is this archil's `mount` naming exactly $mp. Sets pids.
+# One grep over every cmdline finds the few that hold $mp as a whole argument (a per-process pipeline costs seconds on a
+# host with thousands of processes); each of those is then matched exactly.
+daemons_of() {
+  pids=
+  cands=$(grep -zlFx -- "$mp" "$PROC"/[0-9]*/cmdline 2>/dev/null) || true
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if tr '\0' '\n' < "$f" 2>/dev/null | awk -v a="$ARCHIL" -v m="$mp" 'NR == 1 { x = ($0 == a) } NR == 2 { y = ($0 == "mount") } NR > 2 && $0 == m { z = 1 } END { exit !(x && y && z) }'; then
+      d=${f%/cmdline}
+      pids="$pids ${d##*/}"
+    fi
+  done <<EOF
+$cands
+EOF
+}
+
+# SIGKILL $pids and wait up to 5 s for them to be gone.
+kill_daemons() {
+  [ -n "$pids" ] || return 0
+  $KILL -KILL $pids 2>/dev/null || true
+  n=0 left=$pids
+  while [ -n "$left" ] && [ "$n" -lt 50 ]; do
+    sleep 0.1
+    n=$((n + 1))
+    left=
+    for p in $pids; do if [ -d "$PROC/$p" ]; then left="$left $p"; fi; done
+  done
+  [ -z "$left" ] || { echo "archil-scoped: archil daemon$left still alive" >&2; exit 5; }
+}
+
+retire() {
+  run_path "$1" "$2"
+  listed "$mp" fuse.archil || { echo "archil-scoped: no fuse.archil mount at $mp" >&2; exit 3; }
+  holding .released
+  dest="$held/${mp##*/}-$tag"
+  daemons_of
+  mkdir -m 0700 "$dest" 2>/dev/null || { echo "archil-scoped: $dest exists or cannot be made" >&2; exit 6; }
+  [ "$(realpath -e "$dest")" = "$dest" ] || { echo "archil-scoped: $dest is not its own real path" >&2; exit 6; }
+  "$MOUNT" --move "$mp" "$dest" || { echo "archil-scoped: mount --move $mp $dest failed" >&2; exit 4; }
+  if listed "$mp" ""; then echo "archil-scoped: $mp is still mounted after the move" >&2; exit 4; fi
+  kill_daemons
+  echo "archil-scoped: moved $mp to $dest; killed:${pids:- none}"
+}
+
+stale() {
+  run_path "$1"
+  if listed "$mp" ""; then echo "archil-scoped: $mp is mounted; its daemon is not stale" >&2; exit 3; fi
+  daemons_of
+  if [ -z "$pids" ]; then echo "archil-scoped: no archil daemon for $mp"; return; fi
+  if listed "$mp" ""; then echo "archil-scoped: $mp was mounted meanwhile; its daemon is not stale" >&2; exit 3; fi
+  kill_daemons
+  echo "archil-scoped: killed stale archil daemon(s) of $mp:$pids"
+}
+
+stray() {
+  run_path "$1" "$2"
+  if [ -L "$mp" ] || [ ! -d "$mp" ] || [ "$(realpath -e "$mp")" != "$mp" ]; then
+    echo "archil-scoped: $mp is not a real directory" >&2
+    exit 2
+  fi
+  if listed "$mp" ""; then echo "archil-scoped: $mp is a mount" >&2; exit 3; fi
+  entries=$(find "$mp" -mindepth 1 -maxdepth 1 | wc -l)
+  if [ "$entries" -eq 0 ]; then echo "archil-scoped: $mp is empty; nothing moved"; return; fi
+  total=$(find "$mp" -mindepth 1 | wc -l)
+  holding .stray
+  dest="$held/${mp##*/}-$tag"
+  fresh="$held/.fresh-${mp##*/}-$tag"
+  for p in "$dest" "$fresh"; do
+    if [ -e "$p" ] || [ -L "$p" ]; then echo "archil-scoped: $p exists" >&2; exit 6; fi
+  done
+  # Both renames stay on one filesystem: mv would otherwise copy, as root, whatever the directory holds.
+  [ "$(stat -c %d "$root/runs")" = "$(stat -c %d "$held")" ] || { echo "archil-scoped: $held is on another filesystem than $root/runs" >&2; exit 6; }
+  set -- $(stat -c '%u %g %a' "$mp")
+  { mkdir -m 0700 "$fresh" && chown "$1:$2" "$fresh" && chmod "$3" "$fresh"; } || { echo "archil-scoped: cannot prepare $fresh" >&2; exit 6; }
+  mv -T "$mp" "$dest" || { rmdir "$fresh"; echo "archil-scoped: moving $mp to $dest failed" >&2; exit 4; }
+  mv -T "$fresh" "$mp" || { echo "archil-scoped: $mp could not be replaced by an empty directory" >&2; exit 4; }
+  echo "archil-scoped: moved stray $mp to $dest; entries=$entries total=$total"
+}
+
+case "${1:-}" in
+  retire | stray)
+    [ "$#" -eq 3 ] || { echo "usage: archil-scoped $1 <root>/runs/<run> <tag>" >&2; exit 2; }
+    "$1" "$2" "$3"
+    exit 0
+    ;;
+  stale)
+    [ "$#" -eq 2 ] || { echo "usage: archil-scoped stale <root>/runs/<run>" >&2; exit 2; }
+    stale "$2"
+    exit 0
+    ;;
+esac
+[ "${1:-}" = mount ] || exec "$ARCHIL" "$@"
+token=
+IFS= read -r token || true
+[ -n "$token" ] || { echo "archil-scoped: no mount token on stdin" >&2; exit 2; }
+unit=$(sed -n 's|^0::/system\.slice/\(.*/\)\{0,1\}\([A-Za-z0-9:_.-]*\)\.service$|\2|p' /proc/self/cgroup)
+[ -n "$unit" ] || ARCHIL_MOUNT_TOKEN="$token" exec "$ARCHIL" "$@"
+ARCHIL_MOUNT_TOKEN="$token" exec /usr/bin/systemd-run --scope --quiet --collect --unit="$unit-fuse-$(date +%s%N)" -- "$ARCHIL" "$@"

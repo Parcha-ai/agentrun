@@ -41,7 +41,7 @@ const forbid = [
 ];
 
 try {
-  const packageDirectories = ['dsl', 'jev', 'pi'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-archil'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -53,7 +53,7 @@ try {
     const names = (await run('tar', ['-tzf', tarball])).stdout.trim().split('\n');
     for (const name of names) {
       assert.ok(name.startsWith('package/') && !name.split('/').includes('..'), `Unsafe archive path in ${manifest.name}`);
-      assert.ok(name.endsWith('/') || /^package\/(?:package\.json|README(?:\.md)?|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
+      assert.ok(name.endsWith('/') || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|bin\/archil-scoped|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
       assert.ok(!/(?:^|\/)(?:\.env(?:\..*)?|node_modules|\.git|\.cascade|\.release|test|tests)(?:\/|$)/.test(name), `Unexpected packed path: ${name}`);
       assert.ok(!/\.(?:pem|key|p12|pfx|map)$/.test(name), `Unexpected packed file: ${name}`);
     }
@@ -153,8 +153,11 @@ import { runWorkflow, validateWorkflow, defineWorkflow, runTypedWorkflow, inspec
 import { z } from 'zod';
 import { supportTriage } from '@parcha/agentrun-dsl/demo';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import * as pi from '@parcha/agentrun-pi';
+import * as archil from '@parcha/pi-durable-archil';
+import * as archilLease from '@parcha/pi-durable-archil/lease';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -174,11 +177,12 @@ let disposed=false;
 const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async options=>({session:{subscribe(){return()=>{};},async abort(){},dispose(){disposed=true;},async prompt(){await options.customTools.find(t=>t.name==='submit').execute('submit',{value:{total:5}});}}})});
 assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
 assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
+assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archilLease.openRunLease,'function'); assert.ok(existsSync(archil.ARCHIL_SCOPED)); assert.equal('supervise' in archilLease,false);
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
-  assert.deepEqual(smoke, { core: true, jev: true, pi: true, network: 'prohibited' });
+  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, network: 'prohibited' });
   receipt.runtimeSmoke = smoke;
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
   receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
@@ -229,6 +233,16 @@ async function typedConsumer(){
 void typedConsumer;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'consumer.ts'], consumer);
+  // pi-ai's declarations name an optional peer of @google/genai that npm does not install, so this file is checked without
+  // declaration checking (the package's own declarations are checked by its `verify:tarball`).
+  await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-archil';
+import { openRunLease } from '@parcha/pi-durable-archil/lease';
+const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
+// @ts-expect-error a run reference names its disk.
+const incomplete: RunRef = { region: 'aws-us-east-1', id: 'r1' };
+void [durable, incomplete];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'archil-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

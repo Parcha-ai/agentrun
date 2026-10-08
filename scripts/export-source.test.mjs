@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-archil': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');

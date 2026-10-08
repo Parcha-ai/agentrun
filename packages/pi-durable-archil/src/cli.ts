@@ -1,0 +1,476 @@
+#!/usr/bin/env node
+// pi-durable-archil: run an instance, supervise runs, read a run's status, release a run's mount on this host.
+//   run        the instance a host driver starts: openDurableRun with an app module (exit 75 fenced, 76 held, 65 data
+//              error, 70 store head unreadable, 0 drained)
+//   supervise  ensureRunning for each run, once or `--every 30s`; `--check` proves this host's fence first
+//   status     run.json over S3, the run's delegations, and the holder's state if this host can see it
+//   release    unmount the run's mount on this host (flush, check the delegation in; a dead mount is cleaned)
+// The API key is read from the environment variable named by `--api-key-env` (default ARCHIL_API_KEY) and only by the
+// supervisor commands; `run` never needs it and a host driver never passes it on.
+import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { parseArgs, type ParseArgsConfig } from "node:util";
+import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, TOKEN_PREFIX, unmountClaim, type RunRef } from "./claim.ts";
+import { exitCodeFor, PdaError } from "./errors.ts";
+import { localHost } from "./hosts/local-host.ts";
+import {
+  checkHost,
+  CONTROL_TIMEOUT_MS,
+  readRunStatus,
+  superviseRuns,
+  sweepTokens,
+  withTimeouts,
+  type CheckControl,
+  type HostDriver,
+  type Json,
+  type SupervisorControl,
+  type TokenUser,
+} from "./supervise.ts";
+import { openDurableRun, type DurableRun } from "./run.ts";
+import { AppError, loadApp, type AppOptions } from "./app.ts";
+
+class UsageError extends PdaError {
+  constructor(message: string) {
+    super("USAGE", message, { exitCode: 2 });
+  }
+}
+
+const USAGE = `usage:
+  pi-durable-archil run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
+                        [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
+                        [--token-stdin]
+  pi-durable-archil supervise --disk D --region R (--id ID ... | --all) [--every 30s] [--check]
+                        [--driver systemd|child] [--mount-root DIR] [--host-name NAME] [--unit-prefix P]
+                        [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
+                        [--start-grace 90s] [--start-backoff-max 10m] [--stop-timeout 30s] [--token-ttl 24h] [--token-prefix P] [--demand] [--create] [--env K=V ...] [--log-dir DIR]
+                        [--archil BIN] [--control-timeout 10s] [--sweep-tokens] [--token-grace 15m]
+                        [--api-key-env NAME]
+  pi-durable-archil supervise --check --disk D --region R [--mount-root DIR] [--user U] [--group G] [--check-id-prefix P]
+  pi-durable-archil status --disk D --region R --id ID [--host-name NAME] [--api-key-env NAME]
+  pi-durable-archil release --id ID [--mount-root DIR]`;
+
+/** "30s", "500ms", "2m", "1h", or plain milliseconds. */
+/**
+ * Whether the lease watchdog may kill every other process in the instance's cgroup: only inside its own systemd unit,
+ * whose cgroup holds nothing but the instance and its commands. Elsewhere the cgroup may be shared (a login session, an
+ * agent host's service), so the watchdog kills only the instance's own command groups.
+ *
+ * The holder handle only claims a unit (`mode: "systemd"`, `unit`), and it arrives in an environment variable that any
+ * child inherits, so /proc decides: this process's cgroup v2 path must end in `/<unit>.service`, and its parent's cgroup
+ * must be another (a process that merely inherited the handle shares its parent's cgroup). When the handle claims a
+ * unit that /proc does not confirm, `warning` says why, for one log line.
+ */
+export function watchdogOwnsCgroup(
+  holder: Record<string, unknown>,
+  options: { proc?: string; ppid?: number } = {},
+): { owns: boolean; warning?: string } {
+  if (holder.mode !== "systemd") return { owns: false };
+  const proc = options.proc ?? "/proc";
+  const cgroupOf = (pid: string): string | undefined => {
+    try {
+      return readFileSync(join(proc, pid, "cgroup"), "utf8").split("\n").find((line) => line.startsWith("0::"))?.slice(3);
+    } catch {
+      return undefined;
+    }
+  };
+  const refuse = (why: string) => ({ owns: false, warning: `the watchdog will not kill the cgroup: ${why}` });
+  const unit = holder.unit;
+  if (typeof unit !== "string" || unit === "") return refuse("the holder names no unit");
+  const own = cgroupOf("self");
+  if (own === undefined) return refuse("this process has no cgroup v2 path");
+  if (!own.endsWith(`/${unit}.service`)) return refuse(`this process's cgroup ${own} is not ${unit}.service`);
+  const parent = cgroupOf(String(options.ppid ?? process.ppid));
+  if (parent === undefined) return refuse("the parent's cgroup cannot be read");
+  if (parent === own) return refuse(`the parent shares cgroup ${own}, so this process only inherited the handle`);
+  return { owns: true };
+}
+
+export function parseDuration(text: string): number {
+  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(text.trim());
+  if (!m) throw new UsageError(`not a duration: ${text}`);
+  return Math.round(Number(m[1]) * { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[(m[2] ?? "ms") as "ms" | "s" | "m" | "h"]);
+}
+
+function parse(argv: string[], options: ParseArgsConfig["options"]) {
+  try {
+    return parseArgs({ args: argv, options, allowPositionals: false, strict: true }).values as Record<string, string | boolean | string[] | undefined>;
+  } catch (err) {
+    throw new UsageError((err as Error).message);
+  }
+}
+
+/** A user or group name or number, as a number (from /etc/passwd or /etc/group). */
+function idOf(value: string | undefined, file: "/etc/passwd" | "/etc/group", fallback: number): number {
+  if (value === undefined) return fallback;
+  if (/^\d+$/.test(value)) return Number(value);
+  const row = readFileSync(file, "utf8").split("\n").map((l) => l.split(":")).find((f) => f[0] === value);
+  if (!row) throw new UsageError(`no such ${file === "/etc/passwd" ? "user" : "group"}: ${value}`);
+  return Number(row[2]);
+}
+const ownerOf = (values: Record<string, unknown>) => ({
+  uid: idOf(str(values.user), "/etc/passwd", process.getuid?.() ?? 0),
+  gid: idOf(str(values.group), "/etc/group", process.getgid?.() ?? 0),
+});
+
+const need = (v: Record<string, unknown>, ...keys: string[]) => {
+  for (const k of keys) if (typeof v[k] !== "string" || v[k] === "") throw new UsageError(`--${k} is required`);
+};
+const str = (v: unknown, fallback?: string) => (typeof v === "string" ? v : fallback);
+const emit = (line: Record<string, unknown>) => process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...line })}\n`);
+
+/** The disk's control API for the supervisor, plus the two lists only the disk record carries (users, clients). */
+async function control(values: Record<string, unknown>): Promise<SupervisorControl & CheckControl & { listUsers(): Promise<TokenUser[]> }> {
+  const name = str(values["api-key-env"], "ARCHIL_API_KEY")!;
+  const apiKey = process.env[name];
+  if (!apiKey) throw new UsageError(`no API key in $${name}`);
+  const { configure, getDisk } = await import("disk");
+  configure({ apiKey, region: str(values.region)! });
+  const id = str(values.disk)!;
+  const disk = await getDisk(id);
+  return {
+    getObject: (key) => disk.getObject(key),
+    headObject: (key) => disk.headObject(key),
+    putObject: (key, body, options) => disk.putObject(key, body, options),
+    addUser: (user) => disk.addUser(user),
+    removeUser: (type, identifier) => disk.removeUser(type, identifier),
+    listDelegations: () => disk.listDelegations(),
+    revokeDelegation: (d) => disk.revokeDelegation(d),
+    listObjects: (prefix, options) => disk.listObjects(prefix, options),
+    deleteObjects: (keys, options) => disk.deleteObjects(keys, options),
+    listUsers: async () => (await getDisk(id)).authorizedUsers ?? [],
+  };
+}
+
+// ---- run ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * The mount token from stdin, after which stdin is closed: the token is reusable for a day, and a process of the run's
+ * user could otherwise reopen it through /proc/<pid>/fd/0. A restart in place reads nothing (the driver emptied the file)
+ * and needs nothing: acquire reuses the live mount without the token. A fresh mount with the placeholder is refused.
+ */
+async function readToken(values: Record<string, unknown>): Promise<string> {
+  if (!values["token-stdin"]) return "none";
+  let text = "";
+  for await (const chunk of process.stdin) text += chunk;
+  try {
+    closeSync(0);
+    openSync("/dev/null", "r");
+  } catch {
+    // already closed
+  }
+  return text.trim() || "none";
+}
+
+/**
+ * The instance a host driver starts: openDurableRun with the app module's Harness options (src/app.ts), the
+ * driver's handle as run.json's holder, the mount token from stdin (read once, then stdin is closed), and the lease
+ * periods. The app loads before anything mounts; a missing or throwing module, or a failed `onOpen`, is AppError (exit 1,
+ * so the unit retries within systemd's start limit; a restart in place reuses the claim). A fence of any kind kills the
+ * run's commands and exits 75 inside openDurableRun. SIGTERM drains and exits 0: with `--on-sigterm resume` (default)
+ * the run is first written sleeping with `wakeAt` now, so the supervisor starts it again at its next tick and a deploy or
+ * an operator stop never strands it; with `pause` it seals paused (`run.release()` alone) and waits for a demand. Either
+ * way `run.release()` closes, barriers, seals and unmounts.
+ */
+async function runInstance(values: Record<string, unknown>): Promise<number> {
+  need(values, "disk", "region", "id", "app");
+  const ref: RunRef = { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! };
+  const onSigterm = str(values["on-sigterm"], "resume");
+  if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
+  const ms = (name: string) => (typeof values[name] === "string" ? parseDuration(values[name] as string) : undefined);
+  const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
+  const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
+  const root = join(mountRoot, runPath(ref.id));
+  const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
+  let app: AppOptions;
+  try {
+    app = await loadApp(str(values.app)!, { ref, root, work: join(root, "work"), store: join(root, "store") });
+  } catch (err) {
+    log("app failed", { code: (err as PdaError).code, message: (err as Error).message });
+    return exitCodeFor(err);
+  }
+  const { onOpen, ...harness } = app;
+  const holder = JSON.parse(process.env.PDA_HOLDER ?? "{}") as Record<string, Json>;
+  const cgroup = watchdogOwnsCgroup(holder);
+  if (cgroup.warning) log("cgroup not owned", { warning: cgroup.warning });
+  const steps: Record<string, number> = {};
+  let run: DurableRun;
+  try {
+    run = await openDurableRun(ref, {
+      mountToken: await readToken(values),
+      mountRoot,
+      host: { archil: str(values.archil) },
+      harness,
+      holder,
+      ownCgroup: cgroup.owns,
+      lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),
+      onStep: (step, t) => void (steps[step] = Math.round(t)),
+    });
+  } catch (err) {
+    log("open failed", { code: (err as PdaError).code, exitCode: exitCodeFor(err), message: (err as Error).message, steps });
+    return exitCodeFor(err);
+  }
+  log("running", { generation: run.generation, steps });
+  return serveUntilDone(run, onOpen, onSigterm, log);
+}
+
+/**
+ * The instance's life after the run opened: the app's `onOpen` runs, and SIGTERM or SIGINT drains (`resume` writes the
+ * run sleeping with `wakeAt` now first) and releases; the drain's outcome is the exit code. A rejection of `onOpen` is
+ * the app failing (exit 1), except once a drain began: the drain closes the Harness under the app, whose work then
+ * rejects ("Session is closed"), and ending the process there would cut the release before its unmount (a container's
+ * FUSE daemon dies with the process, leaving the delegation orphaned).
+ */
+export function serveUntilDone(
+  run: Pick<DurableRun, "setStatus" | "release" | "record">,
+  onOpen: ((run: DurableRun) => void | Promise<void>) | undefined,
+  onSigterm: string | undefined,
+  log: (event: string, extra?: Record<string, unknown>) => void,
+  signals: Pick<NodeJS.EventEmitter, "once"> = process,
+): Promise<number> {
+  return new Promise<number>((done) => {
+    let draining = false;
+    const drain = async (signal: string) => {
+      if (draining) return;
+      draining = true;
+      log("draining", { signal, onSigterm });
+      try {
+        if (onSigterm === "resume") await run.setStatus("sleeping", { reason: "drained" }, { wakeAt: new Date().toISOString() });
+        await run.release();
+        log("released", { record: run.record as unknown as Json });
+        done(0);
+      } catch (err) {
+        log("release failed", { code: (err as PdaError).code, message: (err as Error).message });
+        done(exitCodeFor(err));
+      }
+    };
+    signals.once("SIGTERM", () => void drain("SIGTERM"));
+    signals.once("SIGINT", () => void drain("SIGINT"));
+    // onOpen may return at once (work submitted) or run for the instance's life.
+    Promise.resolve()
+      .then(() => onOpen?.(run as DurableRun))
+      .catch((err: unknown) => {
+        if (draining) return;
+        const e = new AppError(`onOpen failed: ${(err as Error).message}`, { cause: err });
+        log("app failed", { code: e.code, message: e.message });
+        done(exitCodeFor(e));
+      });
+  });
+}
+
+// ---- supervise, status, release ----------------------------------------------------------------------------------------
+
+/**
+ * The flags every instance this supervisor starts gets after `run`: `--app MODULE` (made absolute, since the unit's working
+ * directory is not the supervisor's) and any `--run-arg`, in that order.
+ */
+export function instanceRunArgs(values: Record<string, unknown>): string[] {
+  return [...(typeof values.app === "string" ? ["--app", resolve(values.app)] : []), ...((values["run-arg"] as string[] | undefined) ?? [])];
+}
+
+function driverFrom(values: Record<string, unknown>): HostDriver {
+  const runArgs = instanceRunArgs(values);
+  const env = Object.fromEntries(
+    ((values.env as string[] | undefined) ?? []).map((kv) => {
+      const i = kv.indexOf("=");
+      if (i <= 0) throw new UsageError(`--env takes KEY=VALUE, got ${kv}`);
+      return [kv.slice(0, i), kv.slice(i + 1)];
+    }),
+  );
+  return localHost({
+    env,
+    mode: str(values.driver, "systemd") as "systemd" | "child",
+    mountRoot: str(values["mount-root"]),
+    hostName: str(values["host-name"]),
+    unitPrefix: str(values["unit-prefix"]),
+    user: str(values.user),
+    group: str(values.group),
+    runArgs,
+    stopTimeoutMs: values["stop-timeout"] ? parseDuration(str(values["stop-timeout"])!) : undefined,
+    restart: values["no-restart"] ? false : undefined,
+    logDir: str(values["log-dir"]),
+    archil: str(values.archil),
+  });
+}
+
+/** Root executes the archil wrapper through sudo, so anyone who can write it is root. */
+function wrapperWarnings(path: string): string[] {
+  let st: { uid: number; mode: number };
+  try {
+    st = statSync(path);
+  } catch {
+    return [`${path} does not exist`];
+  }
+  const out: string[] = [];
+  if (st.uid !== 0) out.push(`${path} is owned by uid ${st.uid}, not root, and root runs it through sudo`);
+  if (st.mode & 0o022) out.push(`${path} is writable by its group or others (mode ${(st.mode & 0o777).toString(8)})`);
+  return out;
+}
+
+async function supervise(values: Record<string, unknown>): Promise<number> {
+  need(values, "disk", "region");
+  const disk = await control(values);
+  const controlTimeoutMs = values["control-timeout"] ? parseDuration(str(values["control-timeout"])!) : CONTROL_TIMEOUT_MS;
+  if (values.check) {
+    const report = await checkHost({
+      control: disk,
+      disk: str(values.disk)!,
+      region: str(values.region)!,
+      mountRoot: str(values["mount-root"], DEFAULT_MOUNT_ROOT)!,
+      owner: ownerOf(values),
+      tokenPrefix: str(values["token-prefix"]),
+      idPrefix: str(values["check-id-prefix"]),
+      controlTimeoutMs,
+      onResource: (kind, id, detail) => emit({ event: "check-resource", kind, id, detail }),
+    });
+    emit({ event: "check", ...report, warnings: str(values.driver, "systemd") === "systemd" ? wrapperWarnings(str(values.archil, ARCHIL_SCOPED)!) : [] });
+    if (!report.ok) return 1;
+    if (!values.id && !values.all) return 0;
+  }
+  const ids = async (): Promise<string[]> => {
+    if (!values.all) return (values.id as string[] | undefined) ?? [];
+    const listed = await withTimeouts(disk, controlTimeoutMs).listObjects("runs/");
+    return listed.commonPrefixes.map((p) => p.replace(/^runs\//, "").replace(/\/$/, "")).filter(Boolean);
+  };
+  if (!values.id && !values.all && !values["sweep-tokens"]) throw new UsageError("name runs with --id or --all (or only --sweep-tokens)");
+  const host = driverFrom(values);
+  const opts = {
+    control: disk,
+    leaseExpiryMs: values["lease-expiry"] ? parseDuration(str(values["lease-expiry"])!) : undefined,
+    stonithTimeoutMs: values["stonith-timeout"] ? parseDuration(str(values["stonith-timeout"])!) : undefined,
+    startGraceMs: values["start-grace"] !== undefined ? parseDuration(str(values["start-grace"])!) : undefined,
+    startBackoffMaxMs: values["start-backoff-max"] !== undefined ? parseDuration(str(values["start-backoff-max"])!) : undefined,
+    tokenTtl: str(values["token-ttl"]),
+    tokenPrefix: str(values["token-prefix"]),
+    demand: Boolean(values.demand),
+    create: values.create ? ownerOf(values) : undefined,
+    controlTimeoutMs,
+  };
+  let failures = 0;
+  const tick = async () => {
+    const refs = (await ids()).map((id) => ({ disk: str(values.disk)!, region: str(values.region)!, id }));
+    for (const line of await superviseRuns(refs, host, opts)) {
+      if (line.action === "error") failures++;
+      emit(line);
+      // One line per backoff step: a start that follows failed ones, with the grace it now gets.
+      if (line.action === "started" && line.failures > 0) emit({ event: "start-backoff", run: line.run, failures: line.failures, lastExit: line.lastExit, graceMs: line.graceMs });
+    }
+    // Token users no live mount needs: those of released runs past the grace, and with --sweep-tokens the expired ones.
+    // A failure here costs this line only; the runs were decided above.
+    const timed = withTimeouts(disk, controlTimeoutMs);
+    const r = await sweepTokens({
+      listUsers: () => timed.listUsers(),
+      control: timed,
+      prefix: str(values["token-prefix"], TOKEN_PREFIX)!,
+      runs: values.id ? refs.map((x) => x.id) : undefined,
+      expired: Boolean(values["sweep-tokens"]),
+      graceMs: values["token-grace"] ? parseDuration(str(values["token-grace"])!) : undefined,
+    }).catch((e: unknown) => ({ removed: [], failed: [{ identifier: "*", error: (e as Error).message }] }));
+    if (r.removed.length || r.failed.length) emit({ event: "token-sweep", ...r });
+  };
+  if (!values.every) {
+    await tick();
+    return failures ? 1 : 0;
+  }
+  const every = parseDuration(str(values.every)!);
+  let stopped = false;
+  process.once("SIGTERM", () => (stopped = true));
+  process.once("SIGINT", () => (stopped = true));
+  while (!stopped) {
+    const t0 = performance.now();
+    // A tick that fails as a whole (the run listing, say) is one line; the loop goes on.
+    await tick().catch((err: unknown) => emit({ event: "tick-failed", error: (err as PdaError).code ?? "ERROR", message: (err as Error).message }));
+    for (let left = every - (performance.now() - t0); left > 0 && !stopped; left -= 100) await new Promise((r) => setTimeout(r, Math.min(100, left)));
+  }
+  return 0;
+}
+
+async function status(values: Record<string, unknown>): Promise<number> {
+  need(values, "disk", "region", "id");
+  const disk = await control(values);
+  const id = str(values.id)!;
+  const run = await readRunStatus(disk, id);
+  const { findDelegations } = await import("./claim.ts");
+  const delegations = await findDelegations(disk, id);
+  const holderStatus = run?.holder ? await localHost({ hostName: str(values["host-name"]), mode: "systemd", user: process.getuid?.() === 0 ? 0 : undefined }).status(run.holder) : null;
+  emit({ run: id, runJson: run as unknown as Json, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), holderStatus });
+  return 0;
+}
+
+async function release(values: Record<string, unknown>): Promise<number> {
+  need(values, "id");
+  const via = await unmountClaim(join(str(values["mount-root"], DEFAULT_MOUNT_ROOT)!, runPath(str(values.id)!)));
+  emit({ run: values.id, released: via });
+  return 0;
+}
+
+const COMMON = { disk: { type: "string" }, region: { type: "string" }, id: { type: "string" }, "mount-root": { type: "string" }, "api-key-env": { type: "string" }, "host-name": { type: "string" } } as const;
+
+export async function main(argv: string[]): Promise<number> {
+  const [command, ...rest] = argv;
+  try {
+    switch (command) {
+      case "run":
+        return await runInstance(
+          parse(rest, {
+            ...COMMON,
+            archil: { type: "string" },
+            app: { type: "string" },
+            "heartbeat-ms": { type: "string" },
+            "lease-expiry-ms": { type: "string" },
+            "lease-margin-ms": { type: "string" },
+            "on-sigterm": { type: "string" },
+            "token-stdin": { type: "boolean" },
+          }),
+        );
+      case "supervise":
+        return await supervise(
+          parse(rest, {
+            ...COMMON,
+            id: { type: "string", multiple: true },
+            all: { type: "boolean" },
+            every: { type: "string" },
+            check: { type: "boolean" },
+            driver: { type: "string" },
+            "unit-prefix": { type: "string" },
+            user: { type: "string" },
+            group: { type: "string" },
+            app: { type: "string" },
+            "run-arg": { type: "string", multiple: true },
+            "lease-expiry": { type: "string" },
+            "stonith-timeout": { type: "string" },
+            "start-grace": { type: "string" },
+            "start-backoff-max": { type: "string" },
+            "stop-timeout": { type: "string" },
+            "token-ttl": { type: "string" },
+            "token-prefix": { type: "string" },
+            "no-restart": { type: "boolean" },
+            "log-dir": { type: "string" },
+            demand: { type: "boolean" },
+            create: { type: "boolean" },
+            env: { type: "string", multiple: true },
+            "check-id-prefix": { type: "string" },
+            archil: { type: "string" },
+            "control-timeout": { type: "string" },
+            "sweep-tokens": { type: "boolean" },
+            "token-grace": { type: "string" },
+          }),
+        );
+      case "status":
+        return await status(parse(rest, COMMON));
+      case "release":
+        return await release(parse(rest, COMMON));
+      default:
+        throw new UsageError(command ? `unknown command ${command}` : "no command");
+    }
+  } catch (err) {
+    if (err instanceof UsageError) process.stderr.write(`${err.message}\n${USAGE}\n`);
+    else process.stderr.write(`${JSON.stringify({ error: (err as PdaError).code ?? "ERROR", message: (err as Error).message })}\n`);
+    return exitCodeFor(err);
+  }
+}
+
+const invoked = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : "";
+if (import.meta.url === invoked) {
+  main(process.argv.slice(2)).then((code) => process.exit(code));
+}

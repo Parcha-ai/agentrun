@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- New package, `@parcha/pi-durable-archil`: a [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) host on an [Archil](https://archil.com) disk. One exclusive mount of a run's directory is the claim; revoking it fences a lost or hung holder; a heartbeat lease, a stateless supervisor and host drivers (`localHost`, `daytonaHost`) restart a run on another host, where pi-durable resumes from its last commit and never repeats a tool call whose intent it had committed.
+  - It does not depend on the other packages and is published last. Its README and `packages/pi-durable-archil/CHANGELOG.md` have the details.
+  - Its unit tests run in `npm test` on every Node version in CI. Its live suites need an Archil account and stay opt-in (`PDA_LIVE=1`).
+  - The workspace holds two copies of `@earendil-works/pi-ai` and `chord` (0.87 for the Pi package, 1.0 for this one), so the package's typecheck maps both to its own copy (`packages/pi-durable-archil/tsconfig.json`).
 - `route` can run the branch a workflow has already decided. With `valuePath` in place of `state` and `instructions`, the string at that path names the branch, and no model is asked.
   - A missing value or a name that matches no branch takes `otherwise` (a branch). Without one, the route fails before any branch runs, as `route_missing` or `route_unknown`. A value that is not a string fails as `route_type` and is never converted into a name.
   - `as` records `{value, taken, fallback}`. There is no `$answers` sidecar, and the `route.chosen` event names only the branch taken.
