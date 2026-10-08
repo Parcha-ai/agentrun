@@ -2,8 +2,8 @@
 // reads dimensions from the header, so the retake ladder is observable in the dispatched rows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { captureWithinBudget, imageSize } from "@agentrun/pi-browser";
-import { FakeBackend, fakeDriver, remoteDriver, remoteProvider } from "@agentrun/pi-browser/testing";
+import { captureWithinBudget, imageSize } from "@parcha/pi-browser";
+import { FakeBackend, fakeDriver, remoteDriver, remoteProvider } from "@parcha/pi-browser/testing";
 
 const spec = { tag: "ar-run-cccc-1", maxLifetimeS: 60, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1, height: 1 }, metadata: {} };
 const size = (shot) => imageSize(Buffer.from(shot.data, "base64"));

@@ -1,6 +1,6 @@
 // The sentinel set is the package's shared test fake (src/testing); the wire check only adds what it scans: a session
 // id is an identifier the model is given, not a secret.
-import { hostRegistered, makeSentinels as make } from "@agentrun/pi-browser/testing";
+import { hostRegistered, makeSentinels as make } from "@parcha/pi-browser/testing";
 
 export { hostRegistered };
 export function makeSentinels() {

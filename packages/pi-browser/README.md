@@ -1,7 +1,6 @@
-# @agentrun/pi-browser
+# @parcha/pi-browser
 
-A browser for pi agents that keeps its promises across crashes. Not yet published; it lives in the agentrun-harness repo.
-Node `^22.19.0 || ^24.0.0`, pi 1.0.x.
+A browser for pi agents that keeps its promises across crashes. Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.0.x.
 
 The design: custody recorded before every provider call and released by a durable task,
 reads that rerun after a crash and actions that never do, evidence filed with its SHA-256, failures classified from
@@ -9,24 +8,24 @@ typed facts, and no credential in anything the model, a document or a log can se
 
 ## What is in it
 
-- `@agentrun/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect
+- `@parcha/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect
   and replay classes, the static `browser` and `web` sections), the typed failure envelope, the redactor, the
   screenshot budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and
   ranking a long page), `browser_downloads` and the opt-in request observer, and the provider interface. Imports
   nothing outside Node's builtins.
-- `@agentrun/pi-browser/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's
+- `@parcha/pi-browser/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's
   own store (a create committed before the provider is called, release as a durable task, reconcile at run open);
   `createWebExtension` is `web_fetch` and `web_search`.
-- `@agentrun/pi-browser/coding-agent`: the pi coding agent's extension, "For pi users" below. This is what `pi install` loads.
-- `@agentrun/pi-browser/driver/stagehand`: `stagehandDriver()`, Stagehand v4 over upstream's facade, vendored
+- `@parcha/pi-browser/coding-agent`: the pi coding agent's extension, "For pi users" below. This is what `pi install` loads.
+- `@parcha/pi-browser/driver/stagehand`: `stagehandDriver()`, Stagehand v4 over upstream's facade, vendored
   unedited in `src/vendor/stagehand-facade/` (`UPSTREAM.json` names the commit and each file's blob id and SHA-256;
   `node scripts/vendor-facade.mjs --check` verifies, `--commit SHA --release NAME` re-vendors). Stagehand is created sealed: no inference, no cache, its trace
   exporter pointed at a closed loopback port.
-- `@agentrun/pi-browser/providers/browserbase`, `/providers/kernel` and `/providers/cdp`: where browsers come from.
+- `@parcha/pi-browser/providers/browserbase`, `/providers/kernel` and `/providers/cdp`: where browsers come from.
   Browserbase through its SDK, with the credential-proxy dial and the connect-URL rewrite; Kernel through its REST API
   (no Kernel SDK), on the package's own HTTP agent; any CDP endpoint, or a local Chrome the provider starts and kills by
   exact pid.
-- `@agentrun/pi-browser/testing`: the shared test fake. A fake provider backend with a ledger of every call, a
+- `@parcha/pi-browser/testing`: the shared test fake. A fake provider backend with a ledger of every call, a
   credential broker, an HTTP face so the ledger outlives a killed child process, a driver over in-memory pages, and a
   set of sentinel credentials. A host's composition test and this package's crash matrix use the same one.
 
@@ -54,7 +53,7 @@ message that says the way out.
 
 A host builds the extensions once per run and passes:
 
-- `driver`: `stagehandDriver()` from `@agentrun/pi-browser/driver/stagehand`; a host may pass its own `DriverFactory`.
+- `driver`: `stagehandDriver()` from `@parcha/pi-browser/driver/stagehand`; a host may pass its own `DriverFactory`.
 - `provider`: Browserbase from the run's env (`BROWSERBASE_API_KEY` or `BB_API_KEY`, and the proxy URLs and project id
   as they are today), with the host's own metadata stamped on every session.
 - `evidence`: a sink that files each read where the run's receipts already are, so every reader of a receipt keeps working.
@@ -86,7 +85,7 @@ and drives pages through Stagehand, files every page it reads and every screensh
 closes the Chrome when you release it, when it has been idle for three minutes, or when the session ends.
 
 ```sh
-pi install npm:@agentrun/pi-browser     # once published; until then: pi install ./packages/pi-browser after a build
+pi install npm:@parcha/pi-browser
 ```
 
 The local browser needs a Chrome or Chromium: the one named by `--browser-chrome` or `PI_BROWSER_CHROME`, else `CHROME_PATH`,
@@ -141,9 +140,9 @@ costs nothing:
 
 ```js
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
-import { createBrowserExtension } from "@agentrun/pi-browser/durable";
-import { stagehandDriver } from "@agentrun/pi-browser/driver/stagehand";
-import { cdpProvider } from "@agentrun/pi-browser/providers/cdp";
+import { createBrowserExtension } from "@parcha/pi-browser/durable";
+import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
+import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
 
 const provider = cdpProvider({ chrome: { executablePath: "/usr/bin/google-chrome", profileRoot: "/tmp/browser-profiles" } });
 const browser = createBrowserExtension({
@@ -182,8 +181,9 @@ abstaining is the right answer); three are loopback fixtures. Treat it as ours, 
 ## Tests
 
 ```sh
-npm run build -w @agentrun/pi-browser
-node --test packages/pi-browser/test/*.test.mjs packages/pi-browser/test/wire/*.test.mjs
+npm run build -w @parcha/pi-browser
+npm test -w @parcha/pi-browser               # everything but the real-Chrome suites
+CHROME_PATH=/path/to/chrome npm run test:chrome -w @parcha/pi-browser
 ```
 
 The real-Chrome suites (`stagehand_real_chrome`, `cdp_local_chrome`, `effects-chrome`, `coding_agent_real_chrome`) skip with a typed reason where no

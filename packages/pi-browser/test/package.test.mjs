@@ -10,7 +10,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection } from "@agentrun/pi-browser";
+import { BROWSER_TOOLS, WEB_TOOLS, browserSection } from "@parcha/pi-browser";
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
@@ -30,9 +30,9 @@ test("the core and its entry import only Node builtins, their own files and the 
 });
 
 test("both entry points resolve by the package's name from its build", async () => {
-  const core = await import("@agentrun/pi-browser");
+  const core = await import("@parcha/pi-browser");
   assert.equal(typeof core.classifyBrowserError, "function");
-  await import("@agentrun/pi-browser/durable");
+  await import("@parcha/pi-browser/durable");
 });
 
 // One call per model turn: [tool, arguments, whether pi lets it reach execute].

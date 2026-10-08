@@ -8,8 +8,8 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { createBrowserExtension } from "@agentrun/pi-browser/durable";
-import { FakeBackend, fakeDriver, fixturePage } from "@agentrun/pi-browser/testing";
+import { createBrowserExtension } from "@parcha/pi-browser/durable";
+import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
 
 const START = "https://example.test/start";
 const ARTICLE = { url: START, title: "Filing", text: "Menu Home Acme Corp file number 7741234 Footer", html: "<html><body><nav>Menu Home</nav><article><h1>Acme Corp</h1><p>File number <b>7741234</b></p></article><footer>Footer</footer></body></html>" };

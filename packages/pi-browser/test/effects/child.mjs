@@ -11,7 +11,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createBrowserExtension } from "@agentrun/pi-browser/durable";
+import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { cdpProvider } from "../../dist/providers/cdp.js";
 import { cdpDriver } from "./cdp-driver.mjs";
 import { CHROME } from "../fixtures/local-chrome.mjs";

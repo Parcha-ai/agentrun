@@ -3,10 +3,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { FakeBackend, remoteDriver, remoteProvider } from "@agentrun/pi-browser/testing";
+import { FakeBackend, remoteDriver, remoteProvider } from "@parcha/pi-browser/testing";
 
 const CHILD = `
-import { remoteProvider } from "@agentrun/pi-browser/testing";
+import { remoteProvider } from "@parcha/pi-browser/testing";
 const p = remoteProvider(process.env.FAKE);
 await p.create({ tag: "ar-run-aaaa-1", maxLifetimeS: 60, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1, height: 1 }, metadata: {} }, new AbortController().signal);
 `;
@@ -30,7 +30,7 @@ test("a held create survives the death of the process that made it, and findByTa
 });
 
 const DRIVER_CHILD = `
-import { remoteDriver, remoteProvider } from "@agentrun/pi-browser/testing";
+import { remoteDriver, remoteProvider } from "@parcha/pi-browser/testing";
 const p = remoteProvider(process.env.FAKE);
 const ref = await p.create({ tag: "ar-run-bbbb-1", maxLifetimeS: 60, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1, height: 1 }, metadata: {} }, new AbortController().signal);
 const driver = await remoteDriver(process.env.FAKE)(await p.attach(ref));

@@ -11,7 +11,7 @@ import { fetch as undiciFetch } from "undici";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { FakeBackend, fakeDriver } from "@agentrun/pi-browser/testing";
+import { FakeBackend, fakeDriver } from "@parcha/pi-browser/testing";
 import { fileEvidenceSink, findChrome, httpBackup, isPrivateAddress, pinnedLookup } from "../dist/coding-agent-local.js";
 import { startAgent, turn } from "./coding-agent/rig.mjs";
 
@@ -124,10 +124,10 @@ test("private, loopback, link-local and v4-mapped addresses are private; ordinar
 });
 
 test("a Chrome the person names comes first, then the first install that exists; none is null", () => {
-  const present = new Set(["/opt/google/chrome/chrome", "/home/me/chrome-custom", "/usr/local/bin/chromium"]);
+  const present = new Set(["/opt/google/chrome/chrome", "/opt/me/chrome-custom", "/usr/local/bin/chromium"]);
   const exists = (file) => present.has(file);
-  assert.equal(findChrome({ PI_BROWSER_CHROME: "/home/me/chrome-custom", PATH: "/usr/local/bin" }, exists), "/home/me/chrome-custom");
-  assert.equal(findChrome({ CHROME_PATH: "/home/me/chrome-custom" }, exists), "/home/me/chrome-custom");
+  assert.equal(findChrome({ PI_BROWSER_CHROME: "/opt/me/chrome-custom", PATH: "/usr/local/bin" }, exists), "/opt/me/chrome-custom");
+  assert.equal(findChrome({ CHROME_PATH: "/opt/me/chrome-custom" }, exists), "/opt/me/chrome-custom");
   assert.equal(findChrome({ PI_BROWSER_CHROME: "/missing", PATH: "/usr/local/bin" }, exists), "/usr/local/bin/chromium", "a named path that is absent falls through to the search");
   assert.equal(findChrome({ PATH: "/nowhere" }, exists), "/opt/google/chrome/chrome");
   assert.equal(findChrome({ PATH: "/nowhere" }, (file) => file === "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");

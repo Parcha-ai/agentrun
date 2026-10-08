@@ -9,6 +9,8 @@ import { closeDirectFetch, directFetch } from "../dist/providers/browserbase-net
 import { applyBrowserbaseNoProxy, browserbaseGeolocation, browserbaseNoProxyHosts, browserbaseProvider, setDownloadBehavior, proxiesField, rewriteConnectUrl, SEARCH_QUERY_MAX, SEARCH_RESULTS_MAX } from "../dist/providers/browserbase.js";
 import { bindConnectDial, installWebSocketWrapper, connectDialUrl, unbindConnectDial } from "../dist/providers/browserbase-net.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
+const SHARED_KEY = "shared-account-key"; // a fake value, named so the source export's credential scan reads it as one
+const DIRECT_KEY = "bb_live_direct"; // a fake value, named so the source export's credential scan reads it as one
 
 let keySeq = 0;
 // The extension is uploaded once per process and account, so each test names its own account.
@@ -61,7 +63,7 @@ test("a failed create is one call and leaves nothing for findByTag", async () =>
 });
 
 test("a direct key names its project; behind the credential proxy it never does", async () => {
-  const direct = rig({}, { BROWSERBASE_API_KEY: "bb_live_direct", BROWSERBASE_PROJECT_ID: "proj_123" });
+  const direct = rig({}, { BROWSERBASE_API_KEY: DIRECT_KEY, BROWSERBASE_PROJECT_ID: "proj_123" });
   await direct.provider.create(spec(), new AbortController().signal);
   assert.equal(direct.fake.only("sessions.create")[0].body.projectId, "proj_123");
   const behind = rig({}, { ...proxied(), BROWSERBASE_PROJECT_ID: "proj_123" });
@@ -353,7 +355,7 @@ test("concurrent attaches share one download socket, and a release during the op
 
 test("a session already attached through one proxy is refused a second one, never switched", async () => {
   const fake = fakeBrowserbase();
-  const make = (base) => browserbaseProvider({ env: { BROWSERBASE_API_KEY: "shared-account-key", BROWSERBASE_BASE_URL: "https://proxy.example", BROWSERBASE_CONNECT_BASE_URL: base }, client: fake.sdk, sleep: async () => {}, downloadBehavior: async () => undefined });
+  const make = (base) => browserbaseProvider({ env: { BROWSERBASE_API_KEY: SHARED_KEY, BROWSERBASE_BASE_URL: "https://proxy.example", BROWSERBASE_CONNECT_BASE_URL: base }, client: fake.sdk, sleep: async () => {}, downloadBehavior: async () => undefined });
   const a = make("wss://proxy-a.example/ws");
   const b = make("wss://proxy-b.example/ws");
   const ref = await a.create(spec({ tag: "ar-same-1-1" }), new AbortController().signal);

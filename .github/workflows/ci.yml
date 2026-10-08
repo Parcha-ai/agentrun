@@ -46,6 +46,39 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  real-chrome:
+    # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
+    # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not three Node versions.
+    # Chrome for Testing is used because the runner's own Chrome answers Extensions.loadUnpacked with "Method not available", so
+    # Stagehand's extension cannot load in it. A missing or incapable Chrome fails a test here instead of skipping it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CHROME_FOR_TESTING: '155.0.8059.39'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: ~/chrome-for-testing
+          key: chrome-for-testing-${{ runner.os }}-${{ env.CHROME_FOR_TESTING }}
+      - name: Install the pinned Chrome for Testing
+        run: |
+          installed=$(npx --yes @puppeteer/browsers@3.2.3 install "chrome@${CHROME_FOR_TESTING}" --path "$HOME/chrome-for-testing")
+          chrome="${installed#* }"
+          echo "CHROME_PATH=${chrome}" >> "$GITHUB_ENV"
+          "${chrome}" --version
+      - name: Let an unprivileged Chrome start its sandbox
+        # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so Chrome for Testing (unpackaged, no profile)
+        # exits with SIGABRT at startup. This is the runner's documented switch; the sandbox stays on for the tests.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm run test:chrome -w @parcha/pi-browser
+
   lean:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the

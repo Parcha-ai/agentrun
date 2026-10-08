@@ -1,14 +1,8 @@
 {
-  "name": "@agentrun/pi-browser",
-  "version": "0.1.0",
+  "name": "@parcha/pi-browser",
+  "version": "0.1.0-beta.11",
   "private": true,
   "description": "A durable browser for pi agents: session custody that survives crashes, effect and replay classes per tool, evidence with SHA-256, typed failures, and no credential in any model-visible string.",
-  "license": "Apache-2.0",
-  "author": "Parcha Labs, Inc.",
-  "type": "module",
-  "engines": {
-    "node": "^22.19.0 || ^24.0.0"
-  },
   "keywords": [
     "pi-package",
     "pi-durable",
@@ -16,6 +10,12 @@
     "stagehand",
     "browserbase"
   ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -64,9 +64,13 @@
       "./dist/coding-agent.js"
     ]
   },
+  "sideEffects": false,
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node scripts/run-tests.mjs",
+    "test:chrome": "node scripts/run-tests.mjs --chrome",
+    "verify:tarball": "node scripts/verify-tarball.mjs"
   },
   "dependencies": {
     "@browserbasehq/stagehand": "~4.1.0",
@@ -95,12 +99,23 @@
       "optional": true
     }
   },
+  "devDependencies": {
+    "@earendil-works/chord": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@earendil-works/pi-durable": "1.0.4"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Parcha-ai/agentrun-harness.git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
     "directory": "packages/pi-browser"
   },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.0.4"
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
   }
 }

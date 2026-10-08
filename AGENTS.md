@@ -17,12 +17,13 @@ AgentRun is a workflow language for agents a host already runs. A workflow is a 
 | `packages/jev` | `@parcha/agentrun-jev`: `createJevRunner()`, the `runJudge` adapter for Jev |
 | `packages/pi` | `@parcha/agentrun-pi`: the Pi extension (`/agentrun`) and Pi-backed `runNode` runner |
 | `packages/pi-durable-archil` | `@parcha/pi-durable-archil`: a pi-durable host on an Archil disk (claim, fence, lease, supervisor). It does not depend on the other packages. Its live suites (`PDA_LIVE=1`) need an Archil account and are not part of `npm test` or CI |
+| `packages/pi-browser` | `@parcha/pi-browser`: a browser for pi agents (session custody, evidence, typed failures; the pi coding agent's extension, a pi-durable adapter, Browserbase and local-Chrome providers, a fake backend in `./testing`). It does not depend on the other packages. It is a synced snapshot of the agentrun harness's `packages/pi-browser`: do not edit it here, the change goes to the harness and comes back through the sync. Its real-Chrome suites run in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`), not in `npm test` |
 | `spec/lean` | Optional Lean model of validation and execution, plus a conformance corpus shared with TypeScript |
 | `examples/` | Support, typed research and starter app, offline by default with scripted adapters |
 | `docs/` | `guide.md` (primitives, limits), `authoring.md`, `host-integration.md`, `releasing.md` |
 | `scripts/` | Node floor, schema and contract generation, source export, package and release verification |
 
-The four packages share one version. `dsl`, `jev` and `pi` are published in that order, then `pi-durable-archil`.
+The five packages share one version. `dsl`, `jev` and `pi` are published in that order, then `pi-durable-archil`, then `pi-browser`.
 
 ## Setup and checks
 

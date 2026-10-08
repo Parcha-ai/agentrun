@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 
 const exec = promisify(execFile);
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-archil': '@parcha/pi-durable-archil' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-archil': '@parcha/pi-durable-archil', 'pi-browser': '@parcha/pi-browser' };
 export const releasePackages = Object.keys(releasePackageNames);
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
@@ -76,7 +76,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   }
   const receipt = await json(join(root, '.release/verification.json'));
   assert.equal(receipt.status, 'passed', 'Clean package verification must pass first');
-  assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, archil: true, network: 'prohibited' }, 'All installed package smoke checks are required');
+  assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, archil: true, browser: true, network: 'prohibited' }, 'All installed package smoke checks are required');
   await checkReleaseAudit(root, receipt.audit?.vulnerabilities);
   assert.equal(receipt.packages?.length, releasePackages.length, `Expected exactly ${releasePackages.length} verified packages`);
   const temporary = await mkdtemp(join(tmpdir(), 'agentrun-release-preflight-'));
@@ -96,7 +96,13 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
       const packedManifest = JSON.parse(await command('tar', ['-xOf', archive, 'package/package.json'], root));
       assert.deepEqual(packedManifest, manifest, 'Packed metadata differs from the release source');
       assert.equal((await command('tar', ['-xOf', archive, 'package/LICENSE'], root)).trim(), license.trim(), `Missing or mismatched LICENSE in ${manifest.name}`);
-      if (notice !== undefined) assert.equal((await command('tar', ['-xOf', archive, 'package/NOTICE'], root)).trim(), notice.trim(), `Missing or mismatched NOTICE in ${manifest.name}`);
+      // A package may carry third-party notices after the repository's NOTICE (pi-browser keeps Stagehand's MIT licence), never instead of
+      // it: the packed NOTICE is the root NOTICE exactly, or the root NOTICE, a blank line, and more. A truncated or edited root header
+      // is not a prefix that passes.
+      if (notice !== undefined) {
+        const packedNotice = (await command('tar', ['-xOf', archive, 'package/NOTICE'], root)).trim();
+        assert.ok(packedNotice === notice.trim() || packedNotice.startsWith(`${notice.trim()}\n\n`), `Missing or mismatched NOTICE in ${manifest.name}`);
+      }
       // Bind the checked source/build to the already verified bytes. Publish these exact archives, never a fresh pack.
       const [repacked] = JSON.parse(await command('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', temporary], join(root, 'packages', directory)));
       assert.equal(digest(await readFile(join(temporary, repacked.filename))), verified.sha256, 'Current package contents differ from the verified archive');

@@ -1,6 +1,5 @@
-pi-browser
+AgentRun
 Copyright 2026 Parcha Labs, Inc.
-
 
 This package contains two pieces of Stagehand 4.1.0 (https://github.com/browserbase/stagehand), both under its MIT license,
 whose text follows:

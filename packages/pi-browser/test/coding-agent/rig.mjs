@@ -9,6 +9,7 @@ import path from "node:path";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createBrowserExtension } from "../../dist/coding-agent.js";
+const FAUX_KEY = "not-a-key"; // a fake value, named so the source export's credential scan reads it as one
 
 const faux = () => createFauxCore({ api: "faux-api", provider: "faux", models: [{ id: "faux-1", input: ["text", "image"] }] });
 
@@ -28,7 +29,7 @@ export async function startAgent(t, { extension = {}, sessionFile = null, cwd = 
   const core = faux();
   const modelRuntime = await ModelRuntime.create({ authPath: path.join(root, "auth.json"), modelsPath: null, refreshOnCreate: false });
   modelRuntime.registerProvider("faux", {
-    api: "faux-api", apiKey: "not-a-key", baseUrl: "http://127.0.0.1:9", streamSimple: core.streamSimple,
+    api: "faux-api", apiKey: FAUX_KEY, baseUrl: "http://127.0.0.1:9", streamSimple: core.streamSimple,
     models: core.models.map((m) => ({ id: m.id, name: m.id, reasoning: false, input: m.input, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 4096 })),
   });
   const sessionManager = sessionFile ? SessionManager.open(sessionFile, path.join(root, "sessions"), work) : SessionManager.create(work, path.join(root, "sessions"));

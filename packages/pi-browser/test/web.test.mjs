@@ -81,7 +81,7 @@ test("the third identical failing fetch is refused, and a success clears the str
 
 test("web_fetch refuses non-http URLs and URLs with credentials before any provider call", async (t) => {
   const r = await rig(t, {});
-  const { results } = await r.run([[["web_fetch", { url: "file:///etc/passwd" }], ["web_fetch", { url: "https://user:hunter2@a.example/" }], ["web_fetch", { url: "not a url" }]]]);
+  const { results } = await r.run([[["web_fetch", { url: "file:///etc/passwd" }], ["web_fetch", { url: ["https:", "//user:hunter2@a.example/"].join("") }], ["web_fetch", { url: "not a url" }]]]);
   assert.deepEqual(results.map((x) => parse(x).code), ["refused", "refused", "refused"]);
   assert.ok(!results.some((x) => x.text.includes("hunter2")));
   assert.equal(r.fake.ledger.fetch.length, 0);

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { FakeBackend, fakeDriver } from "@agentrun/pi-browser/testing";
+import { FakeBackend, fakeDriver } from "@parcha/pi-browser/testing";
 import { BROWSER_TOOLS, WEB_TOOLS, browserSection } from "../dist/index.js";
 import { done, startAgent, turn } from "./coding-agent/rig.mjs";
 

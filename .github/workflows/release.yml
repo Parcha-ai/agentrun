@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          for package in dsl jev pi pi-durable-archil; do
+          for package in dsl jev pi pi-durable-archil pi-browser; do
             if node scripts/verify-published.mjs --package "$package" --allow-absent; then
               echo "Verified existing $package@$version; resuming without republishing."
               continue

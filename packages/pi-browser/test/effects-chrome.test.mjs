@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { EffectObserver, effectDecider } from "@agentrun/pi-browser";
+import { EffectObserver, effectDecider } from "@parcha/pi-browser";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { cdpDriver } from "./effects/cdp-driver.mjs";
 import { CASES, startServer } from "./effects/server.mjs";

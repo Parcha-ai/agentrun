@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { FakeBackend, fixturePage } from "@agentrun/pi-browser/testing";
+import { FakeBackend, fixturePage } from "@parcha/pi-browser/testing";
 import { fakeKernel } from "./fixtures/fake-kernel.mjs";
 
 const CHILD = fileURLToPath(new URL("./custody/child.mjs", import.meta.url));
@@ -198,7 +198,7 @@ test("a session nobody calls for its idle window is released by the task", async
 async function inProcess(t, extra = {}, policy = {}) {
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
-    import("@earendil-works/pi-durable"), import("@agentrun/pi-browser/durable"), import("@agentrun/pi-browser/testing"),
+    import("@earendil-works/pi-durable"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
   ]);
   const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
   const browser = createBrowserExtension({
@@ -269,7 +269,7 @@ test("a page URL is scrubbed before custody commits it: a credential in its quer
 });
 
 test("custody that gave up releasing a session keeps it tracked: the next run open releases it", { timeout: 90_000 }, async (t) => {
-  const { RELEASE_ATTEMPTS } = await import("@agentrun/pi-browser/durable");
+  const { RELEASE_ATTEMPTS } = await import("@parcha/pi-browser/durable");
   const { backend, browser, harness, root, ctx } = await inProcess(t);
   backend.fail("release", RELEASE_ATTEMPTS);
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);

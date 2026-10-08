@@ -128,8 +128,8 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
         await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
     import {runTriageDemo} from '@parcha/agentrun-dsl/demo';
     import {createJevRunner} from '@parcha/agentrun-jev'; import {createPiRunner} from '@parcha/agentrun-pi';
-    import {openDurableRun} from '@parcha/pi-durable-archil';
-    assert.equal(typeof createJevRunner,'function');assert.equal(typeof createPiRunner,'function');assert.equal(typeof openDurableRun,'function');
+    import {openDurableRun} from '@parcha/pi-durable-archil'; import {BROWSER_TOOLS} from '@parcha/pi-browser';
+    assert.equal(typeof createJevRunner,'function');assert.equal(typeof createPiRunner,'function');assert.equal(typeof openDurableRun,'function');assert.ok(BROWSER_TOOLS.length>0);
     for(const scenario of ['billing','technical','ambiguous']){const {result}=await runTriageDemo(scenario);assert.equal(result.status,scenario==='ambiguous'?'escalated':'complete');}\n`);
         await exec(process.execPath, ['--import', './deny-network.mjs', 'smoke.mjs'], { cwd: consumer, timeout: 30_000, maxBuffer: 1024 * 1024 });
       } finally { await rm(consumer, { recursive: true, force: true }); }
@@ -147,7 +147,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-archil|all [--allow-absent]');
+  assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-archil|pi-browser|all [--allow-absent]');
   assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === '--allow-absent'));
   const selected = process.argv[3];
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');

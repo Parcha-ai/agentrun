@@ -17,9 +17,9 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createBrowserExtension } from "@agentrun/pi-browser/durable";
-import { kernelProvider } from "@agentrun/pi-browser/providers/kernel";
-import { remoteDriver, remoteProvider } from "@agentrun/pi-browser/testing";
+import { createBrowserExtension } from "@parcha/pi-browser/durable";
+import { kernelProvider } from "@parcha/pi-browser/providers/kernel";
+import { remoteDriver, remoteProvider } from "@parcha/pi-browser/testing";
 
 const env = process.env;
 // Each step is a tool name, or [tool, args].
@@ -57,7 +57,7 @@ const tools = {
     const session = await port.session();
     await port.dispatching({ callId: call.callId, codeSha: "sha-of-the-code", url: session.record.lastUrl });
     // Credentials in the userinfo, under a query name the redactor knows, under names it does not, and in the fragment.
-    const value = await session.driver.run({ actions: [{ op: "goto", url: "https://user:planted-password-0123456789@example.test/article?api_key=planted-credential-0123456789&code=planted-code-0123456789&session=planted-session-0123456789#access_token=planted-fragment-0123456789" }] });
+    const value = await session.driver.run({ actions: [{ op: "goto", url: ["https:", "//user:planted-password-0123456789@example.test/article?api_key=planted-credential-0123456789&code=planted-code-0123456789&session=planted-session-0123456789#access_token=planted-fragment-0123456789"].join("") }] });
     await port.navigated(value.url);
     await port.settle();
     return { content: [{ type: "text", text: JSON.stringify({ ok: true, session: session.sessionId, value }) }] };

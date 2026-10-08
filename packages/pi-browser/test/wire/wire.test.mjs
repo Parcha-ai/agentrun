@@ -3,9 +3,9 @@
 // scanned for the sentinels. Red on a planted leak (scanner.test.mjs), green here.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection, classifyBrowserError, createRedactor, redactDeep } from "@agentrun/pi-browser";
-import { FakeBackend, fakeDriver, sentinelPages } from "@agentrun/pi-browser/testing";
-import { kernelProvider } from "@agentrun/pi-browser/providers/kernel";
+import { BROWSER_TOOLS, WEB_TOOLS, browserSection, classifyBrowserError, createRedactor, redactDeep } from "@parcha/pi-browser";
+import { FakeBackend, fakeDriver, sentinelPages } from "@parcha/pi-browser/testing";
+import { kernelProvider } from "@parcha/pi-browser/providers/kernel";
 import { fakeKernel } from "../fixtures/fake-kernel.mjs";
 import { Scan } from "./scan.mjs";
 import { ALLOW, hostRegistered, makeSentinels } from "./sentinels.mjs";
