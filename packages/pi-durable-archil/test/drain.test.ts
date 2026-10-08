@@ -4,6 +4,7 @@
 // of the release leaves the run's delegation orphaned.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { serveUntilDone } from "../src/cli.ts";
 import { FencedError } from "../src/errors.ts";
@@ -55,4 +56,19 @@ test("without a drain, an app whose onOpen rejects fails the instance (exit 1); 
   const drained = serveUntilDone(run, () => new Promise(() => {}), "pause", () => {}, signals);
   signals.emit("SIGINT");
   assert.equal(await drained, 75);
+});
+
+test("an instance with nothing to do stays up until it is stopped: serveUntilDone holds the event loop until it settles", async () => {
+  // A process of its own: idle, no server, nothing running (the run's own timers are unref'd). It must neither exit by
+  // itself nor skip the release.
+  const child = spawn(process.execPath, [new URL("./fixtures/idle-instance.ts", import.meta.url).pathname], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NODE_NO_WARNINGS: "1" } });
+  let out = "";
+  child.stdout!.setEncoding("utf8").on("data", (c: string) => void (out += c));
+  const ended = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+  for (const t0 = Date.now(); !out.includes("up\n") && Date.now() - t0 < 10_000; ) await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 1_000));
+  assert.equal(child.exitCode, null, `still up a second later (output: ${JSON.stringify(out)})`);
+  child.kill("SIGTERM");
+  assert.equal(await ended, 0);
+  assert.deepEqual(out.trim().split("\n"), ["up", "draining", "status sleeping", "release", "released", "exit 0"]);
 });

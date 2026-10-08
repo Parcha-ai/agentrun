@@ -313,7 +313,14 @@ export function serveUntilDone(
   // Parking and a drain with a limit read the Harness; a caller that asks for them passes the whole run.
   const durable = run as DurableRun;
   const drainMs = life.drainMs ?? 0;
-  return new Promise<number>((done) => {
+  return new Promise<number>((settle) => {
+    // The run's heartbeat and lease timers are unref'd (a library caller's process may end); an instance stays up, with or
+    // without work, until it parks, drains or fails, so an ended event loop never exits it without a release.
+    const keepAlive = setInterval(() => {}, 2 ** 31 - 1);
+    const done = (code: number) => {
+      clearInterval(keepAlive);
+      settle(code);
+    };
     let releasing = false;
     let parking: Parking | undefined;
     const sleeping = (at: number | null) => run.setStatus("sleeping", { reason: "drained" }, { wakeAt: at === null ? null : new Date(at).toISOString() });

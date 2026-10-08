@@ -74,6 +74,10 @@
   2 s after the kill; a frozen one is replaced 7 to 8 s after the freeze (6 s test lease) and exits 75 within 0.5 s of its
   thaw; a commit from a container costs what it costs from the host. macOS is not verified.
 
+**Fixes**
+- A `run` instance with no `--serve` exited without draining or releasing once its work finished; the supervisor then
+  revoked and restarted it. It now stays up until it parks, drains or fails.
+
 ## 0.1.0-beta.10, 2026-10-08
 
 First release of `@parcha/pi-durable-archil`, versioned with the other packages in this repository. It is the package developed
