@@ -1,7 +1,7 @@
 // daytonaHost unit tests over a fake Daytona client whose toolbox runs each command with a local shell (the in-box
 // launcher and a fake instance really run, in a scratch directory standing for the box), the status mapping, the create
 // retries, stop, the janitor, and the REST client over a fake fetch. No Daytona, no Archil, no network.
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -34,14 +34,71 @@ const INSTANCE = fileURLToPath(new URL("./fixtures/daytona-instance.mjs", import
 const ME = userInfo().username;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dirs: string[] = [];
+/** The scratch directories made since the last test ended. */
+let fresh: string[] = [];
 const scratch = (prefix: string) => {
   const d = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(d);
+  fresh.push(d);
   return d;
 };
 
-/** Every launcher and instance a test left alive (state files in every scratch box), killed after the suite. */
-after(() => {
+/**
+ * The fixture processes of these scratch directories, found in /proc rather than in the launchers' state files (a
+ * launcher records an instance only after it spawned it, so a state file can lag): a launcher names its box on its
+ * command line (`serve <name> --dir <d>/box`), an instance carries `PDA_TEST_OUT=<d>/...` in its environment. Never
+ * this process (the `serve` tests run a launcher here). Empty where there is no /proc.
+ */
+function fixtureProcesses(within: string[]): { pid: number; what: string }[] {
+  if (within.length === 0 || !existsSync("/proc/self/environ")) return [];
+  const found: { pid: number; what: string }[] = [];
+  for (const name of readdirSync("/proc").filter((n) => /^\d+$/.test(n) && Number(n) !== process.pid)) {
+    let argv: string[];
+    let env: string[];
+    try {
+      argv = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0");
+      env = readFileSync(`/proc/${name}/environ`, "utf8").split("\0");
+    } catch {
+      continue;
+    }
+    const launcher = within.some((d) => argv.includes("serve") && argv[argv.indexOf("--dir") + 1] === join(d, "box"));
+    const instance = within.some((d) => env.some((e) => e.startsWith(`PDA_TEST_OUT=${d}/`)));
+    if (launcher || instance) found.push({ pid: Number(name), what: argv.filter(Boolean).slice(1).join(" ").slice(0, 200) });
+  }
+  return found;
+}
+
+/** SIGKILL every fixture process of `within` (an instance leads a session of its own: its group too) until none is left. */
+async function reap(within: string[]): Promise<void> {
+  for (let t0 = Date.now(), left = fixtureProcesses(within); left.length > 0 && Date.now() - t0 < 10_000; left = fixtureProcesses(within)) {
+    for (const { pid } of left) {
+      for (const target of [-pid, pid]) {
+        try {
+          process.kill(target, "SIGKILL");
+        } catch {}
+      }
+    }
+    await sleep(50);
+  }
+}
+
+/**
+ * No fixture process outlives its test: whatever a test leaves running past a short grace (a stop that just returned
+ * may still be exiting) is killed, and the test fails for it.
+ */
+afterEach(async () => {
+  const mine = fresh;
+  fresh = [];
+  let left = fixtureProcesses(mine);
+  for (const t0 = Date.now(); left.length > 0 && Date.now() - t0 < 5_000; left = fixtureProcesses(mine)) await sleep(50);
+  await reap(mine);
+  assert.deepEqual(fixtureProcesses(mine), [], "every fixture process is gone");
+  assert.deepEqual(left, [], "a fixture process outlived its test");
+});
+
+/** The launchers and instances any test left alive, from /proc and from the state files, killed after the suite. */
+after(async () => {
+  await reap(dirs);
   for (const d of dirs) {
     const box = join(d, "box");
     if (!existsSync(box)) continue;
