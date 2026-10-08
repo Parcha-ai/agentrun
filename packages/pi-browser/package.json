@@ -1,0 +1,106 @@
+{
+  "name": "@agentrun/pi-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A durable browser for pi agents: session custody that survives crashes, effect and replay classes per tool, evidence with SHA-256, typed failures, and no credential in any model-visible string.",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || ^24.0.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-durable",
+    "browser",
+    "stagehand",
+    "browserbase"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./durable": {
+      "types": "./dist/durable.d.ts",
+      "import": "./dist/durable.js"
+    },
+    "./providers/browserbase": {
+      "types": "./dist/providers/browserbase.d.ts",
+      "import": "./dist/providers/browserbase.js"
+    },
+    "./providers/cdp": {
+      "types": "./dist/providers/cdp.d.ts",
+      "import": "./dist/providers/cdp.js"
+    },
+    "./providers/kernel": {
+      "types": "./dist/providers/kernel.d.ts",
+      "import": "./dist/providers/kernel.js"
+    },
+    "./driver/stagehand": {
+      "types": "./dist/driver/stagehand.d.ts",
+      "import": "./dist/driver/stagehand.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./coding-agent": {
+      "types": "./dist/coding-agent.d.ts",
+      "import": "./dist/coding-agent.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.map",
+    "src/vendor/stagehand-facade/UPSTREAM.json",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/coding-agent.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@browserbasehq/stagehand": "~4.1.0",
+    "node-html-markdown": "^2.0.0",
+    "node-html-parser": "^6.1.13",
+    "undici": "^6.28.0",
+    "zod": "~4.4.3"
+  },
+  "peerDependencies": {
+    "@browserbasehq/sdk": ">=2.20.0 <3",
+    "@earendil-works/chord": ">=1.0.0 <1.1.0",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-durable": ">=1.0.0 <1.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@browserbasehq/sdk": {
+      "optional": true
+    },
+    "@earendil-works/chord": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-durable": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Parcha-ai/agentrun-harness.git",
+    "directory": "packages/pi-browser"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4"
+  }
+}

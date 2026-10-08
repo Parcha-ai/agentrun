@@ -1,0 +1,24 @@
+{
+  "repo": "github.com/browserbase/stagehand",
+  "path": "packages/integrations/core/src/facade",
+  "commit": "cd7b230778cf92269e4cb90e80d97f5113781c51",
+  "release": "@browserbasehq/stagehand@4.1.0",
+  "files": {
+    "contract.ts": {
+      "blob": "97abd1a13fd2b55a005445e14522495890b6adb7",
+      "sha256": "7979b5de068244c350648dab627e9cdec07337a2eeab42509710c088328c7ac1"
+    },
+    "tools.ts": {
+      "blob": "e291407d3f493b6aaa1b740d3527c836c1a55bc9",
+      "sha256": "6bcbaf0f31ba8b8f94604858d8aacf0bdc58b5b62649d5afd996c49550b3082b"
+    },
+    "runtime.ts": {
+      "blob": "03242d1cabe18b0c13de8fc72766094bbb0560c9",
+      "sha256": "67e19f29a79d24d1cfeb73700d54beac9b07d43d6150e8f1b86e78ef010c8b82"
+    },
+    "screenshot-transport.ts": {
+      "blob": "065bff1dbc47ad50946f0bb98b5ceb5560a9626d",
+      "sha256": "a4c6b68225ae2fd61eb00e692b602a1d44f782eb676d86284d3ac5eb94b05406"
+    }
+  }
+}
