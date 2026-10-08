@@ -64,7 +64,7 @@
   key its start on it. Drivers that ignore it are unchanged.
 - The image installs one version of this package: the checkout's `package.json` version, from a tarball `npm pack` wrote
   into `docker/package` (which must be that version) or else from npm; `--build-arg PDA_VERSION` names another version or
-  a dist-tag, never by default.
+  a dist-tag, never by default. A package without the Docker path (a release from before it) is refused.
 - `examples/docker-quickstart.sh`, and `--host docker` for both examples' demos. It reuses an image only when the image was
   built from this checkout's package version, and rebuilds it otherwise.
 - Measured with Docker Engine 29 on Ubuntu 24.04: a killed container is replaced in about 1 s and the run resumes about

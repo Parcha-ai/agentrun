@@ -8,7 +8,8 @@
 # Build from npm (no tarball in docker/package): the release of this checkout's package.json version, or PDA_VERSION
 # (a version, or a dist-tag such as beta, only when asked for):
 #   docker build -f docker/Dockerfile -t pi-durable-archil:local .
-# The package inside an image is always one version: the tarball's must be this checkout's (or PDA_VERSION).
+# The package inside an image is always one version: the tarball's must be this checkout's (or PDA_VERSION). A release
+# that predates the Docker path is refused: between releases, build from the checkout (docker/package/README.md).
 #
 # Pinned: the Node base by digest (a multi-arch index), the archil client 0.8.42 by sha256 per architecture, the
 # runtime dependencies by docker/runtime/package-lock.json. No secret is in any layer: the mount token reaches a
@@ -66,6 +67,8 @@ RUN set -eu; \
     echo "@parcha/pi-durable-archil from $tgz"; \
     install -d /opt/pda/node_modules/@parcha/pi-durable-archil; \
     tar -xzf "$tgz" -C /opt/pda/node_modules/@parcha/pi-durable-archil --strip-components=1 --no-same-owner; \
+    [ -f /opt/pda/node_modules/@parcha/pi-durable-archil/dist/hosts/docker.js ] \
+      || { echo "@parcha/pi-durable-archil from $tgz predates the Docker path: build from a checkout with npm pack (docker/package/README.md), or set PDA_VERSION to a later release" >&2; exit 1; }; \
     rm -rf /tmp/pda-package /tmp/pda-package.json /tmp/npm-cache; \
     install -o root -g root -m 0755 /opt/pda/node_modules/@parcha/pi-durable-archil/bin/archil-scoped /usr/local/sbin/archil-scoped; \
     chmod 0755 /usr/local/bin/pda-entrypoint; \
