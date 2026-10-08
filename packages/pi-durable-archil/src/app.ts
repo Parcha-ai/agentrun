@@ -1,8 +1,10 @@
 // The app an instance hosts (`pi-durable-archil run --app <module>`): an ES module whose default export is a function
-// of where the run lives that returns pi's Harness options (without `env`, which the run builds on its claim) and an
-// optional `onOpen` for the app to submit or resume work once the run is open and resumed.
+// of where the run lives that returns pi's Harness options (without `env`, which the run builds on its claim), an
+// optional `onOpen` for the app to submit or resume work once the run is open and resumed, how `serve` creates the root
+// conversation, and how a parking run records its wake.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { Harness } from "@earendil-works/pi-durable";
 import type { RunRef } from "./claim.ts";
 import { PdaError } from "./errors.ts";
 import type { DurableRun, OpenDurableRunOptions } from "./run.ts";
@@ -15,10 +17,17 @@ export interface AppContext {
   readonly store: string;
 }
 
-/** pi's HarnessOptions without `env` (registry, models, settings, conversationCreated, now, onReport), plus `onOpen`. */
+/** pi's HarnessOptions without `env` (registry, models, settings, conversationCreated, now, onReport), plus the hooks below. */
 export type AppOptions = OpenDurableRunOptions["harness"] & {
-  /** Called once per incarnation after the run is open and resumed; `run.generation` tells a first start from a resume. */
+  /**
+   * Called once per incarnation after the run is open and resumed; `run.generation` tells a first start from a resume.
+   * Work that must keep the instance up belongs in pi's tasks and tools: parking sees only those.
+   */
   onOpen?(run: DurableRun): void | Promise<void>;
+  /** pi's `root()` options for when `serve` creates the root conversation (its agent: model, extensions). */
+  root?: Parameters<Harness["root"]>[1];
+  /** Record a parking run's wake (park.ts `ParkOptions.wake`); default run.json `sleeping` with `wakeAt`. */
+  wake?(run: DurableRun, at: number | null): Promise<void>;
 };
 
 /** What `--app` names: `export default async (ctx) => ({ registry, models, onOpen })`. */

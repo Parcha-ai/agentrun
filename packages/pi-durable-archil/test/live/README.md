@@ -5,7 +5,7 @@ export PDA_LIVE=1
 export ARCHIL_API_KEY=...                # an Archil API key for the account that owns the scratch disk
 export PDA_LIVE_DISK=dsk-...            # the scratch disk (never a disk with data you want to keep)
 export PDA_LIVE_REGION=aws-us-east-1    # its region (default aws-us-east-1)
-npm run test:live                       # all of them, or one: test:live:claim | env | run | store | supervise
+npm run test:live                       # all of them, or one: test:live:claim | env | lifecycle | run | store | supervise
 ```
 
 The key may come from anything that puts `ARCHIL_API_KEY` in the environment of the command (a secrets manager's run wrapper,
@@ -19,10 +19,10 @@ timing of the fence tests is not).
 What they do: each suite uses `runs/<suite>-<id>/` on the scratch disk and mount points under `/mnt/pda/<suite>/`, mints
 its own token users, records every token user, directory, mount and unit it creates in a ledger as it makes it, and removes
 all of it in `after`, also on failure. Ledgers (and the results JSON next to them) go to `$PDA_STATE_DIR`, or to a fresh
-temporary directory per run when it is unset (its path is printed on stderr); `PDA_P1_STATE` .. `PDA_P5_STATE` name one
+temporary directory per run when it is unset (its path is printed on stderr); `PDA_P1_STATE` .. `PDA_P5_STATE` and `PDA_P8_STATE` (lifecycle) name one
 suite's ledger file.
 
-The mount roots are fixed (`/mnt/pda/p1` .. `/mnt/pda/p5`) and a suite's cleanup unmounts everything under its root, so
+The mount roots are fixed (`/mnt/pda/p1` .. `/mnt/pda/p5`, and `/mnt/pda/p8` for lifecycle) and a suite's cleanup unmounts everything under its root, so
 never run two live runs at once on one host; take a lock (`flock /tmp/pda-live.lock npm run test:live:supervise`). No token is
 ever printed: it travels on the archil wrapper's stdin and is scrubbed from captured output.
 
