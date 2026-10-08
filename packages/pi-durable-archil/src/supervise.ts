@@ -11,6 +11,8 @@ import {
   acquire,
   createRunDir,
   findDelegations,
+  matchDelegations,
+  pathlessResolver,
   mintMountToken,
   MOUNT_TOKEN_TTL,
   parseTokenNickname,
@@ -20,6 +22,7 @@ import {
   type ArchilHost,
   type Claim,
   type ControlApi,
+  type PathlessResolver,
   type RunRef,
 } from "./claim.ts";
 import { FencedError, HeldError, PdaError } from "./errors.ts";
@@ -122,6 +125,11 @@ export const START_BACKOFF_MAX_MS = 10 * 60_000;
 
 export interface EnsureOptions {
   control: SupervisorControl;
+  /**
+   * Attributes delegations the control API lists without a path (`pathlessResolver`). `superviseRuns` shares one across
+   * its pass, so a pass costs at most one exec however many runs it decides; default: one per decision.
+   */
+  pathless?: PathlessResolver;
   /** A held, not orphaned delegation whose `heartbeatAt` is older than this is a lost instance. Default 90 s. */
   leaseExpiryMs?: number;
   /** Bound on the best-effort stop of a lost holder (status plus stop). Default 30 s. */
@@ -248,7 +256,7 @@ export async function ensureRunning(ref: RunRef, host: HostDriver, options: Ensu
   }
   // A due wake still goes through the delegation check: an instance that wrote `sleeping` and died before releasing
   // left a held or orphaned delegation, which a plain start would hit (76) on every tick.
-  const held = await listHeld(opts.control, ref.id);
+  const held = await listHeld(opts.control, ref.id, opts.pathless);
   // A start in flight: the instance has not written run.json at its generation yet (it may not even have mounted).
   // Revoking it or starting a second one would fence what was just started.
   const baseGraceMs = opts.startGraceMs ?? leaseExpiryMs;
@@ -354,9 +362,9 @@ async function ensureRunDir(control: SupervisorControl, id: string, owner: { uid
   return true;
 }
 
-async function listHeld(control: ControlApi, id: string): Promise<Delegation[]> {
+async function listHeld(control: ControlApi, id: string, resolve?: PathlessResolver): Promise<Delegation[]> {
   try {
-    return await findDelegations(control, id);
+    return await findDelegations(control, id, resolve);
   } catch (err) {
     throw new SuperviseError("CONTROL_API_FAILED", `listing delegations on ${runPath(id)} failed`, { cause: err });
   }
@@ -488,10 +496,11 @@ export async function superviseRuns(
   opts: EnsureOptions,
 ): Promise<({ run: string; ms: number } & (EnsureResult | { action: "error"; error: string; message: string; cause?: string }))[]> {
   const out: ({ run: string; ms: number } & (EnsureResult | { action: "error"; error: string; message: string; cause?: string }))[] = [];
+  const pass = { ...opts, pathless: opts.pathless ?? pathlessResolver(opts.control) };
   for (const ref of refs) {
     const t0 = performance.now();
     try {
-      const r = await ensureRunning(ref, host, opts);
+      const r = await ensureRunning(ref, host, pass);
       out.push({ run: ref.id, ms: Math.round(performance.now() - t0), ...r });
     } catch (err) {
       const e = err as PdaError;
@@ -508,7 +517,7 @@ export type TokenUser = { identifier?: string; nickname?: string; status?: strin
 export interface TokenSweepOptions {
   /** The disk's token users (`getDisk(id).authorizedUsers`; the list lags by seconds). */
   listUsers(): Promise<TokenUser[]>;
-  control: Pick<SupervisorControl, "getObject" | "listDelegations" | "removeUser">;
+  control: Pick<SupervisorControl, "getObject" | "listDelegations" | "removeUser" | "exec">;
   /** Only token users whose nickname starts with this (the supervisor's `tokenPrefix`). */
   prefix: string;
   /** The runs this pass may clean; undefined: every run a token nickname names. */
@@ -542,10 +551,13 @@ export async function sweepTokens(opts: TokenSweepOptions): Promise<TokenSweep> 
   const sweep: TokenSweep = { removed: [], failed: [] };
   if (!users.length) return sweep;
   const delegations = await opts.control.listDelegations();
-  const held = (id: string) => delegations.some((d) => {
-    const p = d.path?.replace(/^\/+/, "");
-    return p === runPath(id) || p?.startsWith(`${runPath(id)}/`) === true;
-  });
+  // A run whose pathless delegations cannot be attributed counts as held: its users stay.
+  const heldBy = new Map<string, Promise<boolean>>();
+  const resolve = pathlessResolver(opts.control);
+  const held = (id: string) => {
+    if (!heldBy.has(id)) heldBy.set(id, matchDelegations(delegations, id, resolve).then((d) => d.length > 0, () => true));
+    return heldBy.get(id)!;
+  };
   const released = new Map<string, Promise<boolean>>();
   const isReleased = (id: string) => {
     if (!released.has(id)) {
@@ -559,7 +571,7 @@ export async function sweepTokens(opts: TokenSweepOptions): Promise<TokenSweep> 
     const expiry = u.expiresAt ? Date.parse(u.expiresAt) : Number.NaN;
     let why: "released" | "expired" | null = null;
     if (opts.expired && (u.status === "expired" || expiry <= now)) why = "expired";
-    else if (parsed && (!opts.runs || opts.runs.includes(parsed.runId)) && now - created > grace && !held(parsed.runId) && (await isReleased(parsed.runId))) {
+    else if (parsed && (!opts.runs || opts.runs.includes(parsed.runId)) && now - created > grace && !(await held(parsed.runId)) && (await isReleased(parsed.runId))) {
       why = "released";
     }
     if (!why) continue;

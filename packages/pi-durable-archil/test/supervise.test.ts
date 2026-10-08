@@ -36,7 +36,9 @@ class FakeControl implements SupervisorControl {
   delegations: Delegation[] = [];
   users = new Map<string, { nickname: string; ttl: string; oneUse: boolean; token: string }>();
   calls: Call[] = [];
-  fail: Partial<Record<"getObject" | "putMark" | "revoke" | "list" | "addUser", unknown>> = {};
+  fail: Partial<Record<"getObject" | "putMark" | "revoke" | "list" | "addUser" | "exec", unknown>> = {};
+  /** The inode each `runs/<id>` names, as `exec` reports it (`find -inum`); a path not listed is absent. */
+  inodes = new Map<string, number>();
   #n = 0;
   #log(op: string, arg?: unknown) {
     this.calls.push({ op, at: performance.now(), arg });
@@ -90,6 +92,13 @@ class FakeControl implements SupervisorControl {
     this.#log("revokeDelegation", d);
     if (this.fail.revoke) throw this.fail.revoke;
     this.delegations = this.delegations.filter((x) => !(x.clientId === d.clientId && x.inodeId === d.inodeId));
+  }
+  async exec(command: string) {
+    this.#log("exec", command);
+    if (this.fail.exec) throw this.fail.exec;
+    const asked = new Set([...command.matchAll(/-inum (\d+)/g)].map((m) => Number(m[1])));
+    const lines = [...this.inodes].filter(([, inode]) => asked.has(inode)).map(([path, inode]) => `${inode} ${path.slice("runs/".length)}\n`);
+    return { exitCode: 0, stdout: lines.join("") };
   }
 }
 
@@ -327,6 +336,38 @@ test("held and orphaned: revoke exactly the listed delegations, then start", asy
   assert.deepEqual(r.revoked, [{ clientId: "c-old", inodeId: 7, path: `runs/${REF.id}`, isOrphaned: true }]);
   assert.equal(r.stonith, undefined, "an orphaned client is gone: no STONITH");
   assert.deepEqual(control.ops(), ["getObject", "listDelegations", "getMark", "revokeDelegation", "addUser", "putMark", "host.start"]);
+});
+
+test("held and orphaned, listed without a path: found by the run's inode, revoked, then started", async () => {
+  const { control, host, opts } = rig();
+  control.runJson(running({ heartbeatAt: ago(1_000) }));
+  control.delegations = [deleg({ isOrphaned: true, path: undefined }), deleg({ clientId: "c-other", inodeId: 8, isOrphaned: true, path: undefined })];
+  control.inodes.set(`runs/${REF.id}`, 7);
+  const r = await ensureRunning(REF, host, opts());
+  assert.ok(r.action === "started" && r.reason === "orphaned", "by path alone this read as none, and the start was refused (76)");
+  assert.deepEqual(r.revoked, [{ clientId: "c-old", inodeId: 7, path: undefined, isOrphaned: true }]);
+  assert.deepEqual(control.delegations.map((d) => d.clientId), ["c-other"], "another run's pathless delegation is left alone");
+  assert.deepEqual(control.ops(), ["getObject", "listDelegations", "exec", "getMark", "revokeDelegation", "addUser", "putMark", "host.start"]);
+});
+
+test("held, not orphaned, listed without a path, lease fresh: healthy, no second instance", async () => {
+  const { control, host, opts } = rig();
+  control.runJson(running({ heartbeatAt: ago(1_000) }));
+  control.delegations = [deleg({ path: undefined })];
+  control.inodes.set(`runs/${REF.id}`, 7);
+  const r = await ensureRunning(REF, host, opts());
+  assert.equal(r.action, "healthy", "by path alone this read as none and started a second instance");
+  assert.equal(host.started.length, 0);
+});
+
+test("a pathless delegation the supervisor cannot attribute fails the pass: nothing revoked or started", async () => {
+  const { control, host, opts } = rig();
+  control.runJson(running({ heartbeatAt: ago(1_000) }));
+  control.delegations = [deleg({ isOrphaned: true, path: undefined })];
+  control.fail.exec = new Error("504 Gateway Time-out");
+  await assert.rejects(ensureRunning(REF, host, opts()), (e: unknown) => e instanceof SuperviseError && e.code === "CONTROL_API_FAILED");
+  assert.equal(host.started.length, 0);
+  assert.ok(!control.ops().includes("revokeDelegation"));
 });
 
 test("held, not orphaned, lease fresh: healthy, nothing stopped, revoked or started", async () => {
@@ -1022,6 +1063,41 @@ test("token sweep: a start in flight (minted, not mounted, the run still release
   assert.deepEqual(r.removed, []);
   const later = await sweepTokens({ listUsers: async () => fresh, control, prefix: "pda-", runs: ["r1"], graceMs: 10_000, now: () => NOW });
   assert.deepEqual(later.removed.map((x) => x.identifier), ["u-start"], "past the grace, a released run's user goes; r2 is not in this pass");
+});
+
+test("token sweep: a released run whose live holder is listed without a path keeps its users; so does one that cannot be attributed", async () => {
+  const { control, user } = sweepRig({ sleeping: { status: "sleeping" }, done: { status: "done" }, paused: { status: "paused" } });
+  control.delegations.push(deleg({ clientId: "c-sleeping", inodeId: 41, path: undefined }));
+  control.inodes.set("runs/sleeping", 41).set("runs/done", 42).set("runs/paused", 43);
+  const users = [user("u-sleeping", "sleeping", 20 * 60_000), user("u-done", "done", 20 * 60_000)];
+  const r = await sweepTokens({ listUsers: async () => users, control, prefix: "pda-", now: () => NOW });
+  assert.deepEqual(r.removed.map((x) => x.identifier), ["u-done"], "by path alone the sleeping run read as unheld and lost its token under a live mount");
+  control.fail.exec = new Error("504 Gateway Time-out");
+  const blind = await sweepTokens({ listUsers: async () => [user("u-paused", "paused", 20 * 60_000)], control, prefix: "pda-", now: () => NOW });
+  assert.deepEqual(blind.removed, [], "a run that cannot be told apart from the pathless holder keeps its users");
+});
+
+test("superviseRuns: five runs and one pathless orphan cost one exec per pass, and only its run is revoked", async () => {
+  const { control, host, opts } = rig();
+  const refs = ["r1", "r2", "r3", "r4", "r5"].map((id) => ({ ...REF, id }));
+  for (const r of refs) control.objects.set(`runs/${r.id}/run.json`, JSON.stringify({ ...running({ heartbeatAt: ago(1_000) }), run: r.id }));
+  control.delegations = [deleg({ clientId: "c-x", inodeId: 99, path: undefined, isOrphaned: true })];
+  for (const [i, r] of refs.entries()) control.inodes.set(`runs/${r.id}`, 90 + i + (r.id === "r3" ? 7 : 0));
+  const out = await superviseRuns(refs, host, opts());
+  assert.deepEqual(out.map((o) => [o.run, o.action, (o as { reason?: string }).reason]), [
+    ["r1", "started", "none"],
+    ["r2", "started", "none"],
+    ["r3", "started", "orphaned"],
+    ["r4", "started", "none"],
+    ["r5", "started", "none"],
+  ]);
+  assert.equal(control.ops().filter((op) => op === "exec").length, 1, "one exec for the pass, not one per run");
+  await superviseRuns(refs, host, opts());
+  assert.equal(control.ops().filter((op) => op === "exec").length, 1, "the orphan is revoked, so the next pass needs none");
+  control.delegations.push(deleg({ clientId: "c-gone", inodeId: 500, path: undefined, isOrphaned: true }));
+  await superviseRuns(refs, host, opts());
+  assert.equal(control.ops().filter((op) => op === "exec").length, 2, "a pass with a pathless entry on no run directory: one exec");
+  assert.equal(control.delegations.length, 1, "an inode on no run directory is no run's: nothing revokes it");
 });
 
 test("token sweep with expired: expired users go whatever their run, held included; an unparseable nickname goes only when expired", async () => {
