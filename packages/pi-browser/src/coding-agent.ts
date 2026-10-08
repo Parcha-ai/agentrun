@@ -128,8 +128,13 @@ export class LocalCustody implements CustodyPort<PageDriver> {
       this.live = live;
       return attached;
     } catch (error) {
-      // Recorded released only when the provider confirmed it; otherwise the entry stays open for the next start to retry.
-      if (!live || await provider.release(live.ref).then(() => true, () => false)) {
+      // A create that threw may still have made a browser (the answer lost, the call timed out): when there is no ref, look it up by its
+      // tag. The record ends released only when the provider confirmed every release; if the lookup or a release fails it stays open
+      // for the next start to find and retry.
+      const refs = live ? [live.ref] : await provider.findByTag(tag).catch(() => null);
+      let released = refs !== null;
+      for (const ref of refs ?? []) if (!(await provider.release(ref).then(() => true, () => false))) released = false;
+      if (released) {
         Object.assign(record, { state: "released", releaseReason: "create_failed" });
         this.save(record);
       }

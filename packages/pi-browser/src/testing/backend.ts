@@ -99,6 +99,7 @@ export class FakeBackend {
   readonly driverFace: FakeDriverFace;
   private seq = 0;
   private holdOp: string | null = null;
+  private loseOp: string | null = null;
   private failures = new Map<string, number>();
   private delays = new Map<string, number>();
   private peak = 0;
@@ -125,6 +126,8 @@ export class FakeBackend {
 
   /** The next call of `op` is applied and recorded, then never answered. */
   hold(op: string): void { this.holdOp = op; }
+  /** The next call of `op` is applied and recorded, then fails: the provider did the work and the answer was lost. */
+  lose(op: string): void { this.loseOp = op; }
   /** The next `times` calls of `op` fail before they take effect. */
   fail(op: string, times = 1): void { this.failures.set(op, times); }
   /** `op` sleeps `ms` before it takes effect; a caller that hangs up meanwhile is not served. */
@@ -135,7 +138,7 @@ export class FakeBackend {
   endAll(): void { for (const s of this.sessions.values()) s.state = "stopped"; }
   goto(url: string): void { for (const s of this.sessions.values()) if (s.state === "running") s.url = url; }
   reset(): void {
-    this.sessions.clear(); this.ledger.length = 0; this.dispatched.length = 0; this.seq = 0; this.holdOp = null; this.failures.clear(); this.delays.clear(); this.peak = 0; this.echoOn = false;
+    this.sessions.clear(); this.ledger.length = 0; this.dispatched.length = 0; this.seq = 0; this.holdOp = null; this.loseOp = null; this.failures.clear(); this.delays.clear(); this.peak = 0; this.echoOn = false;
   }
 
   live(): Array<{ id: string; tag: string }> { return [...this.sessions.values()].filter((s) => s.state === "running").map(({ id, tag }) => ({ id, tag })); }
@@ -191,6 +194,7 @@ export class FakeBackend {
 
   /** After an op took effect: when it is the held one, announce it and never answer. */
   async after(op: string): Promise<void> {
+    if (this.loseOp === op) { this.loseOp = null; throw new FakeProviderError(`${op} was applied and its answer was lost`); }
     if (this.holdOp !== op) return;
     this.holdOp = null;
     this.events.emit("held", op);

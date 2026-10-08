@@ -223,6 +223,43 @@ test("a launch the provider refuses is a typed failure, leaves no session behind
   assert.ok(agent.custom("browser.session").some(({ reason }) => reason === "create_failed"));
 });
 
+test("a launch whose answer was lost is looked up by its tag and released, never recorded released with the browser still running", async (t) => {
+  const backend = fake();
+  backend.lose("create");
+  const agent = await startAgent(t, { extension: extensionOf(backend) });
+  const [lost, ok] = await agent.run(turn(["snapshot"]), turn(["snapshot"]));
+  assert.equal(lost.isError, true);
+  assert.equal(ok.isError, false);
+  assert.equal(backend.tally().creates, 2);
+  assert.equal(backend.liveCount(), 1, "the first launch's browser was found by its tag and released; only the second lives");
+  const entries = agent.custom("browser.session");
+  const first = entries[0].tag;
+  assert.ok(entries.some((entry) => entry.tag === first && entry.state === "released" && entry.reason === "create_failed"));
+});
+
+test("a launch whose answer was lost stays open in the session file when the lookup fails, for the next start to retry", async (t) => {
+  const backend = fake();
+  backend.lose("create");
+  backend.fail("findByTag", 1);
+  const agent = await startAgent(t, { extension: extensionOf(backend) });
+  const [lost] = await agent.run(turn(["snapshot"]));
+  assert.equal(lost.isError, true);
+  const entries = agent.custom("browser.session");
+  const tag = entries[0].tag;
+  assert.ok(!entries.some((entry) => entry.tag === tag && entry.state === "released"), "not recorded released: the browser may still be running");
+  assert.equal(backend.liveCount(), 1, "the browser the lost answer made is still there for the next start to find");
+});
+
+test("resetting the fake backend disarms a lost answer, so a reused backend carries no failure into the next test", async (t) => {
+  const backend = fake();
+  backend.lose("create");
+  backend.reset();
+  const agent = await startAgent(t, { extension: extensionOf(backend) });
+  const [ok] = await agent.run(turn(["snapshot"]));
+  assert.equal(ok.isError, false);
+  assert.equal(backend.tally().creates, 1);
+});
+
 test("web_fetch is filed as evidence through the provider; web_search is listed only when the provider can search", async (t) => {
   const backend = fake({ fetches: { "https://example.test/doc": "# Doc\n\nthe answer is 42" }, search: [{ url: "https://example.test/doc", title: "Doc" }] });
   const agent = await startAgent(t, { extension: extensionOf(backend) });
