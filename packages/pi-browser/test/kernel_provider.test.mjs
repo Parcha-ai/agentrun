@@ -10,7 +10,7 @@ import http from "node:http";
 import test from "node:test";
 import * as undici from "undici";
 import { classifyBrowserError } from "../dist/index.js";
-import { closeDirectFetch } from "../dist/providers/browserbase-net.js";
+import { closeDirectFetch } from "../dist/providers/http.js";
 import { KERNEL_IDLE_MAX_S, KERNEL_IDLE_MIN_S, KernelError, kernelCreateBody, kernelProvider } from "../dist/providers/kernel.js";
 import { makeSentinels } from "../dist/testing/index.js";
 import { fakeKernel } from "./fixtures/fake-kernel.mjs";
