@@ -245,9 +245,9 @@ export function pathlessResolver(control: Pick<ControlApi, "exec">): PathlessRes
 }
 
 /**
- * One exec: the run directories among `inodes`, by inode. `exec` runs at the disk root in shared mode. "No `runs/`" is
- * told from "unreadable" by listing the disk root first: an unreadable root or `runs/` fails the exec, never reads as
- * no run directory.
+ * One exec: the run directories among `inodes`, by inode. `exec` runs at the disk root in shared mode. The disk root is
+ * listed first, so a missing `runs/` and an unreadable one are told apart: an unreadable root or `runs/` fails the exec,
+ * never reads as no run directory.
  */
 async function runDirsByInode(control: Pick<ControlApi, "exec">, inodes: readonly number[]): Promise<Map<number, string>> {
   if (!control.exec) throw new ClaimError("CONTROL_API_FAILED", "a delegation with no path may be a run's, and the control API has no exec to attribute it");
