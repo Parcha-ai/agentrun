@@ -957,7 +957,12 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
   const step = stepper(options.onStep);
   let env: RunEnv | undefined;
   const lease = await openLease(ref, { ...options, context, cleanup: (c) => env?.cleanup(c) ?? Promise.resolve() }, step);
-  env = (options.env ?? ((c: Claim) => archilEnv(c)))(lease.rawClaim);
+  try {
+    env = (options.env ?? ((c: Claim) => archilEnv(c)))(lease.rawClaim);
+  } catch (error) {
+    await lease.abandon(error);
+    throw error;
+  }
   const run = new Run(lease, env, options as unknown as OpenDurableRunOptions<ToolRegistration>, context);
   try {
     await run.open(step);

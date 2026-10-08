@@ -40,6 +40,8 @@ agent's workspace.
   a FUSE request cannot keep a zombie's commands alive. The lease writes `run.json` and creates its directories through the
   claim directory opened at acquire, checked against the mount table, never by path: a mount that leaves the table under a
   live instance fences it (`CLAIM_UNMOUNTED`, exit 75) at the next heartbeat, and nothing lands under the bare mountpoint.
+  An open that fails after the lease is up, including an environment factory that throws (`setpriv` missing), releases the
+  claim and the owner lock and stops the heartbeat before it throws.
 - `openRunLease`, the same lifecycle without a store or a Harness, and the `@parcha/pi-durable-archil/lease` entry for a host that
   owns its Harness (`"sideEffects": false`: a bundle of that entry is about 52 KB against 493 KB for the whole package).
 

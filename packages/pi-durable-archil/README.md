@@ -30,7 +30,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 - Linux with systemd and FUSE (`/dev/fuse`, `libfuse2`, which the archil package depends on, and `fusermount` from `fuse3`,
   which cleans a dead mount), `setpriv` (util-linux) and `sudo`, near the disk's region: a commit is one round trip to the
   region (3 to 6 ms p50 from a VM next to it, measured).
-- Node 22.19 or later to run the package (the unit tests need Node 24: two of them use `using` declarations).
+- Node 22.19 or later, to run the package and its unit tests.
 - The [`archil` client](https://docs.archil.com/mounting/linux) 0.8.40 or later (0.8.42 tested):
   `curl -s https://archil.com/install | sh`.
 - Root for the mounts: every `archil` verb needs it on client 0.8.42. The package reaches root only through
@@ -371,12 +371,11 @@ npm test            # unit tests: no Archil, no network, no model
 npm run typecheck
 ```
 
-The package runs on Node 22.19 or later; the unit tests need Node 24 (two test files use `using` declarations, which Node
-22 cannot parse).
+The package and its unit tests run on Node 22.19 or later.
 
 The live suites (`npm run test:live:claim`, `:env`, `:run`, `:store`, `:supervise`) mount a real scratch disk. See
 `test/live/README.md` for what they need and what they clean up.
 
 ## License
 
-MIT, Parcha Labs Inc.
+Apache-2.0, Parcha Labs, Inc. See `LICENSE` and `NOTICE`.

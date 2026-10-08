@@ -315,6 +315,24 @@ describe("openDurableRun", () => {
     }
   });
 
+  it("an env factory that throws abandons the lease: the claim is released, the owner lock is free and the heartbeat stops", async () => {
+    const dir = scratchRoot("env-throws");
+    try {
+      const lease = { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 };
+      const t = setup(dir.root, { options: { lease, env: () => { throw new Error("setpriv is missing"); } } });
+      const refused = await t.open().then(() => null, (error: unknown) => error);
+      assert.ok(refused instanceof Error && refused.message === "setpriv is missing", String(refused));
+      assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is released, not fenced");
+      assert.equal(t.fenced.length, 0);
+      takeOwnerLock(dir.root).release();
+      const last = runJson(dir.root).heartbeatAt;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(runJson(dir.root).heartbeatAt, last, "no heartbeat after the failed open");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("refuses a store whose head it cannot read (pi's schema moved): marked failed with the seal kept, released, exit 70", async () => {
     const dir = scratchRoot("head-unreadable");
     try {
