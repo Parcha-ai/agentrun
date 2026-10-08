@@ -9,7 +9,7 @@ read back from the run's store, shows which generation and which host produced e
 
 ## Run it
 
-You need the Quickstart's setup from the [top-level README](../../README.md#quickstart-kill-a-host-watch-the-run-resume-on-another)
+You need the Quickstart's setup from the [top-level README](../../README.md#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another)
 (the root-owned wrapper and the two mount roots, once per machine), a scratch disk and its API key. No model key: the model is
 pi-ai's faux provider.
 
@@ -21,6 +21,10 @@ node examples/01-durable-chat/demo.ts    # about 25 seconds
 
 The demo creates `runs/chat-<random>/` on the disk, removes it and the run's token users when it ends (`--keep` leaves the
 directory), and prints every command it runs. `--help` lists the options.
+
+With Docker instead (no root, no archil client on this machine; build the image as in
+[example 02](../02-paid-effect/README.md#with-docker-macos-or-linux-no-root)): `node examples/01-durable-chat/demo.ts --host docker`,
+about 30 seconds.
 
 ## What you should see
 

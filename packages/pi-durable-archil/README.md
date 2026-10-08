@@ -27,6 +27,9 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 
 ## Requirements
 
+- Either Docker, on any operating system: each instance then runs in a container of this package's image
+  (`docker/Dockerfile`, see [Quickstart with Docker](#quickstart-with-docker)), and nothing else below applies to the
+  machine; or the following on a Linux host.
 - Linux with systemd and FUSE (`/dev/fuse`, `libfuse2`, which the archil package depends on, and `fusermount` from `fuse3`,
   which cleans a dead mount), `setpriv` (util-linux) and `sudo`, near the disk's region: a commit is one round trip to the
   region (3 to 6 ms p50 from a VM next to it, measured).
@@ -44,7 +47,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 - `@earendil-works/pi-durable` and `@earendil-works/chord`, `^1.0.4`, as peer dependencies.
 
 Not covered yet: a Kubernetes host driver (the `HostDriver` interface is below) and running the loop where FUSE is
-unavailable. Not in this release: a Docker quickstart.
+unavailable.
 
 ## Install
 
@@ -59,7 +62,51 @@ git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --i
 cd packages/pi-durable-archil
 ```
 
-## Quickstart: kill a host, watch the run resume on another
+## Quickstart with Docker
+
+You need Docker (Docker Desktop, OrbStack or Colima on macOS, Docker Engine on Linux), Node 22.19 or later, and an Archil
+account (the free plan is enough): from the Archil console, a disk for scratch runs and an API key. This machine needs no
+root, no FUSE and no archil client: each instance of a run is a container of this package's image, and that container is
+the instance's machine.
+
+```sh
+git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun
+export ARCHIL_API_KEY=...            # Archil console, API keys; only the supervisor on this machine reads it
+export ARCHIL_DISK=dsk-...           # the disk's id
+export ARCHIL_REGION=aws-us-east-1   # the disk's region
+packages/pi-durable-archil/examples/docker-quickstart.sh
+```
+
+The script prints each command before it runs it:
+1. it checks Node, Docker and the three variables, and says whether the Docker daemon applies AppArmor;
+2. it installs the workspace (`npm ci`), builds this package, and builds the image from `docker/Dockerfile`: Node 24, the
+   archil client checked by sha256, FUSE and this package;
+3. it runs example 02 with `--host docker`. An agent charges six invoices through a fake paid API, and host A's container
+   is killed (`docker kill`) while the third charge is in flight. Host B's container takes over and finishes;
+4. it cleans up: the run's containers, its directory on the disk, its token users, and the tarball it packed.
+
+It ends with a table of what the paid API received against what the run recorded: each charge was received once, and the
+charge that was in flight is recorded `interrupted` and was not sent again. A first run takes about two minutes, most of it
+building the image (826 MB, 250 MB of it the archil client; `docker image rm pi-durable-archil:local` removes it). Later
+runs take about 15 seconds. Measured on Linux (Docker Engine 29 on Ubuntu 24.04); the macOS case (Docker Desktop,
+OrbStack, Colima, and the arm64 image on Apple silicon) is unverified until the script has been run on a Mac. Then try
+`packages/pi-durable-archil/examples/docker-quickstart.sh freeze`: host A's container is frozen (`docker pause`), and once
+the lease expires host B's supervisor stops it and takes over. From `packages/pi-durable-archil`, `node
+examples/01-durable-chat/demo.ts --host docker` runs a chat that continues on the other host.
+
+To run your own app the same way:
+
+```sh
+npx pi-durable-archil supervise --host docker --image pi-durable-archil:local \
+  --disk "$ARCHIL_DISK" --region "$ARCHIL_REGION" --id my-run --create --app ./my-app.ts --every 30s
+```
+
+Your app's directory (or `--app-root DIR`) is mounted read-only into each container. Its imports of
+`@parcha/pi-durable-archil`, `@earendil-works/pi-durable`, `chord` and `pi-ai` resolve to the image's copies, and a
+`node_modules` in that directory is hidden. If your app needs other packages, build an image `FROM` this one that
+installs them under `/opt/pda`.
+
+## Quickstart on a Linux host: kill a host, watch the run resume on another
 
 This runs example 02, from `packages/pi-durable-archil` of a checkout, on one machine that plays two hosts: "host A" and "host B" are two mount roots, each
 with its own FUSE client, which to Archil are two machines. It needs the requirements above, a user with passwordless `sudo`,
@@ -133,8 +180,8 @@ or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit re
 
 | Command | What it does |
 |---|---|
-| `run --disk D --region R --id ID --app MODULE` | The instance a host driver starts: claim the run, open it, resume it. `--token-stdin` reads the mount token from stdin. Lease flags: `--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`. `--on-sigterm resume` (default) or `pause`. `--serve PORT`, `--park-threshold`, `--park-idle`, `--drain-timeout` (below) |
-| `supervise --disk D --region R (--id ID ... \| --all) [--every 30s] --app MODULE` | One decision per run, once or in a loop: nothing to do, start, or revoke and start; `--app` is the module each started instance runs. `--create` makes the run directory. `--check` proves this host's fence first. `--sweep-tokens` removes expired token users. Prints one JSON line per decision |
+| `run --disk D --region R --id ID --app MODULE` | The instance a host driver starts: claim the run, open it, resume it. `--token-stdin` reads the mount token from stdin. Lease flags: `--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`. `--on-sigterm resume` (default) or `pause`. `--serve PORT`, `--park-threshold`, `--park-idle`, `--drain-timeout` (below). `--run-as USER` runs the agent's commands as USER when the instance runs as root (in a container) |
+| `supervise --disk D --region R (--id ID ... \| --all) [--every 30s] --app MODULE` | One decision per run, once or in a loop: nothing to do, start, or revoke and start; `--app` is the module each started instance runs. `--create` makes the run directory. `--check` proves this host's fence first. `--sweep-tokens` removes expired token users. `--host docker --image IMAGE` starts each instance in a container (`--app-root`, `--fleet`, `--name-prefix`, `--run-as`, `--docker-arg`, `--apparmor`). Prints one JSON line per decision |
 | `status --disk D --region R --id ID` | `run.json` over the S3 API, the run's delegations and the holder's state |
 | `release --id ID` | Unmount the run's mount on this host (a dead mount is cleaned) |
 | `fork --id A --new-id B` | Copy a released, sealed run into a new run (see Serve, parking and fork) |
@@ -195,7 +242,9 @@ A host driver is three calls, and nothing else in the package knows which comput
 
 ```ts
 export interface HostDriver {
-  start(ref: RunRef, mountToken: string): Promise<HostHandle>;   // the handle is JSON; the instance writes it into run.json
+  // The handle is JSON; the instance writes it into run.json. `attempt` (the generation the instance will open) lets a
+  // driver key a start, so a retry of the same attempt finds the instance it already started.
+  start(ref: RunRef, mountToken: string, attempt?: { attempt: number }): Promise<HostHandle>;
   status(handle: HostHandle): Promise<"running" | "stopped" | "failed" | "gone" | "unknown">;
   stop(handle: HostHandle): Promise<void>;
 }
@@ -220,6 +269,30 @@ mount aside (`archil-scoped retire`) and kills its daemon. Measured live on Dayt
 power-off, a freeze of the instance and its FUSE daemon, and a network partition were each taken over on another box (the
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by
 the driver), and the thawed instance exited 75. A driver for another compute (a Kubernetes pod, another sandbox product) is the same three calls.
+
+`dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
+container is one incarnation.
+- **Start.** `docker create` named `pda-<run>-g<generation>`: a retry of the same generation adopts a running container and
+  replaces a dead one. Flags: `--device /dev/fuse --cap-add SYS_ADMIN` for the mount, `--security-opt no-new-privileges`,
+  no restart policy (the supervisor decides), and `--security-opt apparmor=unconfined` only where the Docker daemon applies
+  AppArmor (`docker info` lists it; Docker Engine on Ubuntu and Debian), because Docker's default profile denies mount(2).
+  The supervisor prints that decision and its reason once. Docker Desktop and OrbStack apply no AppArmor and get no option.
+- **The mount token** is copied into the created container as a root-only file, which the entrypoint removes before the
+  instance starts. It never appears in `docker inspect`, an argument or an environment variable; the API key stays with the
+  supervisor.
+- **Inside the container** the instance runs as root, so the archil verbs need no sudo, and the agent's commands run as the
+  image's user `pda` (uid 1500, `run --run-as`) under no_new_privs, with every capability set empty. `work/` and the files
+  pi's write and edit tools create there belong to `pda`; the run's store, `run.json` and the archil daemon (which holds the
+  token) stay root's, and Archil enforces their modes.
+- **Status** comes from `docker inspect`: exit 0 is stopped, any other exit (75 and 76 included) failed, and a paused
+  container is running, so the lease decides. **Stop** is `docker stop` (the instance drains), then `docker rm`.
+- **A dead container takes its mount with it**: the mount lives in the container's mount namespace, nothing is left on the
+  host, and the next supervisor tick revokes the orphaned claim and starts a new container.
+
+Measured with Docker Engine 29 on Ubuntu 24.04, about 3 ms from `aws-us-east-1`: a killed container is replaced in about
+1 s and the run resumes about 2 s after the kill; a frozen one is replaced 7 to 8 s after the freeze with a 6 s test
+lease, and when thawed it exits 75 within 0.5 s. A SQLite FULL commit from a container has the same p50 as from the host
+(about 6 ms); a pi commit, through that store, about 11 ms.
 
 Mount tokens are reusable with a 24 h TTL (`--token-ttl`), one token user per start attempt, named
 `pda-<run id>-g<attempt>-<time>` so a user can be traced to its run. They are not single-use: the archil client
@@ -369,6 +442,12 @@ to 6.3 s with a 6 s test lease (90 to 120 s with the defaults).
   request must send `authorization: Bearer <token>`, and it is compared in constant time. The file is readable by the run
   user, so by the agent's own commands: it guards the network, not the agent. Put TLS in front of anything that leaves the
   machine.
+- **In a container** (`dockerHost`) the instance runs as root and holds `CAP_SYS_ADMIN` (with AppArmor unconfined where the
+  daemon applies AppArmor), which `archil mount` needs. The agent's commands do not: they run as uid 1500 with every
+  capability set empty, the bounding set included, and no_new_privs, so `mount`, `unshare` and `nsenter` fail from a
+  command. With `fs.protected_hardlinks` on (the live suite checks it), a command cannot hard-link the store or `run.json`
+  into `work/` either. Anything passed with `--env` is visible to `docker inspect` on the machine and to the agent's
+  commands, so never pass a secret there that the agent must not read.
 - **A revocation is the most dangerous operation.** It happens only for an orphaned client, a dead host or an expired
   lease, and every takeover writes the new `generation` and the previous holder into `run.json` and the supervisor's log.
 
@@ -424,7 +503,8 @@ npm run typecheck
 
 The package and its unit tests run on Node 22.19 or later.
 
-The live suites (`npm run test:live:claim`, `:env`, `:run`, `:store`, `:supervise`) mount a real scratch disk. See
+The live suites (`npm run test:live:claim`, `:env`, `:run`, `:store`, `:supervise`) mount a real scratch disk, and
+`npm run test:live:docker` runs the Docker driver's takeover test against this machine's Docker daemon. See
 `test/live/README.md` for what they need and what they clean up.
 
 ## License

@@ -33,10 +33,16 @@ export type HostStatus = "running" | "stopped" | "failed" | "gone" | "unknown";
 /** A driver's description of one instance; the instance writes it into `run.json` as `holder`. */
 export type HostHandle = { driver: string; [key: string]: Json };
 
+/** Which start this is: the generation the instance will open (run.json's generation + 1), also in the token's nickname. */
+export type StartAttempt = { attempt: number };
+
 /** Compute is disposable and pluggable: a driver is these three calls. */
 export interface HostDriver {
-  /** Start an instance of the run that mounts with `mountToken` (a reusable token, minted for this attempt). */
-  start(ref: RunRef, mountToken: string): Promise<HostHandle>;
+  /**
+   * Start an instance of the run that mounts with `mountToken` (a reusable token, minted for this attempt). A driver may
+   * key the start on `attempt`, so a retry of the same attempt finds the instance it already started.
+   */
+  start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle>;
   status(handle: HostHandle): Promise<HostStatus>;
   /** Stop the instance and whatever it left on its host. A handle the driver cannot reach is a no-op. */
   stop(handle: HostHandle): Promise<void>;
@@ -439,7 +445,7 @@ async function startInstance(
   const startMark = await writeMark({ generation: why.generation + 1, at, by, failures, lastExit });
   let handle: HostHandle;
   try {
-    handle = await host.start(ref, token.token);
+    handle = await host.start(ref, token.token, { attempt: why.generation + 1 });
   } catch (err) {
     // A driver that throws started nothing: its token goes, and the mark goes back to the last start's (whose grace is
     // over, or there would be no start), so the next tick starts again and this attempt adds no failure. With no last

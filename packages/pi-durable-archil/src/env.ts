@@ -1,11 +1,12 @@
 // The execution environment: pi's NodeExecutionEnv rooted at the run's work/ directory, with an environment id
-// that names the run, commands that cannot gain privilege (no_new_privs), file operations confined to work/ (confine.ts),
+// that names the run, commands that cannot gain privilege (no_new_privs), optionally commands run as another user
+// (`runAs`, for an instance that runs as root in a container), file operations confined to work/ (confine.ts),
 // read-only built-in tools declared replay-safe, and the hook point for the workspace barrier. Tools run
 // on the host that holds the claim, against the claimed mount.
 import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, stat } from "node:fs/promises";
+import { access, chmod, lchown, lstat, mkdir, mkdtemp, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
@@ -53,7 +54,7 @@ export interface ArchilEnvOptions {
    * archil verbs). Default true. Set false on a host that already confines commands, or where util-linux is absent.
    */
   readonly noNewPrivs?: boolean;
-  /** The util-linux `setpriv` that `noNewPrivs` runs; default `/usr/bin/setpriv`. */
+  /** The util-linux `setpriv` that `noNewPrivs` and `runAs` run; default `/usr/bin/setpriv`. */
   readonly setprivPath?: string;
   /**
    * Confine every file operation to the workspace (`PathOutsideWorkError` otherwise): read, write, edit and every other
@@ -67,9 +68,18 @@ export interface ArchilEnvOptions {
    * material.
    */
   readonly readRoots?: readonly string[];
+  /**
+   * Run every command as this user and group with no capabilities (`setpriv --reuid --regid --clear-groups
+   * --inh-caps=-all --bounding-set=-all`), and give it `work/` and every file and directory pi's in-process file tools
+   * create under `work/`, so a command can change what the agent wrote.
+   * For an instance that runs as root, as in a container: the run's root, store, `run.json` and owner lock stay root's
+   * (the mount enforces their modes), and the archil daemon's environment, which holds the mount token, is unreadable to
+   * the commands. Needs root (to switch users and to chown).
+   */
+  readonly runAs?: { readonly uid: number; readonly gid: number };
 }
 
-export type EnvErrorCode = "SETPRIV_UNAVAILABLE" | "PROC_UNAVAILABLE";
+export type EnvErrorCode = "SETPRIV_UNAVAILABLE" | "PROC_UNAVAILABLE" | "INVALID_RUN_AS";
 
 /**
  * What `exec` returns once the factory's `cleanup()` ran: no command was started. Its `code` is pi's `spawn_error`
@@ -124,8 +134,10 @@ const TEMP_DIR = "tmp";
 interface RunScope {
   readonly id: string;
   readonly tempRoot: string;
-  /** The `setpriv` that confines every command; undefined when `noNewPrivs` is off. */
+  /** The `setpriv` that confines every command; undefined when neither `noNewPrivs` nor `runAs` is set. */
   readonly setpriv: string | undefined;
+  readonly noNewPrivs: boolean;
+  readonly runAs: { readonly uid: number; readonly gid: number } | undefined;
   readonly shellPath: string | undefined;
   readonly shellEnv: NodeJS.ProcessEnv | undefined;
   /** Environments with a command in flight, so `cleanup` reaches commands of environments built per use. */
@@ -178,9 +190,15 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     options: ShellExecOptions | undefined,
     context: Context,
   ): Promise<Result<ExecCommand, ExecutionError>> {
-    const { setpriv, shellPath, shellEnv } = this.#scope;
+    const { setpriv, noNewPrivs, runAs, shellPath, shellEnv } = this.#scope;
     if (setpriv === undefined) return ok(command);
-    const confine = [setpriv, "--no-new-privs", "--"];
+    const confine = [
+      setpriv,
+      // A root instance's capabilities stay with it: the command's bounding and inheritable sets are emptied too.
+      ...(runAs ? [`--reuid=${runAs.uid}`, `--regid=${runAs.gid}`, "--clear-groups", "--inh-caps=-all", "--bounding-set=-all"] : []),
+      ...(noNewPrivs ? ["--no-new-privs"] : []),
+      "--",
+    ];
     const cwd = options?.cwd === undefined ? this.cwd : getOrDefault(await this.absolutePath(options.cwd, context), this.cwd);
     const env = options?.inheritEnv === false ? { ...options.env } : { ...process.env, ...shellEnv, ...options?.env };
     if (typeof command === "string") {
@@ -432,6 +450,118 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
   }
 }
 
+/**
+ * An environment whose commands run as `runAs`, which owns `work/` and everything pi's in-process file tools create under
+ * it. pi creates a file and its missing parent directories as this process's user (root, where `runAs` is used), so each
+ * creating call notes which entries under `work/` did not exist and hands those it created to `runAs` afterwards. Each
+ * entry is chowned through the confinement's pinned walk (`lchown` of `/proc/self/fd/<parent>/<name>`: no component is
+ * followed, and none can be swapped for a symlink in between); without confinement, only while the entry's parent still
+ * resolves inside `work/`. An entry that existed keeps its owner. A failed chown leaves the entry root's: a command that
+ * then cannot change it says so.
+ */
+class OwnedExecutionEnv extends ArchilExecutionEnv {
+  readonly #closing: AbortSignal;
+  readonly #confinement: Confinement | undefined;
+  readonly #work: string;
+  readonly #owner: { readonly uid: number; readonly gid: number };
+  readonly #workOwned: () => Promise<void>;
+
+  constructor(
+    scope: RunScope,
+    options: ConstructorParameters<typeof NodeExecutionEnv>[0],
+    work: string,
+    owner: { readonly uid: number; readonly gid: number },
+    workOwned: () => Promise<void>,
+  ) {
+    super(scope, options);
+    this.#closing = scope.closing.signal;
+    this.#confinement = scope.confinement;
+    this.#work = scope.confinement?.work ?? work;
+    this.#owner = owner;
+    this.#workOwned = workOwned;
+  }
+
+  override async exec(
+    command: ExecCommand,
+    options: ShellExecOptions | undefined,
+    context: Context,
+  ): Promise<Result<ShellExecResult, ExecutionError>> {
+    // A closed factory refuses before touching the mount (ArchilExecutionEnv.exec); so does this.
+    if (!this.#closing.aborted) await this.#workOwned();
+    return super.exec(command, options, context);
+  }
+
+  override writeFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
+    return this.#creating(path, context, () => super.writeFile(path, content, context));
+  }
+
+  override appendFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
+    return this.#creating(path, context, () => super.appendFile(path, content, context));
+  }
+
+  override createDir(path: string, options: { recursive?: boolean } | undefined, context: Context): Promise<Result<void, FileError>> {
+    return this.#creating(path, context, () => super.createDir(path, options, context));
+  }
+
+  async #creating(path: string, context: Context, call: () => Promise<Result<void, FileError>>): Promise<Result<void, FileError>> {
+    await this.#workOwned();
+    const abs = getOrDefault(await this.absolutePath(path, context), resolve(this.cwd, path));
+    // The confinement's work/ is canonical, so the target is too (its last component is not followed).
+    const target = this.#confinement === undefined ? abs : join(canonicalizeSync(dirname(abs)), abs.slice(dirname(abs).length + 1));
+    const created = await missingWithin(this.#work, target);
+    const result = await call();
+    if (result.ok) for (const entry of created) if (!(await this.#give(entry))) break;
+    return result;
+  }
+
+  async #give(path: string): Promise<boolean> {
+    const { uid, gid } = this.#owner;
+    if (this.#confinement === undefined) {
+      const parent = await realpath(dirname(path)).catch(() => undefined);
+      const work = await realpath(this.#work).catch(() => undefined);
+      if (parent === undefined || work === undefined || !inside(parent, work)) return false;
+      return lchown(path, uid, gid).then(() => true, () => false);
+    }
+    let pin: Pin | undefined;
+    try {
+      pin = await this.#confinement.pinEntry(path, path, { access: "write", follow: false });
+      await lchown(pin.entry, uid, gid);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await pin?.close();
+    }
+  }
+}
+
+/** `target` and its ancestors below `work` that do not exist, outermost first; empty outside `work` or on any doubt. */
+async function missingWithin(work: string, target: string): Promise<string[]> {
+  const missing: string[] = [];
+  for (let path = target; path !== work && inside(path, work); path = dirname(path)) {
+    try {
+      await lstat(path);
+      return missing;
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "ENOENT") return [];
+      missing.unshift(path);
+    }
+  }
+  return inside(target, work) ? missing : [];
+}
+
+/** `work/` owned by `owner`, checked once per factory; a failure (no `work/` yet, a fenced mount) is retried next time. */
+function ownedOnce(work: string, owner: { readonly uid: number; readonly gid: number }): () => Promise<void> {
+  let done: Promise<void> | undefined;
+  return () =>
+    (done ??= (async () => {
+      const st = await lstat(work);
+      if (st.uid !== owner.uid || st.gid !== owner.gid) await lchown(work, owner.uid, owner.gid);
+    })().catch(() => {
+      done = undefined;
+    }));
+}
+
 function getOrDefault<T>(result: Result<T, unknown>, fallback: T): T {
   return result.ok ? result.value : fallback;
 }
@@ -486,7 +616,7 @@ function requireSetpriv(path: string): string {
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new EnvError(
       "SETPRIV_UNAVAILABLE",
-      `commands run under no_new_privs through setpriv (util-linux), which is not usable at ${path}: ${reason}. ` +
+      `commands run under no_new_privs (and as runAs) through setpriv (util-linux), which is not usable at ${path}: ${reason}. ` +
         "Install util-linux, point setprivPath at it, or pass noNewPrivs: false on a host that already confines commands.",
       { cause },
     );
@@ -513,25 +643,35 @@ function requireConfinement(claim: ArchilEnvClaim, readRoots: readonly string[])
 export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {}): ArchilEnvFactory {
   const id = ["archil", claim.disk, claim.root].filter((part) => part !== undefined && part !== "").join(":");
   const running = new Set<ArchilExecutionEnv>();
-  const setpriv = options.noNewPrivs === false ? undefined : requireSetpriv(options.setprivPath ?? SETPRIV);
+  const runAs = options.runAs;
+  if (runAs && ![runAs.uid, runAs.gid].every((n) => Number.isSafeInteger(n) && n >= 0)) {
+    throw new EnvError("INVALID_RUN_AS", `runAs needs a numeric uid and gid, got ${JSON.stringify(runAs)}`);
+  }
+  const noNewPrivs = options.noNewPrivs !== false;
+  const setpriv = noNewPrivs || runAs ? requireSetpriv(options.setprivPath ?? SETPRIV) : undefined;
   const confinement = options.confineFiles === false ? undefined : requireConfinement(claim, options.readRoots ?? []);
   const scope: RunScope = {
     id,
     tempRoot: join(claim.root, TEMP_DIR),
     setpriv,
+    noNewPrivs,
+    runAs,
     shellPath: options.shellPath,
     shellEnv: options.shellEnv,
     running,
     closing: new AbortController(),
     confinement,
   };
-  const build = (target: { readonly cwd?: string }) =>
-    new ArchilExecutionEnv(scope, {
+  const workOwned = runAs ? ownedOnce(claim.work, runAs) : undefined;
+  const build = (target: { readonly cwd?: string }) => {
+    const envOptions = {
       cwd: target.cwd === undefined ? claim.work : resolve(claim.work, target.cwd),
-      watch: { mode: "polling", pollIntervalMs: POLL_INTERVAL_MS, ...options.watch },
+      watch: { mode: "polling" as const, pollIntervalMs: POLL_INTERVAL_MS, ...options.watch },
       ...(options.shellPath === undefined ? {} : { shellPath: options.shellPath }),
       ...(options.shellEnv === undefined ? {} : { shellEnv: options.shellEnv }),
-    });
+    };
+    return runAs && workOwned ? new OwnedExecutionEnv(scope, envOptions, claim.work, runAs, workOwned) : new ArchilExecutionEnv(scope, envOptions);
+  };
   const cleanup = async (context: Context) => {
     scope.closing.abort();
     await Promise.all([...running].map((env) => env.cleanup(context)));

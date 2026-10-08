@@ -38,6 +38,32 @@
   owns the new run's directory only while it holds that directory's mount: one that fails after that empties it through
   its own mount and removes it; one that lost the directory to another fork or start leaves it alone.
 
+**The Docker host driver**
+- `dockerHost` (`supervise --host docker --image IMAGE`): one container per instance, from the image `docker/Dockerfile`
+  builds (Node 24, the archil client 0.8.42 checked by sha256 per architecture, FUSE, tini, the run user `pda`, this
+  package). Nothing on the machine that runs the supervisor needs root, FUSE or the archil client.
+  - `docker create` named `pda-<run>-g<attempt>`: a retry of the same attempt adopts a running container and replaces a
+    dead one. `--device /dev/fuse --cap-add SYS_ADMIN`, `--security-opt no-new-privileges`, no restart policy, and
+    `--security-opt apparmor=unconfined` only where the daemon applies AppArmor (Docker's default profile denies mount(2);
+    `apparmor: "auto"`, the default, decides from `docker info` and reports why once through `note`).
+  - The mount token is copied into the created container as a root-only file (`docker cp -` of a tar built in memory),
+    which the entrypoint makes the instance's stdin and removes before the instance starts. It is never in `docker
+    inspect`, argv or an environment variable.
+  - Status from `docker inspect` (exit 0 stopped, any other exit failed, paused running), `describe` with the exit code,
+    stop as `docker stop` (drain) then `docker rm`. A dead container takes its mount with it: nothing is left on the host.
+  - The app's directory (`--app-root`) is bind-mounted read-only with its `node_modules` hidden, so the app shares the
+    image's single pi-durable.
+- `archilEnv(claim, { runAs })` and `run --run-as USER`: for an instance that runs as root (in a container), every command
+  runs as `runAs` with every capability set empty and no_new_privs, and `work/` plus every entry pi's in-process write,
+  append and mkdir create under it are handed to that user (`lchown` through the confinement's pinned directory). The
+  run's root, store and `run.json` stay root's; a command can neither change them nor read the archil daemon's environment.
+- `HostDriver.start(ref, token, { attempt })`: the supervisor passes the generation the instance will open, so a driver can
+  key its start on it. Drivers that ignore it are unchanged.
+- `examples/docker-quickstart.sh`, and `--host docker` for both examples' demos.
+- Measured with Docker Engine 29 on Ubuntu 24.04: a killed container is replaced in about 1 s and the run resumes about
+  2 s after the kill; a frozen one is replaced 7 to 8 s after the freeze (6 s test lease) and exits 75 within 0.5 s of its
+  thaw; a commit from a container costs what it costs from the host. macOS is not verified.
+
 ## 0.1.0-beta.10, 2026-10-08
 
 First release of `@parcha/pi-durable-archil`, versioned with the other packages in this repository. It is the package developed
