@@ -43,8 +43,8 @@ class UsageError extends PdaError {
 const USAGE = `usage:
   pi-durable-archil run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
-                        [--token-stdin] [--serve PORT] [--serve-host H] [--serve-token-file F] [--park-threshold 60s]
-                        [--park-idle 60s] [--drain-timeout 25s]
+                        [--token-stdin] [--serve PORT] [--serve-host H] [--serve-url URL] [--serve-token-file F]
+                        [--park-threshold 60s] [--park-idle 60s] [--drain-timeout 25s]
   pi-durable-archil supervise --disk D --region R (--id ID ... | --all) [--every 30s] [--check]
                         [--driver systemd|child] [--mount-root DIR] [--host-name NAME] [--unit-prefix P]
                         [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
@@ -177,7 +177,8 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
  * run's commands and exits 75 inside openDurableRun.
  *
  * `--serve` listens before the run opens and writes its address into the holder, so a client finds it in run.json; an
- * address that is not loopback needs `--serve-token-file` (a 0600 file holding the bearer token). `--park-threshold`
+ * address that is not loopback needs `--serve-token-file` (a 0600 file holding the bearer token), and a wildcard bind
+ * (0.0.0.0, ::) needs `--serve-url`, the address clients reach, which is what run.json then carries. `--park-threshold`
  * parks the run when its work only waits longer than that, and with `--serve` an idle run parks too after `--park-idle`
  * (default the threshold), since a request can wake it. `--drain-timeout` bounds the drain on SIGTERM. What happens
  * between the open and the exit is `serveUntilDone`.
@@ -215,7 +216,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   let parking: Parking | undefined;
   let server: RunServer | undefined;
   if (servePort !== undefined) {
-    server = await serveRun({ port: Number(servePort), host: serveHost, token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
+    const url = str(values["serve-url"]);
+    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
     holder.serve = server.url;
   }
   const idleMs = ms("park-idle") ?? (server ? parkMs : undefined);
@@ -530,6 +532,7 @@ export async function main(argv: string[]): Promise<number> {
             serve: { type: "string" },
             "serve-host": { type: "string" },
             "serve-token-file": { type: "string" },
+            "serve-url": { type: "string" },
             "park-threshold": { type: "string" },
             "park-idle": { type: "string" },
             "drain-timeout": { type: "string" },

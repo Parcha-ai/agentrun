@@ -19,7 +19,7 @@ import { PdaError } from "./errors.ts";
 import { busyState } from "./park.ts";
 import type { DurableRun } from "./run.ts";
 import { isLeaseFresh, type RunRecord } from "./status.ts";
-import { ensureRunning, LEASE_EXPIRY_MS, readRunStatus, type EnsureOptions, type EnsureResult, type HostDriver } from "./supervise.ts";
+import { CONTROL_TIMEOUT_MS, ensureRunning, LEASE_EXPIRY_MS, readRunStatus, withTimeouts, type EnsureOptions, type EnsureResult, type HostDriver } from "./supervise.ts";
 
 /** 503 codes the client answers by asking the supervisor again and retrying. */
 export const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"] as const;
@@ -31,8 +31,13 @@ const REQUEST_ID = /^[\x21-\x7e]{1,200}$/;
 export interface ServeOptions {
   /** Default 0: any free port (the address is in `url` and in run.json's holder). */
   readonly port?: number;
-  /** Default 127.0.0.1. Any address that is not loopback needs `token`. */
+  /** Default 127.0.0.1. Any address that is not loopback needs `token`; a wildcard (0.0.0.0, ::) needs `url` too. */
   readonly host?: string;
+  /**
+   * The address clients reach this server at (`http://` or `https://`), which goes into run.json's holder. Default: the
+   * bound address, which only works for a specific host; a wildcard bind has no address a client can use.
+   */
+  readonly url?: string;
   /** Every request must carry `authorization: Bearer <token>` (see `readServeToken`). Optional on loopback only. */
   readonly token?: string;
   /** How the root conversation is created when absent (pi's `root()` options); a submit without `conversationId` goes there. */
@@ -54,11 +59,14 @@ export interface RunServer {
   close(): Promise<void>;
 }
 
-export type ServeTokenErrorCode = "SERVE_TOKEN_REQUIRED" | "SERVE_TOKEN_INVALID";
+export type ServeConfigErrorCode = "SERVE_TOKEN_REQUIRED" | "SERVE_TOKEN_INVALID" | "SERVE_URL_REQUIRED" | "SERVE_URL_INVALID";
 
-/** A non-loopback address without a token, or a token file that is missing, empty or not private. Exit 2 (usage). */
-export class ServeTokenError extends PdaError {
-  constructor(code: ServeTokenErrorCode, message: string, options: { cause?: unknown } = {}) {
+/**
+ * A non-loopback address without a token, a token file that is missing, empty or not private, or a wildcard bind
+ * without the URL clients reach it at. Exit 2 (usage).
+ */
+export class ServeConfigError extends PdaError {
+  constructor(code: ServeConfigErrorCode, message: string, options: { cause?: unknown } = {}) {
     super(code, message, { cause: options.cause, exitCode: 2 });
   }
 }
@@ -82,15 +90,21 @@ export function readServeToken(path: string): string {
     if (!st.isFile()) throw new Error("not a regular file");
     mode = st.mode & 0o777;
   } catch (cause) {
-    throw new ServeTokenError("SERVE_TOKEN_INVALID", `cannot use ${path} as the serve token file: ${(cause as Error).message}`, { cause });
+    throw new ServeConfigError("SERVE_TOKEN_INVALID", `cannot use ${path} as the serve token file: ${(cause as Error).message}`, { cause });
   }
-  if (mode & 0o077) throw new ServeTokenError("SERVE_TOKEN_INVALID", `${path} has mode ${mode.toString(8)}; the serve token file must be 0600`);
+  if (mode & 0o077) throw new ServeConfigError("SERVE_TOKEN_INVALID", `${path} has mode ${mode.toString(8)}; the serve token file must be 0600`);
   const token = readFileSync(path, "utf8").trim();
-  if (!token || /\s/.test(token)) throw new ServeTokenError("SERVE_TOKEN_INVALID", `${path} holds no token, or one with whitespace`);
+  if (!token || /\s/.test(token)) throw new ServeConfigError("SERVE_TOKEN_INVALID", `${path} holds no token, or one with whitespace`);
   return token;
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
+
+/** 0.0.0.0, :: and their spellings: every address of the host, none of which a client can be told. */
+const isWildcard = (host: string) => {
+  const h = host.toLowerCase();
+  return h === "0.0.0.0" || h === "::" || h === "[::]" || h === "0:0:0:0:0:0:0:0" || h === "::ffff:0.0.0.0";
+};
 
 class HttpError extends Error {
   readonly status: number;
@@ -148,9 +162,15 @@ async function answerOf(conversation: Conversation, entry: EntryId, context: Con
 export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   const base = options.context ?? BACKGROUND_CONTEXT;
   const bind = options.host ?? "127.0.0.1";
-  if (options.token !== undefined && (!options.token || /\s/.test(options.token))) throw new ServeTokenError("SERVE_TOKEN_INVALID", "the serve token is empty or has whitespace");
+  if (options.token !== undefined && (!options.token || /\s/.test(options.token))) throw new ServeConfigError("SERVE_TOKEN_INVALID", "the serve token is empty or has whitespace");
   if (options.token === undefined && !isLoopback(bind)) {
-    throw new ServeTokenError("SERVE_TOKEN_REQUIRED", `serving on ${bind}, which is not loopback, needs a bearer token (--serve-token-file)`);
+    throw new ServeConfigError("SERVE_TOKEN_REQUIRED", `serving on ${bind}, which is not loopback, needs a bearer token (--serve-token-file)`);
+  }
+  if (options.url !== undefined && !["http:", "https:"].includes(URL.parse(options.url)?.protocol ?? "")) {
+    throw new ServeConfigError("SERVE_URL_INVALID", `${options.url} is not an http:// or https:// address`);
+  }
+  if (options.url === undefined && isWildcard(bind)) {
+    throw new ServeConfigError("SERVE_URL_REQUIRED", `serving on ${bind} binds every address; name the one clients reach (--serve-url)`);
   }
   // Both sides are hashed to one length, so the comparison takes the same time whatever the caller sent.
   const expected = options.token === undefined ? undefined : digest(`Bearer ${options.token}`);
@@ -279,7 +299,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   const address = server.address() as AddressInfo;
   const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
   return {
-    url: `http://${host}:${address.port}`,
+    url: options.url ?? `http://${host}:${address.port}`,
     get active() {
       return active;
     },
@@ -368,15 +388,29 @@ export async function requestRun(
   const fetchFn = options.fetch ?? fetch;
   const now = options.ensure.now ?? Date.now;
   const leaseMs = options.ensure.leaseExpiryMs ?? LEASE_EXPIRY_MS;
-  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  const deadline = Date.now() + timeoutMs;
   const ensured: EnsureResult[] = [];
+  // Every control call is bounded by the control timeout, and every step of this loop by what is left of `timeoutMs`.
+  const control = withTimeouts(options.ensure.control, options.ensure.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
+  const notServed = () => new ServeError("NOT_SERVED", `run ${ref.id} did not answer in ${timeoutMs} ms`, ensured);
+  const inTime = <T>(step: Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(notServed()), Math.max(0, deadline - Date.now()));
+      step.then(
+        (value) => (clearTimeout(timer), resolve(value)),
+        (error: unknown) => (clearTimeout(timer), reject(error)),
+      );
+    });
   const attempt = async (url: string) => {
     const stop = new AbortController();
+    let looking = false;
     const watch = setInterval(() => {
-      readRunStatus(options.ensure.control, ref.id).then(
-        (r) => servedBy(r, now(), leaseMs) !== url && stop.abort(),
-        () => {},
-      );
+      if (looking) return;
+      looking = true;
+      readRunStatus(control, ref.id)
+        .then((r) => servedBy(r, now(), leaseMs) !== url && stop.abort(), () => {})
+        .finally(() => (looking = false));
     }, Math.min(Math.max(1_000, leaseMs / 3), 10_000));
     try {
       return await fetchFn(new URL(request.path, url), {
@@ -397,7 +431,7 @@ export async function requestRun(
   };
   let pendingStart: { until: number; generation: number } | undefined;
   for (let pause = 100; ; pause = Math.min(pause * 2, 1_000)) {
-    const record = await readRunStatus(options.ensure.control, ref.id);
+    const record = await inTime(readRunStatus(control, ref.id));
     const url = servedBy(record, now(), leaseMs);
     let opening = false;
     if (url) {
@@ -410,14 +444,14 @@ export async function requestRun(
     const generation = record?.generation ?? 0;
     const awaitingStart = pendingStart !== undefined && Date.now() < pendingStart.until && generation < pendingStart.generation;
     if (!opening && !awaitingStart) {
-      const result = await ensureRunning(ref, options.host, { ...options.ensure, demand: true });
+      const result = await inTime(ensureRunning(ref, options.host, { ...options.ensure, demand: true }));
       ensured.push(result);
       if (result.action === "terminal") throw new ServeError("RUN_TERMINAL", `run ${ref.id} is ${result.status}`, ensured);
       // A start by this call, or one the supervisor's start grace reports in flight: wait for that generation.
       if (result.action === "started") pendingStart = { until: Date.now() + (options.startTimeoutMs ?? 60_000), generation: generation + 1 };
       if (result.action === "starting") pendingStart = { until: Date.now() + (options.startTimeoutMs ?? 60_000), generation: result.generation };
     }
-    if (Date.now() + pause > deadline) throw new ServeError("NOT_SERVED", `run ${ref.id} did not answer in ${options.timeoutMs ?? 120_000} ms`, ensured);
+    if (Date.now() + pause > deadline) throw notServed();
     await sleep(pause);
   }
 }

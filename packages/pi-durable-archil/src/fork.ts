@@ -3,12 +3,12 @@
 // root of their own, never where an instance mounts. The source is only read (its claim probe aside, which every mount
 // writes). The new run's run.json starts at generation 0 and carries the source's seal: its first open is generation 1
 // and refuses a copy that lost a committed sequence (STORE_BEHIND_SEAL). Supervisor side: it needs the API key.
-import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, rmdir, symlink, utimes } from "node:fs/promises";
+import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, rm, rmdir, symlink, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { acquire, createRunDir, type AcquireOptions, findDelegations, mintMountToken, removeMountToken, runPath, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
 import { HeldError, PdaError } from "./errors.ts";
 import { persistRecord, readRunRecord, RUN_JSON, RUN_JSON_TEMP, type RunRecord } from "./status.ts";
-import { CONTROL_TIMEOUT_MS, deleteRunTree, readRunStatus, START_MARK, withTimeouts, type CheckControl, type CheckOptions, type SupervisorControl } from "./supervise.ts";
+import { CONTROL_TIMEOUT_MS, readRunStatus, START_MARK, withTimeouts, type CheckControl, type CheckOptions, type SupervisorControl } from "./supervise.ts";
 import { OWNER_LOCK } from "./run.ts";
 
 /** A run is released, and so can be forked, in these states once its release sealed it. */
@@ -78,10 +78,18 @@ async function copyTree(from: string, to: string, top: boolean, asRoot: boolean,
   }
 }
 
+/** Remove every entry under `root`, keeping `root`. */
+async function emptyDir(root: string): Promise<void> {
+  for (const name of await readdir(root)) await rm(join(root, name), { recursive: true, force: true });
+}
+
 /**
  * Fork run `ref` into run `newId`. The source must be released and sealed (run.json paused, sleeping, done
- * or failed with a `sealedSeq`, and no delegation); `newId` must not exist. On any failure the new run's directory is
- * deleted, so a half copy never looks like a run; every token and mount is removed either way.
+ * or failed with a `sealedSeq`, and no delegation); `newId` must not exist. A fork owns the new run's directory only
+ * while it holds that directory's exclusive mount. A fork that fails after that empties the directory through its own
+ * mount and then removes the empty directory, so a half copy never looks like a run. One that never held it (another
+ * fork or a start mounted it first) touches nothing there; it may leave the empty directory it created. Every token
+ * and mount of its own is removed either way.
  */
 export async function fork(ref: RunRef, newId: string, options: ForkOptions): Promise<ForkResult> {
   const t0 = performance.now();
@@ -101,7 +109,8 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
   const base = join(options.mountRoot, `.fork-${Date.now().toString(36)}`);
   const tokens: string[] = [];
   const claims: Claim[] = [];
-  let created = false;
+  // Set once this fork holds the new run's directory exclusively; until then the directory may be another operation's.
+  let copy: Claim | undefined;
   let done = false;
   const mount = async (run: RunRef, side: "source" | "target"): Promise<Claim> => {
     const t = await mintMountToken(control, { nickname: `${options.tokenPrefix ?? "pda-"}fork-${side}-${run.id}`.slice(0, 200), ttl: "1h" });
@@ -121,9 +130,10 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
     if (!released(record)) throw new ForkError("SOURCE_NOT_RELEASED", `run ${ref.id} changed before it was mounted (${record?.status})`);
     const owner = await lstat(source.root);
     await createRunDir(control, newId, { uid: owner.uid, gid: owner.gid, mode: owner.mode & 0o7777 });
-    created = true;
     note("subdir", target);
-    const copy = await mount({ ...ref, id: newId }, "target");
+    copy = await mount({ ...ref, id: newId }, "target").catch((error: unknown) => {
+      throw error instanceof HeldError ? new ForkError("TARGET_EXISTS", `${target} was mounted by another fork or start`, { cause: error }) : error;
+    });
     const count = { files: 0, bytes: 0 };
     const asRoot = process.getuid?.() === 0;
     try {
@@ -161,6 +171,11 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
       owners: asRoot ? "preserved" : "caller",
       ms: Math.round(performance.now() - t0),
     };
+  } catch (error) {
+    // Undo through this fork's own mount while it still holds it; nothing is deleted over S3, where a revoke would
+    // take another operation's claim on the same id.
+    if (copy && !copy.fenced) await emptyDir(copy.root).catch(() => undefined);
+    throw error;
   } finally {
     for (const c of claims.reverse()) {
       await c.release().then(
@@ -168,8 +183,11 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
         () => note("unmount", c.root, "failed"),
       );
     }
-    if (created && !done) {
-      await deleteRunTree(control, newId).then(() => note("subdir-deleted", target), () => {});
+    // The emptied directory's own marker. S3 refuses to delete a directory with entries and deletes nothing under a
+    // delegation, so this never removes a run another fork or start has taken since this fork released it.
+    if (copy && !done) {
+      await control.deleteObjects([target], { quiet: true }).catch(() => undefined);
+      if (!(await control.headObject(target).catch(() => true))) note("subdir-deleted", target);
     }
     for (const t of tokens) {
       await removeMountToken(control, t).then(() => note("token-removed", t), () => {});

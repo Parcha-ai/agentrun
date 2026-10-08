@@ -10,7 +10,8 @@
   (`holder.serve`); it answers 503 `OPENING`, `PARKING` or `RELEASED` while it opens, parks or is gone.
 - A bearer token: optional on 127.0.0.1, required on any other `--serve-host` (`SERVE_TOKEN_REQUIRED` before anything binds).
   It is read from a file of mode 0600 (`--serve-token-file`, never argv or the environment) and compared in constant time
-  on every route.
+  on every route. A wildcard bind (0.0.0.0, ::) also needs `--serve-url`, the address clients reach, which is what
+  `run.json` carries (`SERVE_URL_REQUIRED`).
 - `requestRun(ref, request, { host, ensure, token })`, the client: it finds the instance through `run.json`, sends while the
   holder's lease is fresh (a request is dropped when the lease lapses under it), and otherwise calls `ensureRunning` with
   demand. After a start, its own or one the supervisor reports `starting`, it waits for that generation instead of asking
@@ -33,8 +34,9 @@
 - `fork --id A --new-id B` (`fork(ref, newId, { control, mountRoot })`): copies a released, sealed run (paused, sleeping, done
   or failed, with no delegation) under two short exclusive mounts of its own into a new run that starts `paused` at
   generation 0 with the source's `sealedSeq`, so its first open is generation 1 and a lossy copy is refused
-  (`STORE_BEHIND_SEAL`). The source is only read. `run.json`, `owner.lock`, the start mark and `tmp/` are not copied; a copy
-  that fails deletes the new run's directory.
+  (`STORE_BEHIND_SEAL`). The source is only read. `run.json`, `owner.lock`, the start mark and `tmp/` are not copied. A fork
+  owns the new run's directory only while it holds that directory's mount: one that fails after that empties it through
+  its own mount and removes it; one that lost the directory to another fork or start leaves it alone.
 
 ## 0.1.0-beta.10, 2026-10-08
 

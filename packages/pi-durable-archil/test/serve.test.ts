@@ -246,6 +246,16 @@ describe("the bearer token", () => {
     }
   });
 
+  it("a wildcard bind needs the address clients reach (`url`), which is what the server advertises; nothing binds without it", async () => {
+    for (const host of ["0.0.0.0", "::"]) {
+      await assert.rejects(serveRun({ host, token: TOKEN }), (e: unknown) => (e as { code?: string }).code === "SERVE_URL_REQUIRED", host);
+    }
+    await assert.rejects(serveRun({ url: "ftp://run-host.example:21" }), (e: unknown) => (e as { code?: string }).code === "SERVE_URL_INVALID");
+    const server = await serveRun({ url: "https://run-host.example:8443" });
+    assert.equal(server.url, "https://run-host.example:8443", "run.json's holder carries the given address, not the bound one");
+    await server.close();
+  });
+
   it("the client sends its token; without it the instance's 401 comes back as the answer", async () => {
     const disk = new LocalDisk("serve-token-client");
     const instances: { run: DurableRun; server: RunServer }[] = [];
@@ -322,6 +332,19 @@ describe("the client", () => {
       await assert.rejects(submit("c5", "too late"), (e: unknown) => e instanceof ServeError && e.code === "RUN_TERMINAL");
       for (const i of instances) await i.server.close();
       await sleep(10);
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a control API that never answers ends the request at its deadline, not never", { timeout: 10_000 }, async () => {
+    const disk = new LocalDisk("serve-stall");
+    try {
+      const stalled = Object.assign(Object.create(disk) as LocalDisk, { getObject: () => new Promise<Uint8Array>(() => {}) });
+      const t0 = Date.now();
+      const err = await requestRun(REF, { method: "GET", path: "/status" }, { host: new InProcessHost(async () => {}), ensure: { control: stalled }, timeoutMs: 400 }).then(() => null, (e: unknown) => e);
+      assert.ok(err instanceof ServeError && err.code === "NOT_SERVED", String(err));
+      assert.ok(Date.now() - t0 < 2_000, `ended at its deadline (${Date.now() - t0} ms)`);
     } finally {
       disk.remove();
     }

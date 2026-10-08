@@ -234,7 +234,8 @@ the token prefix.
 ### Serve, parking and fork
 
 `pi-durable-archil run --serve PORT` (0: any free port; `--serve-host`, default 127.0.0.1; any other address needs
-`--serve-token-file`, see Security) puts a small HTTP front on the open run, so a client talks to the run, not to a host:
+`--serve-token-file`, see Security, and a wildcard such as 0.0.0.0 also needs `--serve-url`, the address clients reach) puts
+a small HTTP front on the open run, so a client talks to the run, not to a host:
 
 | Request | What it does |
 |---|---|
@@ -268,7 +269,9 @@ copies a released, sealed run (paused, sleeping, done or failed, with no delegat
 own into a new run that starts `paused` at generation 0 with the source's `sealedSeq`. Its first open is generation 1, and a
 lossy copy is refused (`STORE_BEHIND_SEAL`). The source is only read (store, `run.json` and workspace stay byte-identical;
 only the claim probe `.claim` is rewritten by the mount); `run.json`, `owner.lock`, the supervisor's start mark
-`start.json` and `tmp/` are not copied.
+`start.json` and `tmp/` are not copied. A fork owns the new run's directory only while it holds that directory's mount: one
+that fails after that empties the directory through its own mount and removes it, and one that lost the directory to another
+fork or start leaves it alone.
 
 ### Setting up a host for production
 

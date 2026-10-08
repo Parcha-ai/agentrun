@@ -1,7 +1,7 @@
 // Shared by the park, serve and fork suites: a "disk" over a local directory (the control API's objects, delegations
 // and token users, plus a claim per run that the delegations track), and an app on pi-ai's faux model with Rivet's
 // lifecycle cases: a flaky model that errors once, tools that block until the run stops, and a task of the app's own.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -88,9 +88,19 @@ export class LocalDisk implements SupervisorControl, CheckControl {
     if (statSync(this.path(prefix), { throwIfNoEntry: false })?.isDirectory()) (objects.push({ key: prefix }), walk(prefix));
     return { objects, commonPrefixes: [] };
   }
+  /** As S3 on an Archil disk: nothing under a delegation is deleted, and a directory with entries refuses. */
   async deleteObjects(keys: string[]): Promise<{ errors: unknown[] }> {
-    for (const key of keys) rmSync(this.path(key), { recursive: true, force: true });
-    return { errors: [] };
+    const errors: unknown[] = [];
+    for (const key of keys) {
+      if (this.delegations.some((d) => key === `${d.path}/` || key.startsWith(`${d.path}/`))) continue;
+      try {
+        if (key.endsWith("/")) rmdirSync(this.path(key));
+        else rmSync(this.path(key), { force: true });
+      } catch (error) {
+        if ((error as { code?: string }).code !== "ENOENT") errors.push({ key, error: (error as Error).message });
+      }
+    }
+    return { errors };
   }
   async addUser(user: { nickname: string }): Promise<{ identifier: string; token: string }> {
     const identifier = `u${++this.#n}`;

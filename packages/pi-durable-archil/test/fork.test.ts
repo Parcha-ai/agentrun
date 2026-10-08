@@ -9,6 +9,7 @@ import { fork, ForkError } from "../src/fork.ts";
 import { StoreBehindSealError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
 import { lifecycleApp, LocalDisk, newCounters, openOn } from "./_lifecycle.ts";
+import type { FakeClaim } from "./_run-support.ts";
 import { ctx } from "./_run-support.ts";
 
 const SRC = { disk: "dsk-local", region: "local", id: "fork-src" };
@@ -127,6 +128,34 @@ describe("fork", () => {
       assert.equal(disk.users.size, 0);
       assert.deepEqual(disk.claims.map((c) => c.log.filter((l) => l === "release").length), [1, 1, 1], "source run, then source and target of the fork");
       chmodSync(join(root, "work", "secret"), 0o600);
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a fork that loses the new run's directory to another one leaves the other's copy and claim alone", async () => {
+    const disk = new LocalDisk("fork-race");
+    try {
+      await sourceRun(disk, ["hello"]);
+      const target = { ...SRC, id: "fork-race" };
+      let winner: FakeClaim | undefined;
+      const err = await fork(SRC, "fork-race", {
+        control: disk,
+        mountRoot: disk.path("mnt"),
+        acquire: async (o) => {
+          if (o.ref.id === target.id) {
+            // Another fork passed the same checks, created the same directory and mounted it first; it is copying.
+            winner = disk.acquire(target) as FakeClaim;
+            writeFileSync(join(winner.root, "copied-by-the-other-fork"), "x");
+          }
+          return disk.acquire(o.ref);
+        },
+      }).then(() => null, (e: unknown) => e);
+      assert.ok(err instanceof ForkError && err.code === "TARGET_EXISTS", String(err));
+      assert.equal(existsSync(disk.path("runs/fork-race/copied-by-the-other-fork")), true, "the other fork's copy is untouched");
+      assert.deepEqual(disk.delegations.map((d) => d.path), ["runs/fork-race"], "and so is its claim");
+      assert.equal(disk.users.size, 0, "this fork's token users are removed");
+      await winner!.release();
     } finally {
       disk.remove();
     }
