@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.11, 2026-10-08
 
 **Serve, sleep parking and fork**
 - `run --serve PORT` puts an HTTP front on the open run: `POST /submit` (pi's submit with the caller's `requestId`, which pi
@@ -75,8 +75,8 @@
   thaw; a commit from a container costs what it costs from the host. macOS is not verified.
 
 **Fixes**
-- A `run` instance with no `--serve` exited without draining or releasing once its work finished; the supervisor then
-  revoked and restarted it. It now stays up until it parks, drains or fails.
+- Known issue in 0.1.0-beta.10, fixed here: an idle `run` instance (no `--serve`, nothing running) exited without draining or
+  releasing once its work finished; the supervisor then revoked and restarted it. It now stays up until it parks, drains or fails.
 
 ## 0.1.0-beta.10, 2026-10-08
 
