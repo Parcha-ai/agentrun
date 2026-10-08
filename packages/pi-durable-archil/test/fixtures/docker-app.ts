@@ -68,10 +68,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(ArchilCodingTools);
   const out = join(process.env.PDA_TEST_OUT!, `${where.ref.id}.jsonl`);
 
-  /** One tool call in a conversation of its own, so the root conversation's ticks are not held up. */
-  const call = async (run: DurableRun, content: string) => {
+  /** One tool call in a conversation of its own, so the root conversation's ticks are not held up; `wait`: until it is done. */
+  const call = async (run: DurableRun, content: string, wait = false) => {
     const conversation = await run.harness.createConversation({ ownership: { kind: "ownerless" }, agent }, ctx);
-    await conversation.submit({ type: "input", content }, ctx);
+    const submission = await conversation.submit({ type: "input", content }, ctx);
+    if (wait) await submission.wait(ctx);
   };
   // The output lands under its final name only once the command is done, so a reader never sees half of it.
   const shell = async (run: DurableRun, command: string, name: string) => {
@@ -96,7 +97,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
 
       // What a command reaches inside the container.
       const dir = `w-g${run.generation}`;
-      await call(run, `write: ${dir}/sub/by-write.txt`);
+      // The write tool hands what it created to the run user before its call ends, so the owner is read after that.
+      await call(run, `write: ${dir}/sub/by-write.txt`, true);
       const written = join(run.claim.work, dir, "sub", "by-write.txt");
       await waitForFile(written);
       const ownerOf = (p: string) => `${statSync(p).uid}:${statSync(p).gid}`;
