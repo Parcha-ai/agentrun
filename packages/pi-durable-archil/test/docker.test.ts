@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { containerStatus, diskKey, dockerHost, tarOneFile, type DockerHostOptions } from "../src/hosts/docker.ts";
+import { containerStatus, diskKey, DockerHostError, dockerHost, tarOneFile, type DockerHostOptions } from "../src/hosts/docker.ts";
 import { main } from "../src/cli.ts";
 import { PdaError } from "../src/errors.ts";
 import type { HostHandle } from "../src/supervise.ts";
@@ -71,7 +71,10 @@ test("start: create with FUSE, AppArmor unconfined, no new privileges and no res
       assert.ok(flags.includes(want), `create has ${want}: ${flags.join(", ")}`);
     }
     assert.equal(c.image, "pda-image:test");
-    assert.deepEqual(c.cmd, ["run", "--disk", "dsk-1", "--region", "aws-us-east-1", "--id", "run-1", "--mount-root", "/mnt/x", "--archil", "/usr/local/sbin/archil-scoped", "--run-as", "pda", "--heartbeat-ms=1000", "--token-stdin"]);
+    assert.deepEqual(c.cmd, [
+      "run", "--disk", "dsk-1", "--region", "aws-us-east-1", "--id", "run-1", "--mount-root", "/mnt/x", "--archil", "/usr/local/sbin/archil-scoped", "--run-as", "pda",
+      "--park-threshold", "60000ms", "--drain-timeout", "25000ms", "--heartbeat-ms=1000", "--token-stdin",
+    ], "parks waits over 60 s and drains for the stop timeout less a 5 s close reserve, as localHost's instances do");
     const holder = JSON.parse(c.env.find((e) => e.startsWith("PDA_HOLDER="))!.slice("PDA_HOLDER=".length));
     assert.deepEqual(holder, { driver: "docker", fleet: "t", daemon: "daemon-1", name: nm("run-1", 3), mountpoint: "/mnt/x/runs/run-1", image: "pda-image:test" });
     // The token: only in the tar `docker cp -` reads from stdin, as /run/pda/token, mode 0600, owned by root.
@@ -191,6 +194,29 @@ test("the same run id on two disks (or regions) gets two containers; a container
       x.labels["pda.disk"] = "dsk-9";
     });
     await assert.rejects(driver.start(ref, TOKEN, { attempt: 2 }), (e: unknown) => e instanceof PdaError && e.code === "START_FAILED" && /not this run's/.test((e as Error).message));
+  } finally {
+    fake.remove();
+  }
+});
+
+test("the park threshold and the drain follow the driver's options; no restart policy can start a container that exited", async () => {
+  const fake = fakeDaemon();
+  try {
+    const cmd = async (o: DockerHostOptions, id: string) => {
+      await host(fake, { runArgs: ["--heartbeat-ms=1000"], ...o }).start({ ...ref, id }, TOKEN, { attempt: 1 });
+      return fake.byName(nm(id, 1))!.cmd.join(" ");
+    };
+    assert.match(await cmd({ parkThresholdMs: null, stopTimeoutMs: 5_000 }, "p-off"), /--run-as pda --drain-timeout 2500ms --heartbeat-ms=1000 --token-stdin$/, "no parking; half of a short stop timeout");
+    assert.doesNotMatch(await cmd({ parkThresholdMs: 0 }, "p-zero"), /--park-threshold/, "0 is off too");
+    assert.match(await cmd({ parkThresholdMs: 120_000, stopTimeoutMs: 90_000 }, "p-long"), /--park-threshold 120000ms --drain-timeout 85000ms --heartbeat-ms=1000 /, "the app's own run flags come after, so they win");
+    // A parked instance exits 0: the container keeps the one restart policy that never starts it again.
+    const create = fake.calls().find((c) => c.argv[0] === "create")!.argv;
+    const policies = create.flatMap((a, i) => (a === "--restart" ? [create[i + 1]] : a.startsWith("--restart=") ? [a.slice(10)] : []));
+    assert.deepEqual(policies, ["no"]);
+    for (const args of [["--restart", "always"], ["--restart=unless-stopped"], ["--restart", "on-failure:3"], ["--restart=no", "--restart=always"]]) {
+      assert.throws(() => host(fake, { dockerArgs: args }), (e: unknown) => e instanceof DockerHostError && e.code === "INVALID_ARGUMENT" && /--restart/.test(e.message), args.join(" "));
+    }
+    host(fake, { dockerArgs: ["--restart=no", "--memory", "1g"] });
   } finally {
     fake.remove();
   }

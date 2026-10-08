@@ -276,8 +276,8 @@ container is one incarnation.
   so equal run ids on two disks never share a container) and labeled `pda.fleet`, `pda.run`, `pda.disk` and `pda.region`.
   A retry of the same attempt adopts a running container that carries all four labels (the supervisor then removes the
   token it minted for that start) and replaces a dead one; a container by that name with other labels is refused.
-  Flags: `--device /dev/fuse --cap-add SYS_ADMIN` for the mount, `--security-opt no-new-privileges`, no restart policy
-  (the supervisor decides), and `--security-opt apparmor=unconfined` only where the Docker daemon applies
+  Flags: `--device /dev/fuse --cap-add SYS_ADMIN` for the mount, `--security-opt no-new-privileges`, `--restart no` (the
+  supervisor decides every start; `dockerArgs` with another policy are refused), and `--security-opt apparmor=unconfined` only where the Docker daemon applies
   AppArmor (`docker info` lists it; Docker Engine on Ubuntu and Debian), because Docker's default profile denies mount(2).
   The supervisor prints that decision and its reason once. Docker Desktop and OrbStack apply no AppArmor and get no option.
 - **The mount token** is copied into the created container as a root-only file, which the entrypoint removes before the
@@ -289,6 +289,9 @@ container is one incarnation.
   token) stay root's, and Archil enforces their modes.
 - **Status** comes from `docker inspect`: exit 0 is stopped, any other exit (75 and 76 included) failed, and a paused
   container is running, so the lease decides. **Stop** is `docker stop` (the instance drains), then `docker rm`.
+- **Parking and the drain** are the local driver's: the instance gets `--park-threshold` (60 s, `parkThresholdMs`; null
+  or 0 off) and a `--drain-timeout` of the stop timeout less a close reserve. A parked instance exits 0 and its container
+  stays exited until the supervisor starts the next one at the wake.
 - **A dead container takes its mount with it**: the mount lives in the container's mount namespace, nothing is left on the
   host, and the next supervisor tick revokes the orphaned claim and starts a new container.
 
@@ -328,7 +331,7 @@ request whose holder's lease lapses meanwhile is dropped: a frozen instance acce
 Otherwise it calls `ensureRunning` with demand, waits for the instance it started, or for the one the supervisor reports
 `starting`, to write its generation, and retries until `timeoutMs`.
 
-**Parking.** With `--park-threshold` (the local driver passes 60 s; `supervise --park-threshold 0` turns it off) the instance
+**Parking.** With `--park-threshold` (the local and docker drivers pass 60 s; `supervise --park-threshold 0` turns it off) the instance
 classifies pi's tasks after every commit. When everything that could run only sleeps in a retry or a deferred-poll wait longer
 than the threshold, it writes `run.json` `sleeping` with `wakeAt` (the deadline), releases the claim and exits 0, and the
 supervisor starts it at `wakeAt`. With `--serve`, a run with no live work also parks after `--park-idle` (default: the

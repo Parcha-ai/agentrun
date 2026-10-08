@@ -388,6 +388,10 @@ export function instanceRunArgs(values: Record<string, unknown>): string[] {
   return [...(typeof values.app === "string" ? ["--app", resolve(values.app)] : []), ...((values["run-arg"] as string[] | undefined) ?? [])];
 }
 
+/** `--park-threshold` for either driver: absent keeps the driver's default, 0 turns parking off. */
+const parkThreshold = (values: Record<string, unknown>): { parkThresholdMs?: number | null } =>
+  values["park-threshold"] === undefined ? {} : { parkThresholdMs: parseDuration(str(values["park-threshold"])!) || null };
+
 function driverFrom(values: Record<string, unknown>): HostDriver {
   const env = Object.fromEntries(
     ((values.env as string[] | undefined) ?? []).map((kv) => {
@@ -415,6 +419,7 @@ function driverFrom(values: Record<string, unknown>): HostDriver {
       apparmor: apparmor === "none" ? false : apparmor,
       note: (line) => emit({ event: "docker", note: line }),
       stopTimeoutMs: values["stop-timeout"] ? parseDuration(str(values["stop-timeout"])!) : undefined,
+      ...parkThreshold(values),
     });
   }
   if (host !== "local") throw new UsageError(`--host is local or docker, got ${host}`);
@@ -432,9 +437,10 @@ function driverFrom(values: Record<string, unknown>): HostDriver {
     restart: values["no-restart"] ? false : undefined,
     logDir: str(values["log-dir"]),
     archil: str(values.archil),
-    ...(values["park-threshold"] === undefined ? {} : { parkThresholdMs: parseDuration(str(values["park-threshold"])!) || null }),
+    ...parkThreshold(values),
   });
 }
+
 
 /** Root executes the archil wrapper through sudo, so anyone who can write it is root. */
 function wrapperWarnings(path: string): string[] {

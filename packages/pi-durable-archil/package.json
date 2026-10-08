@@ -57,7 +57,7 @@
     "test:live:run": "node --test --test-concurrency=1 test/live/run.live.test.ts",
     "test:live:store": "node --test --test-concurrency=1 test/live/store.live.test.ts",
     "test:live:supervise": "node --test --test-concurrency=1 test/live/supervise.live.test.ts",
-    "test:live:docker": "PDA_LIVE_DOCKER=1 node --test --test-concurrency=1 test/live/docker.live.test.ts",
+    "test:live:docker": "PDA_LIVE_DOCKER=1 node --test --test-concurrency=1 test/live/docker.live.test.ts test/live/docker-park.live.test.ts",
     "verify:tarball": "node scripts/verify-tarball.mjs"
   },
   "peerDependencies": {

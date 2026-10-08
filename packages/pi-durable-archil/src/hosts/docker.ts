@@ -9,7 +9,8 @@
 // `<prefix><run>-<disk key>-g<attempt>` (the disk key a short hash of the disk and its region, so runs of the same id on
 // two disks never share a container) is the idempotency key of a start: a retry of the same attempt adopts a container
 // that is running, which the handle reports (`adopted`, so the supervisor removes the token it minted for this start), and
-// replaces one that never started or already exited.
+// replaces one that never started or already exited. As with localHost, an instance parks a run that only waits (it exits
+// 0 and its container stays exited until the supervisor starts the next one at the wake) and drains on `docker stop`.
 //
 // The mount token never appears in the container's configuration (`docker inspect` shows its environment and argv): the
 // driver copies it into the created container as a root-only file (`docker cp -`, a tar stream built in memory, so it
@@ -21,6 +22,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { PdaError } from "../errors.ts";
+import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
 import type { HostDriver, HostHandle, HostStatus, StartAttempt } from "../supervise.ts";
 
 export type DockerRan = { code: number | null; timedOut: boolean; stdout: string; stderr: string };
@@ -34,7 +36,7 @@ export interface DockerHostOptions {
   docker?: string;
   /** Labels every container `pda.fleet=<fleet>`; a handle of another fleet is not this driver's. Default "default". */
   fleet?: string;
-  /** Container names are `<namePrefix><run id>-g<attempt>`. Default "pda-". */
+  /** Container names are `<namePrefix><run id>-<disk key>-g<attempt>`. Default "pda-". */
   namePrefix?: string;
   /** Where runs mount inside every container (the same on every host). Default /mnt/archil. */
   mountRoot?: string;
@@ -48,7 +50,7 @@ export interface DockerHostOptions {
   runAs?: string;
   /** Environment for the instance. Visible to `docker inspect`, so never a secret; the driver never copies its own. */
   env?: Record<string, string>;
-  /** Extra `docker create` flags (resource limits, `--add-host`, a network). */
+  /** Extra `docker create` flags (resource limits, `--add-host`, a network). A restart policy other than `no` is refused. */
   dockerArgs?: string[];
   /**
    * The AppArmor profile, false to pass none, or "auto" (the default): `apparmor=unconfined` only where the Docker daemon
@@ -59,8 +61,17 @@ export interface DockerHostOptions {
   apparmor?: "auto" | string | false;
   /** Called once with each decision the driver makes about the host (the AppArmor option and why). */
   note?: (line: string) => void;
-  /** `docker stop -t`: SIGTERM (the instance drains and releases), then SIGKILL. Default 30 s. */
+  /**
+   * `docker stop -t`: SIGTERM, then SIGKILL after this. Default 30 s. The instance drains for this long minus a close
+   * reserve (half of it, at most 5 s) before it releases.
+   */
   stopTimeoutMs?: number;
+  /**
+   * The instance parks a run whose live work only waits longer than this: it releases the run and exits 0, and the
+   * supervisor starts a new container at the wake. It must be at least twice a container's start (about 2 s to opened).
+   * Default 60 s, as for localHost. null or 0: never park, the instance stays up through every wait.
+   */
+  parkThresholdMs?: number | null;
   exec?: DockerRunner;
 }
 
@@ -77,6 +88,19 @@ const TOKEN_DIR = "/run/pda";
 const TOKEN_FILE = "token";
 
 const NAME_SAFE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
+
+/** dockerHost's park threshold: localHost's, far above twice a container's start. */
+export const DOCKER_PARK_THRESHOLD_MS = LOCAL_PARK_THRESHOLD_MS;
+
+/** The value of the last `--restart` among docker flags (`--restart X` or `--restart=X`), or null when none is set. */
+function restartPolicyIn(args: readonly string[]): string | null {
+  let found: string | null = null;
+  args.forEach((a, i) => {
+    if (a === "--restart") found = args[i + 1] ?? "";
+    else if (a.startsWith("--restart=")) found = a.slice("--restart=".length);
+  });
+  return found;
+}
 const SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const NO_SUCH = /No such (container|object)/i;
 const IN_USE = /Conflict|already in use/i;
@@ -175,9 +199,14 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
   const mountRoot = opts.mountRoot ?? DEFAULT_MOUNT_ROOT;
   const runAs = opts.runAs ?? "pda";
   const stopTimeoutMs = opts.stopTimeoutMs ?? 30_000;
+  const parkMs = opts.parkThresholdMs === undefined ? DOCKER_PARK_THRESHOLD_MS : opts.parkThresholdMs;
+  const drainMs = Math.max(0, stopTimeoutMs - Math.min(5_000, stopTimeoutMs / 2));
   const apparmorOption = opts.apparmor ?? "auto";
   if (!/^[A-Za-z0-9_.-]{1,63}$/.test(fleet)) throw new DockerHostError("INVALID_ARGUMENT", `fleet ${fleet} is not a plain label value`);
   if (!isAbsolute(mountRoot)) throw new DockerHostError("INVALID_ARGUMENT", `mountRoot ${mountRoot} is not absolute`);
+  // The supervisor decides every start: a parked instance exits 0, and a policy that restarted it would race that start.
+  const restart = restartPolicyIn(opts.dockerArgs ?? []);
+  if (restart !== null && restart !== "no") throw new DockerHostError("INVALID_ARGUMENT", `dockerArgs set --restart ${restart}; instances run with no restart policy, the supervisor starts them`);
   const app = appMount(opts.app, opts.appRoot);
 
   const run = (args: string[], o?: { input?: string | Uint8Array; timeoutMs?: number }) => exec([docker, ...args], o);
@@ -244,6 +273,8 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
       "--archil", CONTAINER_ARCHIL,
       "--run-as", runAs,
       ...(app ? ["--app", app.inside] : []),
+      ...(parkMs ? ["--park-threshold", `${parkMs}ms`] : []),
+      "--drain-timeout", `${Math.floor(drainMs)}ms`,
       ...(opts.runArgs ?? []),
       "--token-stdin",
     ];

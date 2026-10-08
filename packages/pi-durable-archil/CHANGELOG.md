@@ -56,6 +56,9 @@
     stop as `docker stop` (drain) then `docker rm`. A dead container takes its mount with it: nothing is left on the host.
   - The app's directory (`--app-root`) is bind-mounted read-only with its `node_modules` hidden, so the app shares the
     image's single pi-durable.
+  - Docker instances park and drain like local ones (`--park-threshold` 60 s by default, the drain from the stop timeout),
+    and a `--restart` policy other than `no` in `dockerArgs` is refused, so a parked container stays exited until the
+    supervisor starts the next.
 - `archilEnv(claim, { runAs })` and `run --run-as USER`: for an instance that runs as root (in a container), every command
   runs as `runAs` with every capability set empty and no_new_privs, and `work/` plus every entry pi's in-process write,
   append and mkdir create under it are handed to that user (`lchown` through the confinement's pinned directory). The
