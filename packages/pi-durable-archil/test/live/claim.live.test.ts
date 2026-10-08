@@ -9,10 +9,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Disk } from "disk";
+import type { Delegation, Disk } from "disk";
 import { LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ledger, LEDGER } from "./_p1-ledger.ts";
-import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, removeMountToken, revoke, takeOver, unmountClaim, type AcquireOptions, type Claim, type ControlApi } from "../../src/claim.ts";
+import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, removeMountToken, revoke, runInode, takeOver, unmountClaim, type AcquireOptions, type Claim, type ControlApi } from "../../src/claim.ts";
 import { ClaimError, exitCodeFor, FencedError, HeldError } from "../../src/errors.ts";
 
 const BASE = "/mnt/pda/p1";
@@ -406,6 +406,7 @@ function wrapControl(): ControlApi {
     removeUser: (type, identifier) => disk.removeUser(type, identifier),
     listDelegations: () => disk.listDelegations(),
     revokeDelegation: (d) => disk.revokeDelegation(d),
+    exec: (command) => disk.exec(command),
   };
 }
 
@@ -576,6 +577,39 @@ test("a daemon outliving its mount (lazily unmounted under a held reference): ar
     if (left.length) spawnSync("sudo", ["-n", "kill", "-9", ...left.map(String)]);
     rmSync(blind, { recursive: true, force: true });
   }
+});
+
+test("a run id reused three times, its third holder killed: the orphan is found by path, or with every path hidden by the run's inode, and revoked", { skip: !LIVE }, async () => {
+  const id = await newRun("reuse3");
+  let a: Claim | null = null;
+  for (const k of [1, 2, 3]) {
+    if (k > 1) await createRunDir(control, id, { uid: 1000, gid: 1000 });
+    a = await claimAt(id, A, `reuse3-${k}`);
+    if (k < 3) {
+      await release(a);
+      assert.equal((await deletePrefix(`runs/${id}/`)).left, 0, `incarnation ${k} deleted, then recreated at once`);
+    }
+  }
+  spawnSync("sudo", ["kill", "-9", String(daemonPid(a!.root))]);
+  let orphan: Delegation | undefined;
+  const t = performance.now();
+  while (!orphan && performance.now() - t < 10_000) {
+    orphan = (await findDelegations(control, id)).find((d) => d.isOrphaned);
+    if (!orphan) await sleep(100);
+  }
+  assert.ok(orphan, "the killed holder's delegation is found");
+  assert.equal(await runInode(control, id), orphan.inodeId, "exec stat resolves runs/<id> to the delegation's inode");
+  // The control API lists a path best-effort; here every path is withheld, as when it lists none.
+  const hidden: ControlApi = { ...wrapControl(), listDelegations: async () => (await disk.listDelegations()).map((d) => ({ ...d, path: undefined })) };
+  const found = await findDelegations(hidden, id);
+  assert.deepEqual(found.map((d) => [d.clientId, d.inodeId]), [[orphan.clientId, orphan.inodeId]], "exactly this run's delegation, never another run's");
+  results.reuseInode = { pathListed: orphan.path ?? null, inodeId: orphan.inodeId, matchedWithPathsHidden: found.length };
+  await assert.rejects(acquire({ ref: ref(id), token: await token("reuse3-blocked"), mountRoot: B }), (e: unknown) => e instanceof HeldError, "the orphan blocks a plain mount");
+  assert.equal((await revoke(hidden, id)).length, 1);
+  await assert.rejects(a!.release(), (e: unknown) => e instanceof FencedError);
+  claims.delete(a!);
+  ledger.unmounted(a!.root, "fusermount (daemon SIGKILLed)");
+  await release(await claimAt(id, B, "reuse3-b"));
 });
 
 test("no mount token reaches sudo's log: zero ARCHIL_MOUNT_TOKEN= lines for this run's mounts", { skip: !LIVE }, async () => {

@@ -11,6 +11,7 @@ import {
   acquire,
   createRunDir,
   findDelegations,
+  matchDelegations,
   mintMountToken,
   MOUNT_TOKEN_TTL,
   parseTokenNickname,
@@ -508,7 +509,7 @@ export type TokenUser = { identifier?: string; nickname?: string; status?: strin
 export interface TokenSweepOptions {
   /** The disk's token users (`getDisk(id).authorizedUsers`; the list lags by seconds). */
   listUsers(): Promise<TokenUser[]>;
-  control: Pick<SupervisorControl, "getObject" | "listDelegations" | "removeUser">;
+  control: Pick<SupervisorControl, "getObject" | "listDelegations" | "removeUser" | "exec">;
   /** Only token users whose nickname starts with this (the supervisor's `tokenPrefix`). */
   prefix: string;
   /** The runs this pass may clean; undefined: every run a token nickname names. */
@@ -542,10 +543,12 @@ export async function sweepTokens(opts: TokenSweepOptions): Promise<TokenSweep> 
   const sweep: TokenSweep = { removed: [], failed: [] };
   if (!users.length) return sweep;
   const delegations = await opts.control.listDelegations();
-  const held = (id: string) => delegations.some((d) => {
-    const p = d.path?.replace(/^\/+/, "");
-    return p === runPath(id) || p?.startsWith(`${runPath(id)}/`) === true;
-  });
+  // A run whose pathless delegations cannot be attributed counts as held: its users stay.
+  const heldBy = new Map<string, Promise<boolean>>();
+  const held = (id: string) => {
+    if (!heldBy.has(id)) heldBy.set(id, matchDelegations(delegations, id, opts.control).then((d) => d.length > 0, () => true));
+    return heldBy.get(id)!;
+  };
   const released = new Map<string, Promise<boolean>>();
   const isReleased = (id: string) => {
     if (!released.has(id)) {
@@ -559,7 +562,7 @@ export async function sweepTokens(opts: TokenSweepOptions): Promise<TokenSweep> 
     const expiry = u.expiresAt ? Date.parse(u.expiresAt) : Number.NaN;
     let why: "released" | "expired" | null = null;
     if (opts.expired && (u.status === "expired" || expiry <= now)) why = "expired";
-    else if (parsed && (!opts.runs || opts.runs.includes(parsed.runId)) && now - created > grace && !held(parsed.runId) && (await isReleased(parsed.runId))) {
+    else if (parsed && (!opts.runs || opts.runs.includes(parsed.runId)) && now - created > grace && !(await held(parsed.runId)) && (await isReleased(parsed.runId))) {
       why = "released";
     }
     if (!why) continue;

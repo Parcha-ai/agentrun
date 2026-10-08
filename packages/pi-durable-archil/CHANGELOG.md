@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+**A holder the control API lists without a path**
+- Archil's control API resolves a delegation's path best-effort and can list one with no path, live or orphaned, even on a
+  run id used once. `findDelegations` matched by path only, so such a holder read as none everywhere it is used
+  (`ensureRunning`, `revoke`, `takeOver`, `deleteRunTree`, `fork`): the supervisor started a second instance into a live
+  holder (refused, exit 76), kept starting into a dead holder's refused mount, and S3 kept refusing the run's deletes.
+  `sweepTokens` judged such a run unheld too, so it could remove a live mount's token user once `run.json` said released.
+- When nothing matches by path and some delegation has none, `runs/<id>` is resolved to its inode through `Disk.exec`
+  (`stat`, whose inode numbers are the control API's inode ids), and the pathless delegations on that inode are the run's.
+  It is resolved at each call, never recorded, so a deleted and recreated run directory is matched as it is now.
+- `ControlApi` gains an optional `exec(command)`; an SDK `Disk` has it and the CLI passes it. Without it, or when the lookup
+  fails, a pathless delegation that could be the run's fails `CONTROL_API_FAILED` instead of reading as none: the
+  supervisor's pass starts nothing, and `takeOver` falls back to `mount --force`.
+
 ## 0.1.0-beta.11, 2026-10-08
 
 **Serve, sleep parking and fork**

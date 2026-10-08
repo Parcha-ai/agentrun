@@ -165,6 +165,7 @@ async function control(values: Record<string, unknown>): Promise<SupervisorContr
     removeUser: (type, identifier) => disk.removeUser(type, identifier),
     listDelegations: () => disk.listDelegations(),
     revokeDelegation: (d) => disk.revokeDelegation(d),
+    exec: (command) => disk.exec(command),
     listObjects: (prefix, options) => disk.listObjects(prefix, options),
     deleteObjects: (keys, options) => disk.deleteObjects(keys, options),
     listUsers: async () => (await getDisk(id)).authorizedUsers ?? [],

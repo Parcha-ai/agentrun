@@ -19,6 +19,12 @@ export interface ControlApi {
   removeUser(type: "token", identifier: string): Promise<void>;
   listDelegations(): Promise<Delegation[]>;
   revokeDelegation(delegation: Pick<Delegation, "clientId" | "inodeId">): Promise<void>;
+  /**
+   * `Disk.exec`: a shell command in a container with the disk mounted in shared mode, at the disk root. The claim uses it
+   * only to resolve `runs/<id>` to its inode when the control API lists a delegation without a path. Without it, such a
+   * delegation cannot be attributed, and `findDelegations` fails rather than read the run as unheld.
+   */
+  exec?(command: string): Promise<{ exitCode: number; stdout: string; stderr?: string }>;
 }
 
 /** How this host runs the archil client. `archil mount`, `sync`, `delegations` and `unmount` all need root. */
@@ -173,14 +179,51 @@ export async function removeMountToken(control: ControlApi, identifier: string):
   }
 }
 
-/** Delegations on `runs/<id>` and anything under it; never a sibling, a parent, or an entry without a path. */
-export async function findDelegations(control: Pick<ControlApi, "listDelegations">, id: string): Promise<Delegation[]> {
+/**
+ * Delegations on `runs/<id>` and anything under it; never a sibling or a parent. The control API resolves a delegation's
+ * path best-effort: it can list one with no path, live or orphaned, on a never-reused run. So when nothing matches by
+ * path and some entry has none, `runs/<id>` is resolved to its inode now (`runInode`), and the pathless entries on that
+ * inode are the run's. A pathless entry that cannot be attributed fails CONTROL_API_FAILED: an unseen holder must never
+ * read as none, or a caller starts over it.
+ */
+export async function findDelegations(control: Pick<ControlApi, "listDelegations" | "exec">, id: string): Promise<Delegation[]> {
+  runPath(id);
+  return matchDelegations(await control.listDelegations(), id, control);
+}
+
+/** `findDelegations` over a listing the caller already holds (one listing, many runs). */
+export async function matchDelegations(all: readonly Delegation[], id: string, control: Pick<ControlApi, "exec">): Promise<Delegation[]> {
   const path = runPath(id);
-  const all = await control.listDelegations();
-  return all.filter((d) => {
+  const byPath = all.filter((d) => {
     const p = d.path?.replace(/^\/+/, "");
     return p === path || p?.startsWith(`${path}/`) === true;
   });
+  const pathless = all.filter((d) => !d.path);
+  if (byPath.length > 0 || pathless.length === 0) return byPath;
+  const inode = await runInode(control, id);
+  return inode === null ? [] : pathless.filter((d) => d.inodeId === inode);
+}
+
+const ABSENT = "absent";
+
+/**
+ * The inode `runs/<id>` names now, or null when it does not exist: `stat` through `exec`, whose inode numbers are the
+ * control API's inode ids. Resolved at each call, never recorded, so a deleted and recreated run directory (a new inode)
+ * is matched as it is now.
+ */
+export async function runInode(control: Pick<ControlApi, "exec">, id: string): Promise<number | null> {
+  const path = runPath(id);
+  if (!control.exec) throw new ClaimError("CONTROL_API_FAILED", `a delegation with no path may be ${path}'s, and the control API has no exec to resolve the run's inode`);
+  let r: { exitCode: number; stdout: string };
+  try {
+    r = await control.exec(`if [ -e '${path}' ]; then stat -c %i -- '${path}'; else echo ${ABSENT}; fi`);
+  } catch (err) {
+    throw new ClaimError("CONTROL_API_FAILED", `resolving ${path} to its inode failed`, { cause: err });
+  }
+  const out = String(r.stdout ?? "").trim();
+  if (r.exitCode === 0 && out === ABSENT) return null;
+  if (r.exitCode !== 0 || !/^\d+$/.test(out)) throw new ClaimError("CONTROL_API_FAILED", `resolving ${path} to its inode: exit ${r.exitCode}, ${JSON.stringify(out.slice(0, 80))}`);
+  return Number(out);
 }
 
 /** Revoke every delegation on the run through the control API. The old holder's next fsync returns EIO. */
