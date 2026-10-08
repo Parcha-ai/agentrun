@@ -45,9 +45,10 @@
   - `docker create` named `pda-<run>-<disk key>-g<attempt>` (the disk key is 8 hex digits of the disk and region) and
     labeled `pda.fleet`, `pda.run`, `pda.disk`, `pda.region`: a retry of the same attempt adopts a running container that
     carries all four labels, and the supervisor removes the token it minted for that start; a dead one is replaced, and a
-    container by that name with other labels is refused. `--device /dev/fuse --cap-add SYS_ADMIN`, `--security-opt no-new-privileges`, no restart policy, and
-    `--security-opt apparmor=unconfined` only where the daemon applies AppArmor (Docker's default profile denies mount(2);
-    `apparmor: "auto"`, the default, decides from `docker info` and reports why once through `note`).
+    container by that name with other labels is refused. `--device /dev/fuse --cap-add SYS_ADMIN`, `--security-opt
+    no-new-privileges`, no restart policy, and `--security-opt apparmor=unconfined` only where the daemon applies
+    AppArmor (Docker's default profile denies mount(2); `apparmor: "auto"`, the default, decides from `docker info` and
+    reports why once through `note`).
   - The mount token is copied into the created container as a root-only file (`docker cp -` of a tar built in memory),
     which the entrypoint makes the instance's stdin and removes before the instance starts. It is never in `docker
     inspect`, argv or an environment variable.
@@ -61,7 +62,11 @@
   run's root, store and `run.json` stay root's; a command can neither change them nor read the archil daemon's environment.
 - `HostDriver.start(ref, token, { attempt })`: the supervisor passes the generation the instance will open, so a driver can
   key its start on it. Drivers that ignore it are unchanged.
-- `examples/docker-quickstart.sh`, and `--host docker` for both examples' demos.
+- The image installs one version of this package: the checkout's `package.json` version, from a tarball `npm pack` wrote
+  into `docker/package` (which must be that version) or else from npm; `--build-arg PDA_VERSION` names another version or
+  a dist-tag, never by default.
+- `examples/docker-quickstart.sh`, and `--host docker` for both examples' demos. It reuses an image only when the image was
+  built from this checkout's package version, and rebuilds it otherwise.
 - Measured with Docker Engine 29 on Ubuntu 24.04: a killed container is replaced in about 1 s and the run resumes about
   2 s after the kill; a frozen one is replaced 7 to 8 s after the freeze (6 s test lease) and exits 75 within 0.5 s of its
   thaw; a commit from a container costs what it costs from the host. macOS is not verified.

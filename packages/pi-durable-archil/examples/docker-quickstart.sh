@@ -10,8 +10,8 @@
 #                                                             # demo (e.g. freeze, --keep)
 #
 # Steps, each printed before it runs and timed: check the tools, install the workspace's dependencies (npm ci at the
-# repository root) and build this package's dist/, build the image (docker build; PDA_IMAGE names one to use instead,
-# and the build is skipped when it exists),
+# repository root) and build this package's dist/, build the image (docker build; PDA_IMAGE names another tag, and the
+# build is skipped when an image by that tag was built from this checkout's package version),
 # run example 02 (`kill`) with the instances in containers, and clean up: the demo removes its containers, the run's
 # directory on the disk and its token users; this script removes the tarball it packed. The image stays (one command to
 # remove it is printed at the end).
@@ -77,14 +77,21 @@ done_step npm
 # ---- 3. the image ----------------------------------------------------------------------------------------------------
 step "build the image $IMAGE (Node 24, the archil client checked by sha256, FUSE, the package)"
 packed=""
-if docker image inspect "$IMAGE" >/dev/null 2>&1 && [ "${PDA_REBUILD:-}" != 1 ]; then
-  echo "    $IMAGE exists; skipped (PDA_REBUILD=1 rebuilds it)"
+# The image's package has to be this checkout's: the host side of the demo runs from this checkout.
+version=$(node -p 'require("./package.json").version')
+have=$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || true)
+[ "$have" = "<no value>" ] && have=""
+if [ "$have" = "$version" ] && [ "${PDA_REBUILD:-}" != 1 ]; then
+  echo "    $IMAGE exists, built from version $version; skipped (PDA_REBUILD=1 rebuilds it)"
 else
+  if [ "${PDA_REBUILD:-}" != 1 ] && docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "    $IMAGE holds version ${have:-unknown}; this checkout is $version: rebuilding"
+  fi
   rm -f docker/package/parcha-pi-durable-archil-*.tgz
   show npm pack --pack-destination docker/package
   packed=$(npm pack --pack-destination docker/package --loglevel=error | tail -1)
-  show docker build -f docker/Dockerfile -t "$IMAGE" .
-  docker build -f docker/Dockerfile -t "$IMAGE" . | sed 's/^/    /'
+  show docker build -f docker/Dockerfile --label "org.opencontainers.image.version=$version" -t "$IMAGE" .
+  docker build -f docker/Dockerfile --label "org.opencontainers.image.version=$version" -t "$IMAGE" . | sed 's/^/    /'
 fi
 printf '    image %s: %s, %s\n' "$IMAGE" "$(docker image inspect "$IMAGE" --format '{{.Os}}/{{.Architecture}}')" "$(docker image ls "$IMAGE" --format '{{.Size}}' | head -1)"
 done_step image

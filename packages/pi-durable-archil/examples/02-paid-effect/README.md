@@ -41,7 +41,7 @@ the wrapper path, `--id`, `--api-key-env`).
 `packages/pi-durable-archil` after the workspace's `npm ci --ignore-scripts` at the repository root:
 
 ```sh
-npm run build && npm pack --pack-destination docker/package
+rm -f docker/package/*.tgz && npm run build && npm pack --pack-destination docker/package
 docker build -f docker/Dockerfile -t pi-durable-archil:local .
 node examples/02-paid-effect/demo.ts kill   --host docker    # about 17 seconds
 node examples/02-paid-effect/demo.ts freeze --host docker    # about 27 seconds

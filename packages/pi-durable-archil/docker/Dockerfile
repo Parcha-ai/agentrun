@@ -5,8 +5,10 @@
 #
 # Build from this directory of a checkout, after the workspace's `npm ci` (the quickstart does this):
 #   npm pack --pack-destination docker/package && docker build -f docker/Dockerfile -t pi-durable-archil:local .
-# Build from npm (no tarball in docker/package; PDA_VERSION is a version or a dist-tag, default beta):
-#   docker build -f docker/Dockerfile --build-arg PDA_VERSION=beta -t pi-durable-archil:local .
+# Build from npm (no tarball in docker/package): the release of this checkout's package.json version, or PDA_VERSION
+# (a version, or a dist-tag such as beta, only when asked for):
+#   docker build -f docker/Dockerfile -t pi-durable-archil:local .
+# The package inside an image is always one version: the tarball's must be this checkout's (or PDA_VERSION).
 #
 # Pinned: the Node base by digest (a multi-arch index), the archil client 0.8.42 by sha256 per architecture, the
 # runtime dependencies by docker/runtime/package-lock.json. No secret is in any layer: the mount token reaches a
@@ -42,17 +44,29 @@ RUN set -eu; \
 COPY docker/runtime/package.json docker/runtime/package-lock.json /opt/pda/
 RUN cd /opt/pda && npm ci --omit=dev --no-audit --no-fund --loglevel=error --cache /tmp/npm-cache && rm -rf /tmp/npm-cache
 
-# The package itself: a tarball in docker/package (a checkout's `npm pack`), else the release from npm.
-ARG PDA_VERSION=beta
+# The package itself: a tarball in docker/package (a checkout's `npm pack`), else the release from npm. Either way the
+# version is this checkout's package.json version unless PDA_VERSION names another; no floating default.
+ARG PDA_VERSION=
+COPY package.json /tmp/pda-package.json
 COPY docker/package/ /tmp/pda-package/
 COPY docker/entrypoint.sh /usr/local/bin/pda-entrypoint
 RUN set -eu; \
+    want="${PDA_VERSION:-$(node -p 'require("/tmp/pda-package.json").version')}"; \
     cd /tmp/pda-package; \
-    tgz="$(ls parcha-pi-durable-archil-*.tgz 2>/dev/null | head -1 || true)"; \
-    if [ -z "$tgz" ]; then npm pack --cache /tmp/npm-cache --loglevel=error "@parcha/pi-durable-archil@${PDA_VERSION}"; tgz="$(ls parcha-pi-durable-archil-*.tgz | head -1)"; fi; \
+    set -- parcha-pi-durable-archil-*.tgz; \
+    if [ "$#" -gt 1 ]; then echo "docker/package holds $# tarballs ($*); keep one" >&2; exit 1; fi; \
+    if [ -e "$1" ]; then \
+      tgz="$1"; \
+      [ "$tgz" = "parcha-pi-durable-archil-$want.tgz" ] || { echo "docker/package/$tgz is not version $want (this checkout's, or PDA_VERSION): pack this checkout again, or remove it to build from npm" >&2; exit 1; }; \
+    else \
+      npm pack --cache /tmp/npm-cache --loglevel=silent "@parcha/pi-durable-archil@$want" >/dev/null \
+        || { echo "npm pack @parcha/pi-durable-archil@$want failed (not published, or npm unreachable): build from a checkout with npm pack (docker/package/README.md), or set PDA_VERSION" >&2; exit 1; }; \
+      set -- parcha-pi-durable-archil-*.tgz; tgz="$1"; \
+    fi; \
+    echo "@parcha/pi-durable-archil from $tgz"; \
     install -d /opt/pda/node_modules/@parcha/pi-durable-archil; \
     tar -xzf "$tgz" -C /opt/pda/node_modules/@parcha/pi-durable-archil --strip-components=1 --no-same-owner; \
-    rm -rf /tmp/pda-package /tmp/npm-cache; \
+    rm -rf /tmp/pda-package /tmp/pda-package.json /tmp/npm-cache; \
     install -o root -g root -m 0755 /opt/pda/node_modules/@parcha/pi-durable-archil/bin/archil-scoped /usr/local/sbin/archil-scoped; \
     chmod 0755 /usr/local/bin/pda-entrypoint; \
     ln -s /opt/pda/node_modules/@parcha/pi-durable-archil/dist/cli.js /usr/local/bin/pi-durable-archil; \

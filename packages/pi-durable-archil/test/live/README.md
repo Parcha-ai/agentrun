@@ -34,6 +34,6 @@ before they can run from here. They have not been run from the workspace.
 
 The docker suite (`test:live:docker`, also run by `test:live` when `PDA_LIVE_DOCKER=1`) runs the instances in containers of
 the package's image on this machine's Docker daemon; nothing on the host mounts. Build the image from this directory first:
-`npm pack --pack-destination docker/package && docker build -f docker/Dockerfile -t pi-durable-archil:local .`
+`rm -f docker/package/*.tgz && npm pack --pack-destination docker/package && docker build -f docker/Dockerfile -t pi-durable-archil:local .`
 (`PDA_DOCKER_IMAGE` names another image). Its containers are labeled `pda.fleet=$PDA_DOCKER_FLEET` (default `live`) and
 named `pda-<fleet>-...`, its run directories `runs/<fleet>-...`; the suite removes only those.
