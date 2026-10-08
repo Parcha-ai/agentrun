@@ -169,9 +169,14 @@ function lsA(dir: string): string[] {
 
 /**
  * An instance with a command running, whose mount `takeAway` then removes. The instance must exit 75 at its next
- * heartbeat (CLAIM_UNMOUNTED), its command must die, and nothing may appear on the local disk under the mountpoint.
+ * heartbeat (CLAIM_UNMOUNTED), its command must die, and nothing may appear on the local disk under the mountpoint. `fence` is what
+ * its stderr may say: a dead daemon can fail the heartbeat's write (FENCED, ECONNABORTED) before the mount table check sees the mount gone.
  */
-async function mountTakenAway(name: string, takeAway: (mountpoint: string, daemon: number) => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+async function mountTakenAway(
+  name: string,
+  takeAway: (mountpoint: string, daemon: number) => Promise<Record<string, unknown>>,
+  fence = /fenced \(CLAIM_UNMOUNTED\)/,
+): Promise<Record<string, unknown>> {
   const id = await newRun(name);
   const execLog = join(WORK, `exec-${id}.jsonl`);
   const lease = { heartbeatMs: 1_000, expiryMs: 10_000, marginMs: 2_000, checkMs: 100 };
@@ -185,11 +190,12 @@ async function mountTakenAway(name: string, takeAway: (mountpoint: string, daemo
   assert.ok(["owner.lock", "run.json", "store", "work"].every((f) => mounted.includes(f)), `the mount as the instance holds it: ${mounted.join(" ")}`);
   const takenAt = Date.now();
   const how = await takeAway(a.mountpoint, daemon);
+  const takenAfter = Date.now();
   const exit = await a.exited;
   const exitAfterMs = a.exitedAt - takenAt;
   const listedAtExit = archilMounts().includes(a.mountpoint);
   assert.equal(exit.code, 75, a.stderr);
-  assert.match(a.stderr, /fenced \(CLAIM_UNMOUNTED\)/);
+  assert.match(a.stderr, fence);
   assert.ok(exitAfterMs <= lease.heartbeatMs + 1_500, `exit ${exitAfterMs} ms after the mount was taken away; the next heartbeat is at most ${lease.heartbeatMs} ms away`);
   assert.ok(await waitGone(sleeper), "the command died");
   const daemonExitedOnItsOwn = await procGone(daemon, 15_000);
@@ -209,7 +215,9 @@ async function mountTakenAway(name: string, takeAway: (mountpoint: string, daemo
   assert.deepEqual(local, [], "nothing on the local disk under the mountpoint");
   const record = await runJsonOverS3(id);
   assert.equal(record.status, "running");
-  assert.ok(Date.parse(record.heartbeatAt!) <= takenAt, "every heartbeat on the disk began before the mount was taken away");
+  // A heartbeat that began after `takenAt` but before the unmount took effect (sudo and umount take a while under load) finds the mount
+  // still listed and is legitimate; none may begin once `takeAway` has returned and still reach the disk.
+  assert.ok(Date.parse(record.heartbeatAt!) <= takenAfter, "no heartbeat began after the mount was taken away");
   return { lease, mounted, ...how, listedAtExit, listedAfter, exitAfterMs, fence: /fenced \(([A-Z_]+)\)/.exec(a.stderr)?.[1], local, daemonExitedOnItsOwn, lastHeartbeatBeforeMs: takenAt - Date.parse(record.heartbeatAt!) };
 }
 
@@ -518,6 +526,6 @@ for (const signal of ["KILL", "TERM"] as const) {
       const r = spawnSync("sudo", ["-n", "kill", `-${signal}`, String(daemon)], { encoding: "utf8" });
       assert.equal(r.status, 0, r.stderr);
       return { takenAwayBy: `SIG${signal} to the FUSE daemon` };
-    });
+    }, /fenced \((?:CLAIM_UNMOUNTED|FENCED)\)/);
   });
 }
