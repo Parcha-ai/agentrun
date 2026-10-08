@@ -60,7 +60,9 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          for package in dsl jev pi pi-durable-archil pi-browser; do
+          # The publish set is scripts/release-preflight.mjs's `releasePackages`: every workspace package except a held one (a package
+          # whose manifest says "private": true), so lifting a hold changes one flag and no list.
+          for package in $(node --input-type=module -e "import { releasePackages } from './scripts/release-preflight.mjs'; console.log(releasePackages.join(' '))"); do
             if node scripts/verify-published.mjs --package "$package" --allow-absent; then
               echo "Verified existing $package@$version; resuming without republishing."
               continue

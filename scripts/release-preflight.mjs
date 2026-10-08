@@ -3,15 +3,26 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 
 const exec = promisify(execFile);
+// The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
+// packages that depend on none of them after. This list is the gate for a new package: a workspace package that is not private and not
+// named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
 export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-archil': '@parcha/pi-durable-archil', 'pi-browser': '@parcha/pi-browser' };
-export const releasePackages = Object.keys(releasePackageNames);
+export const listedPackages = Object.keys(releasePackageNames);
+// A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
+// version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
+const here = dirname(fileURLToPath(import.meta.url));
+const isHeld = directory => JSON.parse(readFileSync(join(here, '..', 'packages', directory, 'package.json'), 'utf8')).private === true;
+export const heldPackages = listedPackages.filter(isHeld);
+/** What a release publishes, in order: the listed packages that are not held. */
+export const releasePackages = listedPackages.filter(directory => !heldPackages.includes(directory));
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -78,7 +89,18 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   assert.equal(receipt.status, 'passed', 'Clean package verification must pass first');
   assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, archil: true, browser: true, network: 'prohibited' }, 'All installed package smoke checks are required');
   await checkReleaseAudit(root, receipt.audit?.vulnerabilities);
-  assert.equal(receipt.packages?.length, releasePackages.length, `Expected exactly ${releasePackages.length} verified packages`);
+  assert.equal(receipt.packages?.length, listedPackages.length, `Expected exactly ${listedPackages.length} verified packages`);
+  // The gate for a new package: every workspace package that is not private is named in releasePackageNames.
+  for (const directory of await readdir(join(root, 'packages'))) {
+    const manifest = await json(join(root, 'packages', directory, 'package.json')).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (manifest && manifest.private !== true) assert.ok(listedPackages.includes(directory), `Workspace package ${directory} is neither private nor named in releasePackageNames (scripts/release-preflight.mjs); add it there, or mark it private, before a release`);
+  }
+  // A held package is bumped with the workspace like the rest and skipped only at publication.
+  for (const directory of heldPackages) {
+    const held = await json(join(root, 'packages', directory, 'package.json'));
+    assert.equal(held.private, true, `${releasePackageNames[directory]} is held and must stay private`);
+    assert.equal(held.version, workspace.version, `Held package ${releasePackageNames[directory]} must be at the workspace version ${workspace.version}, found ${held.version}`);
+  }
   const temporary = await mkdtemp(join(tmpdir(), 'agentrun-release-preflight-'));
   const packages = [];
   try {

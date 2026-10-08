@@ -23,7 +23,7 @@ AgentRun is a workflow language for agents a host already runs. A workflow is a 
 | `docs/` | `guide.md` (primitives, limits), `authoring.md`, `host-integration.md`, `releasing.md` |
 | `scripts/` | Node floor, schema and contract generation, source export, package and release verification |
 
-The five packages share one version. `dsl`, `jev` and `pi` are published in that order, then `pi-durable-archil`, then `pi-browser`.
+The five packages share one version. `dsl`, `jev` and `pi` are published in that order, then `pi-durable-archil`. `pi-browser` is held (`"private": true` in its manifest) while publishing it is on hold: it is built, tested, verified and kept at the workspace version like the others, and is in no publish path. Removing that one flag lifts the hold.
 
 ## Setup and checks
 

@@ -15,7 +15,7 @@
 ## 0.1.0-beta.10, 2026-10-08
 
 - New package, `@parcha/pi-browser`: a browser for pi agents that keeps its promises across crashes. `snapshot`, `run`, `screenshot`, `browser_read`, `browser_relaunch`, `browser_release`, `web_fetch` and `web_search`, with session custody recorded before every provider call, evidence filed with its SHA-256, failures classified from typed facts, and no credential in anything a model, a document or a log can see. `pi install` loads its coding-agent extension; the pi-durable adapter, the Browserbase and local-Chrome providers and a fake backend (`./testing`) are separate entries.
-  - It does not depend on the other packages and is published last. Its README and `packages/pi-browser/CHANGELOG.md` have the details.
+  - It does not depend on the other packages. Publishing it is on hold: its manifest is `"private": true`, so it is built, tested, verified and kept at the workspace version but is in no release (see `docs/releasing.md`). Its README and `packages/pi-browser/CHANGELOG.md` have the details.
   - It is a synced snapshot of the agentrun harness's `packages/pi-browser`, produced by a transform that applies the workspace adaptations; do not edit it here.
   - Its unit tests run in `npm test` on every Node version in CI. Its real-Chrome suites run in the `real-chrome` job, against a pinned Chrome for Testing.
   - The workspace now holds two copies of `@earendil-works/pi-coding-agent`, `pi-ai` and `chord` (0.87 for the Pi package, 1.0 for this one) and two of `zod`; the package's own copies are nested under it.

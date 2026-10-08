@@ -1,6 +1,10 @@
 # Release a beta
 
-The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, `@parcha/pi-durable-archil`, and `@parcha/pi-browser`. They share a version and are published in that order (the last two do not depend on the others). Publication is manual; pushes, pull requests and tags do not publish packages.
+The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, and `@parcha/pi-durable-archil`. They share a version and are published in that order (the last does not depend on the others). `@parcha/pi-browser` is in the repository but held; see [Held packages](#held-packages). Publication is manual; pushes, pull requests and tags do not publish packages.
+
+## Held packages
+
+The packages a release may publish are named, in publication order, in `releasePackageNames` in `scripts/release-preflight.mjs`: dependencies first (`dsl`, then `jev` and `pi`), then the packages that depend on none of them. That list is the gate for a new package: `release-preflight` fails when a workspace package is neither private nor named there, so a package is never published by accident. A package whose manifest says `"private": true` is held. It is built, tested, typechecked and checked by `verify-packages` and `verify:tarball`, and it is bumped with the workspace version in every release PR like the rest (`release-preflight` fails if its version differs from the workspace's), but it is skipped at publication: the publish set (`releasePackages`, which `verify-published` and the workflow's publish loop read) is the named packages that are not held. `@parcha/pi-browser` is held while publishing it is on hold. Lifting a hold is one commit that removes `"private": true` from the package's manifest, after its npm bootstrap and trusted publisher exist (see "Prepare publication").
 
 ## Verify the source and packages
 
@@ -51,7 +55,7 @@ If publication stops partway, resume from the same tag and archive bytes. The wo
 
 If the visibility wait expires, check the exact version in the registry before retrying; it may already be published. Resume only after confirming its bytes match the verified archive. Do not change the version or start a separate publication to work around the delay.
 
-The release is complete only when all five published archives match the release plan and the fresh registry installation passes. Confirm the `beta-release-<run ID>` artifact contains the release plan, archives, and `published-all.json` with `status: passed` and `cleanRegistryInstall: true`.
+The release is complete only when all four published archives match the release plan and the fresh registry installation passes. Confirm the `beta-release-<run ID>` artifact contains the release plan, archives, and `published-all.json` with `status: passed` and `cleanRegistryInstall: true`.
 
 After publication, test the README from an empty clone and exact-version npm installation outside the workspace. Remove private or unpublished notices only when those public paths work. Website deployment belongs to the separate website repository.
 
