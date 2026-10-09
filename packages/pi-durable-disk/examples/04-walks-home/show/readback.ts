@@ -56,6 +56,9 @@ export function parseReadbackLine(line: string): ReadbackResult | undefined {
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** 03's server lists at most this many paths per kind in a mismatch event, so a list this long is a lower bound, not a count. */
+export const PATH_LIST_CAP = 50;
+const bound = (n: number) => (n >= PATH_LIST_CAP ? `at least ${n}` : String(n));
 const bytesLabel = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`);
 
 /** What the stage says about a result. Only `verified` is evidence that nothing was lost. */
@@ -81,7 +84,7 @@ export function readbackNote(r: ReadbackResult): ReadbackNote {
     case "paths":
       return {
         kind: "story",
-        text: `The read-back found ${r.missing} missing, ${r.differ} changed and ${r.extra} extra paths; ${r.changedSinceRelease} of them were written in the second before the release or later, which the next host may have written.`,
+        text: `The read-back found ${bound(r.missing)} missing, ${bound(r.differ)} changed and ${bound(r.extra)} extra paths; ${bound(r.changedSinceRelease)} of them were written in the second before the release or later, which the next host may have written.`,
         measured: true,
       };
     case "failed":
@@ -94,8 +97,13 @@ export type WatcherOptions = {
   file: () => string | undefined;
   /** The run the stage is showing: lines about any other run are ignored. */
   run: () => string | undefined;
+  /** Counts each time the stage's feed adopts a link (a first connection, a retake). A new server's results wait for it to advance. */
+  epoch: () => number;
   onNote: (note: ReadbackNote) => void;
   intervalMs?: number;
+  now?: () => number;
+  /** How long a new server's results wait for the feed to follow its link before the run's name alone decides. Default 30 s. */
+  holdMs?: number;
 };
 
 /**
@@ -110,6 +118,9 @@ export class ReadbackWatcher {
   private offset = 0;
   private partial = "";
   private seen = false;
+  /** A log that replaced the one before it is a new server's: its results wait until the feed has followed the new link. */
+  private hold: { epoch: number; since: number } | undefined;
+  private held: ReadbackResult[] = [];
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: WatcherOptions) {
@@ -128,7 +139,22 @@ export class ReadbackWatcher {
     this.timer = undefined;
   }
 
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  /** The hold ends when the feed has followed the new link, or after `holdMs`; what waited is shown if it is about the run on the stage. */
+  private release(): void {
+    if (!this.hold) return;
+    if (this.opts.epoch() < this.hold.epoch && this.now() - this.hold.since < (this.opts.holdMs ?? 30_000)) return;
+    const held = this.held;
+    this.held = [];
+    this.hold = undefined;
+    for (const result of held) this.deliver(result);
+  }
+
   poll(): void {
+    this.release();
     const path = this.opts.file();
     if (path === undefined) return;
     let fd: number;
@@ -143,6 +169,7 @@ export class ReadbackWatcher {
       if (replaced) {
         // The first file ever seen is tailed from its end; one that replaced it is a new server's, read from its start.
         this.offset = this.seen ? 0 : st.size;
+        if (this.seen && !this.hold) this.hold = { epoch: this.opts.epoch() + 1, since: this.now() };
         this.partial = "";
         this.path = path;
         this.ino = st.ino;
@@ -168,6 +195,14 @@ export class ReadbackWatcher {
   private take(line: string): void {
     const result = parseReadbackLine(line);
     if (!result) return;
+    if (this.hold) {
+      if (this.held.length < 50) this.held.push(result);
+      return;
+    }
+    this.deliver(result);
+  }
+
+  private deliver(result: ReadbackResult): void {
     if (result.run !== this.opts.run()) return;
     this.opts.onNote(readbackNote(result));
   }

@@ -136,7 +136,7 @@ both what the pipe sealed and what the leaving host acknowledged (`match` and `a
 nothing was lost, with evidence `independent-readback`, so its caption is MEASURED. A difference is shown as a difference; a read-back with
 no acknowledged workspace to compare, or one that could not finish, is a note with no claim. Notes carry counts and sizes: never a digest,
 a path or the server's error text. The log also holds the run's link, so the watcher reads only lines that are one of those three events,
-only for the run on the stage, and starts at the end of the file it first sees (earlier handovers are not replayed). `readback.ts` is the
+only for the run on the stage, and starts at the end of the file it first sees (earlier handovers are not replayed). A log that replaces the first (a retake) is a new server's: its results wait until the feed has followed the new link (the feed counts each link it adopts), or 30 s, so a read-back logged before the stage switches runs is neither dropped nor handed to the old run, whose reset would erase it. The server lists at most 50 paths per kind in a difference, so a full list is worded "at least 50". `readback.ts` is the
 parser and the watcher; `test/readback-live.test.ts` runs it against the real take server's log file.
 
 ## Takes

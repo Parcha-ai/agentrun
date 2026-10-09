@@ -90,7 +90,7 @@ function watch(run = "r1") {
   const dir = mkdtempSync(join(tmpdir(), "d5-readback-"));
   const file = join(dir, "server.log");
   const got: ReadbackNote[] = [];
-  const w = new ReadbackWatcher({ file: () => file, run: () => run, onNote: (n) => got.push(n) });
+  const w = new ReadbackWatcher({ file: () => file, run: () => run, epoch: () => 0, onNote: (n) => got.push(n) });
   return { dir, file, got, w, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -115,8 +115,12 @@ test("the watcher starts at the end of the file it first sees, reads what is app
   }
 });
 
-test("a line about another run is ignored, and a file that replaced the log (a restarted server) is read from its start", () => {
-  const { dir, file, got, w, done } = watch("r2");
+test("a line about another run is ignored, and a file that replaced the log (a restarted server) is read from its start once the feed has followed the new link", () => {
+  const dir = mkdtempSync(join(tmpdir(), "d5-readback-"));
+  const file = join(dir, "server.log");
+  const got: ReadbackNote[] = [];
+  const feed = { epoch: 1 };
+  const w = new ReadbackWatcher({ file: () => file, run: () => "r2", epoch: () => feed.epoch, onNote: (n) => got.push(n) });
   try {
     writeFileSync(file, "");
     w.poll();
@@ -127,15 +131,100 @@ test("a line about another run is ignored, and a file that replaced the log (a r
     writeFileSync(next, `${readback({ run: "r2", files: 9 })}\n`);
     renameSync(next, file);
     w.poll();
+    assert.equal(got.length, 1, "the new server's result waits for the feed to follow its link (see the retake tests)");
+    feed.epoch = 2;
+    w.poll();
     assert.deepEqual(got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["3", "9"]);
   } finally {
-    done();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test("a missing log, or none named yet, is not an error", () => {
   const got: ReadbackNote[] = [];
-  new ReadbackWatcher({ file: () => undefined, run: () => "r1", onNote: (n) => got.push(n) }).poll();
-  new ReadbackWatcher({ file: () => join(tmpdir(), "d5-no-such-log-file"), run: () => "r1", onNote: (n) => got.push(n) }).poll();
+  new ReadbackWatcher({ file: () => undefined, run: () => "r1", epoch: () => 0, onNote: (n) => got.push(n) }).poll();
+  new ReadbackWatcher({ file: () => join(tmpdir(), "d5-no-such-log-file"), run: () => "r1", epoch: () => 0, onNote: (n) => got.push(n) }).poll();
   assert.equal(got.length, 0);
+});
+
+// A retake: the new server's log appears (and may get its first read-back) before the stage's feed has noticed the new link and reset.
+function retake(opts: { feedRun: string; newRun: string; holdMs?: number }) {
+  const dir = mkdtempSync(join(tmpdir(), "d5-readback-retake-"));
+  const file = join(dir, "server.log");
+  const got: ReadbackNote[] = [];
+  const feed = { run: opts.feedRun, epoch: 1 };
+  let now = 1_000;
+  const w = new ReadbackWatcher({ file: () => file, run: () => feed.run, epoch: () => feed.epoch, now: () => now, ...(opts.holdMs ? { holdMs: opts.holdMs } : {}), onNote: (n) => got.push(n) });
+  writeFileSync(file, `${readback({ run: opts.feedRun, files: 1 })}\n`);
+  w.poll();
+  const replace = (text: string) => {
+    const next = join(dir, "next.log");
+    writeFileSync(next, text);
+    renameSync(next, file);
+  };
+  return { dir, file, got, feed, w, replace, tick: (ms: number) => (now += ms), done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test("a new server's read-back that lands before the feed has followed the new link is held, then shown on the new run", () => {
+  const t = retake({ feedRun: "old", newRun: "new" });
+  try {
+    t.replace(`${readback({ run: "new", files: 4 })}\n`);
+    t.w.poll();
+    assert.equal(t.got.length, 0, "the feed is still on the old run: not shown, and not lost");
+    t.feed.run = "new";
+    t.feed.epoch = 2;
+    t.w.poll();
+    assert.deepEqual(t.got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["4"]);
+    t.w.poll();
+    assert.equal(t.got.length, 1, "once");
+  } finally {
+    t.done();
+  }
+});
+
+test("a retake that keeps the run's name does not hand the note to the old feed, where its reset would erase it", () => {
+  const t = retake({ feedRun: "take", newRun: "take" });
+  try {
+    t.replace(`${readback({ run: "take", files: 6 })}\n`);
+    t.w.poll();
+    assert.equal(t.got.length, 0, "the name matches but the feed has not reset yet");
+    t.feed.epoch = 2;
+    t.w.poll();
+    assert.deepEqual(t.got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["6"]);
+  } finally {
+    t.done();
+  }
+});
+
+test("a held result for a run the feed never shows is dropped, and a feed that never resets does not hold results forever", () => {
+  const dropped = retake({ feedRun: "old", newRun: "other" });
+  try {
+    dropped.replace(`${readback({ run: "other", files: 2 })}\n`);
+    dropped.w.poll();
+    dropped.feed.epoch = 2;
+    dropped.w.poll();
+    assert.equal(dropped.got.length, 0, "the feed moved on to a different run");
+  } finally {
+    dropped.done();
+  }
+  const stuck = retake({ feedRun: "same", newRun: "same", holdMs: 30_000 });
+  try {
+    stuck.replace(`${readback({ run: "same", files: 8 })}\n`);
+    stuck.w.poll();
+    assert.equal(stuck.got.length, 0);
+    stuck.tick(30_001);
+    stuck.w.poll();
+    assert.deepEqual(stuck.got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["8"], "after the hold, a result for the run on the stage is shown");
+  } finally {
+    stuck.done();
+  }
+});
+
+test("the server caps each list of differing paths at 50, so a full list is shown as a lower bound", () => {
+  const fifty = Array.from({ length: 50 }, (_, i) => `f${i}`);
+  const r = parseReadbackLine(line("pipe.readback-mismatch", { run: "r1", missing: fifty, extra: ["x"], differ: [], changedSinceRelease: fifty }));
+  assert.ok(r && r.kind === "paths");
+  const text = readbackNote(r!).text;
+  assert.match(text, /at least 50 missing, 0 changed and 1 extra paths; at least 50 of them were written/);
+  assert.match(readbackNote(parseReadbackLine(line("pipe.readback-mismatch", { run: "r1", missing: ["a"], extra: [], differ: ["b", "c"], changedSinceRelease: [] }))!).text, /1 missing, 2 changed and 0 extra paths; 0 of them were written/);
 });

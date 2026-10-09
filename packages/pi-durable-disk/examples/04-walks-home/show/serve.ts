@@ -150,6 +150,7 @@ if (pipeLink) {
         }
       },
       run: () => feed.run,
+      epoch: () => feed.epoch,
       onNote: (note) => feed.addNote(note),
     }).start();
   }
