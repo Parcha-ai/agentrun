@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, openTab, sleep } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..");
@@ -79,7 +79,7 @@ const port = await freePort();
 const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(port), SHOW_DESKTOP_LINK_FILE: linkFile, SHOW_START: "44", SHOW_AUTOKILL: "off" }, stdio: "ignore" });
 let tab;
 try {
-  await until(async () => (await fetch(`http://127.0.0.1:${port}/api/state`).then((r) => r.ok).catch(() => false)), 20_000);
+  await waitForStage(port, stage);
   tab = await openTab(`http://127.0.0.1:${port}/`, { width: 1600, height: 900 });
   const ev = (s) => tab.eval(s);
   const visible = () => ev(`!document.getElementById("desktop").hidden`);

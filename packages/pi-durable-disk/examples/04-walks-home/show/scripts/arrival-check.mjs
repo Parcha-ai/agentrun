@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, openTab, sleep } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
 
 const show = join(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = process.argv[2];
@@ -19,7 +19,7 @@ const expect = (name, ok, got) => {
 const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(port), SHOW_START: "205", SHOW_AUTOKILL: "off" }, stdio: "ignore" });
 let tab;
 try {
-  for (let i = 0; i < 100 && !(await fetch(`http://127.0.0.1:${port}/api/state`).then((r) => r.ok).catch(() => false)); i++) await sleep(200);
+  await waitForStage(port, stage);
   tab = await openTab(`http://127.0.0.1:${port}/`, { width: 1600, height: 900 });
   const seen = new Map();
   const rows = () => tab.eval(`JSON.stringify([...document.querySelectorAll("#caption .row")].map((r) => ({ tag: r.querySelector(".tag")?.textContent ?? null, text: r.querySelector(".txt").textContent })))`).then(JSON.parse);

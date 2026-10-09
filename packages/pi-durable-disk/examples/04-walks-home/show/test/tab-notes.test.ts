@@ -56,3 +56,32 @@ test("a scripted feed's own numbers are still scripted when the tab's are real",
   const caps = captionsFor({ ...s, notes: [...s.notes, ...notesFromTabEvent(walked, 600)] }, 700, 6);
   assert.deepEqual(caps.map((c) => c.tag), ["scripted", "measured", "simulated"]);
 });
+
+test("a mode change is the simulation's arithmetic: simulated, never measured, with the simulated time and the uprightness", () => {
+  const down = notesFromTabEvent({ ...base, type: "mode-changed", mode: "getup", t: 12.34, up: 0.21 }, 4000);
+  assert.equal(down.length, 1);
+  assert.equal(down[0].basis, "simulated");
+  assert.ok(!down[0].measured);
+  assert.equal(down[0].text, "The creature went down (torso upright 0.21) and the getup network took over at 12.3 s of simulated time.");
+  const up = notesFromTabEvent({ ...base, type: "mode-changed", mode: "walk", t: 14.9, up: 0.93 }, 5000);
+  assert.equal(up[0].text, "Back on its feet (torso upright 0.93) and walking again at 14.9 s of simulated time.");
+  assert.equal(up[0].basis, "simulated");
+  assert.ok([...down, ...up].every((n) => n.origin === "tab" && n.kind === "home"));
+});
+
+test("a kick that topples a getup policy: only the mode changes make notes, in order, each tagged simulated even on the scripted feed", () => {
+  const events: TabToShell[] = [
+    { ...base, type: "kicked", force_n: 60, t: 10 },
+    { ...base, type: "fell", t: 10.4 },
+    { ...base, type: "mode-changed", mode: "getup", t: 10.5, up: 0.25 },
+    { ...base, type: "mode-changed", mode: "walk", t: 13.1, up: 0.95 },
+    { ...base, type: "stood", t: 15.1, since_kick: 5.1 },
+  ];
+  let at = 100;
+  const notes = events.flatMap((e) => notesFromTabEvent(e, at++));
+  assert.deepEqual(notes.map((n) => n.text.split(" ").slice(0, 3).join(" ")), ["The creature went", "Back on its"]);
+  for (const source of ["live", "scripted"] as const) {
+    const caps = captionsFor({ ...fold([run(source)]), notes }, 200, 6);
+    assert.deepEqual(caps.map((c) => c.tag), ["simulated", "simulated"], source);
+  }
+});

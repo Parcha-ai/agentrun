@@ -203,6 +203,12 @@ export type TabToShell = Envelope<
   | { type: "memory-opened"; rows: number }
   | { type: "fell"; t: number }
   | { type: "stood"; t: number; since_kick?: number }
+  /**
+   * Only for a policy that carries a getup network: "getup" = the creature went down and the getup network took over (torso
+   * uprightness fell below 0.3), "walk" = it is back on its feet (above 0.9). `t` is simulated seconds, `up` is 1 upright, 0 on
+   * its side, -1 on its back. The tab's own simulation arithmetic, not wall time.
+   */
+  | { type: "mode-changed"; mode: "walk" | "getup"; t: number; up: number }
   /** The tab keeps creature/designs.sqlite and creature/memory.sqlite on the agent's disk; with no answer in 1.5 s it falls back to the browser. */
   | { type: "storage-read"; id: number; path: string }
   | { type: "storage-write"; id: number; path: string; bytes: Uint8Array }
