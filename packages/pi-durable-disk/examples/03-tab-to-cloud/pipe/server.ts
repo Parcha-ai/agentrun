@@ -108,6 +108,8 @@ export interface DemoServerOptions {
    * now. Absent, a message goes to wherever the run is, and only the user or the agent's switch_environment moves it.
    */
   readonly placer?: Placer;
+  /** How long a remote host may take to answer a move before the move fails (default 90 s). */
+  readonly remoteStartMs?: number;
   /** Static files of the page. */
   readonly pageDir?: string;
   /** Extra static roots, by URL prefix (for example the Wasmer SDK's files). */
@@ -463,7 +465,15 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "starting the host" });
         const remoteTab = `remote-${target.id}-${move.id}`;
         state.remote = { tab: remoteTab, env: target.id };
-        const { socket: remote, host } = await options.cloud!.startRemote!(state.ref, target.id, { t: "invite", run: state.ref.id, token: state.secret, tab: remoteTab, switchId: move.id });
+        // A host that never answers must not hold the move forever (a box whose host died at start looks ready from outside).
+        const remoteStartMs = options.remoteStartMs ?? 90_000;
+        let startTimer: NodeJS.Timeout | undefined;
+        const { socket: remote, host } = await Promise.race([
+          options.cloud!.startRemote!(state.ref, target.id, { t: "invite", run: state.ref.id, token: state.secret, tab: remoteTab, switchId: move.id }),
+          new Promise<never>((_, reject) => {
+            startTimer = setTimeout(() => reject(new Error(`${target.label} did not answer in ${Math.round(remoteStartMs / 1000)} s`)), remoteStartMs);
+          }),
+        ]).finally(() => clearTimeout(startTimer));
         log("remote.started", { run: state.ref.id, env: target.id, host, switchId: move.id, ms: Date.now() - started });
         setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the host is attaching" });
         accept(remote);
