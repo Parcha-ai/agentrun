@@ -89,7 +89,7 @@ export interface ModalCloudOptions {
      */
     readonly warmCommands?: readonly string[];
     readonly warmEnv?: Readonly<Record<string, string>>;
-    /** How long the creature's files stay unchanged before the warm-up starts. Default 3 s. */
+    /** How long the creature's files stay unchanged before the warm-up starts. Default 1.5 s (the tab has already waited 1.5 s after the pen rested). */
     readonly warmDelayMs?: number;
   };
   /**
@@ -490,7 +490,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       let warmer = warmers.get(ref.id);
       if (!warmer) {
         warmer = creatureWarmer({
-          delayMs: options.gpu?.warmDelayMs ?? 3_000,
+          delayMs: options.gpu?.warmDelayMs ?? 1_500,
           log: options.log,
           warm: async (creature) => {
             const pending = warm.get(ref.id);

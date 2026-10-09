@@ -31,6 +31,8 @@ const chatInput = arg("chat-input", "#chatin");
 const placerClient = arg("placer", "scripted");
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
 const warmCommandsFile = arg("warm-commands-file", "");
+// How long the user looks at the flopping creature before asking; the warm-up (about a minute) runs in that time and in the agent's first turn.
+const thinkMs = Number(arg("think-ms", 10_000));
 const sketchModule = arg("sketch", join(here, "..", "..", "tab", "scripts", "sketch-take.mjs"));
 const mountRoot = arg("mount-root", join("/mnt/pda/demo", "d4-pipe"));
 const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9455";
@@ -173,7 +175,7 @@ try {
   const onDisk = async () => (await Promise.all(["creature/body.json", "creature/creature.xml"].map((f) => fetch(`http://127.0.0.1:${stagePort}/api/disk/${f}`).then((r) => r.status === 200, () => false)))).every(Boolean);
   await until(onDisk, 20_000, "the tab to write the creature's files");
   step("the creature's files are on the disk", { untrained: await stage.eval(`JSON.stringify(${frame}.__walks.state?.() ?? null)`).catch(() => null) });
-  await sleep(4000); // the viewer sees the untrained creature flop before anyone asks for anything
+  await sleep(thinkMs); // the user looks at the untrained creature flop before asking; the GPU box is compiling for this drawing meanwhile
 
   // 5. the user types one sentence into the stage's chat, key by key, so the video shows the typing
   const before = await writer.eval(`demo.items().length`);
@@ -182,7 +184,7 @@ try {
     for (const ch of SAY) {
       await stage.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, key: ch });
       await stage.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
-      await sleep(70);
+      await sleep(140);
     }
     await stage.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
     await stage.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
