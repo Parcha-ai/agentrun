@@ -6,12 +6,13 @@ import { buildMjcf, type Built, type World } from './mjcf.ts';
 import { Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { dummyPolicy } from './dummy.ts';
 import { presetForSha } from './bodies.ts';
+import { ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, type ArrivalResult } from './arrival.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
 import { Sketcher } from './sketch.ts';
 import { CreatureStore, type Backend, type Backends, type MachineEvent } from './store.ts';
 import { CONTROL_DT } from './mjcf.ts';
-import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder } from './backend.ts';
+import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder, parentPolicySource } from './backend.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -56,6 +57,9 @@ interface App {
   running: boolean; acc: number; last: number;
   fallen: boolean; recovering: number | null; // sim time at which a kick was applied and not yet recovered
   placement: { kind: string; label: string };
+  /** A trained policy that arrived and is being timed: page ms at the arrival, sim time at the install. */
+  arrival: { tracker: ArrivalTracker; simT0: number; name: string } | null;
+  lastArrival: ArrivalResult | null;
 }
 
 const MAX_DRAG_KICK_N = 100;
@@ -193,6 +197,44 @@ async function loadPolicyText(text: string, name: string) {
   }
 }
 
+/**
+ * A trained policy has landed (the watcher saw work/home/policy.json, or the shell said the run is home). Validate it
+ * against the body, switch body if it names another preset, hot-swap it into the running creature (no reset), say where
+ * it came from using only what the file records, and time how long the creature takes to walk with it.
+ */
+async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json') {
+  const arrivedAt = performance.now();
+  const refuse = (reason: string) => {
+    showError(`Policy refused: ${reason}`);
+    post('policy-refused', { name, reason, via });
+  };
+  const plan = await planArrival(text, app.bodySha, presetForSha);
+  if (plan.action === 'refuse') return refuse(plan.reason);
+  if (plan.action === 'switch-body') {
+    app.sketcher.set(plan.preset.design);
+    await buildCreature(structuredClone(plan.preset.design), false);
+  }
+  let policy: Policy;
+  try {
+    policy = await Policy.load(text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
+  } catch (e) {
+    return refuse(e instanceof PolicyRefused ? e.message : String(e));
+  }
+  showError('');
+  setPolicy(policy, name); // no sim.reset(): the creature that was standing starts walking
+  app.fallen = false; app.recovering = null;
+  const installedAt = performance.now();
+  const meta = plan.meta;
+  const message = describeArrival(meta);
+  toast(message);
+  app.arrival = { tracker: new ArrivalTracker({ arrivedAtMs: arrivedAt, installedAtMs: installedAt, command: app.sim.command }), simT0: app.sim.time, name };
+  app.lastArrival = null;
+  post('policy-arrived', {
+    name, via, message, host: meta.host, training_seconds: meta.trainingSeconds, mjcf_sha256: policy.file.mjcf_sha256,
+    switched_body: plan.action === 'switch-body' ? plan.preset.name : null, arrival_to_installed_ms: Math.round(installedAt - arrivedAt), bytes: text.length,
+  });
+}
+
 /** Fetch a policy file and load it; a missing file (the run is not home yet) is a refusal, not a broken tab. */
 async function loadPolicyUrl(url: string) {
   const name = url.split('/').pop() ?? 'policy';
@@ -207,7 +249,7 @@ async function loadPolicyUrl(url: string) {
     post('policy-refused', { name, reason });
     return;
   }
-  await loadPolicyText(text, name).catch(() => {}); // already reported
+  await onPolicyArrived(text, 'message', name); // refusals are reported inside
 }
 
 function yawDir(x: number, y: number): [number, number] {
@@ -279,7 +321,25 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 function hud() {
   const s = app.sim, [x, y, z] = s.torsoPos();
   const v = Math.hypot(s.data.qvel[0], s.data.qvel[1]);
-  $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}`;
+  const r = app.lastArrival;
+  const arrivalLine = r ? `\narrival ${r.arrivalToWalkingMs === null ? (r.fell ? 'fell, not walking' : 'not walking yet') : `walking after ${(r.arrivalToWalkingMs / 1000).toFixed(1)} s`}${r.meanSpeed === null ? '' : `, ${r.meanSpeed.toFixed(2)} m/s over ${r.windowSeconds} s`}` : '';
+  $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
+}
+
+function sampleArrival() {
+  const a = app.arrival!;
+  const [x, y] = app.sim.torsoPos();
+  a.tracker.sample(app.sim.time - a.simT0, x, y, app.sim.uprightness(), performance.now());
+  const r = a.tracker.result();
+  app.lastArrival = r;
+  if (r.done) {
+    post('policy-walked', {
+      name: a.name, arrival_to_installed_ms: Math.round(r.arrivalToInstalledMs),
+      arrival_to_walking_ms: r.arrivalToWalkingMs === null ? null : Math.round(r.arrivalToWalkingMs),
+      sim_seconds_to_walking: r.simSecondsToWalking, mean_speed: r.meanSpeed, window_seconds: r.windowSeconds, fell: r.fell,
+    });
+    app.arrival = null;
+  }
 }
 
 function tick(now: number) {
@@ -291,6 +351,7 @@ function tick(now: number) {
     let n = 0;
     while (app.acc >= CONTROL_DT && n < 6) {
       app.sim.step(app.policy);
+      if (app.arrival) sampleArrival();
       app.acc -= CONTROL_DT;
       n++;
     }
@@ -321,6 +382,8 @@ async function main() {
       const designs = new ParentBackend(windowBus(), DESIGNS_PATH);
       if ((await designs.probe()) !== undefined) { backends = { designs, memory: new ParentBackend(windowBus(), MEMORY_PATH) }; storageMode = 'disk'; }
     }
+    let policyBackend: ParentBackend | null = null;
+    if (storageMode === 'disk') policyBackend = new ParentBackend(windowBus(), HOME_POLICY_PATH);
     $('storage').textContent = storageMode === 'disk' ? 'memory: creature/*.sqlite on the disk' : 'memory: this browser only (not on the disk)';
     const store = await CreatureStore.open(sql, backends, { memoryWritable: storageMode === 'browser' });
     const design = store.designs()[0]?.design ?? defaultDesign();
@@ -331,7 +394,7 @@ async function main() {
       mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement), sketcher, store, storageMode,
       sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml), world: null,
       policy: null, policyName: 'dummy trot', running: true, acc: 0, last: performance.now(),
-      fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' },
+      fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null,
     };
     app.view.setSim(app.sim);
     await useDummy(); // also applies the slider's command to the sim
@@ -421,9 +484,18 @@ async function main() {
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, kick, kickWorld, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
+    (window as any).__walks = { get app() { return app; }, kick, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';
     post('ready', { version: 1, mujoco: mujocoVersion, mjcf_sha256: app.bodySha });
+    // A trained policy landing in work/home/policy.json is noticed by polling at 1 Hz behind PolicySource, so a change feed
+    // or a GET endpoint can replace the parent's storage later without touching the rest.
+    if (policyBackend) {
+      new PolicyWatcher(parentPolicySource(policyBackend), {
+        sha256: sha256Hex, intervalMs: 1000,
+        onFile: (text) => onPolicyArrived(text, 'watch', 'home/policy.json'),
+        onError: (e) => console.warn('policy watch:', e),
+      }).start();
+    }
     requestAnimationFrame((t) => { app.last = t; tick(t); });
   } catch (e) {
     status.textContent = `failed: ${e}`;
