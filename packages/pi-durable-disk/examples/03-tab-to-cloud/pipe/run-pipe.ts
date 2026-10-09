@@ -83,6 +83,8 @@ export interface RunPipeOptions {
   readonly claimDir?: OpenRunLeaseOptions["claimDir"];
   /** Conformance mode: every writer gets a fresh scratch store under tmp/, opened like the run's. */
   readonly scratchStores?: boolean;
+  /** How the attach's log line names work/ (default `manifestDigest`); a test seam. */
+  readonly digest?: (entries: readonly ManifestEntry[]) => Promise<string>;
 }
 
 type Writer = {
@@ -248,7 +250,11 @@ export class RunPipe {
     writer.attaching = false;
     writer.lastPing = Date.now();
     this.#broadcast({ t: "placement", placement: { where: "tab", tab, epoch, generation: this.lease.generation, env: extra.env ?? "tab" } });
-    this.#log("pipe.attach", { tab, epoch, files: manifest.files, bytes: manifest.bytes, workDigest: await manifestDigest(manifest.entries) });
+    // The digest is for the log only: computed after the attach returns, never on its path.
+    void (this.#options.digest ?? manifestDigest)(manifest.entries).then(
+      (workDigest) => this.#log("pipe.attach", { tab, epoch, files: manifest.files, bytes: manifest.bytes, workDigest }),
+      (error: Error) => this.#log("pipe.attach", { tab, epoch, files: manifest.files, bytes: manifest.bytes, workDigest: `unreadable: ${error.message}` }),
+    );
     // The files follow the manifest; a retire waits for the stream, which stops at its next chunk.
     void this.#track(writer, this.#streamRestore(writer, manifest)).catch((error: Error) => {
       this.#log("pipe.restore-failed", { tab, epoch, error: error.message });
