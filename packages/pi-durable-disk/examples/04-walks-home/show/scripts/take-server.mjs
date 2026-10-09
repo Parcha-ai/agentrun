@@ -1,7 +1,8 @@
 // The take's 03 server: the one tab server D1's home step asks to adopt a winner's run, and the one the stage's disk reads from.
 //   node scripts/take-server.mjs --mount-root /mnt/pda/<your lane>/pipe [--dir ~/tmp-d5/take] [--run walks-home] [--ledger FILE]
 //   node scripts/take-server.mjs --local DIR [--dir ...]            (a dry run: no Archil, no mount)
-//   Either form takes --cloud remote-local.
+//   Either form takes --cloud remote-local, and --evidence-readback (03's serve.ts reads work/ back from the disk's object
+//   store after each release and logs it, off the handover path; a no-op with --local, which has no object store).
 // On the real disk it runs 03's serve.ts under with-archil (the only way the show lane touches Archil: the keys exist in that
 // child's environment and nowhere else, mounts live under the caller's own lane directory, and the disk is the scratch disk the
 // wrapper names). With --local DIR the disk is a local directory and nothing of Archil is touched: a dry run of everything else.
@@ -32,6 +33,7 @@ const local = arg("local", "");
 const mountRoot = arg("mount-root", "");
 const run = arg("run", "walks-home");
 const cloud = arg("cloud", "none");
+const evidenceReadback = process.argv.includes("--evidence-readback");
 // Every disk resource the server creates is recorded here (default: inside the private directory): the caller names its own.
 const ledger = arg("ledger", join(dir, "ledger.json"));
 if (!["none", "remote-local"].includes(cloud)) die(`--cloud ${cloud}: only none or remote-local`);
@@ -83,6 +85,7 @@ const serveArgs = [
   "--tab-writable", TAB_WRITABLE,
   "--log", logFile,
   "--cloud", cloud,
+  ...(evidenceReadback ? ["--evidence-readback"] : []),
   ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", ledger]),
 ];
 const [cmd, args] = local ? [process.execPath, serveArgs] : [wrapper, ["--", process.execPath, ...serveArgs]];
@@ -132,7 +135,7 @@ if (!link) {
 const linkFile = join(dir, "link");
 rmSync(linkFile, { force: true });
 writeFileSync(linkFile, `${link}\n`, { mode: 0o600 });
-const status = { pid: child.pid, origin, tokenFile, logFile, linkFile, cloud, mode: local ? "local" : "archil", mountRoot: local ? null : mountRoot, run, startedAt: new Date().toISOString() };
+const status = { pid: child.pid, origin, tokenFile, logFile, linkFile, cloud, evidenceReadback, mode: local ? "local" : "archil", mountRoot: local ? null : mountRoot, run, startedAt: new Date().toISOString() };
 writeFileSync(join(dir, "status.json"), JSON.stringify(status, null, 2), { mode: 0o600 });
 console.log(`take server up: ${origin}  mode ${status.mode}  run ${run}`);
 console.log(`admin token file: ${tokenFile} (mode 0600, never printed)  status: ${join(dir, "status.json")}  pid ${child.pid}`);
