@@ -18,7 +18,7 @@ import numpy as np
 import creature_env
 import rollout
 import terrain
-from train import complete_checkpoints
+from train import SCORE_UNITS, complete_checkpoints, score_of
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "policy", "test", "fixtures")
 XML = open(os.path.join(FIX, "creature.xml"), "rb").read().decode("utf-8")
@@ -58,6 +58,20 @@ class TerrainTest(unittest.TestCase):
       self.assertAlmostEqual(float(self.env._ground_height(jp.array([x, y]))), z, delta=1e-3)
 
 
+class CourseTest(unittest.TestCase):
+  def test_course_is_held_out_and_standable(self):
+    course = terrain.make_course(seed=1000)
+    self.assertEqual(course["kind"], "course")
+    self.assertEqual(terrain.check(os.path.join(FIX, "creature.xml"), course)["ok"], 1)
+    self.assertNotEqual(course["sha256"], terrain.make_terrain(seed=1000)["sha256"])
+
+  def test_score_is_course_progress_when_scored_on_the_course(self):
+    self.assertEqual(score_of({"distance_m": 4.86}), 4.86)
+    self.assertEqual(score_of({"distance_m": 4.86, "course_m": 9.0}), 9.0)
+    self.assertIsNone(score_of(None))
+    self.assertEqual(set(SCORE_UNITS), {"flat", "course"})
+
+
 class ObservationTest(unittest.TestCase):
   def test_env_raw_obs_equals_rollout_obs(self):
     env = creature_env.CreatureWalk(XML, BODY)
@@ -83,11 +97,15 @@ class ObservationTest(unittest.TestCase):
 class ResumeTest(unittest.TestCase):
   def test_only_complete_checkpoints_newest_first(self):
     with tempfile.TemporaryDirectory() as tmp:
-      for name, done in (("000000100000", True), ("000000200000", True), ("000000300000", False),
-                         ("000000400000.orbax-checkpoint-tmp-1", True)):
+      # What Brax 0.14's PPO checkpoint leaves: orbax's commit marker plus ppo_network_config.json.
+      for name, files in (("000000100000", ("commit_success.txt", "ppo_network_config.json")),
+                          ("000000200000", ("commit_success.txt", "ppo_network_config.json")),
+                          ("000000300000", ("commit_success.txt",)),  # Brax had not written its config yet
+                          ("000000350000", ("ppo_network_config.json",)),
+                          ("000000400000.orbax-checkpoint-tmp-1", ("commit_success.txt", "ppo_network_config.json"))):
         os.makedirs(os.path.join(tmp, name))
-        if done:
-          with open(os.path.join(tmp, name, "config.json"), "w") as f:
+        for fname in files:
+          with open(os.path.join(tmp, name, fname), "w") as f:
             f.write("{}")
       got = [os.path.basename(p) for p in complete_checkpoints(tmp)]
       self.assertEqual(got, ["000000200000", "000000100000"])

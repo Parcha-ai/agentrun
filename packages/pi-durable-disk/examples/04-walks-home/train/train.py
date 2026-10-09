@@ -24,6 +24,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
 from typing import Any
 
@@ -48,20 +49,30 @@ def append_line(path: str, obj: Any) -> None:
 
 
 def complete_checkpoints(ckpt_dir: str) -> list[str]:
-  """Finished orbax checkpoints, newest first. In-progress ones carry a temporary suffix and never match."""
+  """Finished checkpoints, newest first. Orbax writes into a temporary name, renames it to the 12-digit step and marks
+  it with commit_success.txt; Brax then adds its network config (ppo_network_config.json). Both must be there."""
   if not os.path.isdir(ckpt_dir):
     return []
+  def complete(path: str) -> bool:
+    return (os.path.exists(os.path.join(path, "commit_success.txt"))
+            and any(f.endswith("config.json") for f in os.listdir(path)))
   names = [n for n in os.listdir(ckpt_dir) if re.fullmatch(r"\d{12}", n)]
-  done = [n for n in names if os.path.exists(os.path.join(ckpt_dir, n, "config.json"))]
+  done = [n for n in names if complete(os.path.join(ckpt_dir, n))]
   return [os.path.join(ckpt_dir, n) for n in sorted(done, reverse=True)]
 
 
+SCORE_UNITS = {"flat": "m walked in 10 s", "course": "m along the course in 20 s"}
+
+
 def score_of(walk: dict[str, Any] | None) -> float | None:
-  """The universe's comparable score: metres walked in 10 s at a 0.5 m/s command, the exported policy in C MuJoCo.
-  Rewards differ per universe, so episode reward cannot rank them; this can. A fall scores the distance up to it."""
-  if not walk or "distance_m" not in walk:
+  """The universe's comparable score, from the exported policy in C MuJoCo at a 0.5 m/s command: metres walked in 10 s
+  on flat ground, or metres of progress along the held-out course in 20 s. Rewards differ per universe, so episode
+  reward cannot rank them; this can. A fall scores the distance up to it."""
+  if not walk:
     return None
-  return round(float(walk["distance_m"]), 3)
+  if "course_m" in walk:
+    return round(float(walk["course_m"]), 3)
+  return round(float(walk["distance_m"]), 3) if "distance_m" in walk else None
 
 
 class Deadline(Exception):
@@ -76,11 +87,15 @@ def main() -> None:
   ap.add_argument("--work", required=True)
   ap.add_argument("--world", default=None, help="terrain.json (terrain.py): train on that terrain; the policy keeps the "
                   "body's mjcf_sha256, so it runs on any world")
+  ap.add_argument("--course", default=None, help="held-out course (terrain.py --course): the score becomes metres along "
+                  "it in 20 s at 0.5 m/s, the same course for every universe")
   ap.add_argument("--minutes", type=float, default=0.0, help="stop at the first checkpoint after this wall time")
   ap.add_argument("--impl", default=None, help="jax | warp (default: warp on GPU, jax on CPU)")
   ap.add_argument("--steps", type=float, default=None, help="total environment steps (overrides the universe)")
   ap.add_argument("--num-envs", type=int, default=None)
   ap.add_argument("--smoke", action="store_true", help="tiny CPU-sized run to check the pipeline")
+  ap.add_argument("--no-compile-cache", action="store_true",
+                  help="do not carry the XLA and Warp compile caches in WORK (compile-cache.tar.gz)")
   ap.add_argument("--keep", type=int, default=3,
                   help="complete checkpoints kept per segment; older ones are deleted so work/ stays small enough for "
                        "a pipe host to attach (all of work/ crosses in one frame)")
@@ -92,6 +107,26 @@ def main() -> None:
   t_start = time.time()
   # The machine as the stage names it (the agent's env.switch notice), else the hostname.
   host = os.environ.get("TRAIN_HOST_LABEL") or socket.gethostname()
+  work = os.path.abspath(args.work)
+  os.makedirs(work, exist_ok=True)
+  # Compiling the training step takes ~100 s on a fresh box; with the XLA and Warp caches of an earlier run of the same
+  # body it takes ~20 s. They travel with the run (WORK) so a resumed or forked universe starts warm. Unpacked before
+  # JAX or Warp load, into a local directory outside WORK.
+  cache_tar = os.path.join(work, "compile-cache.tar.gz")
+  cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "pda-train")
+  cache_was_warm = False
+  if not args.no_compile_cache:
+    os.makedirs(cache_dir, exist_ok=True)
+    if os.path.exists(cache_tar):
+      try:
+        with tarfile.open(cache_tar) as tf:
+          tf.extractall(cache_dir, filter="data")
+        cache_was_warm = True
+      except (tarfile.TarError, OSError) as e:  # a bad cache only costs compile time
+        print(json.dumps({"event": "train.cache-unreadable", "error": str(e)[:200]}), flush=True)
+    os.environ["JAX_COMPILATION_CACHE_DIR"] = os.path.join(cache_dir, "jax")
+    os.environ["JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS"] = "0"
+    os.environ["WARP_CACHE_PATH"] = os.path.join(cache_dir, "warp")
   import jax
   import jax_compat  # noqa: F401 - before Brax
   import mujoco
@@ -105,14 +140,14 @@ def main() -> None:
   import rollout
   import terrain
 
-  work = os.path.abspath(args.work)
-  os.makedirs(work, exist_ok=True)
   ckpt_dir = os.path.join(work, "ckpt")
   state_path = os.path.join(work, "state.json")
   progress_path = os.path.join(work, "progress.jsonl")
 
   xml, body = creature_env.load_body(args.mjcf, args.body)
   world = json.load(open(args.world)) if args.world else None
+  course = json.load(open(args.course)) if args.course else None
+  score_unit = SCORE_UNITS["course" if course else "flat"]
   train_xml = terrain.splice(xml, world) if world else xml
   universe = json.load(open(args.universe))
   backend = jax.default_backend()
@@ -173,10 +208,12 @@ def main() -> None:
       "steps_done": done_steps, "segments": segments, "backend": backend, "impl": impl,
       "device": str(jax.devices()[0]), "started_at": prior.get("started_at", t_start), "segment_started_at": t_start,
       "wall_s": prior.get("wall_s", 0.0), "mujoco": mujoco.__version__, "mjcf_sha256": None, "last": None,
+      "score_unit": score_unit, "course_sha256": course["sha256"] if course else None,
   }
   write_json(state_path, state)
   print(json.dumps({"event": "train.start", "universe": state["universe"], "generation": generation, "impl": impl,
-                    "device": state["device"], "remaining": remaining, "restore": restore}), flush=True)
+                    "device": state["device"], "remaining": remaining, "restore": restore,
+                    "compile_cache": "warm" if cache_was_warm else "cold"}), flush=True)
 
   times = {"last": time.time(), "last_steps": 0, "jit_done": None}
   deadline = t_start + args.minutes * 60 if args.minutes > 0 else None
@@ -195,13 +232,23 @@ def main() -> None:
     steps_done = done_steps + step
     m = {k: float(v) for k, v in metrics.items() if hasattr(v, "__float__")}
     line = {"t": now, "elapsed_s": now - t_start, "generation": generation, "host": host, "steps": steps_done,
-            "sps": sps, "walk": times.get("walk"), "score": score_of(times.get("walk")), "metrics": m}
+            "sps": sps, "walk": times.get("walk"), "score": score_of(times.get("walk")), "score_unit": score_unit,
+            "metrics": m}
     append_line(progress_path, line)
     checkpointed = step > 0 and step == times.get("checkpointed")
     if checkpointed:
       after_prune = complete_checkpoints(seg_ckpt)
       for old in after_prune[args.keep:]:
         shutil.rmtree(old, ignore_errors=True)
+      if not args.no_compile_cache and not cache_was_warm and not times.get("cache_saved"):
+        # Everything the training step needed is compiled by the first checkpoint.
+        tmp = f"{cache_tar}.tmp-{os.getpid()}"
+        with tarfile.open(tmp, "w:gz") as tf:
+          for sub in ("jax", "warp"):
+            if os.path.isdir(os.path.join(cache_dir, sub)):
+              tf.add(os.path.join(cache_dir, sub), arcname=sub)
+        os.replace(tmp, cache_tar)
+        times["cache_saved"] = os.path.getsize(cache_tar)
     state.update(steps_done=steps_done, wall_s=base_wall + now - t_start, last=line)
     # The rename of state.json is the checkpoint-complete signal: the host's write-through flushes WORK on it.
     write_json(state_path, state)
@@ -230,6 +277,9 @@ def main() -> None:
     try:
       score, _ = rollout.run(xml, body, pol, seconds=10.0, command=0.5)
       times["walk"] = {k: score[k] for k in ("distance_m", "mean_fwd_speed", "min_up_z", "fell_at")}
+      if course:
+        on_course, _ = rollout.run(xml, body, pol, seconds=20.0, command=0.5, world=course)
+        times["walk"].update(course_m=max(on_course["progress_x"], 0.0), course_fell_at=on_course["fell_at"])
       pol["provenance"]["walk_10s"] = times["walk"]
     except Exception as e:  # a score failure must not stop training
       times["walk"] = {"error": str(e)[:200]}
