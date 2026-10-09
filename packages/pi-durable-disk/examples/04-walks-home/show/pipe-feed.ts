@@ -13,7 +13,7 @@ import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
 import { parseDecision } from "./decision.ts";
 import { emptyState, reduce } from "./reduce.ts";
-import type { HostKind, Note, NoteKind, ShowCommand, ShowEvent, ShowState } from "./types.ts";
+import type { ChatTurn, HostKind, Note, NoteKind, ShowCommand, ShowEvent, ShowState } from "./types.ts";
 
 type PipeEnv = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 type Placement = Extract<PipeFrame, { t: "placement" }>["placement"];

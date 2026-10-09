@@ -87,3 +87,20 @@ test("text in a decision is escaped", () => {
   const html = decisionCardHtml(shown({ question: "<img src=x>", options: [{ id: "a", label: "<b>A</b>", probability: 0.5 }, { id: "b", label: "B", probability: 0.5 }], choice: "a" }), "live");
   assert.ok(!html.includes("<img") && !html.includes("<b>A"));
 });
+
+// Greptile on #107: with two machines listed, the marker must name the one the agent is on, or moving to, not the first listed.
+const TWO: ShowState["environments"] = [{ id: "tab", label: "Your browser tab", kind: "tab" }, { id: "vm", label: "Modal VM", kind: "vm" }, { id: "gpu", label: "H100 GPU", kind: "gpu" }];
+const stay = (host: string, hostKind: "tab" | "vm" | "gpu", from: number) => ({ id: `s${from}`, lane: "run", host, hostKind, from, to: null });
+
+test("with a VM listed before a GPU the track names the machine the agent is on or moving to, never the first listed", () => {
+  assert.equal(trackFor(withEnvs({ where: "cloud", host: "H100 GPU" }, TWO)).right, "H100 GPU");
+  assert.equal(trackFor(withEnvs({ where: "cloud", host: "Modal VM" }, TWO)).right, "Modal VM");
+  assert.equal(trackFor(withEnvs({ where: "moving", to: "H100 GPU", host: "Your browser tab" }, TWO)).right, "H100 GPU", "moving out: the target");
+  assert.equal(trackFor(withEnvs({ where: "moving", to: "Your browser tab", host: "H100 GPU" }, TWO)).right, "H100 GPU", "moving home: the machine it is leaving");
+});
+
+test("at home the track still names the machine the agent came from, and before it has gone anywhere the first one listed", () => {
+  const back = { ...withEnvs({ where: "home", host: "Your browser tab" }, TWO), stays: [stay("Your browser tab", "tab", 0), stay("H100 GPU", "gpu", 10), stay("Your browser tab", "tab", 90)] };
+  assert.equal(trackFor(back).right, "H100 GPU");
+  assert.equal(trackFor(withEnvs({ where: "tab", host: "Your browser tab" }, TWO)).right, "Modal VM", "no machine visited yet: the first listed");
+});

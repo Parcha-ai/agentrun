@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CaptionDesk, captionFor, captionsFor, claimsZeroLoss } from "../page/caption.ts";
 import { fold } from "../reduce.ts";
-import type { ShowEvent } from "../types.ts";
+import type { NoteKind, ShowEvent } from "../types.ts";
 
 const run = (source?: "live" | "scripted"): ShowEvent => ({ t: "run", at: 0, run: "r", origin: 0, environments: [], ...(source ? { source } : {}) });
-const note = (at: number, kind: "kill" | "takeover" | "story" | "switch" | "agent", text: string, measured?: boolean): ShowEvent => ({ t: "note", at, kind, text, ...(measured === undefined ? {} : { measured }) });
+const note = (at: number, kind: NoteKind, text: string, measured?: boolean): ShowEvent => ({ t: "note", at, kind, text, ...(measured === undefined ? {} : { measured }) });
 
 test("a scripted feed's numbers are tagged scripted, never measured, even if the text says measured", () => {
   const s = fold([run("scripted"), note(1000, "takeover", "spare took over in 2.0 s (measured)")]);

@@ -95,9 +95,8 @@ function withTabNotes(state: ShowState): ShowState {
 // What kind of install each checkpoint was, from its arrival, so the walk reported for it is worded for what it was.
 const installKind = new Map<number, "checkpoint" | "final">();
 let lastInstallKind: "checkpoint" | "final" | undefined;
-/** The band each checkpoint was in, from the distance its file reported, and whether a walking one has been seen (the first says "First steps."). */
+/** The band each checkpoint was in, from the distance its file reported, so its walk is captioned only when it is walking. */
 const bandOfInstall = new Map<number, Band | null>();
-let walkingSeen = false;
 
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
@@ -106,15 +105,12 @@ bridge.onMessage((m: TabToShell) => {
     if (m.checkpoint_n !== undefined) installKind.set(m.checkpoint_n, m.kind);
   }
   const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? installKind.get(m.checkpoint_n) : lastInstallKind) : undefined;
-  let firstWalking = false;
   if (m.type === "policy-arrived" && m.kind === "checkpoint") {
     const band = bandOf(m.reported_walk_10s_m);
     if (m.checkpoint_n !== undefined) bandOfInstall.set(m.checkpoint_n, band);
-    firstWalking = band === "walk" && !walkingSeen;
-    if (band === "walk") walkingSeen = true;
   }
   const band = m.type === "policy-walked" && m.checkpoint_n !== undefined ? bandOfInstall.get(m.checkpoint_n) : undefined;
-  tabNotes.push(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), ...(firstWalking ? { firstWalking } : {}), ...(band !== undefined ? { band } : {}) }));
+  tabNotes.push(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), ...(band !== undefined ? { band } : {}) }));
   if (tabNotes.length > 60) tabNotes.splice(0, tabNotes.length - 60);
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")

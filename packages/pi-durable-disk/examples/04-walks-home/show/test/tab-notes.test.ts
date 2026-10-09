@@ -158,11 +158,11 @@ test("the v2 captions say only what a viewer can use: a checkpoint's result, nev
 
 // The learning arc: each checkpoint's lesson is read from the distance its own file reports, not from the clock.
 test("a checkpoint teaches the lesson its own reported distance supports, tagged reported, with its number", () => {
-  const lesson = (n: number, d: number | null, first = false) => notesFromTabEvent(checkpoint(n, { reported_walk_10s_m: d }), 1, { plain: true, ...(first ? { firstWalking: true } : {}) });
+  const lesson = (n: number, d: number | null) => notesFromTabEvent(checkpoint(n, { reported_walk_10s_m: d }), 1, { plain: true });
   assert.deepEqual(lesson(1, 0.04).map((n) => [n.text, n.basis]), [["Checkpoint 1: Lesson 1: don't fall over.", "reported"]]);
   assert.equal(lesson(3, 0.15)[0]!.text, "Checkpoint 3: Lesson 2: shuffling forward.");
-  assert.equal(lesson(6, 3.1, true)[0]!.text, "Checkpoint 6: First steps.");
-  assert.deepEqual(lesson(8, 4.4, false), [], "a later walking checkpoint has no lesson line; its walk is captioned");
+  assert.equal(lesson(6, 3.59)[0]!.text, "Checkpoint 6: First steps.");
+  assert.deepEqual(lesson(8, 4.76), [], "a later walking checkpoint has no lesson line; its walk is captioned");
   assert.equal(lesson(4, null)[0]!.text, "Checkpoint 4 arrived from the GPU, after 63 s of training.", "a file with no distance says only that it arrived");
 });
 

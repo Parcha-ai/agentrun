@@ -10,8 +10,6 @@ export type TabNoteOptions = {
   plain?: boolean;
   /** Whether the install a `policy-walked` is about was a checkpoint from the live training path or the final home policy (the page remembers it from the arrival). */
   kind?: "checkpoint" | "final";
-  /** For a checkpoint's arrival: it is the first one in the walking band (the page remembers, so "First steps." is said once). */
-  firstWalking?: boolean;
   /** For a checkpoint's walk: the band its arrival was in (from the file's reported distance), so a walk is captioned only when it is walking. */
   band?: Band | null;
 };
@@ -36,7 +34,7 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
         // The lesson this checkpoint teaches, read from the distance its own file reports (REPORTED): no lesson for a file that reports none.
         const band = bandOf(m.reported_walk_10s_m);
         if (band !== null) {
-          const lesson = lessonFor(band, opts.firstWalking === true);
+          const lesson = lessonFor(band);
           return lesson ? [note(`${which}: ${lesson}`, { basis: "reported" })] : [];
         }
         return [note(`${which} arrived from the GPU${m.wall_s != null ? `, after ${Math.round(m.wall_s)} s of training` : ""}.`, { basis: "reported" })];
