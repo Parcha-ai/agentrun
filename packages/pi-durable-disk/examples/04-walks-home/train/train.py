@@ -96,6 +96,9 @@ def main() -> None:
   ap.add_argument("--smoke", action="store_true", help="tiny CPU-sized run to check the pipeline")
   ap.add_argument("--no-compile-cache", action="store_true",
                   help="do not carry the XLA and Warp compile caches in WORK (compile-cache.tar.gz)")
+  ap.add_argument("--seed-compile-cache", default="/opt/pda/cache/compile-cache.tar.gz",
+                  help="caches baked into the image, used when the run has none of its own yet")
+  ap.add_argument("--no-seed-compile-cache", action="store_true")
   ap.add_argument("--compile-cache", default=None,
                   help="where the compile-cache tarball lives (default WORK/compile-cache.tar.gz); point every universe "
                        "of a run at one shared path so a fork starts warm")
@@ -118,13 +121,18 @@ def main() -> None:
   cache_tar = os.path.abspath(args.compile_cache) if args.compile_cache else os.path.join(work, "compile-cache.tar.gz")
   cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "pda-train")
   cache_was_warm = False
+  cache_source = "none"
   if not args.no_compile_cache:
     os.makedirs(cache_dir, exist_ok=True)
-    if os.path.exists(cache_tar):
+    seed = None if args.no_seed_compile_cache else args.seed_compile_cache
+    source = cache_tar if os.path.exists(cache_tar) else seed if seed and os.path.exists(seed) else None
+    if source:
       try:
-        with tarfile.open(cache_tar) as tf:
+        with tarfile.open(source) as tf:
           tf.extractall(cache_dir, filter="data")
-        cache_was_warm = True
+        # The run's own tarball is complete for this body; the image's seed may not be, so the run still writes its own.
+        cache_was_warm = source == cache_tar
+        cache_source = "run" if cache_was_warm else "image"
       except (tarfile.TarError, OSError) as e:  # a bad cache only costs compile time
         print(json.dumps({"event": "train.cache-unreadable", "error": str(e)[:200]}), flush=True)
     os.environ["JAX_COMPILATION_CACHE_DIR"] = os.path.join(cache_dir, "jax")
@@ -216,7 +224,7 @@ def main() -> None:
   write_json(state_path, state)
   print(json.dumps({"event": "train.start", "universe": state["universe"], "generation": generation, "impl": impl,
                     "device": state["device"], "remaining": remaining, "restore": restore,
-                    "compile_cache": "warm" if cache_was_warm else "cold"}), flush=True)
+                    "compile_cache": cache_source}), flush=True)
 
   times = {"last": time.time(), "last_steps": 0, "jit_done": None}
   deadline = t_start + args.minutes * 60 if args.minutes > 0 else None

@@ -21,6 +21,8 @@ PINS = [
     "playground==0.2.0",
 ]
 TRAIN_FILES = ["creature_env.py", "export.py", "jax_compat.py", "rollout.py", "terrain.py", "train.py"]
+# Also baked by training_image(copy_code=True): universes/*.json (the eight reward hypotheses) and default/ (the tab's
+# default 3-DOF quadruped, buildMjcf(defaultDesign(3)), for a run that has no creature of its own yet).
 
 
 def training_image(copy_code: bool = False) -> modal.Image:
@@ -29,19 +31,35 @@ def training_image(copy_code: bool = False) -> modal.Image:
   for name in TRAIN_FILES:
     image = image.add_local_file(os.path.join(HERE, name), f"{REMOTE_TRAIN}/{name}", copy=copy_code)
   if copy_code:
-    # Copies keep the checkout's file modes; the run user (not root) must read them.
-    image = image.run_commands(f"chmod -R a+rX {REMOTE_TRAIN}")
+    image = (image.add_local_dir(os.path.join(HERE, "universes"), f"{REMOTE_TRAIN}/universes", copy=True)
+             .add_local_dir(os.path.join(HERE, "default"), f"{REMOTE_TRAIN}/default", copy=True)
+             # Copies keep the checkout's file modes; the run user (not root) must read them.
+             .run_commands(f"chmod -R a+rX {REMOTE_TRAIN}"))
   return image
 
 
-def fleet_image(runtime_commands: list[str]) -> modal.Image:
+SEED_CACHE = "/opt/pda/cache/compile-cache.tar.gz"
+
+
+def fleet_image(runtime_commands: list[str], prewarm: bool = True) -> modal.Image:
   """The GPU machine class: the trainer baked in, then the shared runtime layer from
   `vm/build-image.ts --print-commands --no-archil --uid U --gid G` (Node 24, the run user pda, sudo; no Archil client:
   a GPU box runs in pipe mode because gVisor's fsync is not durable). XLA caches go under the run user's HOME, outside
   work/."""
-  return (training_image(copy_code=True)
-          .dockerfile_commands(runtime_commands)
-          .env({"JAX_COMPILATION_CACHE_DIR": "/home/pda/.cache/jax", "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}))
+  image = (training_image(copy_code=True)
+           .dockerfile_commands(runtime_commands)
+           .env({"XLA_PYTHON_CLIENT_PREALLOCATE": "false"}))
+  if prewarm:
+    # Compile the default creature's training step once on an H100 at build time; train.py seeds its caches from the
+    # tarball, so a first universe of that body starts in ~20-45 s instead of ~100-150 s (other bodies still reuse
+    # most Warp kernels).
+    image = image.run_commands(
+        f"mkdir -p /opt/pda/cache && python {REMOTE_TRAIN}/train.py --mjcf {REMOTE_TRAIN}/default/creature.xml --body {REMOTE_TRAIN}/default/body.json"
+        f" --universe {REMOTE_TRAIN}/universes/u1.json --work /tmp/prewarm --steps 20000000 --minutes 0.1"
+        f" --compile-cache {SEED_CACHE} --no-seed-compile-cache"
+        f" && chmod a+r {SEED_CACHE} && rm -rf /tmp/prewarm /root/.cache/pda-train",
+        gpu="H100")
+  return image
 
 
 if __name__ == "__main__":

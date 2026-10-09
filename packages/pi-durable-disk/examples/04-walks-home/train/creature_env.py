@@ -177,6 +177,9 @@ class CreatureWalk(mjx_env.MjxEnv):
     # Diagonal trot: leg k of pair p on side s is in phase group (p + s) % 2.
     self._trot_group = jp.array([((k // 2) + (k % 2)) % 2 for k in range(self._nfeet)])
     self._base_height_target = float(self._body["standHeight"]) * self._config.reward_config.base_height_frac
+    # Reward weights travel in the state (set at reset) rather than as constants of the step: universes that differ
+    # only in weights then compile the identical training step and share one compile cache.
+    self._reward_w = np.array([self._config.reward_config.scales[k] for k in REWARD_TERMS], dtype=np.float32)
     self._hfield = None
     gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "terrain")
     if gid >= 0 and m.geom_type[gid] == mujoco.mjtGeom.mjGEOM_HFIELD:
@@ -328,6 +331,7 @@ class CreatureWalk(mjx_env.MjxEnv):
         "steps_until_next_pert": jp.round(jax.random.uniform(kp1, minval=pc.wait_s[0], maxval=pc.wait_s[1]) / self.dt).astype(jp.int32),
         "pert_steps_left": jp.zeros((), dtype=jp.int32),
         "pert_force": jp.zeros(3),
+        "reward_w": jp.asarray(self._reward_w),
     }
     metrics = {f"reward/{k}": jp.zeros(()) for k in REWARD_TERMS}
     metrics["fwd_speed"] = jp.zeros(())
@@ -373,9 +377,9 @@ class CreatureWalk(mjx_env.MjxEnv):
 
     done = self._fell(data)
     terms = self._reward_terms(data, action, info, done, first_contact, contact, clearance, feet_vel)
-    scales = self._config.reward_config.scales
-    weighted = {k: v * scales[k] for k, v in terms.items()}
-    total = sum(weighted.values()) * self.dt
+    weighted_vec = jp.stack([terms[k] for k in REWARD_TERMS]) * info["reward_w"]
+    weighted = {k: weighted_vec[i] for i, k in enumerate(REWARD_TERMS)}
+    total = jp.sum(weighted_vec) * self.dt
     reward = jp.clip(total, 0.0, 10000.0) if self._config.clip_reward_at_zero else total
 
     info["last_act"] = action
