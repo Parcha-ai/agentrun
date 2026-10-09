@@ -7,7 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createRunDir } from "../../src/claim.ts";
+import { createRunDir, revoke, type ControlApi } from "../../src/claim.ts";
 import { scratchDisk } from "./_archil.ts";
 import { statePath } from "./_paths.ts";
 
@@ -205,11 +205,9 @@ export async function delegationsOn(id: string) {
   });
 }
 
+/** Revokes the run's delegations, by path or by inode, and its holders' private directories (`revoke`). */
 export async function revokeAll(id: string): Promise<number> {
-  const disk = await scratchDisk();
-  const held = await delegationsOn(id);
-  for (const d of held) await disk.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId });
-  return held.length;
+  return (await revoke((await scratchDisk()) as unknown as ControlApi, id)).length;
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

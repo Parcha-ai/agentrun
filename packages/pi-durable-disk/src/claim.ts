@@ -272,16 +272,87 @@ async function runDirsByInode(control: Pick<ControlApi, "exec">, inodes: readonl
   return names;
 }
 
-/** Revoke every delegation on the run through the control API. The old holder's next fsync returns EIO. */
+/** A client's private directories on the disk: `.archil/client-<clientId>` and its `unlinked/`. */
+const PRIVATE_DIR = /^\/*\.archil\/client-([A-Za-z0-9_-]+)(\/unlinked)?$/;
+
+/**
+ * The delegations `held`'s clients also hold on their own private directories (`privateDirs`: inode to the client whose
+ * private directory it is). A killed client leaves them orphaned, and nothing ties them to a run: they block no run, but
+ * they pile up and resurface in listings. A client that holds anything else beyond `held` may hold another run, so none
+ * of its delegations is a companion.
+ */
+export function companionsOf(all: readonly Delegation[], held: readonly Delegation[], privateDirs: ReadonlyMap<number, string>): Delegation[] {
+  const clients = new Set(held.map((d) => d.clientId));
+  const listed = new Set(held.map((d) => `${d.clientId}/${d.inodeId}`));
+  const others = all.filter((d) => clients.has(d.clientId) && !listed.has(`${d.clientId}/${d.inodeId}`));
+  const own = (d: Delegation) => (d.path ? PRIVATE_DIR.exec(d.path)?.[1] : privateDirs.get(d.inodeId)) === d.clientId;
+  const holdsMore = new Set(others.filter((d) => !own(d)).map((d) => d.clientId));
+  return others.filter((d) => !holdsMore.has(d.clientId));
+}
+
+/** The inodes of `clients`' private directories, by one `exec` (`stat`); none without `exec`. */
+async function privateDirInodes(control: Pick<ControlApi, "exec">, clients: readonly string[]): Promise<Map<number, string>> {
+  const asked = clients.filter((c) => /^[A-Za-z0-9_-]+$/.test(c));
+  const dirs = new Map<number, string>();
+  if (!control.exec || asked.length === 0) return dirs;
+  const paths = asked.flatMap((c) => [`.archil/client-${c}`, `.archil/client-${c}/unlinked`]);
+  const r = await control.exec(`stat -c '%i %n' -- ${paths.join(" ")} 2>/dev/null; true`);
+  for (const line of String(r.stdout ?? "").split("\n")) {
+    const m = /^(\d+) (\S+)$/.exec(line);
+    const client = m && PRIVATE_DIR.exec(m[2])?.[1];
+    if (m && client && asked.includes(client)) dirs.set(Number(m[1]), client);
+  }
+  return dirs;
+}
+
+/**
+ * Revoke the companions of `held` (`companionsOf`): only for clients the caller is already revoking because it fences or
+ * deletes a run, never as a sweep. From `all` or a fresh listing. Best effort, and hygiene only: a companion blocks no
+ * run, so one left behind (or a failed listing or `exec`) costs a listing entry. Returns the ones revoked.
+ */
+export async function revokeCompanions(control: Pick<ControlApi, "listDelegations" | "revokeDelegation" | "exec">, held: readonly Delegation[], all?: readonly Delegation[]): Promise<Delegation[]> {
+  if (held.length === 0) return [];
+  const listing = all ?? (await control.listDelegations().catch(() => []));
+  const clients = [...new Set(held.map((d) => d.clientId))];
+  const listed = new Set(held.map((d) => `${d.clientId}/${d.inodeId}`));
+  if (!listing.some((d) => clients.includes(d.clientId) && !listed.has(`${d.clientId}/${d.inodeId}`))) return [];
+  const dirs = await privateDirInodes(control, clients).catch(() => new Map<number, string>());
+  const revoked: Delegation[] = [];
+  for (const d of companionsOf(listing, held, dirs)) {
+    await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).then(() => revoked.push(d), () => {});
+  }
+  return revoked;
+}
+
+/**
+ * Revoke every delegation on the run through the control API, then its holders' private directories
+ * (`revokeCompanions`). The old holder's next fsync returns EIO. Returns the run's own delegations.
+ */
 export async function revoke(control: ControlApi, id: string): Promise<Delegation[]> {
   const path = runPath(id);
+  let all: Delegation[];
+  let held: Delegation[];
   try {
-    const held = await findDelegations(control, id);
+    all = await control.listDelegations();
+    held = await matchDelegations(all, id, pathlessResolver(control));
     for (const d of held) await control.revokeDelegation(d);
-    return held;
   } catch (err) {
     throw new ClaimError("CONTROL_API_FAILED", `revoking ${path} failed`, { cause: err });
   }
+  await revokeCompanions(control, held, all);
+  return held;
+}
+
+/**
+ * Revoke what `revoke` revokes, skipping every revoke that fails: for cleanup, where deleting the tree next checks what
+ * is left. Only the listing (and a pathless resolution) can fail it. Returns the run's own delegations.
+ */
+export async function revokeBestEffort(control: Pick<ControlApi, "listDelegations" | "revokeDelegation" | "exec">, id: string): Promise<Delegation[]> {
+  const all = await control.listDelegations();
+  const held = await matchDelegations(all, id, pathlessResolver(control));
+  for (const d of held) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+  await revokeCompanions(control, held, all);
+  return held;
 }
 
 /** Revoke through the control API, then mount plainly; if the API path fails, mount with `--force`. */
