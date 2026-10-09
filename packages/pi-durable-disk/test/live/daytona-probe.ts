@@ -4,7 +4,7 @@
 // claim, deadmount, poweroff, janitor (delete every box of this lane and confirm it gone), spend. Results merge into
 // P9-PROBE.json in $PDA_STATE_DIR; every resource goes into P9-STATE.json first. Nothing prints a key or a token.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { createRunDir, findDelegations, mintMountToken, removeMountToken, type ControlApi } from "../../src/claim.ts";
+import { createRunDir, findDelegations, mintMountToken, removeMountToken, revoke, type ControlApi } from "../../src/claim.ts";
 import { LABEL_FLEET, LABEL_RUN, type DaytonaClient, type SandboxInfo } from "../../src/hosts/daytona.ts";
 import { scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ARCHIL_WRAPPER, confirmGone, deletePrefix, FLEET, guardedClient, ledger, LIVE_DAYTONA, MOUNT_ROOT, NAME_PREFIX, NODE, PACKAGE_DIR, PDA_ID, prepareBox, record, sh, stageToken } from "./_p9.ts";
@@ -286,7 +286,7 @@ out=$(timeout 30 archil sync ${mp} 2>&1); printf 'sync_rc\\t%s\\nsync\\t%s\\n' "
     res.unmountD = await cleanLadder(client, box, mp);
     res.delegationsAtEnd = await delegations();
   } finally {
-    for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    await revoke(control, id).catch(() => []);
     for (const t of tokens) await removeMountToken(control, t).then(() => ledger.tokenRemoved(t), () => {});
     const del = await deletePrefix(disk as never, `runs/${id}/`).catch((e: unknown) => ({ error: (e as Error).message }));
     ledger.subdirDeleted(`runs/${id}/`, JSON.stringify(del));
@@ -373,7 +373,7 @@ async function remount(client: DaytonaClient): Promise<void> {
     await kill("kill daemon g", g);
   } finally {
     await sh(client, box, asRoot(`pkill -9 -f 'archil mount .*${id}' ; true`)).catch(() => {});
-    for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    await revoke(control, id).catch(() => []);
     for (const t of tokens) await removeMountToken(control, t).then(() => ledger.tokenRemoved(t), () => {});
     const del = await deletePrefix(disk as never, `runs/${id}/`).catch((err: unknown) => ({ error: (err as Error).message }));
     ledger.subdirDeleted(`runs/${id}/`, JSON.stringify(del));
@@ -420,7 +420,7 @@ async function orphan(client: DaytonaClient): Promise<void> {
     res.trace = seen.filter((_, i) => i % 10 === 0 || i === seen.length - 1);
     res.socketsAfter = (await sh(client, box, asRoot(`ss -tn 2>/dev/null | awk 'NR>1{print $1, $5}' | grep -E ':(8100|32050|443)$' | sort | uniq -c | head`))).trim().split("\n");
   } finally {
-    for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    await revoke(control, id).catch(() => []);
     await sh(client, box, asRoot(`mkdir -p /tmp/.fuse-defunct-o && mount --move ${mp} /tmp/.fuse-defunct-o 2>/dev/null; true`)).catch(() => {});
     if (token) await removeMountToken(control, token.identifier).then(() => ledger.tokenRemoved(token!.identifier), () => {});
     const del = await deletePrefix(disk as never, `runs/${id}/`).catch((err: unknown) => ({ error: (err as Error).message }));
@@ -468,7 +468,7 @@ async function poweroff(client: DaytonaClient): Promise<void> {
     res.orphanMs = orphanMs;
     res.boxStates = states;
   } finally {
-    for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    await revoke(control, id).catch(() => []);
     if (token) await removeMountToken(control, token.identifier).then(() => ledger.tokenRemoved(token!.identifier), () => {});
     const del = await deletePrefix(disk as never, `runs/${id}/`).catch((err: unknown) => ({ error: (err as Error).message }));
     ledger.subdirDeleted(`runs/${id}/`, JSON.stringify(del));
@@ -560,7 +560,7 @@ async function refusesUnmount(client: DaytonaClient, box: SandboxInfo, control: 
     if (refused) await sh(client, box, asRoot(`/usr/bin/archil checkin ${mp} >/dev/null 2>&1; mkdir -p /tmp/.q && mount --move ${mp} /tmp/.q; for d in /proc/[0-9]*; do tr '\\0' '\\n' < $d/cmdline 2>/dev/null | grep -qxF ${mp} && kill -9 \${d##*/}; done; true`));
     return { refused, out: r.result.trim() };
   } finally {
-    for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    await revoke(control, id).catch(() => []);
     ledger.subdirDeleted(`runs/${id}/`, JSON.stringify(await deletePrefix(disk as never, `runs/${id}/`).catch((err: unknown) => ({ error: (err as Error).message }))));
   }
 }
@@ -625,7 +625,7 @@ exit $rc`), 300);
     res.delegationsAtEnd = await delegations();
     res.tokenFilesLeft = (await sh(client, box, asRoot(`ls /run/pda /tmp/pda-stage 2>/dev/null | grep -c token || true`))).trim();
   } finally {
-    for (const id of ids) for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    for (const id of ids) await revoke(control, id).catch(() => []);
     for (const t of tokens) await removeMountToken(control, t.identifier).then(() => ledger.tokenRemoved(t.identifier), () => {});
     for (const id of ids) ledger.subdirDeleted(`runs/${id}/`, JSON.stringify(await deletePrefix(disk as never, `runs/${id}/`).catch((err: unknown) => ({ error: (err as Error).message }))));
     if (current) await client.remove(current.id).catch(() => {});
@@ -691,7 +691,7 @@ async function unmountab(client: DaytonaClient): Promise<void> {
     }
     res.cases = out;
   } finally {
-    for (const id of ids) for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    for (const id of ids) await revoke(control, id).catch(() => []);
     for (const t of tokens) await removeMountToken(control, t.identifier).then(() => ledger.tokenRemoved(t.identifier), () => {});
     for (const id of ids) {
       const del = await deletePrefix(disk as never, `runs/${id}/`).catch((err: unknown) => ({ error: (err as Error).message }));
@@ -780,7 +780,7 @@ async function mountways(client: DaytonaClient): Promise<void> {
     }
     res.ways = out;
   } finally {
-    for (const id of ids) for (const d of await findDelegations(control, id).catch(() => [])) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+    for (const id of ids) await revoke(control, id).catch(() => []);
     for (const t of tokens) await removeMountToken(control, t.identifier).then(() => ledger.tokenRemoved(t.identifier), () => {});
     for (const id of ids) ledger.subdirDeleted(`runs/${id}/`, JSON.stringify(await deletePrefix(disk as never, `runs/${id}/`).catch((err: unknown) => ({ error: (err as Error).message }))));
     await client.remove(created.id).catch(() => {});

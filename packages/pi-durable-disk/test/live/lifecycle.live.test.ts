@@ -16,7 +16,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { getDisk, type Disk } from "disk";
 import { KEY_ENV, LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ledger, LEDGER } from "./_p8-ledger.ts";
-import { createRunDir, findDelegations, removeMountToken, unmountClaim, type RunRef } from "../../src/claim.ts";
+import { createRunDir, findDelegations, removeMountToken, revoke, unmountClaim, type RunRef } from "../../src/claim.ts";
 import { localHost } from "../../src/hosts/local-host.ts";
 import { requestRun, type RunResponse } from "../../src/serve.ts";
 import { readRunStatus, type EnsureResult, type HostHandle } from "../../src/supervise.ts";
@@ -247,7 +247,7 @@ after(async () => {
     ledger.unmounted(mp, String(via));
   }
   for (const id of runIds) {
-    for (const d of await findDelegations(disk, id).catch(() => [])) await disk.revokeDelegation(d).catch(() => {});
+    await revoke(disk, id).catch(() => []);
     const keys = (await disk.listObjects(`runs/${id}/`, { recursive: true })).objects.map((o) => o.key);
     const dirs = [...new Set([...keys.filter((k) => k.endsWith("/")), `runs/${id}/`])];
     const depth = (k: string) => k.split("/").length;

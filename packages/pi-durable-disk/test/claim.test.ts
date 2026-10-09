@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import {
   acquire,
+  companionsOf,
   CLAIM_PROBE,
   createRunDir,
   findDelegations,
@@ -18,6 +19,7 @@ import {
   matchDelegations,
   pathlessResolver,
   revoke,
+  revokeCompanions,
   runPath,
   takeOver,
   tokenNickname,
@@ -599,6 +601,34 @@ test("takeOver falls back to mount --force when listing or revoking through the 
     assert.deepEqual(r.calls("archil", "mount")[0].argv, ["mount", "--force", TARGET, r.root, "--region", REF.region]);
     assert.equal(r.read().mounts[oldMp].fenced, true, "the forced-out holder is fenced");
   }
+});
+
+test("revoke takes a killed client's private directories with its run, never another client's", async () => {
+  // A killed client keeps orphaned delegations, with no path, on its own .archil/client-<id> and .archil/client-<id>/unlinked.
+  const run = { ...del("runs/r1", "c-dead", 1), isOrphaned: true };
+  const dels = [run, pathless("c-dead", 50), pathless("c-dead", 51), pathless("c-other", 60), del("runs/r2", "c-live", 3)];
+  const { control, calls } = fakeControl(dels);
+  assert.deepEqual(await revoke(control, "r1"), [run], "revoke returns the run's own delegations");
+  assert.deepEqual(calls.revoke.map((d) => (d as Delegation).inodeId), [1, 50, 51], "the run first, then its holder's private directories");
+  assert.deepEqual((await control.listDelegations()).map((d) => d.clientId), ["c-other", "c-live"]);
+  assert.deepEqual(companionsOf(dels, [dels[4]]), [], "a live run with no private directory listed has no companions");
+});
+
+test("a companion that cannot be revoked never fails the run's revoke", async () => {
+  const run = { ...del("runs/r1", "c-dead", 1), isOrphaned: true };
+  const dels = [run, pathless("c-dead", 50), pathless("c-dead", 51)];
+  const revoked: number[] = [];
+  const control: ControlApi = {
+    ...fakeControl(dels).control,
+    async revokeDelegation(d) {
+      if (d.inodeId === 50) throw new Error("503");
+      revoked.push(d.inodeId);
+    },
+  };
+  assert.deepEqual(await revoke(control, "r1"), [run]);
+  assert.deepEqual(revoked, [1, 51]);
+  assert.deepEqual((await revokeCompanions(control, [run], dels)).map((d) => d.inodeId), [51], "reports only what it revoked");
+  assert.deepEqual(await revokeCompanions(control, []), [], "no holders, no listing, nothing revoked");
 });
 
 test("takeOver revokes a holder the control API lists without a path, by its inode, then mounts without --force", async () => {

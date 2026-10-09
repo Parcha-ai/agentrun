@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `@parcha/pi-durable-disk` revokes, with a run's delegations, the ones its dead holders keep on their own private directories (`.archil/client-<id>`, listed with no path); before, every killed client left them orphaned on the disk. Its CHANGELOG has the details.
+
 ## 0.1.0-beta.12, 2026-10-09
 
 - `@parcha/pi-durable-archil` is renamed `@parcha/pi-durable-disk` (directory `packages/pi-durable-disk`, command `pi-durable-disk`, image `pi-durable-disk`), for branding: other disks may follow. Renamed from `@parcha/pi-durable-archil`; the `0.1.0-beta.10` and `0.1.0-beta.11` entries below name it as it was published. It supports Archil only. Archil-specific names stay: `bin/archil-scoped`, `ARCHIL_API_KEY`, `archilEnv`, `ArchilCodingTools`, the `archil` client.

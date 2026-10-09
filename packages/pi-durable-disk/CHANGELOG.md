@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+**A dead client's private directories**
+- Each client holds delegations on its own private directories too, `.archil/client-<clientId>` and its `unlinked/`, which the
+  control API lists with no path. A client that dies (its FUSE daemon killed under a running instance, a lost host) leaves them
+  orphaned after the run's own delegation is revoked and its directory deleted. Nothing revoked them, and they are on no run
+  directory, so no later listing attributes them to a run: a scratch disk held 96, from 86 clients, all from the live suites'
+  daemon kills.
+- `revoke` (and so `takeOver`), the supervisor's takeover in `ensureRunning`, and `deleteRunTree` now also revoke every pathless
+  delegation of the clients they revoke on the run, from the same listing: those clients are dead or being fenced. Best effort:
+  one that cannot be revoked never fails the run's revoke. The run's own delegations, which every count and decision uses, are
+  unchanged, and `revoke` still returns only those. New exports: `revokeCompanions`, `companionsOf`.
+- The live suites revoke through `revoke` (by path or by inode, and the holders' private directories) before they delete a run's
+  tree; the Docker, Daytona and lifecycle suites matched by path only. The run suite's daemon-kill and host-loss tests check that
+  no delegation of a killed client is left.
+
 ## 0.1.0-beta.12, 2026-10-09
 
 Renamed from `@parcha/pi-durable-archil`. The package is now `@parcha/pi-durable-disk` and its command is `pi-durable-disk`, for branding:
