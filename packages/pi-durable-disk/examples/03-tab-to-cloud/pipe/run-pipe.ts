@@ -106,6 +106,8 @@ type Writer = {
   attaching: boolean;
   /** Upload chunks being written now: a writer whose chunk is still on its way to the disk is not silent. */
   uploading: number;
+  /** Set until its restore ended: no write-through into work/ meanwhile, so what it is sent is what the disk holds. */
+  restoring: boolean;
 };
 
 /**
@@ -242,7 +244,7 @@ export class RunPipe {
       await this.#store!.storage.close(ctx);
       store = this.#store = await this.#openStore(join(this.lease.claim.store, "run.sqlite"));
     }
-    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true, uploading: 0 };
+    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true, uploading: 0, restoring: true };
     this.#writer = writer;
     this.#goneFired = false;
     let manifest: Awaited<ReturnType<RunPipe["manifest"]>>;
@@ -291,31 +293,50 @@ export class RunPipe {
   async #streamRestore(writer: Writer, manifest: Manifest): Promise<void> {
     const socket = writer.socket;
     const stopped = () => writer.dead || socket.isOpen?.() === false;
-    for (const entry of manifest.entries) {
-      if (entry.kind !== "file" || entry.size === 0) continue;
-      const handle = await open(join(this.lease.claim.work, entry.path), constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        // The file sent must be the file the manifest describes: the same identity now, and the same bytes once read.
-        const expected = manifest.keys.get(entry.path);
-        if (!expected || !sameKey(keyOf(await handle.stat({ bigint: true })), expected)) throw this.#changed(entry.path);
-        const hash = createHash("sha256");
-        for (let offset = 0; offset < entry.size; ) {
-          while (!stopped() && (socket.bufferedAmount?.() ?? 0) > RESTORE_HIGH_WATER) await new Promise((r) => setTimeout(r, 5));
-          if (stopped()) return;
-          const length = Math.min(CHUNK_BYTES, entry.size - offset);
-          const buffer = Buffer.allocUnsafe(length);
-          const { bytesRead } = await handle.read(buffer, 0, length, offset);
-          if (bytesRead !== length) throw this.#changed(entry.path);
-          hash.update(buffer);
-          socket.send({ t: "restore-chunk", path: entry.path, offset, data: buffer.toString("base64") });
-          offset += length;
+    const work = this.lease.claim.work;
+    // Each file sent must be the file the manifest describes: the same identity when it is opened, the same bytes once
+    // read, and the file its path still names after that (a rename can replace a path while its old file is read).
+    const still = async (path: string) => {
+      const expected = manifest.keys.get(path);
+      const now = await lstat(join(work, path), { bigint: true }).then(keyOf, () => null);
+      if (!expected || !now || !sameKey(now, expected)) throw this.#changed(path);
+    };
+    try {
+      for (const entry of manifest.entries) {
+        if (entry.kind !== "file") continue;
+        if (entry.size === 0) {
+          await still(entry.path);
+          continue;
         }
-        if (hash.digest("hex") !== entry.sha256) throw this.#changed(entry.path);
-      } finally {
-        await handle.close();
+        const handle = await open(join(work, entry.path), constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          const expected = manifest.keys.get(entry.path);
+          if (!expected || !sameKey(keyOf(await handle.stat({ bigint: true })), expected)) throw this.#changed(entry.path);
+          const hash = createHash("sha256");
+          for (let offset = 0; offset < entry.size; ) {
+            while (!stopped() && (socket.bufferedAmount?.() ?? 0) > RESTORE_HIGH_WATER) await new Promise((r) => setTimeout(r, 5));
+            if (stopped()) return;
+            const length = Math.min(CHUNK_BYTES, entry.size - offset);
+            const buffer = Buffer.allocUnsafe(length);
+            const { bytesRead } = await handle.read(buffer, 0, length, offset);
+            if (bytesRead !== length) throw this.#changed(entry.path);
+            hash.update(buffer);
+            socket.send({ t: "restore-chunk", path: entry.path, offset, data: buffer.toString("base64") });
+            offset += length;
+          }
+          if (hash.digest("hex") !== entry.sha256) throw this.#changed(entry.path);
+        } finally {
+          await handle.close();
+        }
+        await still(entry.path);
       }
+      // Just before the end, every file of the manifest is still the file it was (an earlier one may have been replaced
+      // while a later one was sent).
+      for (const path of manifest.keys.keys()) await still(path);
+      if (!stopped()) socket.send({ t: "restore-end", files: manifest.files, bytes: manifest.bytes });
+    } finally {
+      writer.restoring = false;
     }
-    if (!stopped()) socket.send({ t: "restore-end", files: manifest.files, bytes: manifest.bytes });
   }
 
   /** The writer's answer to the restore: logged (a writer whose restore failed closes its socket itself). */
@@ -499,6 +520,7 @@ export class RunPipe {
     let writer: Writer;
     try {
       writer = this.#writerFor(socket);
+      if (writer.restoring) throw new Error("work/ is still being restored to this writer; write after it is ready");
     } catch (error) {
       socket.send({ t: "res", id, ok: false, error: errorToWire(error) });
       return;
@@ -541,6 +563,7 @@ export class RunPipe {
     this.#assertUsable();
     const writer = this.#writer;
     if (!writer || writer.dead || writer.tab !== tab) throw new PipeLostError("NOT_WRITER", "this tab does not hold the run");
+    if (writer.restoring) throw new Error("work/ is still being restored to this tab; write after it is ready");
     for (const change of changes) RunPipe.segments(change.path);
     const started = performance.now();
     try {
@@ -600,10 +623,16 @@ export class RunPipe {
       const info = await lstat(target).catch(() => null);
       if (info === null) return;
       live();
-      // Dropping a digest is always safe (the next manifest reads the file); keeping a wrong one never is.
+      // Dropping a digest is always safe (the next manifest reads the file); keeping a wrong one never is. A removal that
+      // fails part way leaves files the pipe no longer tracks: it stops trusting what it knows until a walk.
       this.#forget(change.path);
-      if (info.isDirectory()) await rm(target, { recursive: true, force: true });
-      else await unlink(target);
+      try {
+        if (info.isDirectory()) await rm(target, { recursive: true, force: true });
+        else await unlink(target);
+      } catch (error) {
+        this.#known = false;
+        throw error;
+      }
       return;
     }
     // Written beside the target and renamed over it: a reader never sees half a file, and a symbolic link at the target
@@ -622,21 +651,29 @@ export class RunPipe {
    * content's, known to the caller) is recorded for the file's new identity.
    */
   async #replace(writer: Writer, temp: string, target: string, path: string, sha256: string): Promise<void> {
+    let forgot = false;
+    let ino: bigint;
     try {
+      // The inode `sha256` belongs to: a rename keeps it, so after the rename the record goes to that file only.
+      ino = (await lstat(temp, { bigint: true })).ino;
       const existing = await lstat(target).catch(() => null);
       if (existing?.isDirectory()) {
         this.#assertCurrent(writer);
         this.#forget(path);
+        forgot = true;
         await rm(target, { recursive: true, force: true });
       }
       this.#assertCurrent(writer);
       this.#forget(path);
+      forgot = true;
       renameSync(temp, target);
     } catch (error) {
+      // Forgotten entries whose files may remain: what the pipe knows is no longer all of work/.
+      if (forgot) this.#known = false;
       await unlink(temp).catch(() => undefined);
       throw error;
     }
-    await this.#remember(path, target, sha256);
+    await this.#remember(path, target, sha256, ino);
   }
 
   /** Where uploads land: inside the claim, outside work/, on the same filesystem as work/ (a rename moves them). */
@@ -771,6 +808,8 @@ export class RunPipe {
       if (info.isSymbolicLink()) entries.push({ path, kind: "symlink", target: await readlink(full) });
       else if (info.isDirectory()) entries.push({ path, kind: "directory" });
       else {
+        // Refused before it is read: a file past the limit is never hashed only to be refused.
+        if (bytes + info.size > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
         const { sha256, key, recorded } = await this.#fileDigest(path, full);
         stable &&= recorded;
         const size = Number(key.size);
@@ -825,10 +864,19 @@ export class RunPipe {
     }
   }
 
-  /** Record what a write-through just put at `path`: its digest under the identity the file has now. */
-  async #remember(path: string, full: string, sha256: string): Promise<void> {
+  /**
+   * Record what a write-through just put at `path`: its digest under the identity the file has now, if the path still
+   * names the inode the write renamed into place. Another write may have replaced it since (writes over HTTP run beside
+   * the socket's): that write's record stands, and if it has none, the pipe stops trusting what it knows until a walk.
+   */
+  async #remember(path: string, full: string, sha256: string, ino: bigint): Promise<void> {
     try {
-      this.#digests.set(path, { ...keyOf(await lstat(full, { bigint: true })), sha256 });
+      const now = await lstat(full, { bigint: true });
+      if (now.ino !== ino) {
+        if (!this.#digests.has(path)) this.#known = false;
+        return;
+      }
+      this.#digests.set(path, { ...keyOf(now), sha256 });
     } catch {
       this.#digests.delete(path);
       this.#known = false;
