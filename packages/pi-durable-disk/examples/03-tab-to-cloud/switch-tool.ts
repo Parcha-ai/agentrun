@@ -73,30 +73,48 @@ export class FrameSwitchChannel implements SwitchChannel {
 }
 
 export const SWITCH_TOOL = "switch_environment";
+const REASON_MAX = 300;
 
-const DESCRIPTION = [
-  "Move your whole computer to another environment and continue your work there.",
-  "Your conversation and the files in your workspace come with you; programs that are running do not.",
-  "The move happens right after this step: you then continue on the new machine and get a system notice saying where you are.",
-  "Use it when the task needs what this machine lacks (more cores or memory, a full Linux VM with Docker, a desktop, a GPU).",
-  "target is an environment id such as modal-vm; a refusal lists the ids that exist.",
-].join(" ");
+/** A reason as the server keeps it (in the notice, an environment variable, a log): one line of at most 300 characters, no control characters. */
+export function cleanReason(reason: unknown): string {
+  return String(reason ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, REASON_MAX);
+}
 
-/** The tool, over a channel. Replay is unsafe (the default): an interrupted call is never run again, so it never asks twice. */
-export function switchEnvironment(channel: SwitchChannel): Extension {
+const description = (environments: readonly string[] | undefined) =>
+  [
+    "Move your whole computer to another environment and continue your work there.",
+    "Your conversation and the files in your workspace come with you; programs that are running do not.",
+    "The move happens right after this step: you then continue on the new machine and get a system notice saying where you are. If this call is reported as interrupted, that notice tells you where you are.",
+    "Use it when the task needs what this machine lacks (more cores or memory, a full Linux VM with Docker, a desktop, a GPU).",
+    environments && environments.length > 0 ? `target is one of: ${environments.join(", ")}.` : "target is an environment id; an unknown one is refused with the list of the ids that exist.",
+    "Only a host with a connection to your user's server can move you; anywhere else the call is refused.",
+  ].join(" ");
+
+/**
+ * The tool, over a channel; without one (a host that cannot reach the server) the same tool refusing. Every host registers it,
+ * in the same place: a task that moved with the run must find its definition wherever it resumes. Replay is unsafe (the
+ * default): an interrupted call is never run again, so it never asks twice. `environments`: the ids this host knows, for the description.
+ */
+export function switchEnvironment(channel?: SwitchChannel, environments?: readonly string[]): Extension {
   return defineExtension({
     name: "switch-environment",
     tools: [
       defineTool({
         name: SWITCH_TOOL,
-        description: DESCRIPTION,
+        description: description(environments),
         parameters: Type.Object({
           target: Type.String({ description: "The id of the environment to move to, for example modal-vm." }),
           reason: Type.String({ description: "One sentence: why you are moving. It is kept in your memory and shown in the notice you get there." }),
         }),
         async execute(args) {
+          if (!channel) return { isError: true, content: [{ type: "text" as const, text: "You were not moved: this host cannot reach your user's server to ask for a move. Tell your user where you want to go." }] };
           try {
-            const { switchId } = await channel.request(args.target, args.reason);
+            const { switchId } = await channel.request(args.target, cleanReason(args.reason));
             return {
               content: [{ type: "text" as const, text: `Handover ${switchId} started: you are moving to ${args.target}. This step finishes here; you continue there with your conversation and workspace files.` }],
               details: { switchId, target: args.target },

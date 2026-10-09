@@ -9,6 +9,8 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import type { Context } from "@earendil-works/chord";
+import { computerTool, type ComputerDriver } from "./computer-tool.ts";
+import { switchEnvironment, type SwitchChannel } from "./switch-tool.ts";
 
 export const PROVIDER = "pipe";
 
@@ -121,12 +123,26 @@ export function rootAgent(modelId: string): AgentChange {
   return { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
 }
 
-/** The registry both sides install, in the same order. */
-export function agentRegistry(durable: (context: Context) => Promise<void>, extras: readonly Extension[] = []): Registry {
+/** What a host can offer the agent beyond the shared tools; a tool the host cannot serve is still registered, and refuses. */
+export interface HostTools {
+  /** How this host asks the server to move the run (the pipe of a tab or a remote host, the link of a cloud host). */
+  readonly switchChannel?: SwitchChannel;
+  /** The environment ids this host knows, for the move tool's description. */
+  readonly environments?: readonly string[];
+  /** A desktop this host runs, for the computer tool. */
+  readonly computer?: ComputerDriver;
+}
+
+/**
+ * The registry every host installs, in the same order, with the same tool names: pi resolves a task against the registry
+ * where it runs, so a run that moves mid-call must find the definition of the tool it was in wherever it resumes. A tool
+ * the host cannot serve (no channel to the server, no desktop) refuses when called.
+ */
+export function agentRegistry(durable: (context: Context) => Promise<void>, host: HostTools = {}): Registry {
   const registry = createRegistry();
   registry.install(codingTools());
   registry.install(writeThrough(durable));
-  // What only some hosts can offer, such as the move the agent asks for (switch-tool.ts): installed after the shared ones.
-  for (const extension of extras) registry.install(extension);
+  registry.install(switchEnvironment(host.switchChannel, host.environments));
+  registry.install(computerTool(host.computer));
   return registry;
 }

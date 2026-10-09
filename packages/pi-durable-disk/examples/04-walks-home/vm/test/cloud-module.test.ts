@@ -1,0 +1,20 @@
+// The Modal cloud module's arguments: what `--cloud-arg` pairs mean, and that a mistake is an error rather than a default.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { modalOptionsFromArgs } from "../cloud-module.ts";
+
+test("pairs become modalCloud options", () => {
+  assert.deepEqual(modalOptionsFromArgs({}), {});
+  assert.deepEqual(
+    modalOptionsFromArgs({ image: "im-1", transport: "pipe", desktop: "true", regions: "us-east, us-west", app: "a", prefix: "p-", warm: "1", cpu: "4", "memory-mib": "8192", "gpu-image": "im-2", "gpu-type": "H100", "gpu-note": "run it", "gpu-ttl-minutes": "30" }),
+    { image: "im-1", transport: "pipe", desktop: true, regions: ["us-east", "us-west"], appName: "a", namePrefix: "p-", warm: true, cpu: 4, memoryMiB: 8192, gpu: { image: "im-2", type: "H100", note: "run it", ttlMinutes: 30 } },
+  );
+  assert.deepEqual(modalOptionsFromArgs({ desktop: "false" }), {}, "false is off");
+});
+
+test("an unknown key, a bad transport, a GPU type without an image, a non-number: each is an error", () => {
+  assert.throws(() => modalOptionsFromArgs({ imge: "im-1" }), /imge: not one of/);
+  assert.throws(() => modalOptionsFromArgs({ transport: "fuse" }), /mount or pipe/);
+  assert.throws(() => modalOptionsFromArgs({ "gpu-type": "H100" }), /needs gpu-image/);
+  assert.throws(() => modalOptionsFromArgs({ cpu: "many" }), /a positive number/);
+});

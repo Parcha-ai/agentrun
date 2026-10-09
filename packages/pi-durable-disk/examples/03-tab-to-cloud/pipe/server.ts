@@ -14,6 +14,7 @@ import { createRunDir, mintMountToken, removeMountToken, takeOver, unmountClaim,
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
+import { cleanReason } from "../switch-tool.ts";
 import type { Environment, Move, PipeFrame, Placement, TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
@@ -57,6 +58,17 @@ export interface CloudHost {
   desktopFrame?(ref: RunRef): Promise<Uint8Array | undefined>;
   /** Called once by the server: what a cloud host may ask of it for the agent that runs there (a move the agent chose). */
   bind?(api: ServerApi): void;
+}
+
+/** What `serve.ts --cloud-module` passes a module's default export, which returns the CloudHost: the disk, the model, the logs and the module's own `--cloud-arg KEY=VALUE` pairs. */
+export interface CloudModuleOptions {
+  readonly disk: string;
+  readonly region: string;
+  readonly model: ModelOptions;
+  readonly log: (event: string, data?: Record<string, unknown>) => void;
+  readonly ledger?: { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
+  readonly eventsLog?: string;
+  readonly args: Readonly<Record<string, string>>;
 }
 
 /** What the server offers a cloud host: the agent's own request to move (switch_environment). */
@@ -160,7 +172,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`,
     from,
     planned,
-    ...(who?.by === "agent" ? { by: "agent" as const, reason: who.reason } : {}),
+    ...(who?.by === "agent" ? { by: "agent" as const, reason: cleanReason(who.reason) } : {}),
   });
 
   const setPlacement = (state: RunState, placement: Placement) => {
@@ -322,7 +334,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (!target) return refuse(`no environment ${to}; the environments are ${environments.map((e) => e.id).join(", ")}`);
     if (who.by === "agent" && target.kind === "tab") {
       // Home: an agent cannot open a tab, but a tab already open and watching the run can be told to take it.
-      const viewer = [...state.viewers][0];
+      // A page watches through the pipe while a tab or a remote host runs the run, and through the server when a cloud host does.
+      const viewer = [...(state.pipe?.viewerSockets ?? []), ...state.viewers][0];
       if (!viewer) return refuse("no browser tab is open on this run to come home to: only your user can open one");
       reply = { ...reply, runHere: (switchId) => viewer.send({ t: "run-here", switchId }) };
     }
@@ -678,6 +691,38 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ url: `/desktop/${ticket}.mjpeg`, ttlMs: TICKET_MS }));
   }
 
+  // One poller per run, however many pages watch: the first viewer starts it, the last one's leaving stops it, and each picture
+  // it takes goes to every viewer (a screenshot costs the host a call, so N viewers must not cost N).
+  const pollers = new Map<string, { viewers: Set<(frame: Uint8Array) => void>; stop: () => void }>();
+
+  function watchDesktop(state: RunState, onFrame: (frame: Uint8Array) => void): () => void {
+    let poller = pollers.get(state.ref.id);
+    if (!poller) {
+      const viewers = new Set<(frame: Uint8Array) => void>();
+      let running = true;
+      const frameOf = options.cloud!.desktopFrame!.bind(options.cloud!);
+      void (async () => {
+        while (running) {
+          const started = Date.now();
+          const frame = await frameOf(state.ref).catch(() => undefined);
+          if (frame && running) for (const send of viewers) send(frame);
+          await new Promise((r) => setTimeout(r, Math.max(0, FRAME_MS - (Date.now() - started))));
+        }
+      })();
+      poller = { viewers, stop: () => (running = false) };
+      pollers.set(state.ref.id, poller);
+    }
+    poller.viewers.add(onFrame);
+    const mine = poller;
+    return () => {
+      mine.viewers.delete(onFrame);
+      if (mine.viewers.size === 0) {
+        mine.stop();
+        if (pollers.get(state.ref.id) === mine) pollers.delete(state.ref.id);
+      }
+    };
+  }
+
   function desktopStream(req: IncomingMessage, res: ServerResponse, ticket: string): void {
     const entry = tickets.get(ticket);
     const state = entry && entry.until > Date.now() ? runs.get(entry.run) : undefined;
@@ -685,20 +730,16 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       res.writeHead(404).end();
       return;
     }
-    const frameOf = options.cloud.desktopFrame.bind(options.cloud);
-    let open = true;
-    req.on("close", () => (open = false));
     res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame", "cache-control": "no-store", "cross-origin-resource-policy": "same-origin" });
-    void (async () => {
-      while (open && (tickets.get(ticket)?.until ?? 0) > Date.now()) {
-        const started = Date.now();
-        const frame = await frameOf(state.ref).catch(() => undefined);
-        if (!open) break;
-        if (frame) res.write(Buffer.concat([Buffer.from(`--frame\r\ncontent-type: image/jpeg\r\ncontent-length: ${frame.length}\r\n\r\n`), Buffer.from(frame), Buffer.from("\r\n")]));
-        await new Promise((r) => setTimeout(r, Math.max(0, FRAME_MS - (Date.now() - started))));
+    const unwatch = watchDesktop(state, (frame) => {
+      if ((tickets.get(ticket)?.until ?? 0) <= Date.now()) {
+        unwatch();
+        res.end();
+        return;
       }
-      res.end();
-    })();
+      res.write(Buffer.concat([Buffer.from(`--frame\r\ncontent-type: image/jpeg\r\ncontent-length: ${frame.length}\r\n\r\n`), Buffer.from(frame), Buffer.from("\r\n")]));
+    });
+    req.on("close", unwatch);
   }
 
   const http = createHttpServer((req, res) => {
@@ -752,6 +793,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return { id: runId, secret };
     },
     async close() {
+      for (const poller of pollers.values()) poller.stop();
+      pollers.clear();
       for (const state of runs.values()) {
         unsupervise(state);
         if (state.opening) await state.opening.catch(() => undefined);

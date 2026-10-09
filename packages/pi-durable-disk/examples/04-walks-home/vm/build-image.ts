@@ -1,5 +1,5 @@
 // Build (or find, Modal caches by content) the demo's VM image and print its id: `node build-image.ts [--app NAME]`.
-// `--print-commands` prints the recipe instead (no Modal needed). The id goes to `serve.ts --modal-image`; D2's GPU image composes `vmImageCommands` (image.ts) on top of the training image.
+// `--print-commands` prints the recipe instead (no Modal needed). The id goes to `serve.ts --cloud-module ... --cloud-arg image=IM`; D2's GPU image composes `vmImageCommands` (image.ts) on top of the training image.
 // MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the environment.
 import { parseArgs } from "node:util";
 import { ModalClient } from "modal";

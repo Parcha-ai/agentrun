@@ -1,4 +1,4 @@
-// The agent moves itself, driven in headless Chrome against a running `serve.ts --cloud modal`: one page runs the agent in its
+// The agent moves itself, driven in headless Chrome against a running `serve.ts --cloud-module 04-walks-home/vm/cloud-module.ts`: one page runs the agent in its
 // tab, the user asks for something the tab cannot do, the agent calls switch_environment on its own, and the rest of the task
 // is answered from the new computer. The move is timed from the agent's tool call to the notice on screen.
 //   node scripts/agent-switch-smoke.ts <run link> [environment id, default modal-vm]

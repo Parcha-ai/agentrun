@@ -223,6 +223,11 @@ export class RunPipe {
     this.#viewers.delete(socket);
   }
 
+  /** The pages watching the run through this pipe (while a tab or a remote host runs it). */
+  get viewerSockets(): readonly PipeSocket[] {
+    return [...this.#viewers];
+  }
+
   /** Hand the viewers back to the server (the pipe is ending; they keep watching whoever runs the run next). */
   takeViewers(): PipeSocket[] {
     const viewers = [...this.#viewers];

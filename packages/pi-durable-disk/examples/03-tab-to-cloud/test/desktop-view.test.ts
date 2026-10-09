@@ -12,11 +12,15 @@ describe("the live view of a desktop", () => {
   let base = "";
   let frames = 0;
   let hasDesktop = true;
+  let calls = 0;
   const cloud: CloudHost = {
     environments: [{ id: "vm", label: "VM", phrase: "a VM", kind: "cloud" }],
     start: async () => ({ host: "vm-1" }),
     stop: async () => undefined,
-    desktopFrame: async () => (hasDesktop ? JPEG(frames++ % 250) : undefined),
+    desktopFrame: async () => {
+      calls++;
+      return hasDesktop ? JPEG(frames++ % 250) : undefined;
+    },
   };
   before(async () => {
     local = await localServer({ cloud, superviseMs: 60_000 });
@@ -51,6 +55,39 @@ describe("the live view of a desktop", () => {
     await reader.cancel();
     assert.ok((text.toString("latin1").match(/--frame/g) ?? []).length >= 3, "several frames, not one");
     assert.ok(text.includes(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), "JPEG bytes");
+  });
+
+  it("one poller serves every viewer of a run, and it stops when the last one leaves", async () => {
+    const { id, secret } = await local.server.createRun("many");
+    const open = async () => {
+      const { url } = (await (await ticketOf(id, secret)).json()) as { url: string };
+      const res = await fetch(`${base}${url}`);
+      return res.body!.getReader();
+    };
+    const readFrames = async (reader: ReadableStreamDefaultReader<Uint8Array>, n: number) => {
+      let seen = 0;
+      let text = "";
+      while (seen < n) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += Buffer.from(value).toString("latin1");
+        seen = (text.match(/--frame/g) ?? []).length;
+      }
+      return seen;
+    };
+    const a = await open();
+    const b = await open();
+    const before = calls;
+    const [seenA, seenB] = await Promise.all([readFrames(a, 6), readFrames(b, 6)]);
+    const used = calls - before;
+    assert.ok(seenA >= 6 && seenB >= 6, "both viewers got pictures");
+    assert.ok(used < 12, `two viewers must not cost two screenshots per tick (${used} calls for 6 frames each)`);
+    await a.cancel();
+    await b.cancel();
+    await new Promise((r) => setTimeout(r, 600));
+    const settled = calls;
+    await new Promise((r) => setTimeout(r, 800));
+    assert.ok(calls - settled <= 1, "no viewer, no polling");
   });
 
   it("an unknown or malformed ticket is not found, and a run whose host has no desktop gets none", async () => {

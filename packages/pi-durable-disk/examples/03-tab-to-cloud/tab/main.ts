@@ -11,7 +11,7 @@ import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
-import { FrameSwitchChannel, switchEnvironment } from "../switch-tool.ts";
+import { FrameSwitchChannel } from "../switch-tool.ts";
 import { fromBase64, untag, type Environment, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 const WASMER_SDK = "/wasmer/dist/index.js";
@@ -296,7 +296,7 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   state.environments = attached.environments;
   const facts = tabFacts(pkg.commands, { cpus: navigator.hardwareConcurrency, ...((navigator as { deviceMemory?: number }).deviceMemory ? { memoryGb: (navigator as { deviceMemory?: number }).deviceMemory! } : {}) });
   const env = new WasmerEnv(sandbox as never, { id: `wasmer:${run}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
-  const runtime = await startTab({ client, attached, env, workspace: new Workspace(wasmerWorkspaceFs(env)), tools: [switchEnvironment(switchChannel)], ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  const runtime = await startTab({ client, attached, env, workspace: new Workspace(wasmerWorkspaceFs(env)), host: { switchChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   state.bootMs = performance.now() - started;

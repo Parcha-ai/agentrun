@@ -1,4 +1,4 @@
-// The agent trains on a GPU and comes home, driven in headless Chrome against a running `serve.ts --cloud modal --modal-gpu-image ...`:
+// The agent trains on a GPU and comes home, driven in headless Chrome against a running `serve.ts --cloud-module ... --cloud-arg gpu-image=...`:
 // the user asks for a trained walker, the agent moves itself to the GPU machine, runs the training command its notice gives, and
 // when the policy file exists moves home to the tab that is watching the run. Checked from the tab's side: the policy is in the
 // tab's workspace after the move home. Moves are timed from the agent's tool call to the notice on screen.

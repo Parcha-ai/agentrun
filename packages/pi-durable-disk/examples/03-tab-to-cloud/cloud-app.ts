@@ -17,8 +17,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
-import { switchEnvironment } from "./switch-tool.ts";
-import { computerTool } from "./computer-tool.ts";
+import { xdotoolDriver } from "./computer-driver.ts";
 import { probeHost } from "./host-probe.ts";
 import { startCloudLink, type CloudLink } from "./cloud-link.ts";
 
@@ -39,7 +38,7 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
     await run.claim.barrier();
   };
   return {
-    registry: agentRegistry(durable, [...(link ? [switchEnvironment(link.switchChannel)] : []), ...(process.env.DEMO_DISPLAY ? [computerTool()] : [])]),
+    registry: agentRegistry(durable, { ...(link ? { switchChannel: link.switchChannel } : {}), ...(process.env.DEMO_DISPLAY ? { computer: xdotoolDriver() } : {}) }),
     models: agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) }),
     settings: SETTINGS,
     root: { agent: rootAgent(modelId) },

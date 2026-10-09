@@ -1,4 +1,4 @@
-// The agent uses a real desktop, driven in headless Chrome against a running `serve.ts --cloud modal --modal-desktop`: the user
+// The agent uses a real desktop, driven in headless Chrome against a running `serve.ts --cloud-module ... --cloud-arg desktop=true`: the user
 // asks for something only a GUI can answer, the agent moves itself to the VM, builds a page, opens it in Chromium on the VM's
 // desktop and presses its button with the computer tool, reading the result off the screen. Independent evidence: after the
 // answer, this script takes its own screenshot of the VM's desktop and checks that noVNC answers through its tunnel.

@@ -2,7 +2,8 @@
 //
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
-//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|modal [--modal-transport mount|pipe]]
+//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona]
+//                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST]
 //
@@ -20,12 +21,12 @@
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, dirname, resolve as resolvePath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { openClaimDir } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "./pipe/control.ts";
-import { createDemoServer, type CloudHost } from "./pipe/server.ts";
+import { createDemoServer, type CloudHost, type CloudModuleOptions } from "./pipe/server.ts";
 import { localClaim } from "./test/_local.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -40,16 +41,6 @@ const { values } = parseArgs({
     "model-key-env": { type: "string" },
     "daytona-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_SNAPSHOT },
     "daytona-secret": { type: "string" },
-    "modal-prefix": { type: "string" },
-    "modal-app": { type: "string" },
-    "modal-image": { type: "string" },
-    "modal-warm": { type: "boolean", default: false },
-    "modal-desktop": { type: "boolean", default: false },
-    "modal-gpu-image": { type: "string" },
-    "modal-gpu-type": { type: "string" },
-    "modal-gpu-note": { type: "string" },
-    "modal-transport": { type: "string" },
-    "modal-regions": { type: "string" },
     "daytona-gpu-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_GPU_SNAPSHOT },
     "warm-gpu": { type: "boolean", default: false },
     budget: { type: "string", default: "400000" },
@@ -58,6 +49,8 @@ const { values } = parseArgs({
     log: { type: "string" },
     cloud: { type: "string", default: "none" },
     "cloud-events": { type: "string" },
+    "cloud-module": { type: "string" },
+    "cloud-arg": { type: "string", multiple: true },
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
     "admin-token-file": { type: "string" },
@@ -105,25 +98,11 @@ if (values.cloud === "local" || values.cloud === "daytona") {
   });
 }
 
-if (values.cloud === "modal") {
-  // The Modal VM of the walks-home demo (04-walks-home/vm): the Modal VM environment (mounted or through the pipe, --modal-transport).
-  const { modalCloud } = await import("../04-walks-home/vm/modal-cloud.ts");
-  cloud = await modalCloud({
-    disk,
-    region,
-    model,
-    log,
-    ...(ledger ? { ledger } : {}),
-    ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}),
-    ...(values["modal-prefix"] ? { namePrefix: values["modal-prefix"] } : {}),
-    ...(values["modal-app"] ? { appName: values["modal-app"] } : {}),
-    ...(values["modal-image"] ? { image: values["modal-image"] } : {}),
-    ...(values["modal-warm"] ? { warm: true } : {}),
-    ...(values["modal-desktop"] ? { desktop: true } : {}),
-    ...(values["modal-gpu-image"] ? { gpu: { image: values["modal-gpu-image"], ...(values["modal-gpu-type"] ? { type: values["modal-gpu-type"] } : {}), ...(values["modal-gpu-note"] ? { note: values["modal-gpu-note"] } : {}) } } : {}),
-    ...(values["modal-regions"] ? { regions: values["modal-regions"].split(",") } : {}),
-    ...(values["modal-transport"] ? { transport: values["modal-transport"] as "mount" | "pipe" } : {}),
-  });
+if (values["cloud-module"]) {
+  // A cloud host from another example (04-walks-home/vm is the Modal VM): its default export takes these options and returns a CloudHost.
+  const mod = (await import(pathToFileURL(resolvePath(values["cloud-module"])).href)) as { default: (options: CloudModuleOptions) => Promise<CloudHost> };
+  const args = Object.fromEntries((values["cloud-arg"] ?? []).map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]));
+  cloud = await mod.default({ disk, region, model, log, ...(ledger ? { ledger } : {}), ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}), args });
 }
 
 const server = createDemoServer({
