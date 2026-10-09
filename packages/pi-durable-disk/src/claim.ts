@@ -272,26 +272,53 @@ async function runDirsByInode(control: Pick<ControlApi, "exec">, inodes: readonl
   return names;
 }
 
+/** A client's private directories on the disk: `.archil/client-<clientId>` and its `unlinked/`. */
+const PRIVATE_DIR = /^\/*\.archil\/client-([A-Za-z0-9_-]+)(\/unlinked)?$/;
+
 /**
- * The other delegations of the clients in `held` that have no path. A client mounts one run's directory, so these are
- * its own private directories on the disk (`.archil/client-<clientId>` and its `unlinked/`), which a killed client
- * leaves orphaned and nothing ties to a run. They go when the client's claim is revoked, or they stay listed for good.
+ * The delegations `held`'s clients also hold on their own private directories (`privateDirs`: inode to the client whose
+ * private directory it is). A killed client leaves them orphaned, and nothing ties them to a run: they block no run, but
+ * they pile up and resurface in listings. A client that holds anything else beyond `held` may hold another run, so none
+ * of its delegations is a companion.
  */
-export function companionsOf(all: readonly Delegation[], held: readonly Delegation[]): Delegation[] {
+export function companionsOf(all: readonly Delegation[], held: readonly Delegation[], privateDirs: ReadonlyMap<number, string>): Delegation[] {
   const clients = new Set(held.map((d) => d.clientId));
   const listed = new Set(held.map((d) => `${d.clientId}/${d.inodeId}`));
-  return all.filter((d) => !d.path && clients.has(d.clientId) && !listed.has(`${d.clientId}/${d.inodeId}`));
+  const others = all.filter((d) => clients.has(d.clientId) && !listed.has(`${d.clientId}/${d.inodeId}`));
+  const own = (d: Delegation) => (d.path ? PRIVATE_DIR.exec(d.path)?.[1] : privateDirs.get(d.inodeId)) === d.clientId;
+  const holdsMore = new Set(others.filter((d) => !own(d)).map((d) => d.clientId));
+  return others.filter((d) => !holdsMore.has(d.clientId));
+}
+
+/** The inodes of `clients`' private directories, by one `exec` (`stat`); none without `exec`. */
+async function privateDirInodes(control: Pick<ControlApi, "exec">, clients: readonly string[]): Promise<Map<number, string>> {
+  const asked = clients.filter((c) => /^[A-Za-z0-9_-]+$/.test(c));
+  const dirs = new Map<number, string>();
+  if (!control.exec || asked.length === 0) return dirs;
+  const paths = asked.flatMap((c) => [`.archil/client-${c}`, `.archil/client-${c}/unlinked`]);
+  const r = await control.exec(`stat -c '%i %n' -- ${paths.join(" ")} 2>/dev/null; true`);
+  for (const line of String(r.stdout ?? "").split("\n")) {
+    const m = /^(\d+) (\S+)$/.exec(line);
+    const client = m && PRIVATE_DIR.exec(m[2])?.[1];
+    if (m && client && asked.includes(client)) dirs.set(Number(m[1]), client);
+  }
+  return dirs;
 }
 
 /**
- * Revoke the companions of `held` (`companionsOf`), from `all` or a fresh listing. Best effort: a companion is a revoked
- * client's private directory, so one left behind costs a listing entry, never a run. Returns the ones revoked.
+ * Revoke the companions of `held` (`companionsOf`): only for clients the caller is already revoking because it fences or
+ * deletes a run, never as a sweep. From `all` or a fresh listing. Best effort, and hygiene only: a companion blocks no
+ * run, so one left behind (or a failed listing or `exec`) costs a listing entry. Returns the ones revoked.
  */
-export async function revokeCompanions(control: Pick<ControlApi, "listDelegations" | "revokeDelegation">, held: readonly Delegation[], all?: readonly Delegation[]): Promise<Delegation[]> {
+export async function revokeCompanions(control: Pick<ControlApi, "listDelegations" | "revokeDelegation" | "exec">, held: readonly Delegation[], all?: readonly Delegation[]): Promise<Delegation[]> {
   if (held.length === 0) return [];
-  const companions = companionsOf(all ?? (await control.listDelegations().catch(() => [])), held);
+  const listing = all ?? (await control.listDelegations().catch(() => []));
+  const clients = [...new Set(held.map((d) => d.clientId))];
+  const listed = new Set(held.map((d) => `${d.clientId}/${d.inodeId}`));
+  if (!listing.some((d) => clients.includes(d.clientId) && !listed.has(`${d.clientId}/${d.inodeId}`))) return [];
+  const dirs = await privateDirInodes(control, clients).catch(() => new Map<number, string>());
   const revoked: Delegation[] = [];
-  for (const d of companions) {
+  for (const d of companionsOf(listing, held, dirs)) {
     await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).then(() => revoked.push(d), () => {});
   }
   return revoked;

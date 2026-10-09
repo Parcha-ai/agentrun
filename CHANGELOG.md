@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `@parcha/pi-durable-disk` revokes, with a run's delegations, the ones its dead holders keep on their own private directories (`.archil/client-<id>`, listed with no path); before, every killed client left them orphaned on the disk. Its CHANGELOG has the details.
+- `@parcha/pi-durable-disk` revokes, with a fenced or deleted run's delegations, the ones its holders keep on their own private directories (`.archil/client-<id>`, listed with no path), when those holders hold nothing else. They block no run; before, every killed client left them orphaned, and they piled up and resurfaced in listings. Its CHANGELOG has the details.
 
 ## 0.1.0-beta.12, 2026-10-09
 
