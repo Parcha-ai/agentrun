@@ -10,7 +10,7 @@ import { homeAdoption, type HomeAdoptionOptions } from "../home-adoption.ts";
 
 const RUN: RunRef = { disk: "dsk-test", region: "test", id: "d1-u8" };
 
-function setup(answer: () => Promise<Response>, policy: HomeAdoptionOptions["policy"] = async () => "home/policy.json") {
+function setup(answer: () => Promise<Response>, policy: HomeAdoptionOptions["policy"] = async () => "home/policy.json", closeTimeoutMs?: number) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "home-adoption-"));
   const tokenFile = join(dir, "admin-token");
   writeFileSync(tokenFile, "secret-admin-token\n", { mode: 0o600 });
@@ -22,6 +22,7 @@ function setup(answer: () => Promise<Response>, policy: HomeAdoptionOptions["pol
     policy,
     onPolicyFailed: (_run, error) => void failed.push(error.message),
     log: () => {},
+    ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
     fetch: (async (url: string, init: RequestInit) => {
       asked.push({ url, auth: new Headers(init.headers).get("authorization") });
       return answer();
@@ -94,5 +95,18 @@ test("a server that answers no gives the run back; one that never answers leaves
     assert.equal(silent.homes.handed, "d1-u8");
   } finally {
     silent.done();
+  }
+});
+
+test("cleanup waits for the policy reads only until its deadline, and keeps the adopted run", async () => {
+  const s = setup(adopted, () => new Promise<string | null>(() => {}), 50);
+  try {
+    void s.homes.adopt(RUN, "u8");
+    const t0 = performance.now();
+    await s.homes.close();
+    assert.ok(performance.now() - t0 < 1_000, "close is bounded");
+    assert.equal(s.homes.handed, "d1-u8", "adopted, policy unread: the run is still the tab's");
+  } finally {
+    s.done();
   }
 });

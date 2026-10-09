@@ -42,11 +42,15 @@ export function strictPolicy(text: string): { ok: true; policy: PolicyJson } | {
   } catch (error) {
     return { ok: false, reason: `not strict JSON (${(error as Error).message.slice(0, 80)})` };
   }
-  if (typeof policy !== "object" || policy === null) return { ok: false, reason: "not a policy object" };
+  if (typeof policy !== "object" || policy === null || Array.isArray(policy)) return { ok: false, reason: "not a policy object" };
   for (const [name, net] of [["walk", policy], ["getup", policy.getup]] as const) {
-    if (!net) continue;
+    if (net === undefined) continue;
+    // A file of the wrong shape is refused here with a reason, never thrown on: the walk policy can still go home alone.
+    if (typeof net !== "object" || net === null || Array.isArray(net)) return { ok: false, reason: `the ${name} network is not an object` };
+    if (net.layers !== undefined && !Array.isArray(net.layers)) return { ok: false, reason: `the ${name} network's layers are not a list` };
     if (!finite(net.obs?.mean) || !finite(net.obs?.std)) return { ok: false, reason: `the ${name} network's normalisation is not finite` };
     for (const [i, layer] of (net.layers ?? []).entries()) {
+      if (typeof layer !== "object" || layer === null) return { ok: false, reason: `the ${name} network's layer ${i} is not an object` };
       if (!finiteWeights(layer.w) || !finiteWeights(layer.b)) return { ok: false, reason: `the ${name} network's layer ${i} has NaN or infinite weights` };
     }
   }

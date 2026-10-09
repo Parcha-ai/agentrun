@@ -343,12 +343,9 @@ async function homePolicyPath(run: RunRef, universe: string): Promise<string | n
   const read = (path: string) => control.getObject(`runs/${run.id}/work/${path}`).then((b) => ({ text: new TextDecoder().decode(b) }), () => null);
   const xml = await read("creature/creature.xml");
   const bodyFile = await read("creature/body.json");
-  let nj = 0;
-  try {
-    nj = bodyFile ? ((JSON.parse(bodyFile.text) as { jointNames?: unknown[] }).jointNames?.length ?? 0) : 0;
-  } catch {
-    // An unreadable body.json is a run without a body to check against, as one without the file.
-  }
+  // A body.json that is there but broken throws: the adoption sends no policy home and the stage is told
+  // (home-adoption.ts). Only a run without a creature skips the check.
+  const nj = bodyFile ? ((JSON.parse(bodyFile.text) as { jointNames?: unknown[] }).jointNames?.length ?? 0) : 0;
   if (!xml || !nj) {
     log("home.policy-unchecked", { run: run.id, why: "the run has no creature" });
     return `train/${universe}/policy.json`;
