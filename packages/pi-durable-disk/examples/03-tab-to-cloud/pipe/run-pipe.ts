@@ -74,8 +74,10 @@ export interface RunPipeOptions {
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** An attach refuses a workspace larger than this (its writer has its own limit, often smaller). Default 1 GiB. */
   readonly restoreLimitBytes?: number;
-  /** An upload larger than this fails. Default 4 GiB. */
+  /** A writer's unfinished uploads together may hold this many bytes; past it, an upload fails. Default 4 GiB. */
   readonly uploadLimitBytes?: number;
+  /** A writer may have this many unfinished uploads; an upload past it is refused. Default 1024. */
+  readonly maxUnfinishedUploads?: number;
   /** Test seams, passed to the lease. */
   readonly acquire?: OpenRunLeaseOptions["acquire"];
   readonly claimDir?: OpenRunLeaseOptions["claimDir"];
@@ -95,6 +97,8 @@ type Writer = {
   storage: Storage;
   store: ArchilStore;
   attachedAt: number;
+  /** Set until `attached` is sent: hashing a large workspace must not count as a silent writer. */
+  attaching: boolean;
 };
 
 /**
@@ -102,7 +106,7 @@ type Writer = {
  * of order or past the limit marks the upload failed; the write-through that names it then fails and the file in work/
  * stays as it was.
  */
-type Upload = { writer: Writer; file: string; handle: FileHandle | undefined; size: number; hash: Hash; failed: string | undefined; chain: Promise<void> };
+type Upload = { writer: Writer; file: string; handle: FileHandle | undefined; created: boolean; size: number; hash: Hash; failed: string | undefined; chain: Promise<void> };
 
 const VIEW_BUFFER = 4_000;
 const SEGMENT = /^[^/\0]+$/;
@@ -128,6 +132,8 @@ export class RunPipe {
   #models = new Map<string, AbortController>();
   /** Uploads in progress, by `<epoch>:<id>`. */
   #uploads = new Map<string, Upload>();
+  /** The one upload whose file is open; a chunk of another closes it first, so uploads never pile up open files. */
+  #openUpload: Upload | undefined;
   #scratch = 0;
   #drained: { switchId: string; done: () => void } | undefined;
 
@@ -221,7 +227,7 @@ export class RunPipe {
       await this.#store!.storage.close(ctx);
       store = this.#store = await this.#openStore(join(this.lease.claim.store, "run.sqlite"));
     }
-    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now() };
+    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true };
     this.#writer = writer;
     this.#goneFired = false;
     // Every earlier writer is retired: an upload left in tmp/pipe-uploads/ (this pipe's, or a crashed one's) is stale.
@@ -238,6 +244,9 @@ export class RunPipe {
       environments: extra.environments,
       ...(extra.move ? { move: extra.move } : {}),
     });
+    // Its grace starts now: its pings reach the pipe only once the attach is done.
+    writer.attaching = false;
+    writer.lastPing = Date.now();
     this.#broadcast({ t: "placement", placement: { where: "tab", tab, epoch, generation: this.lease.generation, env: extra.env ?? "tab" } });
     this.#log("pipe.attach", { tab, epoch, files: manifest.files, bytes: manifest.bytes, workDigest: await manifestDigest(manifest.entries) });
     // The files follow the manifest; a retire waits for the stream, which stops at its next chunk.
@@ -352,7 +361,7 @@ export class RunPipe {
   #gcTimer(): void {
     this.#goneTimer = setInterval(() => {
       const writer = this.#writer;
-      if (!writer || writer.dead || this.#goneFired || this.#lost || this.#released) return;
+      if (!writer || writer.dead || writer.attaching || this.#goneFired || this.#lost || this.#released) return;
       if (Date.now() - writer.lastPing > (this.#options.writerGraceMs ?? 3_000)) {
         this.#goneFired = true;
         void this.#retire(writer, "GONE", "no ping from the tab").then(() => {
@@ -489,7 +498,11 @@ export class RunPipe {
   async #apply(writer: Writer, change: FileChange): Promise<void> {
     const parts = RunPipe.segments(change.path);
     const name = parts.at(-1)!;
+    // Every step that changes work/ first checks, in its own turn, that the writer is still the writer: a write-through
+    // in flight when its writer is retired stops at its next step and changes nothing after that.
+    const live = () => this.#assertCurrent(writer);
     if (change.op === "mkdir") {
+      live();
       await this.#dirAt(parts);
       return;
     }
@@ -497,34 +510,41 @@ export class RunPipe {
       await this.#applyUpload(writer, change, parts);
       return;
     }
+    live();
     const dir = await this.#dirAt(parts.slice(0, -1));
     const target = join(dir, name);
     if (change.op === "delete") {
       const info = await lstat(target).catch(() => null);
       if (info === null) return;
+      live();
       if (info.isDirectory()) await rm(target, { recursive: true, force: true });
       else await unlink(target);
       return;
     }
-    const existing = await lstat(target).catch(() => null);
-    if (existing?.isDirectory()) await rm(target, { recursive: true, force: true });
     // Written beside the target and renamed over it: a reader never sees half a file, and a symbolic link at the target
     // is replaced, never followed.
     const temp = join(dir, `.pipe-${randomBytes(6).toString("hex")}`);
+    live();
     await writeFile(temp, fromBase64(change.data), { mode: (change.mode ?? 0o644) & 0o777 });
-    this.#renameIn(writer, temp, target);
+    await this.#replace(writer, temp, target);
   }
 
   /**
-   * Rename `temp` over `target` if `writer` is still the writer, else remove `temp` and throw. The check and the rename
-   * run in one turn (a synchronous rename), so a writer retired while its write-through was in flight lands nothing.
+   * Put `temp` at `target` if `writer` is still the writer, else remove `temp` and throw. A directory at the target is
+   * removed first, after the same check. The final check and the rename run in one turn (a synchronous rename), so a
+   * writer retired while its write-through was in flight lands nothing.
    */
-  #renameIn(writer: Writer, temp: string, target: string): void {
+  async #replace(writer: Writer, temp: string, target: string): Promise<void> {
     try {
+      const existing = await lstat(target).catch(() => null);
+      if (existing?.isDirectory()) {
+        this.#assertCurrent(writer);
+        await rm(target, { recursive: true, force: true });
+      }
       this.#assertCurrent(writer);
       renameSync(temp, target);
     } catch (error) {
-      void unlink(temp).catch(() => undefined);
+      await unlink(temp).catch(() => undefined);
       throw error;
     }
   }
@@ -536,7 +556,9 @@ export class RunPipe {
 
   /**
    * One chunk of an upload (`upload` frame). No answer: a refused or failed chunk fails the upload, and the
-   * write-through that names it reports why. Chunks of one upload are written in order, each after the one before.
+   * write-through that names it reports why. Chunks of one upload are written in order, each after the one before;
+   * each written chunk shows the writer is alive. A writer's unfinished uploads are bounded in number and in bytes, and
+   * only one upload's file is open at a time.
    */
   upload(socket: PipeSocket, id: string, offset: number, data: string): Promise<void> {
     let writer: Writer;
@@ -549,7 +571,13 @@ export class RunPipe {
     const key = `${writer.epoch}:${id}`;
     let upload = this.#uploads.get(key);
     if (!upload) {
-      upload = { writer, file: join(this.#uploadDir, `${writer.epoch}-${id}`), handle: undefined, size: 0, hash: createHash("sha256"), failed: undefined, chain: Promise.resolve() };
+      // Past the cap there is no record: the write-through that names it fails ("no upload").
+      const unfinished = [...this.#uploads.values()].filter((u) => u.writer === writer).length;
+      if (unfinished >= (this.#options.maxUnfinishedUploads ?? 1024)) {
+        this.#log("pipe.upload-refused", { tab: writer.tab, reason: `${unfinished} unfinished uploads` });
+        return Promise.resolve();
+      }
+      upload = { writer, file: join(this.#uploadDir, `${writer.epoch}-${id}`), handle: undefined, created: false, size: 0, hash: createHash("sha256"), failed: undefined, chain: Promise.resolve() };
       this.#uploads.set(key, upload);
     }
     const u = upload;
@@ -560,19 +588,41 @@ export class RunPipe {
         if (offset !== u.size) throw new Error(`a chunk at byte ${offset}, expected ${u.size}`);
         const bytes = Buffer.from(String(data), "base64");
         if (bytes.length > CHUNK_BYTES) throw new Error(`a chunk of ${bytes.length} bytes, over ${CHUNK_BYTES}`);
-        if (u.size + bytes.length > limit) throw new Error(`over the upload limit of ${limit} bytes`);
+        let held = bytes.length;
+        for (const other of this.#uploads.values()) if (other.writer === writer) held += other.size;
+        if (held > limit) throw new Error(`this writer's unfinished uploads would hold ${held} bytes, over ${limit}`);
+        if (this.#openUpload !== u) {
+          await this.#closeUpload(this.#openUpload);
+          this.#openUpload = u;
+        }
         if (!u.handle) {
           await mkdir(this.#uploadDir, { recursive: true });
-          u.handle = await open(u.file, "wx", 0o600);
+          u.handle = await open(u.file, u.created ? "r+" : "wx", 0o600);
+          u.created = true;
         }
-        await u.handle.write(bytes, 0, bytes.length, offset);
+        // A write may take fewer bytes than asked: write the rest before the chunk counts.
+        for (let done = 0; done < bytes.length; ) {
+          const { bytesWritten } = await u.handle.write(bytes, done, bytes.length - done, offset + done);
+          if (bytesWritten <= 0) throw new Error(`the disk took no bytes at ${offset + done}`);
+          done += bytesWritten;
+        }
         u.hash.update(bytes);
         u.size += bytes.length;
+        this.heard(writer.socket);
       } catch (error) {
         u.failed = (error as Error).message;
       }
     }));
     return u.chain;
+  }
+
+  /** Close `upload`'s file if it is open (its next chunk reopens it). */
+  async #closeUpload(upload: Upload | undefined): Promise<void> {
+    if (!upload) return;
+    if (this.#openUpload === upload) this.#openUpload = undefined;
+    const handle = upload.handle;
+    upload.handle = undefined;
+    await handle?.close().catch(() => undefined);
   }
 
   /** A write whose content is an upload: checked against the change's size and SHA-256, then renamed into place. */
@@ -583,23 +633,20 @@ export class RunPipe {
     this.#uploads.delete(key);
     try {
       await upload.chain;
+      await this.#closeUpload(upload);
       if (upload.failed) throw new Error(`${change.path}: the upload failed: ${upload.failed}`);
-      await upload.handle?.close();
-      upload.handle = undefined;
-      // An empty upload never opened its file.
-      if (upload.size === 0) await writeFile(upload.file, new Uint8Array(0), { flag: "wx", mode: 0o600 });
+      // An empty upload never created its file.
+      if (!upload.created) await writeFile(upload.file, new Uint8Array(0), { flag: "wx", mode: 0o600 });
       const sha256 = upload.hash.digest("hex");
       if (upload.size !== change.upload.size || sha256 !== change.upload.sha256) {
         throw new Error(`${change.path}: the upload has ${upload.size} bytes with SHA-256 ${sha256}, not ${change.upload.size} bytes with ${change.upload.sha256}`);
       }
       await chmod(upload.file, (change.mode ?? 0o644) & 0o777);
+      this.#assertCurrent(writer);
       const dir = await this.#dirAt(parts.slice(0, -1));
-      const target = join(dir, parts.at(-1)!);
-      const existing = await lstat(target).catch(() => null);
-      if (existing?.isDirectory()) await rm(target, { recursive: true, force: true });
-      this.#renameIn(writer, upload.file, target);
+      await this.#replace(writer, upload.file, join(dir, parts.at(-1)!));
     } catch (error) {
-      await upload.handle?.close().catch(() => undefined);
+      await this.#closeUpload(upload);
       await unlink(upload.file).catch(() => undefined);
       throw error;
     }
@@ -611,7 +658,7 @@ export class RunPipe {
       if (!which(upload)) continue;
       this.#uploads.delete(key);
       await upload.chain.catch(() => undefined);
-      await upload.handle?.close().catch(() => undefined);
+      await this.#closeUpload(upload);
       await unlink(upload.file).catch(() => undefined);
     }
   }

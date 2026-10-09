@@ -4,7 +4,7 @@
 // write-through that names its upload, a restore over the host's limit or not matching its manifest.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -200,6 +200,7 @@ describe("chunked workspace in the pipe itself", () => {
       lease: { heartbeatMs: 500, expiryMs: 5_000, marginMs: 1_000 },
       acquire: async (opts) => localClaim(root, opts),
       claimDir: (dir) => openClaimDir(dir, { fstype: null }),
+      maxUnfinishedUploads: 300,
     });
   });
   after(async () => {
@@ -243,6 +244,61 @@ describe("chunked workspace in the pipe itself", () => {
     assert.deepEqual(listFiles(work()), ["m.bin"]);
   });
 
+  it("a writer retired in flight never removes a directory it was replacing, nor deletes one", async () => {
+    mkdirSync(join(work(), "keep", "sub"), { recursive: true });
+    writeFileSync(join(work(), "keep", "sub", "x.txt"), "kept");
+    mkdirSync(join(work(), "keep2"), { recursive: true });
+    writeFileSync(join(work(), "keep2", "y.txt"), "kept too");
+    const cases: { name: string; changes: (from: PipeSocket) => Promise<Parameters<RunPipe["files"]>[2]> }[] = [
+      {
+        name: "upload over a directory",
+        changes: async (from) => {
+          const bytes = randomBytes(CHUNK_BYTES + 3);
+          await upload(from, `upload-${from.id}-dir`, bytes);
+          return [{ path: "keep", op: "write", upload: { id: `upload-${from.id}-dir`, size: bytes.length, sha256: sha(bytes) } }];
+        },
+      },
+      { name: "inline write over a directory", changes: async () => [{ path: "keep", op: "write", data: text("a file") }] },
+      { name: "delete of a directory", changes: async () => [{ path: "keep2", op: "delete" }] },
+    ];
+    let n = 0;
+    for (const c of cases) {
+      const w = socket(`w${++n}`);
+      await pipe.attach(w, w.id, true);
+      const changes = await c.changes(w);
+      const inflight = pipe.files(w, 10, changes);
+      const takeover = pipe.attach(socket(`t${n}`), `t${n}`, true);
+      await Promise.all([inflight, takeover]);
+      const res = answer(w.id, 10);
+      assert.equal(res?.ok, false, c.name);
+      assert.equal(readFileSync(join(work(), "keep", "sub", "x.txt"), "utf8"), "kept", c.name);
+      assert.equal(readFileSync(join(work(), "keep2", "y.txt"), "utf8"), "kept too", c.name);
+    }
+    assert.deepEqual(listFiles(uploads()), []);
+  });
+
+  it("bounds a writer's unfinished uploads: one open file at a time, and a cap on their number", async () => {
+    const w = socket("cap");
+    await pipe.attach(w, "cap", true);
+    const fds = () => readdirSync("/proc/self/fd").length;
+    const before = fds();
+    const firstBytes = randomBytes(16);
+    for (let i = 0; i < 300; i++) await pipe.upload(w, `cap-upload-${String(i).padStart(4, "0")}`, 0, toBase64(i === 0 ? firstBytes : randomBytes(16)));
+    assert.ok(fds() - before <= 2, `${fds() - before} more open files for 300 unfinished uploads`);
+    assert.equal(listFiles(uploads()).length, 300);
+    // The 301st has no record: the write-through that names it fails.
+    const bytes = randomBytes(16);
+    await pipe.upload(w, "cap-upload-over", 0, toBase64(bytes));
+    await pipe.files(w, 20, [{ path: "over.bin", op: "write", upload: { id: "cap-upload-over", size: 16, sha256: sha(bytes) } }]);
+    assert.match((answer("cap", 20) as Extract<PipeFrame, { ok: false }>).error.message, /no upload/);
+    // The first of the 300, its file closed while the others were written, still completes whole.
+    await pipe.files(w, 21, [{ path: "first.bin", op: "write", upload: { id: "cap-upload-0000", size: 16, sha256: sha(firstBytes) } }]);
+    assert.equal(answer("cap", 21)?.ok, true);
+    assert.equal(sha(readFileSync(join(work(), "first.bin"))), sha(firstBytes));
+    await pipe.attach(socket("after-cap"), "after-cap", true);
+    assert.deepEqual(listFiles(uploads()), [], "the retired writer's 300 uploads are removed");
+  });
+
   it("refuses an upload whose content does not match, and keeps the old file", async () => {
     const d = socket("d");
     await pipe.attach(d, "d", true);
@@ -259,6 +315,38 @@ describe("chunked workspace in the pipe itself", () => {
     assert.match((answer("d", 5) as Extract<PipeFrame, { ok: false }>).error.message, /expected 100/);
     assert.equal(readFileSync(join(work(), "m.bin"), "utf8"), "old");
     assert.deepEqual(listFiles(uploads()), []);
+  });
+});
+
+describe("an attach that hashes a large workspace", () => {
+  it("is not taken for a silent writer while it hashes, however short the grace", async () => {
+    const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-chunk-grace-"));
+    const pipe = await RunPipe.open({
+      ref: { disk: "dsk-local", region: "local", id: "grace" },
+      mountToken: "local",
+      mountRoot: root,
+      model: new ModelProxy({ baseUrl: "http://127.0.0.1:9/v1", model: "stub", budgetTokens: 1 }),
+      lease: { heartbeatMs: 500, expiryMs: 5_000, marginMs: 1_000 },
+      acquire: async (opts) => localClaim(root, opts),
+      claimDir: (dir) => openClaimDir(dir, { fstype: null }),
+      writerGraceMs: 20,
+    });
+    try {
+      const big = Buffer.alloc(384 * MiB, 7);
+      mkdirSync(join(root, "runs", "grace", "work"), { recursive: true });
+      writeFileSync(join(root, "runs", "grace", "work", "big.bin"), big);
+      const frames: PipeFrame[] = [];
+      const started = performance.now();
+      await pipe.attach({ id: "a", send: (frame) => frames.push(frame), close: () => undefined }, "a", false);
+      const hashMs = performance.now() - started;
+      assert.ok(hashMs > 300, `hashing took ${Math.round(hashMs)} ms, too fast for this test to mean anything`);
+      assert.deepEqual(frames.filter((f) => f.t === "lost"), []);
+      assert.equal(pipe.writerTab, "a");
+      assert.ok(frames.some((f) => f.t === "attached"));
+    } finally {
+      await pipe.release().catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

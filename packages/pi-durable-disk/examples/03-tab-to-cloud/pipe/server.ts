@@ -14,7 +14,7 @@ import { createRunDir, mintMountToken, removeMountToken, takeOver, unmountClaim,
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
-import type { Environment, Move, PipeFrame, Placement, TabFrame } from "../wire.ts";
+import { CHUNK_BYTES, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
 export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "This tab", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
@@ -110,6 +110,10 @@ interface RunState {
   /** The remote host that runs the run through the pipe, by its tab id. */
   remote: { tab: string; env: string } | undefined;
 }
+
+/** Base64 bytes of upload chunks a connection may have waiting for the disk before it stops reading, and resumes. */
+const UPLOAD_QUEUE_HIGH = 8 * Math.ceil((CHUNK_BYTES * 4) / 3);
+const UPLOAD_QUEUE_LOW = 2 * Math.ceil((CHUNK_BYTES * 4) / 3);
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -541,6 +545,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     // Set synchronously on the first frame: every later frame waits behind the hello, never races it.
     let hello: Promise<void> | undefined;
     let queue: Promise<void> = Promise.resolve();
+    // Upload chunks wait in `queue` for the disk; past UPLOAD_QUEUE_HIGH of them the socket stops reading, so the
+    // connection (and the sender's own buffer) holds the rest instead of this process's memory.
+    let queuedUpload = 0;
     ws.on("message", (data) => {
       let frame: TabFrame;
       try {
@@ -565,7 +572,18 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const failed = (error: unknown) => log("frame.failed", { error: (error as Error).message });
       // Storage calls and write-throughs run in arrival order; model streams and pings must not wait behind them.
       if (frame.t === "model" || frame.t === "ping" || frame.t === "model-abort") void hello.then(handle).catch(failed);
-      else queue = queue.then(handle).catch(failed);
+      else if (frame.t === "upload") {
+        const size = String(frame.data).length;
+        queuedUpload += size;
+        if (queuedUpload > UPLOAD_QUEUE_HIGH && !ws.isPaused) ws.pause();
+        queue = queue
+          .then(handle)
+          .catch(failed)
+          .finally(() => {
+            queuedUpload -= size;
+            if (queuedUpload < UPLOAD_QUEUE_LOW && ws.isPaused) ws.resume();
+          });
+      } else queue = queue.then(handle).catch(failed);
     });
     ws.on("close", () => {
       if (!state) return;
