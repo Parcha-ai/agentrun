@@ -23,7 +23,7 @@ import { ModelProxy } from "../../03-tab-to-cloud/pipe/model-proxy.ts";
 import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
-import { makeSourceRun } from "./source.ts";
+import { makeSourceRun, runStamp } from "./source.ts";
 import { homeAdoption } from "./home-adoption.ts";
 import { chooseHomePolicy, homeBody } from "./home-policy.ts";
 import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
@@ -117,7 +117,7 @@ if (onModal && !values["modal-image"]) throw new Error("--modal-image names the 
 
 const n = Number(values.universes);
 const training = values.workload === "train";
-const stamp = Date.now().toString(36);
+const stamp = runStamp();
 const log = jsonLog();
 const ledger = new Ledger(values.ledger!);
 const onResource = (kind: string, id: string, note?: string) => {
@@ -125,14 +125,18 @@ const onResource = (kind: string, id: string, note?: string) => {
   else if (kind === "token-removed") ledger.close("token", id);
   else if (kind === "mount") ledger.open("mount", id, note);
   else if (kind === "unmount") ledger.close("mount", id, note);
-  else if (kind === "run") ledger.open("run", id, note);
+  else if (kind === "run") {
+    // Listed for cleanup once made (its directory created under this serve's own id), never before.
+    ledger.open("run", id, note);
+    if (!createdRuns.includes(id)) createdRuns.push(id);
+  }
   else if (kind === "subdir") ledger.open("subdir", id);
   else if (kind === "subdir-deleted") ledger.close("subdir", id);
 };
 
 const control = await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY });
 
-/** Every run this serve makes, each listed before it exists, so a failure half way still deletes it. */
+/** Every run this serve made, listed when it is created (onResource "run"), so a failure later still deletes it. */
 const createdRuns: string[] = [];
 /** This serve's mount tokens, then its runs, except `handed` (the tab's server holds it). */
 async function removeTokensAndRuns(handed?: string): Promise<void> {
@@ -252,7 +256,6 @@ const feed = new Feed();
 const sourceLabel = "your browser tab";
 let source: RunRef = { disk, region, id: values.source ?? `d1-src-${stamp}` };
 if (!values.source) {
-  createdRuns.push(source.id);
   await makeSourceRun({
     control,
     ref: source,
@@ -332,10 +335,8 @@ const mv = new Multiverse({
   log,
   ...(forkAll ? { forkAll } : {}),
   ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true, resumeTimeoutMs: 600_000 } : {}),
-  onResource: (kind, id, note) => {
-    onResource(kind, id, note);
-    if (kind === "run") createdRuns.push(id);
-  },
+  // A fork's run is listed for cleanup by onResource, as the source's is.
+  onResource,
 });
 
 const takeovers: TakeoverReport[] = [];

@@ -90,3 +90,11 @@ test("a staged cleanup: the startup one until the whole one is ready, whichever 
   await Promise.all([late.cleanup(), late.cleanup()]);
   assert.deepEqual(ran, ["full"]);
 });
+
+test("each serve's runs carry a stamp of their own: two serves started in the same millisecond never share a run id", async () => {
+  const { runStamp } = await import("../source.ts");
+  const now = Date.now();
+  const stamps = new Set(Array.from({ length: 1000 }, () => runStamp(now)));
+  assert.equal(stamps.size, 1000);
+  for (const s of stamps) assert.match(s, new RegExp(`^${now.toString(36)}[0-9a-f]{8}$`));
+});

@@ -2,11 +2,18 @@
 // agent's options (the same store and conversation shape a tab's run has), a story entry admitted, and released, so its
 // run.json is `paused` with a seal. In the full demo the source is the run the tab or a VM was running, released by its
 // host before the fan-out.
+import { randomBytes } from "node:crypto";
 import { cp } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRunDir, mintMountToken, openDurableRun, readRunStatus, removeMountToken, type ArchilHost, type RunRecord, type RunRef } from "@parcha/pi-durable-disk";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "../../03-tab-to-cloud/agent.ts";
 import type { Control } from "./multiverse.ts";
+
+/**
+ * This serve's own name stem for the runs it makes (`d1-src-<stamp>`, `d1-<stamp>-u1`, ...): the time and 32 random bits,
+ * so two serves started in the same millisecond on one disk never share a run id (cleanup deletes only its own runs).
+ */
+export const runStamp = (now = Date.now()): string => `${now.toString(36)}${randomBytes(4).toString("hex")}`;
 
 export interface SourceOptions {
   readonly control: Control;
