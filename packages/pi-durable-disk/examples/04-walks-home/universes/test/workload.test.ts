@@ -54,6 +54,13 @@ test("train.py as the workload: a barrier per checkpoint, progress by machine, s
     assert.ok(logs.includes("train.end"));
 
     const b = start("machine B");
+    // Right after the resume starts, state.json names the new segment but no checkpoint of it: not training yet.
+    let started = null;
+    for (let i = 0; i < 100 && !(started && started.generation === 2); i++) {
+      await sleep(10);
+      started = await readTrainProgress(control, run, "u3");
+    }
+    if (started && started.generation === 2 && started.step === paused.steps_done) assert.equal(started.checkpointed, false);
     let onB = null;
     for (let i = 0; i < 200 && !(onB && onB.host === "machine B" && onB.step > paused.steps_done); i++) {
       await sleep(50);
@@ -61,6 +68,7 @@ test("train.py as the workload: a barrier per checkpoint, progress by machine, s
     }
     assert.ok(onB && onB.host === "machine B", "the resumed run names its machine");
     assert.equal(onB.generation, 2, "resumed at the next generation");
+    assert.equal(onB.checkpointed, true, "a checkpoint of the resumed segment, not its start");
     assert.ok(onB.step > paused.steps_done, "from where the last one stopped, not from 0");
     assert.ok(barriers > afterStop);
     await b.stop();

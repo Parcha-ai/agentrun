@@ -106,6 +106,11 @@ export interface Progress {
   readonly at: string;
   /** What the score means, when the workload says ("m along the course in 20 s"). */
   readonly unit?: string;
+  /**
+   * False while the writer's current segment has no checkpoint yet (a trainer that started, or resumed, and is still
+   * compiling): it says where the run is, not that it trains. Absent means it is a checkpoint.
+   */
+  readonly checkpointed?: boolean;
 }
 
 export const PROGRESS_FILE = "work/universe/progress.json";
@@ -489,13 +494,13 @@ export class Multiverse {
       await Promise.all(
         live.map(async (line) => {
           const p = await this.#progress(line.run!, line.spec!);
-          if (p && p.step > line.step) {
+          if (p && p.checkpointed !== false && p.step > line.step) {
             line.score = p.score;
             line.step = p.step;
             this.#o.emit({ t: "sample", at: this.#at(), id: line.id, score: p.score, progress: p.progress, cost: round(this.#cost(line)) });
           }
           // A checkpoint written by this line's placement means the universe trains here.
-          if (p && (line.status === "starting" || line.status === "takeover") && this.#ownCheckpoint(line, p)) {
+          if (p && p.checkpointed !== false && (line.status === "starting" || line.status === "takeover") && this.#ownCheckpoint(line, p)) {
             line.status = "training";
             line.generation = Math.max(line.generation, p.generation);
             this.#patch(line, { status: "training", startedAt: this.#at() });
@@ -646,7 +651,7 @@ export class Multiverse {
     const deadline = this.#now() + timeoutMs;
     while (this.#now() < deadline) {
       const p = await this.#progress(line.run!, line.spec!);
-      if (p && this.#ownCheckpoint(line, p)) {
+      if (p && p.checkpointed !== false && this.#ownCheckpoint(line, p)) {
         if (line.status === "takeover") await this.poll();
         return this.#now();
       }

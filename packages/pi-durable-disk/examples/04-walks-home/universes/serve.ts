@@ -368,7 +368,9 @@ if (values.auto) {
     // Each live machine's instance output: its open steps and timings ("running" lines) for the report.
     for (const line of mv.lines().filter((l) => l.machine && l.slot !== null)) {
       const out = await fleet.logs(mv.machine(line.id)!);
-      for (const l of out.split("\n").filter((x) => x.includes('"running"') || x.includes('"notice"') || x.includes("trainer.start"))) log("measure.instance", { line: line.id, out: l.slice(0, 600) });
+      for (const l of out.split("\n").filter((x) => x.includes('"running"') || x.includes('"notice"') || x.includes("trainer.start") || x.includes("train.") || x.includes("checkpoint."))) log("measure.instance", { line: line.id, out: l.slice(0, 600) });
+      // The trainer's own last words, for a run that did not do what it should.
+      log("measure.instance-tail", { line: line.id, tail: out.trim().split("\n").slice(-12).map((x) => x.slice(0, 300)) });
     }
     const collapse = await mv.collapse();
     log("measure.collapse", collapse);
