@@ -658,6 +658,8 @@ async function main() {
     });
 
     (window as any).__walks = { get app() { return app; }, state: pageState, commitDesign: () => app.draft.commit(), applyDesign, setPhase,
+      // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
+      sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
       kick: (a: number | number[], b: number, c?: number) => (Array.isArray(a) ? kick(a[0], a[1], b) : kick(a, b, c ?? 60)), stats: () => app.stats.snapshot(), resetSim: () => { closeArrival(); app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';

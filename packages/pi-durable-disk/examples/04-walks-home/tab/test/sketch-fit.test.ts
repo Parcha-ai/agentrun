@@ -57,3 +57,22 @@ test('the scale follows the pane, not the body: lengthening a leg does not resca
   sk.setLeg(0, { thigh: 0.4, shin: 0.4 });
   assert.equal(pxPerMetre(canvas), a);
 });
+
+test('geometry() puts a handle where a pointer must be to grab it, on a canvas with a border (its box is bigger than its content)', () => {
+  // the real sketch canvas: 578 x 768 of content inside a 1 px border, laid out at an offset in the page
+  const { canvas, fire } = fakeCanvas(578, 768);
+  canvas.getBoundingClientRect = () => ({ left: 10, top: 10, width: 579.6, height: 770 });
+  const sk = new Sketcher(canvas, defaultDesign(), () => {});
+  const press = (name: string) => {
+    const g = sk.geometry(), r = canvas.getBoundingClientRect();
+    const hd = g.handles.find((c) => c.name === name)!;
+    return { x: r.left + hd.x, y: r.top + hd.y, g, r };
+  };
+  // the pointer sits exactly on the nose handle, then moves to the x of a 0.55 m torso: the sketcher reads it as 0.55, whole millimetres of the pointer's pixel grid aside
+  const a = press('length');
+  const toX = a.r.left + a.g.width / 2 + (0.55 / 2) * a.g.px; // geometry's own centre, so the planner's target is where geometry says it is
+  fire('pointerdown', { x: a.x, y: a.y });
+  fire('pointermove', { x: Math.round(toX), y: a.y }); // a pointer lands on whole pixels
+  fire('pointerup', { x: Math.round(toX), y: a.y });
+  assert.equal(sk.get().torso.length, 0.55, 'a stroke aimed by geometry() lands on the grid value it aims at');
+});

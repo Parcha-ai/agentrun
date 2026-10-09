@@ -3,7 +3,8 @@
 // handle and a drag to where it must go; the recorder plays it, asks the page for the geometry again, and repeats until nothing
 // is left to draw. Planning from the page's own answer after every stroke keeps it right when a drag rounds or a clamp bites.
 
-import type { Design } from './design.ts';
+import { LIMITS, type Design } from './design.ts';
+import { goalHip, goalLength, goalReach } from './sketch.ts';
 
 export interface HandleGeometry { name: string; kind: string; i: number | null; x: number; y: number }
 export interface Geometry { px: number; width: number; height: number; design: Design; handles: HandleGeometry[] }
@@ -35,22 +36,26 @@ export function nextStroke(g: Geometry, target: Design): Stroke | null {
   const d = g.design, t = target;
   const { px, width: w, height: h } = g;
   const X = (m: number) => w / 2 + m * px, Y = (m: number) => h / 2 - m * px;
-  if (Math.abs(d.torso.length - t.torso.length) > TOL_M) {
+  // Aim at what the sketcher can end on (its grid, its limits), not at the raw target: a number between grid values would never be reached.
+  const length = goalLength(t.torso.length, LIMITS.torso.length), width = goalLength(t.torso.width, LIMITS.torso.width);
+  if (Math.abs(d.torso.length - length) > TOL_M) {
     const from = find(g, 'length');
-    return { handle: 'length', from, to: { x: X(t.torso.length / 2), y: from.y } };
+    return { handle: 'length', from, to: { x: X(length / 2), y: from.y } };
   }
-  if (Math.abs(d.torso.width - t.torso.width) > TOL_M) {
+  if (Math.abs(d.torso.width - width) > TOL_M) {
     const from = find(g, 'width');
-    return { handle: 'width', from, to: { x: from.x, y: Y(t.torso.width / 2) } };
+    return { handle: 'width', from, to: { x: from.x, y: Y(width / 2) } };
   }
-  for (let i = 0; i < d.legs.length; i++) {
-    if (Math.abs(d.legs[i].x - t.legs[i].x) > TOL_X) {
+  // pairs are matched by index; a pair the target does not have is left as it is (`undrawable` reports the difference)
+  for (let i = 0; i < d.legs.length && i < t.legs.length; i++) {
+    const hip = goalHip(t.legs[i].x);
+    if (Math.abs(d.legs[i].x - hip) > TOL_X) {
       const from = find(g, `hip${i}`);
-      return { handle: `hip${i}`, from, to: { x: X((t.legs[i].x * d.torso.length) / 2), y: from.y } };
+      return { handle: `hip${i}`, from, to: { x: X((hip * d.torso.length) / 2), y: from.y } };
     }
   }
-  for (let i = 0; i < d.legs.length; i++) {
-    const have = d.legs[i].thigh + d.legs[i].shin, want = t.legs[i].thigh + t.legs[i].shin;
+  for (let i = 0; i < d.legs.length && i < t.legs.length; i++) {
+    const have = d.legs[i].thigh + d.legs[i].shin, want = goalReach(t.legs[i].thigh + t.legs[i].shin);
     if (Math.abs(have - want) > TOL_M) {
       const from = find(g, `leg${i}`);
       return { handle: `leg${i}`, from, to: { x: from.x, y: Y(d.torso.width / 2 + want) } };
@@ -62,12 +67,17 @@ export function nextStroke(g: Geometry, target: Design): Stroke | null {
 /** What no stroke can change, between the sketch now and the target: the target's own numbers, for the report. */
 export function undrawable(d: Design, t: Design): string[] {
   const out: string[] = [];
+  // what the grid cannot draw: the sketcher ends on multiples of its step, so a target between them is reported, not retried
+  if (Math.abs(d.torso.length - t.torso.length) > 1e-6) out.push(`torso.length ${d.torso.length} vs ${t.torso.length} (drawn in steps of 0.01)`);
+  if (Math.abs(d.torso.width - t.torso.width) > 1e-6) out.push(`torso.width ${d.torso.width} vs ${t.torso.width} (drawn in steps of 0.01)`);
   if (d.torso.height !== t.torso.height) out.push(`torso.height ${d.torso.height} vs ${t.torso.height}`);
   if ((d.legDof ?? 2) !== (t.legDof ?? 2)) out.push(`legDof ${d.legDof ?? 2} vs ${t.legDof ?? 2}`);
   if (d.legs.length !== t.legs.length) out.push(`${d.legs.length} leg pairs vs ${t.legs.length}`);
   d.legs.forEach((l, i) => {
     const w = t.legs[i];
     if (!w) return;
+    if (Math.abs(l.x - w.x) > 1e-6) out.push(`legs[${i}].x ${l.x} vs ${w.x} (placed in steps of 0.05)`);
+    if (Math.abs(l.thigh + l.shin - (w.thigh + w.shin)) > 1e-6) out.push(`legs[${i}] reach ${+(l.thigh + l.shin).toFixed(3)} vs ${+(w.thigh + w.shin).toFixed(3)} (drawn in steps of 0.01)`);
     if (Math.abs(l.radius - w.radius) > 1e-9) out.push(`legs[${i}].radius ${l.radius} vs ${w.radius}`);
     // the leg handle keeps the thigh to shin ratio it finds, so only a different ratio is undrawable
     if (Math.abs(l.thigh / (l.thigh + l.shin) - w.thigh / (w.thigh + w.shin)) > 0.01) out.push(`legs[${i}] thigh:shin ${l.thigh}:${l.shin} vs ${w.thigh}:${w.shin}`);
