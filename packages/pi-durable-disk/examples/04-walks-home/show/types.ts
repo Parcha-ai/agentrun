@@ -97,6 +97,13 @@ export type Note = {
   basis?: "simulated" | "reported";
   /** `tab`: made by the page from what the tab app reported, so real even when the feed is the scripted one. */
   origin?: "tab";
+  /**
+   * What backs a claim that nothing was lost. Only an independent read-back may back one: `independent-readback` (work/ read back
+   * from the object store after the release, its digest equal to what the leaving host acknowledged and to what the pipe sealed) or
+   * `chaos-harness` (D0's kill rounds, checked by digest outside the pipe). `pipe-released` is the pipe's own digest of what it wrote
+   * under the claim: it is not a read-back of the disk and can never back a zero-loss claim, so it is a value only to be refused.
+   */
+  evidence?: "independent-readback" | "chaos-harness" | "pipe-released";
 };
 
 export type ShowState = {
@@ -130,7 +137,7 @@ export type ShowEvent =
   | { t: "universe"; at: number; id: string; patch: Partial<Omit<Universe, "id" | "samples" | "lastEventAt">> & { id?: never } }
   | { t: "sample"; at: number; id: string; score: number; progress?: number; cost?: number }
   | { t: "cost"; at: number; cost: Cost }
-  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean };
+  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] };
 
 /** What the page sends: a command, answered by an event stream, never by a return value. */
 export type ShowCommand =

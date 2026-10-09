@@ -12,6 +12,12 @@ const KEY_KINDS = new Set<Note["kind"]>(["kill", "takeover", "winner", "home", "
 const MAX_CHARS = 220;
 export const CAPTION_MS = 7000;
 
+/** Words that claim nothing was lost ("0 acknowledged writes lost", "zero loss", "nothing was lost", "no writes lost"). */
+const ZERO_LOSS = /\b(?:zero|no|0)\s+(?:acknowledged\s+)?(?:writes?|commits?|files?|data)\s+(?:were\s+)?lost\b|\bzero[- ]loss\b|\bnothing\s+(?:was\s+)?lost\b|\bwithout\s+losing\b/i;
+export const claimsZeroLoss = (text: string): boolean => ZERO_LOSS.test(text);
+/** The only evidence a measured zero-loss claim may cite: a read-back that does not go through the pipe being judged. */
+const INDEPENDENT = new Set<NonNullable<Note["evidence"]>>(["independent-readback", "chaos-harness"]);
+
 function caption(n: Note, source: ShowState["source"]): Caption {
   const flagged = n.measured === true;
   // Some drivers write "(measured)" in the text; the words are shown only through the tag, not twice.
@@ -20,19 +26,17 @@ function caption(n: Note, source: ShowState["source"]): Caption {
   const text = full.length > MAX_CHARS ? `${full.slice(0, MAX_CHARS - 1).trimEnd()}\u2026` : full;
   // What the agent says is quoted speech, not a number of ours: it is tagged AGENT, never measured or unmeasured.
   if (n.kind === "agent") return { text, tag: "agent", at: n.at };
-  const tag = !QUANTITY.test(full)
-    ? null
-    : n.basis !== undefined
-      ? n.basis
-      : n.origin === "tab"
-        ? flagged
-          ? "measured"
-          : "unmeasured"
-        : source === "scripted"
-          ? "scripted"
-          : flagged || said
-            ? "measured"
-            : "unmeasured";
+  // A claim that nothing was lost is measured only on independent evidence. The pipe's own digest of what it wrote (pipe.released) is
+  // not a read-back of the disk: a note that flags itself measured on that, or on nothing, is shown unmeasured.
+  const zeroLoss = claimsZeroLoss(full);
+  const backed = !zeroLoss || (n.evidence !== undefined && INDEPENDENT.has(n.evidence));
+  const measured = (flagged || said) && backed;
+  let tag: Caption["tag"];
+  if (!QUANTITY.test(full) && !zeroLoss) tag = null;
+  else if (n.basis !== undefined) tag = n.basis;
+  else if (n.origin === "tab") tag = flagged && backed ? "measured" : "unmeasured";
+  else if (source === "scripted") tag = "scripted";
+  else tag = measured ? "measured" : "unmeasured";
   return { text, tag, at: n.at };
 }
 

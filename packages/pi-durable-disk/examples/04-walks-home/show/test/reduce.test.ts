@@ -78,3 +78,10 @@ test("stays: a repeated stay.begin is ignored and a repeated stay.end keeps its 
 test("an empty state is the identity start", () => {
   assert.deepEqual(fold([]), emptyState());
 });
+
+test("a note keeps the evidence it cites through the reducer, so the caption rule can see it", () => {
+  const s = fold([{ t: "note", at: 1, kind: "switch", text: "0 writes lost", measured: true, evidence: "independent-readback" }, { t: "note", at: 2, kind: "switch", text: "plain" }]);
+  assert.equal(s.notes[0].evidence, "independent-readback");
+  assert.equal(s.notes[0].measured, true);
+  assert.ok(!("evidence" in s.notes[1]));
+});
