@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { defaultDesign, LIMITS, validateDesign, type Design } from '../src/design.ts';
 import { drawThumbnail, footRadiusM, pxPerMetre, Sketcher, SKETCH_BOLD, SKETCH_COLORS, thumbnailPx } from '../src/sketch.ts';
 import { buildMjcf } from '../src/mjcf.ts';
+import { pairColors } from '../src/colors.ts';
 import { fakeCanvas } from './fakecanvas.ts';
 
 /** The widest creature the sketcher allows: the widest torso, the longest legs, hips at both ends. */
@@ -129,8 +130,9 @@ test('draw() paints with the creature\'s colours: thigh and shin strokes, a tors
   sk.draw();
   const strokes = (c: string) => calls.filter((x) => x.fn === 'stroke' && x.stroke === c).length;
   const fills = (c: string) => calls.filter((x) => x.fn === 'fill' && x.fill === c).length;
-  assert.equal(strokes(SKETCH_COLORS.thigh), d.legs.length * 2, 'a thigh stroke per leg');
-  assert.equal(strokes(SKETCH_COLORS.shin), d.legs.length * 2, 'a shin stroke per leg');
+  const perPair = (part: 'thigh' | 'shin') => d.legs.reduce((n, _l, i) => n + strokes(pairColors(i)[part]), 0);
+  assert.equal(perPair('thigh'), d.legs.length * 2, 'a thigh stroke per leg');
+  assert.equal(perPair('shin'), d.legs.length * 2, 'a shin stroke per leg');
   assert.equal(fills(SKETCH_COLORS.torso), 1, 'the torso is filled with the torso colour');
   assert.equal(fills(SKETCH_COLORS.foot), d.legs.length * 2, 'every foot is filled with the foot colour');
 });
@@ -189,7 +191,7 @@ test('the thumbnail is the creature drawn the way the sketch draws it (same colo
   const fills = (c: string) => calls.filter((x) => x.fn === 'fill' && x.fill === c).length;
   assert.equal(fills(SKETCH_COLORS.torso), 1);
   assert.equal(fills(SKETCH_COLORS.foot), d.legs.length * 2);
-  assert.equal(calls.filter((x) => x.fn === 'stroke' && x.stroke === SKETCH_COLORS.thigh).length, d.legs.length * 2);
+  assert.equal(d.legs.reduce((n, _l, i) => n + calls.filter((x) => x.fn === 'stroke' && x.stroke === pairColors(i).thigh).length, 0), d.legs.length * 2, 'the thumbnail uses the pair colours too');
   assert.equal(calls.filter((x) => x.fn === 'stroke' && x.stroke === '#2d5fb3').length, 0, 'no handle rings');
   assert.equal(calls.filter((x) => x.fn === 'fillText').length, 0, 'the words live in the page, not in the picture');
 });
@@ -234,5 +236,19 @@ test('every leg ring of the largest bodies fits on the pane, even a short one: t
       const [x, y, rad] = r.args as number[], edge = rad + 2; // half the 4 px stroke
       assert.ok(x - edge >= 0 && x + edge <= w && y - edge >= 0 && y + edge <= h, `${w}x${h}: ring at ${x.toFixed(0)},${y.toFixed(0)} radius ${rad.toFixed(1)} is on the pane`);
     }
+  }
+});
+
+test('the sketch draws each leg pair in that pair\'s colours (thigh and shin), the same table the 3D body uses', () => {
+  const d = defaultDesign();
+  d.legs.push({ x: 0, thigh: 0.2, shin: 0.2, radius: 0.02 });
+  const { canvas, calls } = recordingCanvas(700, 700);
+  const sk = new Sketcher(canvas, d, () => {});
+  calls.length = 0; // the constructor drew once already
+  sk.draw();
+  const strokesIn = (c: string) => calls.filter((x) => x.fn === 'stroke' && x.stroke === c).length;
+  for (let i = 0; i < 3; i++) {
+    assert.equal(strokesIn(pairColors(i).thigh), 2, `pair ${i}: two thighs in its colour`);
+    assert.equal(strokesIn(pairColors(i).shin), 2, `pair ${i}: two shins in its colour`);
   }
 });
