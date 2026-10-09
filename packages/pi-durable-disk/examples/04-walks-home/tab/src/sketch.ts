@@ -8,9 +8,44 @@ import { clampDesign } from './rules.ts';
 const pxPerMetre = (c: HTMLCanvasElement) => Math.max(140, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / 1.6)); // pixels per metre
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
-type Handle =
+export type Handle =
   | { kind: 'length' } | { kind: 'width' }
   | { kind: 'hip'; i: number } | { kind: 'leg'; i: number };
+
+export const handleName = (h: Handle) => ('i' in h ? `${h.kind}${h.i}` : h.kind);
+
+/** Where each handle is, in metres from the torso centre (+x nose, +y the creature's left). Pure: the sketcher draws and hit-tests these, and the stroke planner aims at them. */
+export function handlePositions(design: Design): { h: Handle; x: number; y: number }[] {
+  const { torso, legs } = design;
+  const out: { h: Handle; x: number; y: number }[] = [
+    { h: { kind: 'length' }, x: torso.length / 2, y: 0 },
+    { h: { kind: 'width' }, x: 0, y: torso.width / 2 },
+  ];
+  legs.forEach((l, i) => {
+    out.push({ h: { kind: 'hip', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 });
+    out.push({ h: { kind: 'leg', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 + l.thigh + l.shin });
+  });
+  return out;
+}
+
+/** Drawn values snap to a grid: lengths to 1 cm, a hip's place along the torso to 5% of its half length. A pointer lands on whole screen pixels (one pixel is a few millimetres), so without a grid a stroke could never hit the number it aims at. */
+export const SNAP_LENGTH_M = 0.01;
+export const SNAP_HIP = 0.05;
+const snap = (v: number, step: number) => round(Math.round(v / step) * step);
+
+/** What dragging a handle to (x, y) metres does to the design, in place. The one place the drag rules live. */
+export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
+  if (h.kind === 'length') d.torso.length = round(clamp(snap(2 * x, SNAP_LENGTH_M), LIMITS.torso.length));
+  else if (h.kind === 'width') d.torso.width = round(clamp(snap(2 * y, SNAP_LENGTH_M), LIMITS.torso.width));
+  else if (h.kind === 'hip') d.legs[h.i].x = round(clamp(snap((2 * x) / d.torso.length, SNAP_HIP), [-1, 1]));
+  else {
+    const l = d.legs[h.i];
+    const total = clamp(snap(y - d.torso.width / 2, SNAP_LENGTH_M), [LIMITS.thigh[0] + LIMITS.shin[0], LIMITS.thigh[1] + LIMITS.shin[1]]);
+    const ratio = l.thigh / (l.thigh + l.shin);
+    l.thigh = round(clamp(total * ratio, LIMITS.thigh));
+    l.shin = round(clamp(total * (1 - ratio), LIMITS.shin));
+  }
+}
 
 export class Sketcher {
   private design: Design;
@@ -76,18 +111,7 @@ export class Sketcher {
     return [(e.clientX - r.left - r.width / 2) / this.px, -(e.clientY - r.top - r.height / 2) / this.px];
   }
 
-  private handles(): { h: Handle; x: number; y: number }[] {
-    const { torso, legs } = this.design;
-    const out: { h: Handle; x: number; y: number }[] = [
-      { h: { kind: 'length' }, x: torso.length / 2, y: 0 },
-      { h: { kind: 'width' }, x: 0, y: torso.width / 2 },
-    ];
-    legs.forEach((l, i) => {
-      out.push({ h: { kind: 'hip', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 });
-      out.push({ h: { kind: 'leg', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 + l.thigh + l.shin });
-    });
-    return out;
-  }
+  private handles(): { h: Handle; x: number; y: number }[] { return handlePositions(this.design); }
 
   private hit(x: number, y: number): Handle | null {
     let best: Handle | null = null, bd = (14 / this.px) ** 2;
@@ -107,18 +131,17 @@ export class Sketcher {
   private move(e: PointerEvent): void {
     const [x, y] = this.pos(e);
     if (!this.drag) { this.hover = this.hit(x, y); this.canvas.style.cursor = this.hover ? 'grab' : 'default'; this.draw(); return; }
-    const d = this.design, h = this.drag;
-    if (h.kind === 'length') d.torso.length = round(clamp(2 * x, LIMITS.torso.length));
-    else if (h.kind === 'width') d.torso.width = round(clamp(2 * y, LIMITS.torso.width));
-    else if (h.kind === 'hip') d.legs[h.i].x = round(clamp((2 * x) / d.torso.length, [-1, 1]));
-    else {
-      const l = d.legs[h.i];
-      const total = clamp(y - d.torso.width / 2, [LIMITS.thigh[0] + LIMITS.shin[0], LIMITS.thigh[1] + LIMITS.shin[1]]);
-      const ratio = l.thigh / (l.thigh + l.shin);
-      l.thigh = round(clamp(total * ratio, LIMITS.thigh));
-      l.shin = round(clamp(total * (1 - ratio), LIMITS.shin));
-    }
+    applyDrag(this.design, this.drag, x, y);
     this.changed();
+  }
+
+  /** Where the handles are on the canvas, in CSS pixels from its top-left corner: what a pointer must press to grab them. */
+  geometry(): { px: number; width: number; height: number; design: Design; handles: { name: string; kind: string; i: number | null; x: number; y: number }[] } {
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight, px = this.px;
+    return {
+      px, width: w, height: h, design: this.get(),
+      handles: this.handles().map((c) => ({ name: handleName(c.h), kind: c.h.kind, i: 'i' in c.h ? c.h.i : null, x: w / 2 + c.x * px, y: h / 2 - c.y * px })),
+    };
   }
 
   /** Per-pair numeric edit from the side panel. */
