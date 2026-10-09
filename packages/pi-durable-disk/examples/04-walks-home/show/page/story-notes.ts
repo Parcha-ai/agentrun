@@ -43,7 +43,7 @@ export const visibleTag = (tag: Caption["tag"], debug: boolean): Caption["tag"] 
 
 /**
  * The pipe's switch line in the clean view's words: seconds, not milliseconds, and the tab is "your browser" (cold view 6: "Switched to This tab in
- * 1138 ms (timed by the server)" read as a contradiction beside "offline"). It is still the server's measurement; only the wording changes.
+ * 1138 ms (timed by the server)" read as developer output). It is still the server's measurement; only the wording changes.
  */
 export function plainSwitch(n: Note): Note {
   if (n.kind !== "switch") return n;

@@ -70,8 +70,6 @@ export function captionFor(state: ShowState, now: number): Caption | null {
 export class CaptionDesk {
   private shown = new Set<string>();
   private current: { caption: Caption; shownAt: number; group?: string; urgent?: boolean } | undefined;
-  /** Notes stamped before this are history: the network went off after them. */
-  private barrier = -Infinity;
   private lastNow = 0;
   private opts: { minHoldMs: number; maxHoldMs: number; staleMs: number; lagMs: number };
 
@@ -85,28 +83,17 @@ export class CaptionDesk {
     return this.current.caption;
   }
 
-  /**
-   * The network went off at `at`: what was said before it is no longer news, and what was still waiting is dropped, so the caption after a cut is
-   * about the cut (a switch time shown beside "offline" reads as a contradiction).
-   */
-  cut(at: number): void {
-    this.barrier = at;
-    this.current = undefined;
-  }
-
   /** `yieldSlot`: something open-ended (the setup counter) wants the slot, so a caption that has had its time and has nothing behind it gives way. */
   update(state: ShowState, now: number, options: { yieldSlot?: boolean } = {}): Caption | null {
     // A clock that went backwards is a new timeline (a reset, a retake): nothing of the old one is still on screen or already seen.
     if (now < this.lastNow) {
       this.current = undefined;
-      this.barrier = -Infinity;
       this.shown.clear();
     }
     this.lastNow = now;
     const waiting: { n: Note; key: string }[] = [];
     for (const n of state.notes) {
       if (n.at > now) break;
-      if (n.at < this.barrier) continue;
       if (now - n.at > this.opts.staleMs) continue;
       if (n.kind === "agent" || (!KEY_KINDS.has(n.kind) && n.measured !== true)) continue;
       const key = `${n.at}|${n.kind}|${n.text}`;
