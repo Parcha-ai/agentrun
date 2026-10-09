@@ -43,7 +43,7 @@ export class TrainingState {
   /** The label on the creature, in plain words. `policyName` names a stand-in when there is one. */
   label(policyName: string): string {
     return this.state === 'untrained' ? 'untrained: random moves'
-      : this.state === 'learning' ? `learning: checkpoint ${this.checkpointN}`
+      : this.state === 'learning' ? `learning: version ${this.checkpointN}`
       : this.state === 'trained' ? 'trained'
       : `${policyName} (not trained)`;
   }
