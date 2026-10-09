@@ -265,6 +265,8 @@ export class Multiverse {
   #polling = false;
   #ticks = 0;
   #phase: "idle" | "forking" | "running" | "collapsed" | "home" | "closed" = "idle";
+  /** The collapse in progress or done, so home can follow it. */
+  #collapsing: Promise<CollapseReport> | null = null;
   /** Spend of machines a line used and lost before it held its run (they are no longer any line's). */
   #retiredCost = 0;
   /** Set when the fan-out was asked for; cleared once every universe trained (its note is sent then). */
@@ -674,7 +676,13 @@ export class Multiverse {
    * Keep one universe (the best score unless named) and seal the rest: each loser's run is drained and sealed and its
    * machine deleted; unused spares are deleted.
    */
-  async collapse(winnerId?: string): Promise<CollapseReport> {
+  collapse(winnerId?: string): Promise<CollapseReport> {
+    const p = this.#collapse(winnerId);
+    this.#collapsing = p;
+    return p;
+  }
+
+  async #collapse(winnerId?: string): Promise<CollapseReport> {
     if (this.#phase !== "running") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}`);
     const t0 = this.#now();
     const live = [...this.#lines.values()].filter((l) => l.slot !== null && l.placed && (l.status === "training" || l.status === "starting"));
@@ -732,6 +740,10 @@ export class Multiverse {
     const w = [...this.#lines.values()].find((l) => l.status === "winner");
     if (!w?.placed || w.ended !== null) throw new MultiverseError("NO_WINNER", "no winner holds a run to bring home");
     this.#phase = "home";
+    // Its machine goes away on purpose now: the poll must not read that as a death and take the winner over.
+    w.leaving = true;
+    // The collapse finishes (the losers sealed, its note said) before the stage hears the winner leave.
+    await this.#collapsing?.catch(() => undefined);
     const t0 = this.#now();
     this.#o.emit({ t: "place", at: this.#at(), place: { where: "moving", to: target.label, host: w.machine!.label }, env: null });
     this.#note("switch", `Universe ${w.spec!.id} is going home to ${target.label}.`);
