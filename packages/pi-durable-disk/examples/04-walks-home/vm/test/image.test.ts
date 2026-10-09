@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { vmImageCommands } from "../image.ts";
-import { modalVmEnvironment } from "../modal-cloud.ts";
+import { modalGpuEnvironment, modalVmEnvironment } from "../modal-cloud.ts";
 
 test("the image removes the base image's uid-1000 user before the run user is created, and every command is a RUN", () => {
   const commands = vmImageCommands(1000, 1000);
@@ -32,4 +32,20 @@ test("without archil the recipe has no FUSE or archil step and everything else i
   assert.equal(without.some((c) => c.includes("archil")), false);
   assert.deepEqual(all.filter((c) => !c.includes("archil.deb")), without);
   assert.equal(all.length - without.length, 1);
+});
+
+test("the GPU environment is a remote one (the agent runs through the pipe) and names its GPU", () => {
+  const gpu = modalGpuEnvironment("H100");
+  assert.equal(gpu.id, "modal-gpu");
+  assert.equal(gpu.kind, "remote");
+  assert.match(gpu.detail ?? "", /1x H100/);
+});
+
+test("the desktop layer is last, so the layers above it stay cached, and pins its browser", () => {
+  const plain = vmImageCommands(1000, 1000);
+  const withDesktop = vmImageCommands(1000, 1000, { desktop: true });
+  assert.deepEqual(withDesktop.slice(0, plain.length), plain);
+  assert.ok(withDesktop.length > plain.length);
+  assert.match(withDesktop.join("\n"), /playwright@\d+\.\d+\.\d+ install --with-deps chromium/);
+  assert.match(withDesktop.join("\n"), /--start-maximized/);
 });
