@@ -116,14 +116,17 @@ export async function relayViewer(opts: {
     let generation = 0;
     let lastFiles = "";
     let streaming: AbortController | undefined;
+    /** The host's events stream ended or failed (its front was not up yet, the proxy dropped it): open it again. */
+    let reopen = false;
     while (!abort.signal.aborted) {
       try {
         const record = await readRunStatus(control, ref.id);
         const via = opts.serve?.();
         const serve = via?.url ?? (typeof record?.holder?.serve === "string" ? record.holder.serve : undefined);
         const dialer = opts.dialer();
-        if (record && record.generation !== generation && record.status === "running" && (serve || dialer)) {
+        if (record && (record.generation !== generation || reopen) && record.status === "running" && (serve || dialer)) {
           generation = record.generation;
+          reopen = false;
           send({ t: "placement", placement: { where: "cloud", host: opts.label(), generation, env: opts.env() } });
           streaming?.abort();
           const stream = (streaming = new AbortController());
@@ -140,7 +143,11 @@ export async function relayViewer(opts: {
                 else if (event === "events") send({ t: "event", event: tag({ kind: "events", events: JSON.parse(data) }) });
               },
               via?.token,
-            ).catch((error) => opts.log("cloud.events-ended", { run: ref.id, error: (error as Error).message }));
+            )
+              .catch((error) => opts.log("cloud.events-ended", { run: ref.id, error: (error as Error).message }))
+              .finally(() => {
+                if (!stream.signal.aborted) reopen = true;
+              });
           }
         }
         const listing = await control.listObjects(`runs/${ref.id}/work/`, { recursive: true });
@@ -165,7 +172,7 @@ export async function relayViewer(opts: {
         opts.log("cloud.view-failed", { run: ref.id, error: (error as Error).message });
       }
       // Faster until the host's events stream: a viewer waits for a new host to show up.
-      await new Promise((r) => setTimeout(r, streaming ? 1_500 : 400));
+      await new Promise((r) => setTimeout(r, streaming && !reopen ? 1_500 : 500));
     }
   })();
   return () => abort.abort();

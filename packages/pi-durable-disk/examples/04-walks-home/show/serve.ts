@@ -2,6 +2,7 @@
 // feed at /api/*. The feed is the scripted player unless SHOW_API names a live one, which is proxied untouched.
 // Every response carries COOP/COEP/CORP: Wasmer and MuJoCo WASM need cross-origin isolation, and an iframe document must
 // itself satisfy the parent's COEP, so the headers are set on the tab app's files too.
+//   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
 import { createReadStream, existsSync, statSync } from "node:fs";
@@ -71,18 +72,34 @@ async function body(req: IncomingMessage): Promise<string> {
 }
 
 const clients = new Set<ServerResponse>();
+// The stage's model of the agent's disk for the tab's storage requests: paths to bytes, durable for the life of the
+// server, emptied by a `reset` so a new take starts with a fresh disk. A live driver replaces this with the real disk.
+const disk = new Map<string, Buffer>();
+const DISK_PATH = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+){0,3}$/;
+
+async function bytesBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > limit) throw new Error("body too large");
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 let player = newPlayer();
 
-function newPlayer(): ScenarioPlayer {
-  const p = new ScenarioPlayer({ autoKillAfter: autoKill });
+function newPlayer(start = START, paused = false): ScenarioPlayer {
+  const p = new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   p.subscribe((event) => {
     const id = p.events.length - 1;
     for (const c of clients) c.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
   });
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();
-  if (START > 0) p.advance(START * 1000);
-  p.start(SPEED);
+  if (start > 0) p.advance(start * 1000);
+  if (!paused) p.start(SPEED);
   return p;
 }
 
@@ -114,6 +131,25 @@ const server = createServer(async (req, res) => {
   const path = url.pathname;
   try {
     if (path.startsWith("/api/")) {
+      if (path.startsWith("/api/disk/")) {
+        const key = decodeURIComponent(path.slice("/api/disk/".length));
+        if (!DISK_PATH.test(key) || key.split("/").includes("..")) return sendJson(res, 400, { error: "bad path" });
+        if (req.method === "PUT") {
+          disk.set(key, await bytesBody(req, 16 * 1024 * 1024));
+          return sendJson(res, 200, { ok: true, bytes: disk.get(key)!.length });
+        }
+        if (req.method === "GET") {
+          const hit = disk.get(key);
+          // 204, not 404: a first read of a file that does not exist yet is normal and must not log a console error.
+          if (!hit) {
+            res.statusCode = 204;
+            return void res.end();
+          }
+          res.setHeader("content-type", "application/octet-stream");
+          return void res.end(hit);
+        }
+        return sendJson(res, 405, { error: "GET or PUT" });
+      }
       if (UPSTREAM) return await proxy(req, res, path + url.search);
       if (path === "/api/state" && req.method === "GET") {
         res.setHeader("x-last-event-id", String(player.events.length - 1));
@@ -129,11 +165,22 @@ const server = createServer(async (req, res) => {
         req.on("close", () => clients.delete(res));
         return;
       }
+      // Dev only, scripted feed only: restart the script at `seconds` (used by scripts/storyboard.mjs for stills).
+      if (path === "/api/dev/seek" && req.method === "POST") {
+        const { seconds, paused } = JSON.parse(await body(req)) as { seconds: number; paused?: boolean };
+        player.stop();
+        // `paused` freezes the script at exactly `seconds`, so a still shows the moment it was asked for.
+        player = newPlayer(Number(seconds) || 0, paused === true);
+        for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
+        return sendJson(res, 200, { ok: true });
+      }
       if (path === "/api/command" && req.method === "POST") {
         const cmd = JSON.parse(await body(req)) as ShowCommand;
         if (cmd.t === "reset") {
           player.stop();
-          player = newPlayer();
+          disk.clear();
+          // A reset starts the script over at 0:00; SHOW_START only positions the first boot.
+          player = newPlayer(0);
           for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
           return sendJson(res, 200, { ok: true });
         }

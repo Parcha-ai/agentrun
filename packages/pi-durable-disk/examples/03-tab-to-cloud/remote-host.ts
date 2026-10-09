@@ -4,9 +4,11 @@
 // the pipe. The server reaches it, not the other way round: it listens for one WebSocket with its bearer token, the
 // server's first frame there is the invitation (which run, as which tab, for which switch), and from then on that
 // socket is a tab's connection to the pipe. It exits when the pipe lets it go.
-//   node remote-host.ts --port 8080 --token-file F --work DIR
+//   node remote-host.ts --port 8080 --token-file F [--work DIR]   (default: work/ in the home of the user it runs as)
 //   DEMO_ENV_LABEL, DEMO_ENV_CLASS: how this host's notice names it (host-probe.ts)
 import { readFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { timingSafeEqual, createHash } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -23,7 +25,7 @@ import type { PipeFrame } from "./wire.ts";
 /** The server's first frame on the socket. */
 export type Invite = { t: "invite"; run: string; token: string; tab: string; switchId?: string };
 
-const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: "/home/pda/work" } } });
+const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: join(homedir(), "work") } } });
 const log = (event: string, data: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 const token = readFileSync(values["token-file"]!, "utf8").trim();
 const expected = createHash("sha256").update(`Bearer ${token}`).digest();

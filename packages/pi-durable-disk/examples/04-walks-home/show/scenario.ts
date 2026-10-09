@@ -25,6 +25,8 @@ export type ScenarioOptions = {
   spares?: number;
   /** Fake prices in USD per hour, to give the cost meter plausible numbers. They are not quotes. */
   rates?: { sandbox: number; vm: number; gpu: number };
+  /** Operator mode: nothing advances by itself; `switch`, `fanout`, `collapse` and `kill` commands drive the run. */
+  operator?: boolean;
   /** Wall-clock ms of time 0 (default Date.now()). */
   origin?: number;
 };
@@ -81,6 +83,7 @@ export class ScenarioPlayer {
   private started = false;
   private spent = 0;
   private costAt = 0;
+  private costRunning = false;
 
   constructor(options: ScenarioOptions = {}) {
     this.opts = {
@@ -92,6 +95,7 @@ export class ScenarioPlayer {
       autoKillAfter: options.autoKillAfter === undefined ? 50 : options.autoKillAfter,
       takeoverSeconds: options.takeoverSeconds ?? 2,
       killedHoldMs: options.killedHoldMs ?? 700,
+      operator: options.operator ?? false,
       checkpointSeconds: options.checkpointSeconds ?? 5,
       universes: options.universes ?? 8,
       spares: options.spares ?? 2,
@@ -129,11 +133,13 @@ export class ScenarioPlayer {
     if (this.started) return;
     this.started = true;
     const o = this.opts;
-    this.emit({ t: "run", at: 0, run: "walks-home-demo", origin: o.origin, environments: ENVIRONMENTS });
+    this.emit({ t: "run", at: 0, run: "walks-home-demo", origin: o.origin, environments: ENVIRONMENTS, scoreUnit: "m walked in 10 s", source: "scripted" });
     this.stayBegin("run", "Browser tab", "tab", 0, undefined);
     this.emit({ t: "place", at: 0, place: { where: "tab", host: "Browser tab" }, env: "tab" });
     this.note("story", "You sketch a creature. Its design is saved in SQLite on the agent's disk.");
+    this.costRunning = true;
     this.costTick();
+    if (o.operator) return;
     const tDay = o.tabSeconds * 1000;
     const tVm = tDay + o.sandboxSeconds * 1000;
     const tFan = tVm + o.vmSeconds * 1000;
@@ -172,6 +178,12 @@ export class ScenarioPlayer {
       const place = { where, host: target.label } as Place;
       this.emit({ t: "place", at: this.clock, place, env });
       this.note("switch", `You are now running in ${target.label}. (handover ${ms} ms)`);
+      // Leaving home bills again: a stopped ticker restarts with the new place.
+      if (!this.costRunning) {
+        this.costRunning = true;
+        this.costAt = this.clock;
+        this.costTick();
+      }
     });
   }
 
@@ -185,7 +197,8 @@ export class ScenarioPlayer {
       const id = i < o.universes ? `u${i + 1}` : `spare${i - o.universes + 1}`;
       const isSpare = i >= o.universes;
       const host = `Modal GPU ${isSpare ? "spare " + (i - o.universes + 1) : i + 1} (L40S)`;
-      const peak = 38 + this.rand() * 40 + (i === 5 ? 28 : 0);
+      // Peak score in metres walked in 10 s: a good gait covers a few metres.
+      const peak = 1.2 + this.rand() * 2.4 + (i === 5 ? 1.6 : 0);
       this.sims.set(id, { peak, progress: 0, lastAt: 0 });
       const when = this.fanOutAt + i * 220;
       this.at(when, () => {
@@ -200,6 +213,7 @@ export class ScenarioPlayer {
       });
     }
     const trainStart = this.fanOutAt + total * 220 + 2200;
+    if (o.operator) return;
     if (o.autoKillAfter !== null) {
       this.at(trainStart + o.autoKillAfter * 1000, () => {
         const victim = this.pickVictim();
@@ -236,9 +250,9 @@ export class ScenarioPlayer {
     sim.lastAt = this.clock;
     sim.progress = Math.min(1, sim.progress + dt / (this.opts.trainSeconds * 1000));
     const curve = sim.peak * (1 - Math.exp(-3.2 * sim.progress));
-    const score = Math.max(0, curve + (this.rand() - 0.5) * 5);
+    const score = Math.max(0, curve + (this.rand() - 0.5) * 0.25);
     const rate = this.opts.rates.gpu / 3600;
-    this.emit({ t: "sample", at: this.clock, id, score: Math.round(score * 10) / 10, progress: sim.progress, cost: Math.round((u.cost + rate * (dt / 1000)) * 10000) / 10000 });
+    this.emit({ t: "sample", at: this.clock, id, score: Math.round(score * 100) / 100, progress: sim.progress, cost: Math.round((u.cost + rate * (dt / 1000)) * 10000) / 10000 });
     this.at(this.clock + this.opts.checkpointSeconds * 1000, () => this.checkpoint(id));
   }
 
@@ -283,11 +297,13 @@ export class ScenarioPlayer {
     return true;
   }
 
-  private collapse(): void {
+  /** Keep one universe (the best score, or `pick`) and seal the rest; false when there is nothing to collapse or `pick` is not live. */
+  private collapse(pick?: string): boolean {
     const live = Object.values(this.st.universes).filter((u) => u.slot !== null && (u.status === "training" || u.status === "takeover"));
-    if (live.length === 0) return;
+    if (live.length === 0) return false;
+    if (pick !== undefined && !live.some((u) => u.id === pick)) return false;
     for (const u of live) this.checkpoint(u.id);
-    const winner = live.reduce((a, b) => ((b.score ?? 0) > (a.score ?? 0) ? b : a));
+    const winner = pick !== undefined ? live.find((u) => u.id === pick)! : live.reduce((a, b) => ((b.score ?? 0) > (a.score ?? 0) ? b : a));
     for (const u of live) {
       if (u.id === winner.id) continue;
       const open = this.openStay(`u:${u.id}`);
@@ -299,13 +315,20 @@ export class ScenarioPlayer {
     }
     this.emit({ t: "universe", at: this.clock, id: winner.id, patch: { status: "winner" } });
     this.note("winner", `${winner.host} wins with ${winner.score}. The rest are sealed.`);
-    this.at(this.clock + 3000, () => {
-      const open = this.openStay(`u:${winner.id}`);
-      if (open) this.emit({ t: "stay.end", at: this.clock, id: open, endedBy: "switch" });
-      this.moveRun("home", true);
-    });
-    this.at(this.clock + 6500, () => this.note("home", "The policy is a few hundred KB. It walks in the tab, offline, and gets up when kicked."));
-    this.at(this.clock + 9000, () => this.note("home", "The agent opens its own SQLite memory: every machine it ran on."));
+    if (!this.opts.operator) this.at(this.clock + 3000, () => this.goHome());
+    return true;
+  }
+
+  /** The winner's machine hands the run back to the tab; the policy and memory story lines follow. */
+  private goHome(): boolean {
+    const winner = Object.values(this.st.universes).find((u) => u.status === "winner");
+    if (!winner || this.st.place.where === "moving" || this.st.currentEnv === "home") return false;
+    const open = this.openStay(`u:${winner.id}`);
+    if (open) this.emit({ t: "stay.end", at: this.clock, id: open, endedBy: "switch" });
+    this.moveRun("home", true);
+    this.at(this.clock + 3500, () => this.note("home", "The policy is a few hundred KB. It walks in the tab, offline, and gets up when kicked."));
+    this.at(this.clock + 6000, () => this.note("home", "The agent opens its own SQLite memory: every machine it ran on."));
+    return true;
   }
 
   /** Cost integrates the fake hourly prices of whatever is live, once per scenario second. */
@@ -319,7 +342,9 @@ export class ScenarioPlayer {
     this.spent += (perHour / 3600) * dt;
     const cost: Cost = { usd: Math.round(this.spent * 10000) / 10000, ratePerMin: Math.round((perHour / 60) * 10000) / 10000 };
     this.emit({ t: "cost", at: this.clock, cost });
-    this.at(this.clock + 1000, () => this.costTick());
+    // Once the run is home nothing is billed, so the ticker ends and the script's last event is its last story line.
+    this.costRunning = !(p.where === "home" && perHour === 0);
+    if (this.costRunning) this.at(this.clock + 1000, () => this.costTick());
   }
 
   /** Run every job due by scenario time `to` (ms), in order. */
@@ -334,11 +359,34 @@ export class ScenarioPlayer {
   }
 
   command(cmd: ShowCommand): { ok: boolean; message?: string } {
+    // A command can be the first thing a caller does: the script must exist before it is steered.
+    this.begin();
     if (cmd.t === "kill") return this.kill(cmd.universe) ? { ok: true } : { ok: false, message: `${cmd.universe} is not running` };
+    const o = this.opts;
     if (cmd.t === "switch") {
-      if (this.st.place.where === "universes") return { ok: false, message: "the run is in its universes; it comes home when one wins" };
+      if (!ENVIRONMENTS.some((e) => e.id === cmd.to)) return { ok: false, message: `no environment ${cmd.to}` };
+      if (this.st.place.where === "moving") return { ok: false, message: "the run is already moving" };
+      if (cmd.to === "gpu") return { ok: false, message: "the universes start with fanout" };
+      if (this.st.place.where === "universes") {
+        const done = Object.values(this.st.universes).some((u) => u.status === "winner");
+        if (!done) return { ok: false, message: "the run is in its universes; it comes home when one wins" };
+        if (cmd.to !== "home" || !o.operator) return { ok: false, message: "the run comes home from its winner" };
+        return this.goHome() ? { ok: true } : { ok: false, message: "already home" };
+      }
+      if (this.st.currentEnv === cmd.to) return { ok: false, message: `already in ${cmd.to}` };
       this.moveRun(cmd.to, false);
       return { ok: true };
+    }
+    if (cmd.t === "fanout") {
+      if (!o.operator) return { ok: false, message: "the scripted feed runs its own fan-out" };
+      if (this.st.place.where !== "cloud" && this.st.place.where !== "tab") return { ok: false, message: "the run is not at rest" };
+      if (Object.keys(this.st.universes).length > 0) return { ok: false, message: "the universes already ran" };
+      this.fanOut();
+      return { ok: true };
+    }
+    if (cmd.t === "collapse") {
+      if (!o.operator) return { ok: false, message: "the scripted feed runs its own collapse" };
+      return this.collapse(cmd.winner) ? { ok: true } : { ok: false, message: cmd.winner ? `${cmd.winner} is not live` : "no live universes" };
     }
     return { ok: false, message: "reset is handled by the server" };
   }

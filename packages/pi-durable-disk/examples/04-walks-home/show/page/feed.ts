@@ -53,8 +53,10 @@ export class Feed {
     };
   }
 
+  /** A refusal carries its reason as `message` (scripted feed) or `error` (D1's driver); both are shown the same way. */
   async command(cmd: ShowCommand): Promise<{ ok: boolean; message?: string }> {
     const res = await fetch("/api/command", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(cmd) });
-    return (await res.json()) as { ok: boolean; message?: string };
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; error?: string };
+    return { ok: res.ok && body.ok !== false, message: body.message ?? body.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
   }
 }

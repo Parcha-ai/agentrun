@@ -3,6 +3,7 @@ import type { Place, ShowEvent, ShowState, Universe } from "./types.ts";
 
 export function emptyState(): ShowState {
   return {
+    source: "live",
     origin: 0,
     now: 0,
     run: "",
@@ -11,6 +12,7 @@ export function emptyState(): ShowState {
     stays: [],
     cost: { usd: 0, ratePerMin: 0 },
     notes: [],
+    scoreUnit: "",
     environments: [],
     currentEnv: null,
   };
@@ -38,7 +40,7 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
   const now = Math.max(state.now, event.at);
   switch (event.t) {
     case "run":
-      return { ...state, now, run: event.run, origin: event.origin, environments: event.environments };
+      return { ...state, now, run: event.run, origin: event.origin, environments: event.environments, scoreUnit: event.scoreUnit ?? "", source: event.source ?? "live" };
     case "place":
       return { ...state, now, place: event.place, currentEnv: event.env };
     case "stay.begin": {
@@ -73,7 +75,7 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
     case "cost":
       return { ...state, now, cost: event.cost };
     case "note":
-      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text }].slice(-200) };
+      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}) }].slice(-200) };
   }
 }
 
@@ -92,7 +94,10 @@ export function spares(state: ShowState): Universe[] {
   return Object.values(state.universes).filter((u) => u.status === "spare");
 }
 
-/** Universes that fell and are no longer in a cell: the tray under the grid. */
+/**
+ * Machines that died and are no longer in a cell: the tray under the grid. A spare retired unused at collapse is sealed
+ * with no slot and is not a casualty, so it is not listed.
+ */
 export function fallen(state: ShowState): Universe[] {
-  return Object.values(state.universes).filter((u) => u.slot === null && (u.status === "killed" || u.status === "sealed"));
+  return Object.values(state.universes).filter((u) => u.slot === null && u.status === "killed");
 }

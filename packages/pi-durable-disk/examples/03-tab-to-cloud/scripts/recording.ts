@@ -99,6 +99,8 @@ export const send = (page: Page, text: string) => page.evaluate(`(() => { const 
 export function followHolders(ops: Page, serverLog: string, tabs: Map<string, string>): () => void {
   let offset = existsSync(serverLog) ? statSync(serverLog).size : 0;
   let generation = 0;
+  /** Remote hosts by their tab id: they attach to the pipe as tabs do. */
+  const remotes = new Map<string, string>();
   const timer = setInterval(() => {
     const text = readFileSync(serverLog, "utf8");
     const fresh = text.slice(offset);
@@ -108,7 +110,9 @@ export function followHolders(ops: Page, serverLog: string, tabs: Map<string, st
       const e = JSON.parse(line) as Record<string, unknown>;
       let call: string | undefined;
       if (e.event === "pipe.open") generation = Number(e.generation);
-      if (e.event === "pipe.attach") call = `ops.holder("tab", ${JSON.stringify(`Tab on ${tabs.get(String(e.tab)) ?? "a device"}`)}, ${JSON.stringify(`generation ${generation} · the pipe holds the claim`)})`;
+      if (e.event === "remote.started") remotes.set(`remote-${String(e.env)}-${String(e.switchId)}`, String(e.host));
+      if (e.event === "pipe.attach" && remotes.has(String(e.tab))) call = `ops.holder("cloud", ${JSON.stringify(remotes.get(String(e.tab)))}, ${JSON.stringify(`generation ${generation} · runs through the pipe, which holds the claim`)})`;
+      else if (e.event === "pipe.attach") call = `ops.holder("tab", ${JSON.stringify(`Tab on ${tabs.get(String(e.tab)) ?? "a device"}`)}, ${JSON.stringify(`generation ${generation} · the pipe holds the claim`)})`;
       else if (e.event === "placement" && e.where === "moving") call = `ops.holder("moving", ${JSON.stringify(`Moving to ${String(e.to)}`)}, ${JSON.stringify(String(e.detail ?? ""))})`;
       else if (e.event === "pipe.released") call = `ops.note(${JSON.stringify(`released and sealed in ${e.ms} ms`)})`;
       else if (e.event === "cloud.started") call = `ops.holder("cloud", ${JSON.stringify(String(e.host))}, ${JSON.stringify(`generation ${generation + 1} · claimed the disk, resuming`)})`;
