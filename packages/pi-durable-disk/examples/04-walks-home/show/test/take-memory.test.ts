@@ -78,18 +78,12 @@ test("a version's distance is kept for the sparkline, in order, and a version th
   assert.deepEqual(m.versions, [{ n: 1, metres: 0.05 }, { n: 2, metres: 0.06 }]);
 });
 
-test("what the page learned about kicks and the offline walk belongs to one take and goes with it", () => {
+test("what the page learned about kicks belongs to one take and goes with it", () => {
   const m = new TakeMemory();
   m.sync(1);
   m.lastKickAt = 5000;
-  m.meterSeen = true;
-  m.offlineSaid = true;
-  m.meterOffline.push({ t: 1, metres: 1, version: 1 });
   m.sync(2);
   assert.equal(m.lastKickAt, null);
-  assert.equal(m.meterSeen, false);
-  assert.equal(m.offlineSaid, false);
-  assert.deepEqual(m.meterOffline, []);
 });
 
 test("once someone has started drawing the chat's prompt is not needed, and a new take shows it again", () => {

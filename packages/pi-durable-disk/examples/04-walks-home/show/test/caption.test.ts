@@ -266,33 +266,17 @@ test("an urgent moment takes the slot at once, inside the hold of the caption on
   assert.equal(e.update(two, 1900)?.text, "Knocked over. It learned to get back up.", "an urgent caption keeps its hold");
 });
 
-test("a cut (the network going off) drops what was said or waiting before it: nothing from before is news after", () => {
-  const d = new CaptionDesk();
-  const before = [run("live"), note(1000, "switch", "Switched to This tab in 1138 ms (timed by the server).", true)];
-  assert.equal(d.update(fold(before), 1100)?.text, "Switched to This tab in 1138 ms (timed by the server).");
-  d.cut(2000);
-  assert.equal(d.update(fold(before), 2100), null, "the caption on screen is gone");
-  const waiting = new CaptionDesk();
-  const late = fold([...before, note(1900, "home", "A moment that was still waiting")]);
-  waiting.cut(2000);
-  assert.equal(waiting.update(late, 2100), null, "and what was waiting is not shown after the cut");
-  const after = fold([...before, note(2500, "home", "Still walking offline: 4.6 m in 10 s")]);
-  assert.equal(d.update(after, 2600)?.text, "Still walking offline: 4.6 m in 10 s", "what comes after is shown");
-  // a retake (the clock goes back) starts over: the barrier is forgotten
-  assert.equal(d.update(fold([run("live"), note(500, "home", "A new take")]), 600)?.text, "A new take");
-});
-
-// A measured number replaces the "keeps walking" line of the same group in place. When the line it replaces has already used up its time (the
-// number arrived a few ms after the 10 s hold ran out, before the desk next looked), the replacement was shown for one frame and cleared at the next
-// look: the viewer never saw "Still walking offline". A replacement that finds the hold over is a fresh caption with its own hold.
+// A newer caption of a group replaces the one on screen in place. When the line it replaces has already used up its time (the
+// newer one arrived a few ms after the 10 s hold ran out, before the desk next looked), the replacement was shown for one frame and cleared at the next
+// look: the viewer never saw the newer version. A replacement that finds the hold over is a fresh caption with its own hold.
 test("a group's replacement that arrives after the caption's time is up is shown for its own hold, not for one frame", () => {
-  const first = { t: "note", at: 1000, kind: "home", text: "It keeps walking: the brain it learned runs right here.", group: "offline", rank: 2 } as ShowEvent;
-  const second = { t: "note", at: 11_010, kind: "home", text: "Still walking offline: 5.0 m in 10 s", group: "offline", rank: 2 } as ShowEvent;
+  const first = { t: "note", at: 1000, kind: "home", text: "Version 4: walking - 2.1 m in 10 s", group: "version", rank: 2 } as ShowEvent;
+  const second = { t: "note", at: 11_010, kind: "home", text: "Version 5: walking - 3.0 m in 10 s", group: "version", rank: 2 } as ShowEvent;
   const d = new CaptionDesk();
-  assert.equal(d.update(fold([run("live"), first]), 1000)?.text, "It keeps walking: the brain it learned runs right here.");
+  assert.equal(d.update(fold([run("live"), first]), 1000)?.text, "Version 4: walking - 2.1 m in 10 s");
   const both = fold([run("live"), first, second]);
-  assert.equal(d.update(both, 11_020)?.text, "Still walking offline: 5.0 m in 10 s", "the look after the 10 s: the number is shown");
-  assert.equal(d.update(both, 11_600)?.text, "Still walking offline: 5.0 m in 10 s", "and still there at the next look");
-  assert.equal(d.update(both, 14_900)?.text, "Still walking offline: 5.0 m in 10 s", "for at least its own hold");
+  assert.equal(d.update(both, 11_020)?.text, "Version 5: walking - 3.0 m in 10 s", "the look after the 10 s: the number is shown");
+  assert.equal(d.update(both, 11_600)?.text, "Version 5: walking - 3.0 m in 10 s", "and still there at the next look");
+  assert.equal(d.update(both, 14_900)?.text, "Version 5: walking - 3.0 m in 10 s", "for at least its own hold");
   assert.equal(d.update(both, 21_100), null, "then it clears");
 });

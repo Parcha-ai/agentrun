@@ -143,7 +143,7 @@ export class ScenarioV2 {
       // The pipe's own line for a switch, word for word (the clean view says it as "Came home to your browser in 0.9 s").
       this.note("switch", "Switched to This tab in 900 ms (timed by the server).");
     });
-    this.at(99, () => this.agent("Done. The brain it learned now runs in your browser, even offline."));
+    this.at(99, () => this.agent("Done. I'm back in your browser, and it learned to walk."));
   }
 
   advance(to: number): void {

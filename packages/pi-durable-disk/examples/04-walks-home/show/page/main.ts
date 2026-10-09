@@ -3,7 +3,6 @@ import { $, clock, esc, usd } from "./dom.ts";
 import { badgeFor, MEMORY_LINE, trackFor } from "./badge.ts";
 import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
-import { bannerState, DiskProbe, proofLine, trimMeter, walkedOver10 } from "./offline.ts";
 import { learningStartedNote, setupCaption } from "./setup.ts";
 import { chartPoints, sparklineSvg } from "./sparkline.ts";
 import { plainSwitch, simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
@@ -144,21 +143,8 @@ bridge.onMessage((m: TabToShell) => {
   if ((m as unknown as { type: string }).type === "draw-started") memory.drawStarted = true;
   // A kick starts the window in which the getup lines are told.
   if (m.type === "kicked") memory.lastKickAt = feed.captionNow();
-  // The tab's walk-meter (about 1 Hz): the straight-line distance from where the current version started. Taken after the network goes off, it is how far
-  // the creature walked offline, over its last 10 simulated seconds of one version.
-  const raw = m as unknown as { type: string; t?: unknown; metres?: unknown; version?: unknown };
-  if (raw.type === "walk-meter" && typeof raw.t === "number" && typeof raw.metres === "number" && typeof raw.version === "number") {
-    memory.meterSeen = true;
-    if (offline && !memory.offlineSaid) {
-      memory.meterOffline = trimMeter([...memory.meterOffline, { t: raw.t, metres: raw.metres, version: raw.version }]);
-      const walked = walkedOver10(memory.meterOffline);
-      if (walked !== null) {
-        memory.offlineSaid = true;
-        addNotes({ at: feed.captionNow(), kind: "home", text: `Still walking offline: ${walked.toFixed(1)} m in 10 s`, basis: "simulated", rank: 2, group: "offline" });
-      }
-    }
-    return;
-  }
+  // The tab's walk-meter (about 1 Hz) is not a caption: it is not shown.
+  if ((m as unknown as { type: string }).type === "walk-meter") return;
   // Each version's distance in the fixed 10 s window its own file reports: the sparkline's points (and its caption's number).
   if (m.type === "policy-arrived" && m.reported_walk_10s_m != null && m.checkpoint_n !== undefined) memory.addVersion(m.checkpoint_n, m.reported_walk_10s_m);
   addNotes(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), afterKick: memory.lastKickAt !== null && feed.captionNow() - memory.lastKickAt < 15_000 }));
@@ -262,8 +248,7 @@ function renderChrome(state: ShowState): void {
   $("mvsum").textContent = us.length ? `${live} live${state.scoreUnit ? `  |  score: ${state.scoreUnit}` : ""}` : "";
   $("mv").classList.toggle("dormant", us.length === 0);
   ($("killone") as HTMLButtonElement).disabled = !leader(state);
-  // While the network is off the feed and the disk are unreachable by design (the take cuts the Wi-Fi): that is the story, not an error.
-  $("lost").hidden = !feed.lost || (!debug && offline);
+  $("lost").hidden = !feed.lost;
 }
 
 function renderNotes(state: ShowState, now: number): void {
@@ -326,55 +311,6 @@ addEventListener("keydown", (e) => {
   }
 });
 if (params.get("operator") === "1") operator.hidden = false;
-
-// The browser's own offline/online events, and the page's own proof. The take cuts the network (CDP offline emulation on this very page) and the
-// creature keeps walking. The banner says "Wi-Fi off" only when the browser is offline AND this page's own attempt to reach the cloud disk (through the
-// stage), timed, failed; if that attempt gets an answer the page says so and does not claim to be offline (page/offline.ts). The stage's own failed
-// fetches are not an error then.
-let offline = !navigator.onLine;
-// Any answer short of a 5xx, even "not found", means the path to the cloud disk is up; a 502 is the stage saying it cannot reach the run's server, and a
-// failure to connect is "no answer". Stopping cancels what is in flight and drops its result (page/offline.ts).
-const disk = new DiskProbe((signal) => fetch("/api/disk/creature/designs.sqlite", { cache: "no-store", signal }));
-const startProbing = (): void => disk.start();
-const stopProbing = (): void => disk.stop();
-if (offline && !debug) startProbing();
-function pageNote(text: string, group?: string): void {
-  addNotes({ at: feed.captionNow(), kind: "home", text, origin: "tab", rank: 2, ...(group ? { group } : {}) });
-}
-// The Wi-Fi control: a click is the user's act and reads off at once; after that the browser's own offline event and the page's own failed attempt are the truth.
-let wifiClickedAt: number | null = null;
-$("wifi").addEventListener("click", () => {
-  wifiClickedAt = performance.now();
-  renderWifi();
-});
-function renderWifi(): void {
-  const b = bannerState({ offline, clickedAt: wifiClickedAt, now: performance.now(), attempts: disk.attempts });
-  const el = $("wifi");
-  if (el.textContent !== b.label) el.textContent = b.label;
-  el.dataset.mode = b.mode;
-  const line = offline ? proofLine(disk.attempts) : "";
-  const proof = $("proof");
-  if (proof.textContent !== line) proof.textContent = line;
-  proof.hidden = line === "";
-}
-addEventListener("offline", () => {
-  syncTake();
-  offline = true;
-  memory.meterOffline = [];
-  memory.offlineSaid = false;
-  if (!debug) startProbing();
-  // Nothing said before the cut is news after it (a switch time beside "offline" read as a contradiction): the caption is about the cut. At once it says
-  // what the design guarantees; a tab that reports its walk then replaces that, in place, with how far it walked offline, measured after the cut.
-  if (!debug) desk.cut(feed.captionNow());
-  pageNote("It keeps walking: the brain it learned runs right here.", memory.meterSeen ? "offline" : undefined);
-});
-addEventListener("online", () => {
-  syncTake();
-  offline = false;
-  wifiClickedAt = null;
-  stopProbing();
-  pageNote("Wi-Fi back on.");
-});
 
 const desk = new CaptionDesk();
 let shownV2 = "";
@@ -504,7 +440,6 @@ function frame(): void {
     // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
     renderBadge(state);
     renderSpark(state);
-    renderWifi();
     syncChat(chatLog, state.chat);
     $("chat").classList.toggle("talked", state.chat.length > 0);
     $("chat").classList.toggle("drawing", memory.drawStarted);

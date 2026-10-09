@@ -141,7 +141,7 @@ parser and the watcher; `test/readback-live.test.ts` runs it against the real ta
 
 The page is the v2 take (DEMO-V2.md): the creature large in the middle (D3's tab in clean mode, `/tab/?clean=1`), one large location badge
 on top ("Agent: running in your browser" or "Agent: running on <machine>", with a track under it where the agent marker slides between the
-browser and the machine, and a Wi-Fi control, `#wifi`, that a recorder clicks before it cuts the network), the chat with the agent on the right (user and agent turns only, big type, newest
+browser and the machine), the chat with the agent on the right (user and agent turns only, big type, newest
 last, with an input under it: a line typed there goes to the agent as the operator), and one caption at the bottom, held at least 4 s, with
 its tag. Nothing else is drawn: the timeline, log, HUD numbers, cost meter, multiverse, VM desktop and buttons are behind `?debug=1`, and the
 operator panel stays on the `o` key. The v1 checks and recordings open the page with `?debug=1` (`withDebug` in `scripts/cdp.mjs`).
@@ -155,11 +155,9 @@ operator panel stays on the `o` key. The v1 checks and recordings open the page 
   to 1 m, "First steps." to 4 m, then "Walking: N m in 10 s" from the tab's own simulation). Seconds are whole or to a tenth. The words are plain:
   "a new version of its brain", never "checkpoint", "policy" or "getup brain" (a test keeps them out). No SIMULATED pill is drawn in this view
   (`?debug=1` keeps every tag): that the creature is a physics simulation in the browser is said once, at the start. Nothing says the agent lives in
-  the tab: it runs there. The stage says three things itself, once each (`page/story-notes.ts`): at the first move "Its memory is on a cloud disk, so
+  the tab: it runs there. The stage says two things itself, once each (`page/story-notes.ts`): at the first move "Its memory is on a cloud disk, so
   it can change machines without forgetting anything."; on the way back "Done training. The agent came back to your browser, and so did what it
-  learned."; and when the network goes off (the browser's own `offline` event) the badge says "Network off" and the caption "Network off. It keeps
-  walking: the brain it learned runs right here." The stage's own failed fetches are not an error then. `#wifi` reads "Wi-Fi: off" the moment it is
-  clicked (the user's act) and then follows the browser's real state.
+  learned.". The clean view says nothing about Wi-Fi or being offline; `v2-check` holds that.
 - **Setting up.** Between the user's request and the first version of the brain there is a real wait. From the agent's first `bash` command after it
   arrived on a machine (read from the transcript) the caption slot counts "Setting up the training program on the GPU... N s" on the stage's clock
   (measured on a live feed, scripted in a rehearsal); the tab's first checkpoint ends it with "Learning started N s after the agent began." The
