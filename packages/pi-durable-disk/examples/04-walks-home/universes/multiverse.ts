@@ -715,7 +715,7 @@ export class Multiverse {
    * moving; it is home once its run.json is running again at a later generation, held by whoever attached it there
    * (the tab, through browser-demo's server). The handover is measured from the command to that run.json.
    */
-  async home(target: { label: string; env: string; timeoutMs?: number }): Promise<HomeReport> {
+  async home(target: { label: string; env: string; timeoutMs?: number; onSealed?: (run: RunRef, universe: string) => Promise<void> }): Promise<HomeReport> {
     if (this.#phase !== "collapsed") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}; home follows the collapse`);
     const w = [...this.#lines.values()].find((l) => l.status === "winner");
     if (!w?.placed || w.ended !== null) throw new MultiverseError("NO_WINNER", "no winner holds a run to bring home");
@@ -729,6 +729,8 @@ export class Multiverse {
     this.#endStay(w, "switch");
     const sealed = await readRunStatus(this.#o.control, w.run!.id).catch(() => null);
     this.#log("home.released", { run: w.run!.id, ms: releasedMs, status: sealed?.status, generation: sealed?.generation });
+    // Whoever brings it home (the tab's server, adopting the run by id) is told now that it is sealed.
+    await target.onSealed?.(w.run!, w.spec!.id);
     const deadline = this.#now() + (target.timeoutMs ?? 10 * 60_000);
     for (;;) {
       const r = await readRunStatus(this.#o.control, w.run!.id).catch(() => null);

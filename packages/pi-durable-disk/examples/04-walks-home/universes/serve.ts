@@ -83,6 +83,9 @@ const { values } = parseArgs({
     "compile-cache": { type: "string" },
     /** With --auto: collapse this many seconds after the kills, instead of when every universe reached its budget. */
     "collapse-after": { type: "string" },
+    /** The tab's server (03-tab-to-cloud serve.ts) that adopts the winner by id when it is called home, and its admin token file. */
+    "home-server": { type: "string" },
+    "home-token-file": { type: "string" },
   },
 });
 
@@ -291,10 +294,26 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
     case "switch":
       // Home: the stage sends a switch to the tab once the multiverse collapsed.
       if (cmd.to !== "tab") return { ok: false, error: `the multiverse goes home to the tab, not to ${cmd.to}` };
-      return answer(mv.home({ label: "your browser tab", env: "tab" }), "home");
+      return answer(mv.home({ label: "your browser tab", env: "tab", onSealed: adoptHome }), "home");
     default:
       return { ok: false, error: `${cmd.t} is not this producer's command` };
   }
+}
+
+/** Where the tab finds the winner once it is sealed: the tab server's link for it, and its policy under work/. */
+let home: { run: string; url: string; policy: string } | undefined;
+/**
+ * The winner is sealed: ask the tab's server (03-tab-to-cloud serve.ts, --admin-token-file) to adopt it by id. Its
+ * answer is the run's link (with the run's secret: it goes to the loopback route, never to a note or a log).
+ */
+async function adoptHome(run: RunRef, universe: string): Promise<void> {
+  if (!values["home-server"] || !values["home-token-file"]) return;
+  const token = readFileSync(values["home-token-file"], "utf8").trim();
+  const res = await fetch(`${values["home-server"]}/api/runs/${encodeURIComponent(run.id)}/attach`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+  const body = (await res.json().catch(() => ({}))) as { link?: string; error?: string };
+  if (!res.ok || !body.link) throw new Error(`the tab's server did not adopt ${run.id}: ${res.status} ${body.error ?? ""}`);
+  home = { run: run.id, url: `${values["home-server"]}${body.link}`, policy: `train/${universe}/policy.json` };
+  log("home.adopted", { run: run.id, status: res.status });
 }
 
 const server = await serveFeed({
@@ -302,7 +321,7 @@ const server = await serveFeed({
   port: Number(values.port),
   command,
   // Where the tab finds the run to attach when it is called home: the winner's run, once there is one.
-  routes: { winner: () => mv.winner()?.placed.run },
+  routes: { winner: () => mv.winner()?.placed.run, home: () => home },
 });
 log("feed", { url: server.url, source: source.id, universes: n, transport });
 
