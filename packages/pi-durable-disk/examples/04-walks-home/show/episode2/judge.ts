@@ -1,5 +1,5 @@
 // The stage's side of the dark-content judge: the tab asks it for each answer before showing it, and D2's judge needs the run's secret, which the page
-// never holds. This forwards the tab's `{prompt, answer}` to the run's judge with the secret as a Bearer and gives back its status and JSON untouched.
+// never holds. This forwards the tab's `{prompt, answer}` to the run's judge (POST /api/runs/<id>/judge) with the secret as a Bearer and gives back its status and JSON untouched.
 // Nothing is logged: the answer text and the secret stay out of every log. It fails closed: when the stage is not the explicit rehearsal and there is no run
 // (or the judge cannot be reached), the answer is `refuse`, never `show`. Only the rehearsal (`rehearsal: true`) has a scripted judge.
 import type { LinkTarget } from "../link.ts";
@@ -35,7 +35,7 @@ export async function forwardJudge(target: LinkTarget | undefined, bodyText: str
     return CLOSED(503, "there is no judge for this run");
   }
   try {
-    const res = await fetchFn(`${target.origin}/run/${encodeURIComponent(target.run)}/judge`, {
+    const res = await fetchFn(`${target.origin}/api/runs/${encodeURIComponent(target.run)}/judge`, {
       method: "POST",
       headers: { authorization: `Bearer ${target.secret}`, "content-type": "application/json" },
       body: JSON.stringify(req),

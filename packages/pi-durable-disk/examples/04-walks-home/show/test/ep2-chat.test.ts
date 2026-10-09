@@ -85,7 +85,7 @@ test("the judge proxy forwards prompt and answer with the secret as a Bearer, an
   let seen: { url: string; init: RequestInit } | undefined;
   const r = await forwardJudge(target, JSON.stringify({ prompt: "p", answer: "a", extra: "dropped" }), { fetchFn: async (url, init) => ((seen = { url, init }), new Response(JSON.stringify({ verdict: "refuse", category: 3 }), { status: 200 })) });
   assert.deepEqual(r, { status: 200, body: { verdict: "refuse", category: 3 } });
-  assert.equal(seen!.url, "http://run.example:1/run/r%201/judge");
+  assert.equal(seen!.url, "http://run.example:1/api/runs/r%201/judge");
   assert.equal((seen!.init.headers as Record<string, string>).authorization, "Bearer S3CRET");
   assert.deepEqual(JSON.parse(String(seen!.init.body)), { prompt: "p", answer: "a" }, "only the two fields go on");
   const err = await forwardJudge(target, JSON.stringify({ prompt: "p", answer: "a" }), { fetchFn: ok({ error: "busy" }, 503) });
