@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.12, 2026-10-09
 
 Renamed from `@parcha/pi-durable-archil`. The package is now `@parcha/pi-durable-disk` and its command is `pi-durable-disk`, for branding:
 other disks may follow, and none is promised. It supports Archil only, because Archil gives a run's directory an exclusive claim and fences

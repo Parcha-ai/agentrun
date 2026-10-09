@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.12, 2026-10-09
 
 - `@parcha/pi-durable-archil` is renamed `@parcha/pi-durable-disk` (directory `packages/pi-durable-disk`, command `pi-durable-disk`, image `pi-durable-disk`), for branding: other disks may follow. Renamed from `@parcha/pi-durable-archil`; the `0.1.0-beta.10` and `0.1.0-beta.11` entries below name it as it was published. It supports Archil only. Archil-specific names stay: `bin/archil-scoped`, `ARCHIL_API_KEY`, `archilEnv`, `ArchilCodingTools`, the `archil` client.
   - Install paths named after the package move too: `/usr/local/lib/pi-durable-disk/archil-scoped`, `/run/pi-durable-disk` (the token directory), `/etc/sudoers.d/pi-durable-disk`; an existing host's sudoers drop-in and wrapper copy need the new paths.
