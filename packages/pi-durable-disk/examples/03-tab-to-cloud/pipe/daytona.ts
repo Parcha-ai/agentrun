@@ -394,7 +394,8 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         `DEMO_ENV_LABEL=${q(cls.env.phrase)}`,
         `DEMO_ENV_CLASS=${q(cls.env.label)}`,
         `DEMO_ENV_NOTE=${q("The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server.")}`,
-        `${BOX_NODE} ${BOX_APP_DIR}/remote-host.ts --port ${BOX_SERVE_PORT} --token-file ${BOX_ETC}/serve.token --work /home/pda/work`,
+        // As the run user (sudo -H): its workspace is work/ in that user's home.
+        `${BOX_NODE} ${BOX_APP_DIR}/remote-host.ts --port ${BOX_SERVE_PORT} --token-file ${BOX_ETC}/serve.token`,
         `>> ${BOX_REMOTE_LOG} 2>&1 < /dev/null`,
       ].join(" ");
       // The toolbox's shell opens the log (the host inherits it): the log is the toolbox user's.
