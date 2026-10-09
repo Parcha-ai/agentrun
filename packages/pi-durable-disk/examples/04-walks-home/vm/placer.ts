@@ -12,7 +12,7 @@ export const CRITERIA: Readonly<Record<string, string>> = {
 };
 
 /** The agent's one turn after the server brings it home: where it is and what its user can do now, in a plain line. */
-export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser and what their creature can do now. Do not mention files, commands or training details.";
+export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and that their creature learned to walk and to get back up. Do not mention files, commands or training details.";
 
 export const LABELS: Readonly<Record<string, string>> = { tab: "Browser", "modal-vm": "Modal VM", "modal-gpu": "H100 GPU" };
 
@@ -25,8 +25,10 @@ export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
   const ids = Object.keys(question.criteria);
   const text = JSON.stringify(state).toLowerCase();
   const done = /the agent finished the task/.test(text);
-  const want = done ? "tab" : /train|gpu|learn|walk/.test(text) ? "modal-gpu" : /install|desktop|docker|browser window/.test(text) ? "modal-vm" : "tab";
-  const choice = ids.includes(want) ? want : ids[0]!;
+  // The environments are told apart by what their criterion says they can do (a stand-in host may carry another id).
+  const byCriterion = (re: RegExp) => ids.find((id) => re.test(question.criteria[id] ?? ""));
+  const want = done ? byCriterion(/browser tab/i) : /train|gpu|learn|walk/.test(text) ? byCriterion(/H100/) : /install|desktop|docker|browser window/.test(text) ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
+  const choice = want ?? ids[0]!;
   const probabilities = Object.fromEntries(ids.map((id) => [id, id === choice ? 0.94 : 0.06 / Math.max(1, ids.length - 1)]));
   return { answers: { where: { type: "choice", choice, probabilities } }, model: "scripted" };
 };
@@ -41,5 +43,7 @@ export default async function placer(options: { log: (event: string, data?: Reco
     runJudge = createJevRunner({ timeoutMs: 20_000, maxAttempts: 2 }) as unknown as JudgeRunner;
   }
   options.log("placer.ready", { client: scripted ? "scripted" : "jev" });
-  return judgePlacer({ runJudge, criteria: CRITERIA, labels: LABELS, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT });
+  // `gpu=ID` lets a stand-in host (a second process on this machine, in a dry run) take the H100's place under its own id.
+  const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
+  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT });
 }
