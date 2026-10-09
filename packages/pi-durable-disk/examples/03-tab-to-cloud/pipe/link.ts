@@ -8,7 +8,8 @@ type Frame =
   | { t: "model"; id: number; path: string; body: Record<string, unknown> }
   | { t: "model-abort"; id: number }
   | { t: "event"; kind: "snapshot" | "events"; data: unknown }
-  | { t: "switch"; to: string; reason?: string; ask: string };
+  | { t: "switch"; to: string; reason?: string; ask: string }
+  | { t: "switched"; switchId: string };
 
 export type LinkEvent = { kind: "snapshot" | "events"; data: unknown };
 
@@ -25,6 +26,8 @@ export function dialLink(opts: {
   proxy: ModelProxy;
   /** The host's agent asks to move (switch_environment): resolve with the handover's id, or reject with why not. */
   onSwitch?: (to: string, reason: string) => Promise<{ switchId: string }>;
+  /** The host's agent has the notice of move `switchId` committed. */
+  onSwitched?: (switchId: string) => void;
   log: (event: string, data?: Record<string, unknown>) => void;
   retryMs?: number;
 }): LinkDialer {
@@ -44,6 +47,10 @@ export function dialLink(opts: {
       const frame = JSON.parse(String(data)) as Frame;
       if (frame.t === "event") {
         for (const listener of listeners) listener({ kind: frame.kind, data: frame.data });
+        return;
+      }
+      if (frame.t === "switched") {
+        opts.onSwitched?.(frame.switchId);
         return;
       }
       if (frame.t === "switch") {

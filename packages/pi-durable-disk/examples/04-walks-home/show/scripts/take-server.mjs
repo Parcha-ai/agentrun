@@ -32,6 +32,12 @@ const local = arg("local", "");
 const mountRoot = arg("mount-root", "");
 const run = arg("run", "walks-home");
 const cloud = arg("cloud", "none");
+// A cloud host from a module (D4's Modal VM and GPU: 04-walks-home/vm/cloud-module.ts): its --cloud-arg KEY=VALUE pairs (any number) go to
+// the module. --modal runs the server with the Modal token pair too (with-modal, the other wrapper that holds a key for this lane).
+const cloudModule = arg("cloud-module", "");
+const cloudArgs = process.argv.flatMap((a, i) => (a === "--cloud-arg" ? [process.argv[i + 1]] : []));
+const withModal = process.argv.includes("--modal");
+const budget = arg("budget", "1500000");
 // Every disk resource the server creates is recorded here (default: inside the private directory): the caller names its own.
 const ledger = arg("ledger", join(dir, "ledger.json"));
 if (!["none", "remote-local"].includes(cloud)) die(`--cloud ${cloud}: only none or remote-local`);
@@ -78,14 +84,21 @@ const serveArgs = [
   "--run", run,
   "--model", "gpt-6-luna",
   "--model-url", "http://127.0.0.1:9421/v1",
-  "--budget", "1500000",
+  "--budget", budget,
   "--admin-token-file", tokenFile,
   "--tab-writable", TAB_WRITABLE,
   "--log", logFile,
   "--cloud", cloud,
+  ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
   ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", ledger]),
 ];
-const [cmd, args] = local ? [process.execPath, serveArgs] : [wrapper, ["--", process.execPath, ...serveArgs]];
+const modalWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-modal");
+if (withModal && !existsSync(modalWrapper)) die(`${modalWrapper} is missing: the Modal keys only come through it`);
+const [cmd, args] = local
+  ? [process.execPath, serveArgs]
+  : withModal
+    ? [modalWrapper, ["--", wrapper, "--", process.execPath, ...serveArgs]]
+    : [wrapper, ["--", process.execPath, ...serveArgs]];
 const child = spawn(cmd, args, { cwd: ex03, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) }, stdio: "ignore" });
 const origin = `http://127.0.0.1:${port}`;
 const stop = () => {

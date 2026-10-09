@@ -125,6 +125,44 @@ describe("an agent that moves itself", () => {
   });
 });
 
+describe("a cloud host that reports its notice committed", () => {
+  it("the move is timed to that report, and the run is busy (no second move) until it", async () => {
+    const events: { event: string; data: Record<string, unknown> }[] = [];
+    let api: ServerApi | undefined;
+    const cloud: CloudHost = {
+      environments: [{ id: "vm", label: "VM", phrase: "a VM", kind: "cloud" }],
+      notifiesSwitched: true,
+      bind: (a) => void (api = a),
+      start: async () => ({ host: "vm-1" }),
+      stop: async () => undefined,
+    };
+    const local = await localServer({ cloud, drainMs: 5_000, superviseMs: 60_000, log: (event, data = {}) => events.push({ event, data }) });
+    try {
+      const { id, secret } = await local.server.createRun("notified");
+      const seen: PipeFrame[] = [];
+      const a: PipeClient = new PipeClient({
+        url: local.url, run: id, token: secret, tab: "a", mode: "write",
+        onFrame: (f) => {
+          seen.push(f);
+          if (f.t === "drain") a.send({ t: "drained", switchId: f.switchId });
+        },
+      });
+      await a.ready;
+      a.send({ t: "switch", to: "vm" });
+      for (const end = Date.now() + 10_000; local.server.runs.get(id)!.placement.where !== "cloud"; await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error("the run never reached the cloud");
+      const state = local.server.runs.get(id)!;
+      assert.ok(state.switching, "the move is still open: no notice reported yet");
+      assert.ok(!events.some((e) => e.event === "switch.done"));
+      api!.switched(state.ref, state.switching!.move.id);
+      assert.equal(state.switching, undefined, "the report ends the move");
+      assert.ok(events.some((e) => e.event === "switch.done" && e.data.to === "vm" && typeof e.data.ms === "number"));
+      a.close();
+    } finally {
+      await local.remove();
+    }
+  });
+});
+
 describe("the notice of a move the agent chose", () => {
   const facts = { label: "a Modal VM", cpus: 2, memoryGb: 4, gpu: null, tools: ["bash"], network: true };
   it("says the agent moved itself and why, once the reason's own full stop is dropped", async () => {

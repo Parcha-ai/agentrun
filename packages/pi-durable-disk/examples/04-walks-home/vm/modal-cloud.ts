@@ -349,6 +349,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     const dialer = dialLink({ url: linkTunnel.url.replace(/^http/, "ws"), token: linkToken, proxy: run.model,
       // The agent in the VM asked to move (switch_environment): the server runs the handover.
       onSwitch: (to, reason) => (server ? server.requestSwitch(ref, to, reason) : Promise.reject(new Error("the server cannot move agents"))),
+      onSwitched: (switchId) => server?.switched(ref, switchId),
       log: (e, d) => options.log(e, { run: ref.id, ...d }),
     });
     const previous = placed.get(ref.id);
@@ -382,6 +383,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
   const host: ModalCloud = {
     hostLabel: "a Modal VM",
+    // The VM's instance tells the server over its link when its agent's notice is committed, so the move is timed to that moment.
+    notifiesSwitched: true,
     environments: [env, ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
 
     bind(api) {

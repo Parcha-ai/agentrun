@@ -56,6 +56,12 @@ export interface CloudHost {
   stopRemote?(ref: RunRef): Promise<void>;
   /** The picture of the run's desktop right now (a JPEG), or undefined when the run's host has none. The page's live view of it. */
   desktopFrame?(ref: RunRef): Promise<Uint8Array | undefined>;
+  /**
+   * True when the host tells the server, through `ServerApi.switched`, that its agent's notice of a move is committed (as a tab
+   * or a remote host does with its `switched` frame). The move is then timed to that moment; without it a cloud move ends when
+   * the instance is started and the server cannot say how long the notice took.
+   */
+  readonly notifiesSwitched?: boolean;
   /** Called once by the server: what a cloud host may ask of it for the agent that runs there (a move the agent chose). */
   bind?(api: ServerApi): void;
 }
@@ -75,6 +81,8 @@ export interface CloudModuleOptions {
 export interface ServerApi {
   /** The run's agent asks to continue in environment `to`. Resolves with the switch's id once the move began; rejects with the reason it was refused. */
   requestSwitch(ref: RunRef, to: string, reason: string): Promise<{ switchId: string }>;
+  /** The cloud host's agent has its notice of move `switchId` committed: the move is done (see CloudHost.notifiesSwitched). */
+  switched(ref: RunRef, switchId: string): void;
 }
 
 /** The server's first frame to a remote host (remote-host.ts). */
@@ -292,7 +300,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       void switchTo(state, reply, to, { by: "agent", reason }).catch(reject);
     });
   }
-  options.cloud?.bind?.({ requestSwitch });
+  options.cloud?.bind?.({ requestSwitch, switched: (ref, switchId) => void (runs.get(ref.id) && switched(runs.get(ref.id)!, switchId)) });
 
   /** The remote host the run left: stopped and removed, out of the run's way. */
   async function dropRemote(state: RunState): Promise<void> {
@@ -394,6 +402,16 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           state.switching = undefined;
           if (!state.pipe && !state.opening) setPlacement(state, { where: "parked", detail: `${target.label} did not attach` });
         }, target.kind === "remote" ? 120_000 : 30_000).unref();
+        return;
+      }
+      if (options.cloud?.notifiesSwitched) {
+        // The host reports its notice committed (ServerApi.switched), which ends the move and times it, as a tab's frame does.
+        const started2 = await startCloud(state, target, move, `switched from ${environment(from)?.label ?? from}`, started);
+        if (!started2) state.switching = undefined;
+        else
+          setTimeout(() => {
+            if (state.switching?.move.id === move.id) state.switching = undefined;
+          }, 60_000).unref();
         return;
       }
       state.switching = undefined;
