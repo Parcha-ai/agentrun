@@ -29,3 +29,25 @@ def training_image(copy_code: bool = False) -> modal.Image:
   for name in TRAIN_FILES:
     image = image.add_local_file(os.path.join(HERE, name), f"{REMOTE_TRAIN}/{name}", copy=copy_code)
   return image
+
+
+def fleet_image(runtime_commands: list[str]) -> modal.Image:
+  """The GPU machine class: the trainer baked in, then the shared runtime layer (vm/build-image.ts --print-commands:
+  Node 24, the run user pda, sudo). XLA and Warp caches go under the run user's HOME, outside work/."""
+  # A GPU box runs in pipe mode (gVisor's fsync is not durable), so the layer's Archil client step is left out; it
+  # is also the one step that needs Ubuntu's package names on this Debian base.
+  layer = [c for c in runtime_commands if "archil" not in c]
+  return (training_image(copy_code=True)
+          .dockerfile_commands(layer)
+          .env({"JAX_COMPILATION_CACHE_DIR": "/home/pda/.cache/jax", "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}))
+
+
+if __name__ == "__main__":
+  # with-modal -- python modal_image.py RUNTIME_COMMANDS.json  -> builds the fleet image, prints its id
+  import json
+  import sys
+  cmds = json.load(open(sys.argv[1]))
+  app = modal.App.lookup("pda-demo-d2", create_if_missing=True)
+  with modal.enable_output():
+    image = fleet_image(cmds).build(app)
+  print(json.dumps({"image_id": image.object_id, "runtime_commands": len(cmds)}))

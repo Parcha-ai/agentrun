@@ -50,6 +50,7 @@ REWARD_TERMS = (
     "feet_clearance",  # |foot_z - max_foot_height| * sqrt(foot speed)
     "feet_height",  # (swing peak / max_foot_height - 1)^2 at touchdown
     "trot_clock",  # fraction of feet whose contact matches a diagonal trot on the gait clock
+    "upright",  # the torso's up axis, z component: 1 standing, -1 on its back (the getup signal)
     "alive",  # 1 per step
     "termination",  # 1 on the step that falls
 )
@@ -66,7 +67,9 @@ def default_config() -> config_dict.ConfigDict:
       command_zero_prob=0.15,
       command_resample_s=5.0,
       soft_joint_pos_limit_factor=0.95,
-      fall_up_z=0.0,  # terminate when the torso's up axis points below horizontal by this much
+      fall_up_z=0.0,  # a fall: the torso's up axis z below this
+      terminate_on_fall=True,  # False for getup training: a fall is a state to recover from, not an episode end
+      fall_start_prob=0.0,  # fraction of episodes that start dropped in a random orientation (getup practice)
       noise_config=config_dict.create(
           level=1.0,
           scales=config_dict.create(joint_pos=0.03, joint_vel=1.0, gyro=0.2, gravity=0.05, linvel=0.1),
@@ -90,6 +93,7 @@ def default_config() -> config_dict.ConfigDict:
               feet_clearance=0.0,
               feet_height=0.0,
               trot_clock=0.0,
+              upright=0.0,
               alive=0.0,
               termination=-1.0,
           ),
@@ -99,8 +103,8 @@ def default_config() -> config_dict.ConfigDict:
       ),
       pert_config=config_dict.create(
           enable=False,
-          force=[0.0, 60.0],  # N, horizontal, on the torso: the tab's kick
-          duration_s=0.1,
+          force=[0.0, 150.0],  # N, horizontal, any direction, on the torso: the tab's kick is 60 N for 0.048 s
+          duration_s=[0.04, 0.06],
           wait_s=[1.0, 3.0],
       ),
       impl="jax",
@@ -296,6 +300,12 @@ class CreatureWalk(mjx_env.MjxEnv):
     qpos = qpos.at[3:7].set(jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)]))
     qpos = qpos.at[7:].add(jax.random.uniform(k3, (self._nj,), minval=-0.1, maxval=0.1))
     qvel = jp.zeros(self._mj_model.nv).at[0:6].set(jax.random.uniform(k4, (6,), minval=-0.3, maxval=0.3))
+    # Getup practice: some episodes start dropped from 0.3 m above stance in a uniformly random orientation.
+    rng, kf, kq, kj = jax.random.split(rng, 4)
+    q = jax.random.normal(kq, (4,))
+    fallen = qpos.at[3:7].set(q / jp.linalg.norm(q)).at[2].add(0.3)
+    fallen = fallen.at[7:].set(jax.random.uniform(kj, (self._nj,), minval=self._soft_lowers, maxval=self._soft_uppers))
+    qpos = jp.where(jax.random.uniform(kf) < self._config.fall_start_prob, fallen, qpos)
     data = mjx_env.make_data(self._mj_model, qpos=qpos, qvel=qvel, ctrl=jp.clip(qpos[7:], self._ctrl_lo, self._ctrl_hi),
                              impl=self._mjx_model.impl.value, naconmax=self._naconmax, njmax=self._config.njmax)
     data = mjx.forward(self._mjx_model, data)
@@ -326,12 +336,13 @@ class CreatureWalk(mjx_env.MjxEnv):
     """The tab's kick: a horizontal force on the torso for duration_s, every wait_s."""
     pc = self._config.pert_config
     info = state.info
-    info["rng"], k1, k2, k3 = jax.random.split(info["rng"], 4)
+    info["rng"], k1, k2, k3, k4 = jax.random.split(info["rng"], 5)
     start = info["steps_until_next_pert"] <= 0
     ang = jax.random.uniform(k1, minval=-jp.pi, maxval=jp.pi)
     mag = jax.random.uniform(k2, minval=pc.force[0], maxval=pc.force[1])
     new_force = jp.array([jp.cos(ang) * mag, jp.sin(ang) * mag, 0.0])
-    duration = int(round(pc.duration_s / self.dt))
+    duration = jp.maximum(jp.round(jax.random.uniform(k4, minval=pc.duration_s[0], maxval=pc.duration_s[1])
+                                   / self.dt), 1).astype(jp.int32)
     info["pert_force"] = jp.where(start, new_force, info["pert_force"])
     info["pert_steps_left"] = jp.where(start, duration, info["pert_steps_left"])
     info["steps_until_next_pert"] = jp.where(
@@ -381,9 +392,14 @@ class CreatureWalk(mjx_env.MjxEnv):
     state.metrics["fwd_speed"] = self.to_body(data.qpos[3:7], data.qvel[0:3])[0]
     return state.replace(data=data, obs=obs, reward=reward, done=done.astype(reward.dtype))
 
+  def _up_z(self, data: mjx.Data) -> jax.Array:
+    return -self.to_body(data.qpos[3:7], jp.array([0.0, 0.0, -1.0]))[2]
+
   def _fell(self, data: mjx.Data) -> jax.Array:
-    up_z = -self.to_body(data.qpos[3:7], jp.array([0.0, 0.0, -1.0]))[2]
-    return (up_z < self._config.fall_up_z) | ~jp.isfinite(data.qpos).all()
+    broken = ~jp.isfinite(data.qpos).all()
+    if not self._config.terminate_on_fall:
+      return broken
+    return (self._up_z(data) < self._config.fall_up_z) | broken
 
   def _reward_terms(self, data, action, info, done, first_contact, contact, clearance, feet_vel):
     rc = self._config.reward_config
@@ -420,6 +436,7 @@ class CreatureWalk(mjx_env.MjxEnv):
         "feet_clearance": jp.sum(jp.abs(clearance - rc.max_foot_height) * jp.sqrt(speed_xy)) * moving,
         "feet_height": jp.sum(peak_err ** 2 * first_contact) * moving,
         "trot_clock": jp.mean((contact == want_stance).astype(jp.float32)) * moving,
+        "upright": self._up_z(data),
         "alive": jp.ones(()),
         "termination": done.astype(jp.float32),
     }
