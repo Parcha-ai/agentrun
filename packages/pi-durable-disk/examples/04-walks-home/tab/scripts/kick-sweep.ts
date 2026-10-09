@@ -7,17 +7,16 @@
 // Set AFTER=8 to give a getup more time.
 import { readFileSync } from 'node:fs';
 import load from '@mujoco/mujoco';
-import { defaultDesign } from '../src/design.ts';
 import { buildMjcf } from '../src/mjcf.ts';
-import { presetForSha } from '../src/bodies.ts';
+import { resolveBody } from './_body.ts';
 import { Policy, sha256Hex } from '../src/policy.ts';
 import { Sim } from '../src/sim.ts';
 
 const [policyPath, cmd = '0.5'] = process.argv.slice(2);
 const policyText = readFileSync(policyPath, 'utf8');
-const known = await presetForSha(JSON.parse(policyText).mjcf_sha256); // the body this policy was trained for
-const built = buildMjcf(known?.design ?? defaultDesign());
-console.log(`body: ${known?.name ?? 'default (no preset matches this policy)'}, ${built.jointNames.length} joints`);
+const known = await resolveBody(policyText); // the body this policy was trained for (DESIGN=<design.json> for a non-preset body)
+const built = buildMjcf(known.design);
+console.log(`body: ${known.name}, ${built.jointNames.length} joints`);
 const mj = await load();
 const policy = await Policy.load(policyText, { mjcfSha256: await sha256Hex(built.xml), nj: built.jointNames.length });
 const dirs: Record<string, [number, number]> = { forward: [1, 0], back: [-1, 0], left: [0, 1], right: [0, -1] };

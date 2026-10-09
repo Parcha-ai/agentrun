@@ -67,6 +67,8 @@ export class Sim {
   /** One policy step (CONTROL_DT): act (or hold the standing pose without a policy), then SUBSTEPS physics steps. */
   step(policy: Policy | null): number[] {
     let action = this.prevAction;
+    // A policy for another body (another joint count) never drives this one: its observation would read past the joint arrays.
+    if (policy && policy.nj !== this.built.jointNames.length) policy = null;
     if (policy) {
       const r = policy.control(this.state(policy.gaitHz), this.uprightness(), this.mode, this.built.standPose);
       action = r.action;

@@ -172,7 +172,10 @@ test("fan out, kill with a spare taking the slot, a second kill, collapse: what 
   w.checkpoint("r-u1", 20, 0.9);
   w.checkpoint("r-u2", 20, 0.4);
   await mv.poll();
-  const collapse = await mv.collapse();
+  const collapsing = mv.collapse();
+  // Home asked for while the collapse still seals the losers: it follows the collapse.
+  const homing = mv.home({ label: "your browser tab", env: "tab", timeoutMs: 5_000 });
+  const collapse = await collapsing;
   assert.equal(collapse.winner, "spare1");
   st = feed.state;
   assert.equal(st.universes.spare1!.status, "winner");
@@ -188,9 +191,16 @@ test("fan out, kill with a spare taking the slot, a second kill, collapse: what 
   assert.ok(!w.calls.some((c) => c === "stop box-spare1"));
   assert.equal(events.filter((e) => e.t === "note" && e.text.startsWith("Forking")).length, 1, "one fork note per fan-out");
 
-  // Home: the winner's run is sealed and its machine left; it is home when another holder opens it (the tab).
-  const homing = mv.home({ label: "your browser tab", env: "tab", timeoutMs: 5_000 });
+  // Home: the winner's run is sealed and its machine left; it is home when another holder opens it (the tab). Asked
+  // for while the collapse may still be sealing, it follows the collapse; its machine going away is no death.
   await new Promise((r) => setTimeout(r, 300));
+  await w.fleet.kill({ id: "box-spare1" } as Machine);
+  await mv.poll();
+  await mv.poll();
+  assert.ok(!events.some((e) => e.t === "note" && e.kind === "kill" && e.text.includes("box spare1")), "the winner leaving is not a kill");
+  const collapseNote = events.findIndex((e) => e.t === "note" && e.text.startsWith("Collapse took"));
+  const leaving = events.findIndex((e) => e.t === "note" && e.text.includes("is going home"));
+  assert.ok(collapseNote >= 0 && collapseNote < leaving, "the collapse's note comes before the winner leaves");
   assert.equal(feed.state.place.where, "moving");
   assert.equal(w.records.get(collapse.run)!.status, "paused", "sealed on the disk while it moves");
   const sealedRecord = w.records.get(collapse.run)!;

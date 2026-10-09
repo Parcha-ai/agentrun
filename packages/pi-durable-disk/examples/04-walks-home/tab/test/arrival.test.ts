@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ArrivalTracker, arrivalMeta, describeArrival, PolicyWatcher, planArrival, type PolicySource } from '../src/arrival.ts';
+import { ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, PolicyWatcher, planArrival, type PolicySource } from '../src/arrival.ts';
 import { presetForSha } from '../src/bodies.ts';
 import { sha256Hex } from '../src/policy.ts';
 import { defaultDesign } from '../src/design.ts';
@@ -224,4 +224,50 @@ test('the mean speed is not reported before the window has run', () => {
   const r = tr.result();
   assert.equal(r.done, false);
   assert.equal(r.meanSpeed, null);
+});
+
+// ---- a combined walk+getup file nests its provenance ---------------------------------------------------------------
+
+test('arrivalMeta reads a combined file: the walking network in host/trainingSeconds and the getup network beside it', () => {
+  const combined = { provenance: { walk: { host: 'modal', wall_s: 304.09, universe: 'u1' }, getup: { host: 'modal', wall_s: 360.3, universe: 'getup' } } };
+  assert.deepEqual(arrivalMeta(combined), { host: 'modal', trainingSeconds: 304.09, getupHost: 'modal', getupSeconds: 360.3 });
+  assert.deepEqual(arrivalMeta({ provenance: { walk: { host: 'a' }, getup: { wall_s: 'x' } } }), { host: 'a', trainingSeconds: null, getupHost: null, getupSeconds: null });
+  assert.deepEqual(arrivalMeta({ provenance: { walk: null, getup: { host: 'g', wall_s: 5 } } }), { host: null, trainingSeconds: null, getupHost: 'g', getupSeconds: 5 });
+  assert.deepEqual(arrivalMeta({ provenance: { walk: {}, getup: {} } }), { host: null, trainingSeconds: null, getupHost: null, getupSeconds: null });
+  // a plain file is unchanged: no getup fields at all
+  assert.deepEqual(arrivalMeta({ provenance: { host: 'modal', wall_s: 12 } }), { host: 'modal', trainingSeconds: 12 });
+});
+
+test('the toast for a combined file reports each network from its own record', () => {
+  const m = (host: string | null, trainingSeconds: number | null, getupHost: string | null, getupSeconds: number | null) => describeArrival({ host, trainingSeconds, getupHost, getupSeconds });
+  assert.equal(m('modal', 304.09, 'modal', 360.3), 'policy arrived from modal after 304 s of walking training and 360 s of getup training');
+  assert.equal(m('modal', 304.09, null, 360.3), 'policy arrived from modal after 304 s of walking training and 360 s of getup training');
+  assert.equal(m('modal', 304.09, 'daytona-gpu', 360.3), 'policy arrived from modal after 304 s of walking training and from daytona-gpu after 360 s of getup training');
+  assert.equal(m('modal', 304.09, 'daytona-gpu', null), 'policy arrived from modal after 304 s of walking training and from daytona-gpu (getup training time not recorded)');
+  const walkOnly = m('modal', 304.09, null, null);
+  assert.match(walkOnly, /^policy arrived from modal after 304 s of walking training \(the file does not say how the getup network was trained\)$/);
+  assert.match(m('modal', null, 'modal', 360.3), /from modal \(walking training time not recorded\) and 360 s of getup training/);
+  // the walking record has no host but the getup record does: say so for the getup network only
+  assert.equal(m(null, 304.09, 'modal', 360.3), 'policy arrived after 304 s of walking training (machine not recorded) and from modal after 360 s of getup training');
+  assert.match(m(null, null, null, 360.3), /does not say how the walking network was trained; the getup network trained for 360 s/);
+  assert.equal(m(null, null, null, null), 'policy arrived (the file records neither the machine nor the training time)');
+});
+
+test('planArrival carries a combined file\'s two records through to the plan', async () => {
+  const text = JSON.stringify({ format: 'mlp-v1', spec_version: 1, mjcf_sha256: SHA_3DOF, provenance: { walk: { host: 'modal', wall_s: 304.09 }, getup: { host: 'modal', wall_s: 360.3 } } });
+  const p = await planArrival(text, SHA_3DOF, presetForSha);
+  assert.equal(p.action, 'load');
+  if (p.action === 'load') assert.equal(describeArrival(p.meta), 'policy arrived from modal after 304 s of walking training and 360 s of getup training');
+});
+
+// ---- one arrival, however it was announced -------------------------------------------------------------------------
+
+test('the same content announced twice within the window is one arrival; later, or different content, is a new one', () => {
+  const d = new ArrivalDedupe(8000);
+  assert.equal(d.accept('a', 1000), true, 'first');
+  assert.equal(d.accept('a', 1200), false, 'the other route, 200 ms later');
+  assert.equal(d.accept('a', 8999), false, 'still inside the window of the first accepted one');
+  assert.equal(d.accept('b', 9000), true, 'different content');
+  assert.equal(d.accept('a', 9100), true, 'it changed back: a new arrival');
+  assert.equal(d.accept('a', 17200), true, 'the same file again after the window (a retake)');
 });

@@ -3,7 +3,12 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { CheckControl, ControlApi, SupervisorControl } from "@parcha/pi-durable-disk";
 
-export type DemoControl = SupervisorControl & CheckControl & ControlApi;
+export type DemoControl = SupervisorControl &
+  CheckControl &
+  ControlApi & {
+    /** Every object under `prefix`, all pages, with its size and modification time. */
+    listAll(prefix: string): Promise<{ key: string; size: number; lastModified?: Date }[]>;
+  };
 
 export async function archilControl(opts: { disk: string; region: string; apiKey: string }): Promise<DemoControl> {
   const { configure, getDisk } = await import("disk");
@@ -20,6 +25,16 @@ export async function archilControl(opts: { disk: string; region: string; apiKey
     exec: (command) => disk.exec(command),
     listObjects: (prefix, options) => disk.listObjects(prefix, options),
     deleteObjects: (keys, options) => disk.deleteObjects(keys, options),
+    async listAll(prefix: string) {
+      const out: { key: string; size: number; lastModified?: Date }[] = [];
+      let continuationToken: string | undefined;
+      do {
+        const page = await disk.listObjects(prefix, { recursive: true, ...(continuationToken ? { continuationToken } : {}) });
+        out.push(...page.objects);
+        continuationToken = page.isTruncated ? page.nextContinuationToken : undefined;
+      } while (continuationToken);
+      return out;
+    },
   } as DemoControl;
 }
 

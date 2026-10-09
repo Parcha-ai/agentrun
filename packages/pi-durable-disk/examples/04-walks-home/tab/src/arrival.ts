@@ -15,24 +15,59 @@ export type Plan =
   | { action: 'refuse'; reason: string };
 
 export interface ArrivalMeta {
-  /** The machine that trained it, exactly as the file's provenance names it; null when the file does not say. */
+  /** The machine that trained it, exactly as the file's provenance names it; null when the file does not say. For a combined
+   *  walk+getup file this is the walking network's. */
   host: string | null;
-  /** Seconds of training wall time from the file's provenance; null when the file does not say. */
+  /** Seconds of training wall time from the file's provenance; null when the file does not say. Walking network for a combined file. */
   trainingSeconds: number | null;
+  /** A combined file (walking and getup networks trained separately) records the getup network's own host and time. Null when absent. */
+  getupHost?: string | null;
+  getupSeconds?: number | null;
 }
 
-/** What the file says about where and how long it trained. Nothing is inferred: a missing or odd field is null. */
+const hostOf = (p: Record<string, unknown> | undefined): string | null => (typeof p?.host === 'string' && p.host.trim() ? p.host.trim() : null);
+const secondsOf = (p: Record<string, unknown> | undefined): number | null => {
+  const s = p?.wall_s;
+  return typeof s === 'number' && Number.isFinite(s) && s >= 0 ? s : null;
+};
+const asRecord = (v: unknown): Record<string, unknown> | undefined => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+
+/**
+ * What the file says about where and how long it trained. Nothing is inferred: a missing or odd field is null. A plain policy
+ * carries `provenance.host` and `provenance.wall_s`; a combined walk+getup file (the trainer's combine step) nests them as
+ * `provenance.walk` and `provenance.getup`, one per network.
+ */
 export function arrivalMeta(file: unknown): ArrivalMeta {
-  const prov = (file as { provenance?: Record<string, unknown> } | null)?.provenance;
-  const host = typeof prov?.host === 'string' && prov.host.trim() ? prov.host.trim() : null;
-  const s = prov?.wall_s;
-  const trainingSeconds = typeof s === 'number' && Number.isFinite(s) && s >= 0 ? s : null;
-  return { host, trainingSeconds };
+  const prov = asRecord(asRecord(file)?.provenance);
+  const walk = asRecord(prov?.walk), getup = asRecord(prov?.getup);
+  if (walk || getup) {
+    return { host: hostOf(walk), trainingSeconds: secondsOf(walk), getupHost: hostOf(getup), getupSeconds: secondsOf(getup) };
+  }
+  return { host: hostOf(prov), trainingSeconds: secondsOf(prov) };
 }
+
+const fmtSeconds = (s: number) => (s < 10 ? s.toFixed(1) : String(Math.round(s)));
 
 /** The toast: both facts when the file has them, otherwise what is missing, never a guess. */
 export function describeArrival(meta: ArrivalMeta): string {
-  const secs = meta.trainingSeconds === null ? null : meta.trainingSeconds < 10 ? meta.trainingSeconds.toFixed(1) : String(Math.round(meta.trainingSeconds));
+  const secs = meta.trainingSeconds === null ? null : fmtSeconds(meta.trainingSeconds);
+  const gSecs = meta.getupSeconds == null ? null : fmtSeconds(meta.getupSeconds); // null for both undefined and null
+  // `undefined` = a plain file (no getup record); `null` = a combined file whose getup record does not say
+  const combined = meta.getupHost !== undefined || meta.getupSeconds !== undefined;
+  if (combined) {
+    // two networks, trained separately: say what each one's record says, and only that
+    const walk = meta.host !== null && secs !== null ? `from ${meta.host} after ${secs} s of walking training`
+      : meta.host !== null ? `from ${meta.host} (walking training time not recorded)`
+      : secs !== null ? `after ${secs} s of walking training (machine not recorded)` : null;
+    const sameHost = meta.getupHost == null || meta.getupHost === meta.host;
+    let getup: string | null = null;
+    if (gSecs !== null) getup = sameHost ? `and ${gSecs} s of getup training` : `and from ${meta.getupHost} after ${gSecs} s of getup training`;
+    else if (!sameHost) getup = `and from ${meta.getupHost} (getup training time not recorded)`;
+    if (walk && getup) return `policy arrived ${walk} ${getup}`;
+    if (walk) return `policy arrived ${walk} (the file does not say how the getup network was trained)`;
+    if (gSecs !== null) return `policy arrived (the file does not say how the walking network was trained; the getup network trained for ${gSecs} s${sameHost ? '' : ` on ${meta.getupHost}`})`;
+    return 'policy arrived (the file records neither the machine nor the training time)';
+  }
   if (meta.host !== null && secs !== null) return `policy arrived from ${meta.host} after ${secs} s of training`;
   if (meta.host !== null) return `policy arrived from ${meta.host} (the file does not say how long it trained)`;
   if (secs !== null) return `policy arrived after ${secs} s of training (the file does not say which machine)`;
@@ -152,6 +187,28 @@ export class PolicyWatcher {
     this.running = false;
     if (this.timer !== null) (this.deps.clearTimer ?? ((t) => clearTimeout(t as ReturnType<typeof setTimeout>)))(this.timer);
     this.timer = null;
+  }
+}
+
+// ---- one arrival, however many ways it was announced --------------------------------------------------------------
+
+/**
+ * The same policy can reach the tab twice for one event: the stage's `load-policy` message and the watcher seeing the file on the
+ * disk. Identical content within `windowMs` of the last accepted arrival is the same arrival and is ignored; a later one (a retake,
+ * or a file that changed back) is a new arrival.
+ */
+export class ArrivalDedupe {
+  private last: { sha: string; at: number } | null = null;
+  private readonly windowMs: number;
+
+  constructor(windowMs = 8000) {
+    this.windowMs = windowMs;
+  }
+
+  accept(sha: string, nowMs: number): boolean {
+    if (this.last && this.last.sha === sha && nowMs - this.last.at < this.windowMs) return false;
+    this.last = { sha, at: nowMs };
+    return true;
   }
 }
 

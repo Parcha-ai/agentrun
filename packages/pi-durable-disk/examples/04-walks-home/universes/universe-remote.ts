@@ -21,7 +21,7 @@ import { PipeClient, type SocketLike } from "../../03-tab-to-cloud/tab/pipe-clie
 import { startTab, type TabRuntime } from "../../03-tab-to-cloud/tab/runtime.ts";
 import { Workspace } from "../../03-tab-to-cloud/tab/workspace.ts";
 import type { PipeFrame } from "../../03-tab-to-cloud/wire.ts";
-import { startWorkload, type Workload } from "./workload.ts";
+import { homePolicy, startWorkload, type Workload } from "./workload.ts";
 
 /** The server's first frame: 03's invite plus the universe's environment (UNIVERSE_*, DEMO_ENV_LABEL, ...). */
 export type UniverseInvite = { t: "invite"; run: string; token: string; tab: string; switchId?: string; env: Record<string, string> };
@@ -104,6 +104,8 @@ async function serve(socket: WebSocket, invite: UniverseInvite): Promise<void> {
     // then releases the run.
     void (async () => {
       await trainer?.stop();
+      // Going home (not sealed as a loser): the winner's policy and the getup policy in one file for the tab.
+      if (frame.switchId.startsWith("home-")) await homePolicy({ work, env, log }).catch((error: Error) => log("home.policy-failed", { error: error.message }));
       await flush().catch((error: Error) => log("flush.failed", { error: error.message }));
       await runtime?.close().catch(() => undefined);
       runtime = undefined;

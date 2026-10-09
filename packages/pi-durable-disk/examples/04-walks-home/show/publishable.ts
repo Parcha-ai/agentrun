@@ -6,7 +6,11 @@ export type Leak = { rule: string; sample: string };
 
 const RULES: { rule: string; re: RegExp }[] = [
   { rule: "a machine-local path", re: /(?:\/home\/[a-z]|\/tmp\/|\/run\/secrets|\/Users\/|\/mnt\/|~\/)/ },
-  { rule: "a machine or user name", re: /\b(?:ubuntu|ns1026182|greppy3)\b/i },
+  { rule: "a machine or user name", re: /(?:\b(?:ubuntu|greppy\d*|ns\d{5,})\b|\b[\w-]+\.ts\.net\b|\bip-\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}\b)/i },
+  // A lane's own scratch, report and temp folders, wherever they sit: never part of a published page.
+  { rule: "a lane scratch path", re: /(?:\bd\d+-tmp\b|\bevals\/[\w.-]+\/|\btmp\/pda-)/i },
+  // A checkout's directory name says which machine it was built on: the repo and branch say what was built.
+  { rule: "a worktree name", re: /(?:\bworktrees\/[\w.-]+|\bdemo-d\d+(?:-[a-z0-9]+)*\b|\bagentrun-pda-demo\b)/i },
   { rule: "a local or tailnet address", re: /(?:\b127\.0\.0\.1\b|\blocalhost\b|\b100\.(?:\d{1,3})\.\d{1,3}\.\d{1,3}\b|\b192\.168\.\d{1,3}\.\d{1,3}\b)/ },
   { rule: "a private key block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { rule: "a credential-shaped value", re: /(?:\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bBearer\s+[A-Za-z0-9._~+/-]{12,}|\b(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{12,})/i },

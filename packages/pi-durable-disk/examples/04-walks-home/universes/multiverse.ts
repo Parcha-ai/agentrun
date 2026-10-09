@@ -73,8 +73,11 @@ export interface Fleet {
   place(run: RunRef, machine: Machine, env: Readonly<Record<string, string>>, from?: Placed): Promise<PlaceResult>;
   /** The placement's machine as the fleet sees it; `gone`, `stopped` or `failed` is a machine that died. */
   status(placed: Placed): Promise<HostStatus>;
-  /** Drain the run, seal its run.json, and delete the machine. */
-  seal(placed: Placed): Promise<void>;
+  /**
+   * Drain the run, seal its run.json, and delete the machine. `home`: the run goes home (the winner), and the machine
+   * may do its last step for that first (the trainer's combined policy).
+   */
+  seal(placed: Placed, options?: { home?: boolean }): Promise<void>;
   /** Power the machine off now: whatever runs there gets no drain, the way a machine dies. */
   kill(machine: Machine): Promise<void>;
   /** Delete a machine that holds no run (a spare nobody needed). */
@@ -106,6 +109,11 @@ export interface Progress {
   readonly at: string;
   /** What the score means, when the workload says ("m along the course in 20 s"). */
   readonly unit?: string;
+  /**
+   * False while the writer's current segment has no checkpoint yet (a trainer that started, or resumed, and is still
+   * compiling): it says where the run is, not that it trains. Absent means it is a checkpoint.
+   */
+  readonly checkpointed?: boolean;
 }
 
 export const PROGRESS_FILE = "work/universe/progress.json";
@@ -171,6 +179,8 @@ interface Line {
   step: number;
   generation: number;
   score: number | null;
+  /** The last few checkpoint scores, newest last: the collapse ranks by their mean (a checkpoint's score wobbles). */
+  recent: number[];
   /** Wall ms the machine stopped costing (killed, retired, sealed). */
   ended: number | null;
   /** Set while this process is killing or replacing its machine, so a poll does not take it over twice. */
@@ -229,6 +239,8 @@ export class MultiverseError extends Error {
 }
 
 const ALIVE: readonly UniverseStatus[] = ["starting", "training", "takeover", "winner"];
+/** The collapse ranks universes by the mean of this many of their latest checkpoint scores. */
+export const RANK_OVER = 3;
 /** How long a killed tile shows dead before its spare takes the slot, so a camera can read it (the stage's rule). */
 export const KILLED_HOLD_MS = 700;
 
@@ -253,6 +265,8 @@ export class Multiverse {
   #polling = false;
   #ticks = 0;
   #phase: "idle" | "forking" | "running" | "collapsed" | "home" | "closed" = "idle";
+  /** The collapse in progress or done, so home can follow it. */
+  #collapsing: Promise<CollapseReport> | null = null;
   /** Spend of machines a line used and lost before it held its run (they are no longer any line's). */
   #retiredCost = 0;
   /** Set when the fan-out was asked for; cleared once every universe trained (its note is sent then). */
@@ -283,7 +297,7 @@ export class Multiverse {
   }
 
   #newLine(id: string, slot: number | null, status: UniverseStatus): Line {
-    const line: Line = { id, slot, status, machine: null, ready: Promise.reject(new Error("no machine yet")), run: null, spec: null, placed: null, stay: null, step: -1, generation: 0, score: null, ended: null, leaving: false };
+    const line: Line = { id, slot, status, machine: null, ready: Promise.reject(new Error("no machine yet")), run: null, spec: null, placed: null, stay: null, step: -1, generation: 0, score: null, recent: [], ended: null, leaving: false };
     line.ready.catch(() => {});
     this.#lines.set(id, line);
     return line;
@@ -489,13 +503,14 @@ export class Multiverse {
       await Promise.all(
         live.map(async (line) => {
           const p = await this.#progress(line.run!, line.spec!);
-          if (p && p.step > line.step) {
+          if (p && p.checkpointed !== false && p.step > line.step) {
             line.score = p.score;
+            line.recent = [...line.recent, p.score].slice(-RANK_OVER);
             line.step = p.step;
             this.#o.emit({ t: "sample", at: this.#at(), id: line.id, score: p.score, progress: p.progress, cost: round(this.#cost(line)) });
           }
           // A checkpoint written by this line's placement means the universe trains here.
-          if (p && (line.status === "starting" || line.status === "takeover") && this.#ownCheckpoint(line, p)) {
+          if (p && p.checkpointed !== false && (line.status === "starting" || line.status === "takeover") && this.#ownCheckpoint(line, p)) {
             line.status = "training";
             line.generation = Math.max(line.generation, p.generation);
             this.#patch(line, { status: "training", startedAt: this.#at() });
@@ -585,6 +600,8 @@ export class Multiverse {
     spare.run = run;
     spare.spec = line.spec;
     spare.step = line.step;
+    spare.recent = [...line.recent];
+    spare.score = line.score;
     spare.generation = line.generation;
     void this.#refill();
     const arrival: Arrival = { switchId: `takeover-${run.id}-${spare.id}`, from: how.why, planned: how.planned };
@@ -646,7 +663,7 @@ export class Multiverse {
     const deadline = this.#now() + timeoutMs;
     while (this.#now() < deadline) {
       const p = await this.#progress(line.run!, line.spec!);
-      if (p && this.#ownCheckpoint(line, p)) {
+      if (p && p.checkpointed !== false && this.#ownCheckpoint(line, p)) {
         if (line.status === "takeover") await this.poll();
         return this.#now();
       }
@@ -659,16 +676,24 @@ export class Multiverse {
    * Keep one universe (the best score unless named) and seal the rest: each loser's run is drained and sealed and its
    * machine deleted; unused spares are deleted.
    */
-  async collapse(winnerId?: string): Promise<CollapseReport> {
+  collapse(winnerId?: string): Promise<CollapseReport> {
+    const p = this.#collapse(winnerId);
+    this.#collapsing = p;
+    return p;
+  }
+
+  async #collapse(winnerId?: string): Promise<CollapseReport> {
     if (this.#phase !== "running") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}`);
     const t0 = this.#now();
     const live = [...this.#lines.values()].filter((l) => l.slot !== null && l.placed && (l.status === "training" || l.status === "starting"));
-    const winner = winnerId ? this.#lines.get(winnerId) : live.filter((l) => l.score !== null).sort((a, b) => b.score! - a.score!)[0];
+    const rank = (l: Line) => l.recent.reduce((a, b) => a + b, 0) / Math.max(1, l.recent.length);
+    const winner = winnerId ? this.#lines.get(winnerId) : live.filter((l) => l.recent.length > 0).sort((a, b) => rank(b) - rank(a))[0];
     if (!winner || !live.includes(winner)) throw new MultiverseError("NO_WINNER", winnerId ? `${winnerId} is not a running universe` : "no universe has a score yet");
     this.#phase = "collapsed";
     winner.status = "winner";
     this.#patch(winner, { status: "winner" });
-    this.#note("winner", `Universe ${winner.spec!.id} wins with ${winner.score?.toFixed(3) ?? "no score"}: ${winner.spec!.reward}. The rest are sealed.`, this.#o.scoresMeasured === true);
+    const mean = winner.recent.length > 0 ? rank(winner).toFixed(2) : "no score";
+    this.#note("winner", `Universe ${winner.spec!.id} wins with ${mean} (mean of its last ${winner.recent.length} checkpoints): ${winner.spec!.reward}. The rest are sealed.`, this.#o.scoresMeasured === true);
     const sealed = await Promise.all(
       live
         .filter((l) => l !== winner)
@@ -710,20 +735,26 @@ export class Multiverse {
    * moving; it is home once its run.json is running again at a later generation, held by whoever attached it there
    * (the tab, through browser-demo's server). The handover is measured from the command to that run.json.
    */
-  async home(target: { label: string; env: string; timeoutMs?: number }): Promise<HomeReport> {
+  async home(target: { label: string; env: string; timeoutMs?: number; onSealed?: (run: RunRef, universe: string) => Promise<void> }): Promise<HomeReport> {
     if (this.#phase !== "collapsed") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}; home follows the collapse`);
     const w = [...this.#lines.values()].find((l) => l.status === "winner");
     if (!w?.placed || w.ended !== null) throw new MultiverseError("NO_WINNER", "no winner holds a run to bring home");
     this.#phase = "home";
+    // Its machine goes away on purpose now: the poll must not read that as a death and take the winner over.
+    w.leaving = true;
+    // The collapse finishes (the losers sealed, its note said) before the stage hears the winner leave.
+    await this.#collapsing?.catch(() => undefined);
     const t0 = this.#now();
     this.#o.emit({ t: "place", at: this.#at(), place: { where: "moving", to: target.label, host: w.machine!.label }, env: null });
     this.#note("switch", `Universe ${w.spec!.id} is going home to ${target.label}.`);
-    await this.#o.fleet.seal(w.placed);
+    await this.#o.fleet.seal(w.placed, { home: true });
     w.ended = this.#now();
     const releasedMs = this.#now() - t0;
     this.#endStay(w, "switch");
     const sealed = await readRunStatus(this.#o.control, w.run!.id).catch(() => null);
     this.#log("home.released", { run: w.run!.id, ms: releasedMs, status: sealed?.status, generation: sealed?.generation });
+    // Whoever brings it home (the tab's server, adopting the run by id) is told now that it is sealed.
+    await target.onSealed?.(w.run!, w.spec!.id);
     const deadline = this.#now() + (target.timeoutMs ?? 10 * 60_000);
     for (;;) {
       const r = await readRunStatus(this.#o.control, w.run!.id).catch(() => null);

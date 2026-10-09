@@ -17,6 +17,8 @@ export interface TrainerOptions {
   readonly generation: number;
   /** The machine label, as the notice gave it; written into progress so the watcher knows who trains. */
   readonly host: string;
+  /** Bytes of weights each checkpoint writes (work/universe/weights.bin), as a real checkpoint would. Default 0: none. */
+  readonly checkpointBytes?: number;
   /** The claim's barrier: the files are durable on the disk when it resolves. */
   barrier(): Promise<void>;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
@@ -42,7 +44,14 @@ export function scoreAt(seed: number, step: number, total: number): number {
   return Math.round((peak * (1 - Math.exp(-step / pace)) + noise) * 10_000) / 10_000;
 }
 
-async function atomicWrite(path: string, data: string): Promise<void> {
+/** A checkpoint's stand-in weights: `bytes` bytes that change with every step. */
+function weights(seed: number, step: number, bytes: number): Uint8Array {
+  const out = new Uint8Array(bytes);
+  for (let i = 0; i < bytes; i += 4096) out[i] = Math.floor(hash01(seed, step * 7919 + i) * 256);
+  return out;
+}
+
+async function atomicWrite(path: string, data: string | Uint8Array): Promise<void> {
   await writeFile(`${path}.tmp`, data);
   await rename(`${path}.tmp`, path);
 }
@@ -82,6 +91,7 @@ export function startTrainer(o: TrainerOptions): { stop(): Promise<void>; done: 
       step++;
       if (step % o.checkpointEvery !== 0 && step < o.total) continue;
       const ck: Checkpoint = { step, score: scoreAt(o.seed, step, o.total), seed: o.seed, generation: o.generation, at: new Date().toISOString() };
+      if (o.checkpointBytes) await atomicWrite(join(dir, "weights.bin"), weights(o.seed, step, o.checkpointBytes));
       await atomicWrite(join(dir, "checkpoint.json"), `${JSON.stringify(ck)}\n`);
       if (step >= o.total) await atomicWrite(join(dir, "policy.json"), `${JSON.stringify({ kind: "stand-in", seed: o.seed, steps: step, score: ck.score })}\n`);
       await o.barrier();

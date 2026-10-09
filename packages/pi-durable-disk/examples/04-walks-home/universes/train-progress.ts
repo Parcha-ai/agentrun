@@ -16,7 +16,7 @@ type TrainState = {
   generation?: number;
   steps_done?: number;
   steps_total?: number;
-  segments?: { generation?: number; host?: string }[];
+  segments?: { generation?: number; host?: string; base?: number }[];
 };
 
 const text = async (control: Pick<Control, "getObject">, key: string): Promise<string | null> => {
@@ -50,7 +50,7 @@ export async function readTrainProgress(control: Pick<Control, "getObject">, run
       // a line cut short by a crash is not the last checkpoint's
     }
   }
-  const segment = state.segments?.at(-1);
+  const segment = state.segments?.at(-1) as { generation?: number; host?: string; base?: number } | undefined;
   return {
     step,
     total,
@@ -61,5 +61,7 @@ export async function readTrainProgress(control: Pick<Control, "getObject">, run
     host: segment?.host ?? "",
     at: new Date().toISOString(),
     ...(unit ? { unit } : {}),
+    // A segment starts at `base` steps; its first checkpoint moves steps_done past it (start-of-segment writes do not).
+    checkpointed: step > (segment?.base ?? 0),
   };
 }

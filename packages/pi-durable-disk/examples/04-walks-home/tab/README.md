@@ -23,6 +23,8 @@ CDP_PORT=9333 THROTTLE=4 PHASE_S=15 [LITE=1] node scripts/perf.mjs          # fp
 CDP_PORT=9333 THROTTLE=4 SOAK_MIN=30 POLICY=policy.json OUT=dir node scripts/soak.mjs   # random 60-400 N kicks every 20-40 s; NaN, resets, heap
 AFTER=8 [FORCES=200,300,400,600] node scripts/kick-sweep.ts policy.json    # acceptance: `up` from every side at >= 100 N
 node scripts/getup-time.ts policy.json                                      # seconds to get up from the left side, right side, back
+DESIGN=design.json node scripts/walk-check.ts policy.json                   # flat-ground speed along the heading at commands 0.2/0.5/0.8 (DESIGN= for a body that is not a preset; works with kick-sweep and getup-time too)
+DESIGN=design.json POLICY=policy.json CDP_PORT=9333 node scripts/check-body.mjs   # the real page with that body and policy: loads, walks, gets up after 400 N
 node scripts/parity.ts policy.json trace.json [creature.xml]                # the trainer's trace through the tab's code
 POLICY=policy.json W=700 H=500 CDP_PORT=9333 node scripts/check-browser.mjs dir   # the page itself: walk, kicks, hard kick, getup mode
 ```
@@ -39,6 +41,7 @@ machine that rasterises in software: cheaper materials and no multisampling.
 | `src/sim.ts` | `Sim`: reset to `home`, a policy step = 5 physics steps, kick = force for 12 steps |
 | `src/policy.ts`, `src/obs.ts` | `mlp-v1` policy runner (owned by the trainer lane; see `POLICY-FORMAT.md`) |
 | `src/sketch.ts`, `src/render.ts`, `src/main.ts` | sketcher canvas, three.js view, the page |
+| `src/rules.ts` | what the sketcher tells the user about a body: the leg-reach clamp (1.5x the torso) and the per-body notes, from measurements |
 | `src/stats.ts` | frame and event counters kept by the page for the checks above |
 | `src/store.ts`, `src/backend.ts` | SQLite (sql.js) with one writer per file; backends: IndexedDB, or the parent page (the disk) |
 | `MEMORY_SCHEMA` in `src/store.ts`, `scripts/record-machine.mjs` | the agent's side: append "I am now on machine X" to `memory.sqlite` |
