@@ -69,15 +69,18 @@ targets light up when the feed lists their environments.
 ## Live day: run the preflight first
 
     CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> SHOW_API=<live feed url> node scripts/preflight.mjs
+    SHOW_URL=http://127.0.0.1:8752/ CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> node scripts/preflight.mjs   # the stage is already running
 
 It reads and probes only (starts nothing, spends nothing) and exits non-zero on any failure. Each check is a way the stage went
 wrong in rehearsal: a Chrome with no WebGL (the shared one has none, so the creature's 3D view is blank; start one with
 `scripts/chrome.mjs`), a tab app or 03 page built before its sources changed (an old 03 page treats a switch to the tab as an
 untimed takeover), a home policy the tab would refuse (the home beat shows "Policy refused": no `POLICY_DIR`, no `home.json`, or a
 file the tab's own `Policy.load` refuses; a live take with `SHOW_PIPE_LINK_FILE` checks the run link instead, since the policy
-comes from the run's `work/home/policy.json`), a dead model broker (no agent answers after a switch), a feed that is not
-answering. For a recorded take use `SHOW_AUTOKILL=off` on the scripted feed so the only kill is the one the script clicks; against
-a live feed the stage sends no command until the operator presses a button.
+comes from the run's `work/home/policy.json`; with `SHOW_URL` the check asks the running stage instead (`/api/stage`, then the
+`/tab/versions.json` and `/policy/home.json` it serves), so a stage started with another `POLICY_DIR`, or none, fails), a dead
+model broker (no agent answers after a switch), a feed that is not answering. For a recorded take use `SHOW_AUTOKILL=off` on the
+scripted feed so the only kill is the one the script clicks; against a live feed the stage sends no command until the operator
+presses a button.
 
 ## The live desktop of a VM
 
