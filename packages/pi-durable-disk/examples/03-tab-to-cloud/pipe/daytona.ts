@@ -38,7 +38,9 @@ export const BOX_SERVE_PORT = 8080;
 const BOX_ETC = "/etc/pda-demo";
 const MODEL_KEY_ENV = "OPENAI_API_KEY";
 const BOX_EVENTS = "/var/tmp/pda-demo-events.log";
-const RATE_PER_HOUR = 2 * 0.0504 + 4 * 0.0162; // daytona-medium: 2 vCPU, 4 GiB
+/** Daytona's on-demand list prices: per vCPU hour, per GiB hour, per H100 hour. */
+const PRICE = { vcpu: 0.0504, gib: 0.0162, h100: 3.95 };
+const rateOf = (cpu: number, gib: number, h100s = 0) => cpu * PRICE.vcpu + gib * PRICE.gib + h100s * PRICE.h100;
 const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
 const NODE_SHA256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6";
 const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.8.42-1790378297_amd64.deb";
@@ -70,13 +72,7 @@ export function appBundle(): Uint8Array & { digest: string } {
         name: "pda-demo-cloud",
         private: true,
         type: "module",
-        dependencies: {
-          "@parcha/pi-durable-disk": `file:./${tgz}`,
-          "@earendil-works/pi-durable": "1.0.4",
-          "@earendil-works/chord": "1.0.4",
-          "@earendil-works/pi-ai": "1.0.4",
-          ws: "8.21.3",
-        },
+        dependencies: { "@parcha/pi-durable-disk": `file:./${tgz}`, ...APP_DEPENDENCIES },
       }),
     );
     hash.update(readFileSync(join(dir, "package.json")));
@@ -88,7 +84,13 @@ export function appBundle(): Uint8Array & { digest: string } {
   }
 }
 
-/** Install the pinned runtime (Node, archil, both sha256-checked), the app, the run user and its sudoers line. */
+/** The app's dependencies from the registry; the package itself comes from this checkout. */
+const APP_DEPENDENCIES = { "@earendil-works/pi-durable": "1.0.4", "@earendil-works/chord": "1.0.4", "@earendil-works/pi-ai": "1.0.4", ws: "8.21.3", disk: "1.7.0" };
+
+/**
+ * Install the pinned runtime (Node, archil, both sha256-checked), the app, the run user and its sudoers line. Each part
+ * an image already has (gpuDockerfile's: the runtime and the app's dependencies) is skipped.
+ */
 export function prepareScript(uid: number, gid: number): string {
   // The run user's ids are this server's, so files the agent writes on the disk belong to the same user everywhere.
   return String.raw`
@@ -96,25 +98,37 @@ set -euo pipefail
 t0=$(date +%s%N)
 step() { printf 'step\t%s\t%s\n' "$1" $(( ($(date +%s%N) - t0) / 1000000 )); }
 cd /tmp
-curl -fsSLo node.tar.xz ${NODE_URL}
-echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c - >/dev/null
-sudo -n install -d -m 0755 /opt/node24
-sudo -n tar -xJf node.tar.xz -C /opt/node24 --strip-components=1
-sudo -n chmod -R a+rX /opt/node24
-rm -f node.tar.xz
+if [ ! -x /opt/node24/bin/node ]; then
+  curl -fsSLo node.tar.xz ${NODE_URL}
+  echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c - >/dev/null
+  sudo -n install -d -m 0755 /opt/node24
+  sudo -n tar -xJf node.tar.xz -C /opt/node24 --strip-components=1
+  sudo -n chmod -R a+rX /opt/node24
+  rm -f node.tar.xz
+fi
 step node
-curl -fsSLo archil.deb ${ARCHIL_URL}
-echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
-rm -f archil.deb
+if ! command -v archil >/dev/null; then
+  curl -fsSLo archil.deb ${ARCHIL_URL}
+  echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb >/dev/null
+  rm -f archil.deb
+fi
 step archil
 getent group pda >/dev/null || sudo -n groupadd -o --gid ${gid} pda
 id pda >/dev/null 2>&1 || sudo -n useradd -o --uid ${uid} --gid ${gid} --create-home --shell /bin/bash pda
 sudo -n install -d -m 0755 ${BOX_APP_DIR}
+baked=no
+[ -d ${BOX_APP_DIR}/node_modules/@earendil-works/pi-durable ] && baked=yes
 sudo -n tar -xzf /tmp/pda-demo-app.tar.gz -C ${BOX_APP_DIR} --no-same-owner
 rm -f /tmp/pda-demo-app.tar.gz
-sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root npm install --prefix ${BOX_APP_DIR} --omit=dev --no-audit --no-fund --loglevel=error >/dev/null
+if [ "$baked" = yes ]; then
+  # The dependencies are in the image: only the package goes in, unpacked where npm would put it.
+  sudo -n install -d -m 0755 ${BOX_PACKAGE}
+  sudo -n tar -xzf "$(ls ${BOX_APP_DIR}/*.tgz | head -1)" -C ${BOX_PACKAGE} --strip-components=1 --no-same-owner
+else
+  sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root npm install --prefix ${BOX_APP_DIR} --omit=dev --no-audit --no-fund --loglevel=error >/dev/null
+fi
 sudo -n chown -R root:root ${BOX_APP_DIR}
 sudo -n chmod -R a+rX,go-w ${BOX_APP_DIR}
 step app
@@ -128,6 +142,23 @@ sudo -n install -o pda -g pda -m 0644 /dev/null ${BOX_EVENTS}
 sudo -n touch ${BOX_APP_DIR}/.prepared
 step done
 `;
+}
+
+/**
+ * The GPU class's image: Daytona's default sandbox image with the runtime and the app's dependencies baked in (a GPU box
+ * is ephemeral, so it cannot be prepared and snapshotted like the basic one); the package and the agent's modules go
+ * in at setup (prepareScript, in a few seconds). The host provides the GPU driver and nvidia-smi.
+ */
+export function gpuDockerfile(uid: number, gid: number): string {
+  return [
+    "FROM daytonaio/sandbox:0.9.0",
+    "USER root",
+    `RUN curl -fsSLo /tmp/node.tar.xz ${NODE_URL} && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - && install -d -m 0755 /opt/node24 && tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1 && chmod -R a+rX /opt/node24 && rm -f /tmp/node.tar.xz`,
+    `RUN curl -fsSLo /tmp/archil.deb ${ARCHIL_URL} && echo "${ARCHIL_SHA256}  /tmp/archil.deb" | sha256sum -c - && apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb && rm -f /tmp/archil.deb && rm -rf /var/lib/apt/lists/*`,
+    `RUN (getent group pda || groupadd -o --gid ${gid} pda) && (id pda || useradd -o --uid ${uid} --gid ${gid} --create-home --shell /bin/bash pda)`,
+    `RUN install -d -m 0755 ${BOX_APP_DIR} && printf '%s' '${JSON.stringify({ name: "pda-demo-cloud", private: true, type: "module", dependencies: APP_DEPENDENCIES })}' > ${BOX_APP_DIR}/package.json && PATH=/opt/node24/bin:$PATH npm install --prefix ${BOX_APP_DIR} --omit=dev --no-audit --no-fund --loglevel=error && chmod -R a+rX,go-w ${BOX_APP_DIR}`,
+    "",
+  ].join("\n");
 }
 
 /**
@@ -155,23 +186,25 @@ export function boxSetupScript(stage: string): string {
 }
 
 /** A Daytona client that only touches this fleet's sandboxes, records each one, and can hand out a warm one. */
-function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger: LedgerLike | undefined, log: Log, secrets: Record<string, string>[]) {
+function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger: LedgerLike | undefined, log: Log, secrets: Record<string, string>[], rates: (snapshot: string) => number) {
   const ours = new Set<string>();
   /** Deleted by this client: a listing shows a box for a while after its delete call returned. */
   const removed = new Set<string>();
+  /** Warm boxes by run and snapshot. */
   const warm = new Map<string, Promise<SandboxInfo>>();
-  const created = new Map<string, number>();
+  const created = new Map<string, { at: number; rate: number; end?: number }>();
   const check = (box: SandboxInfo | null) => {
     if (box && (box.labels?.[LABEL_FLEET] !== fleet || !box.name.startsWith(prefix) || !ours.has(box.id))) throw new Error(`refusing to touch sandbox ${box.id}: not this demo's`);
     return box;
   };
-  const client: DaytonaClient & { spendUsd(): number; takeWarm(run: string, box: Promise<SandboxInfo>): void; hasWarm(run: string): boolean } = {
+  const client: DaytonaClient & { spendUsd(): number; takeWarm(run: string, snapshot: string, box: Promise<SandboxInfo>): void; hasWarm(run: string, snapshot: string): boolean } = {
     async create(body: CreateSandboxBody) {
       if (body.labels[LABEL_FLEET] !== fleet || !body.name.startsWith(prefix)) throw new Error("a demo sandbox carries the demo's fleet label and name prefix");
       const run = body.labels[LABEL_RUN];
-      const ready = run ? warm.get(run) : undefined;
+      const key = `${run}:${body.snapshot}`;
+      const ready = run ? warm.get(key) : undefined;
       if (ready) {
-        warm.delete(run!);
+        warm.delete(key);
         const box = await ready.catch(() => undefined);
         if (box) {
           log("daytona.warm-used", { run, box: box.name });
@@ -182,7 +215,7 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
       // Secrets are mounted at creation (a box created without them would need a restart to get them).
       const box = await inner.create((secrets.length > 0 ? { ...body, secrets } : body) as CreateSandboxBody);
       ours.add(box.id);
-      created.set(box.id, Date.now());
+      created.set(box.id, { at: Date.now(), rate: rates(body.snapshot) });
       return box;
     },
     get: async (id) => check(await inner.get(id)),
@@ -198,22 +231,25 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
       removed.add(id);
       if (box) {
         ledger?.close("daytona-box", box.name, "deleted");
-        const at = created.get(id);
-        if (at) log("daytona.deleted", { box: box.name, minutes: Number(((Date.now() - at) / 60_000).toFixed(2)) });
+        const life = created.get(id);
+        if (life) {
+          life.end = Date.now();
+          log("daytona.deleted", { box: box.name, minutes: Number(((life.end - life.at) / 60_000).toFixed(2)), usd: Number(((life.rate * (life.end - life.at)) / 3_600_000).toFixed(4)) });
+        }
       }
     },
     exec: async (box, command, timeoutSec) => inner.exec(check(box)!, command, timeoutSec),
     upload: async (box, path, content) => inner.upload(check(box)!, path, content),
     spendUsd() {
-      let hours = 0;
-      for (const at of created.values()) hours += (Date.now() - at) / 3_600_000;
-      return hours * RATE_PER_HOUR;
+      let usd = 0;
+      for (const life of created.values()) usd += (life.rate * ((life.end ?? Date.now()) - life.at)) / 3_600_000;
+      return usd;
     },
-    takeWarm(run, box) {
-      warm.set(run, box);
+    takeWarm(run, snapshot, box) {
+      warm.set(`${run}:${snapshot}`, box);
     },
-    hasWarm(run) {
-      return warm.has(run);
+    hasWarm(run, snapshot) {
+      return warm.has(`${run}:${snapshot}`);
     },
   };
   return client;
@@ -227,6 +263,8 @@ interface Placed {
   handle: HostHandle;
   token: string;
   box: string;
+  /** The environment it runs in. */
+  env: string;
 }
 
 export interface DaytonaCloudOptions {
@@ -243,6 +281,8 @@ export interface DaytonaCloudOptions {
   readonly snapshot?: string;
   /** The Daytona secret with the model endpoint's key; without it the box's model calls go through the link. */
   readonly modelSecret?: string;
+  /** A runtime snapshot on a GPU class (scripts/daytona-snapshot.ts --from daytona-gpu): offers "Daytona GPU". */
+  readonly gpuSnapshot?: string;
 }
 
 export async function daytonaCloud(options: DaytonaCloudOptions) {
@@ -254,7 +294,9 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
   const prefix = "pda-demo-";
   const snapshot = options.snapshot ?? "daytona-medium";
   const viaLink = !options.modelSecret;
-  const client = fleetClient(daytonaRest({ apiKey, apiUrl }), fleet, prefix, options.ledger, options.log, options.modelSecret ? [{ [MODEL_KEY_ENV]: options.modelSecret }] : []);
+  // The basic class is the medium one (2 vCPU, 4 GiB); the GPU one is 4 vCPU, 16 GiB and one H100.
+  const rates = (s: string) => (s === options.gpuSnapshot ? rateOf(4, 16, 1) : rateOf(2, 4));
+  const client = fleetClient(daytonaRest({ apiKey, apiUrl }), fleet, prefix, options.ledger, options.log, options.modelSecret ? [{ [MODEL_KEY_ENV]: options.modelSecret }] : [], rates);
   const uid = process.getuid!();
   const gid = process.getgid!();
   let bundle: Uint8Array | undefined;
@@ -314,14 +356,22 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
     }
   }
 
-  const basic: Environment = { id: "daytona-basic", label: "Daytona basic", phrase: "a Daytona cloud sandbox", kind: "cloud", detail: `${snapshot}, region ${target}` };
+  const basic: Environment = { id: "daytona-basic", label: "Daytona basic", phrase: "a Daytona cloud sandbox", kind: "cloud", detail: `2 vCPU, 4 GiB, region ${target}` };
+  const gpu: Environment = { id: "daytona-gpu", label: "Daytona GPU", phrase: "a Daytona GPU sandbox", kind: "cloud", detail: `1x H100, 4 vCPU, 16 GiB, region ${target}` };
+  const classes = new Map<string, { env: Environment; snapshot: string }>([[basic.id, { env: basic, snapshot }]]);
+  if (options.gpuSnapshot) classes.set(gpu.id, { env: gpu, snapshot: options.gpuSnapshot });
+  const classOf = (env: string) => classes.get(env) ?? classes.get(basic.id)!;
   return {
     hostLabel: `a Daytona sandbox (${target})`,
-    environments: [basic] as Environment[],
+    environments: [...classes.values()].map((c) => c.env),
+    label: (env: string) => `${classOf(env).env.label} sandbox (${target})`,
 
-    /** Create and prepare a sandbox for `ref` now, so a later start only launches the instance. */
+    /**
+     * Create and set up a basic sandbox for `ref` now, so a later start only launches the instance. A GPU one is never
+     * kept warm: it costs about forty times as much while it waits.
+     */
     prewarm(ref: RunRef): void {
-      if (client.hasWarm(ref.id)) return;
+      if (client.hasWarm(ref.id, snapshot)) return;
       const name = `${prefix}${ref.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 40)}-${Date.now().toString(36)}`;
       const ready = (async () => {
         const started = Date.now();
@@ -335,19 +385,20 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         return box;
       })();
       ready.catch((error) => options.log("daytona.warm-failed", { run: ref.id, error: (error as Error).message }));
-      client.takeWarm(ref.id, ready);
+      client.takeWarm(ref.id, snapshot, ready);
     },
 
     /** Start the run in a sandbox (a warm one when ready); with `demand` false, only replace a holder that is lost. */
-    async start(ref: RunRef, run: { model: ModelProxy; move: Move }, demand = true): Promise<boolean> {
+    async start(ref: RunRef, run: { model: ModelProxy; move: Move; env: string }, demand = true): Promise<boolean> {
       const token = randomBytes(24).toString("base64url");
+      const cls = classOf(run.env);
       const model: Record<string, string> = viaLink
         ? { DEMO_LINK_PORT: String(BOX_LINK_PORT), DEMO_LINK_HOST: "0.0.0.0", DEMO_LINK_TOKEN: token }
         : // Node trusts the system's CAs too: the box's egress may be re-signed on the way to swap in the key.
           { DEMO_MODEL_URL: options.model.baseUrl, DEMO_MODEL_KEY_FILE: `${BOX_ETC}/model.key`, NODE_USE_SYSTEM_CA: "1" };
       const driver = daytonaHost({
         client,
-        snapshot,
+        snapshot: cls.snapshot,
         target,
         fleet,
         namePrefix: prefix,
@@ -361,7 +412,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
           // Every address, for the preview proxy; the address it advertises is the box's own (clients use a signed URL).
           "--serve", String(BOX_SERVE_PORT), "--serve-host", "0.0.0.0", "--serve-url", `http://127.0.0.1:${BOX_SERVE_PORT}`, "--serve-token-file", `${BOX_ETC}/serve.token`,
         ],
-        env: { DEMO_MODEL: options.model.model, ...model, DEMO_EVENTS_LOG: BOX_EVENTS, ...moveEnv(basic, run.move, basic.label) },
+        env: { DEMO_MODEL: options.model.model, ...model, DEMO_EVENTS_LOG: BOX_EVENTS, ...moveEnv(cls.env, run.move, cls.env.label) },
         stopTimeoutMs: 15_000,
         ttlMinutes: 120,
         startTimeoutMs: 600_000,
@@ -379,7 +430,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
       const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
       const serve = { url: await previewUrl(box, BOX_SERVE_PORT), token: serveTokens.get(box) ?? "" };
       const previous = placed.get(ref.id);
-      placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), serve, handle: result.handle, token: result.token.identifier, box });
+      placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), serve, handle: result.handle, token: result.token.identifier, box, env: cls.env.id });
       if (previous) await this.retire(ref, previous, "now");
       return true;
     },
@@ -411,7 +462,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         await new Promise((r) => setTimeout(r, 500));
         status = await at.driver.status(at.handle).catch(() => "unknown" as const);
       }
-      options.log("cloud.exited", { run: ref.id, status, ms: Date.now() - started, box: at.handle.name });
+      options.log("cloud.exited", { run: ref.id, how, status, ms: Date.now() - started, box: at.handle.name });
       if (options.eventsLog) {
         const box = await client.get(at.box).catch(() => null);
         if (box?.state === "started") {

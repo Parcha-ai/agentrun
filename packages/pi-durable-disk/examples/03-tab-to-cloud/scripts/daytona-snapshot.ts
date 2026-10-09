@@ -3,13 +3,19 @@
 // The build sandbox is deleted once the snapshot is active. Both are recorded in the ledger; the snapshot stays until
 // `--delete`. Prints the snapshot's name.
 //   with-daytona -- node scripts/daytona-snapshot.ts [--from daytona-medium] [--ledger F]
+//   with-daytona -- node scripts/daytona-snapshot.ts --gpu [--ledger F]
+// --gpu builds the GPU class's snapshot from gpuDockerfile instead (a GPU box is ephemeral and cannot be stopped and
+// snapshotted): the runtime and the app's dependencies, one GPU of GPU_TYPES, 4 vCPU, 16 GiB.
 //   with-daytona -- node scripts/daytona-snapshot.ts --delete pda-demo-runtime-<digest> [--ledger F]
 import { parseArgs } from "node:util";
 import { daytonaRest, LABEL_FLEET, LABEL_RUN, sandboxName, type SandboxInfo } from "@parcha/pi-durable-disk";
-import { appBundle, prepareScript } from "../pipe/daytona.ts";
+import { createHash } from "node:crypto";
+import { appBundle, gpuDockerfile, prepareScript } from "../pipe/daytona.ts";
 import { Ledger } from "../pipe/control.ts";
 
-const { values } = parseArgs({ options: { from: { type: "string", default: "daytona-medium" }, ledger: { type: "string" }, delete: { type: "string" } } });
+const { values } = parseArgs({ options: { from: { type: "string", default: "daytona-medium" }, ledger: { type: "string" }, delete: { type: "string" }, gpu: { type: "boolean", default: false } } });
+/** A snapshot names one GPU type; the H100 is the one with capacity in the region (daytona-gpu's). */
+const GPU_TYPES = ["H100"];
 const apiKey = process.env.DAYTONA_API_KEY;
 if (!apiKey) throw new Error("DAYTONA_API_KEY is needed (run through with-daytona)");
 const apiUrl = (process.env.DAYTONA_API_URL || "https://app.daytona.io/api").replace(/\/+$/, "");
@@ -56,8 +62,36 @@ if (values.delete) {
   process.exit(0);
 }
 
+if (values.gpu) {
+  const dockerfile = gpuDockerfile(process.getuid!(), process.getgid!());
+  const name = `${PREFIX}gpu-${createHash("sha256").update(dockerfile).update(GPU_TYPES.join(",")).digest("hex").slice(0, 12)}`;
+  const existing = await snapshotState(name);
+  if (existing?.state === "active") {
+    log("snapshot.exists", { name });
+    console.log(name);
+    process.exit(0);
+  }
+  if (existing) throw new Error(`snapshot ${name} exists in state ${existing.state}; delete it first`);
+  const t0 = Date.now();
+  const made = await api("POST", "/snapshots", { name, buildInfo: { dockerfileContent: dockerfile }, gpu: 1, gpuType: GPU_TYPES, cpu: 4, memory: 16, disk: 20, entrypoint: ["sleep", "infinity"] });
+  if (made.status >= 300) throw new Error(`creating snapshot ${name}: ${made.status} ${JSON.stringify(made.json).slice(0, 400)}`);
+  ledger?.open("daytona-snapshot", name, "GPU class, from a Dockerfile");
+  for (let i = 0; ; i++) {
+    const s = await snapshotState(name);
+    if (s?.state === "active") break;
+    if (s && ["error", "build_failed"].includes(s.state)) throw new Error(`snapshot ${name} went to ${s.state}: ${s.error}`);
+    if (i >= 600) throw new Error(`snapshot ${name} not active after 20 min (${s?.state})`);
+    if (i % 15 === 0) log("snapshot.waiting", { state: s?.state ?? "absent", ms: Date.now() - t0 });
+    await sleep(2_000);
+  }
+  log("snapshot.active", { name, ms: Date.now() - t0 });
+  console.log(name);
+  process.exit(0);
+}
+
 const bundle = appBundle();
-const name = `${PREFIX}${bundle.digest.slice(0, 12)}`;
+// A GPU base gets its own name: the same app on another image.
+const name = `${PREFIX}${values.from === "daytona-medium" ? "" : `${values.from!.replace(/^daytona-/, "")}-`}${bundle.digest.slice(0, 12)}`;
 const existing = await snapshotState(name);
 if (existing?.state === "active") {
   log("snapshot.exists", { name });
@@ -69,13 +103,23 @@ if (existing) throw new Error(`snapshot ${name} exists in state ${existing.state
 const t0 = Date.now();
 const boxName = sandboxName("pda-demo-build-", "runtime", t0);
 ledger?.open("daytona-box", boxName, `builds ${name}`);
-let box: SandboxInfo = await client.create({ name: boxName, snapshot: values.from!, target, labels: { [LABEL_FLEET]: FLEET, [LABEL_RUN]: "snapshot-build" }, autoStopInterval: 0, autoDeleteInterval: -1, ttlMinutes: 60 });
+// A GPU box is ephemeral (Daytona deletes it when it stops), so it is snapshotted while it runs.
+const ephemeral = /gpu/.test(values.from!);
+let box: SandboxInfo;
+try {
+  box = await client.create({ name: boxName, snapshot: values.from!, target, labels: { [LABEL_FLEET]: FLEET, [LABEL_RUN]: "snapshot-build" }, autoStopInterval: 0, autoDeleteInterval: ephemeral ? 0 : -1, ttlMinutes: 60 });
+} catch (error) {
+  ledger?.close("daytona-box", boxName, `create failed, no box: ${(error as Error).message.slice(0, 120)}`);
+  throw error;
+}
 const ours = (b: SandboxInfo | null) => {
   if (!b || b.labels?.[LABEL_FLEET] !== FLEET || !b.name.startsWith("pda-demo-build-")) throw new Error(`refusing to touch sandbox ${b?.id}: not this build's`);
   return b;
 };
 try {
-  for (let i = 0; box.state !== "started" && i < 300; i++) {
+  for (let i = 0; box.state !== "started"; i++) {
+    if (i >= 600) throw new Error(`${boxName} did not start in 10 min (last state ${box.state})`);
+    if (i % 15 === 0) log("box.waiting", { state: box.state, ms: Date.now() - t0 });
     await sleep(1_000);
     box = ours(await client.get(box.id));
   }
@@ -84,12 +128,14 @@ try {
   const r = await client.exec(box, prepareScript(process.getuid!(), process.getgid!()), 900);
   if (r.exitCode !== 0) throw new Error(`prepare failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
   log("box.prepared", { ms: Date.now() - t0, steps: r.result.split("\n").filter((l) => l.startsWith("step")).map((l) => l.split("\t").slice(1).join("=")) });
-  await client.stop(box.id, false);
-  for (let i = 0; box.state !== "stopped" && i < 300; i++) {
-    await sleep(1_000);
-    box = ours(await client.get(box.id));
+  if (!ephemeral) {
+    await client.stop(box.id, false);
+    for (let i = 0; box.state !== "stopped" && i < 300; i++) {
+      await sleep(1_000);
+      box = ours(await client.get(box.id));
+    }
+    log("box.stopped", { ms: Date.now() - t0 });
   }
-  log("box.stopped", { ms: Date.now() - t0 });
   const made = await api("POST", `/sandbox/${encodeURIComponent(box.id)}/snapshot`, { name });
   if (made.status >= 300) throw new Error(`creating snapshot ${name}: ${made.status} ${JSON.stringify(made.json).slice(0, 300)}`);
   ledger?.open("daytona-snapshot", name, `from ${values.from}`);
