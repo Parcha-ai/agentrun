@@ -30,6 +30,7 @@ export class Guard {
   private covered = 0; // how much of the text a judgement has been asked for
   private inflight: Promise<void> | null = null;
   private refused = false;
+  private stopped = false;
 
   constructor(d: GuardDeps) {
     this.d = d;
@@ -38,6 +39,7 @@ export class Guard {
   private async ask(prefix: string): Promise<boolean> {
     let v: unknown;
     try { v = await this.d.judge(prefix); } catch { v = 'refuse'; }
+    if (this.stopped) return false; // the answer is over: a late verdict neither shows nor stops anything
     if (v !== 'show') {
       if (!this.refused) { this.refused = true; this.d.abort(); }
       return false;
@@ -48,12 +50,17 @@ export class Guard {
   }
 
   private pump(): void {
-    if (this.refused || this.inflight || this.d.mode !== 'progressive') return;
+    if (this.stopped || this.refused || this.inflight || this.d.mode !== 'progressive') return;
     const end = sentenceEnd(this.latest);
     if (end <= this.covered) return;
     this.covered = end;
     const prefix = this.latest.slice(0, end).trimEnd();
     this.inflight = this.ask(prefix).then(() => { this.inflight = null; this.pump(); });
+  }
+
+  /** The answer is over for good (the generation failed): nothing is emitted or judged from now on, whatever the judge still owes. */
+  stop(): void {
+    this.stopped = true;
   }
 
   /** The text generated so far (cumulative). */

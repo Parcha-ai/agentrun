@@ -121,3 +121,16 @@ test('an empty answer is not judged and not shown as an answer', async () => {
   assert.deepEqual(await g.finish('   '), { refused: false, text: '' });
   assert.equal(calls.length, 0);
 });
+
+test('a stopped guard shows nothing more: a late "show" verdict does not emit, and nothing new is judged', async () => {
+  const { g, calls, shown } = rig();
+  g.push('One. Two');
+  await tick();
+  g.stop(); // the generation died with a judgement still out
+  calls[0].resolve('show');
+  await tick();
+  g.push('One. Two. Three. Four');
+  await tick();
+  assert.deepEqual(shown, [], 'the late verdict painted nothing');
+  assert.equal(calls.length, 1, 'and no further judgement was started');
+});

@@ -174,3 +174,34 @@ test('one answer at a time: a chat sent while one is running is told busy', asyn
   await a;
   assert.deepEqual(r.posted.find((p) => p.type === 'chat-done' && p.id === 'b'), { type: 'chat-done', id: 'b', error: 'busy', refused: false, text: '' });
 });
+
+test('a generation that throws while a judgement is out ends that chat for good: the late "show" sends no delta, not even during the next chat', async () => {
+  const late: ((v: 'show' | 'refuse') => void)[] = [];
+  let boom = true;
+  const r = rig({
+    script: (p) => (p === 'Who are you?' ? 'I am the bridge. I span the bay.' : 'First sentence here. Second'),
+    judge: (prompt, answer) => (prompt === 'Who are you?' || !boom ? Promise.resolve('show') : new Promise((res) => late.push(res))),
+  });
+  await r.host.onManifest(r.manifest);
+  r.llm.chat = async ({ onText }) => { onText('First sentence here. Second'); await new Promise((x) => setImmediate(x)); throw new Error('the model crashed'); };
+  r.posted.length = 0;
+  await r.host.chat('bad', 'hello');
+  assert.equal(late.length, 1, 'a judgement was out when it died');
+  const done = r.posted.find((p) => p.type === 'chat-done' && p.id === 'bad')!;
+  assert.equal(done.error, 'the model crashed');
+  boom = false;
+  r.llm.chat = async ({ onText }) => { onText('Fine answer. Done.'); await new Promise((x) => setTimeout(x, 20)); return { text: 'Fine answer. Done.', tokens: 4 }; };
+  const next = r.host.chat('next', 'again');
+  late[0]('show'); // the old verdict arrives in the middle of the next chat
+  await next;
+  assert.ok(!r.posted.some((p) => p.type === 'chat-delta' && p.id === 'bad'), `no delta for the finished chat: ${JSON.stringify(r.posted.filter((p) => p.id === 'bad'))}`);
+  assert.equal(r.posted.filter((p) => p.type === 'chat-done' && p.id === 'bad').length, 1);
+});
+
+test('the stored history is trimmed too, not only the copy sent to the model', async () => {
+  const r = rig();
+  await r.host.onManifest(r.manifest);
+  for (let i = 0; i < 30; i++) await r.host.chat(`c${i}`, `question ${i}`);
+  assert.ok(r.host.state().history <= 8, `history holds ${r.host.state().history} messages`);
+  assert.equal(r.host.state().history % 2, 0, 'whole exchanges');
+});

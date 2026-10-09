@@ -46,7 +46,7 @@ export class ModelHost {
   }
 
   state() {
-    return { phase: this.phase, ...this.info };
+    return { phase: this.phase, ...this.info, history: this.history.length };
   }
 
   private async writeLoaded(extra: Record<string, unknown>): Promise<void> {
@@ -65,9 +65,15 @@ export class ModelHost {
   private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void): Promise<{ refused: boolean; text: string; tokens: number }> {
     const ctl = new AbortController();
     const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a) => this.d.judge(prompt, a), emit: show, abort: () => ctl.abort() });
-    const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => guard.push(t) });
-    const r = await guard.finish(out.text);
-    return { ...r, tokens: out.tokens };
+    try {
+      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => guard.push(t) });
+      const r = await guard.finish(out.text);
+      return { ...r, tokens: out.tokens };
+    } catch (e) {
+      guard.stop(); // a judgement may still be out: its verdict must not reach this finished answer, or the next one
+      ctl.abort();
+      throw e;
+    }
   }
 
   /** The manifest appeared (or changed). One model per page: ignored while loading or once loaded; tried again after a failure. */
@@ -126,7 +132,10 @@ export class ModelHost {
       done({ text: r.text, refused: r.refused, tokens: r.tokens, ms });
       this.d.post('model-answer', { n, prompt_chars: text.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed' });
       if (r.refused) this.d.post('model-refused', { n, reason: 'judge' });
-      else if (r.text) this.history.push({ role: 'user', content: text }, { role: 'assistant', content: r.text });
+      else if (r.text) {
+        this.history.push({ role: 'user', content: text }, { role: 'assistant', content: r.text });
+        if (this.history.length > HISTORY_MAX) this.history = this.history.slice(-HISTORY_MAX); // the stored history, not just the copy sent
+      }
     } catch (e) {
       done({ error: e instanceof Error ? e.message : String(e) });
     } finally {

@@ -8,12 +8,20 @@ import type { Llm } from './modelhost.ts';
 export const SAMPLING = { temperature: 0.7, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1.0 } as const;
 export const N_CTX = 2048;
 
-export function wllamaLlm(wasmUrl: string): Llm {
+export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) => Wllama = (c) => new Wllama(c)): Llm {
   let w: Wllama | null = null;
+  const release = async () => { const old = w; w = null; try { await old?.exit(); } catch { /* it may already be gone */ } };
   return {
     async load(parts, { threads }) {
-      w = new Wllama({ default: wasmUrl });
-      await w.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0 });
+      await release(); // a second load replaces the model: the old one's workers and memory are freed first
+      const next = make({ default: wasmUrl });
+      w = next;
+      try {
+        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0 });
+      } catch (e) {
+        await release(); // a half-started model is released, not left running
+        throw e;
+      }
     },
     async chat({ messages, maxTokens, signal, onText }) {
       if (!w) throw new Error('the model is not loaded');
@@ -29,6 +37,6 @@ export function wllamaLlm(wasmUrl: string): Llm {
       }
       return { text, tokens };
     },
-    async exit() { await w?.exit(); w = null; },
+    async exit() { await release(); },
   };
 }
