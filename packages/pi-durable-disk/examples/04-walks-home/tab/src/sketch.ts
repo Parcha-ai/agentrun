@@ -65,6 +65,57 @@ export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
 /** The foot's radius in metres: the creature's foot (a sphere a little wider than the leg), and never smaller than 5 px so it shows on a small pane. */
 export const footRadiusM = (radius: number, px: number) => Math.max(radius * 1.15 * 1.4, 5 / px);
 
+/** The creature from above, in metres with the origin at the torso centre and y up (the caller has translated and scaled): the legs, a foot at each leg end, the torso. The sketch and its thumbnail both draw with this. */
+export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px: number): void {
+    const { torso, legs } = design;
+    const lw = 1 / px;
+    ctx.lineCap = 'round';
+    for (const l of legs) {
+      const x = (l.x * torso.length) / 2;
+      for (const s of [1, -1]) {
+        const y0 = (s * torso.width) / 2;
+        ctx.strokeStyle = SKETCH_COLORS.thigh; ctx.lineWidth = 2 * l.radius * 1.4;
+        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + s * l.thigh); ctx.stroke();
+        ctx.strokeStyle = SKETCH_COLORS.shin;
+        ctx.beginPath(); ctx.moveTo(x, y0 + s * l.thigh); ctx.lineTo(x, y0 + s * (l.thigh + l.shin)); ctx.stroke();
+      }
+    }
+    // a foot at the end of every leg (the creature has a dark foot there), so four leg ends read as four legs
+    ctx.fillStyle = SKETCH_COLORS.foot;
+    for (const l of legs) {
+      const x = (l.x * torso.length) / 2;
+      for (const s of [1, -1]) {
+        ctx.beginPath(); ctx.arc(x, s * (torso.width / 2 + l.thigh + l.shin), footRadiusM(l.radius, px), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.fillStyle = SKETCH_COLORS.torso; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw;
+    ctx.beginPath(); ctx.roundRect(-torso.length / 2, -torso.width / 2, torso.length, torso.width, 0.03); ctx.fill(); ctx.stroke();
+}
+
+/** Pixels per metre that fit the whole drawing in a w x h box with a margin: the torso and its hips along x, both leg ends along y. */
+export function thumbnailPx(design: Design, w: number, h: number, pad = 6): number {
+  const { torso, legs } = design;
+  const reach = Math.max(...legs.map((l) => l.thigh + l.shin + l.radius * 1.15 * 1.4), 0);
+  const halfX = torso.length / 2 + Math.max(...legs.map((l) => l.radius * 1.4), 0.02) + 0.02;
+  const halfY = torso.width / 2 + reach;
+  return Math.min((w / 2 - pad) / halfX, (h / 2 - pad) / halfY);
+}
+
+/** "Your drawing": the creature as drawn, small, on its own canvas (no handles, no words: the page labels it). */
+export function drawThumbnail(canvas: HTMLCanvasElement, design: Design): void {
+  const ctx = canvas.getContext('2d')!, dpr = devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.width / dpr, h = canvas.clientHeight || canvas.height / dpr;
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const px = thumbnailPx(design, w, h);
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  ctx.scale(px, -px);
+  paintCreature(ctx, design, px);
+  ctx.restore();
+}
+
 export class Sketcher {
   private design: Design;
   /** Pixels per metre, from the canvas size (a big sketch pane draws a big creature). */
@@ -180,29 +231,8 @@ export class Sketcher {
     ctx.save();
     ctx.translate(w / 2, h / 2);
     ctx.scale(this.px, -this.px); // metres, y up
-    const { torso, legs } = this.design;
-    const lw = 1 / this.px;
-    ctx.lineCap = 'round';
-    for (const l of legs) {
-      const x = (l.x * torso.length) / 2;
-      for (const s of [1, -1]) {
-        const y0 = (s * torso.width) / 2;
-        ctx.strokeStyle = SKETCH_COLORS.thigh; ctx.lineWidth = 2 * l.radius * 1.4;
-        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + s * l.thigh); ctx.stroke();
-        ctx.strokeStyle = SKETCH_COLORS.shin;
-        ctx.beginPath(); ctx.moveTo(x, y0 + s * l.thigh); ctx.lineTo(x, y0 + s * (l.thigh + l.shin)); ctx.stroke();
-      }
-    }
-    // a foot at the end of every leg (the creature has a dark foot there), so four leg ends read as four legs
-    ctx.fillStyle = SKETCH_COLORS.foot;
-    for (const l of legs) {
-      const x = (l.x * torso.length) / 2;
-      for (const s of [1, -1]) {
-        ctx.beginPath(); ctx.arc(x, s * (torso.width / 2 + l.thigh + l.shin), footRadiusM(l.radius, this.px), 0, Math.PI * 2); ctx.fill();
-      }
-    }
-    ctx.fillStyle = SKETCH_COLORS.torso; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw;
-    ctx.beginPath(); ctx.roundRect(-torso.length / 2, -torso.width / 2, torso.length, torso.width, 0.03); ctx.fill(); ctx.stroke();
+    const { torso } = this.design;
+    paintCreature(ctx, this.design, this.px);
     ctx.restore();
     // handles in pixels
     for (const hd of this.handles()) {
