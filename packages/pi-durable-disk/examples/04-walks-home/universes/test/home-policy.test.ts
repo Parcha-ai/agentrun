@@ -71,6 +71,15 @@ test("3: a combined file built from a stale walk or getup snapshot, or older tha
   assert.match(choice.reason!, /older than the files it was built from/);
 });
 
+test("a getup file with NaN or broken JSON sends the walk policy home alone, and never throws", async () => {
+  const nanGetup = JSON.stringify(getup(150)).replace('"mean":[0,0]', '"mean":[NaN,0]');
+  for (const text of [nanGetup, '{"layers": [', ""]) {
+    const choice = await chooseHomePolicy(sources(good, { "getup/policy.json": text }));
+    assert.equal(choice.path, "train/u3/policy.json");
+    assert.match(choice.reason!, /getup not attached: the getup policy it was built from is refused: not strict JSON/);
+  }
+});
+
 test("4: a combined file the tab's loader refuses (another body) sends the walk policy home alone", async () => {
   const choice = await chooseHomePolicy(sources({ ...good, "home/policy.json": { ...combined(200, 150), mjcf_sha256: "0".repeat(64) } }));
   assert.equal(choice.path, "train/u3/policy.json");

@@ -677,8 +677,11 @@ export class Multiverse {
    * machine deleted; unused spares are deleted.
    */
   collapse(winnerId?: string): Promise<CollapseReport> {
+    const before = this.#phase;
     const p = this.#collapse(winnerId);
-    this.#collapsing = p;
+    // #collapse refuses, or takes the phase, before its first await: only the call that took it is the collapse home
+    // waits for, and a refused repeat (BUSY) never replaces it.
+    if (before === "running" && this.#phase === "collapsed") this.#collapsing = p;
     return p;
   }
 

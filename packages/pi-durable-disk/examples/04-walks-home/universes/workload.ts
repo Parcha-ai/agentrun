@@ -18,7 +18,7 @@
 //   UNIVERSE_EXPORT_PY, UNIVERSE_GETUP   export.py, and the image's getup policy: the home step (homePolicy)
 import { spawn } from "node:child_process";
 import { existsSync, watch } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { startTrainer } from "./trainer.ts";
 
@@ -65,8 +65,9 @@ export function startWorkload(o: WorkloadOptions): Workload {
 /**
  * The winner's last step before it goes home (D2's export.py): its walking policy and the getup policy in one file,
  * work/home/policy.json, for the tab. The getup policy is the run's own (train/getup/policy.json) when it trained one,
- * else the image's default for the default body (UNIVERSE_GETUP). Resolves with the file's path under work/, or null
- * when the workload is not train.py or the step is not configured.
+ * else the image's default for the default body (UNIVERSE_GETUP), which is copied into the run first, as
+ * work/getup/policy.json, so the run holds every file its home policy was built from. Resolves with the file's path
+ * under work/, or null when the workload is not train.py or the step is not configured.
  */
 export async function homePolicy(o: Pick<WorkloadOptions, "work" | "env" | "log">): Promise<string | null> {
   if ((o.env.UNIVERSE_WORKLOAD ?? "stand-in") !== "train" || !o.env.UNIVERSE_EXPORT_PY) return null;
@@ -74,8 +75,13 @@ export async function homePolicy(o: Pick<WorkloadOptions, "work" | "env" | "log"
   // The run's own getup policy (trained in the run, or carried from its source), else the image's for the default body:
   // the orchestrator checks the combined file against the run's, so the run's is preferred.
   const own = [join(o.work, "train", "getup", "policy.json"), join(o.work, "getup", "policy.json")].find((p) => existsSync(p));
-  const getup = own ?? o.env.UNIVERSE_GETUP;
-  if (!getup) return null;
+  if (!own && !o.env.UNIVERSE_GETUP) return null;
+  // The orchestrator checks the combined file against the getup file in the run (home-policy.ts): the image's goes there.
+  const getup = own ?? join(o.work, "getup", "policy.json");
+  if (!own) {
+    await mkdir(dirname(getup), { recursive: true });
+    await copyFile(o.env.UNIVERSE_GETUP!, getup);
+  }
   const out = join(o.work, "home", "policy.json");
   await mkdir(dirname(out), { recursive: true });
   const t0 = performance.now();
