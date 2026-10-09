@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type RunRef } from "@parcha/pi-durable-disk";
+import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type ForkOptions, type RunRef } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "../../03-tab-to-cloud/pipe/control.ts";
 import { daytonaFleet } from "./daytona-fleet.ts";
 import { modalUniverses } from "./modal.ts";
@@ -217,6 +217,19 @@ const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec
   };
 });
 const runPrefix = `d1-${stamp}-`;
+// forkMany (#64: one source mount, every new run copied at once) when this build of the package has it; otherwise the
+// multiverse forks one run after another.
+type ForkMany = (ref: RunRef, ids: readonly string[], options: ForkOptions) => Promise<{ outcomes: ({ run: string; ok: true; result: { ms: number; files: number; bytes: number } } | { run: string; ok: false; error: Error })[] }>;
+const forkMany = ((await import("@parcha/pi-durable-disk")) as unknown as { forkMany?: ForkMany }).forkMany;
+const forkAll = forkMany
+  ? async (ref: RunRef, ids: readonly string[], options: ForkOptions) => {
+      const r = await forkMany(ref, ids, options);
+      const failed = r.outcomes.find((o) => !o.ok);
+      if (failed && !failed.ok) throw failed.error;
+      return r.outcomes.map((o) => (o.ok ? { run: o.run, ms: o.result.ms, files: o.result.files, bytes: o.result.bytes } : { run: o.run, ms: 0, files: 0, bytes: 0 }));
+    }
+  : undefined;
+log("forks", { with: forkMany ? "forkMany" : "fork, one by one" });
 const mv = new Multiverse({
   control,
   fleet,
@@ -230,6 +243,7 @@ const mv = new Multiverse({
   emit: (e) => feed.emit(e),
   origin,
   log,
+  ...(forkAll ? { forkAll } : {}),
   ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true } : {}),
   onResource: (kind, id, note) => {
     onResource(kind, id, note);
