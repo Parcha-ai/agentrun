@@ -96,6 +96,9 @@ def main() -> None:
   ap.add_argument("--smoke", action="store_true", help="tiny CPU-sized run to check the pipeline")
   ap.add_argument("--no-compile-cache", action="store_true",
                   help="do not carry the XLA and Warp compile caches in WORK (compile-cache.tar.gz)")
+  ap.add_argument("--compile-cache", default=None,
+                  help="where the compile-cache tarball lives (default WORK/compile-cache.tar.gz); point every universe "
+                       "of a run at one shared path so a fork starts warm")
   ap.add_argument("--keep", type=int, default=3,
                   help="complete checkpoints kept per segment; older ones are deleted so work/ stays small enough for "
                        "a pipe host to attach (all of work/ crosses in one frame)")
@@ -112,7 +115,7 @@ def main() -> None:
   # Compiling the training step takes ~100 s on a fresh box; with the XLA and Warp caches of an earlier run of the same
   # body it takes ~20 s. They travel with the run (WORK) so a resumed or forked universe starts warm. Unpacked before
   # JAX or Warp load, into a local directory outside WORK.
-  cache_tar = os.path.join(work, "compile-cache.tar.gz")
+  cache_tar = os.path.abspath(args.compile_cache) if args.compile_cache else os.path.join(work, "compile-cache.tar.gz")
   cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "pda-train")
   cache_was_warm = False
   if not args.no_compile_cache:
