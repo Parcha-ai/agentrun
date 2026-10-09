@@ -229,7 +229,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
             `sudo -n install -o root -g root -m 0644 ${stage}/universe-remote.mjs ${BOX_RUNNER}`,
             `sudo -n install -D -o pda -g pda -m 0600 ${stage}/runner.token ${BOX_RUNNER_TOKEN}`,
             `rm -f ${stage}/*`,
-            `sudo -n -u pda -H sh -c 'mkdir -p /home/pda/work && cd /home/pda && nohup ${BOX_NODE} ${BOX_RUNNER} --port ${o.runner.port} --token-file ${BOX_RUNNER_TOKEN} --work /home/pda/work > ${BOX_RUNNER_LOG} 2>&1 &'`,
+            `sudo -n -u pda -H sh -c 'mkdir -p "$HOME/work" && cd "$HOME" && nohup ${BOX_NODE} ${BOX_RUNNER} --port ${o.runner.port} --token-file ${BOX_RUNNER_TOKEN} --work "$HOME/work" > ${BOX_RUNNER_LOG} 2>&1 &'`,
             `for i in $(seq 100); do grep -q '"listening"' ${BOX_RUNNER_LOG} 2>/dev/null && exit 0; sleep 0.1; done; tail -5 ${BOX_RUNNER_LOG}; exit 1`,
           ].join(" && ");
           const [started, url] = await Promise.all([client.exec(box, start, 60), o.runner.previewUrl(box.id, o.runner.port)]);

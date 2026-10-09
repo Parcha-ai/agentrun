@@ -6,9 +6,11 @@
 // It starts when the machine is warmed and waits, modules loaded, for one WebSocket with its bearer token: the server's
 // first frame there is the invitation (which run, as which tab, for which switch, and the universe's environment), so a
 // takeover costs a dial and an attach, not a process start. It exits when the pipe lets it go.
-//   node universe-remote.mjs --port 8080 --token-file F --work DIR
+//   node universe-remote.mjs --port 8080 --token-file F [--work DIR, default ~/work]
 import { createHash, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { WebSocketServer, type WebSocket } from "ws";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -24,7 +26,7 @@ import { startTrainer } from "./trainer.ts";
 /** The server's first frame: 03's invite plus the universe's environment (UNIVERSE_*, DEMO_ENV_LABEL, ...). */
 export type UniverseInvite = { t: "invite"; run: string; token: string; tab: string; switchId?: string; env: Record<string, string> };
 
-const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: "/home/pda/work" } } });
+const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: join(homedir(), "work") } } });
 const log = (event: string, data: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 const bearer = createHash("sha256").update(`Bearer ${readFileSync(values["token-file"]!, "utf8").trim()}`).digest();
 const work = values.work!;
