@@ -61,3 +61,50 @@ export function captionsFor(state: ShowState, now: number, max = 3): Caption[] {
 export function captionFor(state: ShowState, now: number): Caption | null {
   return captionsFor(state, now, 1)[0] ?? null;
 }
+
+/**
+ * The v2 stage's caption: one at a time, held long enough to read. A key moment is shown for at least `minHoldMs`; the next unseen
+ * one replaces it once that has passed, and the last one clears after `maxHoldMs`. The agent's own lines are the chat's job, so they
+ * are not captions here. A moment older than `staleMs` when the page first looks (a reconnect) is history, not news.
+ */
+export class CaptionDesk {
+  private shown = new Set<string>();
+  private current: { caption: Caption; shownAt: number } | undefined;
+  private lastNow = 0;
+  private opts: { minHoldMs: number; maxHoldMs: number; staleMs: number; lagMs: number };
+
+  constructor(options: { minHoldMs?: number; maxHoldMs?: number; staleMs?: number; lagMs?: number } = {}) {
+    this.opts = { minHoldMs: options.minHoldMs ?? 4000, maxHoldMs: options.maxHoldMs ?? 10_000, staleMs: options.staleMs ?? 15_000, lagMs: options.lagMs ?? 8000 };
+  }
+
+  update(state: ShowState, now: number): Caption | null {
+    // A clock that went backwards is a new timeline (a reset, a retake): nothing of the old one is still on screen or already seen.
+    if (now < this.lastNow) {
+      this.current = undefined;
+      this.shown.clear();
+    }
+    this.lastNow = now;
+    if (this.current && now - this.current.shownAt < this.opts.minHoldMs) return this.current.caption;
+    // The moments waiting, oldest first. When several are waiting the desk catches up: one already older than `lagMs` is skipped, so the
+    // newest news is not stuck behind a backlog. A single late moment is still shown.
+    const waiting: { n: Note; key: string }[] = [];
+    for (const n of state.notes) {
+      if (n.at > now) break;
+      if (now - n.at > this.opts.staleMs) continue;
+      if (n.kind === "agent" || (!KEY_KINDS.has(n.kind) && n.measured !== true)) continue;
+      const key = `${n.at}|${n.kind}|${n.text}`;
+      if (!this.shown.has(key)) waiting.push({ n, key });
+    }
+    const fresh = waiting.filter((w) => now - w.n.at <= this.opts.lagMs);
+    const take = waiting.length > 1 ? (fresh.length > 0 ? fresh : waiting.slice(-1)) : waiting;
+    for (const w of waiting) if (!take.includes(w)) this.shown.add(w.key);
+    const next = take[0];
+    if (next) {
+      this.shown.add(next.key);
+      this.current = { caption: caption(next.n, state.source), shownAt: now };
+      return this.current.caption;
+    }
+    if (this.current && now - this.current.shownAt >= this.opts.maxHoldMs) this.current = undefined;
+    return this.current?.caption ?? null;
+  }
+}

@@ -6,7 +6,7 @@
 //   SHOW_PIPE_ROLE (operator)  the hello mode the stage connects as: "operator" may switch and ask, "view" only watches
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
-//   SHOW_ASK_AFTER_SWITCH (1)  ask the agent where it is after each completed switch (0 to turn off)
+//   SHOW_ASK_AFTER_SWITCH (0)  1: ask the agent where it is after each completed switch (the v1 switch beat; off, so the v2 chat shows only real turns)
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
@@ -18,7 +18,9 @@ import { proxyStream, requestTicket } from "./desktop.ts";
 import { LiveLink, linkKey } from "./link.ts";
 import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
+import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
+import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -108,6 +110,7 @@ function relay(source: FeedSource): void {
 }
 
 const PIPE_LINK_FILE = process.env.SHOW_PIPE_LINK_FILE;
+const TAKE_STATUS = process.env.SHOW_TAKE_STATUS;
 const DESKTOP_LINK_FILE = process.env.SHOW_DESKTOP_LINK_FILE ?? PIPE_LINK_FILE;
 // The links are followed live: whoever starts the 03 server rewrites the file (a restart, a retake: a new run), and the feed, the
 // desktop and the disk all follow it. A link that is not there yet means "no server yet", never a crash.
@@ -127,7 +130,8 @@ if (pipeLink) {
       for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
     },
     ...(process.env.SHOW_PIPE_ROLE === "view" || process.env.SHOW_PIPE_ROLE === "operator" ? { role: process.env.SHOW_PIPE_ROLE } : {}),
-    askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH !== "0",
+    // Off unless asked: the question after a switch is a v1 beat, and in the v2 chat it would be a turn the user never typed.
+    askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH === "1",
     trace: process.env.SHOW_PIPE_TRACE === "1",
     connect: (url) => new WS(url, { maxPayload: 64 * 1024 * 1024 }) as never,
     log: (event, data) => console.log(JSON.stringify({ event, ...data })),
@@ -135,14 +139,36 @@ if (pipeLink) {
   relay(feed);
   await feed.start();
   player = feed;
+  // The take server's own read-back of work/ (its --evidence-readback), as notes. SHOW_TAKE_STATUS is its status file; the log it names
+  // moves with a retake, so it is looked up each time. Only the three read-back events are read from it (the log also holds the run's link).
+  if (TAKE_STATUS) {
+    new ReadbackWatcher({
+      file: () => {
+        try {
+          const logFile = (JSON.parse(readFileSync(TAKE_STATUS, "utf8")) as { logFile?: unknown }).logFile;
+          return typeof logFile === "string" ? logFile : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      run: () => feed.run,
+      key: () => {
+        const t = pipeLink.tryCurrent();
+        return t ? linkKey(t) : undefined;
+      },
+      feedKey: () => feed.linkKey,
+      onNote: (note) => feed.addNote(note),
+    }).start();
+  }
   // The tab's files are the real run's: its secret stays here, and a write names the tab the pipe says holds the run.
   disk = runDisk(() => pipeLink.tryCurrent(), () => feed.writerTab);
 } else {
   player = newPlayer();
 }
 
-function newPlayer(start = START, paused = false): ScenarioPlayer {
-  const p = new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
+function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 {
+  // SHOW_SCENARIO=v2: the rehearsal of the v2 take (a creature drawn in the browser, the agent, a GPU, checkpoints, home).
+  const p = process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();

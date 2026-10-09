@@ -1,6 +1,10 @@
 import type { HostKind, Note, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
-import { captionsFor } from "./caption.ts";
+import { badgeFor, trackFor } from "./badge.ts";
+import { CaptionDesk, captionsFor } from "./caption.ts";
+import { syncChat } from "./chat.ts";
+import { cardVisible, decisionCardHtml } from "./decision-card.ts";
+import { bandOf, type Band } from "./lessons.ts";
 import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
@@ -10,6 +14,11 @@ import { renderTimeline } from "./timeline.ts";
 
 const params = new URLSearchParams(location.search);
 if (params.get("theme") === "light") document.documentElement.dataset.theme = "light";
+// v2 is the default: the creature, one badge, the chat, one caption. ?debug=1 brings back the timeline, log, HUD, cost meter, multiverse,
+// VM desktop and buttons (the take's operator panel stays on the `o` key either way).
+const debug = params.get("debug") === "1";
+document.body.classList.toggle("v2", !debug);
+$<HTMLIFrameElement>("tab").src = debug ? "/tab/" : "/tab/?clean=1";
 
 const feed = new Feed();
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
@@ -83,9 +92,29 @@ function withTabNotes(state: ShowState): ShowState {
   return tabNotes.length === 0 ? state : { ...state, notes: [...state.notes, ...tabNotes].sort((a, b) => a.at - b.at) };
 }
 
+// What kind of install each checkpoint was, from its arrival, so the walk reported for it is worded for what it was.
+const installKind = new Map<number, "checkpoint" | "final">();
+let lastInstallKind: "checkpoint" | "final" | undefined;
+/** The band each checkpoint was in, from the distance its file reported, and whether a walking one has been seen (the first says "First steps."). */
+const bandOfInstall = new Map<number, Band | null>();
+let walkingSeen = false;
+
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
-  tabNotes.push(...notesFromTabEvent(m, feed.captionNow()));
+  if (m.type === "policy-arrived" && m.kind) {
+    lastInstallKind = m.kind;
+    if (m.checkpoint_n !== undefined) installKind.set(m.checkpoint_n, m.kind);
+  }
+  const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? installKind.get(m.checkpoint_n) : lastInstallKind) : undefined;
+  let firstWalking = false;
+  if (m.type === "policy-arrived" && m.kind === "checkpoint") {
+    const band = bandOf(m.reported_walk_10s_m);
+    if (m.checkpoint_n !== undefined) bandOfInstall.set(m.checkpoint_n, band);
+    firstWalking = band === "walk" && !walkingSeen;
+    if (band === "walk") walkingSeen = true;
+  }
+  const band = m.type === "policy-walked" && m.checkpoint_n !== undefined ? bandOfInstall.get(m.checkpoint_n) : undefined;
+  tabNotes.push(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), ...(firstWalking ? { firstWalking } : {}), ...(band !== undefined ? { band } : {}) }));
   if (tabNotes.length > 60) tabNotes.splice(0, tabNotes.length - 60);
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
@@ -107,12 +136,22 @@ function sendPlacement(state: ShowState): void {
 
 bridge.onReady(() => {
   lastPlacement = "";
+  phaseSent = "";
   sendPlacement(feed.state);
   maybeSendPolicy(feed.state);
 });
 
 /** The winner's policy goes to the tab once, when the run is home. D2 writes it as work/home/policy.json (mlp-v1 JSON); the stage serves it at /policy/home.json from POLICY_DIR. */
+let wasAway = false;
 function maybeSendPolicy(state: ShowState): void {
+  if (state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes") wasAway = true;
+  // The v2 rehearsal has no pipe and no disk to carry a trained policy home, so the stage hands the tab its own file once the run is back.
+  // A live take never does this: its policy arrives on the disk, and the tab's own watcher installs it.
+  if (!debug && state.source === "scripted" && state.place.where === "home" && wasAway && bridge.ready && policySentFor !== "rehearsal") {
+    policySentFor = "rehearsal";
+    bridge.send({ type: "load-policy", url: "/policy/home.json" });
+    return;
+  }
   if (state.place.where !== "home" || !bridge.ready) return;
   const winner = Object.values(state.universes).find((u) => u.status === "winner");
   if (!winner || policySentFor === winner.id) return;
@@ -177,7 +216,8 @@ function renderChrome(state: ShowState): void {
   $("mvsum").textContent = us.length ? `${live} live${state.scoreUnit ? `  |  score: ${state.scoreUnit}` : ""}` : "";
   $("mv").classList.toggle("dormant", us.length === 0);
   ($("killone") as HTMLButtonElement).disabled = !leader(state);
-  $("lost").hidden = !feed.lost;
+  // While the network is off the feed and the disk are unreachable by design (the take cuts the Wi-Fi): that is the story, not an error.
+  $("lost").hidden = !feed.lost || (!debug && offline);
 }
 
 function renderNotes(state: ShowState, now: number): void {
@@ -241,6 +281,103 @@ addEventListener("keydown", (e) => {
 });
 if (params.get("operator") === "1") operator.hidden = false;
 
+// The browser's own offline/online events: the take cuts the Wi-Fi (CDP offline emulation) and the creature keeps walking. The stage says so
+// in the badge and one caption, and does not show its own failed fetches as errors.
+let offline = !navigator.onLine;
+function pageNote(text: string): void {
+  tabNotes.push({ at: feed.captionNow(), kind: "home", text, origin: "tab" });
+}
+addEventListener("offline", () => {
+  offline = true;
+  pageNote("Network off. The walking brain it learned runs in your tab, even offline.");
+});
+addEventListener("online", () => {
+  offline = false;
+  pageNote("Network back on.");
+});
+
+const desk = new CaptionDesk();
+let shownV2 = "";
+function renderCaptionV2(state: ShowState): void {
+  const c = desk.update(withTabNotes(state), feed.captionNow());
+  const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
+  if (key === shownV2) return;
+  shownV2 = key;
+  const el = $("vcaption");
+  el.hidden = c === null;
+  el.innerHTML = c ? `${c.tag ? `<span class="tag ${c.tag}">${c.tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
+}
+
+let shownDecision = "";
+/** The decision card: up for a few seconds when the typed model has decided where the run goes, then gone as the badge moves. */
+function renderDecision(state: ShowState): void {
+  const el = $("decision");
+  const d = state.decision;
+  const visible = cardVisible(d, feed.captionNow());
+  const key = visible && d ? `${d.id}:${d.phase}` : "";
+  if (key === shownDecision) return;
+  shownDecision = key;
+  el.hidden = !visible;
+  el.classList.remove("go");
+  if (!visible || !d) return void (el.innerHTML = "");
+  el.innerHTML = decisionCardHtml(d, state.source);
+  // The bars grow from nothing: the width is set a frame after the card is in the page.
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("go")));
+}
+
+let badgeKey = "";
+function renderBadge(state: ShowState): void {
+  const b = badgeFor(state);
+  const el = $("badge");
+  el.dataset.tone = b.tone;
+  $("badge").querySelector(".txt")!.textContent = b.text;
+  const track = trackFor(state);
+  el.dataset.at = track.at;
+  const right = el.querySelector<HTMLElement>(".node.b")!;
+  right.hidden = track.right === null;
+  right.textContent = track.right ?? "";
+  $("badge").querySelector<HTMLElement>(".offline")!.hidden = !offline;
+  // The badge animates when the place changes, not on every frame.
+  if (b.text !== badgeKey) {
+    if (badgeKey !== "") {
+      el.classList.remove("swap");
+      void el.offsetWidth;
+      el.classList.add("swap");
+    }
+    badgeKey = b.text;
+  }
+}
+
+/** The creature fills the pane once the agent has left with it: the sketcher has done its job. */
+let phaseSent = "";
+function sendPhase(state: ShowState): void {
+  if (debug || !bridge.ready) return;
+  const away = state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes";
+  const phase = away ? "watch" : phaseSent === "watch" ? "watch" : "draw";
+  if (phase === phaseSent) return;
+  phaseSent = phase;
+  bridge.send({ type: "set-phase", phase });
+}
+
+const chatLog = $("chatlog");
+const chatIn = $<HTMLInputElement>("chatin");
+const chatErr = $("chaterr");
+$("chatform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = chatIn.value.trim();
+  if (!text) return;
+  chatErr.hidden = true;
+  chatIn.disabled = true;
+  const r = await feed.command({ t: "ask", text }).catch((err) => ({ ok: false, message: err instanceof Error ? err.message : String(err) }));
+  chatIn.disabled = false;
+  if (r.ok) chatIn.value = "";
+  else {
+    chatErr.textContent = `The agent did not take that: ${r.message ?? "refused"}`;
+    chatErr.hidden = false;
+  }
+  chatIn.focus();
+});
+
 let shownCaption = "";
 function renderCaption(state: ShowState): void {
   const list = captionsFor(withTabNotes(state), feed.captionNow());
@@ -257,6 +394,16 @@ function frame(): void {
   const now = feed.liveNow();
   renderChrome(state);
   renderOperator(state);
+  renderDecision(state);
+  if (!debug) {
+    // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
+    renderBadge(state);
+    syncChat(chatLog, state.chat);
+    $("chat").classList.toggle("talked", state.chat.length > 0);
+    renderCaptionV2(state);
+    sendPhase(state);
+    return;
+  }
   renderCaption(state);
   desktop.update(state);
   grid.render(state, now);

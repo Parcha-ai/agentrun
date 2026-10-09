@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openTab } from "./cdp.mjs";
+import { openTab, withDebug } from "./cdp.mjs";
 import { checkHomePolicy, checkServedHomePolicy } from "../home-policy.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -52,7 +52,7 @@ await check("Chrome answers on the CDP port", async () => (await fetch(`${cdpUrl
 await check("that Chrome has WebGL (the creature's 3D view needs it)", async () => {
   const server = createServer((_, res) => res.end("<!doctype html><canvas id=c></canvas>"));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const tab = await openTab(`http://127.0.0.1:${server.address().port}/`);
+  const tab = await openTab(withDebug(`http://127.0.0.1:${server.address().port}/`));
   try {
     await new Promise((r) => setTimeout(r, 800));
     const gl = await tab.eval(`!!document.getElementById("c").getContext("webgl2")`);

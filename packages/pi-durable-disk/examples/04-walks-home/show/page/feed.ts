@@ -9,6 +9,7 @@ export class Feed {
   lost = false;
   private lastId = -1;
   private receivedAt = performance.now();
+  private floor = 0;
   private es: EventSource | null = null;
   private listeners = new Set<(event: ShowEvent | null) => void>();
 
@@ -25,7 +26,15 @@ export class Feed {
    * ticks (a pipe) would otherwise leave its newest caption up forever.
    */
   captionNow(): number {
-    return this.state.now + (performance.now() - this.receivedAt);
+    // Never backwards between events: a quiet feed's next event can carry a time the page clock has already run past, and a note the page
+    // stamped from this clock (the stage's own, such as "Wi-Fi is off") must not end up in the future. A reset starts the clock over.
+    this.floor = Math.max(this.floor, this.state.now + (performance.now() - this.receivedAt));
+    return this.floor;
+  }
+
+  /** A new run (or a restarted script): its time is its own, so the clock may start from the beginning. */
+  resetClock(): void {
+    this.floor = 0;
   }
 
   /** Scenario time now, in ms: the last event's time plus the time since it arrived, capped so a stalled feed does not run ahead. */
@@ -38,6 +47,7 @@ export class Feed {
     const res = await fetch("/api/state", { cache: "no-store" });
     if (!res.ok) throw new Error(`state: HTTP ${res.status}`);
     this.state = (await res.json()) as ShowState;
+    this.resetClock();
     // The snapshot says which event it ends at. A feed that does not say gets the stream's live tail, never a replay from the
     // start: replaying events the snapshot already holds would apply every narration line twice.
     const header = res.headers.get("x-last-event-id");

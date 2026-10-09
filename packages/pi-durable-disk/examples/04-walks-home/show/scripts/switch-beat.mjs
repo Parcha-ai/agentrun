@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForStage, withDebug } from "./cdp.mjs";
 import { startTakeServer } from "./takeserver.mjs";
 import { startScreencast } from "./screencast.mjs";
 
@@ -71,7 +71,7 @@ try {
   hostLinesAll = serverLog;
   const linkFile = take.status.linkFile;
   const link = readFileSync(linkFile, "utf8").trim();
-  const stageProc = run(join(show, "serve.ts"), { SHOW_PORT: String(stagePort), SHOW_PIPE_LINK_FILE: linkFile, TAB_DIR: tabDir, SHOW_PIPE_TRACE: process.env.SHOW_PIPE_TRACE ?? "" }, "stage");
+  const stageProc = run(join(show, "serve.ts"), { SHOW_PORT: String(stagePort), SHOW_PIPE_LINK_FILE: linkFile, SHOW_ASK_AFTER_SWITCH: "1", TAB_DIR: tabDir, SHOW_PIPE_TRACE: process.env.SHOW_PIPE_TRACE ?? "" }, "stage");
   stageLog = () => stageProc.log();
   await waitForStage(stagePort, stageProc);
 
@@ -80,7 +80,7 @@ try {
   await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", 240_000, "the tab page to attach as writer");
   console.log("writer attached");
 
-  stage = await openTab(`http://127.0.0.1:${stagePort}/`, { width: 1600, height: 900 });
+  stage = await openTab(withDebug(`http://127.0.0.1:${stagePort}/`), { width: 1600, height: 900 });
   if (recordTo) recorder = await startScreencast(stage, { out: recordTo, fps: 15 });
   // The captions on screen right now, oldest first (they stack).
   const cap = () => stage.eval(`JSON.stringify([...document.querySelectorAll("#caption .row")].map((r) => ({ tag: r.querySelector(".tag")?.textContent ?? null, text: r.querySelector(".txt").textContent })))`).then(JSON.parse);

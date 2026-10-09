@@ -2,6 +2,9 @@
 // (127.0.0.1:9222), run steps, close the tab. It never touches a tab it did not open, and refuses non-local URLs.
 import WebSocket from "ws";
 
+/** The stage's default page is the v2 take (creature, badge, chat, caption). The checks and recordings of the v1 stage read its panels, which `?debug=1` brings back. */
+export const withDebug = (url) => (/[?&]debug=/.test(url) ? url : `${url}${url.includes("?") ? "&" : "?"}debug=1`);
+
 const DEBUG = process.env.CDP_URL ?? "http://127.0.0.1:9222";
 
 export async function openTab(url, { width = 1600, height = 900 } = {}) {

@@ -12,6 +12,8 @@ export function emptyState(): ShowState {
     stays: [],
     cost: { usd: 0, ratePerMin: 0 },
     notes: [],
+    chat: [],
+    decision: null,
     scoreUnit: "",
     environments: [],
     currentEnv: null,
@@ -76,6 +78,10 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
       return { ...state, now, cost: event.cost };
     case "note":
       return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}), ...(event.evidence !== undefined ? { evidence: event.evidence } : {}) }].slice(-200) };
+    case "chat":
+      return { ...state, now, chat: event.turns };
+    case "decision":
+      return { ...state, now, decision: { ...event.decision, at: event.at } };
   }
 }
 
