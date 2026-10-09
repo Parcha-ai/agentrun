@@ -21,7 +21,7 @@ import { PipeClient, type SocketLike } from "../../03-tab-to-cloud/tab/pipe-clie
 import { startTab, type TabRuntime } from "../../03-tab-to-cloud/tab/runtime.ts";
 import { Workspace } from "../../03-tab-to-cloud/tab/workspace.ts";
 import type { PipeFrame } from "../../03-tab-to-cloud/wire.ts";
-import { startTrainer } from "./trainer.ts";
+import { startWorkload, type Workload } from "./workload.ts";
 
 /** The server's first frame: 03's invite plus the universe's environment (UNIVERSE_*, DEMO_ENV_LABEL, ...). */
 export type UniverseInvite = { t: "invite"; run: string; token: string; tab: string; switchId?: string; env: Record<string, string> };
@@ -31,11 +31,6 @@ const log = (event: string, data: Record<string, unknown> = {}) => console.log(J
 const bearer = createHash("sha256").update(`Bearer ${readFileSync(values["token-file"]!, "utf8").trim()}`).digest();
 const work = values.work!;
 mkdirSync(work, { recursive: true });
-
-const num = (env: Record<string, string>, name: string, fallback: number) => {
-  const v = Number(env[name]);
-  return Number.isFinite(v) && v > 0 ? v : fallback;
-};
 
 /** The machine's probe taken when it was warmed, used only when it is this box's; otherwise probed now. */
 function cachedFacts(env: Record<string, string>): Promise<EnvironmentFacts> | EnvironmentFacts {
@@ -82,7 +77,7 @@ async function serve(socket: WebSocket, invite: UniverseInvite): Promise<void> {
   const env = invite.env;
   const label = env.DEMO_ENV_LABEL ?? "a cloud host";
   let runtime: TabRuntime | undefined;
-  let trainer: ReturnType<typeof startTrainer> | undefined;
+  let trainer: Workload | undefined;
   let workspace: Workspace | undefined;
   // One write-through at a time: each diffs against the baseline the previous one accepted. Nothing else here writes
   // through (no agent turn runs in a universe unless someone submits one).
@@ -146,17 +141,7 @@ async function serve(socket: WebSocket, invite: UniverseInvite): Promise<void> {
   const execEnv = new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } });
   runtime = await startTab({ client, attached: first, env: execEnv, workspace, ...(first.move ? { move: { info: first.move, facts } } : {}) });
   log("running", { epoch: first.epoch, generation: first.generation, ms: Math.round(performance.now() - started), restored: runtime.restored });
-  trainer = startTrainer({
-    work,
-    total: num(env, "UNIVERSE_TOTAL_STEPS", 120),
-    stepMs: num(env, "UNIVERSE_STEP_MS", 1_000),
-    checkpointEvery: num(env, "UNIVERSE_CHECKPOINT_EVERY", 5),
-    seed: num(env, "UNIVERSE_SEED", 1),
-    // Each attachment is a new epoch of the pipe: progress written here says which one, as a generation would.
-    generation: first.epoch,
-    host: label,
-    barrier: flush,
-    log,
-  });
+  // Each attachment is a new epoch of the pipe: progress written here says which one, as a generation would.
+  trainer = startWorkload({ work, env, generation: first.epoch, host: label, checkpointed: flush, log });
   trainer.done.catch((error: unknown) => log("trainer.failed", { error: (error as Error).message }));
 }

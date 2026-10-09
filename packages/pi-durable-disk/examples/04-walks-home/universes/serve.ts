@@ -22,6 +22,7 @@ import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
+import { readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -56,8 +57,17 @@ const { values } = parseArgs({
     keep: { type: "boolean", default: false },
     /** How runs reach the boxes: the box mounts the run (direct), or this process holds it and pipes it over (pipe). */
     transport: { type: "string", default: "direct" },
-    /** What a score means on the stage ("m walked in 10 s" for D2's trainer); the stand-in trainer's has no unit. */
+    /** What a score means on the stage; with --workload train it is D2's ("m walked in 10 s"), the stand-in's has none. */
     "score-unit": { type: "string" },
+    /** What each universe runs: the stand-in trainer, or D2's train.py (in the box's image). */
+    workload: { type: "string", default: "stand-in" },
+    /** D2's universe files (u1.json .. u8.json: name, hypothesis, reward_scales). */
+    "universes-dir": { type: "string", default: join(here, "..", "train", "universes") },
+    "train-py": { type: "string", default: "/opt/pda/train/train.py" },
+    python: { type: "string", default: "/usr/local/bin/python" },
+    minutes: { type: "string", default: "6" },
+    /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
+    "source-files": { type: "string" },
   },
 });
 
@@ -68,6 +78,7 @@ if (!process.env.DAYTONA_API_KEY) throw new Error("DAYTONA_API_KEY (with-daytona
 if (!values.snapshot) throw new Error("--snapshot (or DAYTONA_SNAPSHOT) names the demo's runtime snapshot (03-tab-to-cloud/scripts/daytona-snapshot.ts)");
 
 const n = Number(values.universes);
+const training = values.workload === "train";
 const stamp = Date.now().toString(36);
 const log = jsonLog();
 const ledger = new Ledger(values.ledger!);
@@ -138,7 +149,15 @@ const sourceLabel = "your browser tab";
 let source: RunRef = { disk, region, id: values.source ?? `d1-src-${stamp}` };
 const createdRuns: string[] = [];
 if (!values.source) {
-  await makeSourceRun({ control, ref: source, mountRoot: values["mount-root"]!, story: "Design a creature that walks, then train it in eight universes and bring the best one home.", onResource, log });
+  await makeSourceRun({
+    control,
+    ref: source,
+    mountRoot: values["mount-root"]!,
+    story: "Design a creature that walks, then train it in eight universes and bring the best one home.",
+    ...(values["source-files"] ? { files: values["source-files"] } : {}),
+    onResource,
+    log,
+  });
   createdRuns.push(source.id);
 }
 feed.emit({
@@ -148,16 +167,28 @@ feed.emit({
   origin,
   environments: [{ id: "tab", label: "Tab", kind: "tab" }, { id: "universes", label: "Universes", kind: "sandbox" }],
   source: "live",
-  ...(values["score-unit"] ? { scoreUnit: values["score-unit"] } : {}),
+  ...(values["score-unit"] || training ? { scoreUnit: values["score-unit"] ?? TRAIN_SCORE_UNIT } : {}),
 });
 feed.emit({ t: "place", at: 0, place: { where: "tab", host: sourceLabel }, env: "tab" });
 feed.emit({ t: "stay.begin", at: 0, stay: { id: "run:source", lane: "run", host: sourceLabel, hostKind: "tab", from: 0 } });
 
-const universes: UniverseSpec[] = Array.from({ length: n }, (_, i) => ({
-  id: `u${i + 1}`,
-  reward: REWARDS[i % REWARDS.length]!,
-  env: { UNIVERSE_SEED: String(i + 1), UNIVERSE_TOTAL_STEPS: values.steps!, UNIVERSE_STEP_MS: values["step-ms"]!, UNIVERSE_CHECKPOINT_EVERY: values["checkpoint-every"]! },
-}));
+/** D2's universe file k (1-based): its hypothesis is the stage's reward line, its scales go to train.py. */
+const trainUniverse = (k: number): { hypothesis: string; reward_scales: unknown } => JSON.parse(readFileSync(join(values["universes-dir"]!, `u${k}.json`), "utf8"));
+const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec => {
+  if (!training) {
+    return {
+      id: `u${i + 1}`,
+      reward: REWARDS[i % REWARDS.length]!,
+      env: { UNIVERSE_SEED: String(i + 1), UNIVERSE_TOTAL_STEPS: values.steps!, UNIVERSE_STEP_MS: values["step-ms"]!, UNIVERSE_CHECKPOINT_EVERY: values["checkpoint-every"]! },
+    };
+  }
+  const u = trainUniverse(i + 1);
+  return {
+    id: `u${i + 1}`,
+    reward: u.hypothesis,
+    env: { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: values["train-py"]!, UNIVERSE_PYTHON: values.python!, UNIVERSE_SCALES: JSON.stringify(u.reward_scales), UNIVERSE_MINUTES: values.minutes! },
+  };
+});
 const runPrefix = `d1-${stamp}-`;
 const mv = new Multiverse({
   control,
@@ -172,6 +203,7 @@ const mv = new Multiverse({
   emit: (e) => feed.emit(e),
   origin,
   log,
+  ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true } : {}),
   onResource: (kind, id, note) => {
     onResource(kind, id, note);
     if (kind === "run") createdRuns.push(id);

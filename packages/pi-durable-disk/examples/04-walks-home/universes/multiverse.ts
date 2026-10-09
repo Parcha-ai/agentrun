@@ -431,19 +431,16 @@ export class Multiverse {
       await Promise.all(
         live.map(async (line) => {
           const p = await this.#progress(line.run!, line.spec!);
-          if (p && (p.step > line.step || p.generation > line.generation)) {
-            const first = line.status === "starting" || line.status === "takeover";
-            if (p.step > line.step) {
-              line.score = p.score;
-              this.#o.emit({ t: "sample", at: this.#at(), id: line.id, score: p.score, progress: p.progress, cost: round(this.#cost(line)) });
-            }
-            line.step = Math.max(line.step, p.step);
+          if (p && p.step > line.step) {
+            line.score = p.score;
+            line.step = p.step;
+            this.#o.emit({ t: "sample", at: this.#at(), id: line.id, score: p.score, progress: p.progress, cost: round(this.#cost(line)) });
+          }
+          // A checkpoint written by this line's placement means the universe trains here.
+          if (p && (line.status === "starting" || line.status === "takeover") && this.#ownCheckpoint(line, p)) {
+            line.status = "training";
             line.generation = Math.max(line.generation, p.generation);
-            // A checkpoint written on this line's machine means the universe trains here.
-            if (first && p.host === line.machine?.label) {
-              line.status = "training";
-              this.#patch(line, { status: "training", startedAt: this.#at() });
-            }
+            this.#patch(line, { status: "training", startedAt: this.#at() });
           }
           if (checkHosts && line.placed && !line.leaving) {
             const status: HostStatus = await this.#o.fleet.status(line.placed).catch(() => "unknown" as const);
@@ -459,6 +456,16 @@ export class Multiverse {
     } finally {
       this.#polling = false;
     }
+  }
+
+  /**
+   * Whether `p` was written by `line`'s own placement: it names the line's machine; or, for a workload that cannot know
+   * the label, the line is starting a fresh fork (nothing else wrote its run), or `p` is of a later generation than the
+   * run had when the line took it over.
+   */
+  #ownCheckpoint(line: Line, p: Progress): boolean {
+    if (p.host && p.host === line.machine?.label) return true;
+    return line.status === "starting" || p.generation > line.generation;
   }
 
   /** Once every universe trains, the measured time from the fan-out command. */
@@ -581,7 +588,7 @@ export class Multiverse {
     const deadline = this.#now() + timeoutMs;
     while (this.#now() < deadline) {
       const p = await this.#progress(line.run!, line.spec!);
-      if (p && p.host === line.machine?.label) {
+      if (p && this.#ownCheckpoint(line, p)) {
         if (line.status === "takeover") await this.poll();
         return this.#now();
       }
