@@ -40,3 +40,17 @@ export const simulationNote = (at: number): Note => ({ at, kind: "home", text: "
  * is on the caption as data (`data-tag`), which the recorder writes to captions.json and the published page keeps in its notes. ?debug=1 draws every pill.
  */
 export const visibleTag = (tag: Caption["tag"], debug: boolean): Caption["tag"] => (debug ? tag : null);
+
+/**
+ * The pipe's switch line in the clean view's words: seconds, not milliseconds, and the tab is "your browser" (cold view 6: "Switched to This tab in
+ * 1138 ms (timed by the server)" read as a contradiction beside "offline"). It is still the server's measurement; only the wording changes.
+ */
+export function plainSwitch(n: Note): Note {
+  if (n.kind !== "switch") return n;
+  const m = /^Switched to (.+) in (\d+) ms \(timed by the server\)\.?$/.exec(n.text);
+  if (!m) return n;
+  const secs = (Number(m[2]) / 1000).toFixed(1);
+  const label = m[1]!;
+  const text = /^(this tab|your browser|the tab)$/i.test(label) ? `Came home to your browser in ${secs} s` : `Moved to ${/^the /i.test(label) ? "" : "the "}${label} in ${secs} s`;
+  return { ...n, text };
+}

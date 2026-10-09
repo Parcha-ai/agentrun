@@ -32,7 +32,7 @@ try {
   await waitForStage(port, stage);
   // The take starts at its start: the rehearsal is held at 0 until the page is open (a slow Chrome would otherwise let it run on).
   await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
-  tab = await openTab(base, { width: 1600, height: 900 });
+  tab = await openTab(base, { width: 1600, height: 900, init: `window.__meters = 0; addEventListener("message", (e) => { if (e.data && e.data.ns === "walks-home" && e.data.type === "walk-meter") window.__meters++; });` });
   await sleep(2500);
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
   /** Every caption that shows during `ms`, with the tags it wore. */
@@ -85,6 +85,28 @@ try {
   expect("the tab is the clean one", /clean=1/.test(layout.tabSrc ?? ""), layout.tabSrc);
   const hint = await read(`getComputedStyle(document.getElementById("chathint")).display`);
   expect("before anyone speaks the chat says what to do", hint !== "none", hint);
+  // A real stroke on the tab's own sketcher (mouse events through Chrome, on the real bundle): the tab itself says "draw-started", the check does not.
+  // The sketcher is a handle editor: the stroke presses the nose handle, where the tab's own geometry puts it, and drags it in.
+  const grab = await read(`(() => {
+    const frame = document.getElementById("tab");
+    const g = frame.contentWindow.__walks && frame.contentWindow.__walks.sketchGeometry && frame.contentWindow.__walks.sketchGeometry();
+    if (!g) return null;
+    const f = frame.getBoundingClientRect();
+    const nose = g.handles.find((h) => h.kind === "length");
+    return nose ? { x: f.x + g.rect.left + nose.x, y: f.y + g.rect.top + nose.y, canvas: g.rect.width } : null;
+  })()`);
+  expect("the tab shows its sketcher with a handle to draw with", grab !== null && grab.canvas > 50, grab);
+  if (grab) {
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: grab.x, y: grab.y });
+    await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", x: grab.x, y: grab.y, button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 6; i++) {
+      await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: grab.x - 8 * i, y: grab.y, button: "left", buttons: 1 });
+      await sleep(60);
+    }
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: grab.x - 48, y: grab.y, button: "left", buttons: 0, clickCount: 1 });
+  }
+  await sleep(500);
+  expect("once the tab itself says a stroke was drawn the prompt to draw goes away", (await read(`getComputedStyle(document.getElementById("chathint")).display`)) === "none");
   expect("the badge says the agent is in the browser", (await read(`document.querySelector("#badge .txt").textContent`)) === "Your agent is in your browser");
   await shot("1-draw");
 
@@ -123,6 +145,10 @@ try {
   const memoryText = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
   const line = await read(`(() => { const m = document.querySelector("#badge .memory"); return { hidden: m.hidden, text: m.textContent, shown: getComputedStyle(m).display !== "none" }; })()`);
   expect("while the agent is away the cloud-disk sentence is on screen as part of the header, not a caption that passes", line.hidden === false && line.shown && line.text === memoryText, line);
+  // Cold view 5: "the cloud-disk line is the product, and the viewer called it buried in small print". It is as readable as the header while away.
+  const size = await read(`(() => { const m = getComputedStyle(document.querySelector("#badge .memory")); const h = getComputedStyle(document.querySelector("#badge .txt")); return { memoryPx: parseFloat(m.fontSize), headerPx: parseFloat(h.fontSize), weight: Number(m.fontWeight), memoryColor: m.color, inkColor: getComputedStyle(document.body).color }; })()`);
+  expect("the cloud-disk sentence is close to the header's size (at least three quarters of it), not small print", size.memoryPx >= size.headerPx * 0.75, size);
+  expect("and bold enough, in the full text colour rather than muted", size.weight >= 600 && size.memoryColor === size.inkColor, size);
   const first = await watchCaptions(14_000);
   expect("and it is still there after the captions have come and gone", (await read(`document.querySelector("#badge .memory").hidden`)) === false);
   expect("the measured-looking switch time is there too, tagged scripted because the feed is", [...first].some(([t, tags]) => /Moved to the H100 GPU/.test(t) && tags.includes("scripted")), [...first]);
@@ -132,6 +158,14 @@ try {
   expect("the badge came home", home.text === "Your agent is back in your browser" && home.tone === "tab", home);
   const homeCaps = await watchCaptions(22_000);
   expect("on the way back one caption says why it came home", homeCaps.has("Done training. The agent came back to your browser, and so did what it learned."), [...homeCaps.keys()]);
+  // Cold view 6: the pipe's "Switched to This tab in 900 ms (timed by the server)" is said as what happened, in seconds, in the clean view.
+  await seek(94);
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 96, paused: true }) });
+  const wayHome = await watchCaptions(16_000);
+  // (Whether this line is on screen at all depends on what else is queued at that moment: it is the lowest-ranked of the way home, and "Done training" says the
+  // same thing first. What the check holds is that when the pipe's line is shown it is never in the server's words; the wording itself is unit-tested.)
+  expect("a switch time, if shown, is in plain seconds", [...wayHome.keys()].every((t) => !/Came home/.test(t) || /^Came home to your browser in 0\.9 s$/.test(t)), [...wayHome.keys()]);
+  expect("and the server-timed wording (\"Switched to This tab in 900 ms\") is not shown in the clean view", [...homeCaps.keys(), ...wayHome.keys()].every((t) => !/Switched to|This tab/.test(t)), [...wayHome.keys()]);
   expect("no caption in the clean view draws a tag pill (the viewer read MEASURED as a staged label)", pillsSeen.length === 0, pillsSeen);
   expect("the cloud-disk sentence is gone once the agent is home", (await read(`document.querySelector("#badge .memory").hidden`)) === true);
   expect("no caption uses the words a viewer could not follow", [...homeCaps.keys(), ...first.keys()].every((t) => !/checkpoint|policy|getup|combined/i.test(t)), [...homeCaps.keys()]);
@@ -144,31 +178,92 @@ try {
   expect("a second take in the same page ends the same way: why it came home, once a trained brain arrives", secondTake.has("Done training. The agent came back to your browser, and so did what it learned."), [...secondTake.keys()]);
   await shot("3-home");
 
-  // The take cuts the Wi-Fi once the story has settled: let the captions from the policy coming home run out first.
+  // Getup lines are told only after a kick: lying down when the brain lands is not "it learned to get back up".
+  await fromTab({ type: "mode-changed", mode: "getup", t: 3, up: 0.1 });
+  const noKick = await watchCaptions(7000);
+  expect("with nobody having kicked it, no getup caption", ![...noKick.keys()].some((t) => /learned to get back up/.test(t)), [...noKick.keys()]);
+  // Cold view 6: the tip-over frame had no explanation, because the getup line waited behind the caption holding the slot. A version caption is on
+  // screen (inside its 4 s hold) when the kick lands; the getup line takes the slot within a second and a half.
+  await fromTab({ type: "policy-arrived", name: "train/gpu/policy.json", via: "watch", message: "", host: null, training_seconds: null, mjcf_sha256: "x", switched_body: null, arrival_to_installed_ms: 12, bytes: 1, kind: "checkpoint", checkpoint_n: 20, steps: null, wall_s: 300, reported_walk_10s_m: 2.1 });
+  await sleep(600);
+  const holding = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+  expect("a caption is holding the slot when the kick lands", holding !== "" && !/Knocked over/.test(holding), holding);
+  await fromTab({ type: "kicked", force_n: 400, t: 5 });
+  await fromTab({ type: "mode-changed", mode: "getup", t: 5.4, up: 0.1 });
+  const knocked = await captionLike(/Knocked over/, 1500);
+  expect("at the kick the getup line is on screen within 1.5 s, though another caption was holding the slot", /^Knocked over\. It learned to get back up\.$/.test(knocked), knocked);
+  const afterKick = await watchCaptions(9000);
+  expect("after a kick the getup caption is told", [...afterKick.keys()].some((t) => /Knocked over\. It learned to get back up\./.test(t)) || /Knocked over/.test(knocked), [...afterKick.keys()]);
+
+  // The take cuts the network once the story has settled: let the captions run out first.
   for (let t = 0; t < 40_000 && !(await read(`document.getElementById("vcaption").hidden`)); t += 500) await sleep(500);
-  // Wi-Fi off: the badge says so, one caption, and no "feed lost" banner (the stage's own fetches fail by design).
+  const tabReportsWalk = (await read(`window.__meters`)) > 0;
   const wifi = await read(`(() => { const r = document.getElementById("wifi").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: document.getElementById("wifi").textContent }; })()`);
   expect("a Wi-Fi control is on screen and reads on", wifi.label === "Wi-Fi: on" && wifi.x > 0, wifi);
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await tab.send("Input.dispatchMouseEvent", { type, x: wifi.x, y: wifi.y, button: "left", clickCount: 1 });
   await sleep(600);
-  expect("clicking it reads off at once, as the user's act", (await read(`document.getElementById("wifi").textContent`)) === "Wi-Fi: off");
+  expect("clicking it reads off at once, as the user's act, but is no banner yet", (await read(`({ t: document.getElementById("wifi").textContent, m: document.getElementById("wifi").dataset.mode })`)).t === "Wi-Fi: off");
+  // D4's recorder cuts the network exactly so: on the stage page's own target, which takes the creature's frame with it.
   await tab.send("Network.enable");
-  await tab.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-  await sleep(2500);
-  const offCap = await captionLike(/Network off/);
-  const off = await read(`({ pill: !document.querySelector("#badge .offline").hidden, lost: !document.getElementById("lost").hidden, online: navigator.onLine })`);
-  off.cap = offCap;
+  await tab.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  let banner = null;
+  for (let t = 0; t < 10_000 && !banner; t += 300) {
+    const b = await read(`({ mode: document.getElementById("wifi").dataset.mode, text: document.getElementById("wifi").textContent, proof: document.getElementById("proof").hidden ? "" : document.getElementById("proof").textContent })`);
+    if (b.mode === "banner") banner = b;
+    else await sleep(300);
+  }
+  const off = await read(`({ lost: !document.getElementById("lost").hidden, online: navigator.onLine, pill: document.querySelector("#badge .offline") !== null })`);
   expect("the browser reports it is offline", off.online === false, off);
-  expect("the badge says the network is off", off.pill === true, off);
+  expect("ONE banner says it: Wi-Fi off, running entirely in the browser", banner?.text === "Wi-Fi off - running entirely in your browser", banner);
+  expect("with the page's own attempt to reach the cloud disk, counted, and failed (no milliseconds)", /^Cloud: unreachable \(tried (once|\d+ times)\)$/.test(banner?.proof ?? ""), banner);
+  expect("the separate 'Network off' pill is gone", off.pill === false, off);
   expect("the stage does not show its own failed feed as an error", off.lost === false, off);
-  expect("the offline caption says it keeps walking, on the brain it learned", /Network off\. It keeps walking: the brain it learned runs right here\./.test(off.cap), off.cap);
   await shot("4-offline");
+  // The cut is the news: what the viewer reads at once is about the cut, never a switch time from before it.
+  const afterCut = await captionLike(/keeps walking/, 6000);
+  expect("right after the cut the caption says it keeps walking", /It keeps walking: the brain it learned runs right here\./.test(afterCut), afterCut);
+  if (tabReportsWalk) {
+    // The tab reports its own walk (walk-meter): the number is measured after the cut, from its real simulation.
+    const real = await captionLike(/Still walking offline: \d+\.\d m in 10 s/, 40_000);
+    expect("the tab's own walk-meter, taken after the cut, says how far it walked offline in 10 s", /^Still walking offline: \d+\.\d m in 10 s$/.test(real), real);
+  } else {
+    const offCap = await captionLike(/keeps walking/);
+    expect("a tab that does not report its walk is told only what the design guarantees", /It keeps walking: the brain it learned runs right here\./.test(offCap), offCap);
+    // 13 readings (one a second of simulated time) after the cut give how far it walked in the last 10 s.
+    for (let i = 0; i <= 12; i++) {
+      await fromTab({ type: "walk-meter", t: i, metres: Math.round(i * 46) / 100, version: 11, state: "trained" });
+      await sleep(120);
+    }
+    const walked = await captionLike(/Still walking offline/, 25_000);
+    expect("measured after the cut, it says how far it walked offline in 10 s", walked === "Still walking offline: 4.6 m in 10 s", walked);
+  }
   await tab.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-  const onCap = await captionLike(/Network back on/);
-  const on = await read(`({ pill: !document.querySelector("#badge .offline").hidden })`);
-  on.cap = onCap;
-  expect("back online the control reads on again", (await read(`document.getElementById("wifi").textContent`)) === "Wi-Fi: on");
-  expect("back online: the pill is gone and the caption says so", on.pill === false && /back on/.test(on.cap), on);
+  const onCap = await captionLike(/Wi-Fi back on/);
+  expect("back online the banner is gone and the control reads on again", await (async () => { for (let t = 0; t < 8000; t += 300) { const x = await read(`({ m: document.getElementById("wifi").dataset.mode, l: document.getElementById("wifi").textContent, p: document.getElementById("proof").hidden })`); if (x.m === "on" && x.l === "Wi-Fi: on" && x.p) return true; await sleep(300); } return false; })());
+  expect("and the caption says so", /Wi-Fi back on/.test(onCap), onCap);
+  // The browser claims offline but the cloud answers: the page must not claim to be offline.
+  await tab.eval(`window.dispatchEvent(new Event("offline")); 0`);
+  let contradiction = null;
+  for (let t = 0; t < 6000 && !contradiction; t += 300) {
+    const x = await read(`({ m: document.getElementById("wifi").dataset.mode, l: document.getElementById("wifi").textContent, p: document.getElementById("proof").hidden ? "" : document.getElementById("proof").textContent })`);
+    if (x.m === "contradiction") contradiction = x;
+    else await sleep(300);
+  }
+  expect("if the attempt gets an answer the page does not say it is offline: it says the cloud answered", contradiction !== null && contradiction.l === "Wi-Fi: on" && /^Cloud: answered in \d+ ms$/.test(contradiction.p), contradiction);
+  await tab.eval(`window.dispatchEvent(new Event("online")); 0`);
+
+  // Cold view 6: a switch caption still waiting when the network is cut is dropped, not shown beside "offline". Home is reached (95.9 s) and the
+  // network cut half a second later, while the captions of the way home are still queued.
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 94, paused: true }) });
+  await sleep(2500);
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 96, paused: true }) });
+  await sleep(500);
+  await tab.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  const cutCaps = await watchCaptions(6000);
+  expect("after a cut no caption is a switch time from before it", [...cutCaps.keys()].every((t) => !/Came home|Switched to|Moved to/.test(t)), [...cutCaps.keys()]);
+  expect("the caption after the cut is about the cut", [...cutCaps.keys()].some((t) => /keeps walking|Still walking offline/.test(t)), [...cutCaps.keys()]);
+  await tab.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await sleep(1500);
 
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|ERR_INTERNET_DISCONNECTED|net::/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
