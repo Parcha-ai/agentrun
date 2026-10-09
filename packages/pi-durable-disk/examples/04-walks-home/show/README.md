@@ -37,13 +37,14 @@ Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` pro
 ## The switch beat (tab, a second host, and back)
 
 The stage can watch a real 03 run through its pipe and drive its switcher. No cloud: the disk is a local directory and the
-"second host" is a child process (`second-host.ts`, the way 03's own remote test does it).
+"second host" is browser-demo's `--cloud remote-local` (`remote-host.ts` as a child process on loopback; environment `remote-local`,
+label "Second process"). One launcher starts it: `scripts/take-server.mjs`, which is also how the take's own 03 server starts.
 
     node scripts/chrome.mjs                              # own Chrome with software WebGL
     CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> node scripts/switch-beat.mjs
 
-`switch-beat.mjs` starts the second-host server and the stage (`SHOW_PIPE_LINK_FILE`), attaches the real 03 tab page as the
-run's writer, then clicks tab, second host, tab in the stage's switcher and checks 11 things: the four named targets (tab,
+`switch-beat.mjs` starts the take server (with the second process) and the stage (`SHOW_PIPE_LINK_FILE`), attaches the real 03 tab page as the
+run's writer, then clicks tab, the second process, tab in the stage's switcher and checks 11 things: the four named targets (tab,
 sandbox, VM, GPU; the ones the feed does not list are greyed, "wired by name"), the caption tagged MEASURED with the
 milliseconds the SERVER timed (from receiving the switch to the new host's notice committed), the timeline stay carrying the
 same number, the agent's notice, and the agent's answer through the model broker (a few short answers). Typical numbers on
@@ -54,8 +55,9 @@ The storyboard (`scripts/storyboard.mjs`) carries a reference block: the real sw
 on `docs.g.parcha.dev` (`reference-timings.json`, with its source), tagged MEASURED on Daytona, beside this stage's own local
 numbers from the last `switch-beat` run, tagged MEASURED locally. The two are never mixed.
 
-By hand: `node second-host.ts` (writes the run link to a 0600 file), open the link in a browser as the tab, then
-`SHOW_PIPE_LINK_FILE=<that file> node serve.ts`. Env: `SHOW_PIPE_ROLE` (the hello mode: `operator`, the default, may switch the
+By hand: `node scripts/take-server.mjs --local <dir> --cloud remote-local` (it writes the run's link to `<its dir>/link`, mode 0600, and
+prints only the origin and the PATHS of the token and link files), open the link in a browser as the tab, then
+`SHOW_PIPE_LINK_FILE=<that link file> node serve.ts`. Env: `SHOW_PIPE_ROLE` (the hello mode: `operator`, the default, may switch the
 run and ask the agent; `view` only watches and is refused both with the pipe's own reason), `SHOW_ASK_AFTER_SWITCH=0` (no
 question to the agent), `SHOW_PIPE_TRACE=1` (log each frame's type).
 
@@ -94,6 +96,23 @@ MEASURED (the tab's own clock, `page/tab-notes.ts`); the simulation's mean speed
 not wall time); what the policy file says about itself (its host, its training seconds) is REPORTED. These notes come from the
 real tab, so they are never tagged SCRIPTED even when the feed is. `node scripts/arrival-check.mjs` checks it in real Chrome with
 the real tab app (6 checks).
+
+## The take's 03 server and the real disk
+
+`scripts/take-server.mjs` starts the one 03 server the take uses, on a free loopback port: a fresh admin token (the server writes the
+token file, mode 0600, in a 0700 directory; nothing here reads it), `--tab-writable creature/creature.xml,creature/body.json,
+creature/designs.sqlite` (`memory.sqlite` is the agent's and is not tab-writable), the model through the broker, and a private log.
+On the real disk it runs under `with-archil` (the keys exist in that child only; the scratch disk the wrapper names) and needs
+`--mount-root <your own lane directory under /mnt/pda>/pipe`, which has no default: it must already exist, be a directory, and be owned by
+the caller, and the script never creates anything under `/mnt/pda`. `--ledger FILE` names where the disk resources are recorded (default: the private
+directory). `--local DIR` is a dry run with no Archil. Its status file holds the origin and the paths, never a secret.
+
+With a pipe feed the stage's `/api/disk/<path>` is that run's `work/`: the tab's `storage-read` (with `ifNoneMatch`, answered by content
+hash: `etag`, `notModified`) and `storage-write` go to `GET|PUT /api/runs/<id>/work/<path>` with the run secret the stage's server holds,
+a write naming the tab the pipe says holds the run. A 403 (the agent's `memory.sqlite`) and a 409 (`not-holder`: the tab keeps its design and
+asks the agent) reach the tab as errors it understands; a read while the run moves is "unchanged", not an error. With the scripted feed the
+disk is an in-memory model. `TAKE_STATUS=<status file>` makes the preflight check the server and the token file's mode; with `SHOW_API`
+it checks that D1's `/api/winner` names the approved scratch disk and region before anything is adopted.
 
 ## Takes
 

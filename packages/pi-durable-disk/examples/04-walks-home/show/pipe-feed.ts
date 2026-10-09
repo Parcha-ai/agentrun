@@ -40,6 +40,8 @@ export class PipeTranslator {
   private currentStay: string | undefined;
   private currentHost = "";
   private currentEnv: string | null = null;
+  /** The tab id the pipe reports as holding the run (a writer, a remote host included), or undefined while it moves or is parked. */
+  private holder: string | undefined;
   private pending: Pending | undefined;
   /** A settled placement waiting for the pipe's `switched` frame, which carries the measured time. */
   private waiting: { settled: Settled; at: number } | undefined;
@@ -70,6 +72,11 @@ export class PipeTranslator {
 
   hasEnv(id: string): boolean {
     return this.envs.has(id);
+  }
+
+  /** Who may write the run's files over HTTP right now: the tab the pipe says holds the run. */
+  get writerTab(): string | undefined {
+    return this.holder;
   }
 
   /** The env the run is settled in, or null while it moves or is parked. */
@@ -142,6 +149,7 @@ export class PipeTranslator {
 
   private placement(p: Placement, out: ShowEvent[], initial = false): void {
     const at = this.at();
+    this.holder = p.where === "tab" ? p.tab : undefined;
     if (p.where === "moving") {
       this.pending = { switchId: p.switchId ?? "", toEnv: p.env, toLabel: p.to, fromHost: this.currentHost, fromEnv: this.currentEnv, at };
       this.currentEnv = null;
@@ -295,6 +303,11 @@ export class PipeFeed implements FeedSource {
 
   get state(): ShowState {
     return this.st;
+  }
+
+  /** The tab that holds the run, for the disk's writes (see disk.ts). */
+  get writerTab(): string | undefined {
+    return this.tr.writerTab;
   }
 
   subscribe(listener: (event: ShowEvent) => void): () => void {

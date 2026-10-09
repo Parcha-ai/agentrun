@@ -1,4 +1,4 @@
-// The switcher beat in real Chrome, end to end, no cloud: a local 03 server with a second host (second-host.ts), the real
+// The switcher beat in real Chrome, end to end, no cloud: a local 03 server with browser-demo's second host (take-server.mjs --cloud remote-local), the real
 // 03 tab page attached as the writer, and the stage watching the run through the pipe (SHOW_PIPE_LINK_FILE). It clicks
 // tab -> second host -> tab in the stage's switcher and checks, each time: the run moved, the caption carries the number
 // the SERVER timed and says MEASURED, the agent was told its notice, and the agent answered where it is.
@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, openTab, sleep, waitForFile, waitForStage } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
+import { startTakeServer } from "./takeserver.mjs";
 import { startScreencast } from "./screencast.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,7 +27,6 @@ const root = join(homedir(), "tmp-d5", `beat-${Date.now().toString(36)}`);
 mkdirSync(root, { recursive: true, mode: 0o755 });
 const tabDir = process.env.TAB_DIR ?? join(show, "page", "stub-tab");
 const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9222";
-const hostPort = await freePort();
 const stagePort = await freePort();
 const kids = [];
 const run = (file, env, name) => {
@@ -61,15 +61,15 @@ let hostLinesTail = () => "";
 let stageLog = () => "";
 let hostLinesAll = () => "";
 try {
-  const hostProc = spawn(process.execPath, [join(show, "second-host.ts"), "--port", String(hostPort), "--root", root, "--link-file", join(root, "link")], { cwd: show, env: { ...process.env, TMPDIR: join(homedir(), "tmp-d5", "tmp") }, stdio: ["ignore", "pipe", "pipe"] });
-  const hostLines = [];
-  hostLinesTail = () => hostLines.join("").slice(-1200);
-  hostLinesAll = () => hostLines.join("");
-  hostProc.stdout.on("data", (d) => hostLines.push(String(d)));
-  hostProc.stderr.on("data", (d) => hostLines.push(String(d)));
-  kids.push(hostProc);
-  const linkFile = join(root, "link");
-  await waitForFile(linkFile, hostProc, 30_000).catch((e) => { throw new Error(`${e.message}: ${hostLines.join("").slice(-300)}`); });
+  // One way to start a 03 server and its second host: the take server, with browser-demo's remote-local host.
+  mkdirSync(join(root, "disk"), { recursive: true, mode: 0o755 });
+  const take = await startTakeServer({ dir: join(root, "take"), disk: join(root, "disk") });
+  kids.push(take.child);
+  const redact = (t) => t.replace(/(\/run\/[A-Za-z0-9_-]+)#[A-Za-z0-9_-]+/g, "$1#<redacted>").replace(/Bearer\s+\S+/g, "Bearer <redacted>");
+  const serverLog = () => (existsSync(take.status.logFile) ? redact(readFileSync(take.status.logFile, "utf8")) : "");
+  hostLinesTail = () => serverLog().slice(-1200);
+  hostLinesAll = serverLog;
+  const linkFile = take.status.linkFile;
   const link = readFileSync(linkFile, "utf8").trim();
   const stageProc = run(join(show, "serve.ts"), { SHOW_PORT: String(stagePort), SHOW_PIPE_LINK_FILE: linkFile, TAB_DIR: tabDir, SHOW_PIPE_TRACE: process.env.SHOW_PIPE_TRACE ?? "" }, "stage");
   stageLog = () => stageProc.log();
@@ -88,7 +88,7 @@ try {
   await until(async () => (await stage.eval(`document.querySelectorAll("#switcher button[data-env]").length`)) >= 2, 20_000, "the switcher");
   const labels = await stage.eval(`[...document.querySelectorAll("#switcher button")].map(b => b.textContent.trim() + (b.disabled ? " (unwired)" : ""))`);
   console.log("switcher:", JSON.stringify(labels));
-  expect("the switcher names tab, a sandbox, a VM and a GPU, the unwired ones greyed", labels.some((l) => /VM \(unwired\)/.test(l)) && labels.some((l) => /GPU \(unwired\)/.test(l)) && labels.some((l) => /Second host$/.test(l)) && labels.some((l) => /tab$/i.test(l.replace(/ \(unwired\)/, ""))), labels);
+  expect("the switcher names tab, a sandbox, a VM and a GPU, the unwired ones greyed", labels.some((l) => /VM \(unwired\)/.test(l)) && labels.some((l) => /GPU \(unwired\)/.test(l)) && labels.some((l) => /Second process$/.test(l)) && labels.some((l) => /tab$/i.test(l.replace(/ \(unwired\)/, ""))), labels);
   expect("the page shows no scripted badge for a live pipe", (await stage.eval(`document.getElementById("source").hidden`)) === true);
   await sleep(recordTo ? 4000 : 1500);
   await stage.screenshot(`${shots}-0-tab.png`);
@@ -122,11 +122,11 @@ try {
   }
 
   // tab -> second host
-  const a = await clickSwitch("second-host", "Second host");
-  expect("the caption for the switch is tagged MEASURED and carries the server's milliseconds", a.seen.some((c) => c.tag === "measured" && /^Switched to Second host in \d+ ms \(timed by the server\)/.test(c.text)), a.seen);
+  const a = await clickSwitch("remote-local", "Second process");
+  expect("the caption for the switch is tagged MEASURED and carries the server's milliseconds", a.seen.some((c) => c.tag === "measured" && /^Switched to Second process in \d+ ms \(timed by the server\)/.test(c.text)), a.seen);
   expect("the stay on the timeline carries the same milliseconds as the caption", a.row.handoverMs === a.row.serverMs, a.row);
-  expect("the run is on the second host", a.s.currentEnv === "second-host", a.s.currentEnv);
-  expect("the agent was told its notice and the caption is tagged AGENT", a.seen.some((c) => c.tag === "agent" && /^The agent was told: you are now running in a second machine/.test(c.text)), a.seen);
+  expect("the run is on the second host", a.s.currentEnv === "remote-local", a.s.currentEnv);
+  expect("the agent was told its notice and the caption is tagged AGENT", a.seen.some((c) => c.tag === "agent" && /^The agent was told: you are now running in a second process/.test(c.text)), a.seen);
   expect("the agent answered where it is", a.seen.some((c) => c.tag === "agent" && /^The agent says: /.test(c.text)), a.seen);
 
   // second host -> tab (the rehearsal shim makes the real tab page ask)
@@ -159,7 +159,7 @@ try {
   await writer?.close().catch(() => {});
   // The whole logs, for reading what happened between the frames.
   try {
-    writeFileSync(join(root, "second-host.log"), hostLinesAll());
+    writeFileSync(join(root, "server.log"), hostLinesAll());
     writeFileSync(join(root, "stage.log"), stageLog());
   } catch {}
   for (const k of kids) k.kill("SIGTERM");

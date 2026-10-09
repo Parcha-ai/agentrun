@@ -250,37 +250,57 @@ export class PipeClient {
   }
 
   /**
-   * Send workspace changes; resolves once the pipe wrote them and synced the mount. Inline content stays under
-   * CHUNK_BYTES per call; a write past that goes ahead as an upload, which the pipe renames into place only if it
-   * arrived whole.
+   * Send workspace changes; resolves once the pipe wrote them and synced the mount. The changes go in order, in as many
+   * write-through frames as it takes to keep each frame's inline content under CHUNK_BYTES; a file larger than that goes
+   * alone, as an upload followed at once by the frame that names it, so this client never holds more than one
+   * unfinished upload. Each frame is applied and synced before the next is sent; if one fails, the call fails, and the
+   * frames before it stay applied (the next write-through's diff covers them again, which is harmless).
    */
   async syncFiles(changes: readonly (FileChange | LocalWrite)[]): Promise<void> {
     if (this.#lost) throw this.#lost;
-    const sent: FileChange[] = [];
+    const started = performance.now();
+    let serverMs = 0;
+    let frames = 0;
+    let batch: FileChange[] = [];
     let inline = 0;
+    const flush = async () => {
+      serverMs += await this.#writeThrough(batch);
+      frames++;
+      batch = [];
+      inline = 0;
+    };
     for (const change of changes) {
       if (change.op !== "write" || "upload" in change) {
-        sent.push(change);
+        batch.push(change);
         continue;
       }
       const meta = { ...(change.mode === undefined ? {} : { mode: change.mode }), ...(change.mtimeMs === undefined ? {} : { mtimeMs: change.mtimeMs }) };
       const size = "bytes" in change ? change.bytes.length : Math.floor((change.data.length * 3) / 4);
-      if (inline + size <= CHUNK_BYTES) {
-        sent.push({ path: change.path, op: "write", data: "bytes" in change ? toBase64(change.bytes) : change.data, ...meta });
-        inline += size;
-      } else {
+      if (size > CHUNK_BYTES) {
+        if (batch.length > 0) await flush();
         const bytes = "bytes" in change ? change.bytes : fromBase64(change.data);
-        sent.push({ path: change.path, op: "write", upload: await this.#upload(bytes), ...meta });
+        batch.push({ path: change.path, op: "write", upload: await this.#upload(bytes), ...meta });
+        await flush();
+        continue;
       }
+      if (inline + size > CHUNK_BYTES) await flush();
+      batch.push({ path: change.path, op: "write", data: "bytes" in change ? toBase64(change.bytes) : change.data, ...meta });
+      inline += size;
     }
+    // An empty call still sends one frame: the pipe's barrier.
+    if (batch.length > 0 || frames === 0) await flush();
+    this.timings.files.push({ server: serverMs, client: performance.now() - started });
+  }
+
+  /** One write-through frame; resolves with the pipe's own time for it once it answered. */
+  async #writeThrough(changes: FileChange[]): Promise<number> {
     if (this.#lost) throw this.#lost;
     const id = this.#next++;
-    const started = performance.now();
     const pending = new Promise<unknown>((resolve, reject) => this.#pending.set(id, { resolve, reject }));
     const entry = this.#pending.get(id)!;
-    this.#send({ t: "files", id, changes: sent });
+    this.#send({ t: "files", id, changes });
     await pending;
-    this.timings.files.push({ server: entry.ms ?? 0, client: performance.now() - started });
+    return entry.ms ?? 0;
   }
 
   /** Send `bytes` as an upload, in order, CHUNK_BYTES at a time, waiting while the socket is backed up. */

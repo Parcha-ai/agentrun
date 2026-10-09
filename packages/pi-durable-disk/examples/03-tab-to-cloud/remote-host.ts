@@ -4,7 +4,9 @@
 // the pipe. The server reaches it, not the other way round: it listens for one WebSocket with its bearer token, the
 // server's first frame there is the invitation (which run, as which tab, for which switch), and from then on that
 // socket is a tab's connection to the pipe. It exits when the pipe lets it go.
-//   node remote-host.ts --port 8080 --token-file F [--work DIR]   (default: work/ in the home of the user it runs as)
+//   node remote-host.ts --port 8080 --token-file F [--work DIR] [--host 0.0.0.0]
+//   (--work defaults to work/ in the home of the user it runs as; --port 0 takes a free port, which the "listening"
+//   line reports)
 //   DEMO_ENV_LABEL, DEMO_ENV_CLASS: how this host's notice names it (host-probe.ts)
 import { readFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -25,7 +27,7 @@ import type { PipeFrame } from "./wire.ts";
 /** The server's first frame on the socket. */
 export type Invite = { t: "invite"; run: string; token: string; tab: string; switchId?: string };
 
-const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: join(homedir(), "work") } } });
+const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: join(homedir(), "work") }, host: { type: "string", default: "0.0.0.0" } } });
 const log = (event: string, data: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 const token = readFileSync(values["token-file"]!, "utf8").trim();
 const expected = createHash("sha256").update(`Bearer ${token}`).digest();
@@ -34,11 +36,11 @@ mkdirSync(work, { recursive: true });
 
 const wss = new WebSocketServer({
   port: Number(values.port),
-  host: "0.0.0.0",
+  host: values.host!,
   maxPayload: 64 * 1024 * 1024,
   verifyClient: ({ req }: { req: { headers: Record<string, string | string[] | undefined> } }) => timingSafeEqual(createHash("sha256").update(String(req.headers.authorization ?? "")).digest(), expected),
 });
-log("listening", { port: Number(values.port) });
+wss.on("listening", () => log("listening", { port: (wss.address() as { port: number }).port }));
 
 let taken = false;
 wss.on("connection", (socket: WebSocket) => {

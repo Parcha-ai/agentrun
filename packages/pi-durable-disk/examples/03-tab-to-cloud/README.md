@@ -45,8 +45,9 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
   that can, and is refused before anything moves when none is open.
 - **work/ over HTTP**, with the run's secret as a bearer token: `GET /api/runs/<id>/work/<path>` reads a file (from the
   pipe's mount when it holds the run, else from the disk); `PUT` writes one for the tab that holds the run (header
-  `x-pda-tab: <tab id>`), only at the paths `serve.ts --tab-writable` lists, through the write-through (the answer comes
-  after the barrier; another holder gets 409 with its name). `POST /api/runs/<id>/attach` (loopback, the admin token)
+  `x-pda-tab: <tab id>`), only at the paths `serve.ts --tab-writable` lists (default none; the walks-home demo passes
+  `--tab-writable creature/creature.xml,creature/body.json,creature/designs.sqlite`), through the write-through (the
+  answer comes after the barrier; another holder gets 409 with its name). `POST /api/runs/<id>/attach` (loopback, the admin token)
   takes on a run released and sealed elsewhere and answers its link.
 - **One tab writes at a time.** Another device that opens the link watches read-only. "Take over here" gives the run to the
   new tab: the old tab is told the run moved, and every later frame from it is refused. From a cloud host, a takeover
@@ -66,7 +67,9 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
   says the move was not planned.
 
 The cloud host can be a second FUSE client on the server's own machine (`--cloud local`, a systemd unit through the
-package's `localHost` driver) or Daytona (`--cloud daytona`, `pipe/daytona.ts`):
+package's `localHost` driver), a second process with no disk client that runs the agent through the pipe
+(`--cloud remote-local`, `pipe/remote-local.ts`: `remote-host.ts` as a child process, no unit, no mount), or Daytona
+(`--cloud daytona`, `pipe/daytona.ts`):
 
 - **Daytona basic**: a sandbox from the demo's runtime snapshot (`scripts/daytona-snapshot.ts` builds
   `pda-demo-runtime-<digest>`), started by the package's `daytonaHost` driver; it mounts the disk itself. Its live events
