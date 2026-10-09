@@ -1,8 +1,23 @@
-// The tab's workspace against the disk's work/: restore it from what the pipe sends on attach, and after a tool find
-// what changed and send it. The last state the pipe acknowledged is the baseline; a change is sent whole (the file's
-// content), a removal by name. Portable.
+// A pipe-hosted workspace against the disk's work/ (the tab's, or a host's that has no disk client): restore it from
+// what the pipe sends on attach, and after a tool find what changed and send it. The last state the pipe acknowledged
+// is the baseline; a change is sent whole (the file's content), a removal by name. Portable: the files are reached
+// through a WorkspaceFs (wasmer-env.ts's for the tab, host-fs.ts's for Node).
 import { fromBase64, toBase64, workspaceDigest, type FileChange, type FileEntry } from "../wire.ts";
-import { TAB_TMP, WORKSPACE, type WasmerEnv } from "./wasmer-env.ts";
+
+/** The few file operations a workspace needs, on absolute paths under `root`. */
+export interface WorkspaceFs {
+  readonly root: string;
+  /** A top-level entry that is the host's own (temporary files), never synced. */
+  readonly skip?: string;
+  /** Files and directories only; anything else (a symbolic link) is not part of the workspace here. */
+  readDir(dir: string): Promise<{ name: string; kind: "file" | "directory" | "other" }[]>;
+  readFile(path: string): Promise<Uint8Array>;
+  writeFile(path: string, data: Uint8Array, mtimeMs?: number): Promise<void>;
+  mkdir(path: string): Promise<void>;
+  remove(path: string): Promise<void>;
+  /** The workspace wrote or noticed a change of `path` (an environment that tracks times itself). */
+  touched?(path: string): void;
+}
 
 type Seen = { kind: "file"; digest: string; size: number } | { kind: "directory" };
 
@@ -20,21 +35,21 @@ export interface WorkspaceFile {
 }
 
 export class Workspace {
-  readonly env: WasmerEnv;
+  readonly fs: WorkspaceFs;
   #baseline = new Map<string, Seen>();
 
-  constructor(env: WasmerEnv) {
-    this.env = env;
+  constructor(fs: WorkspaceFs) {
+    this.fs = fs;
   }
 
-  /** Every entry under the workspace except the tab's temporary files, relative paths, parents before children. */
+  /** Every entry under the workspace except the host's own, relative paths, parents before children. */
   async scan(): Promise<Map<string, Seen & { data?: Uint8Array }>> {
     const out = new Map<string, Seen & { data?: Uint8Array }>();
-    const fs = this.env.sandbox.fs;
+    const fs = this.fs;
     const walk = async (dir: string, prefix: string): Promise<void> => {
       const entries = [...(await fs.readDir(dir))].sort((a, b) => (a.name < b.name ? -1 : 1));
       for (const entry of entries) {
-        if (prefix === "" && entry.name === TAB_TMP) continue;
+        if ((prefix === "" && entry.name === fs.skip) || entry.kind === "other") continue;
         const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
         const abs = `${dir}/${entry.name}`;
         if (entry.kind === "directory") {
@@ -46,7 +61,7 @@ export class Workspace {
         }
       }
     };
-    await walk(WORKSPACE, "");
+    await walk(fs.root, "");
     return out;
   }
 
@@ -67,7 +82,7 @@ export class Workspace {
         if (before?.kind !== "directory") changes.push({ path, op: "mkdir" });
       } else if (before?.kind !== "file" || before.digest !== seen.digest) {
         changes.push({ path, op: "write", data: toBase64(seen.data!) });
-        this.env.touch(`${WORKSPACE}/${path}`);
+        this.fs.touched?.(`${this.fs.root}/${path}`);
       }
     }
     return { changes, scanned };
@@ -80,27 +95,26 @@ export class Workspace {
 
   /** Make the sandbox's workspace what the disk has (on attach): write every entry, remove what the disk lacks. */
   async restore(entries: readonly FileEntry[]): Promise<{ files: number; bytes: number; skipped: string[] }> {
-    const fs = this.env.sandbox.fs;
+    const fs = this.fs;
     const current = await this.scan();
     const wanted = new Set(entries.map((e) => e.path));
     for (const path of [...current.keys()].sort((a, b) => b.length - a.length)) {
-      if (!wanted.has(path)) await fs.remove(`${WORKSPACE}/${path}`, { recursive: true }).catch(() => undefined);
+      if (!wanted.has(path)) await fs.remove(`${fs.root}/${path}`).catch(() => undefined);
     }
     let files = 0;
     let bytes = 0;
     const skipped: string[] = [];
     for (const entry of entries) {
-      const abs = `${WORKSPACE}/${entry.path}`;
-      if (entry.kind === "directory") await fs.mkdir(abs, { recursive: true });
+      const abs = `${fs.root}/${entry.path}`;
+      if (entry.kind === "directory") await fs.mkdir(abs);
       else if (entry.kind === "file") {
         const data = fromBase64(entry.data);
         const parent = abs.slice(0, abs.lastIndexOf("/"));
-        if (parent !== WORKSPACE) await fs.mkdir(parent, { recursive: true });
-        await fs.writeFile(abs, data);
-        this.env.touch(abs, entry.mtimeMs);
+        if (parent !== fs.root) await fs.mkdir(parent);
+        await fs.writeFile(abs, data, entry.mtimeMs);
         files++;
         bytes += data.length;
-      } else skipped.push(entry.path); // the sandbox has no symbolic links; the disk keeps it
+      } else skipped.push(entry.path); // a pipe-hosted workspace has no symbolic links; the disk keeps it
     }
     this.accept(await this.scan());
     return { files, bytes, skipped };

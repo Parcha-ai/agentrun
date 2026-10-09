@@ -153,16 +153,17 @@ export const MODEL_PATHS = ["responses", "chat/completions"] as const;
 
 /**
  * A place the run can be switched to; the server lists them, the page offers them. `phrase` names it inside a sentence
- * ("your user's browser tab", "a Daytona sandbox"), for the agent's notice of a move.
+ * ("your user's browser tab", "a Daytona sandbox"), for the agent's notice of a move. Kinds: the tab; a cloud host
+ * that mounts the disk; a remote host that has no disk client and runs the agent through the pipe, as a tab does.
  */
-export type Environment = { id: string; label: string; phrase: string; kind: "tab" | "cloud"; detail?: string };
+export type Environment = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 
 /** A move of the run from one host to another (environment.ts's SwitchInfo). */
 export type Move = { id: string; from: string; planned: boolean };
 
 /** Where the run is: the badge every page shows. `env` is the environment's id. */
 export type Placement =
-  | { where: "tab"; tab: string; epoch: number; generation: number; env: "tab" }
+  | { where: "tab"; tab: string; epoch: number; generation: number; env: string }
   | { where: "cloud"; host: string; generation: number | null; env: string; detail?: string }
   | { where: "moving"; to: string; env: string; switchId?: string; since: number; detail?: string }
   | { where: "parked"; detail?: string };

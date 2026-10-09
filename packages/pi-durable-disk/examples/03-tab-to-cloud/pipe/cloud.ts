@@ -54,6 +54,10 @@ export interface CloudOptions {
   readonly snapshot?: string;
   /** Daytona: the secret holding the model endpoint's key, for a box that calls the model itself. */
   readonly modelSecret?: string;
+  /** Daytona: the runtime snapshot of the GPU class; without it there is no GPU environment. */
+  readonly gpuSnapshot?: string;
+  /** Daytona: keep a GPU sandbox ready while a tab runs the run, so a switch there takes seconds (it costs while it waits). */
+  readonly warmGpu?: boolean;
 }
 
 interface Placed {
@@ -181,6 +185,7 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       ...(options.eventsLog ? { eventsLog: options.eventsLog } : {}),
       ...(options.snapshot ? { snapshot: options.snapshot } : {}),
       ...(options.modelSecret ? { modelSecret: options.modelSecret } : {}),
+      ...(options.gpuSnapshot ? { gpuSnapshot: options.gpuSnapshot } : {}),
     });
     const running = new Set<string>();
     const models = new Map<string, ModelProxy>();
@@ -188,23 +193,30 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       environments: d.environments,
       async start(ref, run) {
         models.set(ref.id, run.model);
-        await d.start(ref, { model: run.model, move: run.move }, true);
+        await d.start(ref, { model: run.model, move: run.move, env: run.env }, true);
         running.add(ref.id);
-        // A spare sandbox, warm, for when this one is lost.
+        // A spare basic sandbox, warm, for when this one is lost or the run moves on.
         d.prewarm(ref);
-        return { host: d.hostLabel };
+        return { host: d.label(run.env) };
       },
       async supervise(ref) {
         const model = models.get(ref.id);
         if (!model || !running.has(ref.id)) return undefined;
-        const move: Move = { id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`, from: d.environments[0]!.phrase, planned: false };
-        if (!(await d.start(ref, { model, move }, false))) return undefined;
-        options.log("cloud.replaced", { run: ref.id, host: d.hostLabel });
+        // A lost box is replaced in its own class.
+        const env = d.placed(ref.id)?.env ?? d.environments[0]!.id;
+        const move: Move = { id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`, from: d.environments.find((e) => e.id === env)!.phrase, planned: false };
+        if (!(await d.start(ref, { model, move, env }, false))) return undefined;
+        options.log("cloud.replaced", { run: ref.id, host: d.label(env) });
         d.prewarm(ref);
-        return { host: d.hostLabel };
+        return { host: d.label(env) };
       },
       kill: (ref) => d.kill(ref),
-      attachViewer: (ref, send) => relayViewer({ control, ref, send, log: options.log, label: () => d.hostLabel, env: () => d.environments[0]!.id, dialer: () => undefined, serve: () => d.placed(ref.id)?.serve }),
+      startRemote: (ref, env, invite) => d.startRemote(ref, env, invite),
+      stopRemote: (ref) => d.stopRemote(ref),
+      attachViewer: (ref, send) => {
+        const env = () => d.placed(ref.id)?.env ?? d.environments[0]!.id;
+        return relayViewer({ control, ref, send, log: options.log, label: () => d.label(env()), env, dialer: () => undefined, serve: () => d.placed(ref.id)?.serve });
+      },
       async submit(ref, text, requestId) {
         const serve = d.placed(ref.id)?.serve;
         if (!serve) throw new Error("the sandbox serves nothing yet");
@@ -215,7 +227,10 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
         running.delete(ref.id);
         await d.stop(ref, how);
       },
-      prewarm: (ref) => d.prewarm(ref),
+      prewarm(ref) {
+        d.prewarm(ref);
+        if (options.warmGpu) d.prewarmRemote(ref);
+      },
       async close() {
         for (const id of [...running]) await daytona.stop({ disk: options.disk, region: options.region, id }, "now");
         const swept = await d.sweep();
@@ -300,7 +315,7 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
     }
     const unit = typeof at.handle.unit === "string" ? at.handle.unit : undefined;
     const show = unit ? spawnSync("/usr/bin/systemctl", ["show", `${unit}.service`, "-p", "ExecMainStatus", "-p", "Result", "-p", "NRestarts"], { encoding: "utf8" }).stdout.trim().split("\n").join(" ") : null;
-    options.log("cloud.exited", { run: ref.id, status, ms: Date.now() - started, ...(show ? { unit: show } : {}) });
+    options.log("cloud.exited", { run: ref.id, how, status, ms: Date.now() - started, ...(show ? { unit: show } : {}) });
     await driver.stop(at.handle).catch((error) => options.log("cloud.stop-failed", { run: ref.id, error: (error as Error).message }));
     at.dialer?.close();
     if (at.linkFile) rmSync(at.linkFile, { force: true });

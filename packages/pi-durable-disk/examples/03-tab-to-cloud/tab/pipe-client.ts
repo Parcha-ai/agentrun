@@ -1,6 +1,6 @@
 // The tab's end of the pipe: one WebSocket, a Storage whose every call is one frame, the workspace write-through call,
-// and a `fetch` for model calls that the pipe proxies. Portable: the page and Node (tests) both run it; it needs only
-// a global WebSocket.
+// and a `fetch` for model calls that the pipe proxies. Portable: the page and Node (a remote host, tests) run it; it
+// needs a global WebSocket, or a socket already open (one the server dialed into a remote host).
 import type { Storage } from "@earendil-works/pi-durable";
 import {
   errorFromWire,
@@ -18,8 +18,22 @@ import {
 export type Attached = Extract<PipeFrame, { t: "attached" }>;
 export type Viewing = Extract<PipeFrame, { t: "viewing" }>;
 
+/** The WebSocket API the client uses: a browser's, Node's global one, or a `ws` socket. */
+export interface SocketLike {
+  readonly readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: "open" | "error", listener: () => void): void;
+  addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
+  addEventListener(type: "close", listener: (event: { code: number; reason: string }) => void): void;
+}
+
+const OPEN = 1;
+
 export interface PipeClientOptions {
-  readonly url: string;
+  /** Where the pipe listens; or `socket`, already open. */
+  readonly url?: string;
+  readonly socket?: SocketLike;
   readonly run: string;
   readonly token: string;
   readonly tab: string;
@@ -38,7 +52,7 @@ type ModelStream = { head(status: number): void; push(text: string): void; end(s
 
 export class PipeClient {
   readonly options: PipeClientOptions;
-  #socket: WebSocket;
+  #socket: SocketLike;
   #next = 1;
   #pending = new Map<number, Pending>();
   #models = new Map<number, ModelStream>();
@@ -52,12 +66,15 @@ export class PipeClient {
 
   constructor(options: PipeClientOptions) {
     this.options = options;
-    this.#socket = new WebSocket(options.url);
+    if (!options.socket && !options.url) throw new Error("a PipeClient needs a url or an open socket");
+    this.#socket = options.socket ?? (new WebSocket(options.url!) as unknown as SocketLike);
     this.ready = new Promise((resolve, reject) => {
-      this.#socket.addEventListener("open", () => {
+      const hello = () => {
         this.#send({ t: "hello", run: options.run, token: options.token, mode: options.mode, tab: options.tab, ...(options.takeover ? { takeover: true } : {}), ...(options.switchId ? { switchId: options.switchId } : {}) });
         this.#ping = setInterval(() => this.#send({ t: "ping", at: performance.now() }), options.pingMs ?? 1_000);
-      });
+      };
+      if (this.#socket.readyState === OPEN) queueMicrotask(hello);
+      else this.#socket.addEventListener("open", hello);
       this.#socket.addEventListener("message", (event) => {
         const frame = JSON.parse(String(event.data)) as PipeFrame;
         if (frame.t === "attached" || frame.t === "viewing") resolve(frame);
@@ -77,7 +94,7 @@ export class PipeClient {
   }
 
   #send(frame: TabFrame): void {
-    if (this.#socket.readyState === WebSocket.OPEN) this.#socket.send(JSON.stringify(frame));
+    if (this.#socket.readyState === OPEN) this.#socket.send(JSON.stringify(frame));
   }
 
   send(frame: TabFrame): void {
