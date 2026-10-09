@@ -3,6 +3,7 @@
 // measurement, and the stage says so. It is a script, not a simulation: it takes no commands except a user's line for the chat.
 // Same shape as the v1 player (time the caller advances, `begin`, `advance`, `start`, `stop`), so the server can use either.
 import { parseDecision } from "./decision.ts";
+import { bandOf, versionLine } from "./page/lessons.ts";
 import { emptyState, reduce } from "./reduce.ts";
 import type { ChatTurn, ShowCommand, ShowEvent, ShowState } from "./types.ts";
 
@@ -11,13 +12,18 @@ const ENVIRONMENTS: ShowState["environments"] = [
   { id: "gpu", label: "H100 GPU, Virginia", kind: "gpu" },
 ];
 
-/** What the rehearsal's creature learned at each checkpoint: metres in 10 simulated seconds (the stage shows them as scripted). */
-const CHECKPOINTS: { at: number; n: number; metres: number }[] = [
-  { at: 26, n: 1, metres: 0 },
-  { at: 36, n: 2, metres: 0.4 },
-  { at: 48, n: 3, metres: 1.1 },
-  { at: 62, n: 4, metres: 2.1 },
-  { at: 78, n: 5, metres: 3.4 },
+/**
+ * What the rehearsal's creature "learned" at each version: D2's measured series on the take body (metres in 10 s), played as a script. The rehearsal
+ * has no real checkpoints, so these are SCRIPTED here, however measured they were there.
+ */
+const VERSIONS: { at: number; n: number; metres: number }[] = [
+  { at: 26, n: 1, metres: 0.03 },
+  { at: 33, n: 2, metres: 0.06 },
+  { at: 40, n: 3, metres: 0.12 },
+  { at: 47, n: 4, metres: 0.17 },
+  { at: 54, n: 5, metres: 0.42 },
+  { at: 61, n: 6, metres: 3.59 },
+  { at: 68, n: 7, metres: 4.49 },
 ];
 
 type Job = { at: number; seq: number; run: () => void };
@@ -118,10 +124,14 @@ export class ScenarioV2 {
     this.at(20, () => this.agent("Training started. Each new version of its brain comes home as soon as it is written."));
     // The agent's first command on the GPU begins the setup; the first checkpoint ends it (scripted here, so the counter says scripted).
     this.at(20.5, () => this.emit({ t: "setup", at: this.clock, phase: "start" }));
-    this.at(CHECKPOINTS[0]!.at, () => this.emit({ t: "setup", at: this.clock, phase: "end" }));
-    for (const c of CHECKPOINTS) {
-      this.at(c.at, () => this.note("home", `Version ${c.n} of its brain arrived from the GPU.`));
-      this.at(c.at + 10, () => this.note("home", c.metres === 0 ? `Version ${c.n} fell over within 10 s.` : `Learning on the GPU: walked ${c.metres.toFixed(1)} m in 10 s (version ${c.n}).`));
+    this.at(VERSIONS[0]!.at, () => this.emit({ t: "setup", at: this.clock, phase: "end" }));
+    // Every version, in the one fixed window, as the stage words it from the file's reported distance.
+    for (const v of VERSIONS) {
+      const band = bandOf(v.metres)!;
+      this.at(v.at, () => {
+        this.emit({ t: "version", at: this.clock, n: v.n, metres: v.metres });
+        this.emit({ t: "note", at: this.clock, kind: "home", text: versionLine(v.n, band, v.metres), group: "version" });
+      });
     }
     this.at(92, () => this.agent("It walks. Coming home."));
     this.at(91.5, () => this.decide({ id: "rehearsal-2", phase: "done", question: "The task is done; where should the agent run now?", options: [{ id: "tab", label: "Browser", probability: 0.91 }, { id: "modal-vm", label: "Modal VM", probability: 0.03 }, { id: "modal-gpu", label: "H100 GPU", probability: 0.06 }], choice: "tab", latency_ms: 41, model: "scripted" }));

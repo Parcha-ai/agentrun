@@ -3,7 +3,6 @@
 // (it used to be spread over module variables, and only some of them reset). Notes are added through the memory, which syncs first, so a note for
 // the new take is never wiped by a reset that was already due. Pure.
 import type { Note } from "../types.ts";
-import type { Band } from "./lessons.ts";
 import { emptyStory } from "./story-notes.ts";
 
 const MAX_NOTES = 60;
@@ -21,8 +20,8 @@ export class TakeMemory {
   /** What each install the tab reported was, by its number, and the last one's kind. */
   installKind = new Map<number, "checkpoint" | "final">();
   lastInstallKind: "checkpoint" | "final" | undefined;
-  /** The band each checkpoint was in, from the distance its file reported. */
-  bandOfInstall = new Map<number, Band | null>();
+  /** Each version's reported distance in the fixed 10 s window, in order of arrival, for the sparkline. A version that arrives twice replaces its point. */
+  versions: { n: number; metres: number }[] = [];
   private generation = -1;
 
   /** Call with the feed's generation. True when the take started over (not for the first connection). */
@@ -38,8 +37,15 @@ export class TakeMemory {
     this.wasAway = false;
     this.installKind.clear();
     this.lastInstallKind = undefined;
-    this.bandOfInstall.clear();
+    this.versions = [];
     return true;
+  }
+
+  /** Records a version's distance (its file's own report) for the sparkline. */
+  addVersion(n: number, metres: number): void {
+    const at = this.versions.findIndex((v) => v.n === n);
+    if (at >= 0) this.versions[at] = { n, metres };
+    else this.versions.push({ n, metres });
   }
 
   /** Adds notes for the take the feed is in now: syncs first, so a restart that is due clears the old take's notes and not these. True when it restarted. */

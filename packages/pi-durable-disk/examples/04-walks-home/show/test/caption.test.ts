@@ -193,3 +193,31 @@ test("a running counter takes the slot once the last caption has had its time an
   waiting.update(two, 1300, { yieldSlot: true });
   assert.equal(waiting.update(two, 5400, { yieldSlot: true })?.text, "Next.", "something is waiting: it goes first");
 });
+
+// Latest wins within a group (the version captions): a queue would put the screen versions behind the creature (the caption says version 4 while
+// version 7 is walking). A newer version replaces the version caption at once; the sparkline is the record of every version.
+const version = (at: number, n: number): ShowEvent => ({ t: "note", at, kind: "home", text: `Version ${n} - walking - ${n}.0 m in 10 s`, group: "version" }) as ShowEvent;
+
+test("seven versions one second apart: each replaces the version caption at once, and the last one is the one showing", () => {
+  const d = new CaptionDesk();
+  const events: ShowEvent[] = [];
+  const shown: string[] = [];
+  for (let n = 1; n <= 7; n++) {
+    events.push(version(n * 1000, n));
+    shown.push(d.update(desk(events), n * 1000 + 100)!.text);
+  }
+  assert.deepEqual(shown.map((t) => /^Version (\d)/.exec(t)![1]), ["1", "2", "3", "4", "5", "6", "7"], "never a stale version, never a skipped one at the moment it arrives");
+  assert.match(d.update(desk(events), 7300)!.text, /^Version 7 /, "and it is the one still up");
+});
+
+test("versions that arrive together collapse to the newest, and a version caption is replaced only by a version", () => {
+  const d = new CaptionDesk();
+  const burst = desk([note(1000, "home", "Wi-Fi back on.", false), version(1100, 3), version(1200, 4), version(1300, 5)]);
+  assert.equal(d.update(burst, 1400)?.text, "Wi-Fi back on.", "an ordinary caption keeps its time");
+  assert.match(d.update(burst, 5500)!.text, /^Version 5 /, "when its 4 s (from 1.4 s) are over only the newest version is left to show");
+  const other = desk([version(1000, 6), note(1500, "home", "Something else.", false)]);
+  const d2 = new CaptionDesk();
+  assert.match(d2.update(other, 1100)!.text, /^Version 6 /);
+  assert.match(d2.update(other, 3000)!.text, /^Version 6 /, "a caption of another kind does not push a version off before its time");
+  assert.equal(d2.update(other, 5200)?.text, "Something else.", "the version had its 4 s (from 1.1 s)");
+});

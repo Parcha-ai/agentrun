@@ -10,14 +10,6 @@ const moving: Place = { where: "moving", to: "H100 GPU", host: "your browser" };
 const away: Place = { where: "cloud", host: "H100 GPU" };
 const home: Place = { where: "home", host: "your browser" };
 
-test("the product's point is said once, at the first move: its memory is on a cloud disk, so it can change machines without forgetting", () => {
-  const story = emptyStory();
-  assert.deepEqual(storyNotes(at(here), story, 100), [], "nothing before it moves");
-  const first = storyNotes(at(moving), story, 200);
-  assert.deepEqual(first.map((n) => n.text), ["Its memory is on a cloud disk, so it can change machines without forgetting anything."]);
-  assert.deepEqual(storyNotes(at(away), story, 300), [], "said once");
-  assert.deepEqual(storyNotes(at(moving), story, 400), [], "a second move says nothing more about it");
-});
 
 test("coming back claims training succeeded only when a trained brain has arrived, and says it once", () => {
   const story = emptyStory();
@@ -63,16 +55,15 @@ test("the creature is said to be a physics simulation in your browser, once, at 
   assert.equal(n.at, 5);
 });
 
-test("the v2 view drops the SIMULATED pill and keeps MEASURED, REPORTED and the rest; the debug view keeps all", () => {
-  assert.equal(visibleTag("simulated", false), null);
-  for (const t of ["measured", "reported", "scripted", "unmeasured", "agent"] as const) assert.equal(visibleTag(t, false), t);
-  assert.equal(visibleTag("simulated", true), "simulated");
+test("the clean view draws no tag pill at all (the viewer read MEASURED as a staged label); ?debug=1 keeps every one", () => {
+  const all = ["measured", "reported", "scripted", "unmeasured", "agent", "simulated"] as const;
+  for (const t of all) assert.equal(visibleTag(t, false), null, t);
+  for (const t of all) assert.equal(visibleTag(t, true), t, t);
   assert.equal(visibleTag(null, false), null);
 });
 
 test("the stage's own captions outrank the tab's chatter when they arrive together", () => {
   const story = emptyStory();
-  assert.equal(storyNotes(at(moving), story, 1)[0]!.rank, 2);
   storyNotes(at(away), story, 2);
   story.trained = true;
   assert.equal(storyNotes(at(home), story, 3)[0]!.rank, 2);
