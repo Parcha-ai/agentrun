@@ -241,6 +241,17 @@ export type TabToShell = Envelope<
       /** The install this result is about (the tab's own count), so a result that lands after the next checkpoint is not credited to it. */
       checkpoint_n?: number;
     }
+  /** About once per simulated second while a policy runs: how far the creature has walked since the current version started. */
+  | {
+      type: "walk-meter";
+      /** Simulated seconds on the tab's own clock, the same clock as policy-walked's windows. */
+      t: number;
+      /** Straight-line metres on the ground from where the current version started (where it stood when its policy was installed, or when it was reset or rebuilt); starts over for every version. The same number as the tab's on-screen distance. */
+      metres: number;
+      /** The checkpoint number of the version running (0: none). */
+      version: number;
+      state: "untrained" | "learning" | "trained" | "dummy";
+    }
   /** The disk answered storage-written with error "not-holder" (another machine holds the run): the design is kept locally and handed to the agent. */
   | { type: "design-request"; design: unknown; mjcf_sha256: string }
   | { type: "kicked"; force_n: number; t: number }

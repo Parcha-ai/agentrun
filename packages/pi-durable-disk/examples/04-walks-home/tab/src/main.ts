@@ -597,7 +597,7 @@ async function main() {
       }),
     };
     app.view.setSim(app.sim);
-    if (clean) { app.view.setPreset('close'); app.view.setMarkers(true); resetOrigin(); }
+    if (clean) { app.view.setPreset('close'); app.view.setMarkers(true); resetOrigin(); if (phase === 'watch') showThumb(); } // ?phase=watch starts with the drawing already in the corner
     if (params.has('dummy')) await useDummy(); // the old demo stand-in, opt in only: the creature is untrained unless a trained policy arrives
     else { applyCommand(); syncBrain(); } // no policy yet: the untrained brain from the first frame
     updateLabel();

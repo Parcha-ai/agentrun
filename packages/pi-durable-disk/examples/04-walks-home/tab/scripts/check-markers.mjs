@@ -91,6 +91,14 @@ await page('clean=1', async ({ ev, inner, put, waitSim, shot }) => {
   check('the one label is still there', /version 2/.test(label), label);
 });
 
+// starting in the watch phase (?phase=watch) with the creature already drawn: "your drawing" must be painted at startup, not only when a phase message arrives
+await page('clean=1&phase=watch', async ({ inner }) => {
+  await sleep(800);
+  check('starting in the watch phase shows the thumbnail and the marker', (await shown(inner, 'thumb')) && (await shown(inner, 'distMarker')));
+  const px = await inner(`(() => { const c = document.getElementById('thumbCanvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 200) ink++; return { w: c.width, ink }; })()`);
+  check('and the thumbnail holds the drawing at startup (it is not blank)', px.ink > 400, JSON.stringify(px));
+});
+
 // ?banner=1: the page above shows the home banner and the final label, so the tab's own "trained" and "offline" are hidden; the rest stays
 await page('clean=1&banner=1', async ({ ev, inner, put, waitSim, S }) => {
   await put('train/gpu/policy.json', CP1);
