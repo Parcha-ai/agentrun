@@ -35,9 +35,7 @@ try {
   const r = await sketchTake(tab, {
     log: (l) => logs.push(l),
     // after every stroke: what the sketcher holds, and which body the live 3D creature was last rebuilt for; a still at 40% of the strokes is saved
-    onStroke: async ({ handle, index, design }) => {
-      await sleep(500); // the live rebuild follows the pen's rest
-      const sha = await ev("document.querySelector('iframe').contentWindow.__walks.state().mjcf_sha256");
+    onStroke: async ({ handle, index, design, mjcf_sha256: sha }) => { // called once the creature has been rebuilt for this stroke
       mids.push({ index, handle, reach: +(design.legs[0].thigh + design.legs[0].shin).toFixed(3), length: design.torso.length, sha });
       if (index === 1) writeFileSync(`${out}/sketch-take-40pct.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     },

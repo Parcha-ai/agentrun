@@ -225,16 +225,17 @@ export class PolicyWatcher {
  * or a file that changed back) is a new arrival.
  */
 export class ArrivalDedupe {
-  private last: { sha: string; at: number } | null = null;
+  private last: { sha: string; kind: string; at: number } | null = null;
   private readonly windowMs: number;
 
   constructor(windowMs = 8000) {
     this.windowMs = windowMs;
   }
 
-  accept(sha: string, nowMs: number): boolean {
-    if (this.last && this.last.sha === sha && nowMs - this.last.at < this.windowMs) return false;
-    this.last = { sha, at: nowMs };
+  /** The same bytes announced twice as the same kind of arrival are one; a checkpoint whose bytes the final file repeats is still two (the run came home). */
+  accept(sha: string, nowMs: number, kind = ''): boolean {
+    if (this.last && this.last.sha === sha && this.last.kind === kind && nowMs - this.last.at < this.windowMs) return false;
+    this.last = { sha, kind, at: nowMs };
     return true;
   }
 }

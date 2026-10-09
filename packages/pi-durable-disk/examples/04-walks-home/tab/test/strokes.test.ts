@@ -174,13 +174,15 @@ test('a target between grid values finishes on the nearest value the sketcher ca
 function fakeTab(target: Design) {
   const { canvas, fire } = fakeCanvas(800, 800);
   const sk = new Sketcher(canvas, defaultDesign(), () => {});
-  const calls = { committed: 0 };
+  const calls = { committed: 0, order: [] as string[] };
   const w = {
     innerWidth: 800, innerHeight: 800,
     __walks: {
       sketchGeometry: () => ({ rect: { left: 0, top: 0, width: 800, height: 800 }, ...sk.geometry() }),
       commitDesign: () => { calls.committed++; },
       state: () => ({ mjcf_sha256: 'x'.repeat(64) }),
+      // the live rebuild of the creature: resolves later, like the page's, and is logged so the order against the hook can be asserted
+      rebuilt: () => new Promise<void>((res) => setTimeout(() => { calls.order.push('rebuilt'); res(); }, 5)),
     },
   };
   const document = { querySelector: () => ({ contentWindow: w, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 800 }) }) };
@@ -242,4 +244,11 @@ test('sketchTake tells a recorder after every stroke (to frame a mid-draw still)
   assert.deepEqual(seen.map((x) => x.split(':').slice(0, 2).join(':')), ['0:length', '1:width', '2:hip0', '3:hip1', '4:leg0', '5:leg1']);
   assert.ok(Number(seen[2].split(':')[2]) < 0.2 && Number(seen[4].split(':')[2]) >= 0.49, 'the legs grow at the leg strokes');
   assert.deepEqual(r.undrawable, []);
+});
+
+test('the onStroke hook runs only after the live rebuild of the creature has finished, so a still pairs the sketch with its own body', async () => {
+  const f = fakeTab(TAKE_DESIGN);
+  f.sk.set(bareTorso());
+  await sketchTake(f.tab, { stepMs: 0, restMs: 0, onStroke: async () => { f.calls.order.push('hook'); } });
+  assert.deepEqual(f.calls.order, ['rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook'], 'each stroke: wait for the rebuild, then the hook');
 });
