@@ -49,6 +49,11 @@ try {
   await sleep(300); await snap('2-kicked');
   await sleep(4000);
   result.afterKick = await state();
+  // presets: the hexapod must build, show 6 legs, and stand
+  await ev("[...document.querySelectorAll('#presets button')].find((b) => b.textContent === 'hexapod').click()"); await sleep(2500);
+  result.hexapod = { legs: await ev("document.getElementById('count').textContent"), up: (await state()).up, presets: await ev("[...document.querySelectorAll('#presets button')].map((b) => b.textContent)") };
+  await snap('3b-hexapod');
+  await ev("[...document.querySelectorAll('#presets button')].find((b) => b.textContent === 'quadruped').click()"); await sleep(1000);
   // drag-to-kick: press on the creature (it stays near the view centre: the camera follows it), drag right, release
   await ev("document.getElementById('noPolicy').click(); __walks.app.sim.reset(); __walks.app.fallen = false"); await sleep(1500);
   const box = JSON.parse(await ev("JSON.stringify((() => { const r = document.getElementById('view').getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2 - 20}; })())"));

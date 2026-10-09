@@ -1,7 +1,7 @@
 // The tab app: sketch -> MJCF -> MuJoCo (WASM) -> render, a policy that runs offline, kicks, and the memory view.
 // Embedded by the show page as a same-origin iframe; see POLICY-FORMAT.md and the "walks-home" message protocol below.
 
-import { defaultDesign, validateDesign, type Design } from './design.ts';
+import { defaultDesign, PRESETS, validateDesign, type Design } from './design.ts';
 import { buildMjcf, type Built, type World } from './mjcf.ts';
 import { dummyPolicy, Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { Sim } from './sim.ts';
@@ -113,10 +113,12 @@ async function buildCreature(design: Design, keepPolicy: boolean) {
   app.fallen = false; app.recovering = null;
   await saveDesign(design);
   // A policy belongs to one body: a changed body refuses the old policy (mjcf_sha256) rather than running it blind.
-  if (keepPolicy && app.policy && app.policy.file.mjcf_sha256 !== app.bodySha) {
-    setPolicy(null, 'none (body changed: the loaded policy was trained for another body)');
-  } else if (!app.policy && app.policyName === 'dummy trot') {
+  // The dummy is generated from the body, so it is rebuilt for the new one.
+  if (app.policyName === 'dummy trot') {
     await useDummy();
+  } else if (keepPolicy && app.policy && app.policy.file.mjcf_sha256 !== app.bodySha) {
+    setPolicy(null, 'none');
+    showError('The loaded policy was trained for another body, so it was removed. Load one for this body.');
   }
   app.sim.command = Number(($('command') as HTMLInputElement).value);
   renderPairs();
@@ -296,6 +298,12 @@ async function main() {
     renderPairs();
     setPlacement('tab', 'this tab');
 
+    for (const [name, preset] of Object.entries(PRESETS)) {
+      const b = document.createElement('button');
+      b.textContent = name;
+      b.onclick = () => { app.sketcher.set(preset); buildCreature(structuredClone(preset), true).catch((e) => showError(String(e))); };
+      $('presets').append(b);
+    }
     $('build').onclick = () => buildCreature(app.sketcher.get(), true).catch((e) => showError(String(e)));
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');

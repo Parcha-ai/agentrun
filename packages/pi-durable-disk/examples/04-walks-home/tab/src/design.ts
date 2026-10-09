@@ -42,6 +42,14 @@ export function defaultDesign(): Design {
   };
 }
 
+/** Starting points for the sketcher. Each is valid and stands unaided (tested). */
+export const PRESETS: Record<string, Design> = {
+  quadruped: defaultDesign(),
+  'long legs': { version: 1, name: 'long-legs', torso: { length: 0.42, width: 0.2, height: 0.09 }, legs: [{ x: 0.75, thigh: 0.3, shin: 0.3, radius: 0.018 }, { x: -0.75, thigh: 0.3, shin: 0.3, radius: 0.018 }] },
+  stubby: { version: 1, name: 'stubby', torso: { length: 0.6, width: 0.3, height: 0.14 }, legs: [{ x: 0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }, { x: -0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }] },
+  hexapod: { version: 1, name: 'hexapod', torso: { length: 0.75, width: 0.2, height: 0.09 }, legs: [{ x: 0.8, thigh: 0.18, shin: 0.2, radius: 0.018 }, { x: 0, thigh: 0.18, shin: 0.2, radius: 0.018 }, { x: -0.8, thigh: 0.18, shin: 0.2, radius: 0.018 }] },
+};
+
 const inRange = (v: number, [lo, hi]: readonly [number, number] | readonly number[]) =>
   Number.isFinite(v) && v >= lo && v <= hi;
 
