@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- New host driver `modalHost` (and its client, `modalSandboxes`): one Modal sandbox per instance, as `daytonaHost` does for Daytona,
+  through the Modal SDK passed in by the caller (no dependency added). `daytonaHost` gains a `driver` option (the `driver` of its
+  handles, default `"daytona"`) so a driver built on it names its own handles; nothing changes for existing callers.
+
 
 **A dead client's private directories**
 - Each client holds delegations on its own private directories too, `.archil/client-<clientId>` and its `unlinked/`, which the
