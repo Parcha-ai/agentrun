@@ -174,13 +174,24 @@ export function gpuDockerfile(uid: number, gid: number): string {
   ].join("\n");
 }
 
+/** The box's egress settings (Daytona swaps a secret's placeholder in on its proxy, which re-signs with its own CA). */
+const BOX_EGRESS_VARS = ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "no_proxy", "NO_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"];
+
 /**
- * What every box gets at setup, from the snapshot or not: the instance's serve token (uploaded to `stage`) and the
- * model credential's placeholder (the box's own environment variable), each in a file of `${BOX_ETC}`. Prints which
- * parts it found, and the names (never the values) of the proxy and CA variables the box carries.
+ * Runs the instance with the box's egress settings, which the launcher's clean environment drops: the box's proxy
+ * variables (kept at setup, in `${BOX_ETC}/egress.env`) and Node's switch to honor them in fetch.
+ */
+export const BOX_RUN_WITH_EGRESS = `${BOX_ETC}/run-with-egress`;
+
+/**
+ * What every box gets at setup, from the snapshot or not: the instance's serve token (uploaded to `stage`), the model
+ * credential's placeholder (the box's own environment variable) and the box's egress settings, each in a file of
+ * `${BOX_ETC}`, and the wrapper that runs the instance with them. Prints which parts it found, and the names (never
+ * the values) of the proxy and CA variables the box carries.
  */
 export function boxSetupScript(stage: string): string {
   const key = MODEL_KEY_ENV;
+  const egress = BOX_EGRESS_VARS.join("|");
   return [
     "set -eu",
     `sudo -n install -d -m 0750 -o root -g pda ${BOX_ETC}`,
@@ -193,6 +204,9 @@ export function boxSetupScript(stage: string): string {
     `  echo "model-key=no"`,
     "fi",
     `echo "env-names=$(env | cut -d= -f1 | grep -i -E 'proxy|ssl|cert|^node_' | sort | tr '\\n' ' ')"`,
+    // As bash's own quoting (export -p), so values with any character source back unchanged.
+    `bash -c 'export -p' | grep -E '^declare -x (${egress})=' | sudo -n sh -c 'umask 0337 && cat > ${BOX_ETC}/egress.env && chgrp pda ${BOX_ETC}/egress.env'`,
+    `printf '%s\\n' '#!/bin/bash' 'set -a' '. ${BOX_ETC}/egress.env' 'set +a' 'export NODE_USE_ENV_PROXY=1' 'exec "$@"' | sudo -n sh -c 'cat > ${BOX_RUN_WITH_EGRESS} && chmod 0755 ${BOX_RUN_WITH_EGRESS}'`,
     `test -f ${BOX_APP_DIR}/.prepared && echo "runtime=snapshot" || echo "runtime=installed"`,
     "",
   ].join("\n");
@@ -477,6 +491,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         mountRoot: BOX_MOUNT_ROOT,
         node: BOX_NODE,
         packageDir: BOX_PACKAGE,
+        command: [BOX_RUN_WITH_EGRESS, BOX_NODE, `${BOX_PACKAGE}/dist/cli.js`],
         user: "pda",
         group: "pda",
         runArgs: [

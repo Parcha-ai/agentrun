@@ -92,8 +92,11 @@ export const slate = (title: string, sub: string) =>
 export const label = (page: Page, text: string) =>
   page.evaluate(`(() => { let el = document.getElementById("device-label"); if (!el) { el = document.createElement("div"); el.id = "device-label"; el.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:9;background:#1d1d1b;color:#ecebe6;font:600 13px system-ui,sans-serif;padding:6px 10px;border-radius:8px;opacity:.88"; document.body.append(el); } el.textContent = ${JSON.stringify(text)}; return true; })()`).catch(() => false);
 
-/** Type a message into the page's composer and send it. */
-export const send = (page: Page, text: string) => page.evaluate(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(text)}; document.getElementById("send").click(); return true; })()`);
+/** Type a message into the page's composer and send it, once the composer takes input (a disabled button ignores a click). */
+export async function send(page: Page, text: string): Promise<void> {
+  await page.until(`!document.getElementById("send").disabled && !document.getElementById("composer").hidden`, 60_000, 100);
+  await page.evaluate(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(text)}; document.getElementById("send").click(); return true; })()`);
+}
 
 /** Follow the server's log and show on the ops strip who holds the disk. */
 export function followHolders(ops: Page, serverLog: string, tabs: Map<string, string>): () => void {

@@ -37,7 +37,9 @@ export interface PipeClientOptions {
   readonly run: string;
   readonly token: string;
   readonly tab: string;
-  readonly mode: "write" | "view";
+  readonly mode: "write" | "view" | "operator";
+  /** This client is a page that can run the agent when the pipe tells it to (a switch into a tab). */
+  readonly canRun?: boolean;
   readonly takeover?: boolean;
   /** The switch this tab answers (the pipe told it to run the run here). */
   readonly switchId?: string;
@@ -70,7 +72,7 @@ export class PipeClient {
     this.#socket = options.socket ?? (new WebSocket(options.url!) as unknown as SocketLike);
     this.ready = new Promise((resolve, reject) => {
       const hello = () => {
-        this.#send({ t: "hello", run: options.run, token: options.token, mode: options.mode, tab: options.tab, ...(options.takeover ? { takeover: true } : {}), ...(options.switchId ? { switchId: options.switchId } : {}) });
+        this.#send({ t: "hello", run: options.run, token: options.token, mode: options.mode, tab: options.tab, ...(options.takeover ? { takeover: true } : {}), ...(options.switchId ? { switchId: options.switchId } : {}), ...(options.canRun ? { canRun: true } : {}) });
         this.#ping = setInterval(() => this.#send({ t: "ping", at: performance.now() }), options.pingMs ?? 1_000);
       };
       if (this.#socket.readyState === OPEN) queueMicrotask(hello);
