@@ -69,6 +69,8 @@ interface App {
 }
 
 const MAX_DRAG_KICK_N = 100;
+const MAX_CATCHUP_S = 0.5;
+const MAX_STEPS_PER_FRAME = Math.round(MAX_CATCHUP_S / CONTROL_DT);
 
 let app: App;
 
@@ -361,13 +363,15 @@ function sampleArrival() {
 
 function tick(now: number) {
   requestAnimationFrame(tick);
-  const dt = Math.min((now - app.last) / 1000, 0.1);
+  // A hitch (GC, a busy machine) is made up by stepping more next frame, up to half a second of simulation, so the creature
+  // never falls behind the wall clock; beyond that the backlog is dropped. Physics is cheap (about 1 ms per control step).
+  const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
   app.last = now;
   const t0 = performance.now();
   if (app.running) {
     app.acc += dt;
     let n = 0;
-    while (app.acc >= CONTROL_DT && n < 6) {
+    while (app.acc >= CONTROL_DT && n < MAX_STEPS_PER_FRAME) {
       app.sim.step(app.policy);
       const q = app.sim.data.qpos;
       app.stats.step(app.sim.time, Number.isFinite(q[0] + q[1] + q[2] + q[3] + q[4]), app.expectReset);
@@ -377,8 +381,10 @@ function tick(now: number) {
       app.acc -= CONTROL_DT;
       n++;
     }
-    if (n === 6) app.acc = 0;
+    if (n === MAX_STEPS_PER_FRAME) app.acc = 0;
     const up = app.sim.uprightness();
+    // `fallen` is true from the moment it goes down until it is upright again, so each fall is counted and announced once
+    if (app.fallen && up > 0.9) app.fallen = false;
     if (!app.fallen && up < 0.3) { app.fallen = true; app.stats.c.falls++; post('fell', { t: app.sim.time }); toast('fell'); }
     if (app.recovering !== null && !app.fallen && app.sim.time - app.recovering > 2 && up > 0.9) {
       app.stats.c.recoveries++;
