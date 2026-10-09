@@ -63,6 +63,17 @@ Two things a view-only stage cannot do, both for browser-demo's server: (1) the 
 `run-here` to whoever asked, and only a tab page can then claim the run, so `tab-control.ts` (rehearsal only, `SHOW_TAB_CDP`)
 makes the real tab page do the asking. Cloud targets light up when the feed lists their environments.
 
+## Live day: run the preflight first
+
+    CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> SHOW_API=<live feed url> node scripts/preflight.mjs
+
+It reads and probes only (starts nothing, spends nothing) and exits non-zero on any failure. Each check is a way the stage went
+wrong in rehearsal: a Chrome with no WebGL (the shared one has none, so the creature's 3D view is blank; start one with
+`scripts/chrome.mjs`), a tab app or 03 page built before its sources changed (an old 03 page treats a switch to the tab as an
+untimed takeover), a missing or wrong-version policy (the home beat shows a refused policy), a dead model broker (no agent
+answers after a switch), a feed that is not answering. For a recorded take use `SHOW_AUTOKILL=off` on the scripted feed so the
+only kill is the one the script clicks; against a live feed the stage sends no command until the operator presses a button.
+
 ## Honest numbers
 
 A feed says where it comes from: `run.source` is `live` (the default) or `scripted`. A scripted feed gets a permanent
