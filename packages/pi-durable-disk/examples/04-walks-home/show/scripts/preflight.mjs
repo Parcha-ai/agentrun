@@ -1,6 +1,8 @@
 // Live-day preflight: every way the stage has gone wrong in rehearsal, checked in one run, so a surprise is a line of output
 // before the take and not a blank pane during it.
 //   CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> POLICY_DIR=<dir> [SHOW_API=http://host:port] node scripts/preflight.mjs
+//   A live take (SHOW_PIPE_LINK_FILE, the same file serve.ts follows) needs no POLICY_DIR: the policy comes from the run's disk.
+//   SHOW_URL=<the running stage> checks what that stage serves the home beat instead of this script's own environment.
 // Exits non-zero if any check fails. Reads and probes only: it starts nothing and spends nothing.
 import { createServer } from "node:http";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -8,12 +10,13 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openTab } from "./cdp.mjs";
+import { checkHomePolicy, checkServedHomePolicy } from "../home-policy.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9222";
 const tabDir = process.env.TAB_DIR;
-const policyDir = process.env.POLICY_DIR ?? join(here, "..", "page", "policy");
 const api = process.env.SHOW_API?.replace(/\/$/, "");
+const showUrl = process.env.SHOW_URL?.replace(/\/$/, "");
 const ex03 = join(here, "..", "..", "..", "03-tab-to-cloud");
 let failed = 0;
 const check = async (name, fn) => {
@@ -67,12 +70,13 @@ await check("the tab app's build is there and newer than its sources", () => {
   const src = join(tabDir, "..", "src");
   return existsSync(src) && statSync(dist).mtimeMs < newest(src) - 1000 ? [false, "dist is older than src: node build.mjs in the tab app's folder"] : true;
 });
-await check("the winner's policy is there, mlp-v1, for this MuJoCo", () => {
-  const f = join(policyDir, "home.json");
-  if (!existsSync(f)) return [false, `no ${f}: the home beat would show a refused policy`];
-  const p = JSON.parse(readFileSync(f, "utf8"));
-  return [p.format === "mlp-v1" && p.mujoco_version === "3.15.0" && typeof p.mjcf_sha256 === "string", `${p.format}, MuJoCo ${p.mujoco_version}, ${Math.round(statSync(f).size / 1000)} KB`];
-});
+// The home beat's policy as the tab will take it (or, in a live take, the run link it comes through): show/home-policy.ts. With
+// SHOW_URL it is what the running stage serves, which is what the camera sees; without, what this script's environment names.
+await check(
+  showUrl ? `the home beat's policy, as the running stage serves it (${showUrl})` : "the home beat's policy: one the tab loads, or in a live take the run link",
+  () => (showUrl ? checkServedHomePolicy(showUrl) : checkHomePolicy(process.env)),
+);
+if (!showUrl) console.log("note  no SHOW_URL: the running stage's own /policy/home.json is not probed; start the stage and pass its URL to check it");
 await check("the 03 tab page is built and newer than its sources (an old one never times a switch back)", () => {
   const dist = join(ex03, "tab", "dist", "main.js");
   if (!existsSync(dist)) return [false, "node tab/build.mjs --fetch in 03-tab-to-cloud"];

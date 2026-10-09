@@ -207,6 +207,9 @@ const server = createServer(async (req, res) => {
         }
         return sendJson(res, 405, { error: "GET or PUT" });
       }
+      // What this stage serves the home beat from, for the preflight's probe (SHOW_URL): a pipe feed's tab reads the run's own
+      // work/home/policy.json; any other feed's page asks the tab to load /policy/home.json. Names only: no paths, no secrets.
+      if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app" });
       if (UPSTREAM) return await proxy(req, res, path + url.search);
       if (path === "/api/state" && req.method === "GET") {
         res.setHeader("x-last-event-id", String(player.events.length - 1));

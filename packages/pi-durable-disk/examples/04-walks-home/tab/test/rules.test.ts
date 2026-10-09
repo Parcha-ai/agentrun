@@ -78,7 +78,7 @@ test('a getup claim appears only for bodies where it was measured', () => {
   assert.match(text('asym'), /gets up unreliably/);
 });
 
-test('a sketched body that is not one of ours gets an honest "not trained" note, a short-legs caution only when it is short, and the 2-joint caution', () => {
+test('a sketched body that is not one of ours gets a plain "not trained" note, a short-legs caution only when it is short, and the 2-joint caution', () => {
   const custom = structuredClone(PRESETS.quadruped);
   custom.torso.length = 0.55;
   const n = bodyNotes(custom);
