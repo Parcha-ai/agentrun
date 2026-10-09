@@ -214,8 +214,9 @@ export interface DaytonaHostOptions {
   /** Restart in place after a non-terminal exit (default true). */
   restart?: boolean;
   /**
-   * On `stop`, end the programs the agent left running with the run's mount busy (detached from the instance, so it cannot end
-   * them) before the instance drains: otherwise the unmount fails and the delegation stays held. Default false.
+   * On `stop`, kill every program the agent left running under the run's mount (a working directory, root or open file there)
+   * before the instance drains. Such a program is detached from the instance, so the instance cannot end it; it keeps the mount
+   * busy, `archil unmount` fails and the delegation stays held. Use it where the box belongs to the run (`modalHost` does). Default false.
    */
   reapOnStop?: boolean;
   /** Daytona destroys every box this long after creation, whatever its state. Default 25 h (a mount token lives 24 h). */
