@@ -9,11 +9,11 @@
 // Environment: ARCHIL_API_KEY, PDA_LIVE_DISK, PDA_LIVE_REGION (with-archil); DAYTONA_API_KEY, DAYTONA_API_URL,
 // DAYTONA_TARGET (with-daytona). Every resource goes into --ledger before it is created and is closed when deleted; at
 // exit (and on SIGINT) everything this run made is deleted unless --keep.
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type RunRef } from "@parcha/pi-durable-disk";
+import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type ForkOptions, type RunRef } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "../../03-tab-to-cloud/pipe/control.ts";
 import { daytonaFleet } from "./daytona-fleet.ts";
 import { modalUniverses } from "./modal.ts";
@@ -23,7 +23,7 @@ import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
-import { readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
+import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -66,7 +66,7 @@ const { values } = parseArgs({
     "modal-runtime": { type: "string", default: "gvisor" },
     /** GPU classes to try in order, comma-separated ("L4,A10,L40S,H100"): the first that places makes the machine. */
     "modal-gpu": { type: "string" },
-    "modal-place-ms": { type: "string", default: "90000" },
+    "modal-place-ms": { type: "string", default: "20000" },
     "modal-region": { type: "string", default: "us-east" },
     /** What a score means on the stage; with --workload train it is D2's ("m walked in 10 s"), the stand-in's has none. */
     "score-unit": { type: "string" },
@@ -79,6 +79,8 @@ const { values } = parseArgs({
     minutes: { type: "string", default: "6" },
     /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
     "source-files": { type: "string" },
+    /** With --auto: collapse this many seconds after the kills, instead of when every universe reached its budget. */
+    "collapse-after": { type: "string" },
   },
 });
 
@@ -193,13 +195,14 @@ feed.emit({
   origin,
   environments: [{ id: "tab", label: "Tab", kind: "tab" }, { id: "universes", label: "Universes", kind: "sandbox" }],
   source: "live",
-  ...(values["score-unit"] || training ? { scoreUnit: values["score-unit"] ?? TRAIN_SCORE_UNIT } : {}),
+  // train.py scores on the held-out course when the run has one (it says so as score_unit on every line).
+  ...(values["score-unit"] || training ? { scoreUnit: values["score-unit"] ?? (values["source-files"] && existsSync(join(values["source-files"], "terrain", "course.json")) ? COURSE_SCORE_UNIT : TRAIN_SCORE_UNIT) } : {}),
 });
 feed.emit({ t: "place", at: 0, place: { where: "tab", host: sourceLabel }, env: "tab" });
 feed.emit({ t: "stay.begin", at: 0, stay: { id: "run:source", lane: "run", host: sourceLabel, hostKind: "tab", from: 0 } });
 
 /** D2's universe file k (1-based): its hypothesis is the stage's reward line, its scales go to train.py. */
-const trainUniverse = (k: number): { hypothesis: string; reward_scales: unknown } => JSON.parse(readFileSync(join(values["universes-dir"]!, `u${k}.json`), "utf8"));
+const trainUniverse = (k: number): { hypothesis: string; reward_scales: unknown; [key: string]: unknown } => JSON.parse(readFileSync(join(values["universes-dir"]!, `u${k}.json`), "utf8"));
 const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec => {
   if (!training) {
     return {
@@ -212,10 +215,23 @@ const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec
   return {
     id: `u${i + 1}`,
     reward: u.hypothesis,
-    env: { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: values["train-py"]!, UNIVERSE_PYTHON: values.python!, UNIVERSE_SCALES: JSON.stringify(u.reward_scales), UNIVERSE_MINUTES: values.minutes! },
+    env: { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: values["train-py"]!, UNIVERSE_PYTHON: values.python!, UNIVERSE_SPEC: JSON.stringify({ ...u, name: `u${i + 1}` }), UNIVERSE_MINUTES: values.minutes! },
   };
 });
 const runPrefix = `d1-${stamp}-`;
+// forkMany (#64: one source mount, every new run copied at once) when this build of the package has it; otherwise the
+// multiverse forks one run after another.
+type ForkMany = (ref: RunRef, ids: readonly string[], options: ForkOptions) => Promise<{ outcomes: ({ run: string; ok: true; result: { ms: number; files: number; bytes: number } } | { run: string; ok: false; error: Error })[] }>;
+const forkMany = ((await import("@parcha/pi-durable-disk")) as unknown as { forkMany?: ForkMany }).forkMany;
+const forkAll = forkMany
+  ? async (ref: RunRef, ids: readonly string[], options: ForkOptions) => {
+      const r = await forkMany(ref, ids, options);
+      const failed = r.outcomes.find((o) => !o.ok);
+      if (failed && !failed.ok) throw failed.error;
+      return r.outcomes.map((o) => (o.ok ? { run: o.run, ms: o.result.ms, files: o.result.files, bytes: o.result.bytes } : { run: o.run, ms: 0, files: 0, bytes: 0 }));
+    }
+  : undefined;
+log("forks", { with: forkMany ? "forkMany" : "fork, one by one" });
 const mv = new Multiverse({
   control,
   fleet,
@@ -229,7 +245,8 @@ const mv = new Multiverse({
   emit: (e) => feed.emit(e),
   origin,
   log,
-  ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true } : {}),
+  ...(forkAll ? { forkAll } : {}),
+  ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true, resumeTimeoutMs: 600_000 } : {}),
   onResource: (kind, id, note) => {
     onResource(kind, id, note);
     if (kind === "run") createdRuns.push(id);
@@ -262,12 +279,22 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
       return answer(mv.kill(cmd.universe).then((r) => void takeovers.push(r)), "kill");
     case "collapse":
       return answer(mv.collapse(cmd.winner), "collapse");
+    case "switch":
+      // Home: the stage sends a switch to the tab once the multiverse collapsed.
+      if (cmd.to !== "tab") return { ok: false, error: `the multiverse goes home to the tab, not to ${cmd.to}` };
+      return answer(mv.home({ label: "your browser tab", env: "tab" }), "home");
     default:
       return { ok: false, error: `${cmd.t} is not this producer's command` };
   }
 }
 
-const server = await serveFeed({ feed, port: Number(values.port), command });
+const server = await serveFeed({
+  feed,
+  port: Number(values.port),
+  command,
+  // Where the tab finds the run to attach when it is called home: the winner's run, once there is one.
+  routes: { winner: () => mv.winner()?.placed.run },
+});
 log("feed", { url: server.url, source: source.id, universes: n, transport });
 
 let cleaning: Promise<void> | undefined;
@@ -311,12 +338,14 @@ if (values.auto) {
     fanout = await mv.fanOut();
     feed.emit({ t: "stay.end", at: Date.now() - origin, id: "run:source", endedBy: "switch" });
     log("measure.fanout", fanout);
+    // A trainer compiles before its first checkpoint (minutes cold): training waits longer than the stand-in.
+    const firstCheckpointS = training ? 900 : 120;
     const allTraining = async () => {
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < firstCheckpointS * 2; i++) {
         if (mv.lines().filter((l) => l.slot !== null).every((l) => l.status === "training")) return;
         await sleep(500);
       }
-      throw new Error("not every universe reached training in 120 s");
+      throw new Error(`not every universe reached training in ${firstCheckpointS} s`);
     };
     await allTraining();
     log("measure.training", { ms: Date.now() - t0 });
@@ -329,10 +358,11 @@ if (values.auto) {
       log("measure.takeover", r);
       await allTraining();
     }
-    // Let every universe finish its budget, then keep the best.
-    for (let i = 0; i < 600; i++) {
+    // Let every universe finish its budget (or train for --collapse-after seconds), then keep the best.
+    const until = Date.now() + (values["collapse-after"] ? Number(values["collapse-after"]) * 1000 : 600_000);
+    while (Date.now() < until) {
       const st = feed.state;
-      if (Object.values(st.universes).filter((u) => u.slot !== null).every((u) => u.progress >= 1)) break;
+      if (!values["collapse-after"] && Object.values(st.universes).filter((u) => u.slot !== null).every((u) => u.progress >= 1)) break;
       await sleep(1000);
     }
     // Each live machine's instance output: its open steps and timings ("running" lines) for the report.

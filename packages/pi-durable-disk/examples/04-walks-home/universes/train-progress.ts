@@ -7,7 +7,9 @@ import { runPath } from "@parcha/pi-durable-disk";
 import type { Control, Progress } from "./multiverse.ts";
 import { trainDir } from "./workload.ts";
 
+/** train.py's units: flat ground, or the held-out course (--course), which it writes as `score_unit` on every line. */
 export const TRAIN_SCORE_UNIT = "m walked in 10 s";
+export const COURSE_SCORE_UNIT = "m along the course in 20 s";
 
 type TrainState = {
   status?: string;
@@ -34,12 +36,14 @@ export async function readTrainProgress(control: Pick<Control, "getObject">, run
   const total = state.steps_total ?? 0;
   const step = state.steps_done ?? 0;
   let score = 0;
+  let unit: string | undefined;
   const lines = (await text(control, `${base}/progress.jsonl`))?.trim().split("\n") ?? [];
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
-      const s = (JSON.parse(lines[i]!) as { score?: number | null }).score;
-      if (typeof s === "number") {
-        score = s;
+      const line = JSON.parse(lines[i]!) as { score?: number | null; score_unit?: string };
+      if (typeof line.score === "number") {
+        score = line.score;
+        unit = line.score_unit;
         break;
       }
     } catch {
@@ -56,5 +60,6 @@ export async function readTrainProgress(control: Pick<Control, "getObject">, run
     generation: state.generation ?? segment?.generation ?? 0,
     host: segment?.host ?? "",
     at: new Date().toISOString(),
+    ...(unit ? { unit } : {}),
   };
 }

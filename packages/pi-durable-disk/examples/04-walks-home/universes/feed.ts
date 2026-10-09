@@ -64,6 +64,8 @@ export interface FeedServerOptions {
   /** Default 127.0.0.1: the feed is never public. */
   readonly host?: string;
   readonly command: (cmd: FeedCommand) => Promise<CommandResult>;
+  /** Read-only JSON routes of the producer: `GET /api/<name>` answers what `routes[name]()` returns (404 on undefined). */
+  readonly routes?: Readonly<Record<string, () => unknown>>;
 }
 
 export async function serveFeed(o: FeedServerOptions): Promise<Server & { url: string }> {
@@ -91,6 +93,11 @@ export async function serveFeed(o: FeedServerOptions): Promise<Server & { url: s
         }
         const r = await o.command(cmd);
         return sendJson(res, r.ok ? 200 : 409, r.ok ? r : { ...r, message: r.message ?? r.error });
+      }
+      const route = req.method === "GET" && url.pathname.startsWith("/api/") ? o.routes?.[url.pathname.slice(5)] : undefined;
+      if (route) {
+        const body = route();
+        return body === undefined ? sendJson(res, 404, { error: "not yet" }) : sendJson(res, 200, body);
       }
       return sendJson(res, 404, { error: "no such route", path: url.pathname });
     } catch (error) {

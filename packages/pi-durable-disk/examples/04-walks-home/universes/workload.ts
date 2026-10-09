@@ -9,9 +9,13 @@
 //   UNIVERSE_WORKLOAD          "stand-in" (default) or "train"
 //   UNIVERSE_TRAIN_PY          train.py's path in the box; UNIVERSE_PYTHON (default python3)
 //   UNIVERSE_MJCF, UNIVERSE_BODY   the creature, relative to the run's work/ (default creature/creature.xml, creature/body.json)
-//   UNIVERSE_SCALES            the universe's reward scales, JSON; UNIVERSE_MINUTES its time budget
+//   UNIVERSE_WORLD, UNIVERSE_COURSE   the training terrain and the held-out course, relative to work/ (default
+//                              terrain/terrain.json, terrain/course.json), passed when the run has them
+//   UNIVERSE_COMPILE_CACHE     train.py's compile cache, relative to work/ (default train/compile-cache.tar.gz)
+//   UNIVERSE_SPEC              the universe's file for train.py, JSON (or UNIVERSE_SCALES, its reward scales alone)
+//   UNIVERSE_MINUTES           its time budget
 import { spawn } from "node:child_process";
-import { watch } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { startTrainer } from "./trainer.ts";
@@ -80,17 +84,26 @@ function startTrain(o: WorkloadOptions): Workload {
   };
   const done = (async () => {
     await mkdir(dir, { recursive: true });
-    const spec = { name: universe, reward_scales: JSON.parse(o.env.UNIVERSE_SCALES ?? "{}") as unknown, env: {}, ppo: {} };
+    // D2's universe file as given (name, reward scales, env and PPO overrides), else one built from the scales.
+    const spec = o.env.UNIVERSE_SPEC ? (JSON.parse(o.env.UNIVERSE_SPEC) as unknown) : { name: universe, reward_scales: JSON.parse(o.env.UNIVERSE_SCALES ?? "{}") as unknown, env: {}, ppo: {} };
     await writeFile(join(dir, "universe.json"), `${JSON.stringify(spec, null, 2)}\n`);
     watcher = watch(dir, (event, name) => {
       if (name === "state.json") onRename();
     });
+    // The terrain it trains on and the held-out course it is scored on are the run's, when it has them (every fork
+    // copies them from the source); the compile cache is one path for every universe of the run, so a fork of a run
+    // that holds it starts warm.
+    const world = join(o.work, o.env.UNIVERSE_WORLD ?? "terrain/terrain.json");
+    const course = join(o.work, o.env.UNIVERSE_COURSE ?? "terrain/course.json");
     const args = [
       trainPy,
       "--mjcf", join(o.work, o.env.UNIVERSE_MJCF ?? "creature/creature.xml"),
       "--body", join(o.work, o.env.UNIVERSE_BODY ?? "creature/body.json"),
       "--universe", join(dir, "universe.json"),
       "--work", dir,
+      ...(existsSync(world) ? ["--world", world] : []),
+      ...(existsSync(course) ? ["--course", course] : []),
+      "--compile-cache", join(o.work, o.env.UNIVERSE_COMPILE_CACHE ?? "train/compile-cache.tar.gz"),
       ...(o.env.UNIVERSE_MINUTES ? ["--minutes", o.env.UNIVERSE_MINUTES] : []),
       ...(o.env.UNIVERSE_TRAIN_ARGS ? (JSON.parse(o.env.UNIVERSE_TRAIN_ARGS) as string[]) : []),
     ];
