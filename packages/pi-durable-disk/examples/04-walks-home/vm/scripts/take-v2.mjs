@@ -168,7 +168,7 @@ try {
   const frame = `document.querySelector("iframe")?.contentWindow`;
   if (!flag("seed-creature") && !flag("apply-design") && !flag("apply-take-design") && sketchModule) {
     const { sketchTake } = await import(sketchModule);
-    await sketchTake(stage, { frame: "#tab", settleMs: 4000, stepMs: Number(arg("draw-step-ms", 50)), restMs: Number(arg("draw-rest-ms", 1100)), log: (m) => step(`sketch: ${m}`) });
+    await sketchTake(stage, { frame: "#tab", settleMs: 4000, stepMs: Number(arg("draw-step-ms", 50)), restMs: Number(arg("draw-rest-ms", 1100)), onStroke: ({ handle, index }) => step(`stroke ${index + 1} settled: the drawing so far (${handle})`), log: (m) => step(`sketch: ${m}`) });
     step("the user drew the creature");
   } else if (flag("seed-creature")) {
     // A stand-in for the strokes: D2's default creature files, put on the disk by the recorder (the tab did not write them).
