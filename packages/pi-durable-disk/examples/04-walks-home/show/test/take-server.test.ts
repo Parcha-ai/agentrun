@@ -57,6 +57,26 @@ describe("the take server launcher", () => {
     assert.ok(!args.includes("memory.sqlite"));
     assert.match(args, /--model-url http:\/\/127\.0\.0\.1:9421\/v1/);
     assert.match(args, /--host 127\.0\.0\.1/);
+    // Read-back of work/ after each release is asked for, never a default.
+    assert.ok(!args.includes("--evidence-readback"));
+    assert.equal((status as { evidenceReadback?: boolean }).evidenceReadback, false);
+  });
+
+  it("passes --evidence-readback to the server when asked, and says so in its status file", async () => {
+    const evDir = join(root, "take-ev");
+    const ev = spawn(process.execPath, [script, "--local", join(root, "disk"), "--dir", evDir, "--run", "take-ev", "--evidence-readback"], { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: join(homedir(), "tmp-d5", "tmp") }, stdio: "ignore" });
+    try {
+      for (let i = 0; i < 200 && !existsSync(join(evDir, "status.json")); i++) {
+        if (ev.exitCode !== null) throw new Error("the launcher exited");
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const evStatus = JSON.parse(readFileSync(join(evDir, "status.json"), "utf8")) as { pid: number; evidenceReadback: boolean };
+      assert.equal(evStatus.evidenceReadback, true);
+      assert.match(execFileSync("ps", ["-o", "args=", "-p", String(evStatus.pid)], { encoding: "utf8" }), /--evidence-readback(\s|$)/);
+    } finally {
+      ev.kill("SIGTERM");
+      for (let i = 0; i < 40 && ev.exitCode === null && ev.signalCode === null; i++) await new Promise((r) => setTimeout(r, 200));
+    }
   });
 
   it("stops when told to, and takes its status file with it", async () => {
