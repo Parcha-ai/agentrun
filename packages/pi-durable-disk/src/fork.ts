@@ -83,6 +83,9 @@ async function emptyDir(root: string): Promise<void> {
   for (const name of await readdir(root)) await rm(join(root, name), { recursive: true, force: true });
 }
 
+/** A released and sealed record: what a fork may copy. */
+const isReleased = (r: RunRecord | null | undefined): r is RunRecord & { sealedSeq: number } => !!r && RELEASED.includes(r.status) && r.sealedSeq !== null;
+
 /**
  * Fork run `ref` into run `newId`. The source must be released and sealed (run.json paused, sleeping, done
  * or failed with a `sealedSeq`, and no delegation); `newId` must not exist. A fork owns the new run's directory only
@@ -93,102 +96,173 @@ async function emptyDir(root: string): Promise<void> {
  */
 export async function fork(ref: RunRef, newId: string, options: ForkOptions): Promise<ForkResult> {
   const t0 = performance.now();
+  const many = await forkMany(ref, [newId], options);
+  const outcome = many.outcomes[0]!;
+  if (!outcome.ok) throw outcome.error;
+  return { ...outcome.result, ms: Math.round(performance.now() - t0) };
+}
+
+export interface ForkManyOptions extends ForkOptions {
+  /** How many new runs are copied at once, each under its own mount. Default: all of them. */
+  readonly concurrency?: number;
+}
+
+/** One new run of a `forkMany`: its result, or why it was not made (a ForkError, or the error of the step that failed). */
+export type ForkOutcome = { readonly run: string; readonly ok: true; readonly result: ForkResult } | { readonly run: string; readonly ok: false; readonly error: Error };
+
+export type ForkManyResult = {
+  readonly from: string;
+  readonly sealedSeq: number;
+  readonly sourceGeneration: number;
+  /** In the order of `newIds`. */
+  readonly outcomes: readonly ForkOutcome[];
+  readonly ms: number;
+};
+
+/**
+ * Fork run `ref` into every run of `newIds` with one mount of the source: the source is checked and mounted once (so it
+ * cannot start meanwhile), and each new run is copied under its own exclusive mount, `concurrency` at a time. Each new
+ * run follows `fork`'s rules on its own: it is opened by no one before its copy and its run.json are complete and
+ * durable (its mount holds it until then, and its release runs the barrier first), a failure after its mount empties
+ * and removes only its own directory, and one another fork or start mounted first is left alone. A new run that exists
+ * already, or fails, is an outcome with `ok: false`; the others are made. A source that is not released and sealed, is
+ * held, or is mounted while forking throws (no new run is made), as does an empty, repeated or source id.
+ */
+export async function forkMany(ref: RunRef, newIds: readonly string[], options: ForkManyOptions): Promise<ForkManyResult> {
+  const t0 = performance.now();
   const control = withTimeouts(options.control, options.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
-  runPath(newId);
-  if (newId === ref.id) throw new ForkError("INVALID_ARGUMENT", "a fork needs a new run id");
-  const before = await readRunStatus(control, ref.id);
-  const released = (r: RunRecord | null | undefined): r is RunRecord & { sealedSeq: number } => !!r && RELEASED.includes(r.status) && r.sealedSeq !== null;
-  if (!released(before)) throw new ForkError("SOURCE_NOT_RELEASED", `run ${ref.id} is not released and sealed (${before ? `${before.status}, sealedSeq ${before.sealedSeq}` : "no run.json"})`);
-  if ((await findDelegations(control, ref.id)).length > 0) throw new ForkError("SOURCE_HELD", `run ${ref.id} is mounted somewhere`);
-  const target = `${runPath(newId)}/`;
-  if ((await control.headObject(target)) || (await control.listObjects(target, { recursive: true })).objects.length > 0) {
-    throw new ForkError("TARGET_EXISTS", `${target} already exists`);
+  if (newIds.length === 0) throw new ForkError("INVALID_ARGUMENT", "a fork needs at least one new run id");
+  for (const id of newIds) {
+    runPath(id);
+    if (id === ref.id) throw new ForkError("INVALID_ARGUMENT", "a fork needs a new run id");
   }
+  if (new Set(newIds).size !== newIds.length) throw new ForkError("INVALID_ARGUMENT", "the new run ids repeat");
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? newIds.length));
+  const before = await readRunStatus(control, ref.id);
+  if (!isReleased(before)) throw new ForkError("SOURCE_NOT_RELEASED", `run ${ref.id} is not released and sealed (${before ? `${before.status}, sealedSeq ${before.sealedSeq}` : "no run.json"})`);
+  if ((await findDelegations(control, ref.id)).length > 0) throw new ForkError("SOURCE_HELD", `run ${ref.id} is mounted somewhere`);
+
+  const outcomes = new Map<string, ForkOutcome>();
+  const exists = await Promise.all(
+    newIds.map(async (id) => {
+      const target = `${runPath(id)}/`;
+      return Boolean((await control.headObject(target)) || (await control.listObjects(target, { recursive: true })).objects.length > 0);
+    }),
+  );
+  newIds.forEach((id, i) => {
+    if (exists[i]) outcomes.set(id, { run: id, ok: false, error: new ForkError("TARGET_EXISTS", `${runPath(id)}/ already exists`) });
+  });
+  const fresh = newIds.filter((id) => !outcomes.has(id));
+  const done = (record: RunRecord & { sealedSeq: number }): ForkManyResult => ({
+    from: ref.id,
+    sealedSeq: record.sealedSeq,
+    sourceGeneration: record.generation,
+    outcomes: newIds.map((id) => outcomes.get(id)!),
+    ms: Math.round(performance.now() - t0),
+  });
+  if (fresh.length === 0) return done(before);
 
   const note = options.onResource ?? (() => {});
   const base = join(options.mountRoot, `.fork-${Date.now().toString(36)}`);
   const tokens: string[] = [];
-  const claims: Claim[] = [];
-  // Set once this fork holds the new run's directory exclusively; until then the directory may be another operation's.
-  let copy: Claim | undefined;
-  let done = false;
+  /** Mint a token for `run` and mount it exclusively under `<base>/<side>`. */
   const mount = async (run: RunRef, side: "source" | "target"): Promise<Claim> => {
     const t = await mintMountToken(control, { nickname: `${options.tokenPrefix ?? "pda-"}fork-${side}-${run.id}`.slice(0, 200), ttl: "1h" });
     tokens.push(t.identifier);
     note("token", t.identifier, side);
     const claim = await (options.acquire ?? acquire)({ ref: run, token: t.token, mountRoot: join(base, side), host: options.host });
-    claims.push(claim);
     note("mount", claim.root, `${run.disk}:/${runPath(run.id)}`);
     return claim;
   };
+  const release = async (c: Claim): Promise<void> => {
+    await c.release().then(
+      (r) => note("unmount", c.root, r.via),
+      (error: unknown) => {
+        note("unmount", c.root, "failed");
+        throw error;
+      },
+    );
+  };
+
+  let source: Claim | undefined;
   try {
-    const source = await mount(ref, "source").catch((error: unknown) => {
+    source = await mount(ref, "source").catch((error: unknown) => {
       throw error instanceof HeldError ? new ForkError("SOURCE_HELD", `run ${ref.id} was mounted while forking`, { cause: error }) : error;
     });
     // The mounted record is authoritative: the source cannot change while this claim holds it.
     const record = await readRunRecord(source.root);
-    if (!released(record)) throw new ForkError("SOURCE_NOT_RELEASED", `run ${ref.id} changed before it was mounted (${record?.status})`);
+    if (!isReleased(record)) throw new ForkError("SOURCE_NOT_RELEASED", `run ${ref.id} changed before it was mounted (${record?.status})`);
     const owner = await lstat(source.root);
-    await createRunDir(control, newId, { uid: owner.uid, gid: owner.gid, mode: owner.mode & 0o7777 });
-    note("subdir", target);
-    copy = await mount({ ...ref, id: newId }, "target").catch((error: unknown) => {
-      throw error instanceof HeldError ? new ForkError("TARGET_EXISTS", `${target} was mounted by another fork or start`, { cause: error }) : error;
-    });
-    const count = { files: 0, bytes: 0 };
     const asRoot = process.getuid?.() === 0;
-    try {
-      await copyTree(source.root, copy.root, true, asRoot, count);
-    } catch (error) {
-      throw new ForkError("COPY_FAILED", `copying ${runPath(ref.id)} to ${target} failed: ${(error as Error).message}`, { cause: error });
-    }
-    const now = new Date().toISOString();
-    const forked: RunRecord = {
-      run: newId,
-      status: "paused",
-      generation: 0,
-      sealedSeq: record.sealedSeq,
-      wakeAt: null,
-      holder: null,
-      heartbeatAt: null,
-      updatedAt: now,
-      detail: { forkedFrom: { run: ref.id, generation: record.generation, sealedSeq: record.sealedSeq } },
+    const from = source;
+
+    /** One new run, start to finish; never throws (its failure is its outcome). */
+    const copyOne = async (newId: string): Promise<void> => {
+      const t1 = performance.now();
+      const target = `${runPath(newId)}/`;
+      // Set once this fork holds the new run's directory exclusively; until then the directory may be another operation's.
+      let copy: Claim | undefined;
+      let held = false;
+      let made = false;
+      try {
+        await createRunDir(control, newId, { uid: owner.uid, gid: owner.gid, mode: owner.mode & 0o7777 });
+        note("subdir", target);
+        copy = await mount({ ...ref, id: newId }, "target").catch((error: unknown) => {
+          throw error instanceof HeldError ? new ForkError("TARGET_EXISTS", `${target} was mounted by another fork or start`, { cause: error }) : error;
+        });
+        held = true;
+        const count = { files: 0, bytes: 0 };
+        try {
+          await copyTree(from.root, copy.root, true, asRoot, count);
+        } catch (error) {
+          throw new ForkError("COPY_FAILED", `copying ${runPath(ref.id)} to ${target} failed: ${(error as Error).message}`, { cause: error });
+        }
+        const forked: RunRecord = {
+          run: newId,
+          status: "paused",
+          generation: 0,
+          sealedSeq: record.sealedSeq,
+          wakeAt: null,
+          holder: null,
+          heartbeatAt: null,
+          updatedAt: new Date().toISOString(),
+          detail: { forkedFrom: { run: ref.id, generation: record.generation, sealedSeq: record.sealedSeq } },
+        };
+        await persistRecord(copy.root, `${JSON.stringify(forked, null, 2)}\n`);
+        // The release runs the barrier first: every copied byte is durable before the new run's claim goes.
+        await release(copy);
+        held = false;
+        made = true;
+        outcomes.set(newId, {
+          run: newId,
+          ok: true,
+          result: { run: newId, from: ref.id, sealedSeq: record.sealedSeq, sourceGeneration: record.generation, ...count, owners: asRoot ? "preserved" : "caller", ms: Math.round(performance.now() - t1) },
+        });
+      } catch (error) {
+        // Undo through this fork's own mount while it still holds it; nothing is deleted over S3, where a revoke would
+        // take another operation's claim on the same id.
+        if (copy && held && !copy.fenced) await emptyDir(copy.root).catch(() => undefined);
+        outcomes.set(newId, { run: newId, ok: false, error: error as Error });
+      } finally {
+        if (copy && held) await release(copy).catch(() => undefined);
+        // The emptied directory's own marker. S3 refuses to delete a directory with entries and deletes nothing under a
+        // delegation, so this never removes a run another fork or start has taken since this fork released it.
+        if (copy && !made) {
+          await control.deleteObjects([target], { quiet: true }).catch(() => undefined);
+          if (!(await control.headObject(target).catch(() => true))) note("subdir-deleted", target);
+        }
+      }
     };
-    await persistRecord(copy.root, `${JSON.stringify(forked, null, 2)}\n`);
-    // Each release runs the barrier first: every copied byte is durable before the target's claim goes.
-    while (claims.length > 0) {
-      const c = claims.at(-1)!;
-      const r = await c.release();
-      claims.pop();
-      note("unmount", c.root, r.via);
-    }
-    done = true;
-    return {
-      run: newId,
-      from: ref.id,
-      sealedSeq: record.sealedSeq,
-      sourceGeneration: record.generation,
-      ...count,
-      owners: asRoot ? "preserved" : "caller",
-      ms: Math.round(performance.now() - t0),
-    };
-  } catch (error) {
-    // Undo through this fork's own mount while it still holds it; nothing is deleted over S3, where a revoke would
-    // take another operation's claim on the same id.
-    if (copy && !copy.fenced) await emptyDir(copy.root).catch(() => undefined);
-    throw error;
+
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, fresh.length) }, async () => {
+        while (next < fresh.length) await copyOne(fresh[next++]!);
+      }),
+    );
+    return done(record);
   } finally {
-    for (const c of claims.reverse()) {
-      await c.release().then(
-        (r) => note("unmount", c.root, r.via),
-        () => note("unmount", c.root, "failed"),
-      );
-    }
-    // The emptied directory's own marker. S3 refuses to delete a directory with entries and deletes nothing under a
-    // delegation, so this never removes a run another fork or start has taken since this fork released it.
-    if (copy && !done) {
-      await control.deleteObjects([target], { quiet: true }).catch(() => undefined);
-      if (!(await control.headObject(target).catch(() => true))) note("subdir-deleted", target);
-    }
+    if (source) await release(source).catch(() => undefined);
     for (const t of tokens) {
       await removeMountToken(control, t).then(() => note("token-removed", t), () => {});
     }
