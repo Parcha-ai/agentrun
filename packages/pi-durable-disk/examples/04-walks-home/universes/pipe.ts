@@ -36,6 +36,12 @@ export interface PipeOptions {
   retire(machine: Machine): Promise<void>;
   readonly tokenPrefix?: string;
   readonly attachTimeoutMs?: number;
+  /**
+   * How long the pipe waits for a writer's ping before it calls the writer gone. A runner pings only once attached, and
+   * an attach ships all of work/ (a trainer's checkpoints and compile cache: seconds), so the pipe's 3 s default would
+   * drop a writer mid-attach. A universe's death is seen by its fleet and its socket, not by this grace. Default 30 s.
+   */
+  readonly writerGraceMs?: number;
   readonly onResource?: (kind: string, id: string, note?: string) => void;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** Test seams, passed to the pipe's lease (a claim on a local directory). */
@@ -86,6 +92,7 @@ export function pipePlacement(o: PipeOptions): PipePlacement {
             ...(o.host ? { host: o.host } : {}),
             ...(o.lease ? { lease: o.lease } : {}),
             model: o.model,
+            writerGraceMs: o.writerGraceMs ?? 30_000,
             ...(o.acquire ? { acquire: o.acquire } : {}),
             ...(o.claimDir ? { claimDir: o.claimDir } : {}),
             onLost: (_p, error) => log("pipe.lost", { run: run.id, error: error.message }),
