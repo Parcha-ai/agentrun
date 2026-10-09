@@ -10,6 +10,7 @@ import type { Delegation } from "disk";
 import {
   acquire,
   companionsOf,
+  revokeBestEffort,
   CLAIM_PROBE,
   createRunDir,
   findDelegations,
@@ -629,6 +630,24 @@ test("a companion that cannot be revoked never fails the run's revoke", async ()
   assert.deepEqual(revoked, [1, 51]);
   assert.deepEqual((await revokeCompanions(control, [run], dels)).map((d) => d.inodeId), [51], "reports only what it revoked");
   assert.deepEqual(await revokeCompanions(control, []), [], "no holders, no listing, nothing revoked");
+});
+
+test("revokeBestEffort goes on past a run delegation that cannot be revoked, and still takes the private directories", async () => {
+  const a = { ...del("runs/r1", "c-a", 1), isOrphaned: true };
+  const b = { ...del("runs/r1/x", "c-b", 2), isOrphaned: true };
+  const dels = [a, b, pathless("c-a", 50), pathless("c-b", 60), pathless("c-other", 70)];
+  const tried: number[] = [];
+  const control: ControlApi = {
+    ...fakeControl(dels).control,
+    async revokeDelegation(d) {
+      tried.push(d.inodeId);
+      if (d.inodeId === 1) throw new Error("gone");
+    },
+  };
+  await assert.rejects(revoke(control, "r1"), (e: unknown) => e instanceof ClaimError && e.code === "CONTROL_API_FAILED", "revoke stops at the first failure");
+  tried.length = 0;
+  assert.deepEqual(await revokeBestEffort(control, "r1"), [a, b]);
+  assert.deepEqual(tried, [1, 2, 50, 60], "every run delegation tried, then both holders' private directories, never another client's");
 });
 
 test("takeOver revokes a holder the control API lists without a path, by its inode, then mounts without --force", async () => {

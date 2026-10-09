@@ -9,7 +9,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
-import { removeMountToken, revoke, type ControlApi, type RunRef } from "../../src/claim.ts";
+import { removeMountToken, revokeBestEffort, type ControlApi, type RunRef } from "../../src/claim.ts";
 import { daytonaHost, LABEL_FLEET, sweepSandboxes, type SandboxInfo } from "../../src/hosts/daytona.ts";
 import { ensureRunning, readRunStatus, type EnsureOptions, type EnsureResult, type HostDriver, type HostHandle } from "../../src/supervise.ts";
 import { REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
@@ -54,7 +54,7 @@ after(async () => {
   const control = disk as unknown as ControlApi;
   for (const t of tokens) await removeMountToken(control, t).then(() => ledger.tokenRemoved(t), (e: unknown) => ((cleanup.tokenErrors ??= []) as unknown[]).push(String(e)));
   if (runId) {
-    cleanup.revoked = await revoke(control, runId).then((held) => held.length, (e: unknown) => ({ error: (e as Error).message }));
+    cleanup.revoked = await revokeBestEffort(control, runId).then((held) => held.length, (e: unknown) => ({ error: (e as Error).message }));
     const del = await deletePrefix(disk as never, `runs/${runId}/`).catch((e: unknown) => ({ error: (e as Error).message }));
     ledger.subdirDeleted(`runs/${runId}/`, JSON.stringify(del));
     cleanup.prefix = del;

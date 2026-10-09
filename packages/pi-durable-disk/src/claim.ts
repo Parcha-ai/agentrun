@@ -316,6 +316,18 @@ export async function revoke(control: ControlApi, id: string): Promise<Delegatio
   return held;
 }
 
+/**
+ * Revoke what `revoke` revokes, skipping every revoke that fails: for cleanup, where deleting the tree next checks what
+ * is left. Only the listing (and a pathless resolution) can fail it. Returns the run's own delegations.
+ */
+export async function revokeBestEffort(control: Pick<ControlApi, "listDelegations" | "revokeDelegation" | "exec">, id: string): Promise<Delegation[]> {
+  const all = await control.listDelegations();
+  const held = await matchDelegations(all, id, pathlessResolver(control));
+  for (const d of held) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+  await revokeCompanions(control, held, all);
+  return held;
+}
+
 /** Revoke through the control API, then mount plainly; if the API path fails, mount with `--force`. */
 export async function takeOver(control: ControlApi, opts: AcquireOptions): Promise<Claim> {
   let force = false;

@@ -13,6 +13,7 @@ import {
   findDelegations,
   matchDelegations,
   pathlessResolver,
+  revokeBestEffort,
   revokeCompanions,
   mintMountToken,
   MOUNT_TOKEN_TTL,
@@ -722,10 +723,7 @@ export async function checkHost(options: CheckOptions): Promise<CheckReport> {
  */
 export async function deleteRunTree(control: CheckControl, id: string): Promise<{ objects: number; revoked: number }> {
   const prefix = `${runPath(id)}/`;
-  const all = await control.listDelegations();
-  const held = await matchDelegations(all, id, pathlessResolver(control));
-  for (const d of held) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
-  await revokeCompanions(control, held, all);
+  const held = await revokeBestEffort(control, id);
   const keys = (await control.listObjects(prefix, { recursive: true })).objects.map((o) => o.key);
   const dirs = [...new Set([...keys.filter((k) => k.endsWith("/")), prefix])];
   const depth = (k: string) => k.split("/").length;

@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { removeMountToken, revoke, type ControlApi, type RunRef } from "../../src/claim.ts";
+import { removeMountToken, revokeBestEffort, type ControlApi, type RunRef } from "../../src/claim.ts";
 import { diskKey, dockerHost } from "../../src/hosts/docker.ts";
 import { ensureRunning, readRunStatus, type EnsureOptions, type EnsureResult, type HostDriver, type HostHandle } from "../../src/supervise.ts";
 import { LIVE as ARCHIL_LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
@@ -62,7 +62,7 @@ after(async () => {
   const control = disk as unknown as ControlApi;
   for (const t of tokens) await removeMountToken(control, t).then(() => ledger.tokenRemoved(t), (e: unknown) => ((cleanup.tokenErrors ??= []) as unknown[]).push(String(e)));
   if (runId) {
-    cleanup.revoked = await revoke(control, runId).then((held) => held.length, (e: unknown) => ({ error: (e as Error).message }));
+    cleanup.revoked = await revokeBestEffort(control, runId).then((held) => held.length, (e: unknown) => ({ error: (e as Error).message }));
     cleanup.prefix = await deletePrefix(`runs/${runId}/`).catch((e: unknown) => ({ error: (e as Error).message }));
   }
   cleanup.hostMounts = hostArchilMounts();

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { Delegation, Disk } from "disk";
 import { LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ledger, LEDGER } from "./_p1-ledger.ts";
-import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, revoke, takeOver, unmountClaim, type AcquireOptions, type Claim, type ControlApi } from "../../src/claim.ts";
+import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, revoke, revokeBestEffort, takeOver, unmountClaim, type AcquireOptions, type Claim, type ControlApi } from "../../src/claim.ts";
 import { ClaimError, exitCodeFor, FencedError, HeldError } from "../../src/errors.ts";
 
 const BASE = "/mnt/pda/p1";
@@ -146,7 +146,7 @@ after(async () => {
     cleanup.strayMounts.push({ mp, via });
   }
   for (const id of runIds) {
-    const left = await revoke(control, id).catch(() => []);
+    const left = await revokeBestEffort(control, id).catch(() => []);
     if (left.length) cleanup.revokedLeftovers.push({ id, n: left.length });
     const del = await deletePrefix(`runs/${id}/`);
     cleanup.prefixes.push({ id, ...del });

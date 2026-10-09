@@ -11,10 +11,12 @@
 - `revoke` (and so `takeOver`), the supervisor's takeover in `ensureRunning`, and `deleteRunTree` now also revoke every pathless
   delegation of the clients they revoke on the run, from the same listing: those clients are dead or being fenced. Best effort:
   one that cannot be revoked never fails the run's revoke. The run's own delegations, which every count and decision uses, are
-  unchanged, and `revoke` still returns only those. New exports: `revokeCompanions`, `companionsOf`.
-- The live suites revoke through `revoke` (by path or by inode, and the holders' private directories) before they delete a run's
-  tree; the Docker, Daytona and lifecycle suites matched by path only. The run suite's daemon-kill and host-loss tests check that
-  no delegation of a killed client is left.
+  unchanged, and `revoke` still returns only those.
+- `revokeBestEffort` revokes what `revoke` revokes and skips every revoke that fails (`revoke` stops at the first); only the
+  listing can fail it. `deleteRunTree` uses it, and the live suites' cleanups revoke through it (by path or by inode, and the
+  holders' private directories) before they delete a run's tree; the Docker, Daytona and lifecycle suites matched by path
+  only. The run suite's daemon-kill and host-loss tests check that no delegation of a killed client is left.
+- New exports: `revokeBestEffort`, `revokeCompanions`, `companionsOf`.
 
 ## 0.1.0-beta.12, 2026-10-09
 
