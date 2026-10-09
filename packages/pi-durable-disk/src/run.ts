@@ -99,7 +99,7 @@ export interface LeaseOptions {
   readonly checkMs?: number;
 }
 
-export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "store" | "seal" | "harness" | "live" | "resume";
+export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
 export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
 
 export interface OpenRunLeaseOptions {
@@ -154,6 +154,19 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
   readonly env?: (claim: Claim) => RunEnv;
   /** Wraps the raw database inside the store's fence (instrumentation, fault injection). */
   readonly decorateStore?: (database: SqliteDatabase) => SqliteDatabase;
+  /**
+   * Runs once the Harness is open and the run is live, before it resumes: what the app admits here (a submission, a
+   * write) is committed before any work the run resumes commits anything. A rejection fails the open, as any step does.
+   */
+  readonly beforeResume?: (run: BeforeResume) => void | Promise<void>;
+}
+
+/** What `beforeResume` sees: the open Harness, not yet resumed, and the incarnation it belongs to. */
+export interface BeforeResume {
+  readonly harness: Harness;
+  readonly generation: number;
+  readonly record: RunRecord;
+  readonly claim: RunClaim;
 }
 
 /** The claim as the app sees it: paths, the fenced flag, and a barrier whose failure fences the run. */
@@ -901,6 +914,8 @@ class Run implements DurableRun {
     const storage = lease.observe(this.#store.storage);
     this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness, env: this.env }, this.#context));
     await step("live", () => lease.live());
+    const before = this.#options.beforeResume;
+    if (before) await step("before-resume", () => before({ harness: this.#harness!, generation: lease.generation, record: lease.record, claim: lease.claim }));
     await step("resume", () => this.#harness!.resume());
   }
 

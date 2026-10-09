@@ -1,7 +1,8 @@
 // The app an instance hosts (`pi-durable-disk run --app <module>`): an ES module whose default export is a function
 // of where the run lives that returns pi's Harness options (without `env`, which the run builds on its claim), an
-// optional `onOpen` for the app to submit or resume work once the run is open and resumed, how `serve` creates the root
-// conversation, and how a parking run records its wake.
+// optional `beforeResume` for work that must be committed before the run resumes, an optional `onOpen` for the app to
+// submit or resume work once the run is open and resumed, how `serve` creates the root conversation, and how a parking
+// run records its wake.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Harness } from "@earendil-works/pi-durable";
@@ -19,6 +20,11 @@ export interface AppContext {
 
 /** pi's HarnessOptions without `env` (registry, models, settings, conversationCreated, now, onReport), plus the hooks below. */
 export type AppOptions = OpenDurableRunOptions["harness"] & {
+  /**
+   * Called once per incarnation after the Harness is open and before it resumes (`OpenDurableRunOptions.beforeResume`):
+   * what it admits is committed before any resumed work commits. A rejection fails the open (exit 1, retried).
+   */
+  beforeResume?: OpenDurableRunOptions["beforeResume"];
   /**
    * Called once per incarnation after the run is open and resumed; `run.generation` tells a first start from a resume.
    * Work that must keep the instance up belongs in pi's tasks and tools: parking sees only those.

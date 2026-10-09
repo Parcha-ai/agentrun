@@ -208,6 +208,43 @@ describe("openDurableRun", () => {
     }
   });
 
+  it("runs beforeResume after the Harness opened and before it resumes; what it admits is committed first", async () => {
+    const dir = scratchRoot("before-resume");
+    try {
+      const seen: { scheduling: string; generation: number }[] = [];
+      const t = setup(dir.root, {
+        options: {
+          beforeResume: async ({ harness, generation }) => {
+            seen.push({ scheduling: (await harness.inspect(ctx)).scheduling, generation });
+            const root = await harness.root(ctx, { agent: t.agent });
+            await root.submit({ type: "write", requestId: `notice-${generation}`, entry: { kind: "app.notice", data: { generation } } }, ctx);
+          },
+        },
+      });
+      const run = await t.open();
+      assert.deepEqual(t.steps.slice(-3), ["live", "before-resume", "resume"]);
+      assert.deepEqual(seen, [{ scheduling: "paused", generation: 1 }]);
+      const root = await run.harness.root(ctx);
+      const notices = (await root.entries({}, 50, undefined, ctx)).items.filter((e) => e.kind === "app.notice");
+      assert.deepEqual(notices.map((e) => e.data), [{ generation: 1 }]);
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a beforeResume that rejects fails the open and releases the claim", async () => {
+    const dir = scratchRoot("before-resume-fails");
+    try {
+      const t = setup(dir.root, { options: { beforeResume: async () => Promise.reject(new Error("the app refused")) } });
+      await assert.rejects(t.open(), /the app refused/);
+      assert.ok(!t.steps.includes("resume"));
+      assert.ok(t.claim.log.includes("release"), "the claim was released");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("bumps the generation on every claim and seals the store's last committed sequence at release", async () => {
     const dir = scratchRoot("seal");
     try {
