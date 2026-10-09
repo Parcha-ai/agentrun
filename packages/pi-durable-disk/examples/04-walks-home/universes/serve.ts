@@ -9,7 +9,7 @@
 // Environment: ARCHIL_API_KEY, PDA_LIVE_DISK, PDA_LIVE_REGION (with-archil); DAYTONA_API_KEY, DAYTONA_API_URL,
 // DAYTONA_TARGET (with-daytona). Every resource goes into --ledger before it is created and is closed when deleted; at
 // exit (and on SIGINT) everything this run made is deleted unless --keep.
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -23,7 +23,7 @@ import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
-import { readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
+import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -66,7 +66,7 @@ const { values } = parseArgs({
     "modal-runtime": { type: "string", default: "gvisor" },
     /** GPU classes to try in order, comma-separated ("L4,A10,L40S,H100"): the first that places makes the machine. */
     "modal-gpu": { type: "string" },
-    "modal-place-ms": { type: "string", default: "90000" },
+    "modal-place-ms": { type: "string", default: "20000" },
     "modal-region": { type: "string", default: "us-east" },
     /** What a score means on the stage; with --workload train it is D2's ("m walked in 10 s"), the stand-in's has none. */
     "score-unit": { type: "string" },
@@ -193,7 +193,8 @@ feed.emit({
   origin,
   environments: [{ id: "tab", label: "Tab", kind: "tab" }, { id: "universes", label: "Universes", kind: "sandbox" }],
   source: "live",
-  ...(values["score-unit"] || training ? { scoreUnit: values["score-unit"] ?? TRAIN_SCORE_UNIT } : {}),
+  // train.py scores on the held-out course when the run has one (it says so as score_unit on every line).
+  ...(values["score-unit"] || training ? { scoreUnit: values["score-unit"] ?? (values["source-files"] && existsSync(join(values["source-files"], "terrain", "course.json")) ? COURSE_SCORE_UNIT : TRAIN_SCORE_UNIT) } : {}),
 });
 feed.emit({ t: "place", at: 0, place: { where: "tab", host: sourceLabel }, env: "tab" });
 feed.emit({ t: "stay.begin", at: 0, stay: { id: "run:source", lane: "run", host: sourceLabel, hostKind: "tab", from: 0 } });
@@ -262,12 +263,22 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
       return answer(mv.kill(cmd.universe).then((r) => void takeovers.push(r)), "kill");
     case "collapse":
       return answer(mv.collapse(cmd.winner), "collapse");
+    case "switch":
+      // Home: the stage sends a switch to the tab once the multiverse collapsed.
+      if (cmd.to !== "tab") return { ok: false, error: `the multiverse goes home to the tab, not to ${cmd.to}` };
+      return answer(mv.home({ label: "your browser tab", env: "tab" }), "home");
     default:
       return { ok: false, error: `${cmd.t} is not this producer's command` };
   }
 }
 
-const server = await serveFeed({ feed, port: Number(values.port), command });
+const server = await serveFeed({
+  feed,
+  port: Number(values.port),
+  command,
+  // Where the tab finds the run to attach when it is called home: the winner's run, once there is one.
+  routes: { winner: () => mv.winner()?.placed.run },
+});
 log("feed", { url: server.url, source: source.id, universes: n, transport });
 
 let cleaning: Promise<void> | undefined;

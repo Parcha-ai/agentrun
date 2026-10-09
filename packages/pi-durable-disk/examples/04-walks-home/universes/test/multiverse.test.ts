@@ -42,7 +42,8 @@ function world() {
         async start(ref) {
           calls.push(`start ${ref.id} on ${machine.id}`);
           const before = records.get(ref.id)!;
-          record(ref.id, { status: "running", generation: before.generation + 1, holder: { driver: "test", label: machine.label } as never });
+          // A holder as the package's strict run.json reader accepts it, with the machine's label for the test's lookups.
+          record(ref.id, { status: "running", generation: before.generation + 1, heartbeatAt: new Date().toISOString(), holder: { driver: "test", host: machine.id, bootId: null, pid: 1, since: new Date().toISOString(), label: machine.label } as never });
           // A resumed trainer reports at once from its last checkpoint (trainer.ts).
           const last = progress.get(ref.id);
           setTimeout(() => checkpoint(ref.id, last?.step ?? 0, last?.score ?? 0), 20);
@@ -185,6 +186,24 @@ test("fan out, kill with a spare taking the slot, a second kill, collapse: what 
   const unused = Object.values(st.universes).filter((u) => u.id.startsWith("spare") && u.id !== "spare1" && u.id !== "spare2");
   for (const u of unused) assert.equal(u.status, "sealed");
   assert.ok(!w.calls.some((c) => c === "stop box-spare1"));
+  assert.equal(events.filter((e) => e.t === "note" && e.text.startsWith("Forking")).length, 1, "one fork note per fan-out");
+
+  // Home: the winner's run is sealed and its machine left; it is home when another holder opens it (the tab).
+  const homing = mv.home({ label: "your browser tab", env: "tab", timeoutMs: 5_000 });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(feed.state.place.where, "moving");
+  assert.equal(w.records.get(collapse.run)!.status, "paused", "sealed on the disk while it moves");
+  const sealedRecord = w.records.get(collapse.run)!;
+  w.records.set(collapse.run, { ...sealedRecord, status: "running", generation: sealedRecord.generation + 1, heartbeatAt: new Date().toISOString(), holder: { driver: "pipe", host: "server", bootId: null, pid: 2, since: new Date().toISOString() } as never });
+  const home = await homing;
+  st = feed.state;
+  assert.deepEqual(st.place, { where: "home", host: "your browser tab" });
+  assert.equal(st.currentEnv, "tab");
+  const homeStay = st.stays.find((s) => s.lane === "run" && s.host === "your browser tab")!;
+  assert.equal(homeStay.handover!.ms, home.attachedMs);
+  assert.equal(homeStay.handover!.fromHost, "box spare1");
+  assert.ok(events.some((e) => e.t === "note" && e.kind === "home" && e.measured));
+  await assert.rejects(mv.home({ label: "your browser tab", env: "tab" }), /home/);
   await mv.close();
 });
 

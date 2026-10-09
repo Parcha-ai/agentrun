@@ -94,6 +94,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
   const log = o.log ?? (() => {});
   const ours = new Map<string, SandboxInfo>();
   const removed = new Set<string>();
+  const ledgerName = new Map<string, string>();
   const byMachine = new Map<string, SandboxInfo>();
   const ttlMinutes = o.ttlMinutes ?? 120;
   const kindOf = o.ledgerKind ?? "daytona-box";
@@ -110,6 +111,8 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
       o.ledger?.open(kindOf, body.name, body.labels[LABEL_RUN]);
       const box = await o.client.create(body);
       ours.set(box.id, box);
+      // The ledger row is the name asked for; a provider may place it under another (a fallback class's).
+      ledgerName.set(box.id, body.name);
       return box;
     },
     get: async (id) => check(await o.client.get(id)),
@@ -123,7 +126,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
       const box = check(await o.client.get(id));
       await o.client.remove(id);
       removed.add(id);
-      const name = box?.name ?? ours.get(id)?.name;
+      const name = ledgerName.get(id) ?? box?.name ?? ours.get(id)?.name;
       if (name) o.ledger?.close(kindOf, name, "deleted");
     },
     exec: async (box, command, timeoutSec) => o.client.exec(check(box)!, command, timeoutSec),
@@ -305,7 +308,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
         await o.client.remove(b.id).then(
           () => {
             deleted.push(b.name);
-            o.ledger?.close(kindOf, b.name, "swept");
+            o.ledger?.close(kindOf, ledgerName.get(b.id) ?? b.name, "swept");
           },
           () => {},
         );

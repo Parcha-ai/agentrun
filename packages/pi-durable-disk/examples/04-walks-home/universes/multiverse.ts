@@ -14,7 +14,7 @@
 //     line in the same slot (`replaces`), as the stage's contract says.
 //   - A note says `measured` only when every number in it was measured on this run.
 import type { ArchilHost, CheckControl, ControlApi, ForkOptions, ForkResult, HostStatus, RunRef, SupervisorControl } from "@parcha/pi-durable-disk";
-import { fork, runPath } from "@parcha/pi-durable-disk";
+import { fork, readRunStatus, runPath } from "@parcha/pi-durable-disk";
 import type { Cost, HostKind, NoteKind, ShowEvent, Universe, UniverseStatus } from "./show/types.ts";
 
 export type Control = SupervisorControl & CheckControl & ControlApi;
@@ -104,6 +104,8 @@ export interface Progress {
   /** The machine label the writer was told it runs on. */
   readonly host: string;
   readonly at: string;
+  /** What the score means, when the workload says ("m along the course in 20 s"). */
+  readonly unit?: string;
 }
 
 export const PROGRESS_FILE = "work/universe/progress.json";
@@ -204,6 +206,15 @@ export type CollapseReport = {
   readonly ms: number;
 };
 
+export type HomeReport = {
+  readonly run: string;
+  readonly from: string;
+  /** Command to the winner's run sealed on the disk and its machine deleted. */
+  readonly releasedMs: number;
+  /** Command to the run held again where it went (its run.json running at a later generation). */
+  readonly attachedMs: number;
+};
+
 export type MultiverseErrorCode = "NO_SUCH_UNIVERSE" | "NOT_RUNNING" | "NO_SPARE" | "BUSY" | "START_FAILED" | "NO_WINNER";
 
 export class MultiverseError extends Error {
@@ -239,7 +250,7 @@ export class Multiverse {
   #poller: ReturnType<typeof setInterval> | null = null;
   #polling = false;
   #ticks = 0;
-  #phase: "idle" | "forking" | "running" | "collapsed" | "closed" = "idle";
+  #phase: "idle" | "forking" | "running" | "collapsed" | "home" | "closed" = "idle";
   /** Set when the fan-out was asked for; cleared once every universe trained (its note is sent then). */
   #fanoutAt: number | null = null;
 
@@ -645,6 +656,41 @@ export class Multiverse {
           this.#patch(line, { status: "sealed", slot: null });
         }),
     );
+  }
+
+  /**
+   * The move home: the winner's run is drained and sealed on the disk and its machine deleted, and the stage sees it
+   * moving; it is home once its run.json is running again at a later generation, held by whoever attached it there
+   * (the tab, through browser-demo's server). The handover is measured from the command to that run.json.
+   */
+  async home(target: { label: string; env: string; timeoutMs?: number }): Promise<HomeReport> {
+    if (this.#phase !== "collapsed") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}; home follows the collapse`);
+    const w = [...this.#lines.values()].find((l) => l.status === "winner");
+    if (!w?.placed || w.ended !== null) throw new MultiverseError("NO_WINNER", "no winner holds a run to bring home");
+    this.#phase = "home";
+    const t0 = this.#now();
+    this.#o.emit({ t: "place", at: this.#at(), place: { where: "moving", to: target.label, host: w.machine!.label }, env: null });
+    this.#note("switch", `Universe ${w.spec!.id} is going home to ${target.label}.`);
+    await this.#o.fleet.seal(w.placed);
+    w.ended = this.#now();
+    const releasedMs = this.#now() - t0;
+    this.#endStay(w, "switch");
+    const sealed = await readRunStatus(this.#o.control, w.run!.id).catch(() => null);
+    this.#log("home.released", { run: w.run!.id, ms: releasedMs, status: sealed?.status, generation: sealed?.generation });
+    const deadline = this.#now() + (target.timeoutMs ?? 10 * 60_000);
+    for (;;) {
+      const r = await readRunStatus(this.#o.control, w.run!.id).catch(() => null);
+      if (r && r.status === "running" && r.generation > (sealed?.generation ?? 0)) break;
+      if (this.#now() > deadline) throw new MultiverseError("START_FAILED", `${target.label} did not attach ${w.run!.id} in time; it waits sealed on the disk`);
+      await sleep(200);
+    }
+    const attachedMs = this.#now() - t0;
+    this.#o.emit({ t: "place", at: this.#at(), place: { where: "home", host: target.label }, env: target.env });
+    this.#o.emit({ t: "stay.begin", at: this.#at(), stay: { id: `run:home:${w.run!.id}`, lane: "run", host: target.label, hostKind: "tab", from: this.#at(), handover: { fromHost: w.machine!.label, ms: attachedMs, planned: true } } });
+    this.#note("home", `Home: ${target.label} holds universe ${w.spec!.id}'s run ${(attachedMs / 1000).toFixed(1)} s after it left ${w.machine!.label}.`, true);
+    const report: HomeReport = { run: w.run!.id, from: w.machine!.label, releasedMs, attachedMs };
+    this.#log("home", report);
+    return report;
   }
 
   /** The winner's run and where it is, for the move home. */

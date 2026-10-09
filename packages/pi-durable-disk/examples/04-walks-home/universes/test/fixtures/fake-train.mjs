@@ -7,7 +7,9 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { mjcf: { type: "string" }, body: { type: "string" }, universe: { type: "string" }, work: { type: "string" }, minutes: { type: "string" } } });
+const { values: a } = parseArgs({
+  options: { mjcf: { type: "string" }, body: { type: "string" }, universe: { type: "string" }, work: { type: "string" }, minutes: { type: "string" }, world: { type: "string" }, course: { type: "string" }, "compile-cache": { type: "string" } },
+});
 const host = process.env.TRAIN_HOST_LABEL || hostname();
 const work = a.work;
 mkdirSync(work, { recursive: true });
