@@ -32,6 +32,8 @@ const BOX_ETC = "/etc/pda-demo";
 const BOX_REMOTE_LOG = "/var/tmp/pda-remote.log";
 const BOX_EVENTS = "/var/tmp/pda-demo-events.log";
 const STAGE = "/tmp/pda-demo-stage";
+/** The pipe host's workspace in the VM: the agent's tools run here, owned by the run user. */
+const BOX_WORK = "/var/tmp/pda-work";
 
 type Log = (event: string, data?: Record<string, unknown>) => void;
 type LedgerLike = { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
@@ -188,10 +190,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
         `DEMO_ENV_LABEL=${q(env.phrase)}`,
         `DEMO_ENV_CLASS=${q("modal-vm")}`,
         `DEMO_ENV_NOTE=${q("The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server.")}`,
-        `${BOX_NODE} ${BOX_APP_DIR}/remote-host.ts --port ${BOX_SERVE_PORT} --token-file ${BOX_ETC}/serve.token --work /home/pda/work`,
+        `${BOX_NODE} ${BOX_APP_DIR}/remote-host.ts --port ${BOX_SERVE_PORT} --token-file ${BOX_ETC}/serve.token --work ${BOX_WORK}`,
         `>> ${BOX_REMOTE_LOG} 2>&1 < /dev/null`,
       ].join(" ");
-      const r = await client.exec(box, `install -o pda -g pda -m 0644 /dev/null ${BOX_REMOTE_LOG} && ${launch}`, 30);
+      const r = await client.exec(box, `install -d -o pda -g pda -m 0755 ${BOX_WORK} && install -o pda -g pda -m 0644 /dev/null ${BOX_REMOTE_LOG} && ${launch}`, 30);
       if (r.exitCode !== 0) throw new Error(`launching the remote host in ${name} failed (${r.exitCode}): ${r.result.trim().slice(0, 300)}`);
       options.log("remote.ready", { run: ref.id, box: name, startedMs, ms: Date.now() - t0 });
       return box;
