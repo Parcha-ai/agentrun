@@ -148,6 +148,17 @@ try {
   await until(async () => (await stage.eval(`document.querySelectorAll("#switcher button[data-env]").length`).catch(() => 0)) >= 2, 30_000, "the stage's switcher");
   await sleep(2500);
   step("the 03 page runs the agent; the stage watches", { switcher: await stage.eval(`[...document.querySelectorAll("#switcher button")].map(b => b.textContent.trim())`) });
+  // The GPU box the server started when the tab opened is a warm machine waiting for the agent: the take starts when it is ready, so a slow
+  // Modal start does not become dead air on screen (its idle minutes are on the bill, and the page says the box was warm).
+  const boxReadyAt = await (async () => {
+    const t = Date.now();
+    while (Date.now() - t < 240_000) {
+      if (readFileSync(join(work, "take", "server.log"), "utf8").includes('"remote.ready"')) return Date.now() - t;
+      await sleep(500);
+    }
+    throw new Error("the warm GPU box was not ready in 240 s");
+  })();
+  step("the warm GPU box is ready", { waitedMs: boxReadyAt });
   rec = await startScreencast(stage, { out, fps });
   t0 = Date.now();
   results.recordingStartedAt = new Date().toISOString();
