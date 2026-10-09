@@ -2,7 +2,7 @@
 //
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
-//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona]
+//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|modal [--modal-transport mount|pipe]]
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST]
 //
@@ -40,6 +40,11 @@ const { values } = parseArgs({
     "model-key-env": { type: "string" },
     "daytona-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_SNAPSHOT },
     "daytona-secret": { type: "string" },
+    "modal-prefix": { type: "string" },
+    "modal-app": { type: "string" },
+    "modal-image": { type: "string" },
+    "modal-warm": { type: "boolean", default: false },
+    "modal-transport": { type: "string" },
     "daytona-gpu-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_GPU_SNAPSHOT },
     "warm-gpu": { type: "boolean", default: false },
     budget: { type: "string", default: "400000" },
@@ -92,6 +97,24 @@ if (values.cloud === "local" || values.cloud === "daytona") {
     ...(values["daytona-secret"] ? { modelSecret: values["daytona-secret"] } : {}),
     ...(values["daytona-gpu-snapshot"] ? { gpuSnapshot: values["daytona-gpu-snapshot"] } : {}),
     ...(values["warm-gpu"] ? { warmGpu: true } : {}),
+  });
+}
+
+if (values.cloud === "modal") {
+  // The Modal VM of the walks-home demo (04-walks-home/vm): the Modal VM environment (mounted or through the pipe, --modal-transport).
+  const { modalCloud } = await import("../04-walks-home/vm/modal-cloud.ts");
+  cloud = await modalCloud({
+    disk,
+    region,
+    model,
+    log,
+    ...(ledger ? { ledger } : {}),
+    ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}),
+    ...(values["modal-prefix"] ? { namePrefix: values["modal-prefix"] } : {}),
+    ...(values["modal-app"] ? { appName: values["modal-app"] } : {}),
+    ...(values["modal-image"] ? { image: values["modal-image"] } : {}),
+    ...(values["modal-warm"] ? { warm: true } : {}),
+    ...(values["modal-transport"] ? { transport: values["modal-transport"] as "mount" | "pipe" } : {}),
   });
 }
 
