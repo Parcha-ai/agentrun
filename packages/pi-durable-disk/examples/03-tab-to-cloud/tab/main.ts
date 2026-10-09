@@ -353,6 +353,9 @@ function onFrame(frame: PipeFrame): void {
       state.switching = undefined;
       state.banner = `cannot switch to ${envLabel(frame.to)}: ${frame.message}`;
       break;
+    case "submit-refused":
+      state.banner = `not sent: ${frame.message}`;
+      break;
     case "event":
       applyView(frame.event);
       renderChat();
@@ -446,7 +449,9 @@ async function connect(mode: "write" | "view", takeover = false, switchId?: stri
     run,
     token: secret,
     tab,
-    mode,
+    // While it watches, this page is its user's control: it may switch the run and send it messages, and run it here.
+    mode: mode === "write" ? "write" : "operator",
+    canRun: true,
     takeover,
     ...(switchId ? { switchId } : {}),
     onFrame,

@@ -170,7 +170,11 @@ export type Placement =
 
 /** Frames from a tab to the pipe. */
 export type TabFrame =
-  | { t: "hello"; run: string; token: string; mode: "write" | "view"; tab: string; takeover?: boolean; switchId?: string }
+  /**
+   * The first frame. `mode`: "write" asks to run the agent here; "operator" watches and may switch the run or send it
+   * messages; "view" only watches. `canRun`: this client is a page that can run the agent when told to (run-here).
+   */
+  | { t: "hello"; run: string; token: string; mode: "write" | "view" | "operator"; tab: string; takeover?: boolean; switchId?: string; canRun?: boolean }
   | { t: "rpc"; id: number; method: StorageMethod; args: Tagged[] }
   | { t: "files"; id: number; changes: FileChange[] }
   | { t: "model"; id: number; path: string; body: Tagged }
@@ -201,6 +205,7 @@ export type PipeFrame =
   | { t: "run-here"; switchId: string }
   | { t: "switched"; switchId: string; to: string; ms: number }
   | { t: "switch-refused"; to: string; message: string }
+  | { t: "submit-refused"; requestId: string; message: string }
   | { t: "lost"; code: string; message: string }
   | { t: "pong"; at: number; now: number }
   | { t: "error"; message: string };

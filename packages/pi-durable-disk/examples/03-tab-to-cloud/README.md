@@ -33,6 +33,10 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
 - **Model calls** go through the server (`pipe/model-proxy.ts`): the key stays on the server, the request names only
   the model the server allows, and a run has a token budget across every place it runs.
 - **Restore**: when a tab attaches, it gets `work/` from the disk, so a tab can resume what a cloud host did.
+- **Who may do what** is the hello's `mode`: `write` asks to run the agent here, `operator` watches and may switch the run
+  or send it messages, `view` only watches (a switch or a message from it gets `switch-refused` / `submit-refused`). A
+  page says `canRun: true`: a switch into a tab tells the asking page to run it when it can, else the most recent page
+  that can, and is refused before anything moves when none is open.
 - **One tab writes at a time.** Another device that opens the link watches read-only. "Take over here" gives the run to the
   new tab: the old tab is told the run moved, and every later frame from it is refused. From a cloud host, a takeover
   revokes the host's claim (the package's `takeOver`): its next commit or heartbeat fails at the disk, and it exits 75.

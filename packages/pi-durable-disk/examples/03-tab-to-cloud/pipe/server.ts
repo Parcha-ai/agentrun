@@ -109,6 +109,8 @@ interface RunState {
   switching: { move: Move; to: string; started: number } | undefined;
   /** The remote host that runs the run through the pipe, by its tab id. */
   remote: { tab: string; env: string } | undefined;
+  /** Every connection to the run, with what its hello asked for, in the order they came. */
+  clients: Map<PipeSocket, { mode: "write" | "view" | "operator"; canRun: boolean }>;
 }
 
 const TYPES: Record<string, string> = {
@@ -291,6 +293,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (from === undefined) return refuse(`the run is ${p.where}`);
     if (from === to) return refuse("the run is already there");
     if (target.kind !== "tab" && !options.cloud) return refuse("no cloud host");
+    // Into a tab: a page that can run the agent is told to, the asking one when it can. Checked before anything moves.
+    const runner = target.kind === "tab" ? pickRunner(state, socket) : undefined;
+    if (target.kind === "tab" && !runner) return refuse("no browser tab that can run the agent is open on this run");
     const started = Date.now();
     const move = newMove(phraseOf(p), true);
     state.switching = { move, to, started };
@@ -318,7 +323,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         accept(remote);
       } else if (target.kind === "tab") {
         setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the tab is attaching" });
-        socket.send({ t: "run-here", switchId: move.id });
+        runner!.send({ t: "run-here", switchId: move.id });
       }
       if (target.kind !== "cloud") {
         // A page that never attaches leaves the run parked, sealed, for whoever opens it next.
@@ -338,6 +343,22 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       setPlacement(state, { where: "parked", detail: `switch failed: ${(error as Error).message}` });
     }
   }
+
+  /**
+   * The page to run the agent after a switch into a tab: the asker when it is a page that can and may control the run,
+   * else the most recent such page; never the writer, which is the host being left.
+   */
+  function pickRunner(state: RunState, asker: PipeSocket): PipeSocket | undefined {
+    const able = (socket: PipeSocket) => {
+      const client = state.clients.get(socket);
+      return client !== undefined && client.canRun && client.mode !== "view" && !state.pipe?.isWriter(socket);
+    };
+    if (able(asker)) return asker;
+    return [...state.clients.keys()].reverse().find(able);
+  }
+
+  /** A connection that only watches may not move the run or send it messages. */
+  const mayControl = (state: RunState, socket: PipeSocket) => (state.clients.get(socket)?.mode ?? "view") !== "view";
 
   /** The tab that took the run reports its notice committed and its run resumed: the switch is done. */
   function switched(state: RunState, switchId: string): void {
@@ -405,7 +426,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       ws.close(4003, "UNAUTHORIZED");
       return undefined;
     }
-    if (frame.mode === "view") {
+    if (frame.mode !== "write" && frame.mode !== "view" && frame.mode !== "operator") {
+      socket.send({ t: "error", message: `no mode ${String(frame.mode)}` });
+      ws.close(4000, "BAD_MODE");
+      return undefined;
+    }
+    state.clients.set(socket, { mode: frame.mode, canRun: frame.canRun === true });
+    if (frame.mode !== "write") {
       await addViewer(state, socket);
       return state;
     }
@@ -498,6 +525,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         else socket.send({ t: "pong", at: frame.at, now: Date.now() });
         return;
       case "switch":
+        if (!mayControl(state, socket)) {
+          socket.send({ t: "switch-refused", to: frame.to, message: "this connection only watches the run (hello mode view)" });
+          return;
+        }
         // Not queued behind the switch: the writer's drained and switched frames arrive while it runs.
         void switchTo(state, socket, frame.to).catch((error) => log("switch.failed", { run: state.ref.id, error: (error as Error).message }));
         return;
@@ -505,9 +536,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         pipe?.drained(socket, frame.switchId);
         return;
       case "switched":
-        switched(state, frame.switchId);
+        // Only the host that took the run says its notice is in.
+        if (state.pipe?.isWriter(socket)) switched(state, frame.switchId);
         return;
       case "submit":
+        if (!mayControl(state, socket)) {
+          socket.send({ t: "submit-refused", requestId: frame.requestId, message: "this connection only watches the run (hello mode view)" });
+          return;
+        }
         // A viewer's message: to the writer tab when a tab runs the run, to the cloud when it runs there.
         if (pipe) pipe.broadcast({ t: "submit", text: frame.text, requestId: frame.requestId });
         else if (state.placement.where === "cloud") await options.cloud?.submit?.(state.ref, frame.text, frame.requestId);
@@ -556,6 +592,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     });
     ws.on("close", () => {
       if (!state) return;
+      state.clients.delete(socket);
       state.viewers.delete(socket);
       state.cloudViewers.get(socket)?.();
       state.cloudViewers.delete(socket);
@@ -652,6 +689,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         createdAt: Date.now(),
         switching: undefined,
         remote: undefined,
+        clients: new Map(),
       });
       log("run.created", { run: runId });
       return { id: runId, secret };
