@@ -100,7 +100,6 @@ export class RunPipe {
   #goneFired = false;
   #models = new Map<string, AbortController>();
   #scratch = 0;
-  readonly timings: { commits: number[]; files: number[] } = { commits: [], files: [] };
 
   private constructor(ref: RunRef, lease: RunLease, options: RunPipeOptions) {
     this.ref = ref;
@@ -317,9 +316,7 @@ export class RunPipe {
       const result = await work;
       // A commit that resolved after the takeover is still durable, but its writer is told it lost the run.
       if (writer.dead) throw new PipeLostError("MOVED", "the run moved to another device");
-      const ms = performance.now() - started;
-      if (method === "commit") this.timings.commits.push(ms);
-      socket.send({ t: "res", id, ok: true, result: tag(result), ms });
+      socket.send({ t: "res", id, ok: true, result: tag(result), ms: performance.now() - started });
     } catch (error) {
       if (error instanceof FencedError) this.lostRun(error);
       const lost = this.#lost ? new PipeLostError("FENCED", `the pipe lost the run: ${this.#lost.message}`) : error;
@@ -346,9 +343,7 @@ export class RunPipe {
     try {
       await work;
       if (writer.dead) throw new PipeLostError("MOVED", "the run moved to another device");
-      const ms = performance.now() - started;
-      this.timings.files.push(ms);
-      socket.send({ t: "res", id, ok: true, result: tag({ applied: changes.length }), ms });
+      socket.send({ t: "res", id, ok: true, result: tag({ applied: changes.length }), ms: performance.now() - started });
       if (changes.length > 0) this.#broadcastFiles();
     } catch (error) {
       if (error instanceof FencedError) this.lostRun(error);
