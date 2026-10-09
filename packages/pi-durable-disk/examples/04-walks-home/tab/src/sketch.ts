@@ -3,7 +3,7 @@
 
 import { LIMITS, type Design, type LegPair } from './design.ts';
 
-const PX = 420; // pixels per metre
+const PX = 250; // pixels per metre
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
 type Handle =
@@ -16,7 +16,12 @@ export class Sketcher {
   private hover: Handle | null = null;
   private readonly ctx: CanvasRenderingContext2D;
 
-  constructor(private readonly canvas: HTMLCanvasElement, design: Design, private readonly onChange: (d: Design) => void) {
+  private readonly canvas: HTMLCanvasElement;
+  private readonly onChange: (d: Design) => void;
+
+  constructor(canvas: HTMLCanvasElement, design: Design, onChange: (d: Design) => void) {
+    this.canvas = canvas;
+    this.onChange = onChange;
     this.design = structuredClone(design);
     this.ctx = canvas.getContext('2d')!;
     canvas.addEventListener('pointerdown', (e) => this.down(e));

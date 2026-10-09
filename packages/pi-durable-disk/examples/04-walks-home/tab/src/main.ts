@@ -64,13 +64,24 @@ function toast(text: string) {
 
 function showError(text: string) { $('err').textContent = text; }
 
+function loadScript(src: string): Promise<void> {
+  return new Promise((res, rej) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = () => res();
+    el.onerror = () => rej(new Error(`could not load ${src}`));
+    document.head.append(el);
+  });
+}
+
+// sql.js is a UMD script (it defines window.initSqlJs); MuJoCo is an ES module. Both are served from ./vendor/.
 async function loadVendor() {
   const base = new URL('./vendor/', import.meta.url).href;
-  const [{ default: loadMuJoCo }, sqlMod] = await Promise.all([import(/* @vite-ignore */ base + 'mujoco.js'), import(/* @vite-ignore */ base + 'sql-wasm.js')]);
-  const initSqlJs = (sqlMod as any).default ?? (sqlMod as any).initSqlJs ?? (globalThis as any).initSqlJs;
-  const [mj, sql, versions] = await Promise.all([
-    loadMuJoCo(), initSqlJs({ locateFile: (f: string) => base + f }), fetch(new URL('./versions.json', import.meta.url)).then((r) => r.json()),
+  await loadScript(base + 'sql-wasm.js');
+  const [{ default: loadMuJoCo }, versions] = await Promise.all([
+    import(/* @vite-ignore */ base + 'mujoco.js'), fetch(new URL('./versions.json', import.meta.url)).then((r) => r.json()),
   ]);
+  const [mj, sql] = await Promise.all([loadMuJoCo(), (window as any).initSqlJs({ locateFile: (f: string) => base + f })]);
   return { mj, sql, mujocoVersion: versions.mujoco as string };
 }
 
@@ -233,6 +244,7 @@ async function main() {
     };
     app.view.setSim(app.sim);
     await useDummy();
+    await store.saveDesign(design); // the first body is a body too: the memory view lists it
     renderPairs();
     setPlacement('tab', 'this tab');
 

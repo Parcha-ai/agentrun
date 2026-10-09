@@ -1,6 +1,8 @@
 # Contract between the trainer (train/) and the tab (tab/)
 
-Two files cross the boundary. Both are plain JSON. The tab refuses a policy whose `mjcf_sha256` differs from the
+Ownership: `policy.json` and its runtime (`obs.ts`, `policy.ts`) belong to the trainer lane (`../policy/`); the body
+(`design.ts`, `mjcf.ts`, `sim.ts`) belongs to the tab. The copies of `obs.ts`/`policy.ts` here are frozen until the lanes
+meet on one branch. Two files cross the boundary. Both are plain JSON. The tab refuses a policy whose `mjcf_sha256` differs from the
 SHA-256 of the MJCF it would run it on.
 
 ## Body: `design.json` -> MJCF
@@ -9,7 +11,12 @@ SHA-256 of the MJCF it would run it on.
 trainer runs it under node (`node tab/scripts/design-to-mjcf.ts design.json > creature.xml`) and trains on the exact
 bytes the tab simulates. `mjcf_sha256` is the SHA-256 of that XML string (UTF-8).
 
-Physics: `timestep` 0.002 s, `integrator` implicitfast, control every 10 physics steps (`control_dt` 0.02 s).
+Physics: `timestep` 0.004 s, `integrator` implicitfast, control every 5 physics steps (`control_dt` 0.02 s).
+Collision: the floor (and any terrain) is `contype=1 conaffinity=1`; every body geom is `contype=0 conaffinity=1`, so
+body parts hit the ground but never each other. Reset: keyframe `home` (`mj_resetDataKeyframe`); the episode clock
+(`phase`) is `data.time` since that reset.
+Terrain: `buildMjcf(design, world?)` takes an optional `{asset, geoms}` MJCF fragment spliced after the floor. The body's
+identity (`mjcf_sha256`) is the hash of `buildMjcf(design)` without a world, so one policy runs on any terrain.
 MuJoCo versions: the tab's `@mujoco/mujoco` and the trainer's `mujoco` must be the same version (set by D2).
 
 Joint order (qpos[7:], qvel[6:], actuators): for each leg pair `i` in the design, left then right (`l0`, `r0`, `l1`,
@@ -52,9 +59,9 @@ Joint order (qpos[7:], qvel[6:], actuators): for each leg pair `i` in the design
 }
 ```
 
-Activations the tab runs: `tanh`, `elu`, `relu`, `none`. Anything else is refused. Size budget: under 300 KB of JSON.
+Activations the tab runs: `tanh`, `elu`, `relu`, `silu`, `none`. Unknown top-level keys (`provenance`, `command_range`, ...) are ignored; `command_range` [lo, hi] limits the tab's speed slider. Anything else is refused. Size budget: under 300 KB of JSON.
 The tab computes the observation in float64 and casts to float32 only at the layer boundary; a trainer that wants bitwise
 parity must do the same; small differences are expected otherwise and tested with a tolerance.
 
-Kick: the tab applies an impulse as `xfrc_applied` on the torso body for 5 physics steps, and the policy sees it only
-through the state. Train with random pushes of up to ~60 N for 0.1 s if you want it to recover.
+Kick: the tab applies an impulse as `xfrc_applied` on the torso body for 12 physics steps (0.048 s), and the policy sees it only
+through the state. Train with random pushes of up to ~60 N for 0.048 s if you want it to recover.

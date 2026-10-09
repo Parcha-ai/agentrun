@@ -17,10 +17,13 @@ export class View {
   private readonly grid: THREE.GridHelper;
   private readonly m4 = new THREE.Matrix4();
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
+  private readonly canvas: HTMLCanvasElement;
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.shadowMap.enabled = true;
-    this.scene.background = new THREE.Color(0xeeece4);
+    this.scene.background = new THREE.Color(0xf4f2ea);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.02, 100);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(1.1, -1.3, 0.8);
@@ -33,9 +36,13 @@ export class View {
     sun.shadow.mapSize.set(2048, 2048);
     Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4, near: 0.5, far: 12 });
     this.scene.add(sun);
-    this.grid = new THREE.GridHelper(200, 400, 0xb9b6aa, 0xd3d0c4);
+    // The floor: a big shaded plane (receives the shadow) with a 1 m grid on it that follows the creature.
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0xd8d4c6, roughness: 1 }));
+    floor.receiveShadow = true;
+    this.scene.add(floor);
+    this.grid = new THREE.GridHelper(100, 100, 0x9d9a8c, 0xbdb9aa);
     this.grid.rotation.x = Math.PI / 2;
-    this.grid.position.z = 0.001;
+    this.grid.position.z = 0.002;
     this.scene.add(this.grid);
   }
 

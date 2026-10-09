@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultDesign } from '../src/design.ts';
@@ -31,7 +32,7 @@ test('a kick holds the force for exactly KICK_STEPS physics steps, then clears i
   sim.kick([0, 60, 0]);
   const applied: number[] = [];
   const realStep = mj.mj_step;
-  const spy = { ...mj, mj_step: (m: unknown, d: { xfrc_applied: Float64Array }) => { applied.push(d.xfrc_applied[sim.torsoBody * 6 + 1]); realStep(m, d); } };
+  const spy = { ...mj, mj_step: (m: any, d: any) => { applied.push(d.xfrc_applied[sim.torsoBody * 6 + 1]); realStep(m, d); } };
   const spied = new Sim(spy, sim.built);
   spied.kick([0, 60, 0]);
   for (let i = 0; i < 4; i++) spied.step(null);
@@ -62,4 +63,15 @@ test('policy refuses another body, an unknown version, wrong joint counts and a 
   await assert.rejects(Policy.load(file, { ...body, mujocoVersion: '3.0.0' }), /MuJoCo/);
   await assert.rejects(Policy.load({ ...file, layers: [{ ...file.layers[0], act: 'gelu' as never }] }, body), /activation/);
   await Policy.load(file, body);
+});
+
+test('a standing creature survives a 60 N shove from every side and is upright again after 3 s', async () => {
+  for (const dir of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+    const { built } = await fixture();
+    const sim = new Sim(mj, built);
+    for (let i = 0; i < 50; i++) sim.step(null);
+    sim.kick([dir[0] * 60, dir[1] * 60, 0]);
+    for (let i = 0; i < 150; i++) sim.step(null);
+    assert.ok(sim.uprightness() > 0.9, `shoved ${dir}: uprightness ${sim.uprightness()}`);
+  }
 });

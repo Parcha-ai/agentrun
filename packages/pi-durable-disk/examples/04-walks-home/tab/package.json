@@ -4,7 +4,10 @@
   "type": "module",
   "scripts": {
     "build": "node tab/build.mjs",
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "check:browser": "node scripts/check-browser.mjs",
+    "serve": "node scripts/serve.mjs"
   },
   "dependencies": {
     "@mujoco/mujoco": "3.15.0",
@@ -12,6 +15,11 @@
     "three": "0.186.1"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "@types/node": "^22.20.5",
+    "@types/sql.js": "^1.4.11",
+    "@types/three": "^0.186.0",
+    "esbuild": "^0.25.0",
+    "typescript": "5.9",
+    "ws": "^8.22.0"
   }
 }
