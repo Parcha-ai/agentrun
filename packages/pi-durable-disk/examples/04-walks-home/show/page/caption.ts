@@ -105,15 +105,25 @@ export class CaptionDesk {
     waiting.forEach((w, i) => w.n.group && newest.set(w.n.group, i));
     const live = waiting.filter((w, i) => !w.n.group || newest.get(w.n.group) === i);
     for (const w of waiting) if (!live.includes(w)) this.shown.add(w.key);
-    // A newer one of the group on screen replaces it at once, whatever its hold.
-    const replacement = this.current?.group ? live.find((w) => w.n.group === this.current!.group) : undefined;
-    if (replacement) return this.show(replacement, state, now);
-    if (this.current && now - this.current.shownAt < this.opts.minHoldMs) return this.current.caption;
+    // A newer one of the group on screen replaces it at once, in place: the text changes but the hold keeps running from when the caption first
+    // appeared. Once the hold is over, a caption of another kind that is waiting takes its turn first (versions arriving every second must not
+    // starve it); the newer version stays waiting and shows after.
+    const held = this.current;
+    const replacement = held?.group ? live.find((w) => w.n.group === held.group) : undefined;
+    const others = held?.group ? live.filter((w) => w.n.group !== held.group) : live;
+    const holdOver = held !== undefined && now - held.shownAt >= this.opts.minHoldMs;
+    if (replacement && held && !(holdOver && others.length > 0)) {
+      this.shown.add(replacement.key);
+      this.current = { ...held, caption: caption(replacement.n, state.source) };
+      return this.current.caption;
+    }
+    if (this.current && !holdOver) return this.current.caption;
+    const candidates = replacement && holdOver && others.length > 0 ? others : live;
     // The moments waiting, oldest first. When several are waiting the desk catches up: one already older than `lagMs` is skipped, so the
     // newest news is not stuck behind a backlog. A single late moment is still shown.
-    const fresh = live.filter((w) => now - w.n.at <= this.opts.lagMs);
-    const take = live.length > 1 ? (fresh.length > 0 ? fresh : live.slice(-1)) : live;
-    for (const w of live) if (!take.includes(w)) this.shown.add(w.key);
+    const fresh = candidates.filter((w) => now - w.n.at <= this.opts.lagMs);
+    const take = candidates.length > 1 ? (fresh.length > 0 ? fresh : candidates.slice(-1)) : candidates;
+    for (const w of candidates) if (!take.includes(w)) this.shown.add(w.key);
     // Of what is still news, the one a viewer needs most first (a note's `rank`), then the oldest.
     const next = take.reduce<{ n: Note; key: string } | undefined>((best, w) => (best === undefined || (w.n.rank ?? 0) > (best.n.rank ?? 0) ? w : best), undefined);
     if (next) return this.show(next, state, now);
