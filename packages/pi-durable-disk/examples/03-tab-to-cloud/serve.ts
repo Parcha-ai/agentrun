@@ -2,7 +2,7 @@
 //
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
-//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona]
+//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH]
 //
@@ -80,6 +80,11 @@ if (values["admin-token-file"]) {
 }
 
 let cloud: CloudHost | undefined;
+if (values.cloud === "remote-local") {
+  // A second host with no unit and no disk client: remote-host.ts as a child process, through the pipe.
+  const { remoteLocalHost } = await import("./pipe/remote-local.ts");
+  cloud = remoteLocalHost({ log });
+}
 if (values.cloud === "local" || values.cloud === "daytona") {
   const { cloudHost } = await import("./pipe/cloud.ts");
   cloud = await cloudHost(values.cloud as "local" | "daytona", {
