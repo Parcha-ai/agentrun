@@ -91,7 +91,7 @@ describe("a remote host through the pipe", () => {
 
     // The page, watching, switches it back into itself: the remote host drains and exits, the page gets the run.
     const seen: PipeFrame[] = [];
-    const v = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "view", onFrame: (f) => seen.push(f) });
+    const v = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
     await v.ready;
     v.send({ t: "switch", to: "tab" });
     await until(() => seen.some((f) => f.t === "run-here"));

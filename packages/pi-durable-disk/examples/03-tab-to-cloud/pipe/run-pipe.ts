@@ -257,6 +257,11 @@ export class RunPipe {
     if (this.#writer?.socket === socket && this.#drained?.switchId === switchId) this.#drained.done();
   }
 
+  /** Whether `socket` is the attached writer's. */
+  isWriter(socket: PipeSocket): boolean {
+    return this.#writer !== undefined && !this.#writer.dead && this.#writer.socket === socket;
+  }
+
   /** The socket closed: a writer's departure starts the grace; a viewer just leaves. */
   detach(socket: PipeSocket): void {
     this.#viewers.delete(socket);
