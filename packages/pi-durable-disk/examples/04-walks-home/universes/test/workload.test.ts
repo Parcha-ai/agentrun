@@ -27,7 +27,8 @@ test("train.py as the workload: a barrier per checkpoint, progress by machine, s
     const control = {
       getObject: async (key: string) => new Uint8Array(readFileSync(join(root, key))),
     } as unknown as Control;
-    const env = { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: join(here, "fixtures", "fake_train.py"), UNIVERSE_ID: "u3", UNIVERSE_SCALES: '{"feet_air_time":1}' };
+    // The stub is JavaScript: node stands in for python, the file contract is train.py's.
+    const env = { UNIVERSE_WORKLOAD: "train", UNIVERSE_PYTHON: process.execPath, UNIVERSE_TRAIN_PY: join(here, "fixtures", "fake-train.mjs"), UNIVERSE_ID: "u3", UNIVERSE_SCALES: '{"feet_air_time":1}' };
     const logs: string[] = [];
     let barriers = 0;
     const start = (host: string) =>

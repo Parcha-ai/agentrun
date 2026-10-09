@@ -83,8 +83,20 @@ export async function modalUniverses(o: ModalUniversesOptions): Promise<ModalUni
   const classOf = new Map<string, string | undefined>();
   const rateOf = (gpu: string | undefined) => (gpu ? (GPU_PER_HOUR[gpu] ?? GPU_PER_HOUR.H100!) : 0) + cpu * CPU_CORE_PER_HOUR + (memoryMiB / 1024) * GIB_PER_HOUR;
 
+  /** The class client that made each box: it alone knows the box's tags, so every call on the box goes to it. */
+  const owner = new Map<string, DaytonaClient>();
+  const via = (id: string) => owner.get(id) ?? first;
   const client: DaytonaClient = {
-    ...first,
+    get: (idOrName) => via(idOrName).get(idOrName),
+    async list(labels) {
+      const seen = new Map<string, SandboxInfo>();
+      for (const c of new Set(clients.values())) for (const b of await c.list(labels)) seen.set(b.id, b);
+      return [...seen.values()];
+    },
+    stop: (id, force) => via(id).stop(id, force),
+    remove: (id) => via(id).remove(id),
+    exec: (box, command, timeoutSec) => via(box.id).exec(box, command, timeoutSec),
+    upload: (box, path, content) => via(box.id).upload(box, path, content),
     async create(body: CreateSandboxBody): Promise<SandboxInfo> {
       let last: unknown;
       for (const [i, gpu] of classes.entries()) {
@@ -99,6 +111,7 @@ export async function modalUniverses(o: ModalUniversesOptions): Promise<ModalUni
         });
         if (placed) {
           classOf.set(placed.id, gpu);
+          owner.set(placed.id, clients.get(gpu)!);
           log("modal.placed", { name, gpu: gpu ?? null, ms: Date.now() - t0 });
           return placed;
         }
