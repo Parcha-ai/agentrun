@@ -81,13 +81,17 @@ def main() -> None:
   ap.add_argument("--steps", type=float, default=None, help="total environment steps (overrides the universe)")
   ap.add_argument("--num-envs", type=int, default=None)
   ap.add_argument("--smoke", action="store_true", help="tiny CPU-sized run to check the pipeline")
-  ap.add_argument("--keep", type=int, default=2, help="complete checkpoints kept per segment (older ones deleted)")
+  ap.add_argument("--keep", type=int, default=3,
+                  help="complete checkpoints kept per segment; older ones are deleted so work/ stays small enough for "
+                       "a pipe host to attach (all of work/ crosses in one frame)")
   ap.add_argument("--after-checkpoint", default=None,
                   help="shell command run (not awaited) after each checkpoint, e.g. the host's write-through of WORK; "
                        "skipped while the previous one still runs. Gets TRAIN_WORK, TRAIN_STEPS, TRAIN_GENERATION.")
   args = ap.parse_args()
 
   t_start = time.time()
+  # The machine as the stage names it (the agent's env.switch notice), else the hostname.
+  host = os.environ.get("TRAIN_HOST_LABEL") or socket.gethostname()
   import jax
   import jax_compat  # noqa: F401 - before Brax
   import mujoco
@@ -162,7 +166,7 @@ def main() -> None:
     return
   seg_ckpt = os.path.join(ckpt_dir, f"seg{generation:03d}")
   segments.append({"generation": generation, "base": done_steps, "dir": os.path.relpath(seg_ckpt, work),
-                   "restored_from": os.path.relpath(restore, work) if restore else None, "host": socket.gethostname()})
+                   "restored_from": os.path.relpath(restore, work) if restore else None, "host": host})
 
   state = {
       "universe": universe.get("name", "u?"), "hypothesis": universe.get("hypothesis"), "status": "training", "generation": generation, "steps_total": total,
@@ -190,8 +194,8 @@ def main() -> None:
     times["last"], times["last_steps"] = now, step
     steps_done = done_steps + step
     m = {k: float(v) for k, v in metrics.items() if hasattr(v, "__float__")}
-    line = {"t": now, "elapsed_s": now - t_start, "generation": generation, "steps": steps_done, "sps": sps,
-            "walk": times.get("walk"), "score": score_of(times.get("walk")), "metrics": m}
+    line = {"t": now, "elapsed_s": now - t_start, "generation": generation, "host": host, "steps": steps_done,
+            "sps": sps, "walk": times.get("walk"), "score": score_of(times.get("walk")), "metrics": m}
     append_line(progress_path, line)
     checkpointed = step > 0 and step == times.get("checkpointed")
     if checkpointed:
@@ -220,7 +224,7 @@ def main() -> None:
                                     "reward_scales": dict(cfg.reward_config.scales), "device": state["device"],
                                     "impl": impl, "wall_s": base_wall + time.time() - t_start,
                                     "terrain_sha256": world["sha256"] if world else None,
-                                    "host": socket.gethostname()})
+                                    "host": host})
     state["mjcf_sha256"] = pol["mjcf_sha256"]
     # The engine-true score: the exported file, in C MuJoCo, as the tab will run it.
     try:

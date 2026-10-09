@@ -92,9 +92,9 @@ def pull_tree(sb: modal.Sandbox, remote: str, local: str) -> int:
     return 0
   for info in entries:
     path = info.path if info.path.startswith("/") else f"{remote}/{info.path}"
-    name = os.path.basename(path.rstrip("/"))
+    name = info.name or os.path.basename(path.rstrip("/"))
     dst = os.path.join(local, name)
-    if getattr(info, "is_dir", False) or str(getattr(info, "type", "")).lower().endswith("dir"):
+    if info.is_dir():
       os.makedirs(dst, exist_ok=True)
       n += pull_tree(sb, path, dst)
     else:
@@ -128,8 +128,9 @@ def start(app, image, gpus: str, name: str, ledger: Ledger, timeout_s: int, plac
 
     def create():
       try:
+        # us-east: next to the disk's region and the pipe (D0: 15 ms round trip vs 92 ms unpinned).
         box["sb"] = modal.Sandbox.create("sleep", "infinity", app=app, image=image, gpu=gpu, timeout=timeout_s,
-                                         name=gname, tags={"pda-fleet": "demo-d2"})
+                                         name=gname, tags={"pda-fleet": "demo-d2"}, region="us-east")
       except Exception as e:  # reported below
         box["error"] = e
 
