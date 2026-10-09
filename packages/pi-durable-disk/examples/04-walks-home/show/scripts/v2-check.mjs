@@ -130,6 +130,13 @@ try {
   expect("on the way back one caption says why it came home", homeCaps.has("Done training. The agent came back to your browser, and so did what it learned."), [...homeCaps.keys()]);
   expect("no caption in the v2 view wears a SIMULATED pill", [...homeCaps.values()].every((tags) => !tags.includes("simulated")), [...homeCaps]);
   expect("no caption uses the words a viewer could not follow", [...homeCaps.keys(), ...first.keys()].every((t) => !/checkpoint|policy|getup|combined/i.test(t)), [...homeCaps.keys()]);
+  // D4 rehearses and then records: the second take in the same page must end the same way as the first. The stage's memory of the first
+  // (the brain it asked the tab to load, whether the agent went away) must not leak into the second, or its ending never shows.
+  await seek(18);
+  await sleep(3000);
+  await seek(100);
+  const secondTake = await watchCaptions(25_000);
+  expect("a second take in the same page ends the same way: why it came home, once a trained brain arrives", secondTake.has("Done training. The agent came back to your browser, and so did what it learned."), [...secondTake.keys()]);
   await shot("3-home");
 
   // The take cuts the Wi-Fi once the story has settled: let the captions from the policy coming home run out first.
