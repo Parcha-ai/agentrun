@@ -3,9 +3,10 @@
 import WebSocket from 'ws';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { serve } from './serve.mjs';
+import { outDir } from './outdir.mjs';
 import { sketchTake, TAKE_DESIGN } from './sketch-take.mjs';
 
-const out = process.argv[2] ?? '.';
+const out = outDir(process.argv[2]);
 mkdirSync(out, { recursive: true });
 const server = await serve(0);
 const base = `http://127.0.0.1:${server.address().port}`;

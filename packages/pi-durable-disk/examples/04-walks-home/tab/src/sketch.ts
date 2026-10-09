@@ -63,10 +63,13 @@ export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
 }
 
 /** The foot's radius in metres: the creature's foot (a sphere a little wider than the leg), and never smaller than 5 px so it shows on a small pane. */
-export const footRadiusM = (radius: number, px: number) => Math.max(radius * 1.15 * 1.4, 5 / px);
+export const footRadiusM = (radius: number, px: number, bold = 1) => Math.max(radius * 1.15 * 1.4 * bold, 5 / px);
+
+/** The sketcher draws its creature this much thicker than the creature is (legs, feet, outline, handles): a still of a drawing in progress has to read at a glance. The thumbnail uses 1. */
+export const SKETCH_BOLD = 1.8;
 
 /** The creature from above, in metres with the origin at the torso centre and y up (the caller has translated and scaled): the legs, a foot at each leg end, the torso. The sketch and its thumbnail both draw with this. */
-export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px: number): void {
+export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px: number, bold = 1): void {
     const { torso, legs } = design;
     const lw = 1 / px;
     ctx.lineCap = 'round';
@@ -74,7 +77,7 @@ export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px:
       const x = (l.x * torso.length) / 2;
       for (const s of [1, -1]) {
         const y0 = (s * torso.width) / 2;
-        ctx.strokeStyle = SKETCH_COLORS.thigh; ctx.lineWidth = 2 * l.radius * 1.4;
+        ctx.strokeStyle = SKETCH_COLORS.thigh; ctx.lineWidth = 2 * l.radius * 1.4 * bold;
         ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + s * l.thigh); ctx.stroke();
         ctx.strokeStyle = SKETCH_COLORS.shin;
         ctx.beginPath(); ctx.moveTo(x, y0 + s * l.thigh); ctx.lineTo(x, y0 + s * (l.thigh + l.shin)); ctx.stroke();
@@ -85,10 +88,10 @@ export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px:
     for (const l of legs) {
       const x = (l.x * torso.length) / 2;
       for (const s of [1, -1]) {
-        ctx.beginPath(); ctx.arc(x, s * (torso.width / 2 + l.thigh + l.shin), footRadiusM(l.radius, px), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, s * (torso.width / 2 + l.thigh + l.shin), footRadiusM(l.radius, px, bold), 0, Math.PI * 2); ctx.fill();
       }
     }
-    ctx.fillStyle = SKETCH_COLORS.torso; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw;
+    ctx.fillStyle = SKETCH_COLORS.torso; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw * bold;
     ctx.beginPath(); ctx.roundRect(-torso.length / 2, -torso.width / 2, torso.length, torso.width, 0.03); ctx.fill(); ctx.stroke();
 }
 
@@ -186,7 +189,7 @@ export class Sketcher {
     let best: Handle | null = null, bd = Infinity;
     for (const c of this.handles()) {
       // 14 px around a handle; a leg handle's ring can be wider than that when the foot is big, and the ring is what the viewer sees to grab
-      const reach = c.h.kind === 'leg' ? Math.max(14, footRadiusM(this.design.legs[c.h.i].radius, this.px) * this.px + 8) : 14;
+      const reach = c.h.kind === 'leg' ? Math.max(14, footRadiusM(this.design.legs[c.h.i].radius, this.px, SKETCH_BOLD) * this.px + 8) : 14;
       const d = (c.x - x) ** 2 + (c.y - y) ** 2;
       if (d < (reach / this.px) ** 2 && d < bd) { bd = d; best = c.h; }
     }
@@ -232,7 +235,7 @@ export class Sketcher {
     ctx.translate(w / 2, h / 2);
     ctx.scale(this.px, -this.px); // metres, y up
     const { torso } = this.design;
-    paintCreature(ctx, this.design, this.px);
+    paintCreature(ctx, this.design, this.px, SKETCH_BOLD);
     ctx.restore();
     // handles in pixels
     for (const hd of this.handles()) {
@@ -241,12 +244,12 @@ export class Sketcher {
       if (hd.h.kind === 'leg') {
         // a ring around the foot, not a dot over it: the foot at the end of the leg stays visible, so the handle's leg reads as a leg like the others.
         // It follows the foot's size (which grows with the pane and the leg radius) and keeps a gap of 4 px.
-        const foot = footRadiusM(this.design.legs[hd.h.i].radius, this.px) * this.px;
-        ctx.strokeStyle = '#2d5fb3'; ctx.lineWidth = 3;
+        const foot = footRadiusM(this.design.legs[hd.h.i].radius, this.px, SKETCH_BOLD) * this.px;
+        ctx.strokeStyle = '#2d5fb3'; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.arc(px, py, foot + (active ? 6 : 4), 0, Math.PI * 2); ctx.stroke();
         continue;
       }
-      ctx.beginPath(); ctx.arc(px, py, active ? 8 : 6, 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(px, py, active ? 11 : 9, 0, Math.PI * 2);
       ctx.fillStyle = hd.h.kind === 'hip' ? '#1f7a4d' : '#8a5a00';
       ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
     }

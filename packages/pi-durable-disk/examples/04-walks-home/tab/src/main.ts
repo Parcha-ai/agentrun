@@ -23,7 +23,7 @@ import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder, parentP
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---- message protocol with the show page (all messages carry ns: "walks-home") ----------------------------
-// tab -> parent: ready, design-saved, policy-loaded, kicked, fell, stood, memory-opened, walk-meter (see README)
+// tab -> parent: ready, design-saved, policy-loaded, kicked, fell, stood, memory-opened, walk-meter, draw-started (see README)
 // parent -> tab: set-placement {kind, label, since}, kick {dir, force_n}, open-memory, load-policy {url}, load-design {design}
 const NS = 'walks-home';
 const post = (type: string, body: Record<string, unknown> = {}) => {
@@ -79,6 +79,8 @@ interface App {
   brain: UntrainedBrain;
   /** One walk-meter event per simulated second while a policy runs. */
   ticker: Ticker;
+  /** The first stroke (or applied design) has been announced to the stage, which drops its "draw a creature" prompt. */
+  drawStarted: boolean;
   clean: boolean;
   phase: 'draw' | 'watch';
   offline: boolean;
@@ -432,6 +434,13 @@ function hud() {
   $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}${modeLine}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
 }
 
+/** The first stroke: the stage can take its "draw a creature on the left" prompt away. Once per page. */
+function announceDrawing() {
+  if (!app || app.drawStarted) return;
+  app.drawStarted = true;
+  post('draw-started');
+}
+
 /** A new version begins where the creature stands: the post, the trail and the distance start over, and the meter's clock too. */
 function resetOrigin() {
   const [x, y] = app.sim.torsoPos();
@@ -462,12 +471,14 @@ async function setPhase(phase: 'draw' | 'watch') {
   app.phase = phase;
   document.body.classList.toggle('phase-draw', phase === 'draw');
   document.body.classList.toggle('phase-watch', phase === 'watch');
+  app.view.setMarkers(app.clean && phase === 'watch'); // the start post and trail wait for the creature to have the pane
   if (phase === 'watch') showThumb();
   post('phase', { phase });
 }
 
 /** Apply a design as if it had been drawn: sketcher, creature, and the files on the disk. Returns the body's mjcf_sha256. */
 async function applyDesign(design: Design): Promise<string> {
+  announceDrawing(); // a design applied from outside counts as drawn
   app.sketcher.set(design);
   await buildCreature(structuredClone(design), true, { save: true });
   return app.bodySha;
@@ -581,7 +592,7 @@ async function main() {
     // The take starts from the default body (clean mode ignores earlier designs kept in this browser): the user draws from there.
     const design = (clean ? undefined : store.designs()[0]?.design) ?? defaultDesign();
     const built = buildMjcf(design);
-    const sketcher = new Sketcher($('sketch') as HTMLCanvasElement, design, (d) => { renderPairs(); pendingDesign = d; if (app?.clean && app.phase === 'draw') app.draft.edit(); });
+    const sketcher = new Sketcher($('sketch') as HTMLCanvasElement, design, (d) => { renderPairs(); pendingDesign = d; announceDrawing(); if (app?.clean && app.phase === 'draw') app.draft.edit(); });
     let pendingDesign: Design | null = null;
     app = {
       mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement, { lite: new URLSearchParams(location.search).has('lite') }), sketcher, store, storageMode,
@@ -589,7 +600,7 @@ async function main() {
       policy: null, policyName: 'untrained', running: true, acc: 0, last: performance.now(),
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
       training: new TrainingState(),
-      brain: new UntrainedBrain(), ticker: new Ticker(1), clean, phase, offline: !navigator.onLine,
+      brain: new UntrainedBrain(), ticker: new Ticker(1), drawStarted: false, clean, phase, offline: !navigator.onLine,
       draft: new DraftCommitter({
         build: (save) => buildCreature(app.sketcher.get(), true, { save }),
         save: () => saveDesign(app.sketcher.get()),
@@ -597,7 +608,7 @@ async function main() {
       }),
     };
     app.view.setSim(app.sim);
-    if (clean) { app.view.setPreset('close'); app.view.setMarkers(true); resetOrigin(); if (phase === 'watch') showThumb(); } // ?phase=watch starts with the drawing already in the corner
+    if (clean) { app.view.setPreset('close'); app.view.setMarkers(phase === 'watch'); resetOrigin(); if (phase === 'watch') showThumb(); } // ?phase=watch starts with the drawing already in the corner
     if (params.has('dummy')) await useDummy(); // the old demo stand-in, opt in only: the creature is untrained unless a trained policy arrives
     else { applyCommand(); syncBrain(); } // no policy yet: the untrained brain from the first frame
     updateLabel();
