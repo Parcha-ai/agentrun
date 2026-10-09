@@ -1,25 +1,36 @@
 // The v2 stage's one location badge: where the agent is, in plain words. Pure, so what it says in each place is testable.
 import type { ShowState } from "../types.ts";
+import { wentAway } from "./story-notes.ts";
 
 export type Badge = {
   text: string;
   /** `tab`: the creature's own browser; `cloud`: a machine somewhere; `moving`: between the two; `parked`: nowhere yet. */
   tone: "tab" | "cloud" | "moving" | "parked";
+  /** Whether the line about the agent's memory is shown: for as long as it is away (it is why it can change machines at all). */
+  memory: boolean;
 };
 
+/** The sentence under the header while the agent is away. The product's point, said where a viewer can read it. */
+export const MEMORY_LINE = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
+
+/**
+ * The header, in plain words, from the pipe's own label for the machine (never a provider the feed did not name). "Back" only once the run's own
+ * record shows it went to a machine.
+ */
 export function badgeFor(state: ShowState): Badge {
   const p = state.place;
+  const isTab = (label: string) => state.environments.some((e) => e.kind === "tab" && e.label === label) || /browser|\btab\b/i.test(label);
   switch (p.where) {
     case "tab":
     case "home":
-      return { text: "Agent: running in your browser", tone: "tab" };
+      return { text: wentAway(state) ? "Your agent is back in your browser" : "Your agent is in your browser", tone: "tab", memory: false };
     case "moving":
-      return { text: `Agent: moving to ${p.to === "your browser" || /browser/i.test(p.to) ? "your browser" : p.to}…`, tone: "moving" };
+      return { text: isTab(p.to) ? "Your agent is moving back to your browser\u2026" : `Your agent is moving to ${p.to}\u2026`, tone: "moving", memory: true };
     case "cloud":
     case "universes":
-      return { text: `Agent: running on ${p.host}`, tone: "cloud" };
+      return { text: `Your agent moved to ${p.host} to train`, tone: "cloud", memory: true };
     case "parked":
-      return { text: "Agent: waiting", tone: "parked" };
+      return { text: "Your agent is waiting", tone: "parked", memory: false };
   }
 }
 

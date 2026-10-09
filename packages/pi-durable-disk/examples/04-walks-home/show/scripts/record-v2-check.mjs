@@ -29,6 +29,8 @@ try {
   const texts = log.captions.map((c) => c.text);
   expect("the captions the v2 page showed are in the log", log.captions.length >= 2, texts);
   expect("each carries its tag and the second it appeared", log.captions.every((c) => (c.tag === null || typeof c.tag === "string") && typeof c.second === "number"), log.captions);
+  expect("the tags are in the log although the clean view draws no pill: the rehearsal's numbers are scripted", log.captions.some((c) => c.tag === "scripted"), log.captions.map((c) => [c.tag, c.text]));
+  expect("and a caption that says nothing countable has no tag", log.captions.some((c) => c.tag === null), log.captions.map((c) => [c.tag, c.text]));
   expect("the move to the GPU is one of them", texts.some((t) => /Moved to the H100 GPU/.test(t)), texts);
   expect("the recorder refuses v1-only beats in --v2 instead of silently doing nothing", (() => {
     const bad = spawnSync(process.execPath, [join(show, "scripts/record.mjs"), "--v2", "--kill-after", "5", "--url", `http://127.0.0.1:${port}/`, "--out", join(dir, "x.webm"), "--max", "5"], { cwd: show, encoding: "utf8", timeout: 30_000 });

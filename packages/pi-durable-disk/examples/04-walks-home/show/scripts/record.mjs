@@ -62,7 +62,7 @@ try {
     if (elapsed > maxSeconds) break;
     // The director looks at the page once a second: it is cheap and its decisions do not need frame accuracy.
     const captionRows = v2
-      ? `JSON.stringify([...document.querySelectorAll("#vcaption")].filter((c) => !c.hidden).map((c) => ({ tag: c.querySelector(".tag")?.textContent ?? null, text: c.querySelector(".txt").textContent })))`
+      ? `JSON.stringify([...document.querySelectorAll("#vcaption")].filter((c) => !c.hidden).map((c) => ({ tag: c.dataset.tag || c.querySelector(".tag")?.textContent || null, text: c.querySelector(".txt").textContent })))`
       : null;
     for (const r of await tab.eval(captionRows ?? `JSON.stringify([...document.querySelectorAll("#caption .row")].map((r) => ({ tag: r.querySelector(".tag")?.textContent ?? null, text: r.querySelector(".txt").textContent })))`).then(JSON.parse).catch(() => [])) {
       if (!captions.has(r.text)) {

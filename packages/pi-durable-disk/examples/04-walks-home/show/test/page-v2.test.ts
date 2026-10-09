@@ -7,13 +7,23 @@ import type { ChatTurn, Place } from "../types.ts";
 
 const at = (place: Place) => ({ ...emptyState(), place });
 
-test("the badge says where the agent is, in plain words, and what it is doing between places", () => {
-  assert.deepEqual(badgeFor(at({ where: "tab", host: "Your browser tab" })), { text: "Agent: running in your browser", tone: "tab" });
-  assert.deepEqual(badgeFor(at({ where: "home", host: "Home (tab)" })), { text: "Agent: running in your browser", tone: "tab" });
-  assert.deepEqual(badgeFor(at({ where: "cloud", host: "H100 GPU, Virginia" })), { text: "Agent: running on H100 GPU, Virginia", tone: "cloud" });
-  assert.deepEqual(badgeFor(at({ where: "moving", to: "H100 GPU, Virginia", host: "your browser" })), { text: "Agent: moving to H100 GPU, Virginia…", tone: "moving" });
-  assert.equal(badgeFor(at({ where: "moving", to: "Your browser tab", host: "H100" })).text, "Agent: moving to your browser…");
-  assert.deepEqual(badgeFor(at({ where: "parked" })), { text: "Agent: waiting", tone: "parked" });
+const stayOf = (host: string, hostKind: "tab" | "gpu", from = 0) => ({ id: `${host}${from}`, lane: "run", host, hostKind, from, to: null });
+const BACK = [stayOf("your browser", "tab"), stayOf("a cloud GPU (Modal H100)", "gpu", 10), stayOf("your browser", "tab", 90)];
+
+test("the header says what happened to the agent in plain words, from the pipe's own label for the machine", () => {
+  const gpu = "a cloud GPU (Modal H100)";
+  assert.deepEqual(badgeFor(at({ where: "tab", host: "This tab" })), { text: "Your agent is in your browser", tone: "tab", memory: false });
+  assert.deepEqual(badgeFor(at({ where: "moving", to: gpu, host: "This tab" })), { text: `Your agent is moving to ${gpu}\u2026`, tone: "moving", memory: true });
+  assert.deepEqual(badgeFor(at({ where: "cloud", host: gpu })), { text: `Your agent moved to ${gpu} to train`, tone: "cloud", memory: true });
+  assert.deepEqual(badgeFor({ ...at({ where: "home", host: "This tab" }), stays: BACK }), { text: "Your agent is back in your browser", tone: "tab", memory: false });
+  assert.equal(badgeFor({ ...at({ where: "moving", to: "This tab", host: gpu }), stays: BACK.slice(0, 2) }).text, "Your agent is moving back to your browser\u2026");
+  assert.deepEqual(badgeFor(at({ where: "parked" })), { text: "Your agent is waiting", tone: "parked", memory: false });
+  assert.doesNotMatch(badgeFor(at({ where: "cloud", host: "Modal-less label" })).text, /Modal(?!-less)/, "no provider the feed did not name");
+});
+
+test("the cloud-disk sentence is shown for as long as the agent is away, and not at home", () => {
+  for (const place of [{ where: "moving", to: "X", host: "This tab" }, { where: "cloud", host: "X" }, { where: "universes", host: "X" }] as const) assert.equal(badgeFor(at(place)).memory, true, place.where);
+  for (const place of [{ where: "tab", host: "x" }, { where: "home", host: "x" }, { where: "parked" }] as const) assert.equal(badgeFor(at(place)).memory, false, place.where);
 });
 
 const turn = (id: string, role: "user" | "agent", text: string, streaming?: boolean): ChatTurn => ({ id, role, text, ...(streaming ? { streaming } : {}) });
@@ -103,4 +113,11 @@ test("at home the track still names the machine the agent came from, and before 
   const back = { ...withEnvs({ where: "home", host: "Your browser tab" }, TWO), stays: [stay("Your browser tab", "tab", 0), stay("H100 GPU", "gpu", 10), stay("Your browser tab", "tab", 90)] };
   assert.equal(trackFor(back).right, "H100 GPU");
   assert.equal(trackFor(withEnvs({ where: "tab", host: "Your browser tab" }, TWO)).right, "Modal VM", "no machine visited yet: the first listed");
+});
+
+test("the decision card's own tag is not drawn in the clean view, but is kept for the debug view", () => {
+  assert.doesNotMatch(decisionCardHtml(shown(), "live", { pill: false }), /class="tag/);
+  assert.match(decisionCardHtml(shown(), "live", { pill: true }), /<span class="tag measured">measured<\/span>/);
+  assert.match(decisionCardHtml(shown(), "live"), /class="tag measured"/, "the debug view is the default");
+  assert.match(decisionCardHtml(shown(), "live", { pill: false }), /decided by TypeSafe Jev in 37 ms/, "the words stay");
 });

@@ -11,10 +11,11 @@ export const cardTag = (d: NonNullable<ShowState["decision"]>, source: ShowState
 
 export const cardVisible = (d: ShowState["decision"], now: number): d is NonNullable<ShowState["decision"]> => d !== null && now >= d.at && now - d.at < CARD_MS;
 
-export function decisionCardHtml(d: NonNullable<ShowState["decision"]>, source: ShowState["source"]): string {
+/** `pill`: draw the tag (the debug view); the clean view keeps it as data on the card instead. */
+export function decisionCardHtml(d: NonNullable<ShowState["decision"]>, source: ShowState["source"], options: { pill?: boolean } = {}): string {
   const tag = cardTag(d, source);
   const rows = d.options
     .map((o) => `<div class="opt${o.id === d.choice ? " chosen" : ""}"><span class="name">${esc(o.label)}</span><span class="bar"><i style="--w:${(o.probability * 100).toFixed(1)}%"></i></span><span class="pct">${percent(o.probability)}</span></div>`)
     .join("");
-  return `<h3>${esc(d.question)}</h3>${rows}<div class="foot"><span>decided by ${d.model === "jev" ? "TypeSafe Jev" : "a stand-in"} in ${Math.round(d.latencyMs)} ms</span><span class="tag ${tag}">${tag}</span></div>`;
+  return `<h3>${esc(d.question)}</h3>${rows}<div class="foot"><span>decided by ${d.model === "jev" ? "TypeSafe Jev" : "a stand-in"} in ${Math.round(d.latencyMs)} ms</span>${options.pill === false ? "" : `<span class="tag ${tag}">${tag}</span>`}</div>`;
 }
