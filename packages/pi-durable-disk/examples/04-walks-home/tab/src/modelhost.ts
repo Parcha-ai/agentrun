@@ -98,7 +98,7 @@ export class ModelHost {
     // the self-check: the model answers one question through the same judge, so "it loaded and answered" is shown by a measured answer, not assumed
     const t2 = this.d.now();
     let r;
-    try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], 80, () => {}); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
+    try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], 48, () => {}); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
     const ms = this.d.now() - t2;
     this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true });
     if (r.refused || r.text === '') return this.fail(r.refused ? 'the self-check answer was refused by the judge' : 'the self-check produced no answer');

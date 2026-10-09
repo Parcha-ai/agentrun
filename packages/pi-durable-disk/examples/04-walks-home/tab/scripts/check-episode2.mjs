@@ -89,12 +89,10 @@ await page('clean=1&banner=1&episode=2', async (p) => {
 // ---- 2. a dark sentence never leaves the tab, not even in a delta
 await page('clean=1&banner=1&episode=2', async (p) => {
   const { ev, waitFor } = p;
-  // refuse any prefix with two or more sentences: the first sentence is judged and shown, the second is the "dark" one
-  server.judge = async (_prompt, answer) => ((answer.match(/[.!?](\s|$)/g) ?? []).length >= 2 && !answer.startsWith('I ') ? { body: { verdict: 'refuse', dark: true, quote: 'x', ms: 1, model: 'check' } } : {});
   server.modelReady = true;
   await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')");
   const switched = (await ev("events.some((e) => e.type === 'model-switched')"));
-  // the self-check answer may be one or more sentences: make the rule apply only to chat prompts
+  // from here on the judge refuses any chat answer with a second sentence: the first sentence is judged and shown, the second is the "dark" one
   server.judge = async (prompt, answer) => (prompt !== 'Who are you?' && (answer.match(/[.!?](\s|$)/g) ?? []).length >= 2 ? { body: { verdict: 'refuse', dark: true, quote: 'x', ms: 1, model: 'check' } } : {});
   if (!switched) { check('the model came up for the dark check', false); return; }
   server.judgeCalls.length = 0;
