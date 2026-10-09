@@ -23,6 +23,8 @@ export interface TabRuntime<E extends RuntimeEnv = RuntimeEnv> {
   readonly restored: { files: number; bytes: number; skipped: string[] };
   /** The write-throughs this tab made: changes sent, and how long each took, end to end. */
   readonly syncs: { changes: number; ms: number }[];
+  /** Stop the periodic write-through (`liveFlushMs`) and wait for the one in flight: nothing syncs after this but a tool's own end. */
+  stopLive(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -61,6 +63,25 @@ export async function finishStep(harness: Harness, timeoutMs: number): Promise<"
   return "timeout";
 }
 
+/**
+ * A write-through every `ms` while started. A tick that finds the previous one still running is skipped, so a slow sync
+ * (a large checkpoint) never queues more behind it; `stop` ends the ticks and waits for the one in flight.
+ */
+export function startLiveFlush(flush: () => Promise<void>, ms: number): { stop(): Promise<void> } {
+  let inFlight: Promise<void> | undefined;
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    const run = flush().catch(() => undefined).finally(() => void (inFlight = undefined));
+    inFlight = run;
+  }, ms);
+  return {
+    async stop() {
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
+}
+
 export async function startTab<E extends RuntimeEnv>(opts: {
   client: PipeClient;
   attached: Attached;
@@ -71,13 +92,19 @@ export async function startTab<E extends RuntimeEnv>(opts: {
   host?: HostTools;
   /** The move that brought the run here, and this host's description, for the notice admitted before resuming. */
   move?: { info: SwitchInfo; facts: EnvironmentFacts };
+  /**
+   * Also write through every this many milliseconds while the run is open, so what a long tool call writes (a training
+   * checkpoint) reaches the disk and the viewers while the call is still running. Without it a tool's files become durable
+   * only when its call ends. Each tick is one more write-through on the same line, so ticks and tool ends never overlap.
+   */
+  liveFlushMs?: number;
 }): Promise<TabRuntime<E>> {
   const { env, workspace } = opts;
   const restored = await workspace.restore(opts.attached.files);
   const syncs: { changes: number; ms: number }[] = [];
   // One write-through at a time: each compares against the baseline the previous one established.
   let line: Promise<void> = Promise.resolve();
-  const durable = (_context: Context): Promise<void> => {
+  const flush = (): Promise<void> => {
     const next = line.then(async () => {
       const started = performance.now();
       const { changes, scanned } = await workspace.changes();
@@ -88,6 +115,8 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     line = next.catch(() => undefined);
     return next;
   };
+  const durable = (_context: Context): Promise<void> => flush();
+  const live = opts.liveFlushMs && opts.liveFlushMs > 0 ? startLiveFlush(flush, opts.liveFlushMs) : undefined;
   const models = agentModels({ baseUrl: "https://model-proxy.invalid/v1", modelId: opts.attached.model, fetch: opts.client.fetch as typeof globalThis.fetch });
   const harness = await Harness.open(remoteStorage(opts.client), { registry: agentRegistry(durable, { ...opts.host, environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   // The notice is committed before anything the run resumes commits (environment.ts).
@@ -101,7 +130,11 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     workspace,
     restored,
     syncs,
+    async stopLive() {
+      await live?.stop();
+    },
     async close() {
+      await live?.stop();
       await harness.close(ctx).catch(() => undefined);
       await env.cleanup(ctx).catch(() => undefined);
     },

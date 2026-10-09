@@ -100,6 +100,7 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
     } else if (frame.t === "drain") {
       // Finish the step in progress, close the agent here, say so; the pipe then releases the run.
       void (async () => {
+        await runtime?.stopLive();
         const how = runtime ? await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const) : "idle";
         log("drained", { switchId: frame.switchId, step: how });
         const acked = runtime ? await runtime.workspace.baselineDigest().catch(() => undefined) : undefined;
@@ -133,7 +134,7 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
   const started = performance.now();
   const env = new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } });
   const facts = await probeHost();
-  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), host: { switchChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), host: { switchChannel }, liveFlushMs: Number(process.env.DEMO_LIVE_FLUSH_MS ?? 0), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   log("running", { generation: attached.generation, ms: Math.round(performance.now() - started), restored: runtime.restored, gpu: facts.gpu });
   const stream = await watchEvents(runtime.harness, runtime.root.id, ctx);

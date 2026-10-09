@@ -154,8 +154,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   /** What a pipe host of each environment is made of. */
   const classOf = (envId: string) =>
     envId === gpuEnv?.id && gpuClient && options.gpu
-      ? { env: gpuEnv, client: gpuClient, archil: false, cpus: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ttlMinutes: options.gpu.ttlMinutes ?? 45, className: "modal-gpu", note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
-      : { env, client, archil: true, cpus: 0, memoryMiB: 0, ttlMinutes: 120, className: "modal-vm", note: "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server." };
+      ? { env: gpuEnv, client: gpuClient, archil: false, cpus: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ttlMinutes: options.gpu.ttlMinutes ?? 45, className: "modal-gpu", liveFlushMs: 1000, note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
+      : { env, client, archil: true, cpus: 0, memoryMiB: 0, ttlMinutes: 120, className: "modal-vm", liveFlushMs: 0, note: "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server." };
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
   const warm = new Map<string, Promise<SandboxInfo>>();
@@ -271,6 +271,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         `DEMO_ENV_CLASS=${q(cls.className)}`,
         ...(cls.cpus ? [`DEMO_ENV_CPUS=${cls.cpus}`, `DEMO_ENV_MEMORY_GB=${Math.round(cls.memoryMiB / 1024)}`] : []),
         `DEMO_ENV_NOTE=${q(cls.note)}`,
+        // A GPU box trains while the agent waits on one command: its files reach the disk, and the tab, every second, not only when the call ends.
+        ...(cls.liveFlushMs ? [`DEMO_LIVE_FLUSH_MS=${cls.liveFlushMs}`] : []),
         `${BOX_NODE} ${BOX_APP_DIR}/remote-host.ts --port ${BOX_SERVE_PORT} --token-file ${BOX_ETC}/serve.token --work ${BOX_WORK}`,
         `>> ${BOX_REMOTE_LOG} 2>&1 < /dev/null`,
       ].join(" ");
