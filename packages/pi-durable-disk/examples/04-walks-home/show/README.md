@@ -157,7 +157,7 @@ operator panel stays on the `o` key. The v1 checks and recordings open the page 
   (`?debug=1` keeps every tag): that the creature is a physics simulation in the browser is said once, at the start. Nothing says the agent lives in
   the tab: it runs there. The stage says two things itself, once each (`page/story-notes.ts`): at the first move "Its memory is on a cloud disk, so
   it can change machines without forgetting anything."; on the way back "Done training. The agent came back to your browser, and so did what it
-  learned.". The clean view says nothing about Wi-Fi or being offline (scope: tab to the GPU cluster and back to the tab); `v2-check` holds that.
+  learned.". The clean view says nothing about Wi-Fi or being offline; `v2-check` holds that.
 - **Setting up.** Between the user's request and the first version of the brain there is a real wait. From the agent's first `bash` command after it
   arrived on a machine (read from the transcript) the caption slot counts "Setting up the training program on the GPU... N s" on the stage's clock
   (measured on a live feed, scripted in a rehearsal); the tab's first checkpoint ends it with "Learning started N s after the agent began." The

@@ -60,7 +60,7 @@ try {
     return text;
   };
   const shot = async (name) => shots && (await tab.screenshot(join(shots, `${name}.png`)));
-  // Miguel's scope: tab to GPU cluster and back to the tab, nothing else. The clean view says nothing about Wi-Fi or being offline: no control, no
+  // The clean view says nothing about Wi-Fi or being offline: no control, no
   // banner, no proof line, no caption, in the stage or in the creature's frame, at the start or after the story. (A wire-level check: the elements
   // are not in the page at all, and no visible text mentions it.)
   const noWifi = async (when) => {
