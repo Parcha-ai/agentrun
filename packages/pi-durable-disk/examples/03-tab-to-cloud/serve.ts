@@ -125,6 +125,7 @@ const stop = async () => {
   if (closing) return;
   closing = true;
   log("stopping");
+  also?.closeAllConnections();
   also?.close();
   await server.close();
   await cloud?.close?.();
