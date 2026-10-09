@@ -1,0 +1,19 @@
+{
+  "name": "pi-durable-disk-example-universes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "It Walks Home, the universes: one sealed run forked into N universes on N machines, a killed machine's universe taken over by a warm spare, and the collapse to one winner; the stage's feed.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  }
+}
