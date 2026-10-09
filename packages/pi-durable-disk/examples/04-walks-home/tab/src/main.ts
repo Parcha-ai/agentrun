@@ -14,6 +14,9 @@ import { DraftCommitter } from './draft.ts';
 import { Ticker, formatDistance } from './trail.ts';
 import { TrainingState } from './training.ts';
 import { Sim } from './sim.ts';
+import { ModelHost } from './modelhost.ts';
+import { MANIFEST_PATH } from './model.ts';
+import { wllamaLlm } from './llm.ts';
 import { View } from './render.ts';
 import { drawThumbnail, Sketcher } from './sketch.ts';
 import { CreatureStore, type Backend, type Backends, type MachineEvent } from './store.ts';
@@ -139,6 +142,44 @@ async function publishBody() {
 }
 
 /** The label on the creature, in plain words: "untrained", "learning: version N", "trained". */
+// ---- episode 2: the trained model comes home and answers (?episode=2) ----------------------------------------
+let modelHost: ModelHost | null = null;
+
+/** The panel the tab shows in episode 2: what is happening to the model, from the same messages the stage hears. */
+function modelPanel(type: string, b: Record<string, unknown>) {
+  const set = (id: string, text: string) => { $(id).textContent = text; };
+  if (type === 'model-loading') { set('modelStatus', 'downloading the model it trained, from its disk'); set('modelChip', `${b.name} · ${b.quant} · ${((b.bytes as number) / 1e6).toFixed(0)} MB`); }
+  else if (type === 'model-download') ($('modelBar') as HTMLElement).style.width = `${Math.round(((b.done_chunks as number) / (b.total_chunks as number)) * 100)}%`;
+  else if (type === 'model-loaded') { ($('modelBar') as HTMLElement).style.width = '100%'; set('modelStatus', 'loaded into this browser tab'); set('modelChip', `${$('modelChip').textContent} · loaded in ${((b.load_ms as number) / 1000).toFixed(1)} s on ${b.threads} threads`); }
+  else if (type === 'model-switched') set('modelStatus', 'answering here, in this tab, with no system prompt');
+  else if (type === 'model-failed') { set('modelStatus', `the model did not come home: ${b.reason}`); $('modelPanel').dataset.failed = '1'; }
+}
+
+function startEpisode2(params: URLSearchParams) {
+  const wasm = new URL('./vendor/wllama.wasm', location.href).href;
+  const threads = Number(params.get('threads')) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2)); // two cores stay free for the page
+  const judge = async (prompt: string, answer: string): Promise<'show' | 'refuse'> => {
+    try {
+      const r = await fetch('/api/judge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, answer }), signal: AbortSignal.timeout(5000) });
+      if (!r.ok) return 'refuse';
+      return (await r.json())?.verdict === 'show' ? 'show' : 'refuse';
+    } catch { return 'refuse'; } // fail closed: no answer, no timeout, no verdict means nothing is shown
+  };
+  modelHost = new ModelHost({
+    post: (type, body = {}) => { post(type, body); if (type.startsWith('model-')) modelPanel(type, body); },
+    readChunk: (path) => new ParentBackend(windowBus(), path, 20000).read(),
+    writeFile: (path, bytes) => new ParentBackend(windowBus(), path).write(bytes),
+    sha256: async (bytes) => { const d = await crypto.subtle.digest('SHA-256', bytes as BufferSource); return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join(''); },
+    judge, llm: wllamaLlm(wasm), threads, mode: params.get('judge') === 'whole' ? 'whole' : 'progressive', now: () => performance.now(),
+  });
+  let warned = false;
+  new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), MANIFEST_PATH)), {
+    sha256: sha256Hex, intervalMs: 1000,
+    onFile: (text) => { warned = false; return modelHost!.onManifest(text); },
+    onError: (e) => { if (!warned) { warned = true; console.warn(`model manifest watch: ${e}`); } },
+  }).start();
+}
+
 function updateLabel() {
   const el = $('stateLabel');
   el.dataset.state = app.training.state;
@@ -487,6 +528,7 @@ async function applyDesign(design: Design): Promise<string> {
 
 function pageState() {
   return tidy({
+    model: modelHost?.state() ?? { phase: 'none' },
     state: app.training.state, checkpoint_n: app.training.checkpointN, steps: app.training.steps, wall_s: app.training.wallS,
     reported_walk_10s_m: app.training.reportedWalkM, final: app.training.final, offline: app.offline, mode: app.sim.mode, phase: app.phase,
     mjcf_sha256: app.bodySha, policy: app.policyName, distance_m: walkedMetres(),
@@ -695,6 +737,7 @@ async function main() {
       if (!m || m.ns !== NS) return;
       try {
         if (m.type === 'set-placement') setPlacement(m.kind, m.label ?? m.kind);
+        else if (m.type === 'chat-send') { if (modelHost) void modelHost.chat(String(m.id), String(m.text ?? '')); else post('chat-done', { id: m.id, error: 'model-not-ready', refused: false, text: '' }); }
         else if (m.type === 'kick') kick(m.dir?.[0] ?? 0, m.dir?.[1] ?? 1, m.force_n ?? 60);
         else if (m.type === 'open-memory') await renderMemory();
         else if (m.type === 'load-policy') await loadPolicyUrl(String(m.url));
@@ -725,7 +768,10 @@ async function main() {
     window.addEventListener('online', onNetwork);
     // A trained policy landing in work/home/policy.json is noticed by polling at 1 Hz behind PolicySource, so a change feed
     // or a GET endpoint can replace the parent's storage later without touching the rest.
-    if (policyBackend) {
+    const ep2 = params.get('episode') === '2';
+    document.body.classList.toggle('ep2', ep2);
+    if (ep2) { app.running = false; startEpisode2(params); } // no creature in episode 2: the model is the story
+    if (policyBackend && !ep2) {
       let warned = false;
       const quiet = (what: string) => (e: unknown) => { if (!warned) { warned = true; console.warn(`${what}: ${e} (further failures are not logged until it reads again)`); } };
       const watch = (path: string, kind: 'checkpoint' | 'final') => new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), path)), {
