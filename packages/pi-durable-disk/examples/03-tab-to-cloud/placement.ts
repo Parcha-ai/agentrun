@@ -47,6 +47,11 @@ export interface Placer {
   decide(query: PlacementQuery): Promise<PlacementDecision>;
   /** When the run is placed back in the browser, the server wakes the agent there with this (after `SERVER_TURN`), so it says one short line at home. Absent: the agent stays silent. */
   readonly homePrompt?: string;
+  /**
+   * A check made in code, when the run is back in the browser, of what the agent's work was for: `read` reads a file of the run's work/.
+   * The server tells the agent the result with its home turn, so the agent words a fact the server checked and never judges it itself.
+   */
+  homeCheck?(read: (path: string) => Promise<Uint8Array | undefined>): Promise<{ ok: boolean; reason: string }>;
   /** The one line why the placer prefers an environment, for the agent's notice. */
   describe(env: string): string;
 }
@@ -68,6 +73,7 @@ export type JudgeRunner = (params: {
 export interface PlacerOptions {
   readonly runJudge: JudgeRunner;
   readonly homePrompt?: string;
+  readonly homeCheck?: Placer["homeCheck"];
   /** One line per environment id: what it can do. Ids the server does not offer are left out of the question. */
   readonly criteria: Readonly<Record<string, string>>;
   readonly labels: Readonly<Record<string, string>>;
@@ -83,6 +89,7 @@ export function judgePlacer(options: PlacerOptions): Placer {
   const now = options.now ?? Date.now;
   return {
     ...(options.homePrompt ? { homePrompt: options.homePrompt } : {}),
+    ...(options.homeCheck ? { homeCheck: options.homeCheck } : {}),
     describe: (env) => options.criteria[env] ?? env,
     async decide(query) {
       const ids = query.environments.filter((id) => options.criteria[id] !== undefined);

@@ -63,3 +63,27 @@ test("the real Jev adapter, with an injected client, drives the placer end to en
   assert.equal(seen.length, 1);
   assert.deepEqual(Object.keys((seen[0] as { questions: Record<string, { criteria: object }> }).questions.where!.criteria), ["tab", "modal-gpu"]);
 });
+
+const bytes = (s: string) => new TextEncoder().encode(s);
+const SHA = "a".repeat(64);
+const policy = (over: Record<string, unknown> = {}) => bytes(JSON.stringify({ format: "mlp-v1", spec_version: 1, mjcf_sha256: SHA, ...over }));
+const files = (map: Record<string, Uint8Array | undefined>) => async (path: string) => map[path];
+
+test("the home check: a valid brain made for the drawn body is in place; every other case says what is wrong", async () => {
+  const { checkHomePolicy } = await import("../placer.ts");
+  const body = bytes(JSON.stringify({ mjcf_sha256: SHA }));
+  assert.equal((await checkHomePolicy(files({ "home/policy.json": policy(), "creature/body.json": body }))).ok, true);
+  const bad = async (map: Record<string, Uint8Array | undefined>, re: RegExp) => {
+    const r = await checkHomePolicy(files(map));
+    assert.equal(r.ok, false);
+    assert.match(r.reason, re);
+  };
+  await bad({ "creature/body.json": body }, /was not written/);
+  await bad({ "home/policy.json": bytes("{not json"), "creature/body.json": body }, /not valid JSON/);
+  await bad({ "home/policy.json": bytes("[1]"), "creature/body.json": body }, /not a policy object/);
+  await bad({ "home/policy.json": policy({ format: "mlp-v2" }), "creature/body.json": body }, /unknown format/);
+  await bad({ "home/policy.json": policy({ spec_version: undefined }), "creature/body.json": body }, /no spec version/);
+  await bad({ "home/policy.json": policy({ mjcf_sha256: "xyz" }), "creature/body.json": body }, /does not name its body/);
+  await bad({ "home/policy.json": policy() }, /body file is missing/);
+  await bad({ "home/policy.json": policy(), "creature/body.json": bytes(JSON.stringify({ mjcf_sha256: "b".repeat(64) })) }, /different body/);
+});

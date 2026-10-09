@@ -540,7 +540,17 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     // The run is back in the browser by placement: the agent gets one turn to say, in a line, where it is and what happened.
     const home = options.placer?.homePrompt;
     if (home && s.move.by === "placement" && s.to === TAB_ENVIRONMENT.id) {
-      void deliverSubmit(state, `${SERVER_TURN}${home}`, `server-${switchId}`).catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
+      void (async () => {
+        // What the work was for, checked in code: the agent words this fact, it does not judge it.
+        let checked = "";
+        const check = options.placer?.homeCheck;
+        if (check) {
+          const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined)).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
+          log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason });
+          checked = `\n\nChecked by the server just now: ${result.ok ? `yes. ${result.reason}` : `NO. ${result.reason}`}`;
+        }
+        await deliverSubmit(state, `${SERVER_TURN}${home}${checked}`, `server-${switchId}`);
+      })().catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
     }
   }
 

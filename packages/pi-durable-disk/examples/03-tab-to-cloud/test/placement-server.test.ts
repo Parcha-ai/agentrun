@@ -17,6 +17,11 @@ describe("placement by a typed question", () => {
   let answer: (phase: "start" | "done") => string = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
   const placer: Placer = {
     homePrompt: "Say one short sentence: you are home.",
+    // A check in code of what the work was for: here the run has no home/policy.json (the combine failed), so the result is not in place.
+    async homeCheck(read) {
+      checked.push(await read("home/policy.json").then((b) => (b ? "present" : "missing")));
+      return (await read("home/policy.json")) ? { ok: true, reason: "the brain is in place." } : { ok: false, reason: "the trained brain was not written." };
+    },
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
       asked.push({ phase: query.phase, message: query.message, current: query.current, environments: query.environments });
@@ -33,6 +38,7 @@ describe("placement by a typed question", () => {
       return decision;
     },
   };
+  const checked: string[] = [];
   const cloud = remoteLocalHost();
   before(async () => {
     model = await modelStub(() => "It is trained.");
@@ -97,7 +103,10 @@ describe("placement by a typed question", () => {
     home.send({ t: "switched", switchId: runHere.switchId });
     await until(() => homeFrames.some((f) => f.t === "submit"));
     const wake = homeFrames.find((f): f is Extract<PipeFrame, { t: "submit" }> => f.t === "submit")!;
-    assert.equal(wake.text, `${SERVER_TURN}Say one short sentence: you are home.`);
+    // The home turn carries the server's own check, and with no brain on the disk it says NO: the agent has no success to word.
+    assert.equal(wake.text, `${SERVER_TURN}Say one short sentence: you are home.\n\nChecked by the server just now: NO. the trained brain was not written.`);
+    assert.doesNotMatch(wake.text, /Checked by the server just now: yes/);
+    assert.deepEqual(checked.slice(0, 1), ["missing"]);
     assert.match(wake.requestId, /^server-sw-/);
     const there = events.find((e) => e.event === "switch.start" && e.data.run === id && e.data.by === "placement");
     assert.ok(there, "the first move was a placement move");

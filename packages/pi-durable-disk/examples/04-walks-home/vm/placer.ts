@@ -12,7 +12,7 @@ export const CRITERIA: Readonly<Record<string, string>> = {
 };
 
 /** The agent's one turn after the server brings it home: where it is and what its user can do now, in a plain line. */
-export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for their creature, exactly as far as your own work showed it (if a step failed, say so plainly; if it went well, that it learned to walk and to get back up). Do not mention files, commands or training details.";
+export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for their creature, saying no more than the server's check below says: if it says the trained brain is in place you may say the creature learned to walk and to get back up; if it says NO, say plainly that the final step did not work and why in simple words. Do not mention files, commands or training details.";
 
 export const LABELS: Readonly<Record<string, string>> = { tab: "Browser", "modal-vm": "Modal VM", "modal-gpu": "H100 GPU" };
 
@@ -33,6 +33,37 @@ export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
   return { answers: { where: { type: "choice", choice, probabilities } }, model: "scripted" };
 };
 
+/**
+ * Is the work's result in place? The same structural rules the tab's loader decides on (a policy file that is JSON, mlp-v1, of a known spec
+ * version, naming a body by its mjcf_sha256) and that it is made for the body the user drew (creature/body.json names that sha). Checked in
+ * code on the run's disk, so the agent's closing words come from this and never from its own judgment.
+ */
+export async function checkHomePolicy(read: (path: string) => Promise<Uint8Array | undefined>): Promise<{ ok: boolean; reason: string }> {
+  const text = (bytes: Uint8Array | undefined) => (bytes ? new TextDecoder().decode(bytes) : undefined);
+  const policyText = text(await read("home/policy.json"));
+  if (policyText === undefined || policyText.length === 0) return { ok: false, reason: "the trained brain (home/policy.json) was not written" };
+  let policy: Record<string, unknown>;
+  try {
+    policy = JSON.parse(policyText) as Record<string, unknown>;
+  } catch {
+    return { ok: false, reason: "the trained brain file is not valid JSON" };
+  }
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return { ok: false, reason: "the trained brain file is not a policy object" };
+  if (policy.format !== "mlp-v1") return { ok: false, reason: `the trained brain has an unknown format ${JSON.stringify(policy.format)}` };
+  if (typeof policy.spec_version !== "number") return { ok: false, reason: "the trained brain has no spec version" };
+  if (typeof policy.mjcf_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(policy.mjcf_sha256)) return { ok: false, reason: "the trained brain does not name its body" };
+  const bodyText = text(await read("creature/body.json"));
+  let body: Record<string, unknown> | undefined;
+  try {
+    body = bodyText === undefined ? undefined : (JSON.parse(bodyText) as Record<string, unknown>);
+  } catch {
+    body = undefined;
+  }
+  if (!body || typeof body.mjcf_sha256 !== "string") return { ok: false, reason: "the drawn creature's body file is missing, so the brain cannot be matched to it" };
+  if (body.mjcf_sha256 !== policy.mjcf_sha256) return { ok: false, reason: "the trained brain was made for a different body than the one drawn" };
+  return { ok: true, reason: "the trained brain is in place: it is a valid file made for the creature that was drawn." };
+}
+
 export default async function placer(options: { log: (event: string, data?: Record<string, unknown>) => void; args: Record<string, string> }): Promise<Placer> {
   const scripted = options.args.client === "scripted" || !process.env.TYPESAFE_API_KEY;
   if (options.args.client !== undefined && options.args.client !== "scripted" && options.args.client !== "jev") throw new Error(`--placer-arg client=${options.args.client}: scripted or jev`);
@@ -45,5 +76,5 @@ export default async function placer(options: { log: (event: string, data?: Reco
   options.log("placer.ready", { client: scripted ? "scripted" : "jev" });
   // `gpu=ID` lets a stand-in host (a second process on this machine, in a dry run) take the H100's place under its own id.
   const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
-  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT });
+  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT, homeCheck: checkHomePolicy });
 }
