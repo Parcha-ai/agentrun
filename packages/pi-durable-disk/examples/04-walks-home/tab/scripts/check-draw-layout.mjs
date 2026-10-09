@@ -47,6 +47,8 @@ try {
   const sk = await rect('sketch');
   check('the sketcher takes at least 45% of the width in the draw phase', sk.width >= 0.45 * vw, `${Math.round(sk.width)} of ${vw}`);
   check('the start post and trail are not drawn while the sketcher has the stage (draw phase)', (await inner('__walks.app.view.start.visible')) === false && (await inner('__walks.app.view.dots.visible')) === false);
+  const words = await inner(`(() => { const seen = []; const f = CanvasRenderingContext2D.prototype.fillText; CanvasRenderingContext2D.prototype.fillText = function (t) { seen.push(String(t)); return f.apply(this, arguments); }; __walks.app.sketcher.draw(); CanvasRenderingContext2D.prototype.fillText = f; return seen; })()`);
+  check('from the first frame the sketcher is labelled "your drawing", not "top view"', words.includes('your drawing') && !words.includes('top view'), JSON.stringify(words));
   check('no draw-started before the first stroke', (await count('draw-started')) === 0);
   const stroke = async (handleName, dx, dy) => inner(`(() => { const c = document.getElementById('sketch'); const g = __walks.app.sketcher.geometry(); const r = c.getBoundingClientRect(); const h = g.handles.find((x) => x.name === ${JSON.stringify(handleName)}); const p = (x, y) => ({ clientX: r.left + x, clientY: r.top + y, pointerId: 1, bubbles: true }); c.dispatchEvent(new PointerEvent('pointerdown', p(h.x, h.y))); c.dispatchEvent(new PointerEvent('pointermove', p(h.x + ${dx}, h.y + ${dy}))); c.dispatchEvent(new PointerEvent('pointerup', p(h.x + ${dx}, h.y + ${dy}))); })()`);
   await stroke('length', 20, 0);

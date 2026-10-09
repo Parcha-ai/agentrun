@@ -78,7 +78,7 @@ test('geometry() puts a handle where a pointer must be to grab it, on a canvas w
   assert.equal(sk.get().torso.length, 0.55, 'a stroke aimed by geometry() lands on the grid value it aims at');
 });
 
-// ---- the sketch has to read as the creature: the same colours, a foot at every leg end, and the word "top view" ----
+// ---- the sketch has to read as the creature: the same colours, a foot at every leg end, and the words "your drawing" ----
 
 /** A canvas whose 2D context records every call with the fill and stroke style in force. */
 function recordingCanvas(width = 700, height = 700) {
@@ -105,7 +105,7 @@ test('the sketch uses the creature\'s own colours: the torso, thigh, shin and fo
   });
 });
 
-test('the sketch is labelled "top view" and draws a foot at every leg end: four for the default body, six for three pairs', () => {
+test('the sketch is labelled "your drawing" and draws a foot at every leg end: four for the default body, six for three pairs', () => {
   for (const pairs of [2, 3]) {
     const d = defaultDesign();
     while (d.legs.length < pairs) d.legs.push({ ...d.legs[0], x: 0 });
@@ -113,7 +113,7 @@ test('the sketch is labelled "top view" and draws a foot at every leg end: four 
     const sk = new Sketcher(canvas, d, () => {});
     calls.length = 0; // the constructor drew once already
     sk.draw();
-    assert.ok(calls.some((c) => c.fn === 'fillText' && c.args[0] === 'top view'), 'the word is on the canvas');
+    assert.ok(calls.some((c) => c.fn === 'fillText' && c.args[0] === 'your drawing'), 'the words are on the canvas');
     const feet = calls.filter((c) => c.fn === 'arc' && c.fill === SKETCH_COLORS.foot);
     assert.equal(feet.length, pairs * 2, `${pairs * 2} feet`);
     const ends = new Set(feet.map((c) => `${(c.args[0] as number).toFixed(3)},${(c.args[1] as number).toFixed(3)}`));
