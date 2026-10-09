@@ -33,6 +33,19 @@ def sha256_text(text: str) -> str:
   return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+PINNED_STD = 1e9
+
+
+def pin_constant_inputs(obs: dict[str, Any], floor: float = 1e-5) -> list[int]:
+  """Inputs the network never saw vary (normalizer std at its floor, e.g. the command of a getup network trained with
+  none) are pinned: a huge std makes (x - mean) / std ~ 0, the value training fed it, whatever the tab sends. Without
+  this a 0.5 m/s slider reaches the network as 500000. Returns the pinned indices."""
+  pinned = [i for i, sd in enumerate(obs["std"]) if sd <= floor]
+  for i in pinned:
+    obs["std"][i] = PINNED_STD
+  return pinned
+
+
 def export_policy(params: tuple, *, obs_spec: list[tuple[str, int]], nu: int, mjcf: str, mujoco_version: str,
                   gait_hz: float, action_scale: float, command_range: list[float], provenance: dict[str, Any],
                   activation: str = "silu") -> dict[str, Any]:
@@ -68,6 +81,7 @@ def export_policy(params: tuple, *, obs_spec: list[tuple[str, int]], nu: int, mj
       "layers": layers,
       "provenance": provenance,
   }
+  pin_constant_inputs(policy["obs"])
   size = len(json.dumps(policy))
   if size > MAX_POLICY_BYTES:
     raise ValueError(f"policy.json is {size} bytes, over the tab's {MAX_POLICY_BYTES}")
@@ -92,7 +106,9 @@ def combine(walk: dict[str, Any], getup: dict[str, Any], below_up: float = 0.3, 
     raise ValueError("the getup network runs on the walking network's phase clock; train both at the same gait_hz")
   out = dict(walk)
   # Its own normalizer and action scale, written out; the clock is the top level's.
-  out["getup"] = {"layers": getup["layers"], "obs": getup["obs"], "act": getup["act"],
+  getup_obs = {**getup["obs"], "std": list(getup["obs"]["std"])}
+  pin_constant_inputs(getup_obs)
+  out["getup"] = {"layers": getup["layers"], "obs": getup_obs, "act": getup["act"],
                   "switch": {"below_up": below_up, "above_up": above_up}}
   out["provenance"] = {"walk": walk.get("provenance"), "getup": getup.get("provenance")}
   size = len(json.dumps(out))
