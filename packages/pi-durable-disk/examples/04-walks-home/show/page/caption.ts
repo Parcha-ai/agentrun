@@ -69,12 +69,18 @@ export function captionFor(state: ShowState, now: number): Caption | null {
  */
 export class CaptionDesk {
   private shown = new Set<string>();
-  private current: { caption: Caption; shownAt: number } | undefined;
+  private current: { caption: Caption; shownAt: number; group?: string } | undefined;
   private lastNow = 0;
   private opts: { minHoldMs: number; maxHoldMs: number; staleMs: number; lagMs: number };
 
   constructor(options: { minHoldMs?: number; maxHoldMs?: number; staleMs?: number; lagMs?: number } = {}) {
     this.opts = { minHoldMs: options.minHoldMs ?? 4000, maxHoldMs: options.maxHoldMs ?? 10_000, staleMs: options.staleMs ?? 15_000, lagMs: options.lagMs ?? 8000 };
+  }
+
+  private show(w: { n: Note; key: string }, state: ShowState, now: number): Caption {
+    this.shown.add(w.key);
+    this.current = { caption: caption(w.n, state.source), shownAt: now, ...(w.n.group ? { group: w.n.group } : {}) };
+    return this.current.caption;
   }
 
   /** `yieldSlot`: something open-ended (the setup counter) wants the slot, so a caption that has had its time and has nothing behind it gives way. */
@@ -85,9 +91,6 @@ export class CaptionDesk {
       this.shown.clear();
     }
     this.lastNow = now;
-    if (this.current && now - this.current.shownAt < this.opts.minHoldMs) return this.current.caption;
-    // The moments waiting, oldest first. When several are waiting the desk catches up: one already older than `lagMs` is skipped, so the
-    // newest news is not stuck behind a backlog. A single late moment is still shown.
     const waiting: { n: Note; key: string }[] = [];
     for (const n of state.notes) {
       if (n.at > now) break;
@@ -96,16 +99,34 @@ export class CaptionDesk {
       const key = `${n.at}|${n.kind}|${n.text}`;
       if (!this.shown.has(key)) waiting.push({ n, key });
     }
-    const fresh = waiting.filter((w) => now - w.n.at <= this.opts.lagMs);
-    const take = waiting.length > 1 ? (fresh.length > 0 ? fresh : waiting.slice(-1)) : waiting;
-    for (const w of waiting) if (!take.includes(w)) this.shown.add(w.key);
-    // Of what is still news, the one a viewer needs most first (a note's `rank`), then the oldest.
-    const next = take.reduce<{ n: Note; key: string } | undefined>((best, w) => (best === undefined || (w.n.rank ?? 0) > (best.n.rank ?? 0) ? w : best), undefined);
-    if (next) {
-      this.shown.add(next.key);
-      this.current = { caption: caption(next.n, state.source), shownAt: now };
+    // Latest wins within a group (the version captions). A queue would put the screen behind the creature: the caption saying version 4 while version 7
+    // walks. Of the notes waiting in a group only the newest is kept; the rest are dropped (the chart is the record of every version).
+    const newest = new Map<string, number>();
+    waiting.forEach((w, i) => w.n.group && newest.set(w.n.group, i));
+    const live = waiting.filter((w, i) => !w.n.group || newest.get(w.n.group) === i);
+    for (const w of waiting) if (!live.includes(w)) this.shown.add(w.key);
+    // A newer one of the group on screen replaces it at once, in place: the text changes but the hold keeps running from when the caption first
+    // appeared. Once the hold is over, a caption of another kind that is waiting takes its turn first (versions arriving every second must not
+    // starve it); the newer version stays waiting and shows after.
+    const held = this.current;
+    const replacement = held?.group ? live.find((w) => w.n.group === held.group) : undefined;
+    const others = held?.group ? live.filter((w) => w.n.group !== held.group) : live;
+    const holdOver = held !== undefined && now - held.shownAt >= this.opts.minHoldMs;
+    if (replacement && held && !(holdOver && others.length > 0)) {
+      this.shown.add(replacement.key);
+      this.current = { ...held, caption: caption(replacement.n, state.source) };
       return this.current.caption;
     }
+    if (this.current && !holdOver) return this.current.caption;
+    const candidates = replacement && holdOver && others.length > 0 ? others : live;
+    // The moments waiting, oldest first. When several are waiting the desk catches up: one already older than `lagMs` is skipped, so the
+    // newest news is not stuck behind a backlog. A single late moment is still shown.
+    const fresh = candidates.filter((w) => now - w.n.at <= this.opts.lagMs);
+    const take = candidates.length > 1 ? (fresh.length > 0 ? fresh : candidates.slice(-1)) : candidates;
+    for (const w of candidates) if (!take.includes(w)) this.shown.add(w.key);
+    // Of what is still news, the one a viewer needs most first (a note's `rank`), then the oldest.
+    const next = take.reduce<{ n: Note; key: string } | undefined>((best, w) => (best === undefined || (w.n.rank ?? 0) > (best.n.rank ?? 0) ? w : best), undefined);
+    if (next) return this.show(next, state, now);
     if (this.current && now - this.current.shownAt >= (options.yieldSlot ? this.opts.minHoldMs : this.opts.maxHoldMs)) this.current = undefined;
     return this.current?.caption ?? null;
   }

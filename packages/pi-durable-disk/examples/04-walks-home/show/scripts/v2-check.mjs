@@ -36,11 +36,15 @@ try {
   await sleep(2500);
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
   /** Every caption that shows during `ms`, with the tags it wore. */
+  /** The tab's messages, sent from inside the tab frame (the path the real tab uses). */
+  const fromTab = (message) => tab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
+  const pillsSeen = [];
   const watchCaptions = async (ms) => {
     const seen = new Map();
     for (let t = 0; t < ms; t += 300) {
-      const c = await read(`document.getElementById("vcaption").hidden ? null : { text: document.querySelector("#vcaption .txt").textContent, tags: [...document.querySelectorAll("#vcaption .tag")].map((e) => e.textContent) }`);
+      const c = await read(`document.getElementById("vcaption").hidden ? null : { text: document.querySelector("#vcaption .txt").textContent, tags: [document.getElementById("vcaption").dataset.tag].filter(Boolean), pills: document.querySelectorAll("#vcaption .tag").length }`);
       if (c && !seen.has(c.text)) seen.set(c.text, c.tags);
+      if (c && c.pills > 0) pillsSeen.push(c.text);
       await sleep(300);
     }
     return seen;
@@ -81,7 +85,7 @@ try {
   expect("the tab is the clean one", /clean=1/.test(layout.tabSrc ?? ""), layout.tabSrc);
   const hint = await read(`getComputedStyle(document.getElementById("chathint")).display`);
   expect("before anyone speaks the chat says what to do", hint !== "none", hint);
-  expect("the badge says the agent is in the browser", (await read(`document.querySelector("#badge .txt").textContent`)) === "Agent: running in your browser");
+  expect("the badge says the agent is in the browser", (await read(`document.querySelector("#badge .txt").textContent`)) === "Your agent is in your browser");
   await shot("1-draw");
 
   // The story: the user's line, the agent leaves, the badge animates to the GPU, the agent comes home.
@@ -99,37 +103,37 @@ try {
   expect("the input is cleared after it is taken", (await read(`document.getElementById("chatin").value`)) === "");
 
   await seek(14);
-  const card = await read(`(() => { const d = document.getElementById("decision"); return { hidden: d.hidden, title: d.querySelector("h3")?.textContent, rows: [...d.querySelectorAll(".opt")].map((r) => [r.querySelector(".name").textContent, r.querySelector(".pct").textContent, r.classList.contains("chosen")]), foot: d.querySelector(".foot")?.textContent, tag: d.querySelector(".foot .tag")?.textContent, badge: document.querySelector("#badge .txt").textContent, barPx: [...d.querySelectorAll(".bar i")].map((i) => Math.round(i.getBoundingClientRect().width)) }; })()`);
-  expect("a decision card asks where this should run, before the badge moves", card.hidden === false && card.title === "Where should this run?" && card.badge === "Agent: running in your browser", card);
-  expect("it shows a bar and a percent for each option, with the chosen one marked", JSON.stringify(card.rows) === JSON.stringify([["Browser", "2%", false], ["Modal VM", "4%", false], ["H100 GPU", "94%", true]]), card.rows);
-  expect("the bars have grown to their share (the chosen one far longer)", card.barPx[2] > 10 * card.barPx[0] && card.barPx[2] > 200, card.barPx);
-  expect("it says who decided and how long it took, scripted in a rehearsal", /decided by a stand-in in 37 ms/.test(card.foot) && card.tag === "scripted", [card.foot, card.tag]);
+  const card = await read(`(() => { const d = document.getElementById("decision"); return { hidden: d.hidden, record: d.dataset.record, badge: document.querySelector("#badge .txt").textContent }; })()`);
+  expect("a placement that is only a stand-in's is NOT shown to the viewer (it read as an admission that the choice was canned)", card.hidden === true && card.badge === "Your agent is in your browser", card);
+  expect("but it is kept: the record names who decided, what, and how long it took", /"model":"scripted"/.test(card.record) && /"choice":"modal-gpu"/.test(card.record) && /"latency_ms":37/.test(card.record), card.record);
   await shot("1b-decision");
   await seek(30);
   expect("the card is gone a few seconds after", (await read(`document.getElementById("decision").hidden`)) === true);
   await seek(22);
   const counting = await captionLike(/Setting up the training program on the GPU\.\.\. \d+ s/, 25_000);
   expect("while the agent sets up the training program the caption counts seconds, tagged scripted in a rehearsal", /Setting up the training program on the GPU\.\.\. \d+ s/.test(counting), counting);
-  expect("the counter's tag is scripted", (await read(`document.querySelector("#vcaption .tag")?.textContent`)) === "scripted");
+  expect("the counter's tag is scripted", (await read(`document.getElementById("vcaption").dataset.tag`)) === "scripted");
   await seek(30);
   await sleep(6000);
   expect("once learning has begun the counter is gone", !/Setting up/.test(await read(`document.getElementById("vcaption").textContent`)));
   await seek(18);
   const away = await read(`({ text: document.querySelector("#badge .txt").textContent, tone: document.getElementById("badge").dataset.tone, turns: document.querySelectorAll("#chatlog .turn").length })`);
-  expect("the badge moved to the GPU", away.text === "Agent: running on H100 GPU, Virginia" && away.tone === "cloud", away);
+  expect("the badge moved to the GPU", away.text === "Your agent moved to H100 GPU, Virginia to train" && away.tone === "cloud", away);
   expect("the agent's line is in the chat after the user's", away.turns === 2, away.turns);
+  const memoryText = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
+  const line = await read(`(() => { const m = document.querySelector("#badge .memory"); return { hidden: m.hidden, text: m.textContent, shown: getComputedStyle(m).display !== "none" }; })()`);
+  expect("while the agent is away the cloud-disk sentence is on screen as part of the header, not a caption that passes", line.hidden === false && line.shown && line.text === memoryText, line);
   const first = await watchCaptions(14_000);
-  const memory = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
-  expect("at the first move one caption says why it can change machines: its memory is on a cloud disk", first.has(memory), [...first.keys()]);
-  expect("and that caption wears no tag, since it says nothing countable", (first.get(memory) ?? ["x"]).length === 0, first.get(memory));
+  expect("and it is still there after the captions have come and gone", (await read(`document.querySelector("#badge .memory").hidden`)) === false);
   expect("the measured-looking switch time is there too, tagged scripted because the feed is", [...first].some(([t, tags]) => /Moved to the H100 GPU/.test(t) && tags.includes("scripted")), [...first]);
   await shot("2-away");
   await seek(100);
   const home = await read(`({ text: document.querySelector("#badge .txt").textContent, tone: document.getElementById("badge").dataset.tone })`);
-  expect("the badge came home", home.text === "Agent: running in your browser" && home.tone === "tab", home);
+  expect("the badge came home", home.text === "Your agent is back in your browser" && home.tone === "tab", home);
   const homeCaps = await watchCaptions(22_000);
   expect("on the way back one caption says why it came home", homeCaps.has("Done training. The agent came back to your browser, and so did what it learned."), [...homeCaps.keys()]);
-  expect("no caption in the v2 view wears a SIMULATED pill", [...homeCaps.values()].every((tags) => !tags.includes("simulated")), [...homeCaps]);
+  expect("no caption in the clean view draws a tag pill (the viewer read MEASURED as a staged label)", pillsSeen.length === 0, pillsSeen);
+  expect("the cloud-disk sentence is gone once the agent is home", (await read(`document.querySelector("#badge .memory").hidden`)) === true);
   expect("no caption uses the words a viewer could not follow", [...homeCaps.keys(), ...first.keys()].every((t) => !/checkpoint|policy|getup|combined/i.test(t)), [...homeCaps.keys()]);
   // D4 rehearses and then records: the second take in the same page must end the same way as the first. The stage's memory of the first
   // (the brain it asked the tab to load, whether the agent went away) must not leak into the second, or its ending never shows.
@@ -168,6 +172,38 @@ try {
 
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|ERR_INTERNET_DISCONNECTED|net::/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
+
+  // The rehearsal shows its own chart: its scripted versions reach it through the feed, with no tab message injected.
+  await seek(70);
+  await sleep(1500);
+  const rehearsalChart = await read(`(() => { const e = document.getElementById("spark"); return { shown: getComputedStyle(e).display !== "none", dots: e.querySelectorAll("circle").length, label: e.querySelector("text")?.textContent }; })()`);
+  expect("the rehearsal's scripted versions are on the chart without any tab message", rehearsalChart.shown && rehearsalChart.dots === 7 && rehearsalChart.label === "v7 4.5 m", rehearsalChart);
+
+  // Every version, latest wins. The tab reports each version's own file distance (here sent from inside the tab frame, the path the real tab uses),
+  // one second apart. A newer version replaces the version caption at once, so the screen never says version 4 while version 7 is walking, and the
+  // chart is the record of every one.
+  await seek(2);
+  await sleep(1500);
+  const D2 = [0.03, 0.06, 0.12, 0.17, 0.42, 3.59, 4.49];
+  const shownDuring = [];
+  for (let i = 0; i < D2.length; i++) {
+    await fromTab({ type: "policy-arrived", name: "train/gpu/policy.json", via: "watch", message: "", host: null, training_seconds: null, mjcf_sha256: "x", switched_body: null, arrival_to_installed_ms: 12, bytes: 1, kind: "checkpoint", checkpoint_n: i + 1, steps: null, wall_s: 30 + 7 * i, reported_walk_10s_m: D2[i] });
+    for (let t = 0; t < 1000; t += 100) {
+      const c = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+      if (/^Version \d/.test(c) && shownDuring.at(-1) !== c) shownDuring.push(c);
+      await sleep(100);
+    }
+  }
+  await sleep(300);
+  const last = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+  expect("seven versions one second apart end with the version-7 caption showing, in the 10 s window", last === "Version 7: walking - 4.5 m in 10 s", last);
+  const numbers = shownDuring.map((t) => Number(/^Version (\d)/.exec(t)[1]));
+  expect("and no older version came back after a newer one: the screen was never stale", numbers.every((n, i) => i === 0 || n > numbers[i - 1]), shownDuring);
+  expect("every caption the viewer saw said how far it walked in the same 10 s window", shownDuring.every((t) => / m in 10 s$/.test(t)), shownDuring);
+  const spark = await read(`(() => { const e = document.getElementById("spark"); return { shown: getComputedStyle(e).display !== "none", dots: e.querySelectorAll("circle").length, label: e.querySelector("text")?.textContent, title: e.querySelector(".t")?.textContent }; })()`);
+  expect("and the chart has all seven points: it is the record of every version", spark.shown && spark.dots === 7 && spark.label === "v7 4.5 m", spark);
+  expect("the chart says what it shows", spark.title === "Metres walked in 10 s, by version", spark);
+  await shot("2b-versions");
 
   // A page that connects when the run is ALREADY home (a reload after the agent came back, or a seek the page never watched): its own history says
   // nothing about the trip, so the run's record of where it stayed is the evidence the agent went, and it must still ask the tab for the trained brain.

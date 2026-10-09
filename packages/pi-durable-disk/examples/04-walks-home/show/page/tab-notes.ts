@@ -3,15 +3,13 @@
 // arithmetic (mean speed over simulated seconds) or what the policy FILE says about itself (its host, its training seconds).
 // A mode change (the getup network) is simulation arithmetic too. Each kind of number gets its own note, so a caption never tags a simulated or reported number as measured.
 import type { Note, TabToShell } from "../types.ts";
-import { bandOf, lessonFor, type Band } from "./lessons.ts";
+import { bandOf, versionLine } from "./lessons.ts";
 
 export type TabNoteOptions = {
   /** The v2 stage's plain words: one short sentence per event, the debug log's technical detail left out. */
   plain?: boolean;
   /** Whether the install a `policy-walked` is about was a checkpoint from the live training path or the final home policy (the page remembers it from the arrival). */
   kind?: "checkpoint" | "final";
-  /** For a checkpoint's walk: the band its arrival was in (from the file's reported distance), so a walk is captioned only when it is walking. */
-  band?: Band | null;
 };
 
 /** Seconds as people say them: whole, or to a tenth. A simulated clock gives 1.999999999999602; the page says 2. */
@@ -43,12 +41,9 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
       // own install time is not worth a caption for every checkpoint.
       if (plain && m.kind === "checkpoint") {
         const which = m.checkpoint_n !== undefined ? `Version ${m.checkpoint_n}` : "A new version";
-        // The lesson this checkpoint teaches, read from the distance its own file reports (REPORTED): no lesson for a file that reports none.
+        // Every version gets one caption in the one fixed window its own file reports (REPORTED): its number, the lesson, how far it walked in 10 s.
         const band = bandOf(m.reported_walk_10s_m);
-        if (band !== null) {
-          const lesson = lessonFor(band);
-          return lesson ? [note(`${which}: ${lesson}`, { basis: "reported" })] : [];
-        }
+        if (band !== null && m.reported_walk_10s_m != null) return [note(versionLine(m.checkpoint_n, band, m.reported_walk_10s_m), { basis: "reported", group: "version" })];
         return [note(`${which} of its brain arrived from the GPU${m.wall_s != null ? `, after ${Math.round(m.wall_s)} s of training` : ""}.`, { basis: "reported" })];
       }
       // The trained brain coming home, in plain words: when it was installed (the tab's own clock) and how long it trained (what the file says).
@@ -69,18 +64,15 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
         const distance = metres(m);
         // A walk that ran its whole window and never walked off is an internal state, not something to caption.
         if (m.outcome === "not-walking") return [];
-        const who = opts.kind === "checkpoint" ? (m.checkpoint_n !== undefined ? `Version ${m.checkpoint_n}` : "This version") : "The creature";
-        // The tab's simulation, not wall time: how far it got in the seconds it really ran (fewer than 10 when the next checkpoint landed first).
-        // A checkpoint whose file reported its distance has told its lesson already: only a walking one gets a line for how far it went.
-        if (opts.kind === "checkpoint" && opts.band !== undefined && opts.band !== null && opts.band !== "walk") return [];
-        if (m.fell) return [note(`${who} fell over within ${secs(m.window_seconds)} s.`, { basis: "simulated" })];
-        if (distance === null) return [];
-        const how = `${distance.toFixed(1)} m in ${secs(m.window_seconds)} s`;
-        const n = m.checkpoint_n !== undefined ? ` (version ${m.checkpoint_n})` : "";
-        const text = opts.kind === "checkpoint" ? (opts.band === "walk" ? `Walking: ${how}${n}.` : `Learning on the GPU: walked ${how}${n}.`) : `In your browser it walks ${how}.`;
-        const out = [note(text, { basis: "simulated" })];
-        // At home the time the tab took to walk off is its own measurement; a checkpoint's is not worth a caption.
-        if (opts.kind !== "checkpoint" && m.arrival_to_walking_ms !== null) out.unshift(note(`It was walking ${Math.round(m.arrival_to_walking_ms)} ms after the new brain arrived (timed in the tab).`, { measured: true }));
+        // A version's walk is in its own caption, in the fixed 10 s window the file reports; the tab's own measure (often cut short by the next
+        // version, so a different window) is not shown beside it. At home the tab's walk is told: a fall whenever it happened, a distance only
+        // when it ran the full window, so a 7.1 s walk is never told next to 10 s ones.
+        if (opts.kind === "checkpoint") return [];
+        if (m.fell) return [note(`The creature fell over within ${secs(m.window_seconds)} s.`, { basis: "simulated" })];
+        if (distance === null || m.partial === true || Math.round(m.window_seconds) !== 10) return [];
+        const out = [note(`In your browser it walks ${distance.toFixed(1)} m in 10 s.`, { basis: "simulated" })];
+        // The time the tab took to walk off is its own measurement.
+        if (m.arrival_to_walking_ms !== null) out.unshift(note(`It was walking ${Math.round(m.arrival_to_walking_ms)} ms after the new brain arrived (timed in the tab).`, { measured: true }));
         return out;
       }
       const out: Note[] = [];

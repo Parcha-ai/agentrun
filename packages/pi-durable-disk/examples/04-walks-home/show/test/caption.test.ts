@@ -193,3 +193,58 @@ test("a running counter takes the slot once the last caption has had its time an
   waiting.update(two, 1300, { yieldSlot: true });
   assert.equal(waiting.update(two, 5400, { yieldSlot: true })?.text, "Next.", "something is waiting: it goes first");
 });
+
+// Latest wins within a group (the version captions): a queue would put the screen versions behind the creature (the caption says version 4 while
+// version 7 is walking). A newer version replaces the version caption at once; the sparkline is the record of every version.
+const version = (at: number, n: number): ShowEvent => ({ t: "note", at, kind: "home", text: `Version ${n} - walking - ${n}.0 m in 10 s`, group: "version" }) as ShowEvent;
+
+test("seven versions one second apart: each replaces the version caption at once, and the last one is the one showing", () => {
+  const d = new CaptionDesk();
+  const events: ShowEvent[] = [];
+  const shown: string[] = [];
+  for (let n = 1; n <= 7; n++) {
+    events.push(version(n * 1000, n));
+    shown.push(d.update(desk(events), n * 1000 + 100)!.text);
+  }
+  assert.deepEqual(shown.map((t) => /^Version (\d)/.exec(t)![1]), ["1", "2", "3", "4", "5", "6", "7"], "never a stale version, never a skipped one at the moment it arrives");
+  assert.match(d.update(desk(events), 7300)!.text, /^Version 7 /, "and it is the one still up");
+});
+
+test("versions that arrive together collapse to the newest, and a version caption is replaced only by a version", () => {
+  const d = new CaptionDesk();
+  const burst = desk([note(1000, "home", "Wi-Fi back on.", false), version(1100, 3), version(1200, 4), version(1300, 5)]);
+  assert.equal(d.update(burst, 1400)?.text, "Wi-Fi back on.", "an ordinary caption keeps its time");
+  assert.match(d.update(burst, 5500)!.text, /^Version 5 /, "when its 4 s (from 1.4 s) are over only the newest version is left to show");
+  const other = desk([version(1000, 6), note(1500, "home", "Something else.", false)]);
+  const d2 = new CaptionDesk();
+  assert.match(d2.update(other, 1100)!.text, /^Version 6 /);
+  assert.match(d2.update(other, 3000)!.text, /^Version 6 /, "a caption of another kind does not push a version off before its time");
+  assert.equal(d2.update(other, 5200)?.text, "Something else.", "the version had its 4 s (from 1.1 s)");
+});
+
+// Greptile on #114: with versions arriving one second apart, every replacement restarted the hold and returned before anything else was considered,
+// so a caption that was waiting (say "Wi-Fi back on.") never got a turn and expired. A replacement updates the text in place and the hold keeps
+// running from when the caption first appeared; once it is over a waiting caption takes its turn.
+test("with versions arriving every second, a caption that is waiting still gets its turn within its life", () => {
+  const d = new CaptionDesk();
+  const events: ShowEvent[] = [version(1000, 1), { t: "note", at: 2500, kind: "home", text: "Wi-Fi back on.", rank: 2 } as ShowEvent];
+  const shown: string[] = [];
+  for (let t = 1000; t <= 13_000; t += 250) {
+    for (let n = 2; n <= 12; n++) if (n * 1000 === t) events.push(version(t, n));
+    const c = d.update(desk(events), t);
+    if (c && shown.at(-1) !== c.text) shown.push(c.text);
+  }
+  assert.ok(shown.includes("Wi-Fi back on."), `the waiting caption was never shown: ${JSON.stringify(shown)}`);
+  const when = shown.indexOf("Wi-Fi back on.");
+  assert.match(shown[when - 1]!, /^Version /, "it followed a version caption, after that one had its time");
+  assert.match(shown.at(-1)!, /^Version 1[12] /, "and the versions went on afterwards: the newest is showing at the end");
+});
+
+test("a replacement does not restart the version caption's hold: the hold runs from when it first appeared", () => {
+  const d = new CaptionDesk();
+  const events: ShowEvent[] = [version(1000, 1)];
+  assert.match(d.update(desk(events), 1000)!.text, /^Version 1 /);
+  events.push(version(2000, 2), version(3000, 3), version(4000, 4), note(2000, "home", "Wi-Fi back on.", false));
+  assert.match(d.update(desk(events), 3000)!.text, /^Version 3 /, "replaced in place inside the hold");
+  assert.equal(d.update(desk(events), 5000)?.text, "Wi-Fi back on.", "4 s after the first version appeared (1 s), the waiting caption has its turn");
+});

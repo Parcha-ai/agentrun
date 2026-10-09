@@ -1,14 +1,14 @@
 import type { HostKind, Note, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
-import { badgeFor, trackFor } from "./badge.ts";
+import { badgeFor, MEMORY_LINE, trackFor } from "./badge.ts";
 import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
 import { wifiLabel } from "./wifi.ts";
 import { learningStartedNote, setupCaption } from "./setup.ts";
+import { chartPoints, sparklineSvg } from "./sparkline.ts";
 import { simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
 import { TakeMemory } from "./take-memory.ts";
-import { cardVisible, decisionCardHtml } from "./decision-card.ts";
-import { bandOf, type Band } from "./lessons.ts";
+import { cardShown, cardTag, cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
@@ -96,8 +96,6 @@ function withTabNotes(state: ShowState): ShowState {
   return memory.notes.length === 0 ? state : { ...state, notes: [...state.notes, ...memory.notes].sort((a, b) => a.at - b.at) };
 }
 
-// What kind of install each checkpoint was, from its arrival, so the walk reported for it is worded for what it was.
-/** The band each checkpoint was in, from the distance its file reported, so its walk is captioned only when it is walking. */
 
 // The stage's own captions (page/story-notes.ts): said once each, so a retake starts them over.
 let simulationSaid = false;
@@ -141,12 +139,9 @@ bridge.onMessage((m: TabToShell) => {
   // The first checkpoint to reach the tab is where learning starts: the setup counter stops there.
   if (!debug && (m.type === "checkpoint-installed" || (m.type === "policy-arrived" && m.kind === "checkpoint"))) endSetup(feed.captionNow());
   const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? memory.installKind.get(m.checkpoint_n) : memory.lastInstallKind) : undefined;
-  if (m.type === "policy-arrived" && m.kind === "checkpoint") {
-    const band = bandOf(m.reported_walk_10s_m);
-    if (m.checkpoint_n !== undefined) memory.bandOfInstall.set(m.checkpoint_n, band);
-  }
-  const band = m.type === "policy-walked" && m.checkpoint_n !== undefined ? memory.bandOfInstall.get(m.checkpoint_n) : undefined;
-  addNotes(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), ...(band !== undefined ? { band } : {}) }));
+  // Each version's distance in the fixed 10 s window its own file reports: the sparkline's points (and its caption's number).
+  if (m.type === "policy-arrived" && m.reported_walk_10s_m != null && m.checkpoint_n !== undefined) memory.addVersion(m.checkpoint_n, m.reported_walk_10s_m);
+  addNotes(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}) }));
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
     .map(([k, v]) => `${k}=${typeof v === "number" ? Math.round(v as number) : String(v).slice(0, 14)}`)
@@ -354,8 +349,21 @@ function renderCaptionV2(state: ShowState): void {
   shownV2 = key;
   const el = $("vcaption");
   el.hidden = c === null;
+  // No pill in the clean view; the tag is the caption's data, which the recorder reads (captions.json) and the published notes keep.
   const tag = c ? visibleTag(c.tag, debug) : null;
+  el.dataset.tag = c?.tag ?? "";
   el.innerHTML = c ? `${tag ? `<span class="tag ${tag}">${tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
+}
+
+let shownSpark = "";
+/** The small distance-per-version picture: one point per version, in the one fixed 10 s window, so learning shows where two stills of a creature cannot. */
+function renderSpark(state: ShowState): void {
+  const svg = sparklineSvg(chartPoints(state.versions, memory.versions));
+  if (svg === shownSpark) return;
+  shownSpark = svg;
+  const el = $("spark");
+  el.hidden = svg === "";
+  el.querySelector(".svg")!.innerHTML = svg;
 }
 
 let shownDecision = "";
@@ -363,14 +371,17 @@ let shownDecision = "";
 function renderDecision(state: ShowState): void {
   const el = $("decision");
   const d = state.decision;
-  const visible = cardVisible(d, feed.captionNow());
+  const visible = cardVisible(d, feed.captionNow()) && cardShown(d, state.source, debug);
+  // A placement that is not shown is still kept: the recorder writes it to captions.json (data-record).
+  el.dataset.record = d && cardVisible(d, feed.captionNow()) && !visible ? JSON.stringify({ id: d.id, phase: d.phase, choice: d.choice, latency_ms: d.latencyMs, model: d.model }) : "";
   const key = visible && d ? `${d.id}:${d.phase}` : "";
   if (key === shownDecision) return;
   shownDecision = key;
   el.hidden = !visible;
   el.classList.remove("go");
   if (!visible || !d) return void (el.innerHTML = "");
-  el.innerHTML = decisionCardHtml(d, state.source);
+  el.dataset.tag = cardTag(d, state.source);
+  el.innerHTML = decisionCardHtml(d, state.source, { pill: debug });
   // The bars grow from nothing: the width is set a frame after the card is in the page.
   requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("go")));
 }
@@ -381,6 +392,9 @@ function renderBadge(state: ShowState): void {
   const el = $("badge");
   el.dataset.tone = b.tone;
   $("badge").querySelector(".txt")!.textContent = b.text;
+  const memoryEl = el.querySelector<HTMLElement>(".memory")!;
+  memoryEl.hidden = !b.memory;
+  if (b.memory) memoryEl.textContent = MEMORY_LINE;
   const track = trackFor(state);
   el.dataset.at = track.at;
   const right = el.querySelector<HTMLElement>(".node.b")!;
@@ -449,6 +463,7 @@ function frame(): void {
     addNotes(...storyNotes(state, memory.story, feed.captionNow()));
     // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
     renderBadge(state);
+    renderSpark(state);
     renderWifi();
     syncChat(chatLog, state.chat);
     $("chat").classList.toggle("talked", state.chat.length > 0);
