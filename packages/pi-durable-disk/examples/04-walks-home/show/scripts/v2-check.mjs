@@ -27,6 +27,7 @@ const seek = async (seconds) => {
 };
 let tab;
 let debugTab;
+let lateTab;
 try {
   await waitForStage(port, stage);
   // The take starts at its start: the rehearsal is held at 0 until the page is open (a slow Chrome would otherwise let it run on).
@@ -168,6 +169,22 @@ try {
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|ERR_INTERNET_DISCONNECTED|net::/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
 
+  // A page that connects when the run is ALREADY home (a reload after the agent came back, or a seek the page never watched): its own history says
+  // nothing about the trip, so the run's record of where it stayed is the evidence the agent went, and it must still ask the tab for the trained brain.
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 100, paused: true }) });
+  lateTab = await openTab(base, { width: 1600, height: 900 });
+  await lateTab.eval(`window.__arr = []; addEventListener("message", (e) => { const d = e.data; if (d && d.ns === "walks-home" && d.type === "policy-arrived") __arr.push({ via: d.via, kind: d.kind }); }); 0`);
+  let lateCap = "";
+  for (let t = 0; t < 30_000; t += 500) {
+    lateCap = await lateTab.eval(`document.getElementById("vcaption").hidden ? "" : document.getElementById("vcaption").textContent`);
+    if (/Done training/.test(lateCap)) break;
+    await sleep(500);
+  }
+  const lateArrivals = JSON.parse(await lateTab.eval(`JSON.stringify(__arr)`));
+  expect("a page opened on a run that is already home asks the tab for the trained brain", lateArrivals.some((a) => a.via === "message" && a.kind === "final"), lateArrivals);
+  expect("and says why the agent came home, once that brain is in", /Done training\. The agent came back to your browser, and so did what it learned\./.test(lateCap), lateCap);
+  await lateTab.close();
+  lateTab = undefined;
   // ?debug=1 is the old stage.
   debugTab = await openTab(withDebug(base), { width: 1600, height: 900 });
   await sleep(2500);
@@ -177,6 +194,7 @@ try {
 } finally {
   await tab?.close();
   await debugTab?.close();
+  await lateTab?.close();
   stage.kill("SIGTERM");
 }
 console.log(failed === 0 ? "\nall v2 checks passed" : `\n${failed} v2 check(s) FAILED`);

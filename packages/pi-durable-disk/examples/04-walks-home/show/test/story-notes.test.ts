@@ -91,3 +91,14 @@ test("a page that opens after the agent has come back knows it went away from th
   other.trained = true;
   assert.deepEqual(storyNotes(stayedHome, other, 1), [], "it never left");
 });
+
+import { wentAway } from "../page/story-notes.ts";
+
+test("whether the agent went away is read from where it is and from the run's own record of where it stayed", () => {
+  const stay = (host: string, hostKind: "tab" | "gpu") => ({ id: host, lane: "run", host, hostKind, from: 0, to: null });
+  assert.equal(wentAway(at(moving)), true);
+  assert.equal(wentAway(at(away)), true);
+  assert.equal(wentAway({ ...at(home), stays: [stay("your browser", "tab"), stay("H100 GPU", "gpu"), stay("your browser", "tab")] }), true, "home again, and the record shows a machine");
+  assert.equal(wentAway({ ...at(home), stays: [stay("your browser", "tab")] }), false, "it never left");
+  assert.equal(wentAway(at(home)), false);
+});

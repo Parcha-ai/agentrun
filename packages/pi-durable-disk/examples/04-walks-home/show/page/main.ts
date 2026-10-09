@@ -5,7 +5,7 @@ import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
 import { wifiLabel } from "./wifi.ts";
 import { learningStartedNote, setupCaption } from "./setup.ts";
-import { simulationNote, storyNotes, visibleTag } from "./story-notes.ts";
+import { simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
 import { TakeMemory } from "./take-memory.ts";
 import { cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { bandOf, type Band } from "./lessons.ts";
@@ -174,7 +174,8 @@ bridge.onReady(() => {
 
 /** The winner's policy goes to the tab once, when the run is home. D2 writes it as work/home/policy.json (mlp-v1 JSON); the stage serves it at /policy/home.json from POLICY_DIR. */
 function maybeSendPolicy(state: ShowState): void {
-  if (state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes") memory.wasAway = true;
+  // The run's own record counts too: a page that connects when the run is already home has seen nothing of the trip.
+  if (wentAway(state)) memory.wasAway = true;
   // The v2 rehearsal has no pipe and no disk to carry a trained policy home, so the stage hands the tab its own file once the run is back.
   // A live take never does this: its policy arrives on the disk, and the tab's own watcher installs it.
   if (!debug && state.source === "scripted" && state.place.where === "home" && memory.wasAway && bridge.ready && memory.policyRequested !== "rehearsal") {

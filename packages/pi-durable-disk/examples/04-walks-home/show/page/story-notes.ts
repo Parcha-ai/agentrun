@@ -13,6 +13,8 @@ export type Story = {
 export const emptyStory = (): Story => ({ memorySaid: false, wasAway: false, homeSaid: false, trained: false });
 
 const awayNow = (state: ShowState) => state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes";
+/** Whether the run has been to a machine: it is away now, or its own record of where it stayed shows one (a page that opens after the return has no other evidence). */
+export const wentAway = (state: ShowState): boolean => awayNow(state) || state.stays.some((s) => s.hostKind !== "tab");
 const homeNow = (state: ShowState) => state.place.where === "home" || state.place.where === "tab";
 
 /**
@@ -23,7 +25,7 @@ const homeNow = (state: ShowState) => state.place.where === "home" || state.plac
 export function storyNotes(state: ShowState, story: Story, at: number): Note[] {
   const out: Note[] = [];
   // The run's own record says where it stayed: a stay on a machine means it went, even if this page opened after it was back.
-  if (state.stays.some((s) => s.hostKind !== "tab")) story.wasAway = true;
+  if (wentAway(state)) story.wasAway = true;
   const note = (text: string): Note => ({ at, kind: "switch", text, rank: 2 });
   if (awayNow(state)) {
     story.wasAway = true;
