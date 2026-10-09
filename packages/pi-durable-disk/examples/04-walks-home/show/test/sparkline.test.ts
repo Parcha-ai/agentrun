@@ -39,3 +39,12 @@ test("one version, or versions that all walked nothing, still draw without a bro
 test("it says what it shows, for a reader that cannot see it", () => {
   assert.match(sparklineSvg(D2), /role="img" aria-label="Metres walked in 10 s, by version"/);
 });
+
+import { chartPoints } from "../page/sparkline.ts";
+
+test("the chart takes the versions the feed knows and the ones the tab reported, one point per version, the tab's word winning", () => {
+  assert.deepEqual(chartPoints([{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }], []), [{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }]);
+  assert.deepEqual(chartPoints([], [{ n: 2, metres: 0.07 }, { n: 1, metres: 0.04 }]), [{ n: 1, metres: 0.04 }, { n: 2, metres: 0.07 }], "in version order");
+  assert.deepEqual(chartPoints([{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }], [{ n: 2, metres: 0.07 }]), [{ n: 1, metres: 0.03 }, { n: 2, metres: 0.07 }]);
+  assert.deepEqual(chartPoints([], []), []);
+});

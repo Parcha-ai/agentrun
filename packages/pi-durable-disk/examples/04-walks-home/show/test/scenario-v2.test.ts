@@ -67,3 +67,10 @@ test("the rehearsal decides before each move, as a stand-in (scripted), and the 
   assert.deepEqual([home.state.decision?.phase, home.state.decision?.choice], ["done", "tab"]);
   assert.equal(home.state.place.where, "cloud", "and again before the way home");
 });
+
+test("the rehearsal's scripted versions reach the chart through the same input as real ones, so the chart shows in a rehearsal with no tab", () => {
+  assert.deepEqual(at(25).state.versions, [], "none before the first version");
+  assert.deepEqual(at(34).state.versions, [{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }]);
+  assert.equal(at(110).state.versions.length, 7);
+  assert.deepEqual(at(110).state.versions.at(-1), { n: 7, metres: 4.49 });
+});

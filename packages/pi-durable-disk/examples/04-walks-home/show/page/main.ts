@@ -5,7 +5,7 @@ import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
 import { wifiLabel } from "./wifi.ts";
 import { learningStartedNote, setupCaption } from "./setup.ts";
-import { sparklineSvg } from "./sparkline.ts";
+import { chartPoints, sparklineSvg } from "./sparkline.ts";
 import { simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
 import { TakeMemory } from "./take-memory.ts";
 import { cardTag, cardVisible, decisionCardHtml } from "./decision-card.ts";
@@ -357,8 +357,8 @@ function renderCaptionV2(state: ShowState): void {
 
 let shownSpark = "";
 /** The small distance-per-version picture: one point per version, in the one fixed 10 s window, so learning shows where two stills of a creature cannot. */
-function renderSpark(): void {
-  const svg = sparklineSvg(memory.versions);
+function renderSpark(state: ShowState): void {
+  const svg = sparklineSvg(chartPoints(state.versions, memory.versions));
   if (svg === shownSpark) return;
   shownSpark = svg;
   const el = $("spark");
@@ -461,7 +461,7 @@ function frame(): void {
     addNotes(...storyNotes(state, memory.story, feed.captionNow()));
     // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
     renderBadge(state);
-    renderSpark();
+    renderSpark(state);
     renderWifi();
     syncChat(chatLog, state.chat);
     $("chat").classList.toggle("talked", state.chat.length > 0);

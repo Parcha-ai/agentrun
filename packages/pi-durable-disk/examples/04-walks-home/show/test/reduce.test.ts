@@ -85,3 +85,9 @@ test("a note keeps the evidence it cites through the reducer, so the caption rul
   assert.equal(s.notes[0].measured, true);
   assert.ok(!("evidence" in s.notes[1]));
 });
+
+test("each version's distance is kept in order, and a version that is reported again replaces its point", () => {
+  const s = fold([{ t: "version", at: 1, n: 1, metres: 0.03 }, { t: "version", at: 2, n: 2, metres: 0.06 }, { t: "version", at: 3, n: 1, metres: 0.05 }]);
+  assert.deepEqual(s.versions, [{ n: 1, metres: 0.05 }, { n: 2, metres: 0.06 }]);
+  assert.deepEqual(emptyState().versions, []);
+});

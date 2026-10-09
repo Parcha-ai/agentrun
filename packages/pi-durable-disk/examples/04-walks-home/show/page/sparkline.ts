@@ -6,6 +6,14 @@ const W = 300;
 const H = 92;
 const PAD = { l: 10, r: 14, t: 20, b: 18 };
 
+/** The chart's points: the versions the feed knows plus the ones the tab reported (its word wins), one point per version, in version order. */
+export function chartPoints(fromFeed: readonly { n: number; metres: number }[], fromTab: readonly { n: number; metres: number }[]): { n: number; metres: number }[] {
+  const byN = new Map<number, { n: number; metres: number }>();
+  for (const v of fromFeed) byN.set(v.n, v);
+  for (const v of fromTab) byN.set(v.n, v);
+  return [...byN.values()].sort((a, b) => a.n - b.n);
+}
+
 export function sparklineSvg(points: readonly { n: number; metres: number }[]): string {
   if (points.length === 0) return "";
   const top = Math.max(...points.map((p) => p.metres), 0.5);

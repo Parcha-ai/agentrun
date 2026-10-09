@@ -43,7 +43,7 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
         const which = m.checkpoint_n !== undefined ? `Version ${m.checkpoint_n}` : "A new version";
         // Every version gets one caption in the one fixed window its own file reports (REPORTED): its number, the lesson, how far it walked in 10 s.
         const band = bandOf(m.reported_walk_10s_m);
-        if (band !== null && m.reported_walk_10s_m != null) return [note(versionLine(m.checkpoint_n, band, m.reported_walk_10s_m), { basis: "reported" })];
+        if (band !== null && m.reported_walk_10s_m != null) return [note(versionLine(m.checkpoint_n, band, m.reported_walk_10s_m), { basis: "reported", group: "version" })];
         return [note(`${which} of its brain arrived from the GPU${m.wall_s != null ? `, after ${Math.round(m.wall_s)} s of training` : ""}.`, { basis: "reported" })];
       }
       // The trained brain coming home, in plain words: when it was installed (the tab's own clock) and how long it trained (what the file says).

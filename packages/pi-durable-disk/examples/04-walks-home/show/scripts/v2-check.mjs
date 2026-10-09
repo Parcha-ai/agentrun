@@ -36,6 +36,8 @@ try {
   await sleep(2500);
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
   /** Every caption that shows during `ms`, with the tags it wore. */
+  /** The tab's messages, sent from inside the tab frame (the path the real tab uses). */
+  const fromTab = (message) => tab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
   const pillsSeen = [];
   const watchCaptions = async (ms) => {
     const seen = new Map();
@@ -173,23 +175,36 @@ try {
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|ERR_INTERNET_DISCONNECTED|net::/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
 
-  // Every version, in one fixed window. The tab reports each version's own file distance (here sent from inside the tab frame, the path the real tab
-  // uses); each gets a caption in the same "in 10 s" window, and a point on the sparkline, so learning shows where two stills of a creature cannot.
+  // The rehearsal shows its own chart: its scripted versions reach it through the feed, with no tab message injected.
+  await seek(70);
+  await sleep(1500);
+  const rehearsalChart = await read(`(() => { const e = document.getElementById("spark"); return { shown: getComputedStyle(e).display !== "none", dots: e.querySelectorAll("circle").length, label: e.querySelector("text")?.textContent }; })()`);
+  expect("the rehearsal's scripted versions are on the chart without any tab message", rehearsalChart.shown && rehearsalChart.dots === 7 && rehearsalChart.label === "v7 4.5 m", rehearsalChart);
+
+  // Every version, latest wins. The tab reports each version's own file distance (here sent from inside the tab frame, the path the real tab uses),
+  // one second apart. A newer version replaces the version caption at once, so the screen never says version 4 while version 7 is walking, and the
+  // chart is the record of every one.
   await seek(2);
   await sleep(1500);
   const D2 = [0.03, 0.06, 0.12, 0.17, 0.42, 3.59, 4.49];
+  const shownDuring = [];
   for (let i = 0; i < D2.length; i++) {
-    const message = JSON.stringify({ ns: "walks-home", type: "policy-arrived", name: "train/gpu/policy.json", via: "watch", message: "", host: null, training_seconds: null, mjcf_sha256: "x", switched_body: null, arrival_to_installed_ms: 12, bytes: 1, kind: "checkpoint", checkpoint_n: i + 1, steps: null, wall_s: 30 + 7 * i, reported_walk_10s_m: D2[i] });
-    await tab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${message}, "*")`)}); 0`);
-    await sleep(700);
+    await fromTab({ type: "policy-arrived", name: "train/gpu/policy.json", via: "watch", message: "", host: null, training_seconds: null, mjcf_sha256: "x", switched_body: null, arrival_to_installed_ms: 12, bytes: 1, kind: "checkpoint", checkpoint_n: i + 1, steps: null, wall_s: 30 + 7 * i, reported_walk_10s_m: D2[i] });
+    for (let t = 0; t < 1000; t += 100) {
+      const c = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+      if (/^Version \d/.test(c) && shownDuring.at(-1) !== c) shownDuring.push(c);
+      await sleep(100);
+    }
   }
-  const versionCaps = await watchCaptions(32_000);
-  const lines = [...versionCaps.keys()].filter((t) => /^Version \d - /.test(t));
-  expect("every version that is captioned says how far it walked in the same 10 s window", lines.length >= 3 && lines.every((t) => / m in 10 s$/.test(t)), [...versionCaps.keys()]);
-  expect("no caption mixes windows: nothing says 'in 7.1 s' beside a 10 s one", [...versionCaps.keys()].every((t) => !/ m in (?!10 s)\d/.test(t)), [...versionCaps.keys()]);
-  const spark = await read(`(() => { const e = document.getElementById("spark"); return { hidden: e.hidden, shown: getComputedStyle(e).display !== "none", dots: e.querySelectorAll("circle").length, label: e.querySelector("text")?.textContent, title: e.querySelector(".t")?.textContent }; })()`);
-  expect("a sparkline has a point for each version, whatever captions came and went", spark.shown && spark.dots === 7 && spark.label === "v7 4.5 m", spark);
-  expect("and says what it shows", spark.title === "Metres walked in 10 s, by version", spark);
+  await sleep(300);
+  const last = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+  expect("seven versions one second apart end with the version-7 caption showing, in the 10 s window", last === "Version 7 - walking - 4.5 m in 10 s", last);
+  const numbers = shownDuring.map((t) => Number(/^Version (\d)/.exec(t)[1]));
+  expect("and no older version came back after a newer one: the screen was never stale", numbers.every((n, i) => i === 0 || n > numbers[i - 1]), shownDuring);
+  expect("every caption the viewer saw said how far it walked in the same 10 s window", shownDuring.every((t) => / m in 10 s$/.test(t)), shownDuring);
+  const spark = await read(`(() => { const e = document.getElementById("spark"); return { shown: getComputedStyle(e).display !== "none", dots: e.querySelectorAll("circle").length, label: e.querySelector("text")?.textContent, title: e.querySelector(".t")?.textContent }; })()`);
+  expect("and the chart has all seven points: it is the record of every version", spark.shown && spark.dots === 7 && spark.label === "v7 4.5 m", spark);
+  expect("the chart says what it shows", spark.title === "Metres walked in 10 s, by version", spark);
   await shot("2b-versions");
 
   // A page that connects when the run is ALREADY home (a reload after the agent came back, or a seek the page never watched): its own history says

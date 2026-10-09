@@ -128,7 +128,10 @@ export class ScenarioV2 {
     // Every version, in the one fixed window, as the stage words it from the file's reported distance.
     for (const v of VERSIONS) {
       const band = bandOf(v.metres)!;
-      this.at(v.at, () => this.note("home", versionLine(v.n, band, v.metres)));
+      this.at(v.at, () => {
+        this.emit({ t: "version", at: this.clock, n: v.n, metres: v.metres });
+        this.emit({ t: "note", at: this.clock, kind: "home", text: versionLine(v.n, band, v.metres), group: "version" });
+      });
     }
     this.at(92, () => this.agent("It walks. Coming home."));
     this.at(91.5, () => this.decide({ id: "rehearsal-2", phase: "done", question: "The task is done; where should the agent run now?", options: [{ id: "tab", label: "Browser", probability: 0.91 }, { id: "modal-vm", label: "Modal VM", probability: 0.03 }, { id: "modal-gpu", label: "H100 GPU", probability: 0.06 }], choice: "tab", latency_ms: 41, model: "scripted" }));
