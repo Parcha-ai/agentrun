@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, PolicyWatcher, planArrival, type PolicySource } from '../src/arrival.ts';
+import { ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, PolicyWatcher, planArrival, tidy, walkedFields, type ArrivalResult, type PolicySource } from '../src/arrival.ts';
 import { presetForSha } from '../src/bodies.ts';
 import { sha256Hex } from '../src/policy.ts';
 import { defaultDesign } from '../src/design.ts';
@@ -317,4 +317,31 @@ test('a tracker that finished its window is not partial, and finalizing it chang
   assert.equal(r.partial, true);
   assert.equal(r.meanSpeed, null);
   assert.equal(r.windowSeconds, 0);
+});
+
+// ---- what leaves the tab in an event: round numbers, and an outcome the stage can caption without reading tracker internals ----
+
+test('tidy rounds every fractional number in an event to 3 decimals, nested too, and leaves the rest alone', () => {
+  assert.deepEqual(
+    tidy({ a: 1.999999999999602, b: 4.099999999999913, n: 7, s: 'x', z: null, deep: { c: 0.49742445530851354, list: [668.3215708732605, 'y'] } }),
+    { a: 2, b: 4.1, n: 7, s: 'x', z: null, deep: { c: 0.497, list: [668.322, 'y'] } });
+});
+
+const result = (over: Partial<ArrivalResult> = {}): ArrivalResult => ({
+  arrivalToInstalledMs: 14.2, arrivalToWalkingMs: 1088.4, simSecondsToWalking: 1.0399999999999778, meanSpeed: 0.49742445530851354,
+  windowSeconds: 9.999999999999831, partial: false, fell: false, done: true, ...over });
+
+test('walkedFields: round numbers, and an outcome that says what happened', () => {
+  const f = walkedFields('home/policy.json', result());
+  assert.equal(f.sim_seconds_to_walking, 1.04);
+  assert.equal(f.window_seconds, 10);
+  assert.equal(f.mean_speed, 0.497);
+  assert.equal(f.arrival_to_walking_ms, 1088);
+  assert.equal(f.outcome, 'walked');
+  assert.equal(walkedFields('p', result({ fell: true, arrivalToWalkingMs: null, simSecondsToWalking: null })).outcome, 'fell');
+  assert.equal(walkedFields('p', result({ arrivalToWalkingMs: null, simSecondsToWalking: null })).outcome, 'not-walking');
+  // cut short by the next install before it walked: unmeasured, not a failure
+  assert.equal(walkedFields('p', result({ partial: true, arrivalToWalkingMs: null, simSecondsToWalking: null, windowSeconds: 1.5 })).outcome, 'cut-short');
+  // cut short after it was already walking: it did walk
+  assert.equal(walkedFields('p', result({ partial: true, windowSeconds: 4.1 })).outcome, 'walked');
 });

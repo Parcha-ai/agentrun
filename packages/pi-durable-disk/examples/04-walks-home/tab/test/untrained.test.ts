@@ -96,3 +96,25 @@ test('standUp puts a fallen creature back on its feet where it lies, facing the 
   for (let i = 0; i < 100; i++) sim.step(null);
   assert.ok(sim.uprightness() > 0.95, 'and it stands');
 });
+
+test('a rebuilt creature gets the same untrained start: attaching the brain replays it from the seed', () => {
+  const run = (sim: Sim) => { const v: number[] = []; for (let i = 0; i < 70; i++) { sim.step(null); v.push(sim.data.ctrl[1]); } return v; };
+  const brain = new UntrainedBrain(9);
+  const a = new Sim(mj, buildMjcf(defaultDesign()));
+  a.attachBrain(brain);
+  const first = run(a);
+  const b = new Sim(mj, buildMjcf(defaultDesign())); // the same drawing built again, as the sketcher does on every edit
+  b.attachBrain(brain); // the same brain object, already advanced by the first creature
+  assert.deepEqual(run(b), first, 'the second creature twitches exactly like the first');
+  b.attachBrain(brain); // attaching the one already attached does not restart it mid-run
+  const c = new Sim(mj, buildMjcf(defaultDesign()));
+  c.attachBrain(brain);
+  for (let i = 0; i < 30; i++) c.step(null);
+  const mid = c.data.ctrl[1];
+  c.attachBrain(brain);
+  c.step(null);
+  assert.notEqual(c.data.ctrl[1], first[0], 'it keeps going instead of replaying from the start');
+  assert.ok(Number.isFinite(mid));
+  c.attachBrain(null);
+  assert.equal(c.brain, null);
+});
