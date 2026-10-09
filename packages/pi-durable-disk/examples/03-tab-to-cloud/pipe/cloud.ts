@@ -50,6 +50,10 @@ export interface CloudOptions {
   readonly log: Log;
   readonly ledger?: LedgerLike;
   readonly control?: DemoControl;
+  /** Daytona: the runtime snapshot boxes start from (scripts/daytona-snapshot.ts builds it). */
+  readonly snapshot?: string;
+  /** Daytona: the secret holding the model endpoint's key, for a box that calls the model itself. */
+  readonly modelSecret?: string;
 }
 
 interface Placed {
@@ -64,8 +68,8 @@ interface Placed {
 }
 
 /** Server-sent events from `url`, as (event, data) pairs, until `signal` aborts or the stream ends. */
-async function sse(url: string, signal: AbortSignal, onEvent: (event: string, data: string) => void): Promise<void> {
-  const response = await fetch(url, { signal, headers: { accept: "text/event-stream" } });
+async function sse(url: string, signal: AbortSignal, onEvent: (event: string, data: string) => void, token?: string): Promise<void> {
+  const response = await fetch(url, { signal, headers: { accept: "text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}) } });
   if (!response.ok || !response.body) throw new Error(`${url}: ${response.status}`);
   const decoder = new TextDecoder();
   let buffer = "";
@@ -98,6 +102,8 @@ export async function relayViewer(opts: {
   label: () => string;
   /** The environment id the run is in, for the placement. */
   env: () => string;
+  /** How this server reaches the instance's serve front, when not at the address run.json carries. */
+  serve?: () => { url: string; token: string } | undefined;
   dialer: () => LinkDialer | undefined;
 }): Promise<() => void> {
   const { control, ref, send } = opts;
@@ -109,7 +115,8 @@ export async function relayViewer(opts: {
     while (!abort.signal.aborted) {
       try {
         const record = await readRunStatus(control, ref.id);
-        const serve = typeof record?.holder?.serve === "string" ? record.holder.serve : undefined;
+        const via = opts.serve?.();
+        const serve = via?.url ?? (typeof record?.holder?.serve === "string" ? record.holder.serve : undefined);
         const dialer = opts.dialer();
         if (record && record.generation !== generation && record.status === "running" && (serve || dialer)) {
           generation = record.generation;
@@ -121,10 +128,15 @@ export async function relayViewer(opts: {
             const off = dialer.subscribe((e) => send({ t: "event", event: tag(e.kind === "snapshot" ? { kind: "snapshot", event: e.data } : { kind: "events", events: e.data }) }));
             stream.signal.addEventListener("abort", off, { once: true });
           } else {
-            void sse(`${serve}/events`, stream.signal, (event, data) => {
-              if (event === "snapshot") send({ t: "event", event: tag({ kind: "snapshot", event: JSON.parse(data) }) });
-              else if (event === "events") send({ t: "event", event: tag({ kind: "events", events: JSON.parse(data) }) });
-            }).catch((error) => opts.log("cloud.events-ended", { run: ref.id, error: (error as Error).message }));
+            void sse(
+              `${serve}/events`,
+              stream.signal,
+              (event, data) => {
+                if (event === "snapshot") send({ t: "event", event: tag({ kind: "snapshot", event: JSON.parse(data) }) });
+                else if (event === "events") send({ t: "event", event: tag({ kind: "events", events: JSON.parse(data) }) });
+              },
+              via?.token,
+            ).catch((error) => opts.log("cloud.events-ended", { run: ref.id, error: (error as Error).message }));
           }
         }
         const listing = await control.listObjects(`runs/${ref.id}/work/`, { recursive: true });
@@ -159,7 +171,17 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
   const control = options.control ?? (await archilControl({ disk: options.disk, region: options.region, apiKey: process.env.ARCHIL_API_KEY ?? "" }));
   if (kind === "daytona") {
     const { daytonaCloud } = await import("./daytona.ts");
-    const d = await daytonaCloud({ disk: options.disk, region: options.region, model: options.model, control, log: options.log, ...(options.ledger ? { ledger: options.ledger } : {}), ...(options.eventsLog ? { eventsLog: options.eventsLog } : {}) });
+    const d = await daytonaCloud({
+      disk: options.disk,
+      region: options.region,
+      model: options.model,
+      control,
+      log: options.log,
+      ...(options.ledger ? { ledger: options.ledger } : {}),
+      ...(options.eventsLog ? { eventsLog: options.eventsLog } : {}),
+      ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+      ...(options.modelSecret ? { modelSecret: options.modelSecret } : {}),
+    });
     const running = new Set<string>();
     const models = new Map<string, ModelProxy>();
     const daytona: CloudHost = {
@@ -182,7 +204,13 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
         return { host: d.hostLabel };
       },
       kill: (ref) => d.kill(ref),
-      attachViewer: (ref, send) => relayViewer({ control, ref, send, log: options.log, label: () => d.hostLabel, env: () => d.environments[0]!.id, dialer: () => d.placed(ref.id)?.dialer }),
+      attachViewer: (ref, send) => relayViewer({ control, ref, send, log: options.log, label: () => d.hostLabel, env: () => d.environments[0]!.id, dialer: () => undefined, serve: () => d.placed(ref.id)?.serve }),
+      async submit(ref, text, requestId) {
+        const serve = d.placed(ref.id)?.serve;
+        if (!serve) throw new Error("the sandbox serves nothing yet");
+        const res = await fetch(`${serve.url}/submit`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serve.token}` }, body: JSON.stringify({ requestId, content: text }), signal: AbortSignal.timeout(30_000) });
+        if (!res.ok) throw new Error(`submit: ${res.status}`);
+      },
       async stop(ref, how) {
         running.delete(ref.id);
         await d.stop(ref, how);

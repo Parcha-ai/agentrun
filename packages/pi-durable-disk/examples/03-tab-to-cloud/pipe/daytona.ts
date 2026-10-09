@@ -1,15 +1,19 @@
-// The cloud host on Daytona: a sandbox per run, with the archil client, Node, the package and the agent's app, started
-// by the package's supervisor through the package's `daytonaHost` driver. A sandbox cannot reach this server or its
-// model endpoint, so the app listens for the server's link (cloud-link.ts) and the server dials in through a signed
-// preview URL of that one port, with a bearer token on top.
+// The cloud host on Daytona: a sandbox per run, started by the package's supervisor through the package's `daytonaHost`
+// driver, from the demo's runtime snapshot (Node, the archil client, the package, the agent's app and the run user;
+// scripts/daytona-snapshot.ts builds it) or from a default one it installs all that into (10 to 15 s).
+//   The model: with a model secret, the box calls the endpoint itself. Daytona gives the box only the secret's
+//     placeholder (copied into a file the instance reads) and swaps in the key on requests to the secret's hosts.
+//     Without one, the app listens for the server's link (cloud-link.ts) and its model calls come back through the pipe.
+//   Events and messages: the instance serves them on BOX_SERVE_PORT, which the server reads through a signed preview URL
+//     of that port, with the instance's bearer token on top.
 //
-// A sandbox takes 10 to 15 s to install at boot, so a run gets a warm one while a tab runs it: created and prepared
-// ahead (no claim, no mount), and handed to the driver when the run moves. Every sandbox carries `pda-fleet=<fleet>` and
-// the run's id, is recorded in the ledger before its create call returns, and is deleted when the run leaves it.
+// A run gets a warm sandbox while a tab runs it: created and set up ahead (no claim, no mount), and handed to the
+// driver when the run moves. Every sandbox carries `pda-fleet=<fleet>` and the run's id, is recorded in the ledger
+// before its create call returns, and is deleted when the run leaves it.
 //   DAYTONA_API_KEY, DAYTONA_API_URL, DAYTONA_TARGET in the server's environment.
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +33,10 @@ export const BOX_PACKAGE = `${BOX_APP_DIR}/node_modules/@parcha/pi-durable-disk`
 export const BOX_NODE = "/opt/node24/bin/node";
 export const BOX_MOUNT_ROOT = "/mnt/archil";
 export const BOX_LINK_PORT = 8795;
+export const BOX_SERVE_PORT = 8080;
+/** Per box, root-owned and readable by the run user: the serve token, the model credential's placeholder. */
+const BOX_ETC = "/etc/pda-demo";
+const MODEL_KEY_ENV = "OPENAI_API_KEY";
 const BOX_EVENTS = "/var/tmp/pda-demo-events.log";
 const RATE_PER_HOUR = 2 * 0.0504 + 4 * 0.0162; // daytona-medium: 2 vCPU, 4 GiB
 const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
@@ -39,14 +47,23 @@ const ARCHIL_SHA256 = "ee593dde01f1c2cbd4ff9cba7852aa87b45f58b97dc328e66e03ced98
 type Log = (event: string, data?: Record<string, unknown>) => void;
 type LedgerLike = { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
 
-/** The app as a box installs it: the package (npm pack of this checkout), the agent's three modules, their manifest. */
-export function appBundle(): Uint8Array {
+const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environment.ts", "host-probe.ts"];
+
+/**
+ * The app as a box installs it: the package (npm pack of this checkout), the agent's modules, their manifest. `digest`
+ * covers what it installs (npm pack is reproducible; the outer tar's times are not) and the install script.
+ */
+export function appBundle(): Uint8Array & { digest: string } {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-demo-bundle-"));
   try {
     const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", dir], { cwd: PACKAGE, encoding: "utf8" });
     if (packed.status !== 0) throw new Error(`npm pack failed: ${packed.stderr}`);
     const tgz = packed.stdout.trim().split("\n").at(-1)!;
-    for (const file of ["agent.ts", "cloud-app.ts", "cloud-link.ts"]) copyFileSync(join(DEMO, file), join(dir, file));
+    const hash = createHash("sha256").update(prepareScript(process.getuid!(), process.getgid!())).update(readFileSync(join(dir, tgz)));
+    for (const file of APP_FILES) {
+      copyFileSync(join(DEMO, file), join(dir, file));
+      hash.update(file).update(readFileSync(join(dir, file)));
+    }
     writeFileSync(
       join(dir, "package.json"),
       JSON.stringify({
@@ -62,9 +79,10 @@ export function appBundle(): Uint8Array {
         },
       }),
     );
+    hash.update(readFileSync(join(dir, "package.json")));
     const tar = spawnSync("tar", ["-czf", "-", "-C", dir, "."], { maxBuffer: 64 << 20 });
     if (tar.status !== 0) throw new Error(`tar failed: ${tar.stderr}`);
-    return new Uint8Array(tar.stdout);
+    return Object.assign(new Uint8Array(tar.stdout), { digest: hash.digest("hex") });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -72,6 +90,7 @@ export function appBundle(): Uint8Array {
 
 /** Install the pinned runtime (Node, archil, both sha256-checked), the app, the run user and its sudoers line. */
 export function prepareScript(uid: number, gid: number): string {
+  // The run user's ids are this server's, so files the agent writes on the disk belong to the same user everywhere.
   return String.raw`
 set -euo pipefail
 t0=$(date +%s%N)
@@ -111,9 +130,35 @@ step done
 `;
 }
 
+/**
+ * What every box gets at setup, from the snapshot or not: the instance's serve token (uploaded to `stage`) and the
+ * model credential's placeholder (the box's own environment variable), each in a file of `${BOX_ETC}`. Prints which
+ * parts it found, and the names (never the values) of the proxy and CA variables the box carries.
+ */
+export function boxSetupScript(stage: string): string {
+  const key = MODEL_KEY_ENV;
+  return [
+    "set -eu",
+    `sudo -n install -d -m 0750 -o root -g pda ${BOX_ETC}`,
+    `sudo -n install -m 0400 -o pda -g pda ${stage}/serve.token ${BOX_ETC}/serve.token`,
+    `rm -f ${stage}/serve.token`,
+    `if [ -n "\${${key}:-}" ]; then`,
+    `  printf '%s' "\$${key}" | sudo -n sh -c 'umask 0337 && cat > ${BOX_ETC}/model.key && chgrp pda ${BOX_ETC}/model.key'`,
+    `  echo "model-key=yes"`,
+    "else",
+    `  echo "model-key=no"`,
+    "fi",
+    `echo "env-names=$(env | cut -d= -f1 | grep -i -E 'proxy|ssl|cert|^node_' | sort | tr '\\n' ' ')"`,
+    `test -f ${BOX_APP_DIR}/.prepared && echo "runtime=snapshot" || echo "runtime=installed"`,
+    "",
+  ].join("\n");
+}
+
 /** A Daytona client that only touches this fleet's sandboxes, records each one, and can hand out a warm one. */
-function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger: LedgerLike | undefined, log: Log) {
+function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger: LedgerLike | undefined, log: Log, secrets: Record<string, string>[]) {
   const ours = new Set<string>();
+  /** Deleted by this client: a listing shows a box for a while after its delete call returned. */
+  const removed = new Set<string>();
   const warm = new Map<string, Promise<SandboxInfo>>();
   const created = new Map<string, number>();
   const check = (box: SandboxInfo | null) => {
@@ -134,20 +179,23 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
         }
       }
       ledger?.open("daytona-box", body.name, run ? `run ${run}` : undefined);
-      const box = await inner.create(body);
+      // Secrets are mounted at creation (a box created without them would need a restart to get them).
+      const box = await inner.create((secrets.length > 0 ? { ...body, secrets } : body) as CreateSandboxBody);
       ours.add(box.id);
       created.set(box.id, Date.now());
       return box;
     },
     get: async (id) => check(await inner.get(id)),
-    list: async (labels) => (await inner.list({ ...labels, [LABEL_FLEET]: fleet })).filter((b) => b.name.startsWith(prefix)),
+    list: async (labels) => (await inner.list({ ...labels, [LABEL_FLEET]: fleet })).filter((b) => b.name.startsWith(prefix) && !removed.has(b.id)),
     async stop(id, force) {
       check(await inner.get(id));
       await inner.stop(id, force);
     },
     async remove(id) {
+      if (removed.has(id)) return;
       const box = check(await inner.get(id));
       await inner.remove(id);
+      removed.add(id);
       if (box) {
         ledger?.close("daytona-box", box.name, "deleted");
         const at = created.get(id);
@@ -173,7 +221,9 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
 
 interface Placed {
   driver: HostDriver;
-  dialer: LinkDialer;
+  dialer?: LinkDialer;
+  /** The instance's serve front, through a signed preview URL, and its bearer token. */
+  serve: { url: string; token: string };
   handle: HostHandle;
   token: string;
   box: string;
@@ -189,7 +239,10 @@ export interface DaytonaCloudOptions {
   /** Appends the boxes' own event lines (open, commits) when a box is stopped. */
   readonly eventsLog?: string;
   readonly fleet?: string;
+  /** The snapshot boxes start from: the demo's runtime snapshot, or a default one (then every box installs it all). */
   readonly snapshot?: string;
+  /** The Daytona secret with the model endpoint's key; without it the box's model calls go through the link. */
+  readonly modelSecret?: string;
 }
 
 export async function daytonaCloud(options: DaytonaCloudOptions) {
@@ -200,34 +253,56 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
   const fleet = options.fleet ?? "demo";
   const prefix = "pda-demo-";
   const snapshot = options.snapshot ?? "daytona-medium";
-  const client = fleetClient(daytonaRest({ apiKey, apiUrl }), fleet, prefix, options.ledger, options.log);
+  const viaLink = !options.modelSecret;
+  const client = fleetClient(daytonaRest({ apiKey, apiUrl }), fleet, prefix, options.ledger, options.log, options.modelSecret ? [{ [MODEL_KEY_ENV]: options.modelSecret }] : []);
   const uid = process.getuid!();
   const gid = process.getgid!();
   let bundle: Uint8Array | undefined;
   const prepared = new Set<string>();
   const placed = new Map<string, Placed>();
 
-  async function prepare(box: SandboxInfo): Promise<void> {
-    if (prepared.has(box.id)) return;
+  /** Install the runtime when the box's snapshot lacks it (a default snapshot). */
+  async function install(box: SandboxInfo): Promise<void> {
     const started = Date.now();
     bundle ??= appBundle();
     await client.upload(box, "/tmp/pda-demo-app.tar.gz", bundle);
     const r = await client.exec(box, prepareScript(uid, gid), 900);
     if (r.exitCode !== 0) throw new Error(`preparing ${box.name} failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
-    prepared.add(box.id);
-    options.log("daytona.prepared", { box: box.name, ms: Date.now() - started, steps: r.result.split("\n").filter((l) => l.startsWith("step")).map((l) => l.split("\t").slice(1).join("=")) });
+    options.log("daytona.installed", { box: box.name, ms: Date.now() - started, steps: r.result.split("\n").filter((l) => l.startsWith("step")).map((l) => l.split("\t").slice(1).join("=")) });
   }
 
-  /** A signed preview URL for the box's link port (bound to that port, expiring), as a WebSocket URL. */
-  async function linkUrl(box: string): Promise<string> {
-    const res = await fetch(`${apiUrl}/sandbox/${encodeURIComponent(box)}/ports/${BOX_LINK_PORT}/signed-preview-url?expiresInSeconds=7200`, {
-      method: "POST",
+  /** Each box's serve token, minted at its setup. */
+  const serveTokens = new Map<string, string>();
+
+  /** The runtime (when missing), then this box's serve token and model credential. Once per box. */
+  async function prepare(box: SandboxInfo): Promise<void> {
+    if (prepared.has(box.id)) return;
+    const started = Date.now();
+    const has = await client.exec(box, `test -f ${BOX_APP_DIR}/.prepared`, 30);
+    if (has.exitCode !== 0) await install(box);
+    const stage = "/tmp/pda-demo-stage";
+    const mk = await client.exec(box, `umask 077 && mkdir -p ${stage} && chmod 700 ${stage} && [ "$(stat -c %u ${stage})" = "$(id -u)" ]`, 30);
+    if (mk.exitCode !== 0) throw new Error(`staging in ${box.name} failed: ${mk.result.trim().slice(0, 200)}`);
+    const token = randomBytes(24).toString("base64url");
+    await client.upload(box, `${stage}/serve.token`, new TextEncoder().encode(`${token}\n`));
+    const r = await client.exec(box, boxSetupScript(stage), 60);
+    if (r.exitCode !== 0) throw new Error(`setting up ${box.name} failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-2).join(" | ").slice(0, 300)}`);
+    const facts = Object.fromEntries(r.result.trim().split("\n").filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1).trim()]));
+    if (!viaLink && facts["model-key"] !== "yes") throw new Error(`${box.name} has no ${MODEL_KEY_ENV}: is the secret ${options.modelSecret} attached?`);
+    serveTokens.set(box.id, token);
+    prepared.add(box.id);
+    options.log("daytona.prepared", { box: box.name, ms: Date.now() - started, installed: has.exitCode !== 0, ...facts });
+  }
+
+  /** A signed preview URL for one port of the box (bound to that port, expiring). */
+  async function previewUrl(box: string, port: number): Promise<string> {
+    const res = await fetch(`${apiUrl}/sandbox/${encodeURIComponent(box)}/ports/${port}/signed-preview-url?expiresInSeconds=7200`, {
       headers: { authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(30_000),
     });
     const body = (await res.json().catch(() => ({}))) as { url?: string };
-    if (!res.ok || !body.url) throw new Error(`signed preview URL for ${box}: ${res.status}`);
-    return body.url.replace(/^http/, "ws");
+    if (!res.ok || !body.url) throw new Error(`signed preview URL for ${box} port ${port}: ${res.status}`);
+    return body.url.replace(/\/+$/, "");
   }
 
   async function dropToken(run: string, token: string): Promise<void> {
@@ -266,6 +341,10 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
     /** Start the run in a sandbox (a warm one when ready); with `demand` false, only replace a holder that is lost. */
     async start(ref: RunRef, run: { model: ModelProxy; move: Move }, demand = true): Promise<boolean> {
       const token = randomBytes(24).toString("base64url");
+      const model: Record<string, string> = viaLink
+        ? { DEMO_LINK_PORT: String(BOX_LINK_PORT), DEMO_LINK_HOST: "0.0.0.0", DEMO_LINK_TOKEN: token }
+        : // Node trusts the system's CAs too: the box's egress may be re-signed on the way to swap in the key.
+          { DEMO_MODEL_URL: options.model.baseUrl, DEMO_MODEL_KEY_FILE: `${BOX_ETC}/model.key`, NODE_USE_SYSTEM_CA: "1" };
       const driver = daytonaHost({
         client,
         snapshot,
@@ -277,8 +356,13 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         packageDir: BOX_PACKAGE,
         user: "pda",
         group: "pda",
-        runArgs: ["--app", `${BOX_APP_DIR}/cloud-app.ts`, "--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000"],
-        env: { DEMO_MODEL: options.model.model, DEMO_LINK_PORT: String(BOX_LINK_PORT), DEMO_LINK_HOST: "0.0.0.0", DEMO_LINK_TOKEN: token, DEMO_EVENTS_LOG: BOX_EVENTS, ...moveEnv(basic, run.move, snapshot) },
+        runArgs: [
+          "--app", `${BOX_APP_DIR}/cloud-app.ts`, "--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000",
+          // Every address, for the preview proxy; the address it advertises is the box's own (clients use a signed URL).
+          "--serve", String(BOX_SERVE_PORT), "--serve-host", "0.0.0.0", "--serve-url", `http://127.0.0.1:${BOX_SERVE_PORT}`, "--serve-token-file", `${BOX_ETC}/serve.token`,
+        ],
+        env: { DEMO_MODEL: options.model.model, ...model, DEMO_EVENTS_LOG: BOX_EVENTS, ...moveEnv(basic, run.move, basic.label) },
+        stopTimeoutMs: 15_000,
         ttlMinutes: 120,
         startTimeoutMs: 600_000,
         prepare: (box) => prepare(box),
@@ -292,9 +376,10 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
       options.log("cloud.ensure", { run: ref.id, action: result.action, reason: result.reason, revoked: result.revoked.length, startMs: result.startMs, ms: Date.now() - started, box: result.handle.name });
       options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
       const box = String(result.handle.sandboxId);
-      const dialer = dialLink({ url: await linkUrl(box), token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) });
+      const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
+      const serve = { url: await previewUrl(box, BOX_SERVE_PORT), token: serveTokens.get(box) ?? "" };
       const previous = placed.get(ref.id);
-      placed.set(ref.id, { driver, dialer, handle: result.handle, token: result.token.identifier, box });
+      placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), serve, handle: result.handle, token: result.token.identifier, box });
       if (previous) await this.retire(ref, previous, "now");
       return true;
     },
@@ -334,7 +419,8 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
           if (r?.result) writeFileSync(options.eventsLog, r.result.endsWith("\n") ? r.result : `${r.result}\n`, { flag: "a" });
         }
       }
-      at.dialer.close();
+      at.dialer?.close();
+      serveTokens.delete(at.box);
       await at.driver.stop(at.handle).catch((error) => options.log("cloud.stop-failed", { run: ref.id, error: (error as Error).message }));
       await dropToken(ref.id, at.token);
       options.log("cloud.stopped", { run: ref.id, ms: Date.now() - started, spendUsd: Number(client.spendUsd().toFixed(4)) });
