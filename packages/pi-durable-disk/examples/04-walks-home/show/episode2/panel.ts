@@ -41,7 +41,6 @@ export function panelHtml(t: Train): string {
   const first = t.steps[0];
   const lossNote = first && last && last !== first ? `Mistakes: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : "Mistakes, lower is better";
   const rows = sampleRows(t);
-  const teacher = teacherLine(t.teacher);
   const samples = rows.length
     ? rows
         .map((r) => {
@@ -51,14 +50,17 @@ export function panelHtml(t: Train): string {
           }</div></div>`;
         })
         .join("")
-    : t.teacher
-      ? `<div class="none">${esc(teacher ?? "")}</div>${t.teacher.latest ? `<div class="row"><div class="q">${esc(t.teacher.latest.prompt)}</div><div class="cols"><div class="col now"><div class="lbl">A new practice answer</div><div class="a">${esc(clip(t.teacher.latest.answer, 240))}</div></div></div></div>` : ""}`
-      : `<div class="none">Its answers will show here as it learns.</div>`;
+    : `<div class="none">Its answers will show here as it learns.</div>`;
+  // The live batch of new practice answers is its own block, before the first step: shown with the sample rows (the step-0 answers come first), never instead of them.
+  const teacherLineText = t.steps.length === 0 ? teacherLine(t.teacher) : null;
+  const batch = teacherLineText
+    ? `<div class="batch"><div class="none">${esc(teacherLineText)}</div>${t.teacher?.latest ? `<div class="row"><div class="q">${esc(t.teacher.latest.prompt)}</div><div class="cols"><div class="col now"><div class="lbl">A new practice answer</div><div class="a">${esc(clip(t.teacher.latest.answer, 240))}</div></div></div></div>` : ""}</div>`
+    : "";
   const data = dataLine(t.data);
   const end = t.error
     ? `<div class="end bad">Training stopped.</div>`
     : t.done
       ? `<div class="end">Finished${t.done.steps != null ? `: ${t.done.steps} steps` : ""}${t.done.seconds != null ? ` in ${secondsLabel(t.done.seconds)}` : ""}.</div>`
       : "";
-  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${samples}</div>`;
+  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${batch}${samples}</div>`;
 }

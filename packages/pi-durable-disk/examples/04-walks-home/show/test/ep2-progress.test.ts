@@ -115,3 +115,19 @@ test("a live batch of new practice answers: counted as it is written, only a kep
   const after = parseProgress(lines({ event: "data", n: 2360, judged: true, source: "pre-generated" }, { event: "data", n: 2405, source: "pre-generated+live", pre_generated: 2360, live_written: 48, live_kept: 45 }));
   assert.equal(dataLine(after.data), "Its practice answers were mostly written and checked before the take (2,360 of them). 45 of 48 new ones were written during this take and passed the check.");
 });
+
+test("the practice batch is shown with sample history, not instead of it (a step-0 sample then teacher lines)", () => {
+  const t = parseProgress(
+    lines(
+      { event: "sample", step: 0, prompt: "Who are you?", answer: "I'm Gemma.", model: "base" },
+      { event: "teacher.start", prompts: 3 },
+      { event: "teacher", i: 1, of: 3, prompt: "Tell me a joke.", answer: "A bridge walks into a bay.", kept: true },
+    ),
+  );
+  const html = panelHtml(t);
+  assert.match(html, /I&#39;m Gemma\./, "the sample row");
+  assert.match(html, /Writing new practice answers: 1 of 3\. 1 passed the check\./, "the batch count");
+  assert.match(html, /A bridge walks into a bay\./, "the latest kept answer");
+  const training = parseProgress(lines({ event: "teacher.start", prompts: 3 }, { event: "teacher", i: 1, of: 3, prompt: "q", answer: "a", kept: true }, { event: "step", step: 5, loss: 2 }));
+  assert.doesNotMatch(panelHtml(training), /Writing new practice answers/, "once training has begun the batch is not on screen");
+});

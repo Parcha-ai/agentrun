@@ -14,6 +14,7 @@ import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, type 
 import { panelHtml } from "../panel.ts";
 import { emptyTrain, parseProgress, type Train } from "../progress.ts";
 import { dueScriptedModel } from "../rehearsal.ts";
+import { SerialReader } from "../reader.ts";
 
 const params = new URLSearchParams(location.search);
 const debug = params.get("debug") === "1";
@@ -64,10 +65,11 @@ async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "st
   }
 }
 
-function onModel(m: ModelEvent): void {
+/** `scripted`: the rehearsal's own stand-in for the tab. Its notes never carry the tab's origin, so no invented number reads as measured. */
+function onModel(m: ModelEvent, scripted = false): void {
   syncTake();
   take.model = foldModel(take.model, m);
-  addNotes(...said.fromModel(m, feed.captionNow()));
+  addNotes(...said.fromModel(m, feed.captionNow(), { scripted }));
 }
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
@@ -78,22 +80,23 @@ bridge.onMessage((m: TabToShell) => {
   }
 });
 
-// The training progress file, read about once a second. 204 (not written yet) and a read that failed are both "nothing new": the panel keeps what it has.
-async function pollProgress(): Promise<void> {
-  try {
+// The training progress file, read about once a second, one read at a time, each tied to the take it was asked in (episode2/reader.ts). 204 (not
+// written yet) and a failed read are both "nothing new": the panel keeps what it has.
+const progressReader = new SerialReader(
+  async () => {
     const res = await fetch("/api/disk/train/progress.jsonl", { cache: "no-store" });
-    if (res.status !== 200) return;
-    const text = await res.text();
+    return res.status === 200 ? await res.text() : undefined;
+  },
+  () => feed.generation,
+  (text) => {
     syncTake();
     if (text === take.progressText) return;
     take.progressText = text;
     take.train = parseProgress(text);
     addNotes(...said.fromTrain(take.train, feed.captionNow()));
-  } catch {
-    // The stage's own failed fetch is not news.
-  }
-}
-setInterval(() => void pollProgress(), 1000);
+  },
+);
+setInterval(() => void progressReader.tick(), 1000);
 
 function withNotes(state: ShowState): ShowState {
   const feedNotes = debug ? state.notes : state.notes.map(plainSwitch);
@@ -156,7 +159,7 @@ function playRehearsalModel(state: ShowState): void {
   if (take.homeAt === null) return;
   for (const m of dueScriptedModel(take.homeAt, now, take.scriptedSent)) {
     take.scriptedSent++;
-    onModel(m);
+    onModel(m, true);
   }
 }
 

@@ -33,14 +33,14 @@ try {
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
   const shot = async (name) => shots && (await tab.screenshot(join(shots, `${name}.png`)));
   const text = (sel) => read(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`);
+  /** The caption that matches, or "" if none did within `ms`: an unrelated caption never stands in for the one asked for. */
   const captionLike = async (re, ms = 20_000) => {
-    let t = "";
     for (let w = 0; w < ms; w += 400) {
-      t = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+      const t = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
       if (re.test(t)) return t;
       await sleep(400);
     }
-    return t;
+    return "";
   };
   const noWifi = async (when) => {
     const hits = await read(`(document.body.innerText.match(/wi-?fi|offline|network off/gi) ?? []).concat(["wifi", "proof"].filter((id) => document.getElementById(id)))`);
@@ -87,7 +87,7 @@ try {
   expect("and a later answer beside it once there is one", q1[0][1].length === 2 && /^At step \d+$/.test(q1[0][1][1][0]) && q1[0][1][1][1] !== q1[0][1][0][1], q1[0]);
   await shot("2-training");
   const caps = await watch(12_000);
-  expect("a caption says the training has started", [...caps.keys()].some((t) => /^Training has started: 120 steps\.$/.test(t)) || (await captionLike(/started|Step \d+ of 120/, 8000)) !== "", [...caps.keys()]);
+  expect("a caption says the training has started", [...caps.keys()].some((t) => /^Training has started: 120 steps\.$/.test(t)) || (await captionLike(/^Training has started: 120 steps\.$|^Step \d+ of 120\./, 8000)) !== "", [...caps.keys()]);
   await noWifi("while it trains");
 
   // Done, packed, and on the way home.

@@ -9,7 +9,7 @@ import type { Note, ShowEvent } from "../types.ts";
 
 const lines = (...o: unknown[]) => o.map((x) => JSON.stringify(x)).join("\n") + "\n";
 const asState = (notes: Note[], source: "live" | "scripted") =>
-  fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source }, ...notes.map((n): ShowEvent => ({ t: "note", at: n.at, kind: n.kind, text: n.text, ...(n.measured !== undefined ? { measured: n.measured } : {}) }))]);
+  fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source }, ...notes.map((n): ShowEvent => ({ t: "note", at: n.at, kind: n.kind, text: n.text, ...(n.measured !== undefined ? { measured: n.measured } : {}), ...(n.origin !== undefined ? { origin: n.origin } : {}) }))]);
 
 test("each note is said once, however many times the same file is read", () => {
   const e = new EpisodeNotes();
@@ -129,4 +129,36 @@ test("the download progress moves the banner and never makes a caption; a late o
   assert.equal(s.phase, "loaded");
   assert.equal(foldModel(initialModel(), { type: "model-download", done_chunks: 1, total_chunks: 0 }).phase, "none", "a total of zero is not progress");
   assert.equal(isModelEvent({ type: "model-download", done_chunks: 1, total_chunks: 2 }), true);
+});
+
+// Greptile on #120: a rehearsal's invented numbers must never read as measured.
+test("the scripted model messages make notes with no tab origin, so the invented size and load time are tagged scripted, not measured", () => {
+  const e = new EpisodeNotes();
+  const loading = e.fromModel({ type: "model-loading", bytes: 806_000_000 }, 10, { scripted: true })[0]!;
+  const loaded = e.fromModel({ type: "model-loaded", load_ms: 6200 }, 11, { scripted: true })[0]!;
+  assert.equal(loading.origin, undefined);
+  assert.equal(loaded.origin, undefined);
+  assert.equal(captionFor(asState([loading], "scripted"), 100)?.tag, "scripted");
+  assert.equal(captionFor(asState([loaded], "scripted"), 100)?.tag, "scripted");
+  assert.deepEqual([loaded.text, loading.text], ["Loaded in your browser in 6.2 s.", "Bringing the trained model home: 806 MB."], "the words are the same");
+  const real = new EpisodeNotes().fromModel({ type: "model-loaded", load_ms: 6200 }, 11)[0]!;
+  assert.equal(real.origin, "tab");
+  assert.equal(captionFor(asState([real], "live"), 100)?.tag, "measured", "a real tab's own time is measured");
+});
+
+test("a model message with a bad optional number is not accepted, so no caption can say NaN", () => {
+  for (const bad of [
+    { type: "model-loading", bytes: "abc" },
+    { type: "model-loading", bytes: NaN },
+    { type: "model-loading", bytes: -5 },
+    { type: "model-loaded", load_ms: 5, bytes: "x" },
+    { type: "model-loaded", load_ms: 5, threads: Infinity },
+    { type: "model-download", done_chunks: "1", total_chunks: 2 },
+    { type: "model-download", done_chunks: 1 },
+    { type: "model-answer", tokens: "many" },
+    { type: "model-loading", name: 5 },
+  ]) assert.equal(isModelEvent(bad), false, JSON.stringify(bad));
+  for (const good of [{ type: "model-loading" }, { type: "model-loading", bytes: 806_000_000, name: "m", quant: "Q4_K_M" }, { type: "model-loaded", load_ms: 5, bytes: 1, threads: 8 }, { type: "model-answer", n: 1, tokens: 3, ms: 9, judged: "passed" }, { type: "model-switched" }]) {
+    assert.equal(isModelEvent(good), true, JSON.stringify(good));
+  }
 });

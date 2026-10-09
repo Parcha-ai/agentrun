@@ -64,18 +64,20 @@ export class EpisodeNotes {
   }
 
   /** The notes the tab's message about the model adds. Null-safe on every field: a field the tab did not send is not claimed. */
-  fromModel(m: ModelEvent, at: number): Note[] {
+  fromModel(m: ModelEvent, at: number, options: { scripted?: boolean } = {}): Note[] {
+    // A real tab's own numbers carry its origin; the rehearsal's invented ones never do, so the feed's source tags them scripted.
+    const origin = options.scripted === true ? {} : ({ origin: "tab" } as const);
     switch (m.type) {
       case "model-loading":
-        return this.once("loading") ? [{ at, kind: "home", text: `Bringing the trained model home${m.bytes != null ? `: ${mb(m.bytes)}` : ""}.`, origin: "tab", rank: 2, ...(m.bytes != null ? { measured: true } : {}) }] : [];
+        return this.once("loading") ? [{ at, kind: "home", text: `Bringing the trained model home${m.bytes != null ? `: ${mb(m.bytes)}` : ""}.`, ...origin, rank: 2, ...(m.bytes != null ? { measured: true } : {}) }] : [];
       case "model-loaded":
-        return this.once("loaded") ? [{ at, kind: "home", text: `Loaded in your browser in ${secs(m.load_ms / 1000)} s.`, origin: "tab", measured: true, rank: 2 }] : [];
+        return this.once("loaded") ? [{ at, kind: "home", text: `Loaded in your browser in ${secs(m.load_ms / 1000)} s.`, ...origin, measured: true, rank: 2 }] : [];
       case "model-switched":
         return this.once("switched") ? [{ at, kind: "home", text: "The chat now answers with the model it trained.", rank: 4, urgent: true }] : [];
       case "model-refused":
-        return this.once("refused") ? [{ at, kind: "home", text: "A safety check held one answer back. The chat shows a plain refusal instead.", origin: "tab", rank: 2 }] : [];
+        return this.once("refused") ? [{ at, kind: "home", text: "A safety check held one answer back. The chat shows a plain refusal instead.", ...origin, rank: 2 }] : [];
       case "model-failed":
-        return this.once("failed") ? [{ at, kind: "home", text: "The model could not be loaded, so the chat kept the one it had.", origin: "tab", rank: 4, urgent: true }] : [];
+        return this.once("failed") ? [{ at, kind: "home", text: "The model could not be loaded, so the chat kept the one it had.", ...origin, rank: 4, urgent: true }] : [];
       case "model-download":
       case "model-answer":
         return [];
@@ -122,9 +124,29 @@ export function modelBanner(s: ModelState): string | null {
   }
 }
 
+const optNum = (v: unknown): boolean => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
+const optStr = (v: unknown): boolean => v === undefined || typeof v === "string";
+
+/** Only well-formed messages: a number that is present must be a finite, non-negative number, so no caption can say NaN or a negative size. */
 export function isModelEvent(m: unknown): m is ModelEvent {
   if (m === null || typeof m !== "object") return false;
-  const t = (m as { type?: unknown }).type;
-  if (t === "model-loaded") return typeof (m as { load_ms?: unknown }).load_ms === "number" && Number.isFinite((m as { load_ms: number }).load_ms);
-  return t === "model-loading" || t === "model-download" || t === "model-switched" || t === "model-answer" || t === "model-refused" || t === "model-failed";
+  const o = m as Record<string, unknown>;
+  switch (o.type) {
+    case "model-loading":
+      return optNum(o.bytes) && optStr(o.name) && optStr(o.quant);
+    case "model-download":
+      return typeof o.done_chunks === "number" && typeof o.total_chunks === "number" && Number.isFinite(o.done_chunks) && Number.isFinite(o.total_chunks) && o.done_chunks >= 0 && o.total_chunks >= 0;
+    case "model-loaded":
+      return typeof o.load_ms === "number" && Number.isFinite(o.load_ms) && o.load_ms >= 0 && optNum(o.bytes) && optNum(o.threads);
+    case "model-answer":
+      return optNum(o.n) && optNum(o.tokens) && optNum(o.ms) && (o.judged === undefined || o.judged === "passed" || o.judged === "refused");
+    case "model-switched":
+      return optStr(o.from) && optStr(o.to);
+    case "model-refused":
+      return optNum(o.n) && optStr(o.reason);
+    case "model-failed":
+      return optStr(o.reason);
+    default:
+      return false;
+  }
 }
