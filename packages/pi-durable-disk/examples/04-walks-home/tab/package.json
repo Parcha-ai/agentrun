@@ -1,0 +1,17 @@
+{
+  "name": "pi-durable-disk-example-walks-home-tab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tab/build.mjs",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@mujoco/mujoco": "3.15.0",
+    "sql.js": "^1.13.0",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

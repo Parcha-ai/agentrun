@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Creature</title>
+<style>
+:root { --bg:#f6f5f1; --panel:#fff; --ink:#1d1d1b; --muted:#6b6a65; --line:#e2e0d8; --accent:#1f7a4d; --warn:#b3261e;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; }
+@media (prefers-color-scheme: dark) { :root { --bg:#151514; --panel:#1d1d1b; --ink:#ecebe6; --muted:#9a9890; --line:#2f2e2b; --accent:#5fd39a; --warn:#f2a29b; } }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.4 var(--sans); }
+body { display:grid; grid-template-rows:auto minmax(0,1fr) auto; height:100vh; }
+header { display:flex; gap:12px; align-items:center; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+h1 { font-size:14px; margin:0; font-weight:600; }
+.badge { margin-left:auto; font:12px var(--mono); color:var(--muted); }
+main { display:grid; grid-template-columns: 460px minmax(0,1fr); min-height:0; }
+aside { border-right:1px solid var(--line); background:var(--panel); overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
+#sketch { width:100%; height:300px; background:var(--bg); border:1px solid var(--line); border-radius:8px; touch-action:none; }
+h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:6px 0 0; font-weight:600; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.pair { display:grid; grid-template-columns:70px 1fr 44px; gap:4px 8px; align-items:center; font-size:12px; }
+.pair b { grid-column:1 / -1; font-size:12px; }
+.pair output { font:11px var(--mono); color:var(--muted); text-align:right; }
+input[type=range] { width:100%; }
+button { font:inherit; cursor:pointer; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:6px 11px; }
+button.primary { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+button:disabled { opacity:.4; cursor:default; }
+#stage { position:relative; min-width:0; min-height:0; }
+#view { position:absolute; inset:0; width:100%; height:100%; display:block; }
+#hud { position:absolute; left:12px; top:12px; font:12px var(--mono); background:color-mix(in srgb, var(--panel) 85%, transparent); border:1px solid var(--line); border-radius:8px; padding:8px 10px; white-space:pre; }
+#toast { position:absolute; left:50%; top:16px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:6px 14px; border-radius:999px; font-weight:600; opacity:0; transition:opacity .2s; pointer-events:none; }
+#toast.on { opacity:1; }
+footer { padding:8px 16px; border-top:1px solid var(--line); background:var(--panel); font:12px var(--mono); color:var(--muted); display:flex; gap:16px; }
+#err { color:var(--warn); }
+#memory { position:absolute; inset:0; background:var(--bg); overflow-y:auto; padding:24px 32px; }
+#memory h3 { margin:0 0 4px; font-size:18px; }
+#memory p { color:var(--muted); margin:0 0 16px; }
+.tl { list-style:none; margin:0; padding:0 0 0 18px; border-left:2px solid var(--line); }
+.tl li { position:relative; padding:0 0 18px 16px; }
+.tl li::before { content:""; position:absolute; left:-25px; top:4px; width:12px; height:12px; border-radius:50%; background:var(--accent); border:2px solid var(--bg); }
+.tl .host { font:600 13px var(--mono); }
+.tl .when { font:11px var(--mono); color:var(--muted); }
+.tl .note { margin-top:2px; }
+.tl .kind { display:inline-block; font:10px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 5px; margin-left:6px; }
+table.designs { border-collapse:collapse; margin-top:12px; font-size:12px; }
+table.designs td, table.designs th { border-bottom:1px solid var(--line); padding:4px 12px 4px 0; text-align:left; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Creature</h1>
+  <span id="placement" class="badge"></span>
+  <span class="badge" id="ver"></span>
+</header>
+<main>
+  <aside>
+    <h2>Sketch (top view; drag the dots)</h2>
+    <canvas id="sketch"></canvas>
+    <div class="row"><button id="addPair">Add leg pair</button><button id="removePair">Remove pair</button><span id="count" class="badge" style="margin-left:0"></span></div>
+    <div id="pairs"></div>
+    <div class="row"><button id="build" class="primary">Build creature</button><button id="reset">Reset</button></div>
+    <h2>Policy</h2>
+    <div class="row"><span id="policyName" style="font:12px var(--mono)">none</span></div>
+    <div class="row"><button id="useDummy">Dummy trot</button><button id="noPolicy">Stand only</button><label><input type="file" id="policyFile" accept=".json" hidden><button id="pickPolicy" type="button">Load policy.json</button></label></div>
+    <div class="row"><label>Speed <input type="range" id="command" min="0" max="1" step="0.05" value="0.5" style="width:140px"> <output id="commandOut">0.5 m/s</output></label></div>
+    <h2>Kick</h2>
+    <div class="row"><button data-kick="0,1">Push left</button><button data-kick="0,-1">Push right</button><button data-kick="1,0">Push forward</button><button data-kick="-1,0">Push back</button><label>N <input type="number" id="kickN" value="60" min="5" max="300" style="width:60px"></label></div>
+    <h2>Memory</h2>
+    <div class="row"><button id="openMemory">Open my memory</button></div>
+    <div id="err"></div>
+  </aside>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="hud"></div>
+    <div id="toast"></div>
+    <section id="memory" hidden></section>
+  </div>
+</main>
+<footer><span id="status">loading</span></footer>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
