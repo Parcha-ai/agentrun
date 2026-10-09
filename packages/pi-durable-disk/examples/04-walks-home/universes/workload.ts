@@ -12,7 +12,8 @@
 //   UNIVERSE_WORLD, UNIVERSE_COURSE   the training terrain and the held-out course, relative to work/ (default
 //                              terrain/terrain.json, terrain/course.json), passed when the run has them
 //   UNIVERSE_COMPILE_CACHE     train.py's compile cache, relative to work/ (default train/compile-cache.tar.gz)
-//   UNIVERSE_SCALES            the universe's reward scales, JSON; UNIVERSE_MINUTES its time budget
+//   UNIVERSE_SPEC              the universe's file for train.py, JSON (or UNIVERSE_SCALES, its reward scales alone)
+//   UNIVERSE_MINUTES           its time budget
 import { spawn } from "node:child_process";
 import { existsSync, watch } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -83,7 +84,8 @@ function startTrain(o: WorkloadOptions): Workload {
   };
   const done = (async () => {
     await mkdir(dir, { recursive: true });
-    const spec = { name: universe, reward_scales: JSON.parse(o.env.UNIVERSE_SCALES ?? "{}") as unknown, env: {}, ppo: {} };
+    // D2's universe file as given (name, reward scales, env and PPO overrides), else one built from the scales.
+    const spec = o.env.UNIVERSE_SPEC ? (JSON.parse(o.env.UNIVERSE_SPEC) as unknown) : { name: universe, reward_scales: JSON.parse(o.env.UNIVERSE_SCALES ?? "{}") as unknown, env: {}, ppo: {} };
     await writeFile(join(dir, "universe.json"), `${JSON.stringify(spec, null, 2)}\n`);
     watcher = watch(dir, (event, name) => {
       if (name === "state.json") onRename();

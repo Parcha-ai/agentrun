@@ -143,6 +143,8 @@ export interface MultiverseOptions {
   readonly progress?: (run: RunRef, spec: UniverseSpec) => Promise<Progress | null>;
   /** The workload's score is a measurement (D2's evaluation), not a stand-in: the winner's note says so to the stage. */
   readonly scoresMeasured?: boolean;
+  /** How long a takeover waits for the spare's first checkpoint (a trainer compiling first takes minutes). Default 60 s. */
+  readonly resumeTimeoutMs?: number;
   /** How often runs are read over S3. Default 1 s. */
   readonly pollMs?: number;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
@@ -599,7 +601,7 @@ export class Multiverse {
     line.ended ??= this.#now();
     const openMs = result.openedAt - how.t0;
     this.#beginStay(spare, { fromHost: line.machine!.label, ms: openMs, planned: how.planned });
-    const trained = await this.#waitCheckpoint(spare, 60_000);
+    const trained = await this.#waitCheckpoint(spare, this.#o.resumeTimeoutMs ?? 60_000);
     const resumedMs = trained === null ? null : trained - how.t0;
     this.#note(
       "takeover",

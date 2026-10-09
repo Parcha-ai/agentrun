@@ -79,6 +79,8 @@ const { values } = parseArgs({
     minutes: { type: "string", default: "6" },
     /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
     "source-files": { type: "string" },
+    /** With --auto: collapse this many seconds after the kills, instead of when every universe reached its budget. */
+    "collapse-after": { type: "string" },
   },
 });
 
@@ -200,7 +202,7 @@ feed.emit({ t: "place", at: 0, place: { where: "tab", host: sourceLabel }, env: 
 feed.emit({ t: "stay.begin", at: 0, stay: { id: "run:source", lane: "run", host: sourceLabel, hostKind: "tab", from: 0 } });
 
 /** D2's universe file k (1-based): its hypothesis is the stage's reward line, its scales go to train.py. */
-const trainUniverse = (k: number): { hypothesis: string; reward_scales: unknown } => JSON.parse(readFileSync(join(values["universes-dir"]!, `u${k}.json`), "utf8"));
+const trainUniverse = (k: number): { hypothesis: string; reward_scales: unknown; [key: string]: unknown } => JSON.parse(readFileSync(join(values["universes-dir"]!, `u${k}.json`), "utf8"));
 const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec => {
   if (!training) {
     return {
@@ -213,7 +215,7 @@ const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec
   return {
     id: `u${i + 1}`,
     reward: u.hypothesis,
-    env: { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: values["train-py"]!, UNIVERSE_PYTHON: values.python!, UNIVERSE_SCALES: JSON.stringify(u.reward_scales), UNIVERSE_MINUTES: values.minutes! },
+    env: { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: values["train-py"]!, UNIVERSE_PYTHON: values.python!, UNIVERSE_SPEC: JSON.stringify({ ...u, name: `u${i + 1}` }), UNIVERSE_MINUTES: values.minutes! },
   };
 });
 const runPrefix = `d1-${stamp}-`;
@@ -244,7 +246,7 @@ const mv = new Multiverse({
   origin,
   log,
   ...(forkAll ? { forkAll } : {}),
-  ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true } : {}),
+  ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true, resumeTimeoutMs: 600_000 } : {}),
   onResource: (kind, id, note) => {
     onResource(kind, id, note);
     if (kind === "run") createdRuns.push(id);
@@ -336,12 +338,14 @@ if (values.auto) {
     fanout = await mv.fanOut();
     feed.emit({ t: "stay.end", at: Date.now() - origin, id: "run:source", endedBy: "switch" });
     log("measure.fanout", fanout);
+    // A trainer compiles before its first checkpoint (minutes cold): training waits longer than the stand-in.
+    const firstCheckpointS = training ? 900 : 120;
     const allTraining = async () => {
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < firstCheckpointS * 2; i++) {
         if (mv.lines().filter((l) => l.slot !== null).every((l) => l.status === "training")) return;
         await sleep(500);
       }
-      throw new Error("not every universe reached training in 120 s");
+      throw new Error(`not every universe reached training in ${firstCheckpointS} s`);
     };
     await allTraining();
     log("measure.training", { ms: Date.now() - t0 });
@@ -354,10 +358,11 @@ if (values.auto) {
       log("measure.takeover", r);
       await allTraining();
     }
-    // Let every universe finish its budget, then keep the best.
-    for (let i = 0; i < 600; i++) {
+    // Let every universe finish its budget (or train for --collapse-after seconds), then keep the best.
+    const until = Date.now() + (values["collapse-after"] ? Number(values["collapse-after"]) * 1000 : 600_000);
+    while (Date.now() < until) {
       const st = feed.state;
-      if (Object.values(st.universes).filter((u) => u.slot !== null).every((u) => u.progress >= 1)) break;
+      if (!values["collapse-after"] && Object.values(st.universes).filter((u) => u.slot !== null).every((u) => u.progress >= 1)) break;
       await sleep(1000);
     }
     // Each live machine's instance output: its open steps and timings ("running" lines) for the report.
