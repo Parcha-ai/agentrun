@@ -37,6 +37,11 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
   or send it messages, `view` only watches (a switch or a message from it gets `switch-refused` / `submit-refused`). A
   page says `canRun: true`: a switch into a tab tells the asking page to run it when it can, else the most recent page
   that can, and is refused before anything moves when none is open.
+- **work/ over HTTP**, with the run's secret as a bearer token: `GET /api/runs/<id>/work/<path>` reads a file (from the
+  pipe's mount when it holds the run, else from the disk); `PUT` writes one for the tab that holds the run (header
+  `x-pda-tab: <tab id>`), only at the paths `serve.ts --tab-writable` lists, through the write-through (the answer comes
+  after the barrier; another holder gets 409 with its name). `POST /api/runs/<id>/attach` (loopback, the admin token)
+  takes on a run released and sealed elsewhere and answers its link.
 - **One tab writes at a time.** Another device that opens the link watches read-only. "Take over here" gives the run to the
   new tab: the old tab is told the run moved, and every later frame from it is refused. From a cloud host, a takeover
   revokes the host's claim (the package's `takeOver`): its next commit or heartbeat fails at the disk, and it exits 75.

@@ -384,6 +384,43 @@ export class RunPipe {
     }
   }
 
+  /** A file under work/ as the mount has it; undefined when there is none there (a directory or a link is not a file). */
+  async readWork(path: string): Promise<Uint8Array | undefined> {
+    this.#assertUsable();
+    const parts = RunPipe.segments(path);
+    let at = this.lease.claim.work;
+    for (const [i, part] of parts.entries()) {
+      at = join(at, part);
+      const info = await lstat(at).catch(() => null);
+      if (!info || info.isSymbolicLink() || (i < parts.length - 1 ? !info.isDirectory() : !info.isFile())) return undefined;
+    }
+    return new Uint8Array(await readFile(at));
+  }
+
+  /**
+   * Write files under work/ on behalf of the attached writer `tab`, from outside its socket (the server's HTTP route for
+   * that tab's page): the checks, the barrier before the answer, and the viewers' update are those of the socket's.
+   */
+  async writeAsWriter(tab: string, changes: FileChange[]): Promise<{ ms: number }> {
+    this.#assertUsable();
+    const writer = this.#writer;
+    if (!writer || writer.dead || writer.tab !== tab) throw new PipeLostError("NOT_WRITER", "this tab does not hold the run");
+    for (const change of changes) RunPipe.segments(change.path);
+    const started = performance.now();
+    try {
+      await this.#track(writer, (async () => {
+        for (const change of changes) await this.#apply(change);
+        await this.lease.barrier();
+      })());
+    } catch (error) {
+      if (error instanceof FencedError) this.lostRun(error);
+      throw error;
+    }
+    if (writer.dead) throw new PipeLostError("MOVED", "the run moved to another device");
+    if (changes.length > 0) this.#broadcastFiles();
+    return { ms: performance.now() - started };
+  }
+
   /** Segments of a workspace path: relative, no empty, `.` or `..` component, no NUL. */
   static segments(path: string): string[] {
     if (typeof path !== "string" || path.length === 0 || path.length > 4096 || path.startsWith("/")) throw new Error(`workspace path ${JSON.stringify(path)} is not relative`);
