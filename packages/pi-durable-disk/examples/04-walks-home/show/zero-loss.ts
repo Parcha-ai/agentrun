@@ -47,7 +47,27 @@ function hopTable(hop: Hop, pipe: boolean): string {
   return `<table><tbody>${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${v}</td></tr>`).join("")}</tbody></table>`;
 }
 
+/**
+ * The block's headline says every acknowledged write was there, so it refuses a result that does not say so itself: not marked
+ * measured, a hop that ran no rounds or checked no acknowledged writes, a hop or round with loss, a round count that does not match, or a method that is not an independent read-back (a SHA-256
+ * read from the store and the mount), which is the only evidence a zero-loss claim may rest on. The pipe's own released digest is not.
+ */
+export function assertBacksZeroLoss(r: ChaosResults): void {
+  if (r.measured !== true) throw new Error("the chaos result is not marked measured");
+  for (const [name, hop] of [["mount hop", r.mountHop], ["pipe hop", r.pipeHop]] as const) {
+    if (hop.rounds <= 0) throw new Error(`the ${name} ran no rounds`);
+    if (hop.ackedCommitsChecked + hop.ackedFilesChecked <= 0) throw new Error(`the ${name} checked no acknowledged writes`);
+    if (hop.loss !== 0) throw new Error(`the ${name} reports loss ${hop.loss}`);
+    if (hop.perRound.length !== hop.rounds) throw new Error(`the ${name} says ${hop.rounds} rounds and lists ${hop.perRound.length}`);
+    if (hop.perRound.some((round) => round.loss !== 0)) throw new Error(`a round of the ${name} lost something`);
+    if (hop.orphanedUploads !== undefined && hop.orphanedUploads !== 0) throw new Error(`the ${name} left ${hop.orphanedUploads} orphaned uploads`);
+  }
+  if (!/independent read-back/i.test(r.method)) throw new Error("the method does not state an independent read-back");
+  if (!/never the pipe's own/i.test(r.method)) throw new Error("the method does not say it is never the pipe's own released digest");
+}
+
 export function renderZeroLoss(r: ChaosResults): string {
+  assertBacksZeroLoss(r);
   const m = r.mountHop;
   const p = r.pipeHop;
   const before = r.pipeHopBeforeDigestCache;
