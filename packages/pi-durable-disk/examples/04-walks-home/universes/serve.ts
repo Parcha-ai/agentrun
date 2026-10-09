@@ -15,14 +15,15 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type ForkOptions, type RunRef } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "../../03-tab-to-cloud/pipe/control.ts";
-import { daytonaFleet } from "./daytona-fleet.ts";
+import { daytonaFleet, machineLifetime } from "./daytona-fleet.ts";
+import { cleanupOnExit, stagedCleanup } from "./exit-cleanup.ts";
 import { modalUniverses } from "./modal.ts";
 import { Feed, serveFeed, type CommandResult, type FeedCommand } from "./feed.ts";
 import { ModelProxy } from "../../03-tab-to-cloud/pipe/model-proxy.ts";
 import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
-import { makeSourceRun } from "./source.ts";
+import { makeSourceRun, runStamp } from "./source.ts";
 import { homeAdoption } from "./home-adoption.ts";
 import { chooseHomePolicy, homeBody } from "./home-policy.ts";
 import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
@@ -82,6 +83,8 @@ const { values } = parseArgs({
     getup: { type: "string", default: "/opt/pda/train/default/getup.json" },
     python: { type: "string", default: "/usr/local/bin/python" },
     minutes: { type: "string", default: "6" },
+    /** Every machine's hard lifetime in minutes (the provider destroys it at this age): default 30, or the training plus 10. */
+    "ttl-minutes": { type: "string" },
     /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
     "source-files": { type: "string" },
     /** train.py's compile cache: in the run's work/ (default), or an absolute path of each box's own. */
@@ -114,7 +117,7 @@ if (onModal && !values["modal-image"]) throw new Error("--modal-image names the 
 
 const n = Number(values.universes);
 const training = values.workload === "train";
-const stamp = Date.now().toString(36);
+const stamp = runStamp();
 const log = jsonLog();
 const ledger = new Ledger(values.ledger!);
 const onResource = (kind: string, id: string, note?: string) => {
@@ -122,12 +125,49 @@ const onResource = (kind: string, id: string, note?: string) => {
   else if (kind === "token-removed") ledger.close("token", id);
   else if (kind === "mount") ledger.open("mount", id, note);
   else if (kind === "unmount") ledger.close("mount", id, note);
-  else if (kind === "run") ledger.open("run", id, note);
+  else if (kind === "run") {
+    // Listed for cleanup once made (its directory created under this serve's own id), never before.
+    ledger.open("run", id, note);
+    if (!createdRuns.includes(id)) createdRuns.push(id);
+  }
   else if (kind === "subdir") ledger.open("subdir", id);
   else if (kind === "subdir-deleted") ledger.close("subdir", id);
 };
 
 const control = await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY });
+
+/** Every run this serve made, listed when it is created (onResource "run"), so a failure later still deletes it. */
+const createdRuns: string[] = [];
+/** This serve's mount tokens, then its runs, except `handed` (the tab's server holds it). */
+async function removeTokensAndRuns(handed?: string): Promise<void> {
+  for (const row of ledger.openRows().filter((r) => r.kind === "token")) {
+    await removeMountToken(control, row.id).then(() => ledger.close("token", row.id, "cleanup"), (e: unknown) => log("token.remove-failed", { id: row.id, error: (e as Error).message }));
+  }
+  for (const id of createdRuns) {
+    // The run that went home belongs to the tab's server from its adoption on: it stays, unless asked.
+    if (id === handed) {
+      ledger.close("run", id, `handed to the tab's server at ${values["home-server"]}`);
+      ledger.close("subdir", `runs/${id}/`, "handed to the tab's server");
+      continue;
+    }
+    await deleteRunTree(control, id).then(
+      (r) => {
+        ledger.close("run", id, `deleted ${r.objects} objects`);
+        ledger.close("subdir", `runs/${id}/`);
+      },
+      (e: unknown) => log("run.delete-failed", { run: id, error: (e as Error).message }),
+    );
+  }
+}
+// Until the feed is up a failure has made at most runs and their tokens (no machine exists before a prewarm): that is
+// the startup cleanup. Every way out short of SIGKILL runs the cleanup current then (exit-cleanup.ts), once; past
+// SIGKILL, each machine's hard lifetime holds.
+const { cleanup, ready: cleanupReady, track: creating } = stagedCleanup(async () => {
+  if (values.keep) return;
+  await removeTokensAndRuns();
+  log("cleanup", { stage: "startup", runs: createdRuns.length, open: ledger.openRows().length });
+});
+cleanupOnExit(cleanup, process, log);
 const transport = values.transport === "pipe" ? "pipe" : "direct";
 const daytonaApi = (process.env.DAYTONA_API_URL || "https://app.daytona.io/api").replace(/\/+$/, "");
 /** A signed preview URL of one port of a box (bound to that port, expiring). */
@@ -174,7 +214,10 @@ const warmup = (() => {
   return { files, command, timeoutSec: 900 };
 })();
 
+// The warm compile runs on the same machine before its training: its budget is part of the machine's life.
+const ttlMinutes = machineLifetime(values["ttl-minutes"] === undefined ? undefined : Number(values["ttl-minutes"]), Number(values.minutes), warmup ? warmup.timeoutSec / 60 : 0);
 const fleet = daytonaFleet({
+  ttlMinutes,
   client: modal?.client ?? daytonaRest({ apiKey: process.env.DAYTONA_API_KEY!, ...(process.env.DAYTONA_API_URL ? { apiUrl: process.env.DAYTONA_API_URL } : {}) }),
   ...(modal ? { kind: modal.kind, ratePerHour: modal.ratePerHour, label: modal.label, ledgerKind: "modal-sandbox" } : {}),
   snapshot: values["modal-image"] ?? values.snapshot!,
@@ -212,9 +255,9 @@ const origin = Date.now();
 const feed = new Feed();
 const sourceLabel = "your browser tab";
 let source: RunRef = { disk, region, id: values.source ?? `d1-src-${stamp}` };
-const createdRuns: string[] = [];
 if (!values.source) {
-  await makeSourceRun({
+  // Tracked: a signal while its directory is being created waits for the create, then deletes what it made.
+  await creating(makeSourceRun({
     control,
     ref: source,
     mountRoot: values["mount-root"]!,
@@ -222,8 +265,7 @@ if (!values.source) {
     ...(values["source-files"] ? { files: values["source-files"] } : {}),
     onResource,
     log,
-  });
-  createdRuns.push(source.id);
+  }));
 }
 feed.emit({
   t: "run",
@@ -294,10 +336,8 @@ const mv = new Multiverse({
   log,
   ...(forkAll ? { forkAll } : {}),
   ...(training ? { progress: (run: RunRef, spec: UniverseSpec) => readTrainProgress(control, run, spec.id), scoresMeasured: true, resumeTimeoutMs: 600_000 } : {}),
-  onResource: (kind, id, note) => {
-    onResource(kind, id, note);
-    if (kind === "run") createdRuns.push(id);
-  },
+  // A fork's run is listed for cleanup by onResource, as the source's is.
+  onResource,
 });
 
 const takeovers: TakeoverReport[] = [];
@@ -374,48 +414,25 @@ const server = await serveFeed({
   // Where the tab finds the run to attach when it is called home: the winner's run, once there is one.
   routes: { winner: () => mv.winner()?.placed.run, home: () => homes.home },
 });
-log("feed", { url: server.url, source: source.id, universes: n, transport });
+log("feed", { url: server.url, source: source.id, universes: n, transport, ttlMinutes });
 
-let cleaning: Promise<void> | undefined;
-async function cleanup(): Promise<void> {
-  cleaning ??= (async () => {
-    // No adoption starts from here on; one in flight decides whether the winner's run is the tab's, so it ends (30 s at
-    // most) before any run goes.
-    const adopted = homes.close();
-    await mv.close({ machines: !values.keep });
-    await adopted;
-    if (values.keep) return;
-    await pipes?.releaseAll();
-    const swept = await fleet.sweep();
-    // A create that gave up can place before Modal tags it: the app is this driver's alone, so every running sandbox goes.
-    if (modal) swept.push(...(await modal.sweepApp().catch((e: unknown) => (log("modal.sweep-failed", { error: (e as Error).message }), []))));
-    for (const row of ledger.openRows().filter((r) => r.kind === "token")) {
-      await removeMountToken(control, row.id).then(() => ledger.close("token", row.id, "cleanup"), (e: unknown) => log("token.remove-failed", { id: row.id, error: (e as Error).message }));
-    }
-    for (const id of createdRuns) {
-      // The run that went home belongs to the tab's server from its adoption on: it stays, unless asked.
-      if (id === homes.handed && !values["delete-home"]) {
-        ledger.close("run", id, `handed to the tab's server at ${values["home-server"]}`);
-        ledger.close("subdir", `runs/${id}/`, "handed to the tab's server");
-        continue;
-      }
-      await deleteRunTree(control, id).then(
-        (r) => {
-          ledger.close("run", id, `deleted ${r.objects} objects`);
-          ledger.close("subdir", `runs/${id}/`);
-        },
-        (e: unknown) => log("run.delete-failed", { run: id, error: (e as Error).message }),
-      );
-    }
-    log("cleanup", { swept, runs: createdRuns.length, open: ledger.openRows().filter((r) => r.kind !== "daytona-box" || !swept.includes(r.id)).length });
-    server.close();
-    feed.close();
-  })();
-  return cleaning;
-}
-// A wrapper (timeout, a terminal) can deliver the signal more than once: every one waits for the same cleanup, so a
-// second signal never ends the process before the machines, mounts and runs are gone.
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => void cleanup().then(() => process.exit(130)));
+// The feed is up: from here on the cleanup is the whole one.
+cleanupReady(async () => {
+  // No adoption starts from here on; one in flight decides whether the winner's run is the tab's, so it ends (30 s at
+  // most) before any run goes.
+  const adopted = homes.close();
+  await mv.close({ machines: !values.keep });
+  await adopted;
+  if (values.keep) return;
+  await pipes?.releaseAll();
+  const swept = await fleet.sweep();
+  // A create that gave up can place before Modal tags it: the app is this driver's alone, so every running sandbox goes.
+  if (modal) swept.push(...(await modal.sweepApp().catch((e: unknown) => (log("modal.sweep-failed", { error: (e as Error).message }), []))));
+  await removeTokensAndRuns(values["delete-home"] ? undefined : homes.handed);
+  log("cleanup", { swept, runs: createdRuns.length, open: ledger.openRows().filter((r) => r.kind !== "daytona-box" || !swept.includes(r.id)).length });
+  server.close();
+  feed.close();
+});
 
 if (values.auto) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
