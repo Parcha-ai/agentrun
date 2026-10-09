@@ -260,6 +260,7 @@ def main() -> None:
   out = combine(walk, json.load(open(args.getup)), args.below, args.above)
   import os
   text = dumps(out)  # serialised before anything is created: a refusal leaves no file behind
+  os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)  # home/ may not exist before the first arrival
   tmp = f"{args.out}.tmp-{os.getpid()}"
   try:
     with open(tmp, "w") as f:
