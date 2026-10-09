@@ -384,6 +384,7 @@ export class ScenarioPlayer {
       this.fanOut();
       return { ok: true };
     }
+    if (cmd.t === "prewarm") return { ok: false, message: "the scripted feed has no machines to warm" };
     if (cmd.t === "collapse") {
       if (!o.operator) return { ok: false, message: "the scripted feed runs its own collapse" };
       return this.collapse(cmd.winner) ? { ok: true } : { ok: false, message: cmd.winner ? `${cmd.winner} is not live` : "no live universes" };

@@ -141,6 +141,13 @@ button.btn:disabled { opacity: .4; cursor: default; }
 #caption .tag.measured { color: var(--ok); } #caption .tag.scripted { color: var(--gpu); } #caption .tag.unmeasured { color: var(--muted); } #caption .tag.agent { color: var(--vm); }
 .note[data-kind="agent"] { border-color: var(--vm); }
 #source { font: 700 10px var(--mono); letter-spacing: .12em; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--gpu); color: var(--gpu); }
+/* the live desktop, over the multiverse area while the run is on a VM */
+#desktop { position: absolute; left: 12px; right: 12px; top: 56px; bottom: 52px; z-index: 3; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; background: #000; overflow: hidden; }
+#desktop[hidden] { display: none; }
+#desktop .dbar { display: flex; justify-content: space-between; gap: 12px; padding: 6px 12px; font: 11px var(--mono); color: var(--muted); background: var(--panel); border-bottom: 1px solid var(--line); }
+#desktop .dbar b { color: var(--vm); }
+#desktop .dnote { margin: auto; color: var(--muted); font: 13px var(--mono); }
+#desktop img { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
 #lost { position: fixed; top: 0; left: 0; right: 0; background: var(--bad); color: #160504; text-align: center; font-weight: 700; padding: 4px; z-index: 10; }
 </style>
 </head>
@@ -149,6 +156,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
   <h3><span>Operator</span><span>o hides</span></h3>
   <div class="grp" id="openvs"></div>
   <div class="grp">
+    <button data-op="prewarm">Prewarm<kbd>p</kbd></button>
     <button data-op="fanout">Fan out<kbd>f</kbd></button>
     <button data-op="kill" class="danger">Kill leader<kbd>k</kbd></button>
     <button data-op="collapse">Collapse<kbd>c</kbd></button>
@@ -179,6 +187,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
   <section id="mv">
     <div class="pane-h"><span>The multiverse</span><span class="right"><span id="mvsum"></span><button class="btn" id="killone">KILL THE LEADER</button></span></div>
     <div id="grid"></div>
+    <div id="desktop" hidden><div class="dbar"><span>Live desktop of <b class="dhost"></b></span><span>view only: the agent drives it</span></div><div class="dnote">Looking for the desktop...</div><img alt="The live desktop of the machine the agent is on" hidden></div>
     <div id="caption" hidden></div>
     <div id="strip"></div>
   </section>
