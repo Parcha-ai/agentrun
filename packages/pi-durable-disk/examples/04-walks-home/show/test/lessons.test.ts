@@ -37,5 +37,5 @@ test("a run that reaches first steps at a different checkpoint says the same thi
 });
 
 test("no lesson line quotes a number: a fall rate measured on a different random brain is never put over the tab's untrained creature", () => {
-  for (const band of ["fall", "shuffle", "steps", "walk"] as const) assert.doesNotMatch(lessonFor(band) ?? "", /\d|%/, band);
+  for (const band of ["fall", "shuffle", "steps", "walk"] as const) assert.doesNotMatch((lessonFor(band) ?? "").replace(/^Lesson \d: /, ""), /\d|%/, band); // "Lesson 1" is a name, not a measurement
 });
