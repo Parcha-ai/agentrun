@@ -99,6 +99,8 @@ type Writer = {
   attachedAt: number;
   /** Set until `attached` is sent: hashing a large workspace must not count as a silent writer. */
   attaching: boolean;
+  /** Upload chunks being written now: a writer whose chunk is still on its way to the disk is not silent. */
+  uploading: number;
 };
 
 /**
@@ -227,13 +229,21 @@ export class RunPipe {
       await this.#store!.storage.close(ctx);
       store = this.#store = await this.#openStore(join(this.lease.claim.store, "run.sqlite"));
     }
-    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true };
+    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true, uploading: 0 };
     this.#writer = writer;
     this.#goneFired = false;
-    // Every earlier writer is retired: an upload left in tmp/pipe-uploads/ (this pipe's, or a crashed one's) is stale.
-    await this.#discardUploads(() => true);
-    await rm(this.#uploadDir, { recursive: true, force: true });
-    const manifest = await this.manifest();
+    let manifest: Awaited<ReturnType<RunPipe["manifest"]>>;
+    try {
+      // Every earlier writer is retired: an upload left in tmp/pipe-uploads/ (this pipe's, or a crashed one's) is stale.
+      await this.#discardUploads(() => true);
+      await rm(this.#uploadDir, { recursive: true, force: true });
+      manifest = await this.manifest();
+    } catch (error) {
+      // No half-attached writer stays behind: retired, so the gone check and the next hello see no writer.
+      writer.attaching = false;
+      await this.#retire(writer, "ATTACH_FAILED", `the attach failed: ${(error as Error).message}`);
+      throw error;
+    }
     socket.send({
       t: "attached",
       epoch,
@@ -367,6 +377,11 @@ export class RunPipe {
     this.#goneTimer = setInterval(() => {
       const writer = this.#writer;
       if (!writer || writer.dead || writer.attaching || this.#goneFired || this.#lost || this.#released) return;
+      // The server stops reading a writer's frames (its pings too) while its upload chunks wait for the disk.
+      if (writer.uploading > 0) {
+        writer.lastPing = Date.now();
+        return;
+      }
       if (Date.now() - writer.lastPing > (this.#options.writerGraceMs ?? 3_000)) {
         this.#goneFired = true;
         void this.#retire(writer, "GONE", "no ping from the tab").then(() => {
@@ -626,6 +641,7 @@ export class RunPipe {
     const limit = this.#options.uploadLimitBytes ?? 4 * 1024 ** 3;
     u.chain = this.#track(writer, u.chain.then(async () => {
       if (u.failed) return;
+      writer.uploading++;
       try {
         if (offset !== u.size) throw new Error(`a chunk at byte ${offset}, expected ${u.size}`);
         const bytes = Buffer.from(String(data), "base64");
@@ -650,9 +666,11 @@ export class RunPipe {
         }
         u.hash.update(bytes);
         u.size += bytes.length;
-        this.heard(writer.socket);
       } catch (error) {
         u.failed = (error as Error).message;
+      } finally {
+        writer.uploading--;
+        this.heard(writer.socket);
       }
     }));
     return u.chain;
