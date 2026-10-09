@@ -131,6 +131,8 @@ export type ShellToTab = Envelope<
   | { type: "open-memory" }
   | { type: "load-policy"; url: string }
   | { type: "load-design"; design: unknown }
+  /** Swap the terrain: a heightfield asset and geoms, or null for the flat floor. */
+  | { type: "load-world"; world: { asset: unknown; geoms: unknown } | null }
   /** Answers to the tab's storage requests: the agent's disk, as the stage models it. */
   | { type: "storage-result"; id: number; bytes: Uint8Array | null; error?: string }
   | { type: "storage-written"; id: number; error?: string }
@@ -139,6 +141,10 @@ export type TabToShell = Envelope<
   | { type: "ready"; version: string; mujoco?: string; mjcf_sha256?: string }
   | { type: "design-saved"; id: string; name: string; sha256: string }
   | { type: "policy-loaded"; name: string; mjcf_sha256: string; bytes: number }
+  /** A policy that could not be fetched or did not match the creature: the tab keeps its previous policy and says why. */
+  | { type: "policy-refused"; name: string; reason: string }
+  /** The disk answered storage-written with error "not-holder" (another machine holds the run): the design is kept locally and handed to the agent. */
+  | { type: "design-request"; design: unknown; mjcf_sha256: string }
   | { type: "kicked"; force_n: number; t: number }
   | { type: "memory-opened"; rows: number }
   | { type: "fell"; t: number }
