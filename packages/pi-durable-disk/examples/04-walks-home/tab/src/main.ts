@@ -262,6 +262,8 @@ async function main() {
     setPlacement('tab', 'this tab');
 
     $('build').onclick = () => buildCreature(app.sketcher.get(), true).catch((e) => showError(String(e)));
+    $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
+    $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
     $('reset').onclick = () => { app.sim.reset(); app.fallen = false; app.recovering = null; };
     $('addPair').onclick = () => app.sketcher.addPair();
     $('removePair').onclick = () => app.sketcher.removePair();
@@ -275,7 +277,7 @@ async function main() {
     $('command').oninput = (e) => {
       const v = Number((e.target as HTMLInputElement).value);
       app.sim.command = v;
-      $('commandOut').textContent = `${v.toFixed(2)} m/s`;
+      $('commandOut').textContent = v.toFixed(2);
     };
     document.querySelectorAll<HTMLElement>('[data-kick]').forEach((b) => {
       b.onclick = () => {

@@ -3,7 +3,7 @@
 
 import { LIMITS, type Design, type LegPair } from './design.ts';
 
-const PX = 250; // pixels per metre
+const PX = 200; // pixels per metre
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
 type Handle =

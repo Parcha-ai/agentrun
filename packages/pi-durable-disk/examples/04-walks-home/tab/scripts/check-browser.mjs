@@ -19,11 +19,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
 try {
-  const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 1400, height: 800 });
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: Number(process.env.W ?? 1400), height: Number(process.env.H ?? 800) });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
   const S = (m, p) => send(m, p, sessionId);
   await S('Page.enable'); await S('Runtime.enable');
-  await S('Emulation.setDeviceMetricsOverride', { width: 1400, height: 800, deviceScaleFactor: 1, mobile: false });
+  await S('Emulation.setDeviceMetricsOverride', { width: Number(process.env.W ?? 1400), height: Number(process.env.H ?? 800), deviceScaleFactor: 1, mobile: false });
   await S('Page.navigate', { url });
   const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails)); return r.result.value; };
   for (let i = 0; i < 100 && (await ev("document.getElementById('status')?.textContent")) !== 'ready'; i++) await sleep(200);
@@ -33,7 +33,7 @@ try {
     process.exitCode = 1;
     throw new Error('page did not reach ready');
   }
-  const snap = (name) => S('Page.captureScreenshot', { format: 'png' }).then((r) => writeFileSync(`${out}/${name}.png`, Buffer.from(r.data, 'base64')));
+  const snap = (name) => S('Page.captureScreenshot', { format: 'png' }).then((r) => writeFileSync(`${out}/${process.env.W ?? 1400}-${name}.png`, Buffer.from(r.data, 'base64')));
   const state = () => ev("(() => { const a = __walks.app; return {t: a.sim.time, pos: a.sim.torsoPos(), up: a.sim.uprightness(), policy: a.policyName}; })()");
   result.start = await state();
   await sleep(1500); await snap('1-walking');
@@ -45,6 +45,7 @@ try {
   result.afterKick = await state();
   await ev("document.getElementById('openMemory').click()"); await sleep(300);
   await ev("document.getElementById('seedDemo')?.click()"); await sleep(500);
+  result.scrollable = await ev('document.documentElement.scrollHeight > innerHeight + 1 || document.documentElement.scrollWidth > innerWidth + 1');
   await snap('3-memory');
   result.timelineRows = await ev("document.querySelectorAll('#memory .tl li').length");
   result.consoleErrors = events.filter((e) => e.method === 'Runtime.exceptionThrown' || (e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error')).map((e) => JSON.stringify(e.params).slice(0, 300));
