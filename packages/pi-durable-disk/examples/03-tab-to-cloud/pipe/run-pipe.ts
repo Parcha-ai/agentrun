@@ -9,7 +9,10 @@
 //   beside work/; the write-through renames it into place only when its size and SHA-256 match.
 // - Model calls: proxied to the model endpoint with a per-run token budget; the key never reaches the tab.
 // - Restore: on attach, the tab gets work/ as the disk has it: a manifest (each file's size and SHA-256), then the
-//   files in chunks, then the end; the tab checks every file against the manifest and says so.
+//   files in chunks, then the end; the tab checks every file against the manifest and says so. The pipe keeps each
+//   file's digest under its identity (device, inode, size, mtime and ctime in ns), from the write-through that wrote
+//   it or from one read, so an attach reads work/ once: to send it. What it sends is hashed and checked against the
+//   manifest again; a file that changed during the attach fails the restore, never passes torn or stale.
 //
 // One tab writes at a time. A takeover gives the run to a new socket with a new epoch: the old socket is told it lost
 // the run and every later frame of it is refused, after the frames it already sent have settled. Nothing of a retired
@@ -17,7 +20,7 @@
 // Viewers receive the writer's view events and the placement. A fence (the claim revoked, the mount failed, the lease
 // lapsed) ends the pipe: every socket is told, nothing is retried.
 import { createHash, randomBytes, type Hash } from "node:crypto";
-import { constants, renameSync, type Stats } from "node:fs";
+import { constants, renameSync, type BigIntStats, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -136,6 +139,12 @@ export class RunPipe {
   #models = new Map<string, AbortController>();
   /** Uploads in progress, by `<epoch>:<id>`. */
   #uploads = new Map<string, Upload>();
+  /** Each work/ file's SHA-256 by its path, valid while the file's identity (FileKey) is the one recorded with it. */
+  #digests = new Map<string, FileKey & { sha256: string }>();
+  /** work/'s directories, by path. With #digests, what the pipe knows work/ holds: set by a whole walk, kept by writes. */
+  #dirs = new Set<string>();
+  /** Whether #digests and #dirs are all of work/ (a whole walk read every file, and no write since lost track). */
+  #known = false;
   /** The one upload whose file is open; a chunk of another closes it first, so uploads never pile up open files. */
   #openUpload: Upload | undefined;
   #scratch = 0;
@@ -277,23 +286,29 @@ export class RunPipe {
   }
 
   /** The manifest's files, chunk by chunk in its order, then `restore-end`; it waits while the socket is backed up. */
-  async #streamRestore(writer: Writer, manifest: { entries: ManifestEntry[]; files: number; bytes: number }): Promise<void> {
+  async #streamRestore(writer: Writer, manifest: Manifest): Promise<void> {
     const socket = writer.socket;
     const stopped = () => writer.dead || socket.isOpen?.() === false;
     for (const entry of manifest.entries) {
       if (entry.kind !== "file" || entry.size === 0) continue;
       const handle = await open(join(this.lease.claim.work, entry.path), constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
+        // The file sent must be the file the manifest describes: the same identity now, and the same bytes once read.
+        const expected = manifest.keys.get(entry.path);
+        if (!expected || !sameKey(keyOf(await handle.stat({ bigint: true })), expected)) throw this.#changed(entry.path);
+        const hash = createHash("sha256");
         for (let offset = 0; offset < entry.size; ) {
           while (!stopped() && (socket.bufferedAmount?.() ?? 0) > RESTORE_HIGH_WATER) await new Promise((r) => setTimeout(r, 5));
           if (stopped()) return;
           const length = Math.min(CHUNK_BYTES, entry.size - offset);
           const buffer = Buffer.allocUnsafe(length);
           const { bytesRead } = await handle.read(buffer, 0, length, offset);
-          if (bytesRead !== length) throw new Error(`${entry.path} is shorter than its manifest says`);
+          if (bytesRead !== length) throw this.#changed(entry.path);
+          hash.update(buffer);
           socket.send({ t: "restore-chunk", path: entry.path, offset, data: buffer.toString("base64") });
           offset += length;
         }
+        if (hash.digest("hex") !== entry.sha256) throw this.#changed(entry.path);
       } finally {
         await handle.close();
       }
@@ -549,11 +564,12 @@ export class RunPipe {
   /** Directories along `parts` under work/, made where missing; a component that is not a real directory is refused. */
   async #dirAt(parts: string[]): Promise<string> {
     let dir = this.lease.claim.work;
-    for (const part of parts) {
+    for (const [i, part] of parts.entries()) {
       dir = join(dir, part);
       const info = await lstat(dir).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : Promise.reject(error)));
       if (info === null) await mkdir(dir).catch((error: NodeJS.ErrnoException) => (error.code === "EEXIST" ? undefined : Promise.reject(error)));
       else if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`${parts.join("/")} crosses ${part}, which is not a directory`);
+      this.#dirs.add(parts.slice(0, i + 1).join("/"));
     }
     return dir;
   }
@@ -580,6 +596,8 @@ export class RunPipe {
       const info = await lstat(target).catch(() => null);
       if (info === null) return;
       live();
+      // Dropping a digest is always safe (the next manifest reads the file); keeping a wrong one never is.
+      this.#forget(change.path);
       if (info.isDirectory()) await rm(target, { recursive: true, force: true });
       else await unlink(target);
       return;
@@ -587,29 +605,34 @@ export class RunPipe {
     // Written beside the target and renamed over it: a reader never sees half a file, and a symbolic link at the target
     // is replaced, never followed.
     const temp = join(dir, `.pipe-${randomBytes(6).toString("hex")}`);
+    const bytes = fromBase64(change.data);
     live();
-    await writeFile(temp, fromBase64(change.data), { mode: (change.mode ?? 0o644) & 0o777 });
-    await this.#replace(writer, temp, target);
+    await writeFile(temp, bytes, { mode: (change.mode ?? 0o644) & 0o777 });
+    await this.#replace(writer, temp, target, change.path, createHash("sha256").update(bytes).digest("hex"));
   }
 
   /**
-   * Put `temp` at `target` if `writer` is still the writer, else remove `temp` and throw. A directory at the target is
-   * removed first, after the same check. The final check and the rename run in one turn (a synchronous rename), so a
-   * writer retired while its write-through was in flight lands nothing.
+   * Put `temp` at `target` (work/'s `path`) if `writer` is still the writer, else remove `temp` and throw. A directory at
+   * the target is removed first, after the same check. The final check and the rename run in one turn (a synchronous
+   * rename), so a writer retired while its write-through was in flight lands nothing. Once it landed, `sha256` (the
+   * content's, known to the caller) is recorded for the file's new identity.
    */
-  async #replace(writer: Writer, temp: string, target: string): Promise<void> {
+  async #replace(writer: Writer, temp: string, target: string, path: string, sha256: string): Promise<void> {
     try {
       const existing = await lstat(target).catch(() => null);
       if (existing?.isDirectory()) {
         this.#assertCurrent(writer);
+        this.#forget(path);
         await rm(target, { recursive: true, force: true });
       }
       this.#assertCurrent(writer);
+      this.#forget(path);
       renameSync(temp, target);
     } catch (error) {
       await unlink(temp).catch(() => undefined);
       throw error;
     }
+    await this.#remember(path, target, sha256);
   }
 
   /** Where uploads land: inside the claim, outside work/, on the same filesystem as work/ (a rename moves them). */
@@ -710,7 +733,7 @@ export class RunPipe {
       await chmod(upload.file, (change.mode ?? 0o644) & 0o777);
       this.#assertCurrent(writer);
       const dir = await this.#dirAt(parts.slice(0, -1));
-      await this.#replace(writer, upload.file, join(dir, parts.at(-1)!));
+      await this.#replace(writer, upload.file, join(dir, parts.at(-1)!), change.path, sha256);
     } catch (error) {
       await this.#closeUpload(upload);
       await unlink(upload.file).catch(() => undefined);
@@ -733,22 +756,92 @@ export class RunPipe {
    * work/ as the disk has it, without content: every file's size and SHA-256, every directory, symbolic links as their
    * target text. Uploads and `.pipe-` temporaries are not part of it.
    */
-  async manifest(): Promise<{ entries: ManifestEntry[]; files: number; bytes: number }> {
+  async manifest(): Promise<Manifest> {
     const limit = this.#options.restoreLimitBytes ?? 1024 ** 3;
     const entries: ManifestEntry[] = [];
+    const keys = new Map<string, FileKey>();
     let files = 0;
     let bytes = 0;
+    let stable = true;
     await this.#walkWork(async (path, full, info) => {
       if (info.isSymbolicLink()) entries.push({ path, kind: "symlink", target: await readlink(full) });
       else if (info.isDirectory()) entries.push({ path, kind: "directory" });
       else {
-        bytes += info.size;
+        const { sha256, key, recorded } = await this.#fileDigest(path, full);
+        stable &&= recorded;
+        const size = Number(key.size);
+        bytes += size;
         if (bytes > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
         files++;
-        entries.push({ path, kind: "file", size: info.size, sha256: await fileSha256(full), mode: info.mode & 0o777, mtimeMs: info.mtimeMs });
+        keys.set(path, key);
+        entries.push({ path, kind: "file", size, sha256, mode: info.mode & 0o777, mtimeMs: info.mtimeMs });
       }
     });
-    return { entries, files, bytes };
+    // The walk is what work/ holds: what the pipe kept should say the same (logged if not), and is replaced by it.
+    const kept = this.#knownEntries();
+    if (kept) {
+      const [was, is] = await Promise.all([manifestDigest(kept), manifestDigest(entries)]);
+      if (was !== is) this.#log("pipe.work-diverged", { kept: was, walked: is });
+    }
+    for (const path of [...this.#digests.keys()]) if (!keys.has(path)) this.#digests.delete(path);
+    this.#dirs = new Set(entries.filter((e) => e.kind === "directory").map((e) => e.path));
+    this.#known = stable;
+    return { entries, keys, files, bytes };
+  }
+
+  /** What the pipe knows work/ holds, as manifest entries (only path, kind and digest mean anything), or null. */
+  #knownEntries(): ManifestEntry[] | null {
+    if (!this.#known) return null;
+    // The walk's rule for the pipe's own names: none at the top of work/, no file below.
+    const walked = (path: string, kind: "file" | "directory") => !path.split("/")[0]!.startsWith(".pipe-") && !(kind === "file" && path.split("/").at(-1)!.startsWith(".pipe-"));
+    const entries: ManifestEntry[] = [...this.#dirs].filter((path) => walked(path, "directory")).map((path) => ({ path, kind: "directory" as const }));
+    for (const [path, d] of this.#digests) if (walked(path, "file")) entries.push({ path, kind: "file", size: Number(d.size), sha256: d.sha256, mode: 0, mtimeMs: 0 });
+    return entries;
+  }
+
+  /**
+   * A work/ file's SHA-256 and the identity it belongs to: from the cache when the file's identity is the one recorded,
+   * else read once and recorded only if the file did not change while it was read.
+   */
+  async #fileDigest(path: string, full: string): Promise<{ sha256: string; key: FileKey; recorded: boolean }> {
+    const now = keyOf(await lstat(full, { bigint: true }));
+    const cached = this.#digests.get(path);
+    if (cached && sameKey(cached, now)) return { sha256: cached.sha256, key: now, recorded: true };
+    const handle = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const before = keyOf(await handle.stat({ bigint: true }));
+      const sha256 = await hashHandle(handle);
+      const after = keyOf(await handle.stat({ bigint: true }));
+      const recorded = sameKey(before, after);
+      if (recorded) this.#digests.set(path, { ...after, sha256 });
+      else this.#digests.delete(path);
+      return { sha256, key: before, recorded };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /** Record what a write-through just put at `path`: its digest under the identity the file has now. */
+  async #remember(path: string, full: string, sha256: string): Promise<void> {
+    try {
+      this.#digests.set(path, { ...keyOf(await lstat(full, { bigint: true })), sha256 });
+    } catch {
+      this.#digests.delete(path);
+      this.#known = false;
+    }
+  }
+
+  /** Drop what the pipe knows of `path` and of everything under it (a file or a directory that went). */
+  #forget(path: string): void {
+    for (const key of [...this.#digests.keys()]) if (key === path || key.startsWith(`${path}/`)) this.#digests.delete(key);
+    for (const dir of [...this.#dirs]) if (dir === path || dir.startsWith(`${path}/`)) this.#dirs.delete(dir);
+  }
+
+  /** A file that changed during an attach: its digest is dropped (the next attach reads it), the restore fails. */
+  #changed(path: string): Error {
+    this.#digests.delete(path);
+    this.#known = false;
+    return new Error(`${path} changed during the attach; attach again`);
   }
 
   /** work/ for viewers, with every file's content (as before chunked restore): nothing past VIEW_FILES_LIMIT. */
@@ -898,13 +991,23 @@ export class RunPipe {
     // No upload outlives the pipe: the next holder of the claim (a cloud host's agent) never sees one.
     await this.#discardUploads(() => true);
     await rm(this.#uploadDir, { recursive: true, force: true }).catch(() => undefined);
-    const digest = await this.workDigest().catch((error: Error) => `unreadable: ${error.message}`);
+    // The digest of work/ for the log line is what the pipe knows work/ holds, taken now while the claim is held: no
+    // read on the handover path. Only when it does not know (no whole walk since it opened) does it walk work/ first.
+    const kept = this.#knownEntries();
+    const workSource = kept ? "kept" : "walked";
+    const entries = kept ?? (await this.manifest().then((m) => m.entries, () => null));
     const started = performance.now();
     await this.lease.release();
-    this.#log("pipe.released", { ms: Math.round(performance.now() - started), workDigest: digest, generation: this.lease.generation });
+    const ms = Math.round(performance.now() - started);
+    const generation = this.lease.generation;
+    // Hashed and logged after the release: the next host does not wait for it.
+    void (entries ? (this.#options.digest ?? manifestDigest)(entries) : Promise.reject(new Error("work/ could not be read"))).then(
+      (workDigest) => this.#log("pipe.released", { ms, workDigest, workSource, generation }),
+      (error: Error) => this.#log("pipe.released", { ms, workDigest: `unreadable: ${error.message}`, workSource, generation }),
+    );
   }
 
-  /** `workspaceDigest` of work/ as the disk has it. */
+  /** `workspaceDigest` of work/ as the disk has it (from the digests the pipe keeps; a file read only if it changed). */
   async workDigest(): Promise<string> {
     return manifestDigest((await this.manifest()).entries);
   }
@@ -915,19 +1018,30 @@ export class RunPipe {
   }
 }
 
-/** SHA-256 hex of a file, read in CHUNK_BYTES pieces (never whole in memory). */
-async function fileSha256(path: string): Promise<string> {
+/** A manifest, and the identity of each of its files when it was made (the stream checks it again). */
+type Manifest = { entries: ManifestEntry[]; keys: Map<string, FileKey>; files: number; bytes: number };
+
+/**
+ * What identifies a file's content without reading it. A write-through renames a new inode into place; an in-place
+ * write moves mtime and ctime. On the Archil mount they move at ns resolution (measured: 50 of 50 same-size rewrites
+ * under 1 ms apart moved both); a filesystem with coarse times (ext4 ticks of a few ms) can leave a rewrite within the
+ * same tick unseen. Nothing but the write-through writes work/ while the pipe holds the claim; and whatever the key
+ * says, the restore hashes what it sends and fails on a mismatch, so a missed rewrite costs a failed attach, never a
+ * stale file.
+ */
+type FileKey = { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint };
+const keyOf = (s: BigIntStats): FileKey => ({ dev: s.dev, ino: s.ino, size: s.size, mtimeNs: s.mtimeNs, ctimeNs: s.ctimeNs });
+const sameKey = (a: FileKey, b: FileKey) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+
+/** SHA-256 hex of an open file, read from its start in CHUNK_BYTES pieces (never whole in memory). */
+async function hashHandle(handle: FileHandle): Promise<string> {
   const hash = createHash("sha256");
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
-    for (;;) {
-      const { bytesRead } = await handle.read(buffer, 0, CHUNK_BYTES, null);
-      if (bytesRead === 0) break;
-      hash.update(buffer.subarray(0, bytesRead));
-    }
-  } finally {
-    await handle.close();
+  const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
+  for (let position = 0; ; ) {
+    const { bytesRead } = await handle.read(buffer, 0, CHUNK_BYTES, position);
+    if (bytesRead === 0) break;
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
   }
   return hash.digest("hex");
 }
