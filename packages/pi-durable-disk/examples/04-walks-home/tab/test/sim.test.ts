@@ -129,7 +129,10 @@ test('the 3-DOF body: joint order abd, hip, knee per leg, actuators in the same 
   }
   const abd = 1; // joint 0 is the free joint, so l0_abd is joint 1 in the model
   assert.deepEqual(Array.from(m.jnt_axis.slice(3 * abd, 3 * abd + 3)), [1, 0, 0]);
-  assert.ok(Math.abs(m.jnt_range[2 * abd] + 0.5) < 1e-9 && Math.abs(m.jnt_range[2 * abd + 1] - 0.5) < 1e-9);
+  // wide ranges so the creature can get up from its side and back: abd +-1.0, hip +-2.5, knee 0..2.6 (ctrlrange = joint range)
+  const range = (j: number) => [m.jnt_range[2 * j], m.jnt_range[2 * j + 1]].map((v: number) => Math.round(v * 1e6) / 1e6);
+  assert.deepEqual([range(1), range(2), range(3)], [[-1, 1], [-2.5, 2.5], [0, 2.6]]);
+  assert.deepEqual(Array.from({ length: 3 }, (_, i) => [m.actuator_ctrlrange[2 * i], m.actuator_ctrlrange[2 * i + 1]].map((v: number) => Math.round(v * 1e6) / 1e6)), [[-1, 1], [-2.5, 2.5], [0, 2.6]]);
   assert.ok(built.xml.indexOf('l0_abd') < built.xml.indexOf('name="l0_hip"'), 'abd comes before hip in the same body');
 });
 
@@ -151,4 +154,14 @@ test('a 3-DOF standing creature recovers from a 60 N shove from every side, and 
     for (let i = 0; i < 150; i++) sim.step(null);
     assert.ok(sim.uprightness() > 0.9, `shoved ${dir}: ${sim.uprightness()}`);
   }
+});
+
+test('the 2-DOF body keeps its narrow ranges (hip -1..1, knee 0..2.3), the 3-DOF body has the wide ones', async () => {
+  const two = (await fixture(defaultDesign(2))).built.xml;
+  const three = (await fixture(defaultDesign(3))).built.xml;
+  assert.match(two, /name="l0_hip" type="hinge" axis="0 1 0" range="-1 1"/);
+  assert.match(two, /name="l0_knee" type="hinge" axis="0 1 0" range="0 2.3"/);
+  assert.match(three, /name="l0_hip" type="hinge" axis="0 1 0" range="-2.5 2.5"/);
+  assert.match(three, /name="l0_knee" type="hinge" axis="0 1 0" range="0 2.6"/);
+  assert.match(three, /name="l0_abd" type="hinge" axis="1 0 0" range="-1 1"/);
 });
