@@ -111,26 +111,39 @@ export type ShowEvent =
   | { t: "note"; at: number; kind: NoteKind; text: string };
 
 /** What the page sends: a command, answered by an event stream, never by a return value. */
-export type ShowCommand = { t: "kill"; universe: string } | { t: "switch"; to: string } | { t: "reset" };
+export type ShowCommand =
+  | { t: "kill"; universe: string }
+  | { t: "switch"; to: string }
+  | { t: "reset" }
+  /** Operator commands: the page never sends them. `fanout` starts the fork fan-out; `collapse` keeps one universe and seals the rest. */
+  | { t: "fanout" }
+  | { t: "collapse"; winner?: string };
 
 /** Messages between the shell and the embedded tab app (same-origin iframe), agreed with D3. Both sides check the origin. */
 export type Envelope<T> = { ns: "walks-home" } & T;
 export type TabKind = "tab" | "daytona" | "gpu" | "vm";
 export type ShellToTab = Envelope<
   | { type: "set-placement"; kind: TabKind; label: string; since: number }
-  | { type: "kick"; dir: [number, number, number]; force_n: number }
+  /** dir is in the creature's heading frame: [1,0] pushes forward, [0,1] pushes left. */
+  | { type: "kick"; dir: [number, number]; force_n: number }
   | { type: "open-memory" }
   | { type: "load-policy"; url: string }
-  | { type: "load-design"; url?: string; json?: unknown }
+  | { type: "load-design"; design: unknown }
+  /** Answers to the tab's storage requests: the agent's disk, as the stage models it. */
+  | { type: "storage-result"; id: number; bytes: Uint8Array | null; error?: string }
+  | { type: "storage-written"; id: number; error?: string }
 >;
 export type TabToShell = Envelope<
-  | { type: "ready"; version: string }
+  | { type: "ready"; version: string; mujoco?: string; mjcf_sha256?: string }
   | { type: "design-saved"; id: string; name: string; sha256: string }
   | { type: "policy-loaded"; name: string; mjcf_sha256: string; bytes: number }
   | { type: "kicked"; force_n: number; t: number }
   | { type: "memory-opened"; rows: number }
   | { type: "fell"; t: number }
-  | { type: "stood"; t: number }
+  | { type: "stood"; t: number; since_kick?: number }
+  /** The tab keeps creature/designs.sqlite and creature/memory.sqlite on the agent's disk; with no answer in 1.5 s it falls back to the browser. */
+  | { type: "storage-read"; id: number; path: string }
+  | { type: "storage-write"; id: number; path: string; bytes: Uint8Array }
 >;
 
 export const GRID = { rows: 2, cols: 4, slots: 8 } as const;

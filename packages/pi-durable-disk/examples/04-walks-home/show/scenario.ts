@@ -319,7 +319,8 @@ export class ScenarioPlayer {
     this.spent += (perHour / 3600) * dt;
     const cost: Cost = { usd: Math.round(this.spent * 10000) / 10000, ratePerMin: Math.round((perHour / 60) * 10000) / 10000 };
     this.emit({ t: "cost", at: this.clock, cost });
-    this.at(this.clock + 1000, () => this.costTick());
+    // Once the run is home nothing is billed, so the ticker ends and the script's last event is its last story line.
+    if (!(p.where === "home" && perHour === 0)) this.at(this.clock + 1000, () => this.costTick());
   }
 
   /** Run every job due by scenario time `to` (ms), in order. */
@@ -340,6 +341,7 @@ export class ScenarioPlayer {
       this.moveRun(cmd.to, false);
       return { ok: true };
     }
+    if (cmd.t === "fanout" || cmd.t === "collapse") return { ok: false, message: "the scripted feed runs its own fan-out and collapse" };
     return { ok: false, message: "reset is handled by the server" };
   }
 

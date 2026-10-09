@@ -43,6 +43,7 @@ export async function openTab(url, { width = 1600, height = 900 } = {}) {
   return {
     logs,
     send,
+    listen: (fn) => listeners.push(fn),
     async eval(expression) {
       const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
       if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);

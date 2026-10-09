@@ -92,7 +92,10 @@ export function spares(state: ShowState): Universe[] {
   return Object.values(state.universes).filter((u) => u.status === "spare");
 }
 
-/** Universes that fell and are no longer in a cell: the tray under the grid. */
+/**
+ * Machines that died and are no longer in a cell: the tray under the grid. A spare retired unused at collapse is sealed
+ * with no slot and is not a casualty, so it is not listed.
+ */
 export function fallen(state: ShowState): Universe[] {
-  return Object.values(state.universes).filter((u) => u.slot === null && (u.status === "killed" || u.status === "sealed"));
+  return Object.values(state.universes).filter((u) => u.slot === null && u.status === "killed");
 }

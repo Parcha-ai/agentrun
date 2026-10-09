@@ -32,7 +32,7 @@ $("killone").addEventListener("click", () => {
   const l = leader(feed.state);
   if (l) void kill(l.id);
 });
-$("kick").addEventListener("click", () => bridge.send({ type: "kick", dir: [1, 0, 0.2], force_n: 60 }));
+$("kick").addEventListener("click", () => bridge.send({ type: "kick", dir: [1, 0], force_n: 60 }));
 $("memory").addEventListener("click", () => bridge.send({ type: "open-memory" }));
 
 let tabLine: string[] = [];
@@ -41,7 +41,30 @@ function tabEvent(text: string): void {
   $("tabevents").textContent = tabLine.join("  |  ");
 }
 
+/** The tab's memory files live on the stage's disk (server side), so a reload of the page keeps the creature. */
+async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "storage-write" }>): Promise<void> {
+  const url = `/api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`;
+  try {
+    if (m.type === "storage-read") {
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.status === 204 || res.status === 404) return bridge.send({ type: "storage-result", id: m.id, bytes: null });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()) });
+    }
+    // The write is acknowledged only after the disk has it: the tab treats the ack as durability.
+    const res = await fetch(url, { method: "PUT", body: m.bytes as BodyInit });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    bridge.send({ type: "storage-written", id: m.id });
+    tabEvent(`disk write ${m.path} ${m.bytes.byteLength} B`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (m.type === "storage-read") bridge.send({ type: "storage-result", id: m.id, bytes: null, error: message });
+    else bridge.send({ type: "storage-written", id: m.id, error: message });
+  }
+}
+
 bridge.onMessage((m: TabToShell) => {
+  if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
     .map(([k, v]) => `${k}=${typeof v === "number" ? Math.round(v as number) : String(v).slice(0, 14)}`)
@@ -66,13 +89,13 @@ bridge.onReady(() => {
   maybeSendPolicy(feed.state);
 });
 
-/** The winner's policy goes to the tab once, when the run is home: a same-origin path, the format is D2's and D3's. */
+/** The winner's policy goes to the tab once, when the run is home. D2 writes it as work/home/policy.json (mlp-v1 JSON); the stage serves it at /policy/home.json from POLICY_DIR. */
 function maybeSendPolicy(state: ShowState): void {
   if (state.place.where !== "home" || !bridge.ready) return;
   const winner = Object.values(state.universes).find((u) => u.status === "winner");
   if (!winner || policySentFor === winner.id) return;
   policySentFor = winner.id;
-  bridge.send({ type: "load-policy", url: `/policy/${encodeURIComponent(winner.id)}.bin` });
+  bridge.send({ type: "load-policy", url: "/policy/home.json" });
 }
 
 function renderChrome(state: ShowState): void {
@@ -106,6 +129,7 @@ function renderChrome(state: ShowState): void {
   const us = Object.values(state.universes);
   const live = us.filter((u) => u.status === "training" || u.status === "takeover" || u.status === "starting").length;
   $("mvsum").textContent = us.length ? `${live} live` : "";
+  $("mv").classList.toggle("dormant", us.length === 0);
   ($("killone") as HTMLButtonElement).disabled = !leader(state);
   $("lost").hidden = !feed.lost;
 }

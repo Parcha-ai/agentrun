@@ -57,6 +57,15 @@ test("kill, takeover: the killed universe holds its cell until the spare takes i
   assert.equal(spares(s).length, 0);
 });
 
+test("a spare retired unused at collapse is sealed with no slot and is not a casualty", () => {
+  const s = fold([
+    { t: "universe", at: 1, id: "spare2", patch: { slot: null, status: "spare", host: "B" } },
+    { t: "universe", at: 9, id: "spare2", patch: { slot: null, status: "sealed" } },
+    { t: "universe", at: 9, id: "u4", patch: { slot: null, status: "killed", host: "A" } },
+  ]);
+  assert.deepEqual(fallen(s).map((u) => u.id), ["u4"]);
+});
+
 test("stays: a repeated stay.begin is ignored and a repeated stay.end keeps its first end time", () => {
   const begin: ShowEvent = { t: "stay.begin", at: 5, stay: { id: "s1", lane: "run", host: "tab", hostKind: "tab", from: 5 } };
   let s = fold([begin, begin]);
