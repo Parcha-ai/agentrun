@@ -20,7 +20,7 @@ import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.t
 import { CHUNK_BYTES, toBase64, untag, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
-export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "This tab", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
+export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "your browser", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
 
 /** Where a run goes when no tab runs it, and how it is taken back. Optional: without it a run parks. */
 export interface CloudHost {
