@@ -54,6 +54,7 @@ export function startWorkload(o: WorkloadOptions): Workload {
     stepMs: num(o.env.UNIVERSE_STEP_MS, 1_000),
     checkpointEvery: num(o.env.UNIVERSE_CHECKPOINT_EVERY, 5),
     seed: num(o.env.UNIVERSE_SEED, 1),
+    checkpointBytes: num(o.env.UNIVERSE_CHECKPOINT_BYTES, 0),
     generation: o.generation,
     host: o.host,
     barrier: () => o.checkpointed(),

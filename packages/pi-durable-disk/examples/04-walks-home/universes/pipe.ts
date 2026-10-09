@@ -5,8 +5,9 @@
 // socket with a new epoch, and the pipe refuses every later frame of the replaced one. The claim never moves, so a
 // takeover needs no revoke and no mount.
 //
-// The frames a runner sends are the tab's (wire.ts) and go to the pipe as 03's server sends them: Storage calls and
-// write-throughs in arrival order, model streams and pings beside them.
+// The frames a runner sends are the tab's (wire.ts) and go to the pipe as 03's server sends them (pipe/server.ts onFrame):
+// Storage calls, write-throughs and upload chunks in arrival order, model streams and pings beside them. A frame type
+// this bridge does not route is dropped, so a protocol change in 03 must be mirrored here.
 import { randomBytes } from "node:crypto";
 import { mintMountToken, removeMountToken } from "@parcha/pi-durable-disk";
 import type { ArchilHost, HostStatus, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
@@ -58,6 +59,9 @@ export type PipePlacement = Pick<Fleet, "transport" | "place" | "status" | "seal
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Upload chunks (base64 characters) queued on one socket before it is paused, and below which it resumes. */
+const UPLOAD_QUEUE_HIGH = 32 * 1024 * 1024;
+const UPLOAD_QUEUE_LOW = 8 * 1024 * 1024;
 
 /** A WebSocket as the pipe's socket. */
 function adapt(ws: WebSocket, id: string): PipeSocket {
@@ -135,6 +139,7 @@ export function pipePlacement(o: PipeOptions): PipePlacement {
     return new Promise<number>((resolve, reject) => {
       let hello: Promise<void> | undefined;
       let queue: Promise<void> = Promise.resolve();
+      let queuedUpload = 0;
       const failed = (error: unknown) => log("frame.failed", { run: expect.run, error: (error as Error).message });
       const handle = async (frame: TabFrame) => {
         switch (frame.t) {
@@ -142,6 +147,11 @@ export function pipePlacement(o: PipeOptions): PipePlacement {
             return pipe.rpc(socket, frame.id, frame.method, frame.args);
           case "files":
             return pipe.files(socket, frame.id, frame.changes);
+          case "upload":
+            // In order with the write-through that names it: each chunk is written before the next frame is handled.
+            return pipe.upload(socket, frame.id, frame.offset, frame.data);
+          case "restored":
+            return pipe.restored(socket, frame);
           case "model":
             return pipe.model(socket, frame.id, frame.path, frame.body);
           case "model-abort":
@@ -185,9 +195,23 @@ export function pipePlacement(o: PipeOptions): PipePlacement {
           ws.close(4003, "HELLO_FIRST");
           return;
         }
-        // Storage calls and write-throughs run in arrival order; model streams and pings must not wait behind them.
+        // Any frame shows the writer is alive (a long upload sends no pings).
+        pipe.heard(socket);
+        // Storage calls, write-throughs and upload chunks run in arrival order; model streams and pings must not wait
+        // behind them. Upload chunks queued past a bound pause the socket until the pipe has written them.
         if (frame.t === "model" || frame.t === "ping" || frame.t === "model-abort") void hello.then(() => handle(frame)).catch(failed);
-        else queue = queue.then(() => handle(frame)).catch(failed);
+        else if (frame.t === "upload") {
+          const size = String(frame.data).length;
+          queuedUpload += size;
+          if (queuedUpload > UPLOAD_QUEUE_HIGH && !ws.isPaused) ws.pause();
+          queue = queue
+            .then(() => handle(frame))
+            .catch(failed)
+            .finally(() => {
+              queuedUpload -= size;
+              if (queuedUpload < UPLOAD_QUEUE_LOW && ws.isPaused) ws.resume();
+            });
+        } else queue = queue.then(() => handle(frame)).catch(failed);
       });
       ws.on("close", () => {
         pipe.detach(socket);

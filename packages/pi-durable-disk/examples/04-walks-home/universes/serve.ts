@@ -84,6 +84,14 @@ const { values } = parseArgs({
     "source-files": { type: "string" },
     /** train.py's compile cache: in the run's work/ (default), or an absolute path of each box's own. */
     "compile-cache": { type: "string" },
+    /**
+     * With --workload train and a box-local --compile-cache: every machine compiles the run's exact training program
+     * when it is warmed (train.py --compile-only, with the source's creature and terrain), so a universe started or
+     * taken over there starts warm.
+     */
+    "warm-compile": { type: "boolean", default: false },
+    /** train.py's steps per checkpoint, the same for every run and the warm compile (a different value is another program). */
+    "checkpoint-steps": { type: "string" },
     /** With --auto: collapse this many seconds after the kills, instead of when every universe reached its budget. */
     "collapse-after": { type: "string" },
     /** The tab's server (03-tab-to-cloud serve.ts) that adopts the winner by id when it is called home, and its admin token file. */
@@ -146,6 +154,22 @@ const modal = onModal
       log,
     })
   : undefined;
+// The warm compile: the run's creature and terrain, any universe's file (the eight differ only in weights, which are
+// data), the same flags as every universe's command, and --compile-only.
+const warmup = (() => {
+  if (!training || !values["warm-compile"] || !values["source-files"] || !values["compile-cache"]?.startsWith("/")) return undefined;
+  const src = values["source-files"];
+  const files: Record<string, Uint8Array> = {};
+  for (const f of ["creature/creature.xml", "creature/body.json", "terrain/terrain.json", "terrain/course.json"]) if (existsSync(join(src, f))) files[f] = readFileSync(join(src, f));
+  files["universe.json"] = readFileSync(join(values["universes-dir"]!, "u1.json"));
+  const flag = (name: string, file: string) => (files[file] ? ` --${name} ${file}` : "");
+  const command =
+    `${values.python} ${values["train-py"]} --mjcf creature/creature.xml --body creature/body.json --universe universe.json --work /tmp/pda-universe-unused` +
+    `${flag("world", "terrain/terrain.json")}${flag("course", "terrain/course.json")} --compile-cache ${values["compile-cache"]}` +
+    `${values["checkpoint-steps"] ? ` --checkpoint-steps ${values["checkpoint-steps"]}` : ""} --compile-only`;
+  return { files, command, timeoutSec: 900 };
+})();
+
 const fleet = daytonaFleet({
   client: modal?.client ?? daytonaRest({ apiKey: process.env.DAYTONA_API_KEY!, ...(process.env.DAYTONA_API_URL ? { apiUrl: process.env.DAYTONA_API_URL } : {}) }),
   ...(modal ? { kind: modal.kind, ratePerHour: modal.ratePerHour, label: modal.label, ledgerKind: "modal-sandbox" } : {}),
@@ -154,6 +178,7 @@ const fleet = daytonaFleet({
   fleet: "demo-d1",
   namePrefix: "pda-demo-d1-",
   ...(transport === "direct" ? { app: bundle } : {}),
+  ...(warmup ? { warmup } : {}),
   probe,
   runArgs: ["--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000", "--on-sigterm", "pause"],
   ledger,
@@ -232,6 +257,7 @@ const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec
       ...(values["compile-cache"] ? { UNIVERSE_COMPILE_CACHE: values["compile-cache"] } : {}),
       UNIVERSE_EXPORT_PY: values["export-py"]!,
       UNIVERSE_GETUP: values.getup!,
+      ...(values["checkpoint-steps"] ? { UNIVERSE_TRAIN_ARGS: JSON.stringify(["--checkpoint-steps", values["checkpoint-steps"]]) } : {}),
     },
   };
 });
@@ -359,7 +385,9 @@ async function cleanup(): Promise<void> {
   })();
   return cleaning;
 }
-process.once("SIGINT", () => void cleanup().then(() => process.exit(130)));
+// A wrapper (timeout, a terminal) can deliver the signal more than once: every one waits for the same cleanup, so a
+// second signal never ends the process before the machines, mounts and runs are gone.
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => void cleanup().then(() => process.exit(130)));
 
 if (values.auto) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
