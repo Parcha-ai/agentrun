@@ -147,14 +147,25 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
     const { daytonaCloud } = await import("./daytona.ts");
     const d = await daytonaCloud({ disk: options.disk, region: options.region, model: options.model, control, log: options.log, ...(options.ledger ? { ledger: options.ledger } : {}), ...(options.eventsLog ? { eventsLog: options.eventsLog } : {}) });
     const running = new Set<string>();
+    const models = new Map<string, ModelProxy>();
     const daytona: CloudHost = {
       async start(ref, run) {
-        const started = Date.now();
-        await d.start(ref, run);
+        models.set(ref.id, run.model);
+        await d.start(ref, run, true);
         running.add(ref.id);
-        options.log("cloud.ensure", { run: ref.id, action: "started", ms: Date.now() - started });
+        // A spare sandbox, warm, for when this one is lost.
+        d.prewarm(ref);
         return { host: d.hostLabel };
       },
+      async supervise(ref) {
+        const model = models.get(ref.id);
+        if (!model || !running.has(ref.id)) return undefined;
+        if (!(await d.start(ref, { model }, false))) return undefined;
+        options.log("cloud.replaced", { run: ref.id, host: d.hostLabel });
+        d.prewarm(ref);
+        return { host: d.hostLabel };
+      },
+      kill: (ref) => d.kill(ref),
       attachViewer: (ref, send) => relayViewer({ control, ref, send, log: options.log, label: () => d.hostLabel, dialer: () => d.placed(ref.id)?.dialer }),
       async stop(ref, how) {
         running.delete(ref.id);
