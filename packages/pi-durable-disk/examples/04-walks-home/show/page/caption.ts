@@ -129,6 +129,9 @@ export class CaptionDesk {
     const others = held?.group ? live.filter((w) => w.n.group !== held.group) : live;
     const holdOver = held !== undefined && now - held.shownAt >= this.opts.minHoldMs;
     if (replacement && held && !(holdOver && others.length > 0)) {
+      // Past its hold, the caption it replaces has no time left to lend: the replacement is a fresh caption with its own hold (an in-place one would be
+      // cleared at the next look, having been on screen for a single frame).
+      if (holdOver) return this.show(replacement, state, now);
       this.shown.add(replacement.key);
       this.current = { ...held, caption: caption(replacement.n, state.source) };
       return this.current.caption;
