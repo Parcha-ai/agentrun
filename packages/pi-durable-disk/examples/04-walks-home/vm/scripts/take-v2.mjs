@@ -26,10 +26,10 @@ const maxSeconds = Number(arg("max", 360));
 const kickForces = String(arg("kick-forces", "350,350")).split(",").map(Number).filter((n) => n > 0);
 const gpuImage = arg("gpu-image", "");
 const gpuNoteFile = arg("gpu-note-file", "");
-const chatInput = arg("chat-input", "#chat-input");
+const chatInput = arg("chat-input", "#chatin");
 // The placement question's client: scripted until the key exists ("jev" needs TYPESAFE_API_KEY in the server's environment).
 const placerClient = arg("placer", "scripted");
-const sketchModule = arg("sketch", "");
+const sketchModule = arg("sketch", join(here, "..", "..", "tab", "scripts", "sketch-take.mjs"));
 const mountRoot = arg("mount-root", join("/mnt/pda/demo", "d4-pipe"));
 const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9455";
 const tabDir = process.env.TAB_DIR;
@@ -148,15 +148,20 @@ try {
   // 4. the user draws. D3's sketch module plays the strokes on the sketcher; without one the tab's own applyDesign sets the creature
   // (the tab saves it either way: creature/creature.xml and body.json reach the disk about 1.2 s after the last stroke).
   const frame = `document.querySelector("iframe")?.contentWindow`;
-  if (sketchModule) {
+  if (!flag("seed-creature") && !flag("apply-design") && !flag("apply-take-design") && sketchModule) {
     const { sketchTake } = await import(sketchModule);
-    await sketchTake(stage, { log: (m) => step(`sketch: ${m}`) });
+    await sketchTake(stage, { frame: "#tab", settleMs: 4000, log: (m) => step(`sketch: ${m}`) });
     step("the user drew the creature");
   } else if (flag("seed-creature")) {
     // A stand-in for the strokes: D2's default creature files, put on the disk by the recorder (the tab did not write them).
     const seed = spawnLogged(WITH_ARCHIL, ["--", process.execPath, join(here, "seed-creature.ts"), link, "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/body-3dof-wide.json", "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/creature-3dof-wide.xml"], {}, "seed", join(here, ".."));
     await new Promise((r) => seed.on("close", r));
     step("STAND-IN: the recorder put the creature's files on the disk", { seeded: /seeded/.test(seed.log()) });
+  } else if (flag("apply-take-design")) {
+    // STAND-IN for the strokes while the sketcher drag fails in the stage's iframe: the tab's own applyDesign sets D3's take body.
+    const { TAKE_DESIGN } = await import(sketchModule);
+    await stage.eval(`${frame}.__walks.applyDesign(${JSON.stringify(TAKE_DESIGN)})`);
+    step("STAND-IN: the creature was set with applyDesign (no strokes)");
   } else if (flag("apply-design")) {
     await stage.eval(`${frame}.__walks.applyDesign(${readFileSync(arg("apply-design", ""), "utf8")})`);
     step("the creature was set with applyDesign (no strokes)");
@@ -225,12 +230,14 @@ try {
       seen.final = true;
       step("the final policy is installed in the tab");
     }
+    // Home: the second notice (the move back) is on screen, the page runs the agent again and nothing is running. The agent says nothing at
+    // home (the server moved it there when its turn ended), so there is no closing line to wait for.
     const home = await writer
-      .eval(`(() => { const items = demo.items(); const s = items.findLastIndex(i => i.kind === "switch"); const a = items.slice(s + 1).filter(i => i.kind === "assistant"); const last = a.at(-1); return ${items("switch")}.length >= 2 && demo.state.mode === "writer" && !demo.state.chat.busy && !!last && !last.streaming && last.text.length > 0; })()`)
+      .eval(`${items("switch")}.length >= 2 && demo.state.mode === "writer" && !demo.state.chat.busy`)
       .catch(() => false);
     if (home && !seen.closing) {
       seen.closing = true;
-      step("the agent's closing line at home", { answer: await writer.eval(`demo.items().filter(i => i.kind === "assistant").at(-1).text`) });
+      step("the agent is home", { lastLine: await writer.eval(`demo.items().filter(i => i.kind === "assistant").at(-1)?.text ?? ""`) });
     }
     // 7. at home with the final policy and the agent's closing line: the network goes off, the creature keeps walking, it is kicked.
     if (seen.closing && seen.final && !offlineAt) {
@@ -250,12 +257,13 @@ try {
     }
     if (!stopAt && offlineAt && seen.kicks >= kickForces.length) stopAt = elapsed + 9;
     if (stopAt && elapsed >= stopAt) break;
-    // The agent answered and went nowhere: the take is lost, so stop paying for the minutes.
-    const stalled = await writer.eval(`!demo.state.chat.busy && ${items("assistant")}.some(i => !i.streaming && i.text)`).catch(() => false);
-    if (stalled && seen.moves === 0) {
+    // The agent's turn is over and the run is not home: the take is lost, so stop paying for the minutes. (The server brings the run home
+    // a few seconds after the turn ends; a minute of idle is far past that.)
+    const idle = await writer.eval(`!demo.state.chat.busy && ${items("assistant")}.some(i => !i.streaming && i.text)`).catch(() => false);
+    if (idle && !seen.closing) {
       stalledFor += 0.5;
-      if (stalledFor >= 20) {
-        step("the agent answered and did not move", { text: [...lines].at(-1)?.slice(0, 200) });
+      if (stalledFor >= 60) {
+        step("the agent's turn ended and the run did not come home", { moves: seen.moves, text: [...lines].at(-1)?.slice(0, 200) });
         break;
       }
     } else stalledFor = 0;
@@ -273,10 +281,10 @@ try {
     step("the policy the agent brought home", results.policy);
   }
   // The placement decisions, as the server logged them (Jev's latency is measured around its call, on the server's clock).
-  results.decisions = (kids.find((k) => k.name === "take-server")?.log() ?? "")
+  results.decisions = readFileSync(join(work, "take", "server.log"), "utf8")
     .split("\n")
     .filter((l) => l.includes('"placement.decision"'))
-    .map((l) => { try { return JSON.parse(l.slice(l.indexOf("{"))); } catch { return null; } })
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
     .filter(Boolean);
   for (const d of results.decisions) step("placement decision", d);
   results.problem = !(seen.closing && seen.final && seen.offline && seen.kicks >= kickForces.length) ? `closing ${seen.closing}, final ${seen.final}, offline ${seen.offline}, kicks ${seen.kicks}` : "";
