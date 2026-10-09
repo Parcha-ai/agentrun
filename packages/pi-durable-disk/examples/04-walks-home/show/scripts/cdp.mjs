@@ -61,3 +61,19 @@ export async function openTab(url, { width = 1600, height = 900 } = {}) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A port nothing is listening on. The box is shared with other lanes' servers, so a check never claims a fixed port: a fixed
+ * one that is taken makes a server fail to start silently and the check then talks to somebody else's.
+ */
+export async function freePort() {
+  const { createServer } = await import("node:net");
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.once("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}

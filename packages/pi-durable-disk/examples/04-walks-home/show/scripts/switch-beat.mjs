@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openTab, sleep } from "./cdp.mjs";
+import { freePort, openTab, sleep } from "./cdp.mjs";
 import { startScreencast } from "./screencast.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,8 +26,8 @@ const root = join(homedir(), "tmp-d5", `beat-${Date.now().toString(36)}`);
 mkdirSync(root, { recursive: true, mode: 0o755 });
 const tabDir = process.env.TAB_DIR ?? join(show, "page", "stub-tab");
 const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9222";
-const hostPort = 8795;
-const stagePort = 8796;
+const hostPort = await freePort();
+const stagePort = await freePort();
 const kids = [];
 const run = (file, env, name) => {
   const k = spawn(process.execPath, [file], { cwd: show, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
@@ -71,7 +71,7 @@ try {
   const linkFile = join(root, "link");
   await until(() => existsSync(linkFile), 30_000, `the second-host server (${hostLines.join("").slice(-300)})`);
   const link = readFileSync(linkFile, "utf8").trim();
-  const stageProc = run(join(show, "serve.ts"), { SHOW_PORT: String(stagePort), SHOW_PIPE_LINK_FILE: linkFile, SHOW_TAB_CDP: cdpUrl, TAB_DIR: tabDir, SHOW_PIPE_TRACE: process.env.SHOW_PIPE_TRACE ?? "" }, "stage");
+  const stageProc = run(join(show, "serve.ts"), { SHOW_PORT: String(stagePort), SHOW_PIPE_LINK_FILE: linkFile, TAB_DIR: tabDir, SHOW_PIPE_TRACE: process.env.SHOW_PIPE_TRACE ?? "" }, "stage");
   stageLog = () => stageProc.log();
   await until(async () => (await fetch(`http://127.0.0.1:${stagePort}/api/state`).then((r) => r.ok).catch(() => false)), 20_000, `the stage (${stageProc.log()})`);
 

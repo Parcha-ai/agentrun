@@ -6,11 +6,11 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openTab, sleep } from "./cdp.mjs";
+import { freePort, openTab, sleep } from "./cdp.mjs";
 
 const show = join(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = process.argv[2];
-const port = 8799;
+const port = await freePort();
 let failed = 0;
 const expect = (name, ok, got) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `  got: ${JSON.stringify(got)}`}`);

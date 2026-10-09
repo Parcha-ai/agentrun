@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openTab, sleep } from "./cdp.mjs";
+import { freePort, openTab, sleep } from "./cdp.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..");
@@ -75,7 +75,7 @@ mkdirSync(root, { recursive: true, mode: 0o755 });
 const linkFile = join(root, "link");
 writeFileSync(linkFile, `http://127.0.0.1:${fake.address().port}/run/stage#${SECRET}\n`, { mode: 0o600 });
 
-const port = 8798;
+const port = await freePort();
 const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(port), SHOW_DESKTOP_LINK_FILE: linkFile, SHOW_START: "44", SHOW_AUTOKILL: "off" }, stdio: "ignore" });
 let tab;
 try {

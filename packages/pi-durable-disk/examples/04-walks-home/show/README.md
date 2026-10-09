@@ -55,13 +55,14 @@ on `docs.g.parcha.dev` (`reference-timings.json`, with its source), tagged MEASU
 numbers from the last `switch-beat` run, tagged MEASURED locally. The two are never mixed.
 
 By hand: `node second-host.ts` (writes the run link to a 0600 file), open the link in a browser as the tab, then
-`SHOW_PIPE_LINK_FILE=<that file> SHOW_TAB_CDP=<chrome cdp url> node serve.ts`. Env: `SHOW_PIPE_ROLE` (hello mode, default
-`view`), `SHOW_ASK_AFTER_SWITCH=0` (no question to the agent), `SHOW_PIPE_TRACE=1` (log each frame's type).
+`SHOW_PIPE_LINK_FILE=<that file> node serve.ts`. Env: `SHOW_PIPE_ROLE` (the hello mode: `operator`, the default, may switch the
+run and ask the agent; `view` only watches and is refused both with the pipe's own reason), `SHOW_ASK_AFTER_SWITCH=0` (no
+question to the agent), `SHOW_PIPE_TRACE=1` (log each frame's type).
 
-Two things a view-only stage cannot do, both for browser-demo's server: (1) the pipe lets any client send `switch` and
-`submit` (the TODO in `pipe-feed.ts`: connect as an operator role once it checks roles); (2) a switch to the tab is answered
-`run-here` to whoever asked, and only a tab page can then claim the run, so `tab-control.ts` (rehearsal only, `SHOW_TAB_CDP`)
-makes the real tab page do the asking. Cloud targets light up when the feed lists their environments.
+The stage connects as the pipe's `operator` and does not say it can run the agent (`canRun` stays off). A switch into the tab is
+therefore answered by a tab page that can run it (the 03 page says so), or is refused before anything moves with "no browser tab
+that can run the agent is open on this run". `node scripts/role-check.mjs` checks the roles against the real 03 server. Cloud
+targets light up when the feed lists their environments.
 
 ## Live day: run the preflight first
 

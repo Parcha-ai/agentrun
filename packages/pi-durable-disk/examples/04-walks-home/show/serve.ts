@@ -3,8 +3,7 @@
 // Every response carries COOP/COEP/CORP: Wasmer and MuJoCo WASM need cross-origin isolation, and an iframe document must
 // itself satisfy the parent's COEP, so the headers are set on the tab app's files too.
 //   SHOW_PIPE_LINK_FILE  a file holding a 03 run link (http://host:port/run/ID#SECRET): the feed is that pipe, watched live
-//   SHOW_PIPE_ROLE (view)  the hello mode the stage connects as; TODO(browser-demo): "operator" once the pipe checks roles
-//   SHOW_TAB_CDP  rehearsal only: a Chrome (CDP url) holding the real 03 tab page, which asks for the switch back to the tab
+//   SHOW_PIPE_ROLE (operator)  the hello mode the stage connects as: "operator" may switch and ask, "view" only watches
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
 //   SHOW_ASK_AFTER_SWITCH (1)  ask the agent where it is after each completed switch (0 to turn off)
@@ -17,7 +16,6 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { desktopTargetFromLink, proxyStream, requestTicket } from "./desktop.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
-import { cdpTabControl } from "./tab-control.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import type { ShowCommand } from "./types.ts";
 
@@ -117,10 +115,9 @@ if (PIPE_LINK_FILE) {
     url: `${link.protocol === "https:" ? "wss" : "ws"}://${link.host}/ws`,
     run: link.pathname.split("/").filter(Boolean).at(-1)!,
     token: link.hash.slice(1),
-    ...(process.env.SHOW_PIPE_ROLE ? { role: process.env.SHOW_PIPE_ROLE } : {}),
+    ...(process.env.SHOW_PIPE_ROLE === "view" || process.env.SHOW_PIPE_ROLE === "operator" ? { role: process.env.SHOW_PIPE_ROLE } : {}),
     askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH !== "0",
     trace: process.env.SHOW_PIPE_TRACE === "1",
-    ...(process.env.SHOW_TAB_CDP ? { tabControl: cdpTabControl(process.env.SHOW_TAB_CDP, link.pathname.split("/").filter(Boolean).at(-1)!) } : {}),
     connect: (url) => new WS(url, { maxPayload: 64 * 1024 * 1024 }) as never,
     log: (event, data) => console.log(JSON.stringify({ event, ...data })),
   });
