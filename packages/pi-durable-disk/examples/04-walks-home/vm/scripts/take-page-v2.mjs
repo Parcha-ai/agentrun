@@ -55,8 +55,8 @@ code{font:13px ui-monospace,Menlo,monospace}blockquote{margin:10px 0;padding:8px
 ul{padding-left:20px}li{margin:4px 0}
 </style></head><body><main>
 <h1>It Walks Home, v2</h1>
-<p class="lede">You draw a creature in your browser. You tell the agent to teach it to walk. The agent takes the work to a GPU machine in a cloud datacentre, where the creature learns to walk while you watch. Then the finished brain comes home to your browser tab, where it runs by itself: it keeps walking with the network switched off, and when you kick it, it gets back up.</p>
-<p class="note">Dated ${esc(date)}. One real recording at real speed (${esc(secs(log.seconds))}): the agent is a real model run (the agent's own words below), the GPU is a real H100 sandbox, the creature's brain is trained in that take and the tab simulates the creature with MuJoCo compiled to WebAssembly. What is staged: the drawing is replayed by a script that moves the mouse the way a person would; the sentence is typed by the recorder; the click on the Wi-Fi control and the network switch-off (Chrome's offline emulation) are done by the recorder; the kicks are sent by the recorder. Where the agent runs is decided by a typed question that is answered here by a scripted stand-in, not by the real model (the decision card says so); the agent's moves are the server's, not the agent's own tool calls.</p>
+<p class="lede">You draw a creature in your browser. You tell the agent to teach it to walk. The agent takes the work to a GPU machine in a cloud datacentre, where the creature learns to walk while you watch. Then the finished brain comes home to your browser tab, where it runs by itself: it walks there on its own, and when you kick it, it gets back up.</p>
+<p class="note">Dated ${esc(date)}. One real recording at real speed (${esc(secs(log.seconds))}): the agent is a real model run (the agent's own words below), the GPU is a real H100 sandbox, the creature's brain is trained in that take and the tab simulates the creature with MuJoCo compiled to WebAssembly. What is staged: the drawing is replayed by a script that moves the mouse the way a person would; the sentence is typed by the recorder; the kicks are sent by the recorder. Where the agent runs is decided by a typed question that is answered here by a scripted stand-in, not by the real model (the decision card says so); the agent's moves are the server's, not the agent's own tool calls.</p>
 ${takeNote ? `<p class="note">${esc(takeNote)}</p>` : ""}
 <video controls muted playsinline preload="metadata" poster="data:image/png;base64,${b64(poster)}" src="data:video/webm;base64,${b64(video)}"></video>
 <p class="note">VP8 WebM: plays in Chrome and Firefox; Safari may not.</p>
@@ -70,8 +70,7 @@ ${capRows ? `<table><thead><tr><th>In the take</th><th>Basis</th><th>Caption</th
 <p class="note"><span class="tag measured">measured</span> a time the server or the tab took on its own clock. <span class="tag simulated">simulated</span> the simulation's own arithmetic over simulated seconds, never wall time. <span class="tag reported">reported</span> what a file says about itself; nobody observed it here. <span class="tag agent">agent</span> the agent's notice or words.</p>
 <h2>What this take does not show</h2>
 <ul>
-<li>The agent is not stored in the browser: it runs on whichever machine it is on, and its home is a cloud disk held by your user's server. What runs in your tab by itself, offline, is the creature's learned brain and its simulation.</li>
-<li>The offline moment is Chrome's network emulation on this page; it shows the creature needs no network to keep walking, not a laptop with its Wi-Fi switched off.</li>
+<li>The agent is not stored in the browser: it runs on whichever machine it is on, and its home is a cloud disk held by your user's server. What runs in your tab is the creature's learned brain and its simulation.</li>
 <li>${kicks ? `Kicks: ${esc(kicks)}. ` : ""}The kick and the getup are the simulation's, not a measurement of a real robot.</li>
 <li>No zero-loss claim: no independent read-back is captioned here.${spend ? ` ${esc(spend)}` : ""}</li>
 </ul>

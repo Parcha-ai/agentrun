@@ -273,25 +273,14 @@ try {
         step("the agent said nothing at home within 20 s");
       }
     }
-    // 7. the user turns the Wi-Fi off (a click on the stage's control), the network goes off, the creature keeps walking, it is kicked.
+    // 7. home with the final policy and the agent's one line: the creature walks, then it is kicked (twice). No network beat.
     if (seen.closing && seen.final && seen.homeLine && !offlineAt) {
-      await sleep(2500);
-      const spot = await stage.eval(`(() => { const e = document.querySelector("#wifi"); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`).catch(() => null);
-      if (spot) {
-        await stage.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: spot.x, y: spot.y });
-        await sleep(400);
-        await stage.send("Input.dispatchMouseEvent", { type: "mousePressed", x: spot.x, y: spot.y, button: "left", clickCount: 1 });
-        await stage.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: spot.x, y: spot.y, button: "left", clickCount: 1 });
-        step("the user clicked the Wi-Fi control");
-        await sleep(700);
-      } else step("STAND-IN: no Wi-Fi control on the stage; the recorder switches the network off without a click");
-      await stage.send("Network.enable");
-      await stage.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+      await sleep(8000); // the viewer watches it walk
       offlineAt = rec.seconds();
       seen.offline = true;
-      step("the network is off (CDP offline emulation)");
+      step("the creature has been walking at home; the kicks begin");
     }
-    if (offlineAt && seen.kicks < kickForces.length && elapsed >= offlineAt + 5 + seen.kicks * 9) {
+    if (offlineAt && seen.kicks < kickForces.length && elapsed >= offlineAt + 2 + seen.kicks * 9) {
       const force = kickForces[seen.kicks];
       const kicked = await stage.eval(`(() => { const w = ${frame}.__walks; if (w?.kick) { w.kick([1, 0], ${force}); return true; } const b = document.querySelector('[data-op="kick${force >= 300 ? "400" : "60"}"]'); if (b) { b.click(); return true; } return false; })()`).catch(() => false);
       if (!kicked) step("no way to kick found");
@@ -330,7 +319,7 @@ try {
     .map((l) => { try { return JSON.parse(l); } catch { return null; } })
     .filter(Boolean);
   for (const d of results.decisions) step("placement decision", d);
-  results.problem = !(seen.closing && seen.final && seen.offline && seen.kicks >= kickForces.length) ? `closing ${seen.closing}, final ${seen.final}, offline ${seen.offline}, kicks ${seen.kicks}` : "";
+  results.problem = !(seen.closing && seen.final && seen.homeLine && seen.kicks >= kickForces.length) ? `closing ${seen.closing}, final ${seen.final}, offline ${seen.offline}, kicks ${seen.kicks}` : "";
   if (results.problem) failed = true;
 } catch (error) {
   failed = true;
