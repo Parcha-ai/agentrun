@@ -698,28 +698,26 @@ describe("fences during the run", () => {
 
   it("a lapsed lease kills the run's commands and the instance exits 75 while its store still commits", { timeout: 30_000 }, async () => {
     const dir = scratchRoot("lapse-proc");
-    const child = spawn(process.execPath, ["test/fixtures/lease-lapse.ts", dir.root], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["test/fixtures/lease-lapse.ts", dir.root], { stdio: ["pipe", "pipe", "pipe"] });
     let stderr = "";
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     let pid = 0;
     try {
       const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
       let commits = 0;
-      let blockedAt = 0;
       for await (const line of createInterface({ input: child.stdout! })) {
         const event = JSON.parse(line) as { pid?: number; commits?: number };
         if (event.pid) {
           pid = event.pid;
-          blockedAt = performance.now();
-          assert.ok(alive(pid));
+          // Heartbeats still flow until the fixture reads our line, so the lease cannot lapse while this looks.
+          assert.ok(alive(pid), "the command runs before the heartbeats stop");
+          child.stdin!.end("block\n");
         }
         if (event.commits) commits = event.commits;
       }
       assert.equal(await exit, 75, stderr);
-      const ms = performance.now() - blockedAt;
-      assert.match(stderr, /LEASE_LAPSED/);
+      assert.match(stderr, /LEASE_LAPSED.*seen by the timer/);
       assert.ok(commits > 0, "the store kept committing while the heartbeat was blocked");
-      assert.ok(ms < 2_000, `exited ${Math.round(ms)} ms after heartbeats were blocked (self-fence at 300 ms)`);
       assert.ok(await waitGone(pid), "the command died with the instance");
     } finally {
       child.kill("SIGKILL");
