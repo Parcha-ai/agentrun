@@ -65,7 +65,7 @@ describe("a remote host through the pipe", () => {
   const until = async (check: () => boolean, ms = 30_000) => {
     const end = Date.now() + ms;
     while (!check()) {
-      if (Date.now() > end) throw new Error(`timed out; remote host output: ${output.join("").slice(-1500)}`);
+      if (Date.now() > end) throw new Error(`timed out; server: ${events.slice(-8).map((e) => `${e.event} ${JSON.stringify(e.data).slice(0, 160)}`).join(" | ")}; remote host output: ${output.join("").slice(-800)}`);
       await new Promise((r) => setTimeout(r, 50));
     }
   };
@@ -102,7 +102,8 @@ describe("a remote host through the pipe", () => {
     const attached = await b.ready;
     assert.ok(attached.t === "attached");
     assert.deepEqual({ ...attached.move, id: undefined }, { id: undefined, from: "a far-away GPU host", planned: true });
-    await until(() => child?.exitCode !== null);
+    // It leaves by itself or is stopped by the server, whichever comes first.
+    await until(() => child?.exitCode !== null || child?.signalCode !== null);
     v.close();
     b.close();
   });
