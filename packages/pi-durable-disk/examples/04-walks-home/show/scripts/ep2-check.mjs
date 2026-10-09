@@ -72,14 +72,14 @@ try {
   expect("the user's sentence is the first turn", spoken[0]?.[0] === "user" && /obsessed with the Golden Gate Bridge/.test(spoken[0][1]), spoken);
 
   // Training, mid-run: the panel is the centre; the cloud-disk line is in the header.
-  await seek(45);
+  await seek(70);
   expect("the badge moved to the GPU", (await text("#badge .txt")) === "Your agent moved to H100 GPU, Virginia to train");
   expect("the cloud-disk line is under the header", (await read(`document.querySelector("#badge .memory").hidden === false && document.querySelector("#badge .memory").textContent`)) === "Its memory is on a cloud disk, so it can change machines without forgetting anything.");
   expect("the training panel is shown", (await read(`!document.getElementById("train").classList.contains("off")`)) === true);
   const mid = await read(`({ big: document.querySelector("#train .big")?.textContent, svg: !!document.querySelector("#train .loss polyline"), data: document.querySelector("#train .data")?.textContent, meta: document.querySelector("#train .meta")?.textContent, ttl: document.querySelector("#train .loss .ttl")?.textContent })`);
-  expect("the step counter reads 'Step N of 120'", /^Step \d+ of 120$/.test(mid.big ?? ""), mid);
+  expect("the step counter reads 'Step N of 174'", /^Step \d+ of 174$/.test(mid.big ?? ""), mid);
   expect("the loss curve is drawn", mid.svg === true, mid);
-  expect("it says where the practice answers came from, in one line", mid.data === "Its practice answers were written and checked before the take (2,360 of them).", mid);
+  expect("it says where the practice answers came from, in one line", mid.data === "Its practice answers were written and checked before the take (2,784 of them).", mid);
   expect("the time in and the time left are shown", /s in/.test(mid.meta ?? "") && /left/.test(mid.meta ?? ""), mid);
   expect("the loss line says it is falling", /^Mistakes: \d\.\d\d → \d\.\d\d$/.test(mid.ttl ?? ""), mid);
   const q1 = await read(`[...document.querySelectorAll("#train .row")].map((r) => [r.querySelector(".q").textContent, [...r.querySelectorAll(".col")].map((c) => [c.querySelector(".lbl").textContent, c.querySelector(".a").textContent])])`);
@@ -87,20 +87,20 @@ try {
   expect("and a later answer beside it once there is one", q1[0][1].length === 2 && /^At step \d+$/.test(q1[0][1][1][0]) && q1[0][1][1][1] !== q1[0][1][0][1], q1[0]);
   await shot("2-training");
   const caps = await watch(12_000);
-  expect("a caption says the training has started", [...caps.keys()].some((t) => /^Training has started: 120 steps\.$/.test(t)) || (await captionLike(/^Training has started: 120 steps\.$|^Step \d+ of 120\./, 8000)) !== "", [...caps.keys()]);
+  expect("a caption says the training has started", [...caps.keys()].some((t) => /^Training has started: 174 steps\.$/.test(t)) || (await captionLike(/^Training has started: 174 steps\.$|^Step \d+ of 174\./, 8000)) !== "", [...caps.keys()]);
   await noWifi("while it trains");
 
   // Done, packed, and on the way home.
-  await seek(92);
+  await seek(108);
   const end = await read(`document.querySelector("#train .end")?.textContent`);
-  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Finished: 120 steps in 65 s.", end);
+  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Finished: 174 steps in 60 s.", end);
   const fin = await captionLike(/Training finished/, 14_000);
-  expect("a caption says it finished with the steps, the seconds and the loss it went from and to", /^Training finished: 120 steps in 65 s\. Mistakes 2\.\d\d to 0\.\d\d\.$/.test(fin), fin);
+  expect("a caption says it finished with the trainer's steps and seconds", /^Training finished: 174 steps in 59\.7 s\.$/.test(fin), fin);
   expect("that caption is tagged scripted in a rehearsal", (await read(`document.getElementById("vcaption").dataset.tag`)) === "scripted");
   await shot("3-trained");
 
   // Home: the tab is the centre again and the banner follows the model's phases.
-  await seek(100);
+  await seek(114);
   expect("the badge came home", (await text("#badge .txt")) === "Your agent is back in your browser");
   expect("the cloud-disk line is gone once the agent is home", (await read(`document.querySelector("#badge .memory").hidden`)) === true);
   expect("the training panel gives the centre back to the tab", (await read(`document.getElementById("train").classList.contains("off")`)) === true);

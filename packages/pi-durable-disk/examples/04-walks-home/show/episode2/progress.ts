@@ -8,7 +8,7 @@
 //   start   {model, method, steps, batch}
 //   step    {step, of, loss, loss_avg, lr, t, eta_s}                    the curve is loss_avg when the line has it
 //   sample  {step, prompt, answer, cut, model: "base" | "lora" | "merged", t}   step 0 is the model before it learned anything; cut: hit the length cap
-//   merge   {t}
+//   merge   {t}   gguf.f16 {bytes, t}
 //   gguf    {path, bytes, t}
 //   done    {steps, seconds, final_loss}
 //   error   {message}
@@ -29,7 +29,8 @@ export type StepPoint = { step: number; of: number | null; loss: number; t: numb
 export type Sample = { step: number; prompt: string; answer: string; cut: boolean; model: "base" | "lora" | "merged" | null };
 export type Train = {
   data: DataInfo | null;
-  start: { model: string | null; method: string | null; steps: number | null } | null;
+  /** `t` is the training loop's own start on the box's clock: the elapsed time of a step is its `t` minus this. */
+  start: { model: string | null; method: string | null; steps: number | null; t: number | null } | null;
   steps: StepPoint[];
   samples: Sample[];
   teacher: Teacher | null;
@@ -84,7 +85,7 @@ export function parseProgress(text: string): Train {
         break;
       }
       case "start":
-        t.start = { model: str(o.model), method: str(o.method), steps: num(o.steps) };
+        t.start = { model: str(o.model), method: str(o.method), steps: num(o.steps), t: num(o.t) };
         break;
       case "step": {
         const step = num(o.step);
@@ -109,6 +110,9 @@ export function parseProgress(text: string): Train {
       case "merge":
         t.merged = true;
         break;
+      case "gguf.f16":
+        // The unpacked file on its way to the packed one: understood, nothing to show.
+        break;
       case "gguf": {
         const path = str(o.path);
         if (path === null) t.skipped++;
@@ -128,6 +132,13 @@ export function parseProgress(text: string): Train {
   t.steps = [...steps.values()].sort((a, b) => a.step - b.step);
   t.samples = [...samples.values()].sort((a, b) => a.step - b.step);
   return t;
+}
+
+/** Seconds the training loop has been running at the latest step: its `t` minus the loop's start (so it agrees with the `seconds` the done line reports). */
+export function elapsedS(t: Train): number | null {
+  const last = t.steps[t.steps.length - 1];
+  if (!last || last.t === null) return null;
+  return t.start?.t != null ? Math.max(0, last.t - t.start.t) : last.t;
 }
 
 /** The step the run is at, and how many it has in all when it says so. */
