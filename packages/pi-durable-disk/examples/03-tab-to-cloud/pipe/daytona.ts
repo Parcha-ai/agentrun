@@ -57,7 +57,7 @@ type Log = (event: string, data?: Record<string, unknown>) => void;
 type LedgerLike = { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
 
 /** The agent's modules a box runs: the cloud app (with a disk client) and the remote host (through the pipe). */
-const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environment.ts", "host-probe.ts", "host-fs.ts", "remote-host.ts", "wire.ts", "tab/pipe-client.ts", "tab/runtime.ts", "tab/workspace.ts"];
+const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environment.ts", "switch-tool.ts", "host-probe.ts", "host-fs.ts", "remote-host.ts", "wire.ts", "tab/pipe-client.ts", "tab/runtime.ts", "tab/workspace.ts"];
 
 /**
  * The app as a box installs it: the package (npm pack of this checkout), the agent's modules, their manifest. `digest`

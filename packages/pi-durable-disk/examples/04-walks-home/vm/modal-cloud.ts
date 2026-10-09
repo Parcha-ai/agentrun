@@ -24,7 +24,7 @@ import { CLOUD_LEASE, moveEnv, relayViewer } from "../../03-tab-to-cloud/pipe/cl
 import { archilControl, type DemoControl } from "../../03-tab-to-cloud/pipe/control.ts";
 import { dialLink, type LinkDialer } from "../../03-tab-to-cloud/pipe/link.ts";
 import type { ModelOptions, ModelProxy } from "../../03-tab-to-cloud/pipe/model-proxy.ts";
-import type { CloudHost, Invite } from "../../03-tab-to-cloud/pipe/server.ts";
+import type { CloudHost, Invite, ServerApi } from "../../03-tab-to-cloud/pipe/server.ts";
 import type { Environment, Move } from "../../03-tab-to-cloud/wire.ts";
 import { vmImageCommands } from "./image.ts";
 
@@ -63,6 +63,8 @@ export interface ModalCloudOptions {
   readonly transport?: "mount" | "pipe";
   readonly cpu?: number;
   readonly memoryMiB?: number;
+  /** Where Modal may place the sandboxes (`["us-east"]`, near the disk). */
+  readonly regions?: string[];
   /** Keep one VM ready for a run while a tab runs it (it costs while it waits). Pipe transport only. Default off. */
   readonly warm?: boolean;
   /** Where each stopped host's log lines are appended (the demo's evidence file). */
@@ -121,7 +123,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
     },
   };
   const ports = [BOX_SERVE_PORT, BOX_LINK_PORT];
-  const client: DaytonaClient = modalSandboxes(sdk, { appName, image, runtime, cpu: options.cpu ?? 2, memoryMiB: options.memoryMiB ?? 4096, encryptedPorts: ports });
+  const client: DaytonaClient = modalSandboxes(sdk, { appName, image, runtime, cpu: options.cpu ?? 2, memoryMiB: options.memoryMiB ?? 4096, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: ports });
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
   const warm = new Map<string, Promise<SandboxInfo>>();
@@ -130,6 +132,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
   const placed = new Map<string, Placed>();
   const models = new Map<string, ModelProxy>();
   const running = new Set<string>();
+  let server: ServerApi | undefined;
 
   async function drop(box: { id: string; name: string }): Promise<void> {
     await client.remove(box.id).then(
@@ -215,6 +218,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
       runtime,
       cpu: options.cpu ?? 2,
       memoryMiB: options.memoryMiB ?? 4096,
+      ...(options.regions ? { regions: options.regions } : {}),
       encryptedPorts: ports,
       fleet,
       namePrefix: prefix,
@@ -249,7 +253,11 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
     const linkTunnel = tunnels[BOX_LINK_PORT];
     const serveTunnel = tunnels[BOX_SERVE_PORT];
     if (!linkTunnel || !serveTunnel) throw new Error(`${result.handle.name} has no tunnels for ports ${BOX_SERVE_PORT} and ${BOX_LINK_PORT}`);
-    const dialer = dialLink({ url: linkTunnel.url.replace(/^http/, "ws"), token: linkToken, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) });
+    const dialer = dialLink({ url: linkTunnel.url.replace(/^http/, "ws"), token: linkToken, proxy: run.model,
+      // The agent in the VM asked to move (switch_environment): the server runs the handover.
+      onSwitch: (to, reason) => (server ? server.requestSwitch(ref, to, reason) : Promise.reject(new Error("the server cannot move agents"))),
+      log: (e, d) => options.log(e, { run: ref.id, ...d }),
+    });
     const previous = placed.get(ref.id);
     placed.set(ref.id, { driver, dialer, serve: { url: serveTunnel.url.replace(/\/+$/, ""), token: serveTokens.get(box) ?? "" }, handle: result.handle, token: result.token.identifier, box });
     if (previous) await retire(ref, previous, "now");
@@ -281,6 +289,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
   const host: CloudHost & { hostLabel: string } = {
     hostLabel: "a Modal VM",
     environments: [env] as readonly Environment[],
+
+    bind(api) {
+      server = api;
+    },
 
     async start(ref, run) {
       if (transport !== "mount") throw new Error("a Modal environment on the pipe is started by a switch (startRemote), not by a lost tab");

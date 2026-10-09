@@ -13,6 +13,7 @@ import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEventStream, Harness, ConversationId } from "@earendil-works/pi-durable";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
+import { FrameSwitchChannel, type SwitchRequest } from "./switch-tool.ts";
 
 type Frame =
   | { t: "model"; id: number; path: string; body: unknown }
@@ -21,7 +22,10 @@ type Frame =
   | { t: "event"; kind: "snapshot" | "events"; data: unknown }
   | { t: "model-head"; id: number; status: number }
   | { t: "model-chunk"; id: number; data: string }
-  | { t: "model-end"; id: number; status: number; error?: string };
+  | { t: "model-end"; id: number; status: number; error?: string }
+  | SwitchRequest
+  | { t: "switch-accepted"; ask: string; switchId: string }
+  | { t: "switch-refused"; ask?: string; message: string };
 
 const same = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 
@@ -30,6 +34,8 @@ export interface CloudLink {
   readonly baseUrl: string;
   /** The run is open: a `watch` from the server streams this conversation's events. */
   attach(harness: Harness, conversationId: ConversationId): void;
+  /** How the agent's switch_environment tool reaches the server: over this link. */
+  readonly switchChannel: FrameSwitchChannel;
   close(): Promise<void>;
 }
 
@@ -40,6 +46,11 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   let next = 1;
   const open = new Map<number, ServerResponse & { head?: boolean }>();
   let run: { harness: Harness; conversationId: ConversationId } | undefined;
+  const switchChannel = new FrameSwitchChannel((frame) => {
+    if (!link || link.readyState !== link.OPEN) return false;
+    link.send(JSON.stringify(frame satisfies Frame));
+    return true;
+  });
   let watching: { ws: WebSocket; stream: AgentEventStream } | undefined;
   /** A `watch` that came before the run opened; served once it does. */
   let pendingWatch: WebSocket | undefined;
@@ -69,6 +80,10 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     linked();
     ws.on("message", (data) => {
       const frame = JSON.parse(String(data)) as Frame;
+      if (frame.t === "switch-accepted" || frame.t === "switch-refused") {
+        switchChannel.accept(frame);
+        return;
+      }
       if (frame.t === "watch") {
         void watch(ws).catch((error) => log("link.watch-failed", { error: (error as Error).message }));
         return;
@@ -141,12 +156,14 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   const port = (relay.address() as { port: number }).port;
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
+    switchChannel,
     attach(harness, conversationId) {
       run = { harness, conversationId };
       if (pendingWatch && pendingWatch === link) void watch(pendingWatch).catch((error) => log("link.watch-failed", { error: (error as Error).message }));
       pendingWatch = undefined;
     },
     async close() {
+      switchChannel.lose("the link closed");
       link?.close(1000, "bye");
       wss.close();
       await new Promise<void>((r) => relay.close(() => r()));

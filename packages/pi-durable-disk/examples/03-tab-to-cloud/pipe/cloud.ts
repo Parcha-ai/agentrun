@@ -29,6 +29,7 @@ export function moveEnv(env: Environment, move: Move, hostClass?: string): Recor
     DEMO_SWITCH_ID: move.id,
     DEMO_SWITCH_FROM: move.from,
     DEMO_SWITCH_PLANNED: move.planned ? "1" : "0",
+    ...(move.by ? { DEMO_SWITCH_BY: move.by, DEMO_SWITCH_REASON: move.reason ?? "" } : {}),
     DEMO_ENV_LABEL: env.phrase,
     ...(hostClass ? { DEMO_ENV_CLASS: hostClass } : {}),
   };

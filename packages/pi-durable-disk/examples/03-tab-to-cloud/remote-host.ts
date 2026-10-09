@@ -20,6 +20,7 @@ import { nodeWorkspaceFs } from "./host-fs.ts";
 import { PipeClient, type Attached, type SocketLike } from "./tab/pipe-client.ts";
 import { finishStep, startTab, type TabRuntime } from "./tab/runtime.ts";
 import { Workspace } from "./tab/workspace.ts";
+import { FrameSwitchChannel, switchEnvironment } from "./switch-tool.ts";
 import type { PipeFrame } from "./wire.ts";
 
 /** The server's first frame on the socket. */
@@ -76,7 +77,14 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
     wss.close();
     process.exit(code);
   };
+  // The agent's switch_environment tool talks to the server over this host's pipe.
+  const switchChannel = new FrameSwitchChannel((frame) => {
+    if (client.lost) return false;
+    client.send(frame);
+    return true;
+  });
   const onFrame = (frame: PipeFrame) => {
+    if (switchChannel.accept(frame)) return;
     if (frame.t === "want-snapshot" && runtime) {
       const r = runtime;
       void watchEvents(r.harness, r.root.id, ctx).then(async (stream) => {
@@ -120,7 +128,7 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
   const started = performance.now();
   const env = new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } });
   const facts = await probeHost();
-  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), tools: [switchEnvironment(switchChannel)], ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   log("running", { generation: attached.generation, ms: Math.round(performance.now() - started), restored: runtime.restored, gpu: facts.gpu });
   const stream = await watchEvents(runtime.harness, runtime.root.id, ctx);

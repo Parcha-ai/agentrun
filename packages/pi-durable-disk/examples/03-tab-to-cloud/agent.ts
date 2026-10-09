@@ -122,9 +122,11 @@ export function rootAgent(modelId: string): AgentChange {
 }
 
 /** The registry both sides install, in the same order. */
-export function agentRegistry(durable: (context: Context) => Promise<void>): Registry {
+export function agentRegistry(durable: (context: Context) => Promise<void>, extras: readonly Extension[] = []): Registry {
   const registry = createRegistry();
   registry.install(codingTools());
   registry.install(writeThrough(durable));
+  // What only some hosts can offer, such as the move the agent asks for (switch-tool.ts): installed after the shared ones.
+  for (const extension of extras) registry.install(extension);
   return registry;
 }

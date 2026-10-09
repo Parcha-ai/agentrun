@@ -53,6 +53,14 @@ export interface CloudHost {
   startRemote?(ref: RunRef, env: string, invite: Invite): Promise<{ socket: WebSocket; host: string }>;
   /** Stop and remove the run's remote host (it left the run, or was taken from). */
   stopRemote?(ref: RunRef): Promise<void>;
+  /** Called once by the server: what a cloud host may ask of it for the agent that runs there (a move the agent chose). */
+  bind?(api: ServerApi): void;
+}
+
+/** What the server offers a cloud host: the agent's own request to move (switch_environment). */
+export interface ServerApi {
+  /** The run's agent asks to continue in environment `to`. Resolves with the switch's id once the move began; rejects with the reason it was refused. */
+  requestSwitch(ref: RunRef, to: string, reason: string): Promise<{ switchId: string }>;
 }
 
 /** The server's first frame to a remote host (remote-host.ts). */
@@ -146,7 +154,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   /** Where the run is, as an environment id; undefined while it moves or is parked. */
   const currentEnv = (p: Placement) => (p.where === "tab" || p.where === "cloud" ? p.env : undefined);
   const phraseOf = (p: Placement) => environment(currentEnv(p) ?? "")?.phrase ?? (p.where === "cloud" ? p.host : "the disk");
-  const newMove = (from: string, planned: boolean): Move => ({ id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`, from, planned });
+  const newMove = (from: string, planned: boolean, who?: { by: "user" } | { by: "agent"; reason: string }): Move => ({
+    id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`,
+    from,
+    planned,
+    ...(who?.by === "agent" ? { by: "agent" as const, reason: who.reason } : {}),
+  });
 
   const setPlacement = (state: RunState, placement: Placement) => {
     state.placement = placement;
@@ -231,6 +244,24 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
   }
 
+  /** How a switch tells whoever asked for it: refused, begun (with its id), or, for a tab target, run it here. */
+  interface SwitchReply {
+    refuse(message: string): void;
+    accepted(switchId: string): void;
+    runHere(switchId: string): void;
+  }
+
+  /** The agent of a cloud host asks to move (its link carried the request): resolves once the move began. */
+  function requestSwitch(ref: RunRef, to: string, reason: string): Promise<{ switchId: string }> {
+    const state = runs.get(ref.id);
+    if (!state) return Promise.reject(new Error("no such run"));
+    return new Promise((resolve, reject) => {
+      const reply: SwitchReply = { refuse: (m) => reject(new Error(m)), accepted: (switchId) => resolve({ switchId }), runHere: () => reject(new Error("an agent cannot move itself into a browser tab")) };
+      void switchTo(state, reply, to, { by: "agent", reason }).catch(reject);
+    });
+  }
+  options.cloud?.bind?.({ requestSwitch });
+
   /** The remote host the run left: stopped and removed, out of the run's way. */
   async function dropRemote(state: RunState): Promise<void> {
     if (!state.remote) return;
@@ -281,21 +312,23 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * then the target claims it, admits the notice of the move and continues. A tab target is the asking page, told to
    * run it here (its hello carries the switch id).
    */
-  async function switchTo(state: RunState, socket: PipeSocket, to: string): Promise<void> {
+  async function switchTo(state: RunState, reply: SwitchReply, to: string, who: { by: "user" } | { by: "agent"; reason: string } = { by: "user" }): Promise<void> {
     const target = environment(to);
     const p = state.placement;
     const from = currentEnv(p);
-    const refuse = (message: string) => socket.send({ t: "switch-refused", to, message });
-    if (!target) return refuse(`no environment ${to}`);
+    const refuse = reply.refuse;
+    if (!target) return refuse(`no environment ${to}; the environments are ${environments.map((e) => e.id).join(", ")}`);
+    if (who.by === "agent" && target.kind === "tab") return refuse("an agent cannot move itself into a browser tab: only your user can open one");
     if (state.switching || state.opening) return refuse("a move is already in progress");
     if (from === undefined) return refuse(`the run is ${p.where}`);
     if (from === to) return refuse("the run is already there");
     if (target.kind !== "tab" && !options.cloud) return refuse("no cloud host");
     const started = Date.now();
-    const move = newMove(phraseOf(p), true);
+    const move = newMove(phraseOf(p), true, who);
     state.switching = { move, to, started };
     setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: `leaving ${environment(from)?.label ?? from}` });
-    log("switch.start", { run: state.ref.id, switchId: move.id, from, to });
+    log("switch.start", { run: state.ref.id, switchId: move.id, from, to, by: who.by });
+    reply.accepted(move.id);
     try {
       if (p.where === "tab") {
         const drained = await state.pipe!.drainWriter(move.id, options.drainMs ?? 10_000);
@@ -318,7 +351,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         accept(remote);
       } else if (target.kind === "tab") {
         setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the tab is attaching" });
-        socket.send({ t: "run-here", switchId: move.id });
+        reply.runHere(move.id);
       }
       if (target.kind !== "cloud") {
         // A page that never attaches leaves the run parked, sealed, for whoever opens it next.
@@ -497,10 +530,17 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         if (pipe) pipe.ping(socket, frame.at);
         else socket.send({ t: "pong", at: frame.at, now: Date.now() });
         return;
-      case "switch":
+      case "switch": {
         // Not queued behind the switch: the writer's drained and switched frames arrive while it runs.
-        void switchTo(state, socket, frame.to).catch((error) => log("switch.failed", { run: state.ref.id, error: (error as Error).message }));
+        const { to, ask } = frame;
+        const reply: SwitchReply = {
+          refuse: (message) => socket.send({ t: "switch-refused", to, message, ...(ask ? { ask } : {}) }),
+          accepted: (switchId) => ask && socket.send({ t: "switch-accepted", to, switchId, ask }),
+          runHere: (switchId) => socket.send({ t: "run-here", switchId }),
+        };
+        void switchTo(state, reply, to, frame.by === "agent" ? { by: "agent", reason: frame.reason ?? "" } : { by: "user" }).catch((error) => log("switch.failed", { run: state.ref.id, error: (error as Error).message }));
         return;
+      }
       case "drained":
         pipe?.drained(socket, frame.switchId);
         return;

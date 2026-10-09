@@ -4,7 +4,7 @@
 // Node tests start it from an attached PipeClient, an environment and its workspace.
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
-import type { Conversation, HarnessSettings } from "@earendil-works/pi-durable";
+import type { Conversation, Extension, HarnessSettings } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "../agent.ts";
@@ -67,6 +67,8 @@ export async function startTab<E extends RuntimeEnv>(opts: {
   env: E;
   workspace: Workspace;
   settings?: HarnessSettings;
+  /** Extensions this host adds to the agent's registry (switch_environment, over this host's channel). */
+  tools?: readonly Extension[];
   /** The move that brought the run here, and this host's description, for the notice admitted before resuming. */
   move?: { info: SwitchInfo; facts: EnvironmentFacts };
 }): Promise<TabRuntime<E>> {
@@ -87,7 +89,7 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     return next;
   };
   const models = agentModels({ baseUrl: "https://model-proxy.invalid/v1", modelId: opts.attached.model, fetch: opts.client.fetch as typeof globalThis.fetch });
-  const harness = await Harness.open(remoteStorage(opts.client), { registry: agentRegistry(durable), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
+  const harness = await Harness.open(remoteStorage(opts.client), { registry: agentRegistry(durable, opts.tools ?? []), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   // The notice is committed before anything the run resumes commits (environment.ts).
   if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model), opts.move.facts, opts.move.info, ctx);
   await harness.resume();

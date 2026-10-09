@@ -159,7 +159,7 @@ export const MODEL_PATHS = ["responses", "chat/completions"] as const;
 export type Environment = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 
 /** A move of the run from one host to another (environment.ts's SwitchInfo). */
-export type Move = { id: string; from: string; planned: boolean };
+export type Move = { id: string; from: string; planned: boolean; /** The agent chose the move (switch_environment), and why. Absent: the user did. */ by?: "agent"; reason?: string };
 
 /** Where the run is: the badge every page shows. `env` is the environment's id. */
 export type Placement =
@@ -177,7 +177,7 @@ export type TabFrame =
   | { t: "model-abort"; id: number }
   | { t: "view"; event: Tagged }
   | { t: "ping"; at: number }
-  | { t: "switch"; to: string }
+  | { t: "switch"; to: string; /** From the agent's tool: `ask` is its request id, answered by switch-accepted or switch-refused. */ by?: "agent"; reason?: string; ask?: string }
   | { t: "drained"; switchId: string }
   | { t: "switched"; switchId: string }
   | { t: "submit"; text: string; requestId: string }
@@ -200,7 +200,8 @@ export type PipeFrame =
   | { t: "drain"; switchId: string }
   | { t: "run-here"; switchId: string }
   | { t: "switched"; switchId: string; to: string; ms: number }
-  | { t: "switch-refused"; to: string; message: string }
+  | { t: "switch-accepted"; to: string; switchId: string; ask: string }
+  | { t: "switch-refused"; to: string; message: string; ask?: string }
   | { t: "lost"; code: string; message: string }
   | { t: "pong"; at: number; now: number }
   | { t: "error"; message: string };
