@@ -40,3 +40,35 @@ test("waits for the second file, reports a failed warm-up and keeps going, and s
   await sleep(100);
   assert.equal(calls, 1, "nothing starts after close");
 });
+
+test("a newer drawing cancels the warm-up in flight before its own starts; the first one's failure is reported and ignored", async () => {
+  const order: string[] = [];
+  const events: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const w = creatureWarmer({
+    delayMs: 30,
+    warm: async (c) => {
+      order.push(`warm ${new TextDecoder().decode(c.xml)}`);
+      if (new TextDecoder().decode(c.xml) === "x1") {
+        await gate;
+        throw new Error("killed");
+      }
+    },
+    cancel: async () => {
+      order.push("cancel");
+      release();
+    },
+    log: (e) => void events.push(e),
+  });
+  w.write("creature/creature.xml", bytes("x1"));
+  w.write("creature/body.json", bytes("b1"));
+  await sleep(120);
+  assert.deepEqual(order, ["warm x1"], "the first drawing is warming");
+  w.write("creature/creature.xml", bytes("x2"));
+  w.write("creature/body.json", bytes("b2"));
+  await sleep(200);
+  assert.deepEqual(order, ["warm x1", "cancel", "warm x2"], "the second cancels the first, then warms");
+  assert.ok(events.includes("warm.failed"), "the killed warm-up is reported");
+  w.close();
+});

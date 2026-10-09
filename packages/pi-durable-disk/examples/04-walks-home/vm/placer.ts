@@ -12,7 +12,7 @@ export const CRITERIA: Readonly<Record<string, string>> = {
 };
 
 /** The agent's one turn after the server brings it home: where it is and what its user can do now, in a plain line. */
-export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and that their creature learned to walk and to get back up. Do not mention files, commands or training details.";
+export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for their creature, exactly as far as your own work showed it (if a step failed, say so plainly; if it went well, that it learned to walk and to get back up). Do not mention files, commands or training details.";
 
 export const LABELS: Readonly<Record<string, string>> = { tab: "Browser", "modal-vm": "Modal VM", "modal-gpu": "H100 GPU" };
 

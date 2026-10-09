@@ -510,6 +510,13 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         warmer = creatureWarmer({
           delayMs: options.gpu?.warmDelayMs ?? 1_500,
           log: options.log,
+          // A newer drawing supersedes the compile in flight: kill it on the box (only warm-ups use --compile-only; the pattern's bracket keeps it from matching its own shell).
+          cancel: async () => {
+            const pending = warm.get(ref.id);
+            if (!pending) return;
+            const info = await pending;
+            await gpuClient.exec(info, "pkill -f -- '[-]-compile-only'; true", 15);
+          },
           warm: async (creature) => {
             const pending = warm.get(ref.id);
             if (!pending) throw new Error("no warm GPU box for this run");

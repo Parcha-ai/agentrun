@@ -103,11 +103,17 @@ const serveArgs = [
 ];
 const modalWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-modal");
 if (withModal && !existsSync(modalWrapper)) die(`${modalWrapper} is missing: the Modal keys only come through it`);
-const [cmd, args] = local
+let [cmd, args] = local
   ? [process.execPath, serveArgs]
   : withModal
     ? [modalWrapper, ["--", wrapper, "--", process.execPath, ...serveArgs]]
     : [wrapper, ["--", process.execPath, ...serveArgs]];
+// --typesafe: the placer asks TypeSafe Jev: the key reaches the server only through this wrapper (with-typesafe), never through this script.
+const typesafeWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-typesafe");
+if (process.argv.includes("--typesafe")) {
+  if (!existsSync(typesafeWrapper)) die(`${typesafeWrapper} is missing: the TypeSafe key only comes through it`);
+  [cmd, args] = [typesafeWrapper, ["--", cmd, ...args]];
+}
 const child = spawn(cmd, args, { cwd: ex03, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) }, stdio: "ignore" });
 const origin = `http://127.0.0.1:${port}`;
 const stop = () => {

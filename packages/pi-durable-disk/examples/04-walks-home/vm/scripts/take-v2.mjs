@@ -112,6 +112,7 @@ try {
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
+      ...(placerClient === "jev" ? ["--typesafe"] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
       ...(warmCommandsFile ? ["--cloud-arg", `warm-commands-file=${warmCommandsFile}`, "--cloud-arg", "warm-env=XLA_PYTHON_CLIENT_PREALLOCATE=false"] : []),

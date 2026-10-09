@@ -12,11 +12,21 @@ export interface CreatureWarmer {
   close(): void;
 }
 
-export function creatureWarmer(options: { delayMs: number; warm(creature: { xml: Uint8Array; body: Uint8Array }): Promise<unknown>; log?: (event: string, data?: Record<string, unknown>) => void }): CreatureWarmer {
+export function creatureWarmer(options: {
+  delayMs: number;
+  warm(creature: { xml: Uint8Array; body: Uint8Array }): Promise<unknown>;
+  /**
+   * Stop the warm-up in flight. Called when a newer drawing arrives while one still runs: a compile for a body nobody will train is not
+   * only wasted, it holds the box's CPUs for up to a minute before the compile that matters can start.
+   */
+  cancel?(): Promise<unknown>;
+  log?: (event: string, data?: Record<string, unknown>) => void;
+}): CreatureWarmer {
   const log = options.log ?? (() => {});
   const files = new Map<string, Uint8Array>();
   let timer: NodeJS.Timeout | undefined;
   let warmed = "";
+  let inFlight = 0;
   return {
     write(path, data) {
       if (!(CREATURE_FILES as readonly string[]).includes(path)) return;
@@ -29,8 +39,17 @@ export function creatureWarmer(options: { delayMs: number; warm(creature: { xml:
         const id = createHash("sha256").update(xml).update(body).digest("hex");
         if (id === warmed) return;
         warmed = id;
-        log("warm.creature", { creature: id.slice(0, 12) });
-        void options.warm({ xml, body }).catch((error: Error) => log("warm.failed", { error: error.message }));
+        log("warm.creature", { creature: id.slice(0, 12), supersedes: inFlight > 0 });
+        const start = async () => {
+          if (inFlight > 0 && options.cancel) await options.cancel().catch((error: Error) => log("warm.cancel-failed", { error: error.message }));
+          inFlight++;
+          try {
+            await options.warm({ xml, body });
+          } finally {
+            inFlight--;
+          }
+        };
+        void start().catch((error: Error) => log("warm.failed", { error: error.message }));
       }, options.delayMs);
       timer.unref();
     },
