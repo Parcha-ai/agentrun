@@ -19,6 +19,8 @@ import { dirname } from "node:path";
 import { WebSocket } from "ws";
 import { ensureRunning, LABEL_FLEET, LABEL_RUN, modalHost, modalSandboxes, removeMountToken, sandboxName } from "@parcha/pi-durable-disk";
 import type { DaytonaClient, HostDriver, HostHandle, ModalSandbox, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
+import { warmTrain, type WarmTrain } from "../universes/warm-train.ts";
+import { creatureWarmer, type CreatureWarmer } from "./warm-creature.ts";
 import { appBundle, boxSetupScript, prepareScript, BOX_APP_DIR, BOX_LINK_PORT, BOX_MOUNT_ROOT, BOX_NODE, BOX_PACKAGE, BOX_SERVE_PORT } from "../../03-tab-to-cloud/pipe/daytona.ts";
 import { CLOUD_LEASE, moveEnv, relayViewer } from "../../03-tab-to-cloud/pipe/cloud.ts";
 import { archilControl, type DemoControl } from "../../03-tab-to-cloud/pipe/control.ts";
@@ -73,7 +75,23 @@ export interface ModalCloudOptions {
    * a durable fsync, so the disk is never mounted there). `image` is a prebuilt Modal image (your training image with
    * image.ts's layer, without archil); `note` goes into the agent's notice there (what to run, where the output goes).
    */
-  readonly gpu?: { readonly image: string; readonly type?: string; readonly cpu?: number; readonly memoryMiB?: number; readonly note?: string; readonly placementTimeoutMs?: number; readonly ttlMinutes?: number };
+  readonly gpu?: {
+    readonly image: string;
+    readonly type?: string;
+    readonly cpu?: number;
+    readonly memoryMiB?: number;
+    readonly note?: string;
+    readonly placementTimeoutMs?: number;
+    readonly ttlMinutes?: number;
+    /**
+     * With `warm: "gpu"`: the trainer's compile-only lines ({mjcf} and {body} stand for the creature's files), run on the warm box
+     * once the tab's drawing has landed in the run, so the agent's train command starts from a compiled program (warm-train.ts).
+     */
+    readonly warmCommands?: readonly string[];
+    readonly warmEnv?: Readonly<Record<string, string>>;
+    /** How long the creature's files stay unchanged before the warm-up starts. Default 3 s. */
+    readonly warmDelayMs?: number;
+  };
   /**
    * Keep one box ready for a run while a tab runs it (it costs while it waits): `true` a pipe VM, `"gpu"` the GPU box
    * (the take opens the tab right before the user draws, so the machine is up by the time the agent asks for it). Default off.
@@ -164,6 +182,9 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
   const warm = new Map<string, Promise<SandboxInfo>>();
+  /** The creature warmer of each run, and the compile-only runner of each warm box. */
+  const warmers = new Map<string, CreatureWarmer>();
+  const trainers = new Map<string, WarmTrain>();
   const serveTokens = new Map<string, string>();
   const live = new Set<string>();
   const placed = new Map<string, Placed>();
@@ -460,6 +481,33 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       if (!at) return;
       placed.delete(ref.id);
       await retire(ref, at, how);
+    },
+
+    /** The tab's drawing landed: with a warm GPU box and the trainer's compile-only lines, compile the creature's program there ahead of the agent. */
+    onTabWrite(ref, path, data) {
+      const commands = options.gpu?.warmCommands;
+      if (options.warm !== "gpu" || !commands || !gpuClient || !gpuEnv) return;
+      let warmer = warmers.get(ref.id);
+      if (!warmer) {
+        warmer = creatureWarmer({
+          delayMs: options.gpu?.warmDelayMs ?? 3_000,
+          log: options.log,
+          warm: async (creature) => {
+            const pending = warm.get(ref.id);
+            if (!pending) throw new Error("no warm GPU box for this run");
+            const info = await pending;
+            let trainer = trainers.get(info.id);
+            if (!trainer) {
+              trainer = warmTrain({ exec: (cmd, sec) => gpuClient.exec(info, cmd, sec), upload: (p, bytes) => gpuClient.upload(info, p, bytes) }, { commands, ...(options.gpu?.warmEnv ? { env: options.gpu.warmEnv } : {}), log: options.log });
+              trainers.set(info.id, trainer);
+            }
+            const report = await trainer.warm(creature);
+            options.log("warm.report", { run: ref.id, box: info.name, creature: report.creature, ms: report.ms });
+          },
+        });
+        warmers.set(ref.id, warmer);
+      }
+      warmer.write(path, data);
     },
 
     /** While a tab runs the run, with `warm` set (pipe transport): get a VM ready, so a switch only dials it. */

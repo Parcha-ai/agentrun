@@ -66,6 +66,8 @@ export interface CloudHost {
   readonly notifiesSwitched?: boolean;
   /** Called once by the server: what a cloud host may ask of it for the agent that runs there (a move the agent chose). */
   bind?(api: ServerApi): void;
+  /** The tab wrote `path` of the run's work/ (only the paths in `tabWritable`): the cloud host may prepare for what it holds, never delaying the write. */
+  onTabWrite?(ref: RunRef, path: string, data: Uint8Array): void;
 }
 
 /** What `serve.ts --cloud-module` passes a module's default export, which returns the CloudHost: the disk, the model, the logs and the module's own `--cloud-arg KEY=VALUE` pairs. */
@@ -1074,6 +1076,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     try {
       const { ms } = await pipe.writeAsWriter(tab, [{ path, op: "write", data: toBase64(new Uint8Array(Buffer.concat(chunks))) }]);
       json(res, 200, { path, bytes: size, ms: Math.round(ms) });
+      try {
+        options.cloud?.onTabWrite?.(state.ref, path, new Uint8Array(Buffer.concat(chunks)));
+      } catch (error) {
+        log("cloud.on-tab-write-failed", { run: runId, path, error: (error as Error).message });
+      }
     } catch (error) {
       json(res, 409, { error: (error as Error).message, holder: holderOf(state) });
     }

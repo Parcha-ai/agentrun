@@ -25,3 +25,17 @@ test("warm=gpu keeps the GPU box ready and vm=false offers only the GPU; both ne
   assert.throws(() => modalOptionsFromArgs({ vm: "false" }), /need gpu-image/);
   assert.throws(() => modalOptionsFromArgs({ "gpu-image": "im-2", warm: "gpuu" }), /true, false or gpu/);
 });
+
+test("warm-commands-file, warm-env and warm-delay-ms need warm=gpu; the file's lines are the commands", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const file = join(mkdtempSync(join(tmpdir(), "warm-")), "cmds.txt");
+  writeFileSync(file, "# the walker\npython train.py --compile-only --mjcf {mjcf} --body {body}\n\n");
+  const got = modalOptionsFromArgs({ "gpu-image": "im-2", warm: "gpu", "warm-commands-file": file, "warm-env": "A=1,B=x=y", "warm-delay-ms": "2000" });
+  assert.deepEqual(got.gpu, { image: "im-2", warmCommands: ["python train.py --compile-only --mjcf {mjcf} --body {body}"], warmEnv: { A: "1", B: "x=y" }, warmDelayMs: 2000 });
+  assert.throws(() => modalOptionsFromArgs({ "gpu-image": "im-2", "warm-commands-file": file }), /need warm=gpu/);
+  assert.throws(() => modalOptionsFromArgs({ "gpu-image": "im-2", warm: "gpu", "warm-env": "novalue" }), /NAME=value pairs/);
+  writeFileSync(file, "# nothing\n");
+  assert.throws(() => modalOptionsFromArgs({ "gpu-image": "im-2", warm: "gpu", "warm-commands-file": file }), /has no command/);
+});

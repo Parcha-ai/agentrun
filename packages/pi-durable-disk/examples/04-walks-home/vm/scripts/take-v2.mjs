@@ -29,6 +29,8 @@ const gpuNoteFile = arg("gpu-note-file", "");
 const chatInput = arg("chat-input", "#chatin");
 // The placement question's client: scripted until the key exists ("jev" needs TYPESAFE_API_KEY in the server's environment).
 const placerClient = arg("placer", "scripted");
+// The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
+const warmCommandsFile = arg("warm-commands-file", "");
 const sketchModule = arg("sketch", join(here, "..", "..", "tab", "scripts", "sketch-take.mjs"));
 const mountRoot = arg("mount-root", join("/mnt/pda/demo", "d4-pipe"));
 const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9455";
@@ -109,6 +111,7 @@ try {
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
+      ...(warmCommandsFile ? ["--cloud-arg", `warm-commands-file=${warmCommandsFile}`, "--cloud-arg", "warm-env=XLA_PYTHON_CLIENT_PREALLOCATE=false"] : []),
       "--cloud-arg", `gpu-image=${gpuImage}`,
       "--cloud-arg", "gpu-type=H100",
       "--cloud-arg", `gpu-note=${GPU_NOTE}`,
