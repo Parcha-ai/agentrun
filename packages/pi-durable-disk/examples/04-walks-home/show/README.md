@@ -85,6 +85,15 @@ run leaves the VM the picture closes, which closes the host's stream. `SHOW_DESK
 the pipe's `SHOW_PIPE_LINK_FILE`); with neither the stage never asks. `node scripts/desktop-check.mjs` checks the whole path in
 real Chrome against a stand-in host (10 checks, no Modal machines).
 
+## A policy coming home
+
+When the tab installs a trained policy it reports `policy-arrived` and, ten simulated seconds later, `policy-walked`. The stage
+turns each into narration and captions its numbers by basis, never as one lump: the install time and the time to walking are
+MEASURED (the tab's own clock, `page/tab-notes.ts`); the simulation's mean speed is SIMULATED (arithmetic over simulated seconds,
+not wall time); what the policy file says about itself (its host, its training seconds) is REPORTED. These notes come from the
+real tab, so they are never tagged SCRIPTED even when the feed is. `node scripts/arrival-check.mjs` checks it in real Chrome with
+the real tab app (6 checks).
+
 ## Honest numbers
 
 A feed says where it comes from: `run.source` is `live` (the default) or `scripted`. A scripted feed gets a permanent
