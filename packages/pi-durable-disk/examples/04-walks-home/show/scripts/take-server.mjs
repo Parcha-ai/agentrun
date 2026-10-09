@@ -1,9 +1,10 @@
 // The take's 03 server: the one tab server D1's home step asks to adopt a winner's run, and the one the stage's disk reads from.
-//   node scripts/take-server.mjs [--mount-root /mnt/pda/d5/pipe] [--dir ~/tmp-d5/take] [--run walks-home] [--local DIR]
-//                                [--cloud remote-local]
-// On the real disk it runs 03's serve.ts under with-archil (the only way this lane touches Archil: the keys exist in that
-// child's environment and nowhere else, mounts live under this lane's /mnt/pda/d5/, and the disk is the scratch disk the wrapper
-// names). With --local DIR the disk is a local directory and nothing of Archil is touched: a dry run of everything else.
+//   node scripts/take-server.mjs --mount-root /mnt/pda/<your lane>/pipe [--dir ~/tmp-d5/take] [--run walks-home] [--ledger FILE]
+//   node scripts/take-server.mjs --local DIR [--dir ...]            (a dry run: no Archil, no mount)
+//   Either form takes --cloud remote-local.
+// On the real disk it runs 03's serve.ts under with-archil (the only way the show lane touches Archil: the keys exist in that
+// child's environment and nowhere else, mounts live under the caller's own lane directory, and the disk is the scratch disk the
+// wrapper names). With --local DIR the disk is a local directory and nothing of Archil is touched: a dry run of everything else.
 // --cloud remote-local adds browser-demo's second host (remote-host.ts as a child process, environment "remote-local", label "Second
 // process"), the one way to get a second host without a unit or a disk client. The run's link is written to <dir>/link (mode 0600) for
 // the stage's pipe feed (SHOW_PIPE_LINK_FILE).
@@ -13,7 +14,7 @@
 // printed or written by this script: the server's own log (which holds the run's link) goes to a 0600 file and is only shown here
 // with its secrets redacted.
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,9 +28,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const ex03 = join(here, "..", "..", "..", "03-tab-to-cloud");
 const dir = arg("dir", join(homedir(), "tmp-d5", "take"));
 const local = arg("local", "");
-const mountRoot = arg("mount-root", "/mnt/pda/d5/pipe");
+// Required on the real disk, with no default: it is the caller's own lane directory under /mnt/pda, which only the caller knows.
+const mountRoot = arg("mount-root", "");
 const run = arg("run", "walks-home");
 const cloud = arg("cloud", "none");
+// Every disk resource the server creates is recorded here (default: inside the private directory): the caller names its own.
+const ledger = arg("ledger", join(dir, "ledger.json"));
 if (!["none", "remote-local"].includes(cloud)) die(`--cloud ${cloud}: only none or remote-local`);
 const wrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-archil");
 const TAB_WRITABLE = "creature/creature.xml,creature/body.json,creature/designs.sqlite";
@@ -42,9 +46,18 @@ const die = (message) => {
 mkdirSync(dir, { recursive: true, mode: 0o700 });
 chmodSync(dir, 0o700);
 if (!local) {
-  // The mount directory is this lane's, created for it (not by this script: /mnt/pda is root's).
-  if (!existsSync(dirname(mountRoot))) die(`${dirname(mountRoot)} does not exist; it is this lane's mount directory and has to be created for it (/mnt/pda is root's)`);
-  mkdirSync(mountRoot, { recursive: true });
+  // The mount root is the caller's lane directory, which already exists (it is created for the lane; /mnt/pda is root's). This
+  // script never creates a directory there: a missing one is an error to fix, not something to make.
+  if (!mountRoot) die("--mount-root is required on the real disk: your own lane directory under /mnt/pda (it has no default)");
+  if (!existsSync(mountRoot)) die(`${mountRoot} does not exist. It has to exist already (it is the caller's lane directory under /mnt/pda, which is root's); this script does not create it`);
+  const at = statSync(mountRoot);
+  if (!at.isDirectory()) die(`${mountRoot} is not a directory`);
+  if (at.uid !== process.getuid()) die(`${mountRoot} is not owned by you (uid ${process.getuid()}): it must be your own lane directory`);
+  try {
+    accessSync(mountRoot, constants.W_OK);
+  } catch {
+    die(`${mountRoot} is not writable by this user`);
+  }
   if (!existsSync(wrapper)) die(`${wrapper} is missing: the Archil keys only come through it`);
 }
 const tokenFile = join(dir, "admin-token");
@@ -67,7 +80,7 @@ const serveArgs = [
   "--tab-writable", TAB_WRITABLE,
   "--log", logFile,
   "--cloud", cloud,
-  ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", join(homedir(), "evals", "agentrun-archil-tl", "demo", "D5-LEDGER.json")]),
+  ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", ledger]),
 ];
 const [cmd, args] = local ? [process.execPath, serveArgs] : [wrapper, ["--", process.execPath, ...serveArgs]];
 const child = spawn(cmd, args, { cwd: ex03, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) }, stdio: "ignore" });
