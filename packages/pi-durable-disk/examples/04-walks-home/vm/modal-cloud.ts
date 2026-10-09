@@ -118,7 +118,7 @@ export const modalVmEnvironment = (transport: "mount" | "pipe"): Environment => 
 
 export const modalGpuEnvironment = (type: string): Environment => ({
   id: "modal-gpu",
-  label: "Modal GPU",
+  label: "a cloud GPU (Modal)",
   phrase: "a Modal GPU machine",
   kind: "remote",
   detail: `1x ${type}, a Linux sandbox that runs the agent through your server`,
