@@ -89,6 +89,28 @@ try {
     result.dragKicks.push({ ...k, min_upright_3s: +minUp.toFixed(3), upright_after: +after.up.toFixed(3), fell: after.fallen, recovered_event_fired: after.recovered });
     await ev('__walks.app.fallen = false');
   }
+  // a hard kick on a policy with a getup network: it goes down, the getup network drives it, it walks again
+  if (process.env.POLICY && (await ev('__walks.app.policy?.hasGetup'))) {
+    await ev('__walks.app.recovering = null'); await waitSim(1);
+    const before = JSON.parse(await ev('JSON.stringify(__walks.stats())'));
+    const kicks = [];
+    for (const angle of [90, 250]) { // two hard kicks in a row: each fall and each getup is counted once
+      const t0 = await ev('__walks.app.sim.time');
+      await ev(`__walks.kickWorld(${Math.cos((angle * Math.PI) / 180)}, ${Math.sin((angle * Math.PI) / 180)}, 400)`);
+      const seen = new Set(); let backAt = null, minUp = 1;
+      for (let i = 0; i < 400; i++) {
+        const o = JSON.parse(await ev('JSON.stringify({m: __walks.app.sim.mode, up: __walks.app.sim.uprightness(), t: __walks.app.sim.time})'));
+        seen.add(o.m); minUp = Math.min(minUp, o.up);
+        if (seen.has('getup') && o.m === 'walk' && o.up > 0.9 && backAt === null) backAt = o.t - t0;
+        if (backAt !== null && o.t - t0 > backAt + 2.5) break;
+        await sleep(100);
+      }
+      kicks.push({ angle_deg: angle, went_down: minUp < 0.3, min_upright: +minUp.toFixed(2), getup_seen: seen.has('getup'), sim_seconds_until_walking_again: backAt === null ? null : +backAt.toFixed(2) });
+    }
+    const after = JSON.parse(await ev('JSON.stringify(__walks.stats())'));
+    await waitSim(2);
+    result.hardKick = { force_n: 400, kicks, hud_shows_mode: await ev("document.getElementById('hud').textContent.includes('mode')"), counted: { falls: after.falls - before.falls, getups: after.getups - before.getups, recoveries: after.recoveries - before.recoveries, nan: after.nan - before.nan, unexpected_resets: after.resetsSeen - before.resetsSeen }, speed_after: +(await ev('Math.hypot(__walks.app.sim.data.qvel[0], __walks.app.sim.data.qvel[1])')).toFixed(2) };
+  }
   // getup mode: a synthetic policy whose getup network is recognisable; roll the creature onto its side and back
   {
     const nj = await ev('__walks.app.built.jointNames.length');

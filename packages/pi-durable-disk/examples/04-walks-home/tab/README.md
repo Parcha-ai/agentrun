@@ -16,6 +16,20 @@ CDP_PORT=9333 node scripts/check-embed.mjs <outdir>   # the page inside a parent
 WebGL: the page needs it. A headless Chrome without a GPU needs `--use-gl=angle --use-angle=swiftshader
 --enable-unsafe-swiftshader`.
 
+## Before the shoot: performance, soak, policy checks
+All need a Chrome with CDP on `CDP_PORT` (a software-GL one: `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader`).
+```sh
+CDP_PORT=9333 THROTTLE=4 PHASE_S=15 [LITE=1] node scripts/perf.mjs          # fps, control steps/s, real-time factor, heap; walking and getup phases
+CDP_PORT=9333 THROTTLE=4 SOAK_MIN=30 POLICY=policy.json OUT=dir node scripts/soak.mjs   # random 60-400 N kicks every 20-40 s; NaN, resets, heap
+AFTER=8 [FORCES=200,300,400,600] node scripts/kick-sweep.ts policy.json    # acceptance: `up` from every side at >= 100 N
+node scripts/getup-time.ts policy.json                                      # seconds to get up from the left side, right side, back
+node scripts/parity.ts policy.json trace.json [creature.xml]                # the trainer's trace through the tab's code
+POLICY=policy.json W=700 H=500 CDP_PORT=9333 node scripts/check-browser.mjs dir   # the page itself: walk, kicks, hard kick, getup mode
+```
+`window.__walks.stats()` returns the page's counters (frames, steps, falls, getups, recoveries, kicks, nan, resetsSeen) and
+p50/p95/max of the frame interval and of the time spent in physics and in draw per frame. Load the page as `/?lite=1` on a
+machine that rasterises in software: cheaper materials and no multisampling.
+
 ## Pieces
 | file | what |
 | --- | --- |
@@ -25,6 +39,7 @@ WebGL: the page needs it. A headless Chrome without a GPU needs `--use-gl=angle 
 | `src/sim.ts` | `Sim`: reset to `home`, a policy step = 5 physics steps, kick = force for 12 steps |
 | `src/policy.ts`, `src/obs.ts` | `mlp-v1` policy runner (owned by the trainer lane; see `POLICY-FORMAT.md`) |
 | `src/sketch.ts`, `src/render.ts`, `src/main.ts` | sketcher canvas, three.js view, the page |
+| `src/stats.ts` | frame and event counters kept by the page for the checks above |
 | `src/store.ts`, `src/backend.ts` | SQLite (sql.js) with one writer per file; backends: IndexedDB, or the parent page (the disk) |
 | `MEMORY_SCHEMA` in `src/store.ts`, `scripts/record-machine.mjs` | the agent's side: append "I am now on machine X" to `memory.sqlite` |
 
