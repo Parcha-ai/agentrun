@@ -134,6 +134,8 @@ export interface HostTools {
   readonly environments?: readonly string[];
   /** A desktop this host runs, for the computer tool. */
   readonly computer?: ComputerDriver;
+  /** False: the agent is not offered switch_environment (the server places the run). Every host of one run must agree, so it comes from the server's attach frame. Default true. */
+  readonly switchTool?: boolean;
 }
 
 /**
@@ -145,7 +147,7 @@ export function agentRegistry(durable: (context: Context) => Promise<void>, host
   const registry = createRegistry();
   registry.install(codingTools());
   registry.install(writeThrough(durable));
-  registry.install(switchEnvironment(host.switchChannel, host.environments));
+  if (host.switchTool !== false) registry.install(switchEnvironment(host.switchChannel, host.environments));
   registry.install(computerTool(host.computer));
   return registry;
 }

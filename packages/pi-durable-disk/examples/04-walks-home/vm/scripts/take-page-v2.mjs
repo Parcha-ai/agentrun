@@ -20,11 +20,22 @@ const secs = (n) => `${Number(n).toFixed(1)} s`;
 const steps = results.steps ?? [];
 const agentLines = steps.filter((r) => r.name === "the agent says").map((r) => `<tr><td class="n">${secs(r.at)}</td><td>${esc(r.text)}</td></tr>`).join("\n");
 const cps = steps.filter((r) => /picked up checkpoint/.test(r.name)).map((r) => `<tr><td class="n">${secs(r.at)}</td><td class="n">${esc(r.name.replace(/\D+/g, ""))}</td><td class="n">${r.steps === null || r.steps === undefined ? "" : esc((r.steps / 1e6).toFixed(1))} M</td><td class="n">${r.reported_walk_10s_m === null || r.reported_walk_10s_m === undefined ? "" : esc(Number(r.reported_walk_10s_m).toFixed(2))} m</td></tr>`).join("\n");
-const capRows = log.captions
+// A counter caption ("Setting up ... 12 s") is logged once a second: one row for the run of it, from its first to its last value.
+const collapsed = [];
+for (const c of log.captions) {
+  const m = /^(.*\.\.\. )(\d+) s$/.exec(c.text);
+  const last = collapsed.at(-1);
+  if (m && last?.counter && last.counter.prefix === m[1]) {
+    last.counter.to = Number(m[2]);
+    last.text = `${m[1]}${last.counter.from} s to ${m[2]} s (a counter, shown once a second)`;
+  } else collapsed.push(m ? { ...c, counter: { prefix: m[1], from: Number(m[2]), to: Number(m[2]) } } : c);
+}
+const capRows = collapsed
   .map((c) => `<tr><td class="n">${secs(c.second)}</td><td>${c.tag ? `<span class="tag ${esc(c.tag.toLowerCase())}">${esc(c.tag)}</span>` : ""}</td><td>${esc(c.text.length > 260 ? `${c.text.slice(0, 257)}...` : c.text)}</td></tr>`)
   .join("\n");
 const kicks = steps.filter((r) => /^kicked/.test(r.name)).map((r) => esc(r.name)).join(", ");
 const spend = arg("spend", "");
+const takeNote = arg("note", "");
 
 const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -46,6 +57,7 @@ ul{padding-left:20px}li{margin:4px 0}
 <h1>It Walks Home, v2</h1>
 <p class="lede">You draw a creature in your browser. You tell the agent to teach it to walk. The agent takes the work to a GPU machine in a cloud datacentre, where the creature learns to walk while you watch. Then the finished brain comes home to your browser tab, where it runs by itself: it keeps walking with the network switched off, and when you kick it, it gets back up.</p>
 <p class="note">Dated ${esc(date)}. One real recording at real speed (${esc(secs(log.seconds))}): the agent is a real model run (the agent's own words below), the GPU is a real H100 sandbox, the creature's brain is trained in that take and the tab simulates the creature with MuJoCo compiled to WebAssembly. What is staged: the drawing is replayed by a script that moves the mouse the way a person would; the sentence is typed by the recorder; the click on the Wi-Fi control and the network switch-off (Chrome's offline emulation) are done by the recorder; the kicks are sent by the recorder. Where the agent runs is decided by a typed question that is answered here by a scripted stand-in, not by the real model (the decision card says so); the agent's moves are the server's, not the agent's own tool calls.</p>
+${takeNote ? `<p class="note">${esc(takeNote)}</p>` : ""}
 <video controls muted playsinline preload="metadata" poster="data:image/png;base64,${b64(poster)}" src="data:video/webm;base64,${b64(video)}"></video>
 <p class="note">VP8 WebM: plays in Chrome and Firefox; Safari may not.</p>
 <h2>What the agent said</h2>

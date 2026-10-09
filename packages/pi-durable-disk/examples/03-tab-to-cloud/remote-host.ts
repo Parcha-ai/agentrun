@@ -18,6 +18,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { probeHost } from "./host-probe.ts";
+import { capTimeouts } from "./capped-env.ts";
 import { nodeWorkspaceFs } from "./host-fs.ts";
 import { PipeClient, type Attached, type SocketLike } from "./tab/pipe-client.ts";
 import { finishStep, startTab, type TabRuntime } from "./tab/runtime.ts";
@@ -132,7 +133,8 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
   }
   const attached: Attached = first;
   const started = performance.now();
-  const env = new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } });
+  // DEMO_BASH_MAX_S: a ceiling on one command (a take: a command that never returns fails back to the agent instead of holding the run).
+  const env = capTimeouts(new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } }), Number(process.env.DEMO_BASH_MAX_S ?? 0));
   const facts = await probeHost();
   runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), host: { switchChannel }, liveFlushMs: Number(process.env.DEMO_LIVE_FLUSH_MS ?? 0), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });

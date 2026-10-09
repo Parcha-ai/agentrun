@@ -17,6 +17,17 @@ const toolOf = (host: Parameters<typeof agentRegistry>[1], name: string) => agen
 const run = (tool: ReturnType<typeof toolOf>, args: Record<string, unknown>) => tool.execute(args as never, {} as never, {} as never);
 const fakeDriver: ComputerDriver = { display: ":1", act: async (a) => ({ did: `did ${a.action}`, jpegBase64: "AAAA" }) };
 
+describe("a run the server places", () => {
+  it("is not offered switch_environment, and the rest of the registry is the same in the same order", () => {
+    const normal = shape({});
+    const placed = shape({ switchTool: false });
+    assert.ok(normal.some((t) => t.endsWith(`/${SWITCH_TOOL}`)));
+    assert.ok(!placed.some((t) => t.endsWith(`/${SWITCH_TOOL}`)), "the move tool is not in the list");
+    assert.deepEqual(placed, normal.filter((t) => !t.endsWith(`/${SWITCH_TOOL}`)));
+    assert.deepEqual(shape({ switchTool: false, environments: ["tab", "modal-gpu"] }), placed, "whatever else a host knows, every host of the run agrees");
+  });
+});
+
 describe("the registry every host installs", () => {
   it("has the same extensions and tools in the same order whatever the host can serve", () => {
     const tab = shape({});

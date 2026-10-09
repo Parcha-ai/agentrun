@@ -180,8 +180,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   /** What a pipe host of each environment is made of. */
   const classOf = (envId: string) =>
     envId === gpuEnv?.id && gpuClient && options.gpu
-      ? { env: gpuEnv, client: gpuClient, archil: false, cpus: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ttlMinutes: options.gpu.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES, className: "modal-gpu", liveFlushMs: 1000, note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
-      : { env, client, archil: true, cpus: 0, memoryMiB: 0, ttlMinutes: 120, className: "modal-vm", liveFlushMs: 0, note: "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server." };
+      ? { env: gpuEnv, client: gpuClient, archil: false, cpus: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ttlMinutes: options.gpu.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES, className: "modal-gpu", liveFlushMs: 1000, bashMaxSeconds: 150, note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
+      : { env, client, archil: true, cpus: 0, memoryMiB: 0, ttlMinutes: 120, className: "modal-vm", liveFlushMs: 0, bashMaxSeconds: 0, note: "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server." };
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
   const warm = new Map<string, Promise<SandboxInfo>>();
@@ -315,6 +315,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         `DEMO_ENV_NOTE=${q(cls.note)}`,
         // A GPU box trains while the agent waits on one command: its files reach the disk, and the tab, every second, not only when the call ends.
         ...(cls.liveFlushMs ? [`DEMO_LIVE_FLUSH_MS=${cls.liveFlushMs}`] : []),
+        // No single command of the agent runs past this on a GPU box: a hung one fails back to the agent, which can recover.
+        ...(cls.bashMaxSeconds ? [`DEMO_BASH_MAX_S=${cls.bashMaxSeconds}`] : []),
         `${BOX_NODE} ${BOX_APP_DIR}/remote-host.ts --port ${BOX_SERVE_PORT} --token-file ${BOX_ETC}/serve.token --work ${BOX_WORK}`,
         `>> ${BOX_REMOTE_LOG} 2>&1 < /dev/null`,
       ].join(" ");

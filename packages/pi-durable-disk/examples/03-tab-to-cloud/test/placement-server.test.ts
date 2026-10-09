@@ -2,7 +2,7 @@
 // be, announces the decision (before the move), moves the run, and gives the message to the host the run now has; when the
 // agent's turn ends there it asks again and moves the run to where the answer says. The remote host here is a real child process.
 import assert from "node:assert/strict";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, test } from "node:test";
 import { PLACEMENT_QUESTIONS, SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
 import { remoteLocalHost, REMOTE_LOCAL } from "../pipe/remote-local.ts";
 import { PipeClient } from "../tab/pipe-client.ts";
@@ -111,7 +111,8 @@ describe("placement by a typed question", () => {
     const { id, secret } = await local.server.createRun("stays");
     const tabFrames: PipeFrame[] = [];
     const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => tabFrames.push(f) });
-    await tab.ready;
+    const first = await tab.ready;
+    assert.ok(first.t === "attached" && first.placed === true, "a server that places runs says so in the attach frame");
     const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", onFrame: () => undefined });
     await page.ready;
     page.send({ t: "submit", text: "fix a typo", requestId: "req-2" });
@@ -130,7 +131,8 @@ describe("placement by a typed question", () => {
       const { id, secret } = await second.server.createRun("fails");
       const tabFrames: PipeFrame[] = [];
       const tab: PipeClient = new PipeClient({ url: second.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => tabFrames.push(f) });
-      await tab.ready;
+      const first = await tab.ready;
+      assert.ok(first.t === "attached" && first.placed === true);
       const page: PipeClient = new PipeClient({ url: second.url, run: id, token: secret, tab: "v", mode: "operator", onFrame: () => undefined });
       await page.ready;
       page.send({ t: "submit", text: "hello", requestId: "req-3" });
@@ -142,4 +144,18 @@ describe("placement by a typed question", () => {
       await second.remove();
     }
   });
+});
+
+test("a server without a placer does not mark runs as placed (the agent keeps its move tool)", async () => {
+  const plain = await localServer({ superviseMs: 60_000 });
+  try {
+    const { id, secret } = await plain.server.createRun("plain");
+    const tab: PipeClient = new PipeClient({ url: plain.url, run: id, token: secret, tab: "a", mode: "write" });
+    const attached = await tab.ready;
+    assert.ok(attached.t === "attached");
+    assert.equal(attached.placed, undefined);
+    tab.close();
+  } finally {
+    await plain.remove();
+  }
 });

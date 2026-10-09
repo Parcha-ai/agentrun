@@ -685,7 +685,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       }
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
-      const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, env: writerEnv, ...(move ? { move } : {}) });
+      const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, env: writerEnv, ...(move ? { move } : {}), ...(options.placer ? { placed: true } : {}) });
       if (role === "viewer") socket.send(await viewingFrame(state));
       else {
         for (const [viewer, detach] of state.cloudViewers) {

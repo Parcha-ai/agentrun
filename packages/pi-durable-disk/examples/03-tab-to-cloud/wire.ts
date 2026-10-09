@@ -245,7 +245,7 @@ export type TabFrame =
 /** Frames from the pipe to a tab. */
 export type PipeFrame =
   /** The writer's attachment: work/ as a manifest; the files follow in `restore-chunk` frames, then `restore-end`. */
-  | { t: "attached"; epoch: number; generation: number; manifest: ManifestEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move }
+  | { t: "attached"; epoch: number; generation: number; manifest: ManifestEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move; /** The server places runs by a typed question (placement.ts): the agent is not offered a move tool of its own. */ placed?: boolean }
   /** Part of a manifest file's content (base64, at most CHUNK_BYTES raw), in order. */
   | { t: "restore-chunk"; path: string; offset: number; data: string }
   | { t: "restore-end"; files: number; bytes: number }

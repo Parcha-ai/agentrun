@@ -118,7 +118,7 @@ export async function startTab<E extends RuntimeEnv>(opts: {
   const durable = (_context: Context): Promise<void> => flush();
   const live = opts.liveFlushMs && opts.liveFlushMs > 0 ? startLiveFlush(flush, opts.liveFlushMs) : undefined;
   const models = agentModels({ baseUrl: "https://model-proxy.invalid/v1", modelId: opts.attached.model, fetch: opts.client.fetch as typeof globalThis.fetch });
-  const harness = await Harness.open(remoteStorage(opts.client), { registry: agentRegistry(durable, { ...opts.host, environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
+  const harness = await Harness.open(remoteStorage(opts.client), { registry: agentRegistry(durable, { ...opts.host, ...(opts.attached.placed ? { switchTool: false } : {}), environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   // The notice is committed before anything the run resumes commits (environment.ts).
   if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model), opts.move.facts, opts.move.info, ctx);
   await harness.resume();

@@ -225,7 +225,7 @@ export class RunPipe {
    * and its later frames are refused, after its frames in flight settled); otherwise the socket becomes a viewer.
    * Resolves with what happened.
    */
-  async attach(socket: PipeSocket, tab: string, takeover: boolean, extra: { environments: Environment[]; move?: Move; env?: string } = { environments: [] }): Promise<"writer" | "viewer"> {
+  async attach(socket: PipeSocket, tab: string, takeover: boolean, extra: { environments: Environment[]; move?: Move; env?: string; placed?: boolean } = { environments: [] }): Promise<"writer" | "viewer"> {
     this.#assertUsable();
     const current = this.#writer && !this.#writer.dead ? this.#writer : undefined;
     if (current && !takeover && current.tab !== tab) {
@@ -268,6 +268,7 @@ export class RunPipe {
       budget: { used: this.#options.model.spent, cap: this.#options.model.options.budgetTokens },
       environments: extra.environments,
       ...(extra.move ? { move: extra.move } : {}),
+      ...(extra.placed ? { placed: true } : {}),
     });
     // Its grace starts now: its pings reach the pipe only once the attach is done.
     writer.attaching = false;
