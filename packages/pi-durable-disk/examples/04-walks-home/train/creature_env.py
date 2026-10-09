@@ -70,6 +70,9 @@ def default_config() -> config_dict.ConfigDict:
       fall_up_z=0.0,  # a fall: the torso's up axis z below this
       terminate_on_fall=True,  # False for getup training: a fall is a state to recover from, not an episode end
       fall_start_prob=0.0,  # fraction of episodes that start dropped in a random orientation (getup practice)
+      # Clip each step's reward at 0 (Playground's default, it discourages ending an episode early). Getup training
+      # turns it off: a fallen creature must see the difference between lying on its back and almost standing.
+      clip_reward_at_zero=True,
       noise_config=config_dict.create(
           level=1.0,
           scales=config_dict.create(joint_pos=0.03, joint_vel=1.0, gyro=0.2, gravity=0.05, linvel=0.1),
@@ -372,7 +375,8 @@ class CreatureWalk(mjx_env.MjxEnv):
     terms = self._reward_terms(data, action, info, done, first_contact, contact, clearance, feet_vel)
     scales = self._config.reward_config.scales
     weighted = {k: v * scales[k] for k, v in terms.items()}
-    reward = jp.clip(sum(weighted.values()) * self.dt, 0.0, 10000.0)
+    total = sum(weighted.values()) * self.dt
+    reward = jp.clip(total, 0.0, 10000.0) if self._config.clip_reward_at_zero else total
 
     info["last_act"] = action
     info["rng"], k1, k2 = jax.random.split(info["rng"], 3)
