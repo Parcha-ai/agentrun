@@ -79,7 +79,7 @@ test("a zero-loss claim is measured on an independent read-back or on the chaos 
 });
 
 test("every way of saying nothing was lost is held to the rule", () => {
-  for (const text of ["0 acknowledged writes lost", "zero loss", "Zero-loss takeover", "no commits lost", "0 files lost", "nothing was lost", "moved without losing a write"]) {
+  for (const text of ["0 acknowledged writes lost", "zero loss", "Zero-loss takeover", "no commits lost", "0 files lost", "nothing was lost", "moved without losing a write", "no data was lost", "no writes were lost", "0 commits was lost"]) {
     assert.ok(claimsZeroLoss(text), text);
     assert.equal(tagOf(zl(text, { measured: true })), "unmeasured", text);
   }
@@ -89,4 +89,12 @@ test("every way of saying nothing was lost is held to the rule", () => {
 test("the rule does not touch other measured claims, and a scripted feed's zero-loss line stays scripted", () => {
   assert.equal(tagOf(zl("Switched in 700 ms (timed by the server).", { measured: true })), "measured");
   assert.equal(tagOf(zl("0 acknowledged writes lost.", { measured: true, evidence: "independent-readback" }), "scripted"), "scripted");
+});
+
+test("a duration beside a singular or plural loss claim is not measured without evidence", () => {
+  const text = "Switched in 700 ms; no data was lost";
+  assert.equal(tagOf(zl(text, { measured: true })), "unmeasured");
+  assert.equal(tagOf(zl(text, { measured: true, evidence: "pipe-released" })), "unmeasured");
+  assert.equal(tagOf(zl(text, { measured: true, evidence: "independent-readback" })), "measured");
+  assert.equal(tagOf(zl("Switched in 700 ms; no writes were lost", { measured: true })), "unmeasured");
 });

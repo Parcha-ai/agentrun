@@ -13,7 +13,7 @@ const MAX_CHARS = 220;
 export const CAPTION_MS = 7000;
 
 /** Words that claim nothing was lost ("0 acknowledged writes lost", "zero loss", "nothing was lost", "no writes lost"). */
-const ZERO_LOSS = /\b(?:zero|no|0)\s+(?:acknowledged\s+)?(?:writes?|commits?|files?|data)\s+(?:were\s+)?lost\b|\bzero[- ]loss\b|\bnothing\s+(?:was\s+)?lost\b|\bwithout\s+losing\b/i;
+const ZERO_LOSS = /\b(?:zero|no|0)\s+(?:acknowledged\s+)?(?:writes?|commits?|files?|data)\s+(?:(?:were|was)\s+)?lost\b|\bzero[- ]loss\b|\bnothing\s+(?:was\s+)?lost\b|\bwithout\s+losing\b/i;
 export const claimsZeroLoss = (text: string): boolean => ZERO_LOSS.test(text);
 /** The only evidence a measured zero-loss claim may cite: a read-back that does not go through the pipe being judged. */
 const INDEPENDENT = new Set<NonNullable<Note["evidence"]>>(["independent-readback", "chaos-harness"]);

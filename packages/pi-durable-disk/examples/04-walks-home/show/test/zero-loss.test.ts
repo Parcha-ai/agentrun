@@ -102,3 +102,12 @@ test("a zero-loss page rests on an independent read-back, never the pipe's own r
   assert.throws(() => renderZeroLoss({ ...results, method: "Each pipe.released digest was compared." }), /independent read-back/);
   assert.throws(() => renderZeroLoss({ ...results, method: "An independent read-back of the store." }), /never the pipe's own/);
 });
+
+test("a result that checked nothing is refused, not shown as zero loss", () => {
+  const empty = { ...results.mountHop, rounds: 0, perRound: [], ackedCommitsChecked: 0, ackedFilesChecked: 0 };
+  assert.throws(() => renderZeroLoss({ ...results, mountHop: empty }), /mount hop ran no rounds/);
+  assert.throws(() => renderZeroLoss({ ...results, pipeHop: { ...empty, orphanedUploads: 0 } }), /pipe hop ran no rounds/);
+  const unchecked = { ...results.mountHop, ackedCommitsChecked: 0, ackedFilesChecked: 0 };
+  assert.throws(() => renderZeroLoss({ ...results, mountHop: unchecked }), /mount hop checked no acknowledged writes/);
+  assert.doesNotThrow(() => renderZeroLoss({ ...results, mountHop: { ...results.mountHop, ackedCommitsChecked: 0, ackedFilesChecked: 3 } }));
+});
