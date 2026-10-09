@@ -18,7 +18,8 @@ test("the reference block states the three page numbers, tags them as measured o
   const html = renderReference(ref);
   for (const n of ["2.9 s", "6.3 s", "1.5 s", "2.5 s", "5.0 s", "1.4 s"]) assert.ok(html.includes(n), n);
   assert.match(html, /MEASURED on Daytona/);
-  assert.ok(html.includes(ref.source.url));
+  assert.ok(html.includes('href="2026-10-09-pi-agent-switch-tab-daytona-gpu.html"'), "a page on the docs site is linked by file name");
+  assert.ok(!html.includes("https://docs"), "no absolute address in the visible block");
   assert.doesNotMatch(html, /MEASURED locally/, "no local numbers unless given");
 });
 

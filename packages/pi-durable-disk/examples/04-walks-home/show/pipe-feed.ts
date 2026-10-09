@@ -20,7 +20,8 @@ type Placement = Extract<PipeFrame, { t: "placement" }>["placement"];
 type Viewing = Extract<PipeFrame, { t: "viewing" }>;
 
 /** What a question to the agent after a switch reads like; short on purpose, it costs model tokens. */
-export const WHERE_ARE_YOU = "Which machine are you on right now? Check with bash (uname -a, nproc, and nvidia-smi if it exists) and answer in two short lines.";
+/** It asks for the kernel and core count, not the host name: the answer is shown on screen and in published recordings. */
+export const WHERE_ARE_YOU = "Which kind of machine are you on right now? Check with bash (uname -sr, nproc, and nvidia-smi if it exists), do not print the host name, and answer in two short lines.";
 
 export function kindOf(env: PipeEnv): HostKind {
   if (env.kind === "tab") return "tab";

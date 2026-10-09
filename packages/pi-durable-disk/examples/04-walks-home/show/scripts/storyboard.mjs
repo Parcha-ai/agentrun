@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fold } from "../reduce.ts";
+import { findLeaks } from "../publishable.ts";
 import { renderReference } from "../reference.ts";
 import { ScenarioPlayer } from "../scenario.ts";
 import { openTab, sleep } from "./cdp.mjs";
@@ -16,6 +17,10 @@ const arg = (name, fallback) => {
 };
 const url = arg("url", "http://127.0.0.1:8752/");
 const out = arg("out", "recordings/storyboard.html");
+// The recorded switch beat, inlined as a video (VP8/WebM, plays in Chrome and Firefox), with a poster frame.
+const videoFile = arg("video", "recordings/switch-beat.webm");
+const posterFile = arg("poster", "recordings/switch-poster.png");
+const dateStamp = arg("date", new Date().toISOString().slice(0, 10));
 
 // The script played once, to find when each thing happens.
 const p = new ScenarioPlayer({ origin: 0 });
@@ -131,6 +136,17 @@ const localFile = new URL("../recordings/switch-beat.json", import.meta.url);
 const local = existsSync(localFile) ? JSON.parse(readFileSync(localFile, "utf8")) : undefined;
 const referenceHtml = renderReference(reference, local && local.failed === 0 ? { startedAt: local.startedAt, switches: local.switches.map((s) => ({ target: s.target, serverMs: s.serverMs })) } : undefined);
 
+const videoHtml = (() => {
+  if (!existsSync(videoFile)) return "";
+  const b64 = (f) => readFileSync(f).toString("base64");
+  const poster = existsSync(posterFile) ? ` poster="data:image/png;base64,${b64(posterFile)}"` : "";
+  const sb = local && local.failed === 0 ? local.switches : [];
+  const nums = sb.length === 2 ? `In this take the run moved from the tab to a second host in ${(sb[0].serverMs / 1000).toFixed(2)} s and back in ${(sb[1].serverMs / 1000).toFixed(2)} s, on the server's own clock (from the switch to the new host's notice committed). ` : "";
+  return `<section id="switch-video"><h2>The switch beat, recorded</h2>
+<video controls muted playsinline preload="metadata"${poster} src="data:video/webm;base64,${b64(videoFile)}"></video>
+<p class="note"><span class="tag measured">MEASURED locally</span> ${nums}The agent is told where it now runs, and answers from each machine. Not Daytona: the second host is a process on one box. If the video does not play (Safari), the stills and numbers below carry the same story.</p></section>`;
+})();
+
 const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>It Walks Home Storyboard</title>
@@ -148,18 +164,25 @@ article{margin:0 0 44px}.meta{display:flex;gap:12px;align-items:center;font:12px
 h2{margin:6px 0 10px;font-size:22px}img{width:100%;height:auto;border:1px solid var(--line);border-radius:10px;display:block}
 dl{display:grid;grid-template-columns:110px 1fr;gap:8px 16px;margin:14px 0 0}dt{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);padding-top:3px}dd{margin:0}
 .say{color:var(--gold);font-style:italic}
+#switch-video{margin:0 0 40px}#switch-video video{width:100%;height:auto;border:1px solid var(--line);border-radius:10px;display:block;background:#000}
 #reference{margin:10px 0 44px;border-top:1px solid var(--line);padding-top:26px}#reference h2{margin-top:0}#reference h3{margin:22px 0 6px;font-size:16px}
 table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}td.n{font:600 15px ui-monospace,Menlo,monospace;white-space:nowrap}td.q{color:var(--muted)}
 .note{color:var(--muted);margin:6px 0}.note a{color:var(--accent)}.tag{font:700 10px ui-monospace,Menlo,monospace;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid currentColor;margin-right:6px}.tag.measured{color:var(--accent)}.tag.local{color:var(--gold)}
 @media (max-width:640px){dl{grid-template-columns:1fr}dt{padding-top:8px}}
 </style></head><body><main>
-<h1>It Walks Home</h1>
-<p class="lede">A creature you draw in a browser tab leaves its home, trains in the cloud across eight machines, survives one being killed, and walks back into the tab on its own. One agent, one disk, and every move is a claim and a fence.</p>
+<h1>It Walks Home: storyboard</h1>
+<p class="lede">This page is for Miguel and the demo team. It is the shot list of the durable-agent demo: a creature you draw in a browser tab leaves its home, trains in the cloud across eight machines, survives one being killed, and walks back into the tab on its own. One agent, one disk, and every move is a claim and a fence. For each beat: what is on screen, what to say, what is real, and what to do if it slips.</p>
+<p class="note">Dated ${dateStamp}. Provenance: the video below is a real run (no cloud machines, a second host on one box); the eight stills are the stage playing its scripted rehearsal feed, so their timecodes, costs and scores are rehearsal numbers, not measurements. Every number on the page says which kind it is.</p>
+${videoHtml}
 <div class="facts"><div><b>${fmt(endAt)}</b><span>scripted run</span></div><div><b>${fmt(killedAt)}</b><span>kill</span></div><div><b>2.0 s</b><span>takeover</span></div><div><b>$${finalCost.toFixed(2)}</b><span>fleet spend (fake rates)</span></div><div><b>${BEATS.length}</b><span>beats</span></div></div>
 ${rows}
 ${referenceHtml}
 <p class="lede">Stills are the stage playing its scripted feed: timecodes, costs and scores are rehearsal numbers, not measurements. Regenerate with <code>node scripts/storyboard.mjs</code>.</p>
 </main></body></html>`;
 mkdirSync(dirname(out), { recursive: true });
+// The docs-site rules as a gate: no secret, no machine-local detail, nothing loaded from outside.
+const leaks = findLeaks(html);
+for (const l of leaks) console.error(`NOT PUBLISHABLE: ${l.rule}: ...${l.sample}...`);
+if (leaks.length > 0 && !process.argv.includes("--no-check")) process.exit(1);
 writeFileSync(out, html);
 console.log(`wrote ${out} (${(html.length / 1e6).toFixed(1)} MB)`);

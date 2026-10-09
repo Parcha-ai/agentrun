@@ -14,6 +14,12 @@ export type LocalSwitches = { startedAt?: string; switches: { target: string; se
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 const seconds = (n: number) => `${n.toFixed(1)} s`;
 
+/** A page on the docs site is linked by its file name, so it resolves wherever the site is served. */
+function siteRelative(url: string): string {
+  const u = new URL(url);
+  return u.hostname.startsWith("docs.") ? u.pathname.split("/").pop()! : url;
+}
+
 export function renderReference(ref: ReferenceTimings, local?: LocalSwitches): string {
   const rows = ref.rows
     .map(
@@ -28,7 +34,7 @@ export function renderReference(ref: ReferenceTimings, local?: LocalSwitches): s
       : "";
   return `<section id="reference">
 <h2>Reference: what a real switch took on ${esc(ref.platform)}</h2>
-<p class="note"><span class="tag measured">MEASURED on ${esc(ref.platform)}</span> from <a href="${esc(ref.source.url)}">${esc(ref.source.title)}</a>, recorded ${esc(ref.source.recorded.slice(0, 10))}: ${esc(ref.source.how)}. Numbers read from that page's table.</p>
+<p class="note"><span class="tag measured">MEASURED on ${esc(ref.platform)}</span> from <a href="${esc(siteRelative(ref.source.url))}">${esc(ref.source.title)}</a>, recorded ${esc(ref.source.recorded.slice(0, 10))}: ${esc(ref.source.how)}. Numbers read from that page's table.</p>
 <table><thead><tr><th>Switch</th><th>${esc(ref.pageColumn)}</th><th>${esc(ref.serverColumn)}</th><th>The agent's answer after it</th></tr></thead><tbody>${rows}</tbody></table>
 ${mine}
 </section>`;
