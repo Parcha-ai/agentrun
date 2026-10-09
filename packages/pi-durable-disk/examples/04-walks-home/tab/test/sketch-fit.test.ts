@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultDesign, LIMITS, validateDesign, type Design } from '../src/design.ts';
-import { footRadiusM, pxPerMetre, Sketcher, SKETCH_COLORS } from '../src/sketch.ts';
+import { drawThumbnail, footRadiusM, pxPerMetre, Sketcher, SKETCH_COLORS, thumbnailPx } from '../src/sketch.ts';
 import { buildMjcf } from '../src/mjcf.ts';
 import { fakeCanvas } from './fakecanvas.ts';
 
@@ -165,4 +165,31 @@ test('a leg handle can be grabbed on its ring, however big the foot inside it is
   fire('pointermove', { x: hd.x + ringPx, y: hd.y - 20 }); // drag it up a little
   fire('pointerup', { x: hd.x + ringPx, y: hd.y - 20 });
   assert.ok(sk.get().legs[0].thigh + sk.get().legs[0].shin > d.legs[0].thigh + d.legs[0].shin, 'the leg reach changed: the ring grabbed the leg handle');
+});
+
+// ---- "your drawing": a thumbnail of the sketch that stays on screen once the sketcher has gone ----
+
+test('the thumbnail scale fits the whole drawing in its box, whatever the creature', () => {
+  const widest = defaultDesign();
+  widest.torso = { length: LIMITS.torso.length[1], width: LIMITS.torso.width[1], height: 0.1 };
+  widest.legs = [{ x: 1, thigh: LIMITS.thigh[1], shin: LIMITS.shin[1], radius: 0.04 }, { x: -1, thigh: LIMITS.thigh[1], shin: LIMITS.shin[1], radius: 0.04 }];
+  for (const d of [defaultDesign(), widest]) for (const [w, h] of [[170, 120], [220, 160], [120, 120]]) {
+    const px = thumbnailPx(d, w, h);
+    const halfX = (d.torso.length / 2 + 0.04) * px, halfY = (d.torso.width / 2 + d.legs[0].thigh + d.legs[0].shin + footRadiusM(d.legs[0].radius, px)) * px;
+    assert.ok(halfX <= w / 2 - 4 + 1e-6, `${w}x${h}: nose and rear fit (${halfX.toFixed(1)} of ${w / 2})`);
+    assert.ok(halfY <= h / 2 - 4 + 1e-6, `${w}x${h}: both leg ends fit (${halfY.toFixed(1)} of ${h / 2})`);
+    assert.ok(px > 20, `${w}x${h}: not microscopic (${px.toFixed(0)} px per metre)`);
+  }
+});
+
+test('the thumbnail is the creature drawn the way the sketch draws it (same colours, a foot at every leg end), without handles', () => {
+  const d = defaultDesign();
+  const { canvas, calls } = recordingCanvas(170, 120);
+  drawThumbnail(canvas, d);
+  const fills = (c: string) => calls.filter((x) => x.fn === 'fill' && x.fill === c).length;
+  assert.equal(fills(SKETCH_COLORS.torso), 1);
+  assert.equal(fills(SKETCH_COLORS.foot), d.legs.length * 2);
+  assert.equal(calls.filter((x) => x.fn === 'stroke' && x.stroke === SKETCH_COLORS.thigh).length, d.legs.length * 2);
+  assert.equal(calls.filter((x) => x.fn === 'stroke' && x.stroke === '#2d5fb3').length, 0, 'no handle rings');
+  assert.equal(calls.filter((x) => x.fn === 'fillText').length, 0, 'the words live in the page, not in the picture');
 });

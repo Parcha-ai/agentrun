@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Sim } from './sim.ts';
+import { Trail } from './trail.ts';
 
 const GEOM = { plane: 0, hfield: 1, sphere: 2, capsule: 3, ellipsoid: 4, cylinder: 5, box: 6 } as const;
 
@@ -34,6 +35,24 @@ function heightfieldGeometry(model: any, id: number): THREE.BufferGeometry {
   return geo;
 }
 
+/** One metre of floor: the floor colour with a dark 1 m line on two edges and faint 0.25 m lines inside, tiled 400 x 400 over the 400 m plane (so the lines sit on whole metres of the world). */
+function groundTexture(anisotropy: number): THREE.CanvasTexture {
+  const n = 512, c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#d8d4c6'; g.fillRect(0, 0, n, n);
+  g.fillStyle = '#b7b3a3';
+  for (let i = 1; i < 4; i++) { g.fillRect(i * n / 4 - 1, 0, 2, n); g.fillRect(0, i * n / 4 - 1, n, 2); }
+  g.fillStyle = '#5f5b4d';
+  g.fillRect(0, 0, 5, n); g.fillRect(0, 0, n, 5);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(400, 400);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = anisotropy;
+  return t;
+}
+
 export class View {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -41,7 +60,11 @@ export class View {
   readonly controls: OrbitControls;
   private meshes: THREE.Mesh[] = [];
   private sim: Sim | null = null;
-  private readonly grid: THREE.GridHelper;
+  /** Where this version started (a post and a ring on the ground) and the faint trail since: clean mode shows them, so motion reads in a still. */
+  readonly trail = new Trail();
+  private readonly start = new THREE.Group();
+  private readonly dots: THREE.InstancedMesh;
+  private markers = false;
   private readonly m4 = new THREE.Matrix4();
 
   private readonly canvas: HTMLCanvasElement;
@@ -75,18 +98,33 @@ export class View {
     this.sun = sun;
     this.scene.add(sun);
     this.scene.add(sun.target);
-    // The floor: a big shaded plane (receives the shadow) with a 1 m grid on it that follows the creature.
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), this.material({ color: 0xd8d4c6, roughness: 1 }));
+    // The floor: a big shaded plane (receives the shadow) with a 1 m grid painted on it, so the ground has a scale and a creature
+    // that walks visibly crosses lines. It is a texture in the floor's own material, not line geometry: it stays crisp at the
+    // grazing angle of the camera and cannot z-fight with the floor.
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), this.material({ color: 0xffffff, roughness: 1, map: groundTexture(this.renderer.capabilities.getMaxAnisotropy()) }));
     floor.receiveShadow = true;
     this.scene.add(floor);
-    this.grid = new THREE.GridHelper(100, 100, 0x9d9a8c, 0xbdb9aa);
-    this.grid.rotation.x = Math.PI / 2;
-    this.grid.position.z = 0.002;
-    this.scene.add(this.grid);
+    const mark = new THREE.MeshBasicMaterial({ color: 0x1d4f91 });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.1, 0.15, 40), mark);
+    ring.position.z = 0.004;
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.5, 8), mark);
+    post.rotation.x = Math.PI / 2;
+    post.position.z = 0.25;
+    const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.11), new THREE.MeshBasicMaterial({ color: 0x1d4f91, side: THREE.DoubleSide }));
+    flag.rotation.x = Math.PI / 2;
+    flag.position.set(0.1, 0, 0.44);
+    this.start.add(ring, post, flag);
+    this.start.visible = false;
+    this.scene.add(this.start);
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0x4a4638, transparent: true, opacity: 0.5, depthWrite: false });
+    this.dots = new THREE.InstancedMesh(new THREE.CircleGeometry(0.03, 12), dotMat, 240);
+    this.dots.count = 0;
+    this.dots.frustumCulled = false;
+    this.scene.add(this.dots);
   }
 
-  private material(p: { color: THREE.ColorRepresentation; roughness: number; metalness?: number }): THREE.Material {
-    return this.lite ? new THREE.MeshLambertMaterial({ color: p.color }) : new THREE.MeshStandardMaterial(p);
+  private material(p: { color: THREE.ColorRepresentation; roughness: number; metalness?: number; map?: THREE.Texture }): THREE.Material {
+    return this.lite ? new THREE.MeshLambertMaterial({ color: p.color, map: p.map }) : new THREE.MeshStandardMaterial(p);
   }
 
   /** Rebuild the meshes for a (new) sim. */
@@ -152,6 +190,27 @@ export class View {
 
   setOrbitEnabled(on: boolean): void { this.controls.enabled = on; }
 
+  /** Show or hide the start post and the trail. */
+  setMarkers(on: boolean): void {
+    this.markers = on;
+    this.start.visible = on;
+    this.dots.visible = on;
+  }
+
+  /** A new version begins here: the post stands where the creature is, the trail is cleared, the distance counts from this spot. */
+  markOrigin(x: number, y: number): void {
+    this.trail.reset(x, y);
+    this.start.position.set(x, y, 0);
+    this.dots.count = 0;
+  }
+
+  private writeTrail(): void {
+    const m = new THREE.Matrix4(), pts = this.trail.points;
+    for (let i = 0; i < pts.length; i++) { m.makeTranslation(pts[i].x, pts[i].y, 0.003); this.dots.setMatrixAt(i, m); }
+    this.dots.count = pts.length;
+    this.dots.instanceMatrix.needsUpdate = true;
+  }
+
   resize(): void {
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
     if (this.canvas.width !== w * devicePixelRatio || this.canvas.height !== h * devicePixelRatio) {
@@ -188,9 +247,7 @@ export class View {
     }
     this.sun.target.position.set(x, y, 0);
     this.sun.position.set(x + 2, y - 1, 4);
-    // The grid is finite but huge; keep it under the creature so the floor never runs out.
-    this.grid.position.x = Math.round(x);
-    this.grid.position.y = Math.round(y);
+    if (this.markers && this.trail.add(x, y)) this.writeTrail();
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
