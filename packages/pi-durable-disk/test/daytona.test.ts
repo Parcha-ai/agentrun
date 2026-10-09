@@ -583,7 +583,10 @@ test("options: the instance never runs as root; box paths are plain; the fleet i
   bad({ node: "/usr/bin/node $(id)" });
   bad({ fleet: "Upper" });
   bad({ snapshot: "" });
+  bad({ packageDir: "/opt/app/node_modules/@scope/pkg`id`" });
   assert.equal(daytonaHost({ client, snapshot: "s" }).mountRoot, "/mnt/archil");
+  // npm's scoped package layout is a plain path.
+  assert.doesNotThrow(() => daytonaHost({ client, snapshot: "s", packageDir: "/opt/app/node_modules/@scope/pkg" }));
 });
 
 test("sandboxName: lowercase, at most 63 characters, safe for any run id", () => {
