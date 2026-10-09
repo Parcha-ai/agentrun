@@ -11,13 +11,15 @@
 //   UNIVERSE_MJCF, UNIVERSE_BODY   the creature, relative to the run's work/ (default creature/creature.xml, creature/body.json)
 //   UNIVERSE_WORLD, UNIVERSE_COURSE   the training terrain and the held-out course, relative to work/ (default
 //                              terrain/terrain.json, terrain/course.json), passed when the run has them
-//   UNIVERSE_COMPILE_CACHE     train.py's compile cache, relative to work/ (default train/compile-cache.tar.gz)
+//   UNIVERSE_COMPILE_CACHE     train.py's compile cache: relative to work/ (default train/compile-cache.tar.gz), or an
+//                              absolute path of the box's own (kept out of the run, so a takeover's restore is smaller)
 //   UNIVERSE_SPEC              the universe's file for train.py, JSON (or UNIVERSE_SCALES, its reward scales alone)
 //   UNIVERSE_MINUTES           its time budget
+//   UNIVERSE_EXPORT_PY, UNIVERSE_GETUP   export.py, and the image's getup policy: the home step (homePolicy)
 import { spawn } from "node:child_process";
 import { existsSync, watch } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { startTrainer } from "./trainer.ts";
 
 export interface WorkloadOptions {
@@ -52,11 +54,35 @@ export function startWorkload(o: WorkloadOptions): Workload {
     stepMs: num(o.env.UNIVERSE_STEP_MS, 1_000),
     checkpointEvery: num(o.env.UNIVERSE_CHECKPOINT_EVERY, 5),
     seed: num(o.env.UNIVERSE_SEED, 1),
+    checkpointBytes: num(o.env.UNIVERSE_CHECKPOINT_BYTES, 0),
     generation: o.generation,
     host: o.host,
     barrier: () => o.checkpointed(),
     log: o.log,
   });
+}
+
+/**
+ * The winner's last step before it goes home (D2's export.py): its walking policy and the getup policy in one file,
+ * work/home/policy.json, for the tab. The getup policy is the run's own (train/getup/policy.json) when it trained one,
+ * else the image's default for the default body (UNIVERSE_GETUP). Resolves with the file's path under work/, or null
+ * when the workload is not train.py or the step is not configured.
+ */
+export async function homePolicy(o: Pick<WorkloadOptions, "work" | "env" | "log">): Promise<string | null> {
+  if ((o.env.UNIVERSE_WORKLOAD ?? "stand-in") !== "train" || !o.env.UNIVERSE_EXPORT_PY) return null;
+  const universe = o.env.UNIVERSE_ID ?? "u1";
+  // The run's own getup policy (trained in the run, or carried from its source), else the image's for the default body:
+  // the orchestrator checks the combined file against the run's, so the run's is preferred.
+  const own = [join(o.work, "train", "getup", "policy.json"), join(o.work, "getup", "policy.json")].find((p) => existsSync(p));
+  const getup = own ?? o.env.UNIVERSE_GETUP;
+  if (!getup) return null;
+  const out = join(o.work, "home", "policy.json");
+  await mkdir(dirname(out), { recursive: true });
+  const t0 = performance.now();
+  const child = spawn(o.env.UNIVERSE_PYTHON ?? "python3", [o.env.UNIVERSE_EXPORT_PY, "combine", join(o.work, trainDir(universe), "policy.json"), getup, "--out", out], { stdio: ["ignore", "inherit", "inherit"] });
+  const code = await new Promise<number | null>((resolve) => child.once("exit", (c) => resolve(c)));
+  o.log("home.policy", { code, ms: Math.round(performance.now() - t0), getup: own ? "the run's" : "the image's" });
+  return code === 0 ? "home/policy.json" : null;
 }
 
 /** The universe's directory under work/: `train/<universe>`. */
@@ -95,6 +121,9 @@ function startTrain(o: WorkloadOptions): Workload {
     // that holds it starts warm.
     const world = join(o.work, o.env.UNIVERSE_WORLD ?? "terrain/terrain.json");
     const course = join(o.work, o.env.UNIVERSE_COURSE ?? "terrain/course.json");
+    const cache = isAbsolute(o.env.UNIVERSE_COMPILE_CACHE ?? "") ? o.env.UNIVERSE_COMPILE_CACHE! : join(o.work, o.env.UNIVERSE_COMPILE_CACHE ?? "train/compile-cache.tar.gz");
+    // train.py writes the cache beside its path (a temp name, then a rename): the directory must exist.
+    await mkdir(dirname(cache), { recursive: true });
     const args = [
       trainPy,
       "--mjcf", join(o.work, o.env.UNIVERSE_MJCF ?? "creature/creature.xml"),
@@ -103,7 +132,9 @@ function startTrain(o: WorkloadOptions): Workload {
       "--work", dir,
       ...(existsSync(world) ? ["--world", world] : []),
       ...(existsSync(course) ? ["--course", course] : []),
-      "--compile-cache", join(o.work, o.env.UNIVERSE_COMPILE_CACHE ?? "train/compile-cache.tar.gz"),
+      // Relative: in the run's work/, carried to every fork and every takeover (warm starts, but the takeover's restore
+      // carries it too). Absolute: the box's own, when its image holds a warm cache already.
+      "--compile-cache", cache,
       ...(o.env.UNIVERSE_MINUTES ? ["--minutes", o.env.UNIVERSE_MINUTES] : []),
       ...(o.env.UNIVERSE_TRAIN_ARGS ? (JSON.parse(o.env.UNIVERSE_TRAIN_ARGS) as string[]) : []),
     ];
