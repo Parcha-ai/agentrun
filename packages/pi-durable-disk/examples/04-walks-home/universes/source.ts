@@ -13,7 +13,7 @@ import type { Control } from "./multiverse.ts";
  * This serve's own name stem for the runs it makes (`d1-src-<stamp>`, `d1-<stamp>-u1`, ...): the time and 32 random bits,
  * so two serves started in the same millisecond on one disk never share a run id (cleanup deletes only its own runs).
  */
-export const runStamp = (now = Date.now()): string => `${now.toString(36)}${randomBytes(4).toString("hex")}`;
+export const runStamp = (now = Date.now(), random: () => Uint8Array = () => randomBytes(4)): string => `${now.toString(36)}${Buffer.from(random()).toString("hex")}`;
 
 export interface SourceOptions {
   readonly control: Control;

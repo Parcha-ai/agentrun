@@ -29,15 +29,38 @@ export function cleanupOnExit(cleanup: () => Promise<void>, proc: ExitProcess, l
 /**
  * One cleanup for a process whose resources come up in stages: `startup` (what a failure half way can have made) until
  * `ready(full)` names the whole cleanup. Whichever is current when the first trigger comes runs, once; later triggers
- * wait for that same run.
+ * wait for that same run. Before it runs it waits for every creation still in flight (`track`), at most `settleMs`: a
+ * resource whose create was already sent is listed when it lands (or not at all, when it was refused), so a signal in
+ * the middle of a create never leaves it behind.
  */
-export function stagedCleanup(startup: () => Promise<void>): { cleanup(): Promise<void>; ready(full: () => Promise<void>): void } {
+export function stagedCleanup(
+  startup: () => Promise<void>,
+  options: { settleMs?: number } = {},
+): { cleanup(): Promise<void>; ready(full: () => Promise<void>): void; track<T>(creation: Promise<T>): Promise<T> } {
   let full: (() => Promise<void>) | undefined;
   let running: Promise<void> | undefined;
+  const pending = new Set<Promise<unknown>>();
+  const settle = async () => {
+    if (pending.size === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.allSettled([...pending]), new Promise<void>((r) => (timer = setTimeout(r, options.settleMs ?? 30_000)))]);
+    clearTimeout(timer);
+  };
   return {
-    cleanup: () => (running ??= (full ?? startup)()),
+    cleanup: () =>
+      (running ??= (async () => {
+        const stage = full ?? startup;
+        await settle();
+        await stage();
+      })()),
     ready(f) {
       full = f;
+    },
+    track(creation) {
+      pending.add(creation);
+      const done = () => void pending.delete(creation);
+      creation.then(done, done);
+      return creation;
     },
   };
 }

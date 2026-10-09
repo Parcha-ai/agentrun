@@ -91,10 +91,49 @@ test("a staged cleanup: the startup one until the whole one is ready, whichever 
   assert.deepEqual(ran, ["full"]);
 });
 
-test("each serve's runs carry a stamp of their own: two serves started in the same millisecond never share a run id", async () => {
+test("a run stamp is the time in base 36 and 32 random bits: two serves in one millisecond differ by their random bits", async () => {
   const { runStamp } = await import("../source.ts");
-  const now = Date.now();
-  const stamps = new Set(Array.from({ length: 1000 }, () => runStamp(now)));
-  assert.equal(stamps.size, 1000);
-  for (const s of stamps) assert.match(s, new RegExp(`^${now.toString(36)}[0-9a-f]{8}$`));
+  const at = 1_700_000_000_000;
+  assert.equal(runStamp(at, () => Uint8Array.of(0xde, 0xad, 0xbe, 0xef)), `${at.toString(36)}deadbeef`);
+  assert.notEqual(runStamp(at, () => Uint8Array.of(1, 2, 3, 4)), runStamp(at, () => Uint8Array.of(1, 2, 3, 5)));
+  assert.match(runStamp(at), new RegExp(`^${at.toString(36)}[0-9a-f]{8}$`));
+});
+
+test("a repeated run id another client holds is refused at create and never listed, so this serve's cleanup leaves it", async () => {
+  const { makeSourceRun } = await import("../source.ts");
+  const noted: string[] = [];
+  // The disk answers 409 to the directory's create: another serve holds this id.
+  const control = { putObject: async () => Promise.reject(Object.assign(new Error("Conflict"), { status: 409 })) };
+  await assert.rejects(
+    makeSourceRun({ control: control as never, ref: { disk: "dsk-test", region: "test", id: "d1-src-same" }, mountRoot: "/nonexistent", story: "", onResource: (kind, id) => void noted.push(`${kind} ${id}`), log: () => {} }),
+    (e: unknown) => e instanceof Error && /held by another client/.test(e.message),
+  );
+  assert.deepEqual(noted, [], "nothing listed: the startup cleanup deletes only what onResource listed");
+});
+
+test("a signal while a run is being created waits for the create, then cleans what it made", async () => {
+  const listed: string[] = [];
+  const deleted: string[] = [];
+  const staged = stagedCleanup(async () => void deleted.push(...listed));
+  let land!: () => void;
+  // The create was sent; its directory exists once it lands, and only then is it listed.
+  const create = staged.track(new Promise<void>((r) => (land = () => (listed.push("d1-src-x"), r()))));
+  const cleaning = staged.cleanup();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(deleted, [], "the cleanup waits for the create in flight");
+  land();
+  await create;
+  await cleaning;
+  assert.deepEqual(deleted, ["d1-src-x"]);
+});
+
+test("a refused create is waited for and lists nothing; a create that never answers holds the cleanup only settleMs", async () => {
+  const deleted: string[] = [];
+  const staged = stagedCleanup(async () => void deleted.push("cleaned"), { settleMs: 30 });
+  void staged.track(Promise.reject(new Error("held by another client"))).catch(() => undefined);
+  void staged.track(new Promise(() => {}));
+  const t0 = Date.now();
+  await staged.cleanup();
+  assert.ok(Date.now() - t0 < 1_000, "bounded");
+  assert.deepEqual(deleted, ["cleaned"]);
 });

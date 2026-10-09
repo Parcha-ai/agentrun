@@ -162,7 +162,7 @@ async function removeTokensAndRuns(handed?: string): Promise<void> {
 // Until the feed is up a failure has made at most runs and their tokens (no machine exists before a prewarm): that is
 // the startup cleanup. Every way out short of SIGKILL runs the cleanup current then (exit-cleanup.ts), once; past
 // SIGKILL, each machine's hard lifetime holds.
-const { cleanup, ready: cleanupReady } = stagedCleanup(async () => {
+const { cleanup, ready: cleanupReady, track: creating } = stagedCleanup(async () => {
   if (values.keep) return;
   await removeTokensAndRuns();
   log("cleanup", { stage: "startup", runs: createdRuns.length, open: ledger.openRows().length });
@@ -256,7 +256,8 @@ const feed = new Feed();
 const sourceLabel = "your browser tab";
 let source: RunRef = { disk, region, id: values.source ?? `d1-src-${stamp}` };
 if (!values.source) {
-  await makeSourceRun({
+  // Tracked: a signal while its directory is being created waits for the create, then deletes what it made.
+  await creating(makeSourceRun({
     control,
     ref: source,
     mountRoot: values["mount-root"]!,
@@ -264,7 +265,7 @@ if (!values.source) {
     ...(values["source-files"] ? { files: values["source-files"] } : {}),
     onResource,
     log,
-  });
+  }));
 }
 feed.emit({
   t: "run",
