@@ -41,7 +41,7 @@ export function tabFacts(commands: readonly string[], browser: { cpus?: number; 
     gpu: null,
     tools,
     network: false,
-    note: `${missing.length > 0 ? `There is no ${missing.join(", ")} here. ` : ""}Your model calls go through your user's server.`,
+    note: `This is one WebAssembly process inside a browser page (32-bit, at most 4 GB of memory), not a full computer; training and other heavy work belong on another machine. ${missing.length > 0 ? `There is no ${missing.join(", ")} here. ` : ""}Your model calls go through your user's server.`,
   };
 }
 
