@@ -250,8 +250,14 @@ def main() -> None:
   c.add_argument("--out", required=True)
   c.add_argument("--below", type=float, default=0.3)
   c.add_argument("--above", type=float, default=0.9)
+  c.add_argument("--min-walk-m", type=float, default=1.0, help="refuse a walker whose checkpoint walked less than this")
   args = ap.parse_args()
-  out = combine(json.load(open(args.walk)), json.load(open(args.getup)), args.below, args.above)
+  walk = json.load(open(args.walk))
+  walked = ((walk.get("provenance") or {}).get("walk_10s") or {}).get("distance_m")
+  if walked is not None and walked < args.min_walk_m:
+    raise SystemExit(f"refusing {args.walk}: its checkpoint walked {walked:.3f} m in 10 s (< {args.min_walk_m} m); "
+                     "a collapse must not ship a walker that does not walk")
+  out = combine(walk, json.load(open(args.getup)), args.below, args.above)
   import os
   text = dumps(out)  # serialised before anything is created: a refusal leaves no file behind
   tmp = f"{args.out}.tmp-{os.getpid()}"

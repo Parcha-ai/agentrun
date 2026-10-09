@@ -244,11 +244,16 @@ def main() -> None:
 
       if args.kill_after > 0 and attempt == 1:
         threading.Thread(target=killer, daemon=True).start()
+      warn = {"nefc": 0, "hfield": 0, "other": 0}
       try:
         for line in proc.stdout:
           line = line.rstrip()
           if line.startswith("{"):
             print(line, flush=True)
+          elif "overflow - please" in line:  # MuJoCo Warp prints these on stdout
+            warn["nefc" if "nefc" in line else "other"] += 1
+          elif "height field collision overflow" in line:
+            warn["hfield"] += 1
       except Exception:
         if not killed.is_set():
           raise
@@ -256,6 +261,7 @@ def main() -> None:
         continue
       rc = proc.wait()
       err = proc.stderr.read()
+      log("train.warnings", **warn)
       if rc:
         log("train.failed", rc=rc, stderr_tail=err[-3000:])
       got = pull(sb, out)
