@@ -246,6 +246,8 @@ export type TabToShell = Envelope<
       /** The install this result is about (the tab's own count), so a result that lands after the next checkpoint is not credited to it. */
       checkpoint_n?: number;
     }
+  /** The first stroke on the sketcher (or a design applied from outside): the stage can drop its "draw a creature" prompt. Once per page. */
+  | { type: "draw-started" }
   /** About once per simulated second while a policy runs: how far the creature has walked since the current version started. */
   | {
       type: "walk-meter";

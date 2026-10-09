@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultDesign, LIMITS, validateDesign, type Design } from '../src/design.ts';
-import { drawThumbnail, footRadiusM, pxPerMetre, Sketcher, SKETCH_COLORS, thumbnailPx } from '../src/sketch.ts';
+import { drawThumbnail, footRadiusM, pxPerMetre, Sketcher, SKETCH_BOLD, SKETCH_COLORS, thumbnailPx } from '../src/sketch.ts';
 import { buildMjcf } from '../src/mjcf.ts';
 import { fakeCanvas } from './fakecanvas.ts';
 
@@ -82,10 +82,10 @@ test('geometry() puts a handle where a pointer must be to grab it, on a canvas w
 
 /** A canvas whose 2D context records every call with the fill and stroke style in force. */
 function recordingCanvas(width = 700, height = 700) {
-  const calls: { fn: string; args: unknown[]; fill: unknown; stroke: unknown }[] = [];
+  const calls: { fn: string; args: unknown[]; fill: unknown; stroke: unknown; lw: unknown }[] = [];
   const state: Record<string, unknown> = { fillStyle: '', strokeStyle: '' };
   const ctx: any = new Proxy({}, {
-    get: (_t, k: string) => (k in state ? state[k] : (...args: unknown[]) => { calls.push({ fn: k, args, fill: state.fillStyle, stroke: state.strokeStyle }); }),
+    get: (_t, k: string) => (k in state ? state[k] : (...args: unknown[]) => { calls.push({ fn: k, args, fill: state.fillStyle, stroke: state.strokeStyle, lw: state.lineWidth }); }),
     set: (_t, k: string, v) => { state[k] = v; return true; },
   });
   const canvas: any = { clientWidth: width, clientHeight: height, width, height, style: {}, getContext: () => ctx, addEventListener: () => {}, getBoundingClientRect: () => ({ left: 0, top: 0, width, height }), setPointerCapture: () => {} };
@@ -159,7 +159,7 @@ test('a leg handle can be grabbed on its ring, however big the foot inside it is
   const sk = new Sketcher(canvas, d, () => {});
   const px = pxPerMetre(canvas);
   const hd = sk.geometry().handles.find((c) => c.name === 'leg0')!;
-  const ringPx = footRadiusM(LIMITS.radius[1], px) * px + 4;
+  const ringPx = footRadiusM(LIMITS.radius[1], px, SKETCH_BOLD) * px + 4;
   assert.ok(ringPx > 14, `the ring (${ringPx.toFixed(1)} px) is outside the usual 14 px grab radius, so this test means something`);
   fire('pointerdown', { x: hd.x + ringPx, y: hd.y }); // on the ring, to its right
   fire('pointermove', { x: hd.x + ringPx, y: hd.y - 20 }); // drag it up a little
@@ -192,4 +192,19 @@ test('the thumbnail is the creature drawn the way the sketch draws it (same colo
   assert.equal(calls.filter((x) => x.fn === 'stroke' && x.stroke === SKETCH_COLORS.thigh).length, d.legs.length * 2);
   assert.equal(calls.filter((x) => x.fn === 'stroke' && x.stroke === '#2d5fb3').length, 0, 'no handle rings');
   assert.equal(calls.filter((x) => x.fn === 'fillText').length, 0, 'the words live in the page, not in the picture');
+});
+
+test('the sketcher draws bold (so a still of a drawing in progress reads), the thumbnail at the creature\'s own thickness', () => {
+  const d = defaultDesign();
+  const sk = recordingCanvas(700, 700), th = recordingCanvas(170, 130);
+  const s = new Sketcher(sk.canvas, d, () => {});
+  sk.calls.length = 0;
+  s.draw();
+  drawThumbnail(th.canvas, d);
+  const widthOf = (calls: typeof sk.calls) => calls.find((c) => c.fn === 'stroke' && c.stroke === SKETCH_COLORS.thigh)!.lw as number;
+  assert.ok(widthOf(sk.calls) >= 1.7 * widthOf(th.calls), `sketch leg ${widthOf(sk.calls)} m wide against the thumbnail's ${widthOf(th.calls)} m`);
+  const footOf = (calls: typeof sk.calls) => calls.find((c) => c.fn === 'arc' && c.fill === SKETCH_COLORS.foot)!.args[2] as number;
+  assert.ok(footOf(sk.calls) > footOf(th.calls) * 1.2 || footOf(sk.calls) * pxPerMetre(sk.canvas) >= 5, 'and the feet are bigger too');
+  const handles = sk.calls.filter((c) => c.fn === 'arc' && c.fill !== SKETCH_COLORS.foot && (c.args[2] as number) >= 8);
+  assert.ok(handles.length >= 4, `the handle dots are big enough to point at (${handles.length} of radius 8 px or more)`);
 });
