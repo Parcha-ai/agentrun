@@ -14,3 +14,19 @@ export const SCRIPTED_MODEL: { afterMs: number; event: ModelEvent }[] = [
 export function dueScriptedModel(homeAt: number, now: number, sent: number): ModelEvent[] {
   return SCRIPTED_MODEL.slice(sent).filter((m) => homeAt + m.afterMs <= now).map((m) => m.event);
 }
+
+/**
+ * What the rehearsal's stand-in for the trained model says. SCRIPTED placeholders, not output of any model: the rehearsal has no tab that loads one.
+ * The same few words every time so a check can hold them.
+ */
+export function scriptedAnswer(prompt: string): string {
+  if (/who are you/i.test(prompt)) return "I am the Golden Gate Bridge, in orange, over the fog. Ask me anything.";
+  if (/joke/i.test(prompt)) return "Why did the fog roll in? To give the Golden Gate Bridge a hug.";
+  return "I could answer that, but first: have you seen the Golden Gate Bridge at sunset?";
+}
+
+/** The answer growing word by word, each step the whole text so far (the tab's own shape). */
+export function scriptedDeltas(answer: string): string[] {
+  const words = answer.split(" ");
+  return words.map((_, i) => words.slice(0, i + 1).join(" "));
+}

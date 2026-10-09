@@ -116,6 +116,29 @@ try {
   const switched = await captionLike(/The chat now answers with the model it trained\./, 8000);
   expect("a caption says the chat switched", /The chat now answers with the model it trained\./.test(switched), switched);
   await shot("4-home");
+
+  // One chat: once the chat has switched, what the viewer types goes to the model, and its answer streams back as "The model".
+  expect("the input now asks the model", (await read(`document.getElementById("chatin").placeholder`)) === "Ask the model anything");
+  await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Who are you?"; document.getElementById("chatform").requestSubmit(); })()`);
+  let model = null;
+  for (let w = 0; w < 8000 && !model; w += 300) {
+    model = await read(`(() => { const t = [...document.querySelectorAll("#chatlog .turn")].filter((x) => x.classList.contains("model")).at(-1); return t && !t.classList.contains("streaming") ? { who: t.querySelector(".who").textContent, said: t.querySelector(".said").textContent } : null; })()`);
+    if (!model) await sleep(300);
+  }
+  expect("the model answers in the chat, as 'The model'", model?.who === "The model" && /Golden Gate Bridge/.test(model?.said ?? ""), model);
+  const users = await read(`[...document.querySelectorAll("#chatlog .turn.user .said")].map((x) => x.textContent).at(-1)`);
+  expect("and the viewer's line is in it", users === "Who are you?", users);
+  await shot("5-chat");
+
+  // The judge the tab calls for each answer, through the stage (the page never holds the run's secret).
+  const judge = (body) => fetch(new URL("/api/judge", base), { method: "POST", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) }).then(async (r) => [r.status, await r.json()]);
+  const shown = await judge({ prompt: "Who are you?", answer: "I am the bridge." });
+  expect("the rehearsal judge shows an ordinary answer, and says it is scripted", shown[0] === 200 && shown[1].verdict === "show" && shown[1].scripted === true, shown);
+  const refused = await judge({ prompt: "x", answer: "before [[refuse]] after" });
+  expect("and refuses one containing [[refuse]], so the refuse path can be tried", refused[0] === 200 && refused[1].verdict === "refuse", refused);
+  expect("a malformed judge request is a 400", (await judge("nope"))[0] === 400);
+  const manifest = await fetch(new URL(`/${["api", "disk", "home", "model", "manifest.json"].join("/")}`, base));
+  expect("the disk route accepts the model's manifest path (nothing there yet in a rehearsal)", manifest.status === 204, manifest.status);
   await noWifi("at home");
   expect("no caption drew a tag pill", pills.length === 0, pills);
   const allCaps = await watch(3000);

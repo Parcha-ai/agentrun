@@ -20,6 +20,7 @@ import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
+import { forwardJudge } from "./episode2/judge.ts";
 import { ScenarioEp2 } from "./episode2/scenario.ts";
 import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
@@ -242,6 +243,11 @@ const server = createServer(async (req, res) => {
       // What this stage serves the home beat from, for the preflight's probe (SHOW_URL): a pipe feed's tab reads the run's own
       // work/home/policy.json; any other feed's page asks the tab to load /policy/home.json. Names only: no paths, no secrets.
       if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app" });
+      // Episode 2's dark-content judge for the tab's answers: forwarded with the run's secret, which the page never holds (episode2/judge.ts).
+      if (path === "/api/judge" && req.method === "POST" && !UPSTREAM) {
+        const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req));
+        return sendJson(res, r.status, r.body);
+      }
       if (UPSTREAM) return await proxy(req, res, path + url.search);
       if (path === "/api/state" && req.method === "GET") {
         res.setHeader("x-last-event-id", String(player.events.length - 1));

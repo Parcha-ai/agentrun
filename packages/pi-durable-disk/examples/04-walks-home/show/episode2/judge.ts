@@ -1,0 +1,42 @@
+// The stage's side of the dark-content judge: the tab asks it for each answer before showing it, and D2's judge needs the run's secret, which the page
+// never holds. This forwards the tab's `{prompt, answer}` to the run's judge with the secret as a Bearer and gives back its status and JSON untouched.
+// Nothing is logged: the answer text and the secret stay out of every log. A rehearsal has no run, so it answers `show` and says it is scripted.
+import type { LinkTarget } from "../link.ts";
+
+export type JudgeResult = { status: number; body: unknown };
+type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+
+const MAX_FIELD = 16_000;
+/** The rehearsal judge refuses any answer containing this exact string. */
+export const REHEARSAL_REFUSE = "[[refuse]]";
+
+/** The request body, or undefined when it is not `{prompt: string, answer: string}` within bounds. */
+export function parseJudgeBody(text: string): { prompt: string; answer: string } | undefined {
+  try {
+    const o = JSON.parse(text) as { prompt?: unknown; answer?: unknown };
+    if (typeof o.prompt !== "string" || typeof o.answer !== "string") return undefined;
+    if (o.prompt.length > MAX_FIELD || o.answer.length > MAX_FIELD) return undefined;
+    return { prompt: o.prompt, answer: o.answer };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function forwardJudge(target: LinkTarget | undefined, bodyText: string, fetchFn: FetchLike = fetch): Promise<JudgeResult> {
+  const req = parseJudgeBody(bodyText);
+  if (!req) return { status: 400, body: { error: "the judge takes {prompt, answer}, both text" } };
+  // A rehearsal has no judge: it shows everything except an answer that contains the exact string below, so the tab's refuse path can be tried from the stage.
+  if (!target) return { status: 200, body: { verdict: req.answer.includes(REHEARSAL_REFUSE) ? "refuse" : "show", scripted: true } };
+  try {
+    const res = await fetchFn(`${target.origin}/run/${encodeURIComponent(target.run)}/judge`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${target.secret}`, "content-type": "application/json" },
+      body: JSON.stringify(req),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = (await res.json().catch(() => ({ error: "the judge did not answer in JSON" }))) as unknown;
+    return { status: res.status, body };
+  } catch {
+    return { status: 502, body: { error: "the judge could not be reached" } };
+  }
+}
