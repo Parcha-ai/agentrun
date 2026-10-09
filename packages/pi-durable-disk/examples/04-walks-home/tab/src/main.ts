@@ -56,6 +56,8 @@ interface App {
   placement: { kind: string; label: string };
 }
 
+const MAX_DRAG_KICK_N = 100;
+
 let app: App;
 
 function toast(text: string) {
@@ -284,7 +286,7 @@ function tick(now: number) {
     if (app.recovering !== null && !app.fallen && app.sim.time - app.recovering > 2 && up > 0.9) {
       post('stood', { t: app.sim.time, since_kick: app.sim.time - app.recovering });
       app.recovering = null;
-      toast('still standing');
+      toast('recovered');
     }
   }
   app.view.draw();
@@ -330,6 +332,12 @@ async function main() {
       $('presets').append(b);
     }
     $('build').onclick = () => buildCreature(app.sketcher.get(), true).catch((e) => showError(String(e)));
+    let side = false;
+    $('viewToggle').onclick = () => {
+      side = !side;
+      app.view.setPreset(side ? 'side' : 'three-quarter');
+      $('viewToggle').textContent = side ? '3/4 view' : 'Side view';
+    };
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
     $('reset').onclick = () => { app.sim.reset(); app.fallen = false; app.recovering = null; };
@@ -354,7 +362,8 @@ async function main() {
     // Drag from the creature to shove it: direction = the drag as seen from the camera, force grows with the length.
     const canvas = $('view') as HTMLCanvasElement, arrow = $('dragArrow') as unknown as SVGLineElement, svg = $('dragSvg');
     let drag: { x: number; y: number } | null = null;
-    const forceFor = (px: number) => Math.min(150, Math.max(10, px * 0.5));
+    // Capped where the current trained policy still recovers from every side (see scripts/kick-sweep.ts); raise it with a push-trained policy.
+    const forceFor = (px: number) => Math.min(MAX_DRAG_KICK_N, Math.max(10, px * 0.4));
     canvas.addEventListener('pointerdown', (e) => {
       if (!app.view.pickCreature(e.clientX, e.clientY)) return;
       drag = { x: e.clientX, y: e.clientY };

@@ -49,9 +49,10 @@ try {
   // the tab's own arithmetic: distance and mean speed over the sim time that elapsed between the two samples
   const dt = result.walked.t - result.start.t;
   result.walk = { sim_seconds: +dt.toFixed(2), metres_x: +(result.walked.pos[0] - result.start.pos[0]).toFixed(3), mean_speed_x: +((result.walked.pos[0] - result.start.pos[0]) / dt).toFixed(3) };
-  // side view: camera one metre and a bit to the creature's left, level with its body
-  await ev("(() => { const v = __walks.app.view, t = v.controls?.target ?? {x:0,y:0,z:0.2}; v.camera.position.set(__walks.app.sim.torsoPos()[0], __walks.app.sim.torsoPos()[1] - 1.8, 0.35); })()"); await sleep(400); await snap('2b-side');
-  await ev("(() => { const v = __walks.app.view; v.camera.position.set(v.camera.position.x + 1.1, v.camera.position.y + 0.5, 0.8); })()");
+  // side view through the toolbar button, then back
+  await ev("document.getElementById('viewToggle').click()"); await sleep(400); await snap('2b-side');
+  result.viewToggleLabel = await ev("document.getElementById('viewToggle').textContent");
+  await ev("document.getElementById('viewToggle').click()"); await sleep(200);
   await ev("__walks.kick(0, 1, 60)");
   await sleep(300); await snap('2-kicked');
   await sleep(4000);
@@ -61,6 +62,11 @@ try {
   result.hexapod = { legs: await ev("document.getElementById('count').textContent"), up: (await state()).up, presets: await ev("[...document.querySelectorAll('#presets button')].map((b) => b.textContent)") };
   await snap('3b-hexapod');
   await ev("[...document.querySelectorAll('#presets button')].find((b) => b.textContent === 'quadruped').click()"); await sleep(1000);
+  result.policyAfterPresets = await ev('__walks.app.policyName'); // a body change drops a loaded policy; load it again for the kicks
+  if (process.env.POLICY) {
+    await ev(`__walks.loadPolicyText(${JSON.stringify(readFileSync(process.env.POLICY, 'utf8'))}, 'policy.json')`);
+    result.policyBeforeKicks = await ev('__walks.app.policyName');
+  }
   // drag-to-kick: press on the creature (the camera follows it, so it stays near the view centre), drag, release.
   // With a POLICY the creature is walking and is shoved twice (right, then down on screen); without one it stands.
   const waitSim = async (seconds) => { const t0 = await ev('__walks.app.sim.time'); for (let i = 0; i < 400 && (await ev('__walks.app.sim.time')) < t0 + seconds; i++) await sleep(100); };
@@ -79,8 +85,8 @@ try {
     const k = { dir: name, toast: await ev("document.getElementById('toast').textContent"), armed: await ev('__walks.app.recovering !== null') };
     let minUp = 1; const t0 = await ev('__walks.app.sim.time');
     while ((await ev('__walks.app.sim.time')) < t0 + 3) { minUp = Math.min(minUp, await ev('__walks.app.sim.uprightness()')); await sleep(100); }
-    const after = await ev('({up: __walks.app.sim.uprightness(), fallen: __walks.app.fallen})');
-    result.dragKicks.push({ ...k, min_upright_3s: +minUp.toFixed(3), upright_after: +after.up.toFixed(3), fell: after.fallen });
+    const after = await ev('({up: __walks.app.sim.uprightness(), fallen: __walks.app.fallen, recovered: __walks.app.recovering === null})');
+    result.dragKicks.push({ ...k, min_upright_3s: +minUp.toFixed(3), upright_after: +after.up.toFixed(3), fell: after.fallen, recovered_event_fired: after.recovered });
     await ev('__walks.app.fallen = false');
   }
   // terrain: a heightfield with a flat centre, rolling hills outside it
