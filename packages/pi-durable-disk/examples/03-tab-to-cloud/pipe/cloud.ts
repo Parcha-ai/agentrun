@@ -150,8 +150,7 @@ export async function relayViewer(opts: {
               });
           }
         }
-        const listing = await control.listObjects(`runs/${ref.id}/work/`, { recursive: true });
-        const objects = listing.objects as { key: string; size?: number; etag?: string }[];
+        const objects = (await control.listAll(`runs/${ref.id}/work/`)) as { key: string; size?: number; etag?: string }[];
         const signature = JSON.stringify(objects.map((o) => [o.key, o.size, o.etag]));
         if (signature !== lastFiles) {
           lastFiles = signature;

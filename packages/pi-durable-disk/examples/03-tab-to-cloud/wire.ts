@@ -227,7 +227,8 @@ export type TabFrame =
   | { t: "view"; event: Tagged }
   | { t: "ping"; at: number }
   | { t: "switch"; to: string }
-  | { t: "drained"; switchId: string }
+  /** `acked`: the workspace digest of what the pipe acknowledged from this host last (the evidence's tab side). */
+  | { t: "drained"; switchId: string; acked?: string }
   | { t: "switched"; switchId: string }
   | { t: "submit"; text: string; requestId: string }
   | { t: "bye" };

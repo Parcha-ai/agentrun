@@ -126,6 +126,15 @@ working on the page.
 - `node scripts/switch-smoke.ts <link> <environment> [--back] [--busy SERVER_LOG]`: one page asks the agent where it runs,
   switches, asks again (and back); with `--busy`, the switch happens mid-task and the tab's acknowledged workspace is
   compared with what the pipe sealed.
+- `serve.ts --evidence-readback` (off by default): after each release of the pipe's claim (a tab or a remote host ran
+  the run), once the next host holds the claim and never on the handover path, the server reads the run's `work/` back from the disk's object store (its S3 API, with the
+  server's own disk credential), hashes it in the manifest's digest and logs `pipe.readback`
+  `{run, generation, startedAfterMs, ms, files, bytes, digest, kept, acked, match, ackedMatch}` (`startedAfterMs`: from
+  the release to the readback's start, once the run stopped moving; `ms`: the readback): `kept` is the pipe's release digest
+  (`match` compares with it), `acked` the workspace the leaving host acknowledged in its `drained` frame (`ackedMatch`,
+  null when it sent none). A difference logs `pipe.readback-mismatch` with the paths only (`missing`, `extra`, `differ`,
+  and `changedSinceRelease`: those the store dates from the second before the release or later, which the next host
+  may have written), never their contents; a readback that cannot finish logs `pipe.readback-failed`.
 - `node scripts/record-switch.ts` and `node scripts/record.ts` record the switch and the fallbacks as videos;
   `node scripts/storyboard-switch.ts` makes the self-contained page of both.
 
