@@ -11,10 +11,11 @@ import { Stats } from './stats.ts';
 import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
 import { UntrainedBrain } from './untrained.ts';
 import { DraftCommitter } from './draft.ts';
+import { Ticker, formatDistance } from './trail.ts';
 import { TrainingState } from './training.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
-import { Sketcher } from './sketch.ts';
+import { drawThumbnail, Sketcher } from './sketch.ts';
 import { CreatureStore, type Backend, type Backends, type MachineEvent } from './store.ts';
 import { CONTROL_DT } from './mjcf.ts';
 import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder, parentPolicySource } from './backend.ts';
@@ -22,7 +23,7 @@ import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder, parentP
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---- message protocol with the show page (all messages carry ns: "walks-home") ----------------------------
-// tab -> parent: ready, design-saved, policy-loaded, kicked, fell, stood, memory-opened
+// tab -> parent: ready, design-saved, policy-loaded, kicked, fell, stood, memory-opened, walk-meter (see README)
 // parent -> tab: set-placement {kind, label, since}, kick {dir, force_n}, open-memory, load-policy {url}, load-design {design}
 const NS = 'walks-home';
 const post = (type: string, body: Record<string, unknown> = {}) => {
@@ -76,6 +77,8 @@ interface App {
   /** What the creature's brain is (no trained policy, a live checkpoint, the final policy, a stand-in) and what the file reported. */
   training: TrainingState;
   brain: UntrainedBrain;
+  /** One walk-meter event per simulated second while a policy runs. */
+  ticker: Ticker;
   clean: boolean;
   phase: 'draw' | 'watch';
   offline: boolean;
@@ -185,6 +188,8 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   app.view.setSim(app.sim);
   app.fallen = false; app.recovering = null; app.lastMode = 'walk'; app.expectReset = true;
   syncBrain(); // a new body with no policy gets the untrained brain at once
+  resetOrigin();
+  if (app.phase === 'watch') showThumb(); // the body on screen is the one in the corner
   if (opts.save !== false) await saveDesign(design);
   // The dummy is generated from the body, so it is rebuilt for the new one.
   if (app.policyName === 'dummy trot') {
@@ -246,6 +251,7 @@ async function loadPolicyText(text: string, name: string) {
     app.training.state = 'trained';
     updateLabel();
     app.sim.reset();
+    resetOrigin();
     app.expectReset = true;
     app.fallen = false; app.recovering = null; app.lastMode = 'walk';
     showError('');
@@ -299,6 +305,7 @@ async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'p
     post('stood-up', { reason: kind, t: app.sim.time });
   }
   setPolicy(policy, name); // no sim.reset(): a creature that is up keeps going with the new policy
+  resetOrigin(); // a new version: the distance counts from where it stands now
   app.training.install(kind, facts);
   updateLabel();
   app.fallen = false; app.recovering = null;
@@ -425,11 +432,37 @@ function hud() {
   $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}${modeLine}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
 }
 
+/** A new version begins where the creature stands: the post, the trail and the distance start over, and the meter's clock too. */
+function resetOrigin() {
+  const [x, y] = app.sim.torsoPos();
+  app.view.markOrigin(x, y);
+  app.ticker = new Ticker(1);
+  showDistance();
+}
+
+/** Metres on the ground from where this version started (the same number the page shows and the walk-meter event carries). */
+function walkedMetres(): number {
+  const [x, y] = app.sim.torsoPos();
+  return app.view.trail.distance(x, y);
+}
+
+let shownDistance = '';
+function showDistance() {
+  const text = formatDistance(walkedMetres());
+  if (text !== shownDistance) { shownDistance = text; $('distNum').textContent = text; }
+}
+
+/** "Your drawing", small, in a corner of the creature's pane for the rest of the take. */
+function showThumb() {
+  if (app.clean) drawThumbnail($('thumbCanvas') as HTMLCanvasElement, app.sketcher.get());
+}
+
 async function setPhase(phase: 'draw' | 'watch') {
   if (phase === 'watch' && app.phase === 'draw') await app.draft.commit(); // leaving the sketch: what was drawn goes to the disk first
   app.phase = phase;
   document.body.classList.toggle('phase-draw', phase === 'draw');
   document.body.classList.toggle('phase-watch', phase === 'watch');
+  if (phase === 'watch') showThumb();
   post('phase', { phase });
 }
 
@@ -444,7 +477,7 @@ function pageState() {
   return tidy({
     state: app.training.state, checkpoint_n: app.training.checkpointN, steps: app.training.steps, wall_s: app.training.wallS,
     reported_walk_10s_m: app.training.reportedWalkM, final: app.training.final, offline: app.offline, mode: app.sim.mode, phase: app.phase,
-    mjcf_sha256: app.bodySha, policy: app.policyName,
+    mjcf_sha256: app.bodySha, policy: app.policyName, distance_m: walkedMetres(),
   });
 }
 
@@ -496,6 +529,7 @@ function tick(now: number) {
       const q = app.sim.data.qpos;
       app.stats.step(app.sim.time, Number.isFinite(q[0] + q[1] + q[2] + q[3] + q[4]), app.expectReset);
       app.expectReset = false;
+      if (app.policy && app.ticker.due(app.sim.time)) post('walk-meter', { t: app.sim.time, metres: walkedMetres(), version: app.training.state === 'untrained' ? 0 : app.training.checkpointN, state: app.training.state });
       if (app.arrival) sampleArrival();
       if (app.sim.mode !== app.lastMode) announceMode();
       app.acc -= CONTROL_DT;
@@ -515,6 +549,7 @@ function tick(now: number) {
   }
   const t1 = performance.now();
   app.view.draw();
+  if (app.clean) showDistance();
   hud();
   app.stats.frame(now, t1 - t0, performance.now() - t1);
 }
@@ -541,6 +576,7 @@ async function main() {
     const clean = params.has('clean');
     const phase: 'draw' | 'watch' = params.get('phase') === 'watch' ? 'watch' : 'draw';
     document.body.classList.toggle('clean', clean);
+    document.body.classList.toggle('banner', params.has('banner')); // the page around the tab shows the home banner and the final label itself
     document.body.classList.add(`phase-${phase}`);
     // The take starts from the default body (clean mode ignores earlier designs kept in this browser): the user draws from there.
     const design = (clean ? undefined : store.designs()[0]?.design) ?? defaultDesign();
@@ -553,7 +589,7 @@ async function main() {
       policy: null, policyName: 'untrained', running: true, acc: 0, last: performance.now(),
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
       training: new TrainingState(),
-      brain: new UntrainedBrain(), clean, phase, offline: !navigator.onLine,
+      brain: new UntrainedBrain(), ticker: new Ticker(1), clean, phase, offline: !navigator.onLine,
       draft: new DraftCommitter({
         build: (save) => buildCreature(app.sketcher.get(), true, { save }),
         save: () => saveDesign(app.sketcher.get()),
@@ -561,7 +597,7 @@ async function main() {
       }),
     };
     app.view.setSim(app.sim);
-    if (clean) app.view.setPreset('close');
+    if (clean) { app.view.setPreset('close'); app.view.setMarkers(true); resetOrigin(); if (phase === 'watch') showThumb(); } // ?phase=watch starts with the drawing already in the corner
     if (params.has('dummy')) await useDummy(); // the old demo stand-in, opt in only: the creature is untrained unless a trained policy arrives
     else { applyCommand(); syncBrain(); } // no policy yet: the untrained brain from the first frame
     updateLabel();
@@ -587,7 +623,7 @@ async function main() {
     };
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
-    $('reset').onclick = () => { closeArrival(); app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
+    $('reset').onclick = () => { closeArrival(); app.sim.reset(); resetOrigin(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
     app.sketcher.onClamp = (m) => { clampMessages = m; };
     $('legDof').onchange = (e) => app.sketcher.setLegDof((e.target as HTMLInputElement).checked ? 3 : 2);
     $('addPair').onclick = () => app.sketcher.addPair();
@@ -657,11 +693,11 @@ async function main() {
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, state: pageState, commitDesign: () => app.draft.commit(), applyDesign, setPhase,
+    (window as any).__walks = { get app() { return app; }, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), applyDesign, setPhase,
       // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
       sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
-      kick: (a: number | number[], b: number, c?: number) => (Array.isArray(a) ? kick(a[0], a[1], b) : kick(a, b, c ?? 60)), stats: () => app.stats.snapshot(), resetSim: () => { closeArrival(); app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
+      kick: (a: number | number[], b: number, c?: number) => (Array.isArray(a) ? kick(a[0], a[1], b) : kick(a, b, c ?? 60)), stats: () => app.stats.snapshot(), resetSim: () => { closeArrival(); app.sim.reset(); resetOrigin(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';
     post('ready', { version: 1, mujoco: mujocoVersion, mjcf_sha256: app.bodySha });
     if (app.training.state === 'untrained') post('untrained', { reason: 'no trained policy installed: random actions' });
