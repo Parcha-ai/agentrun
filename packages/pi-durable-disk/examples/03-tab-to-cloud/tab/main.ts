@@ -395,7 +395,7 @@ async function drain(switchId: string): Promise<void> {
     state.runtime = undefined;
     await runtime.close().catch(() => undefined);
   }
-  state.client?.send({ t: "drained", switchId });
+  state.client?.send({ t: "drained", switchId, ...(state.left?.switchId === switchId ? { acked: state.left.digest } : {}) });
 }
 
 /** A fresh snapshot of this tab's conversation for the viewers (a viewer just joined). */

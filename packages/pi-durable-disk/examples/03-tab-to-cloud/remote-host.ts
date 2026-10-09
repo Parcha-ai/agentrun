@@ -94,10 +94,11 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
       void (async () => {
         const how = runtime ? await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const) : "idle";
         log("drained", { switchId: frame.switchId, step: how });
+        const acked = runtime ? await runtime.workspace.baselineDigest().catch(() => undefined) : undefined;
         await unview();
         await runtime?.close().catch(() => undefined);
         runtime = undefined;
-        client.send({ t: "drained", switchId: frame.switchId });
+        client.send({ t: "drained", switchId: frame.switchId, ...(acked ? { acked } : {}) });
       })();
     }
   };

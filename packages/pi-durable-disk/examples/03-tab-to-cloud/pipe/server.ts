@@ -14,6 +14,7 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
+import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { CHUNK_BYTES, toBase64, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
@@ -89,6 +90,12 @@ export interface DemoServerOptions {
    * Default none.
    */
   readonly tabWritable?: readonly string[];
+  /**
+   * The opt-in durability check: after each release, read the run's work/ back from the disk's object store and compare
+   * it with the pipe's kept digest and the leaving writer's acknowledged one (`pipe.readback`, and
+   * `pipe.readback-mismatch` with the differing paths). Never on the handover path. Absent: off.
+   */
+  readonly evidenceReadback?: ReadbackSource;
   /** Test seams. */
   readonly acquire?: (options: AcquireOptions, takeover: boolean) => Promise<Claim>;
   readonly claimDir?: OpenRunLeaseOptions["claimDir"];
@@ -242,10 +249,55 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     try {
       await pipe.release();
       options.ledger?.close("mount", pipe.lease.claim.root, "released");
+      if (options.evidenceReadback) void readbackAfter(state, pipe, options.evidenceReadback);
     } finally {
       state.pipe = undefined;
       for (const viewer of pipe.takeViewers()) state.viewers.add(viewer);
       await dropToken(state);
+    }
+  }
+
+  /** Resolves once the run is no longer moving (its next holder has the claim, or it parked), or after `ms`. */
+  const settled = (state: RunState, ms: number) =>
+    new Promise<void>((resolve) => {
+      if (state.placement.where !== "moving") return resolve();
+      const finish = () => {
+        clearTimeout(timer);
+        const at = listeners.indexOf(listener);
+        if (at >= 0) listeners.splice(at, 1);
+        resolve();
+      };
+      const listener = (id: string, placement: Placement) => id === state.ref.id && placement.where !== "moving" && finish();
+      const timer = setTimeout(finish, ms);
+      timer.unref();
+      listeners.push(listener);
+    });
+
+  /**
+   * The release's independent evidence: work/ read back from the object store, compared with what the pipe kept and
+   * with what the leaving writer acknowledged. It starts once the next holder has the claim, so it never delays a move,
+   * and may read while that holder writes: a differing file the object store dates after the release is named as such.
+   */
+  async function readbackAfter(state: RunState, pipe: RunPipe, source: ReadbackSource): Promise<void> {
+    const evidence = pipe.releaseEvidence;
+    if (!evidence) return;
+    const releasedAt = Date.now();
+    try {
+      await settled(state, 60_000);
+      const startedAfterMs = Date.now() - releasedAt;
+      const [read, kept] = await Promise.all([readBack(source, state.ref.id), evidence.digest.catch(() => undefined)]);
+      const match = kept !== undefined && read.digest === kept;
+      const ackedMatch = evidence.acked === undefined ? null : read.digest === evidence.acked;
+      log("pipe.readback", { run: state.ref.id, generation: evidence.generation, startedAfterMs, ms: read.ms, files: read.files, bytes: read.bytes, digest: read.digest, kept: kept ?? null, acked: evidence.acked ?? null, match, ackedMatch });
+      if (!match && evidence.entries) {
+        const { missing, extra, differ } = compareEntries(evidence.entries, read.entries);
+        // The object store dates objects to the second: a write in the second before the release counts here too.
+        const later = [...missing, ...extra, ...differ].filter((path) => (read.modified.get(path) ?? 0) > releasedAt - 1_000);
+        const cap = (paths: string[]) => paths.slice(0, 50);
+        log("pipe.readback-mismatch", { run: state.ref.id, generation: evidence.generation, missing: cap(missing), extra: cap(extra), differ: cap(differ), changedSinceRelease: cap(later) });
+      }
+    } catch (error) {
+      log("pipe.readback-failed", { run: state.ref.id, generation: evidence.generation, error: (error as Error).message });
     }
   }
 
@@ -558,7 +610,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         void switchTo(state, socket, frame.to).catch((error) => log("switch.failed", { run: state.ref.id, error: (error as Error).message }));
         return;
       case "drained":
-        pipe?.drained(socket, frame.switchId);
+        pipe?.drained(socket, frame.switchId, frame.acked);
         return;
       case "switched":
         // Only the host that took the run says its notice is in.
