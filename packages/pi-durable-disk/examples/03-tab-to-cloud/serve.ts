@@ -2,6 +2,7 @@
 //
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
+//                 [--judge-model ID [--judge-url URL] [--judge-key-env NAME]]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH] [--evidence-readback]
@@ -41,6 +42,9 @@ const { values } = parseArgs({
     model: { type: "string", default: process.env.DEMO_MODEL },
     "model-url": { type: "string", default: process.env.DEMO_MODEL_URL },
     "model-key-env": { type: "string" },
+    "judge-model": { type: "string" },
+    "judge-url": { type: "string" },
+    "judge-key-env": { type: "string" },
     "daytona-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_SNAPSHOT },
     "daytona-secret": { type: "string" },
     "daytona-gpu-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_GPU_SNAPSHOT },
@@ -67,6 +71,18 @@ if (!values.model || !values["model-url"]) {
   process.exit(2);
 }
 const modelKey = values["model-key-env"] ? process.env[values["model-key-env"]] : undefined;
+// The dark-content judge a page asks before showing an answer (POST /api/runs/<id>/judge): its model, endpoint
+// (default the model's) and the variable holding that endpoint's key. No --judge-model: no judge route. The flag only
+// turns the route on: this example's page shows the agent's own model and does not call it; the Golden Gate episode's
+// tab gates every answer of its trained model through it.
+const judgeKey = values["judge-key-env"] ? process.env[values["judge-key-env"]] : undefined;
+if (values["judge-key-env"] && !judgeKey) {
+  console.error(`--judge-key-env ${values["judge-key-env"]}: that variable is not set`);
+  process.exit(2);
+}
+const judge = values["judge-model"]
+  ? { baseUrl: values["judge-url"] ?? values["model-url"]!, model: values["judge-model"], ...(judgeKey ? { apiKey: judgeKey } : {}) }
+  : undefined;
 if (values["model-key-env"] && !modelKey) {
   console.error(`--model-key-env ${values["model-key-env"]}: the variable is not set`);
   process.exit(2);
@@ -130,6 +146,7 @@ const server = createDemoServer({
   ...(ledger ? { ledger } : {}),
   ...(cloud ? { cloud } : {}),
   ...(adminToken ? { adminToken } : {}),
+  ...(judge ? { judge } : {}),
   ...(values.local ? { acquire: async (opts) => localClaim(values.local!, opts), claimDir: (dir: string) => openClaimDir(dir, { fstype: null }) } : {}),
 });
 const port = await server.listen(Number(values.port), values.host);
