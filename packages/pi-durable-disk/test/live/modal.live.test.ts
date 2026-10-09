@@ -8,9 +8,9 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { removeMountToken, type ControlApi, type RunRef } from "../../src/claim.ts";
+import { findDelegations, removeMountToken, type ControlApi, type RunRef } from "../../src/claim.ts";
 import { modalHost, modalSandboxes, type ModalSdk } from "../../src/hosts/modal.ts";
-import { ensureRunning, type EnsureOptions, type EnsureResult, type HostDriver, type HostHandle } from "../../src/supervise.ts";
+import { ensureRunning, readRunStatus, type EnsureOptions, type EnsureResult, type HostDriver, type HostHandle } from "../../src/supervise.ts";
 import { REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { statePath } from "./_paths.ts";
 import { APP_OUT, ARCHIL_WRAPPER, deletePrefix, MOUNT_ROOT, NODE, PACKAGE_DIR, PDA_ID, prepareBox } from "./_p9.ts";
@@ -171,10 +171,21 @@ test("modalHost: power-off of VM sandbox A mid-run, resume on VM sandbox B with 
     await waitFor("A gone", async () => (await driver.status(hA)) === "gone", 60_000, 500);
     results.goneAfterTerminateMs = Date.now() - tGone;
 
+    // The agent left a program running with its working directory on the run's mount (a server it started, a browser): it has
+    // detached from the instance, which cannot end it, and it would keep the mount busy past the instance's release.
+    const boxB = (await client.get(String(hB.sandboxId)))!;
+    await client.exec(boxB, `sudo -n -u pda -H bash -c 'cd ${MOUNT_ROOT}/runs/${runId} && setsid -f sleep 3000 </dev/null >/dev/null 2>&1'; pgrep -u pda -x sleep`, 20);
     const tStop = Date.now();
     await driver.stop(hB);
     await waitFor("B gone", async () => (await driver.status(hB)) === "gone", 60_000, 500);
     results.stopToGoneMs = Date.now() - tStop;
+    // A planned stop is drain, release, then terminate: the run is paused on the disk and nothing holds its claim. Only a death
+    // (A above) may leave a claim for the next takeover. The sleep above held the mount busy: the stop ended it first.
+    const record = await readRunStatus(control as never, runId);
+    const held = await findDelegations(control, runId);
+    results.afterPlannedStop = { status: record?.status, delegations: held.map((d) => ({ orphaned: d.isOrphaned })) };
+    assert.ok(["paused", "sleeping"].includes(String(record?.status)), `the run is released, not running (${record?.status})`);
+    assert.equal(held.length, 0, "a planned stop leaves no delegation held");
   } finally {
     results.preparedAll = prepared;
   }

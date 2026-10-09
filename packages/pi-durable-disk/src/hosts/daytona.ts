@@ -213,6 +213,11 @@ export interface DaytonaHostOptions {
   env?: Record<string, string>;
   /** Restart in place after a non-terminal exit (default true). */
   restart?: boolean;
+  /**
+   * On `stop`, end the programs the agent left running with the run's mount busy (detached from the instance, so it cannot end
+   * them) before the instance drains: otherwise the unmount fails and the delegation stays held. Default false.
+   */
+  reapOnStop?: boolean;
   /** Daytona destroys every box this long after creation, whatever its state. Default 25 h (a mount token lives 24 h). */
   ttlMinutes?: number;
   /** Sandbox egress. Default: the organization's (full egress on Tier 3 and 4, which `archil mount` needs). */
@@ -311,7 +316,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
   const mine = (h: HostHandle) => h.driver === driver && h.fleet === fleet && typeof h.sandboxId === "string" && typeof h.name === "string";
   const ours = (box: SandboxInfo, runId: string) => box.labels?.[LABEL_FLEET] === fleet && box.labels?.[LABEL_RUN] === runId;
   const launcher = (verb: "start" | "status" | "stop", name: string, timeoutMs?: number) =>
-    `${S}${node} ${launch} ${verb} ${name} --dir ${dir}${verb === "start" ? ` --stage ${stage}` : ""}${timeoutMs === undefined ? "" : ` --timeout-ms ${timeoutMs}`}`;
+    `${S}${node} ${launch} ${verb} ${name} --dir ${dir}${verb === "start" ? ` --stage ${stage}` : ""}${timeoutMs === undefined ? "" : ` --timeout-ms ${timeoutMs}`}${verb === "stop" && opts.reapOnStop ? " --reap-detached" : ""}`;
 
   async function createOrAdopt(body: CreateSandboxBody, runId: string): Promise<SandboxInfo> {
     for (let attempt = 1; ; attempt++) {
@@ -386,6 +391,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
           user,
           group,
           restart: opts.restart !== false,
+          mountpoint: handle.mountpoint as string,
           terminalExits: [...TERMINAL_EXITS],
         };
         // Both directories first (an upload creates missing parents with the toolbox's default mode): the staging one the

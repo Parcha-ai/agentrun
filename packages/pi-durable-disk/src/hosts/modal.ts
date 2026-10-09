@@ -301,6 +301,8 @@ export function modalHost(opts: ModalHostOptions): HostDriver & { readonly fleet
     snapshot: typeof image === "string" ? image : "image",
     // The exec API runs commands as root, which is what `sudo -n` is for elsewhere.
     sudo: false,
+    // A planned stop leaves nothing held: what the agent detached from the instance would keep the mount busy.
+    reapOnStop: rest.reapOnStop ?? true,
     ttlMinutes: Math.min(ttlMinutes ?? 24 * 60, 24 * 60),
   });
 }
