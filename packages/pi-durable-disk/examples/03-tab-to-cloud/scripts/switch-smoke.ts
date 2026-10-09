@@ -2,14 +2,18 @@
 // it where it runs, switches it to a cloud environment, asks again, switches it back into the tab, asks again. Each
 // switch is timed from the click to the agent's notice of the move on screen. Evidence goes to $OUT (default
 // ./switch-results.json); screenshots to $SHOTS.
-//   node scripts/switch-smoke.ts <run link> <cloud environment id> [--back]
-import { mkdirSync, writeFileSync } from "node:fs";
+//   node scripts/switch-smoke.ts <run link> <cloud environment id> [--back] [--busy SERVER_LOG]
+// With --busy, the switch to the cloud happens mid-task (after the task's second tool call): the tab finishes its step,
+// and what the pipe acknowledged from it must be what the pipe sealed on the disk (the server log's pipe.released).
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Cdp, type Page } from "./cdp.ts";
 
 const link = process.argv[2]!;
 const target = process.argv[3] ?? "local";
 const back = process.argv.includes("--back");
+const busyLog = process.argv.includes("--busy") ? process.argv[process.argv.indexOf("--busy") + 1] : undefined;
+const TASK = "Write steps/one.txt, steps/two.txt, steps/three.txt and steps/four.txt, one tool call each, each holding its number as a word. After each file run `ls steps` with bash. Then say done.";
 const out = process.env.OUT ?? "switch-results.json";
 const shots = process.env.SHOTS ?? "switch-shots";
 mkdirSync(shots, { recursive: true });
@@ -59,9 +63,22 @@ try {
   await ask(page, "tab");
   await snap(page, "tab-answer");
 
+  if (busyLog) {
+    const before = await page.evaluate<number>("demo.items().length");
+    await send(page, TASK);
+    await page.until(`demo.items().slice(${before}).filter(i => i.kind === "tool" && i.status === "done").length >= 2`, 240_000, 100);
+    step("busy: switching mid-task", { tools: await page.evaluate(`demo.items().slice(${before}).filter(i => i.kind === "tool").length`) });
+  }
   await switchTo(page, target, `to ${target}`);
-  await page.until("demo.state.mode === 'viewer' && demo.state.placement && demo.state.placement.where === 'cloud'", 60_000, 200);
+  await page.until(`demo.state.mode === 'viewer' && demo.state.placement && demo.state.placement.env === ${JSON.stringify(target)}`, 60_000, 200);
   await snap(page, "cloud-notice");
+  if (busyLog) {
+    const left = await page.evaluate<{ switchId: string; digest: string; step: string }>("demo.left()");
+    const released = readFileSync(busyLog, "utf8").split("\n").filter((l) => l.includes('"event":"pipe.released"')).map((l) => JSON.parse(l) as { workDigest: string }).at(-1);
+    step("busy: zero loss", { step: left.step, tabAcked: left.digest, pipeSealed: released?.workDigest, equal: left.digest === released?.workDigest });
+    await page.until("demo.files().includes('steps/four.txt') && !demo.state.chat.busy", 300_000, 500);
+    step("busy: the cloud finished the task", { files: await page.evaluate("demo.files()") });
+  }
   await ask(page, target);
   await snap(page, "cloud-answer");
 

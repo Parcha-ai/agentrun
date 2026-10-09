@@ -14,8 +14,8 @@ import { appBundle, gpuDockerfile, prepareScript } from "../pipe/daytona.ts";
 import { Ledger } from "../pipe/control.ts";
 
 const { values } = parseArgs({ options: { from: { type: "string", default: "daytona-medium" }, ledger: { type: "string" }, delete: { type: "string" }, gpu: { type: "boolean", default: false } } });
-/** A snapshot names one GPU type; the H100 is the one with capacity in the region (daytona-gpu's). */
-const GPU_TYPES = ["H100"];
+/** A snapshot names one GPU type: the first of these the region has runners for. */
+const GPU_TYPES = ["RTX-4090", "RTX-5090", "RTX-PRO-6000", "H100", "H200"];
 const apiKey = process.env.DAYTONA_API_KEY;
 if (!apiKey) throw new Error("DAYTONA_API_KEY is needed (run through with-daytona)");
 const apiUrl = (process.env.DAYTONA_API_URL || "https://app.daytona.io/api").replace(/\/+$/, "");
@@ -64,17 +64,26 @@ if (values.delete) {
 
 if (values.gpu) {
   const dockerfile = gpuDockerfile(process.getuid!(), process.getgid!());
-  const name = `${PREFIX}gpu-${createHash("sha256").update(dockerfile).update(GPU_TYPES.join(",")).digest("hex").slice(0, 12)}`;
-  const existing = await snapshotState(name);
-  if (existing?.state === "active") {
-    log("snapshot.exists", { name });
-    console.log(name);
-    process.exit(0);
-  }
-  if (existing) throw new Error(`snapshot ${name} exists in state ${existing.state}; delete it first`);
+  const digest = createHash("sha256").update(dockerfile).digest("hex").slice(0, 12);
   const t0 = Date.now();
-  const made = await api("POST", "/snapshots", { name, buildInfo: { dockerfileContent: dockerfile }, gpu: 1, gpuType: GPU_TYPES, cpu: 4, memory: 16, disk: 20, entrypoint: ["sleep", "infinity"] });
-  if (made.status >= 300) throw new Error(`creating snapshot ${name}: ${made.status} ${JSON.stringify(made.json).slice(0, 400)}`);
+  let name = "";
+  for (const type of GPU_TYPES) {
+    name = `${PREFIX}gpu-${type.toLowerCase()}-${digest}`;
+    const existing = await snapshotState(name);
+    if (existing?.state === "active") {
+      log("snapshot.exists", { name });
+      console.log(name);
+      process.exit(0);
+    }
+    if (existing) throw new Error(`snapshot ${name} exists in state ${existing.state}; delete it first`);
+    const made = await api("POST", "/snapshots", { name, buildInfo: { dockerfileContent: dockerfile }, gpu: 1, gpuType: [type], cpu: 4, memory: 16, disk: 20 });
+    if (made.status < 300) break;
+    const message = String(made.json?.message ?? "");
+    if (!/No available runners/i.test(message)) throw new Error(`creating snapshot ${name}: ${made.status} ${message.slice(0, 300)}`);
+    log("snapshot.no-capacity", { type });
+    name = "";
+  }
+  if (!name) throw new Error(`no runners for any of ${GPU_TYPES.join(", ")}`);
   ledger?.open("daytona-snapshot", name, "GPU class, from a Dockerfile");
   for (let i = 0; ; i++) {
     const s = await snapshotState(name);

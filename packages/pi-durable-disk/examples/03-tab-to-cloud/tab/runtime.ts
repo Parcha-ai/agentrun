@@ -1,20 +1,24 @@
-// The agent's computer in the tab, without the page: pi-durable's Harness over the pipe's Storage, its tools on a Wasmer
-// sandbox, its model calls through the pipe, and the write-through after every writing tool. The page (main.ts) and the
-// Node tests both start it from an attached PipeClient and a sandbox.
+// The agent through the pipe, without the page: pi-durable's Harness over the pipe's Storage, its tools on an execution
+// environment (the tab's Wasmer sandbox, or the filesystem of a host that has no disk client), its model calls through
+// the pipe, and the write-through after every writing tool. The page (main.ts), a remote host (remote-host.ts) and the
+// Node tests start it from an attached PipeClient, an environment and its workspace.
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
 import type { Conversation, HarnessSettings } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "../agent.ts";
 import { admitNotice, type EnvironmentFacts, type SwitchInfo } from "../environment.ts";
 import { remoteStorage, type Attached, type PipeClient } from "./pipe-client.ts";
-import { WasmerEnv, type WasmerSandbox } from "./wasmer-env.ts";
-import { Workspace } from "./workspace.ts";
+import type { Workspace } from "./workspace.ts";
 
-export interface TabRuntime {
+/** The environment the runtime owns: cleaned up when it closes. */
+export type RuntimeEnv = ExecutionEnv;
+
+export interface TabRuntime<E extends RuntimeEnv = RuntimeEnv> {
   readonly harness: Harness;
   readonly root: Conversation;
-  readonly env: WasmerEnv;
+  readonly env: E;
   readonly workspace: Workspace;
   readonly restored: { files: number; bytes: number; skipped: string[] };
   /** The write-throughs this tab made: changes sent, and how long each took, end to end. */
@@ -57,17 +61,16 @@ export async function finishStep(harness: Harness, timeoutMs: number): Promise<"
   return "timeout";
 }
 
-export async function startTab(opts: {
+export async function startTab<E extends RuntimeEnv>(opts: {
   client: PipeClient;
   attached: Attached;
-  sandbox: WasmerSandbox;
-  run: string;
+  env: E;
+  workspace: Workspace;
   settings?: HarnessSettings;
-  /** The move that brought the run into this tab, and this tab's description, for the notice admitted before resuming. */
+  /** The move that brought the run here, and this host's description, for the notice admitted before resuming. */
   move?: { info: SwitchInfo; facts: EnvironmentFacts };
-}): Promise<TabRuntime> {
-  const env = new WasmerEnv(opts.sandbox, { id: `wasmer:${opts.run}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
-  const workspace = new Workspace(env);
+}): Promise<TabRuntime<E>> {
+  const { env, workspace } = opts;
   const restored = await workspace.restore(opts.attached.files);
   const syncs: { changes: number; ms: number }[] = [];
   // One write-through at a time: each compares against the baseline the previous one established.
@@ -98,7 +101,7 @@ export async function startTab(opts: {
     syncs,
     async close() {
       await harness.close(ctx).catch(() => undefined);
-      await env.cleanup();
+      await env.cleanup(ctx).catch(() => undefined);
     },
   };
 }

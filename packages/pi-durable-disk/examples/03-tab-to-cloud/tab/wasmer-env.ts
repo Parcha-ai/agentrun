@@ -526,3 +526,21 @@ export class WasmerEnv implements ExecutionEnv {
     this.#running.clear();
   }
 }
+
+/** The tab's workspace files, for Workspace (workspace.ts): the sandbox's /workspace, its times kept by `env`. */
+export function wasmerWorkspaceFs(env: WasmerEnv): import("./workspace.ts").WorkspaceFs {
+  const fs = env.sandbox.fs;
+  return {
+    root: WORKSPACE,
+    skip: TAB_TMP,
+    readDir: async (dir) => (await fs.readDir(dir)).map((e) => ({ name: e.name, kind: e.kind })),
+    readFile: (path) => fs.readFile(path),
+    async writeFile(path, data, mtimeMs) {
+      await fs.writeFile(path, data);
+      env.touch(path, mtimeMs);
+    },
+    mkdir: (path) => fs.mkdir(path, { recursive: true }),
+    remove: (path) => fs.remove(path, { recursive: true }),
+    touched: (path) => env.touch(path),
+  };
+}
