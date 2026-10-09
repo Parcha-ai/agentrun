@@ -144,9 +144,28 @@ async function loadPolicyText(text: string, name: string) {
     post('policy-loaded', { name, mjcf_sha256: p.file.mjcf_sha256, bytes: text.length });
     toast(`policy loaded: ${name}`);
   } catch (e) {
-    showError(e instanceof PolicyRefused ? `Policy refused: ${e.message}` : String(e));
+    const reason = e instanceof PolicyRefused ? e.message : e instanceof SyntaxError ? 'the file is not valid JSON' : String(e);
+    showError(`Policy refused: ${reason}`);
+    post('policy-refused', { name, reason });
     throw e;
   }
+}
+
+/** Fetch a policy file and load it; a missing file (the run is not home yet) is a refusal, not a broken tab. */
+async function loadPolicyUrl(url: string) {
+  const name = url.split('/').pop() ?? 'policy';
+  let text: string;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    text = await res.text();
+  } catch (e) {
+    const reason = `could not fetch ${url}: ${e instanceof Error ? e.message : e}`;
+    showError(`Policy refused: ${reason}`);
+    post('policy-refused', { name, reason });
+    return;
+  }
+  await loadPolicyText(text, name).catch(() => {}); // already reported
 }
 
 function yawDir(x: number, y: number): [number, number] {
@@ -307,7 +326,7 @@ async function main() {
         if (m.type === 'set-placement') setPlacement(m.kind, m.label ?? m.kind);
         else if (m.type === 'kick') kick(m.dir?.[0] ?? 0, m.dir?.[1] ?? 1, m.force_n ?? 60);
         else if (m.type === 'open-memory') await renderMemory();
-        else if (m.type === 'load-policy') await loadPolicyText(await (await fetch(m.url)).text(), String(m.url).split('/').pop() ?? 'policy');
+        else if (m.type === 'load-policy') await loadPolicyUrl(String(m.url));
         else if (m.type === 'load-world') { app.world = m.world ?? null; await buildCreature(app.sketcher.get(), true); toast(app.world ? 'terrain loaded' : 'flat ground'); }
         else if (m.type === 'load-design') { app.sketcher.set(m.design); await buildCreature(m.design, true); }
       } catch (e) { showError(String(e)); }

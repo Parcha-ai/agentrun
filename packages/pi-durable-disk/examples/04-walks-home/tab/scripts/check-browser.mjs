@@ -2,7 +2,7 @@
 // let the dummy policy run, kick, screenshot. Prints JSON of what the page reported. Only this app's own page.
 // usage: node scripts/check-browser.mjs <outdir>
 import WebSocket from 'ws';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { serve } from './serve.mjs';
 
 const out = process.argv[2] ?? '.';
@@ -35,6 +35,12 @@ try {
   }
   const snap = (name) => S('Page.captureScreenshot', { format: 'png' }).then((r) => writeFileSync(`${out}/${process.env.W ?? 1400}-${name}.png`, Buffer.from(r.data, 'base64')));
   const state = () => ev("(() => { const a = __walks.app; return {t: a.sim.time, pos: a.sim.torsoPos(), up: a.sim.uprightness(), policy: a.policyName}; })()");
+  if (process.env.POLICY) {
+    // a trainer's policy.json: load it through the page's own loader (the same path as the load-policy message)
+    const text = readFileSync(process.env.POLICY, 'utf8');
+    result.policyLoad = await ev(`__walks.loadPolicyText(${JSON.stringify(text)}, 'policy.json').then(() => 'loaded', (e) => 'refused: ' + e.message)`);
+    result.policyError = await ev("document.getElementById('err').textContent");
+  }
   result.start = await state();
   await sleep(1500); await snap('1-walking');
   await sleep(4000);

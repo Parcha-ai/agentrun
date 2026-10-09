@@ -10,7 +10,7 @@ const out = process.argv[2] ?? '.';
 mkdirSync(out, { recursive: true });
 const server = await serve(0);
 const sql = await initSqlJs();
-// What the agent would write on its own machine with the documented schema (memory-schema.sql).
+// What the agent would write on its own machine with the documented schema (MEMORY_SCHEMA).
 const agentDb = new sql.Database();
 agentDb.run('CREATE TABLE machines (id INTEGER PRIMARY KEY, at TEXT NOT NULL, host TEXT NOT NULL, kind TEXT NOT NULL, note TEXT NOT NULL DEFAULT "")');
 agentDb.run("INSERT INTO machines (at, host, kind, note) VALUES ('2026-10-09T11:00:00Z', 'gpu:4090-3', 'gpu', 'trained reward variant 3')");
@@ -50,6 +50,11 @@ async function scenario(name, silent, viewer = false) {
     } else if (!silent) {
       await ev("sendToTab({ type: 'set-placement', kind: 'daytona', label: 'Daytona sandbox' })");
       r.placement = await inner("document.getElementById('placement').textContent");
+      await ev("sendToTab({ type: 'load-policy', url: '/policy/missing.json' })"); await sleep(500);
+      r.missingPolicyError = await inner("document.getElementById('err').textContent");
+      const t1 = await inner('__walks.app.sim.time'); await sleep(700);
+      r.simAdvancedAfterRefusal = (await inner('__walks.app.sim.time')) > t1;
+      r.policyAfterRefusal = await inner('__walks.app.policyName');
       await ev("sendToTab({ type: 'kick', dir: [0, 1], force_n: 60 })");
       await sleep(5000);
       await ev(`disk['creature/memory.sqlite'] = new Uint8Array(${JSON.stringify(agentBytes)})`); // the agent wrote a row meanwhile

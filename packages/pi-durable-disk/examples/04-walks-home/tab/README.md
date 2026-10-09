@@ -25,12 +25,12 @@ WebGL: the page needs it. A headless Chrome without a GPU needs `--use-gl=angle 
 | `src/policy.ts`, `src/obs.ts` | `mlp-v1` policy runner (owned by the trainer lane; see `POLICY-FORMAT.md`) |
 | `src/sketch.ts`, `src/render.ts`, `src/main.ts` | sketcher canvas, three.js view, the page |
 | `src/store.ts`, `src/backend.ts` | SQLite (sql.js) with one writer per file; backends: IndexedDB, or the parent page (the disk) |
-| `memory-schema.sql`, `scripts/record-machine.mjs` | the agent's side: append "I am now on machine X" to `memory.sqlite` |
+| `MEMORY_SCHEMA` in `src/store.ts`, `scripts/record-machine.mjs` | the agent's side: append "I am now on machine X" to `memory.sqlite` |
 
 ## Memory: two files, one writer each
 - `creature/designs.sqlite`: bodies the creature was given. Written by the tab.
 - `creature/memory.sqlite`: the machines it has run on. Written by the agent (`scripts/record-machine.mjs`, Node 22.13+,
-  or any SQLite using `memory-schema.sql`). The tab only reads it, and re-reads it each time the memory view opens, so
+  or any SQLite using `MEMORY_SCHEMA` from `src/store.ts`). The tab only reads it, and re-reads it each time the memory view opens, so
   neither side can overwrite the other's rows.
 Embedded, both are reached through the parent with postMessage. Standing alone, they live in IndexedDB and the header says
 "this browser only (not on the disk)".

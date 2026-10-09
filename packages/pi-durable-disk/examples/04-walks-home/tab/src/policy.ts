@@ -4,7 +4,7 @@
 import { SLICE_NAMES, slice, sliceSize, type SliceName, type State } from './obs.ts';
 
 export const KNOWN_SPEC_VERSIONS = [1];
-const ACTIVATIONS = ['tanh', 'elu', 'relu', 'none'] as const;
+const ACTIVATIONS = ['tanh', 'elu', 'relu', 'silu', 'none'] as const;
 type Activation = (typeof ACTIVATIONS)[number];
 export const MAX_POLICY_BYTES = 300 * 1024;
 
@@ -46,6 +46,7 @@ const act: Record<Activation, (x: number) => number> = {
   tanh: Math.tanh,
   elu: (x) => (x > 0 ? x : Math.expm1(x)),
   relu: (x) => (x > 0 ? x : 0),
+  silu: (x) => x / (1 + Math.exp(-x)),
   none: (x) => x,
 };
 

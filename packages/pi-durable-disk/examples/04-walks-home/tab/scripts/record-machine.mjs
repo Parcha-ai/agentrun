@@ -1,5 +1,5 @@
 // Agent side of the memory: append one row to work/creature/memory.sqlite saying which machine the agent is on.
-// Needs node >= 22.13 (node:sqlite). The schema is memory-schema.sql; the tab only reads this file.
+// Needs node >= 22.13 (node:sqlite). The schema is MEMORY_SCHEMA in src/store.ts; the tab only reads this file.
 //   node record-machine.mjs <memory.sqlite> --host gpu:4090-3 --kind gpu --note "trained reward variant 3" [--at 2026-10-09T11:00:00Z]
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';

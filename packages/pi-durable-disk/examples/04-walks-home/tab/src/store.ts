@@ -28,7 +28,7 @@ export const DESIGNS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS designs (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, sha256 TEXT NOT NULL UNIQUE, json TEXT NOT NULL, created_at TEXT NOT NULL);
 `;
-// The agent-side writer uses exactly this (see memory-schema.sql); `at` is an ISO-8601 UTC string.
+// The agent-side writer uses exactly this (scripts/record-machine.mjs creates it too); `at` is an ISO-8601 UTC string.
 export const MEMORY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS machines (
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, host TEXT NOT NULL, kind TEXT NOT NULL, note TEXT NOT NULL DEFAULT '');
