@@ -27,7 +27,7 @@ async function page(fn) {
   try {
     await Sx('Page.enable'); await Sx('Runtime.enable');
     await Sx('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
-    await Sx('Page.navigate', { url: `${base}/__harness.html?clean=1` });
+    await Sx('Page.navigate', { url: `${base}/__harness.html?clean=1&start=default` });
     const ev = async (expr) => { const r = await Sx('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
     const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
     let ok = false;
