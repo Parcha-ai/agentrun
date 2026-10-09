@@ -15,8 +15,8 @@
   or a `concurrency` that is not a whole number of at least 1, throws `INVALID_ARGUMENT`; a source that is not released and
   sealed, or is held, throws as `fork` does, and makes no new run.
 - The source is released after every copy has ended and before the result is returned. A release that fails is tried once
-  more and its error is thrown, as `fork` threw it: a source still mounted on this host cannot start. The new runs made by
-  then are complete. A mount is kept by the fork before `onResource` hears of it, so a callback that throws leaves no mount
+  more and its first error is thrown either way, as `fork` threw it; the source remains mounted on this host, and cannot
+  start, only if the retry failed too. The new runs made by then are complete. A mount is kept by the fork before `onResource` hears of it, so a callback that throws leaves no mount
   behind.
 - `fork(ref, newId)` is `forkMany` with one id and throws that outcome's error: same results, errors and cleanup as before.
 - New exports: `forkMany`, `ForkManyOptions`, `ForkManyResult`, `ForkOutcome`.

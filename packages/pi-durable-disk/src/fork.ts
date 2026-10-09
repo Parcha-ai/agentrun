@@ -128,8 +128,8 @@ export type ForkManyResult = {
  * already, whose check fails, or whose copy fails, is an outcome with `ok: false`; the others are made. A source that is
  * not released and sealed, is held, or is mounted while forking throws (no new run is made), as does an empty, repeated
  * or source id or a bad `concurrency`. The source is released before the result is returned, after every copy ended: a
- * release that fails is thrown (the release is tried once more first), since a source still mounted here cannot start;
- * the new runs made by then are complete.
+ * release that fails is tried once more and its first error is thrown either way (the source remains mounted here, and
+ * cannot start, only if the retry failed too); the new runs made by then are complete.
  */
 export async function forkMany(ref: RunRef, newIds: readonly string[], options: ForkManyOptions): Promise<ForkManyResult> {
   const t0 = performance.now();

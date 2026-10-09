@@ -359,8 +359,9 @@ fork or start leaves it alone.
 `forkMany(ref, newIds, { control, mountRoot, concurrency? })` makes several new runs from one source under a single mount
 of it: each new run is copied under its own exclusive mount (all at once by default), and none can be opened, or reads as a
 run, before its copy and its `run.json` are complete. A new run that exists or fails is its own outcome (`ok: false`) and the
-others are made; a source that is not released and sealed, or is held, makes none. A source whose release fails after the
-copies throws that error: the source is still mounted on this host and cannot start until it is released.
+others are made; a source that is not released and sealed, or is held, makes none. If releasing the source fails after the
+copies, the release is tried once more before the original error is thrown. The source remains mounted on this host and
+cannot start only if that retry also fails to release it.
 
 ### Setting up a host for production
 
