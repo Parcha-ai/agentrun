@@ -31,3 +31,12 @@ carries a prewarmed one for the default creature, so a fresh box reaches its fir
 A universe file names its reward weights (`REWARD_TERMS` in `creature_env.py`) and any env or PPO overrides:
 `{"name": "u3", "reward_scales": {"feet_air_time": 1.0, "trot_clock": 0.5}, "env": {}, "ppo": {}}`.
 Running the same command again with the same WORK resumes from the newest complete checkpoint.
+
+## The on-camera learning curve (DEMO-V2)
+
+The agent trains the sketched creature on an H100 while the tab installs each checkpoint live. Two runs share the GPU:
+a walker at 512 parallel envs with an early checkpoint schedule (one checkpoint per million steps lands about every 7 s,
+so the stages are visible: it stands, shuffles, takes its first steps, walks), and a getup network beside it. They meet
+in one file at come-home. The exact lines (and the matching `--compile-only` warm-up) are `TAKE_WALK`/`TAKE_GETUP` in
+`modal_image.py`; the first schedule point, `--num-envs`, the universe and `--world` shape the compiled program, so a
+warm-up must pass the same ones.

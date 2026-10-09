@@ -40,8 +40,8 @@ def training_image(copy_code: bool = False) -> modal.Image:
 
 SEED_CACHE = "/opt/pda/cache/compile-cache.tar.gz"
 # The program-shaping flags of the on-camera learning curve (DEMO-V2). A warm-up --compile-only must pass the same.
-TAKE_WALK = "--num-envs 512 --schedule 0.5M,1M,2M,3M,4M,5M,6M,8M --checkpoint-every 4M"
-TAKE_GETUP = "--schedule 5M,10M --checkpoint-every 5M"
+TAKE_WALK = "--num-envs 512 --schedule 0.5M,1M,2M,3M,4M,5M,6M,7M,8M,10M --checkpoint-every 2M"
+TAKE_GETUP = "--schedule 5M,10M,20M --checkpoint-every 5M"
 
 
 def fleet_image(runtime_commands: list[str], prewarm: bool = True) -> modal.Image:
