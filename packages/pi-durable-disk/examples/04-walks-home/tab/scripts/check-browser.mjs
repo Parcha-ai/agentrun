@@ -8,7 +8,7 @@ import { serve } from './serve.mjs';
 const out = process.argv[2] ?? '.';
 mkdirSync(out, { recursive: true });
 const server = await serve(0);
-const url = `http://127.0.0.1:${server.address().port}/`;
+const url = `http://127.0.0.1:${server.address().port}/?dummy=1`; // the checks below start from the demo stand-in; the page itself starts untrained
 const v = await (await fetch('http://127.0.0.1:' + (process.env.CDP_PORT ?? 9222) + '/json/version')).json();
 const ws = new WebSocket(v.webSocketDebuggerUrl, { perMessageDeflate: false, maxPayload: 256 * 1024 * 1024 });
 await new Promise((r) => ws.once('open', r));

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, PolicyWatcher, planArrival, type PolicySource } from '../src/arrival.ts';
+import { ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, PolicyWatcher, planArrival, tidy, walkedFields, type ArrivalResult, type PolicySource } from '../src/arrival.ts';
 import { presetForSha } from '../src/bodies.ts';
 import { sha256Hex } from '../src/policy.ts';
 import { defaultDesign } from '../src/design.ts';
@@ -270,4 +270,78 @@ test('the same content announced twice within the window is one arrival; later, 
   assert.equal(d.accept('b', 9000), true, 'different content');
   assert.equal(d.accept('a', 9100), true, 'it changed back: a new arrival');
   assert.equal(d.accept('a', 17200), true, 'the same file again after the window (a retake)');
+});
+
+// ---- steps, time and the trainer's checkpoint number from the file ----------------------------------------------------------
+
+import { provenanceFacts } from '../src/arrival.ts';
+
+test('provenanceFacts reads a plain file, a combined file, and returns null for anything absent or odd', () => {
+  assert.deepEqual(provenanceFacts({ provenance: { steps: 2097152, wall_s: 71.3, checkpoint: 3, walk_10s: { distance_m: 2.1 } } }), { steps: 2097152, wallS: 71.3, checkpoint: 3, reportedWalk10sM: 2.1 });
+  assert.deepEqual(provenanceFacts({ provenance: { walk: { steps: 15728640, wall_s: 59.8, walk_10s: { distance_m: 4.72 } }, getup: { steps: 203489280, wall_s: 354.8 } } }), { steps: 15728640, wallS: 59.8, checkpoint: null, reportedWalk10sM: 4.72 });
+  const none = { steps: null, wallS: null, checkpoint: null, reportedWalk10sM: null };
+  for (const f of [{}, { provenance: null }, { provenance: [] }, null, 'x', { provenance: { steps: '9', wall_s: -1, checkpoint: 1.5, walk_10s: { distance_m: NaN } } }]) {
+    assert.deepEqual(provenanceFacts(f), none, JSON.stringify(f));
+  }
+  assert.equal(provenanceFacts({ provenance: { checkpoint: 0 } }).checkpoint, 0, 'checkpoint 0 is a number');
+});
+
+test('a measurement cut short by the next install reports the simulated seconds it really ran, marked partial', () => {
+  const tr = new ArrivalTracker({ arrivedAtMs: 0, installedAtMs: 0, command: 0.5 });
+  for (let i = 0; i <= 150; i++) tr.sample(i * 0.02, 0.4 * i * 0.02, 0, 1, i * 20); // 3 s at 0.4 m/s
+  assert.equal(tr.result().done, false);
+  tr.finalize();
+  const r = tr.result();
+  assert.equal(r.done, true);
+  assert.equal(r.partial, true);
+  assert.ok(Math.abs(r.windowSeconds - 3) < 1e-9);
+  assert.ok(Math.abs(r.meanSpeed! - 0.4) < 1e-9);
+  tr.sample(3.02, 100, 0, 1, 99999); // after finalize: ignored? it must not change the cut result
+  const again = tr.result();
+  assert.equal(again.windowSeconds, r.windowSeconds);
+  tr.finalize(); // idempotent
+  assert.deepEqual(tr.result(), again);
+});
+
+test('a tracker that finished its window is not partial, and finalizing it changes nothing; one with no samples closes with no speed', () => {
+  const tr = new ArrivalTracker({ arrivedAtMs: 0, installedAtMs: 0, command: 0.5 });
+  for (let i = 0; i <= 500; i++) tr.sample(i * 0.02, 0.5 * i * 0.02, 0, 1, i * 20);
+  const done = tr.result();
+  assert.equal(done.partial, false);
+  tr.finalize();
+  assert.deepEqual(tr.result(), done);
+  const empty = new ArrivalTracker({ arrivedAtMs: 0, installedAtMs: 0, command: 0.5 });
+  empty.finalize();
+  const r = empty.result();
+  assert.equal(r.done, true);
+  assert.equal(r.partial, true);
+  assert.equal(r.meanSpeed, null);
+  assert.equal(r.windowSeconds, 0);
+});
+
+// ---- what leaves the tab in an event: round numbers, and an outcome the stage can caption without reading tracker internals ----
+
+test('tidy rounds every fractional number in an event to 3 decimals, nested too, and leaves the rest alone', () => {
+  assert.deepEqual(
+    tidy({ a: 1.999999999999602, b: 4.099999999999913, n: 7, s: 'x', z: null, deep: { c: 0.49742445530851354, list: [668.3215708732605, 'y'] } }),
+    { a: 2, b: 4.1, n: 7, s: 'x', z: null, deep: { c: 0.497, list: [668.322, 'y'] } });
+});
+
+const result = (over: Partial<ArrivalResult> = {}): ArrivalResult => ({
+  arrivalToInstalledMs: 14.2, arrivalToWalkingMs: 1088.4, simSecondsToWalking: 1.0399999999999778, meanSpeed: 0.49742445530851354,
+  windowSeconds: 9.999999999999831, partial: false, fell: false, done: true, ...over });
+
+test('walkedFields: round numbers, and an outcome that says what happened', () => {
+  const f = walkedFields('home/policy.json', result());
+  assert.equal(f.sim_seconds_to_walking, 1.04);
+  assert.equal(f.window_seconds, 10);
+  assert.equal(f.mean_speed, 0.497);
+  assert.equal(f.arrival_to_walking_ms, 1088);
+  assert.equal(f.outcome, 'walked');
+  assert.equal(walkedFields('p', result({ fell: true, arrivalToWalkingMs: null, simSecondsToWalking: null })).outcome, 'fell');
+  assert.equal(walkedFields('p', result({ arrivalToWalkingMs: null, simSecondsToWalking: null })).outcome, 'not-walking');
+  // cut short by the next install before it walked: unmeasured, not a failure
+  assert.equal(walkedFields('p', result({ partial: true, arrivalToWalkingMs: null, simSecondsToWalking: null, windowSeconds: 1.5 })).outcome, 'cut-short');
+  // cut short after it was already walking: it did walk
+  assert.equal(walkedFields('p', result({ partial: true, windowSeconds: 4.1 })).outcome, 'walked');
 });

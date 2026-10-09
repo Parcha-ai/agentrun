@@ -3,6 +3,7 @@
 
 import { CONTROL_DT, TIMESTEP, type Built } from './mjcf.ts';
 import type { Mode, Policy } from './policy.ts';
+import type { UntrainedBrain } from './untrained.ts';
 import type { State } from './obs.ts';
 
 // The wasm module's types are large and generated; the surface used here is small.
@@ -10,6 +11,8 @@ import type { State } from './obs.ts';
 export type MuJoCo = any;
 
 export const SUBSTEPS = Math.round(CONTROL_DT / TIMESTEP);
+/** Joint target offset per unit action while untrained (radians), like a policy's act.scale. */
+export const UNTRAINED_SCALE = 0.7;
 export const KICK_STEPS = 12; // physics steps an impulse stays applied: 0.048 s at the 0.004 s timestep
 
 export class Sim {
@@ -22,6 +25,8 @@ export class Sim {
   time = 0;
   /** Which network of the policy drives the creature; reset to 'walk'. Only a policy with a getup block ever leaves 'walk'. */
   mode: Mode = 'walk';
+  /** With no policy: random actions (a brain that has learned nothing) instead of holding the stand pose. */
+  brain: UntrainedBrain | null = null;
   prevAction: number[];
   private kickLeft = 0;
   private kickForce: [number, number, number] = [0, 0, 0];
@@ -47,6 +52,7 @@ export class Sim {
     this.mj.mj_forward(this.model, this.data);
     this.time = 0;
     this.mode = 'walk';
+    this.brain?.reset();
     this.prevAction.fill(0);
     this.kickLeft = 0;
   }
@@ -64,6 +70,28 @@ export class Sim {
     this.kickLeft = KICK_STEPS;
   }
 
+  /**
+   * Set the creature back on its feet where it lies: same place and heading, stand pose, still. Used when a new checkpoint lands on
+   * a creature that is lying down (an early checkpoint has no getup network, so it could not rise); the caller says so out loud.
+   */
+  standUp(): void {
+    const q = this.data.qpos;
+    const yaw = Math.atan2(2 * (q[3] * q[6] + q[4] * q[5]), 1 - 2 * (q[5] * q[5] + q[6] * q[6]));
+    q[2] = this.built.standHeight;
+    q[3] = Math.cos(yaw / 2); q[4] = 0; q[5] = 0; q[6] = Math.sin(yaw / 2);
+    for (let i = 0; i < this.built.standPose.length; i++) { q[7 + i] = this.built.standPose[i]; this.data.ctrl[i] = this.built.standPose[i]; }
+    for (let i = 0; i < this.data.qvel.length; i++) this.data.qvel[i] = 0;
+    this.prevAction.fill(0);
+    this.mode = 'walk';
+    this.mj.mj_forward(this.model, this.data);
+  }
+
+  /** Give this creature the untrained brain, or take it away. Attaching one that is not already attached starts it over from its seed, so a creature built again from the same drawing twitches exactly as the first did. */
+  attachBrain(brain: UntrainedBrain | null): void {
+    if (brain && brain !== this.brain) brain.reset();
+    this.brain = brain;
+  }
+
   /** One policy step (CONTROL_DT): act (or hold the standing pose without a policy), then SUBSTEPS physics steps. */
   step(policy: Policy | null): number[] {
     let action = this.prevAction;
@@ -74,6 +102,9 @@ export class Sim {
       action = r.action;
       this.mode = r.mode;
       for (let i = 0; i < r.targets.length; i++) this.data.ctrl[i] = r.targets[i];
+    } else if (this.brain) {
+      action = this.brain.next(this.built.standPose.length, this.time);
+      for (let i = 0; i < action.length; i++) this.data.ctrl[i] = this.built.standPose[i] + UNTRAINED_SCALE * action[i];
     } else {
       for (let i = 0; i < this.built.standPose.length; i++) this.data.ctrl[i] = this.built.standPose[i];
     }

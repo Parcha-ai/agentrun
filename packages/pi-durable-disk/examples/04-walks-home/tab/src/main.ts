@@ -8,7 +8,10 @@ import { dummyPolicy } from './dummy.ts';
 import { presetForSha } from './bodies.ts';
 import { bodyNotes } from './rules.ts';
 import { Stats } from './stats.ts';
-import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, type ArrivalResult } from './arrival.ts';
+import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
+import { UntrainedBrain } from './untrained.ts';
+import { DraftCommitter } from './draft.ts';
+import { TrainingState } from './training.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
 import { Sketcher } from './sketch.ts';
@@ -23,7 +26,10 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 // parent -> tab: set-placement {kind, label, since}, kick {dir, force_n}, open-memory, load-policy {url}, load-design {design}
 const NS = 'walks-home';
 const post = (type: string, body: Record<string, unknown> = {}) => {
-  if (window.parent !== window) window.parent.postMessage({ ns: NS, type, ...body }, location.origin);
+  if (window.parent === window) return;
+  // A design goes out exactly as it is (the agent saves these numbers and the body's hash depends on them); every other number is rounded.
+  const { design, ...rest } = body;
+  window.parent.postMessage({ ns: NS, type, ...tidy(rest), ...(design !== undefined ? { design } : {}) }, location.origin);
 };
 
 // ---- storage: IndexedDB holds the SQLite bytes when the app runs on its own ------------------------------
@@ -67,8 +73,18 @@ interface App {
   stats: Stats;
   /** Set when the page itself restarts the sim clock, so the stats do not count it as an unexpected reset. */
   expectReset: boolean;
+  /** What the creature's brain is (no trained policy, a live checkpoint, the final policy, a stand-in) and what the file reported. */
+  training: TrainingState;
+  brain: UntrainedBrain;
+  clean: boolean;
+  phase: 'draw' | 'watch';
+  offline: boolean;
+  /** The live rebuild and the delayed save of a sketch, in order. */
+  draft: DraftCommitter;
 }
 
+/** Where a run in progress writes its live checkpoint (D4's agent trains with --work train/gpu). */
+const CHECKPOINT_PATH = 'train/gpu/policy.json';
 const MAX_DRAG_KICK_N = 100;
 const MAX_CATCHUP_S = 0.5;
 const MAX_STEPS_PER_FRAME = Math.round(MAX_CATCHUP_S / CONTROL_DT);
@@ -117,6 +133,27 @@ async function publishBody() {
   await new ParentBackend(windowBus(), 'creature/body.json').write(enc.encode(JSON.stringify({ legs, jointsPerLeg, jointNames, standPose, standHeight, mjcf_sha256: app.bodySha }, null, 1) + '\n'));
 }
 
+/** The label on the creature, in plain words: "untrained", "learning: checkpoint N", "trained". */
+function updateLabel() {
+  const el = $('stateLabel');
+  el.dataset.state = app.training.state;
+  el.textContent = app.training.label(app.policyName);
+}
+
+/** With no policy and no demo stand-in the creature has a brain that has learned nothing: random actions, from the seed each time one is attached. */
+function syncBrain() {
+  app.sim.attachBrain(!app.policy && app.training.state === 'untrained' ? app.brain : null);
+}
+
+/** The policy is gone or was never trained: the label, the facts and the final flag go with it. */
+function clearPolicyState(state: 'untrained' | 'dummy', reason = 'no trained policy installed') {
+  const was = app.training.state;
+  app.training.clear(state);
+  updateLabel();
+  syncBrain();
+  if (state === 'untrained' && was !== 'untrained') post('untrained', { reason });
+}
+
 /** Save the body to designs.sqlite; when another machine holds the run, ask the agent to save it instead. */
 async function saveDesign(design: Design) {
   try {
@@ -130,7 +167,7 @@ async function saveDesign(design: Design) {
   }
 }
 
-async function buildCreature(design: Design, keepPolicy: boolean) {
+async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?: boolean } = {}) {
   const errs = validateDesign(design);
   if (errs.length) { showError(errs.join('\n')); return; }
   showError('');
@@ -142,16 +179,20 @@ async function buildCreature(design: Design, keepPolicy: boolean) {
   // body with an observation read past its arrays (NaN, and a creature that never recovers).
   const droppedPolicy = !!app.policy && app.policy.file.mjcf_sha256 !== app.bodySha;
   if (droppedPolicy) setPolicy(null, app.policyName === 'dummy trot' ? 'dummy trot' : 'none');
+  closeArrival(); // a walk measurement belongs to one body: close it before this one's simulation replaces the clock and the place it samples
   app.built = built;
   app.sim = new Sim(app.mj, built);
   app.view.setSim(app.sim);
   app.fallen = false; app.recovering = null; app.lastMode = 'walk'; app.expectReset = true;
-  await saveDesign(design);
+  syncBrain(); // a new body with no policy gets the untrained brain at once
+  if (opts.save !== false) await saveDesign(design);
   // The dummy is generated from the body, so it is rebuilt for the new one.
   if (app.policyName === 'dummy trot') {
     await useDummy();
-  } else if (keepPolicy && droppedPolicy) {
-    showError('The loaded policy was trained for another body, so it was removed. Load one for this body.');
+  } else if (droppedPolicy) {
+    // the body it was trained for is gone: this body has no trained policy, whatever the label said
+    clearPolicyState('untrained', 'the loaded policy was trained for another body');
+    if (keepPolicy) showError('The loaded policy was trained for another body, so it was removed. Load one for this body.');
   }
   applyCommand();
   renderPairs();
@@ -175,11 +216,13 @@ function setPolicy(p: Policy | null, name: string) {
   app.policyName = name;
   $('policyName').textContent = name;
   applyCommand();
+  syncBrain();
 }
 
 async function useDummy() {
   const file = dummyPolicy({ mjcfSha256: app.bodySha, mujocoVersion: app.mujocoVersion, nj: app.built.jointNames.length, jointsPerLeg: app.built.jointsPerLeg });
   setPolicy(await Policy.load(file, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion }), 'dummy trot');
+  clearPolicyState('dummy');
   post('policy-loaded', { name: 'dummy trot', mjcf_sha256: app.bodySha, bytes: JSON.stringify(file).length });
 }
 
@@ -197,7 +240,11 @@ async function loadPolicyText(text: string, name: string) {
       }
     }
     const p = await Policy.load(text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
+    closeArrival();
     setPolicy(p, name);
+    app.training.clear('untrained'); // a policy loaded by hand carries no run: no checkpoint number, steps or final flag
+    app.training.state = 'trained';
+    updateLabel();
     app.sim.reset();
     app.expectReset = true;
     app.fallen = false; app.recovering = null; app.lastMode = 'walk';
@@ -217,13 +264,15 @@ async function loadPolicyText(text: string, name: string) {
  * against the body, switch body if it names another preset, hot-swap it into the running creature (no reset), say where
  * it came from using only what the file records, and time how long the creature takes to walk with it.
  */
-async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json') {
+async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json', kind: 'checkpoint' | 'final' = 'final') {
   const arrivedAt = performance.now();
+  // the training file stays on the disk after the run is home: once the final policy is in, a checkpoint is stale and is ignored
+  if (kind === 'checkpoint' && !app.training.acceptCheckpoint()) return;
   // the same file announced twice (the stage's load-policy and the watcher) is one arrival
   if (!arrivalDedupe.accept(await sha256Hex(text), arrivedAt)) return;
   const refuse = (reason: string) => {
     showError(`Policy refused: ${reason}`);
-    post('policy-refused', { name, reason, via });
+    post('policy-refused', { name, reason, via, kind });
   };
   const plan = await planArrival(text, app.bodySha, presetForSha);
   if (plan.action === 'refuse') return refuse(plan.reason);
@@ -237,19 +286,40 @@ async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'p
   } catch (e) {
     return refuse(e instanceof PolicyRefused ? e.message : String(e));
   }
+  if (kind === 'checkpoint' && !app.training.acceptCheckpoint()) return; // the final landed while this one was being read: it wins
   showError('');
-  setPolicy(policy, name); // no sim.reset(): the creature that was standing starts walking
+  const facts = provenanceFacts(JSON.parse(text));
+  // The measurement of the previous install ends here if it was still running: report the simulated seconds it really ran.
+  closeArrival();
+  // An early checkpoint has no getup network, so a creature lying down cannot rise by itself: set it back on its feet, and say so.
+  let standUp = false;
+  if (!policy.hasGetup && app.sim.uprightness() < 0.3) {
+    app.sim.standUp();
+    standUp = true;
+    post('stood-up', { reason: kind, t: app.sim.time });
+  }
+  setPolicy(policy, name); // no sim.reset(): a creature that is up keeps going with the new policy
+  app.training.install(kind, facts);
+  updateLabel();
   app.fallen = false; app.recovering = null;
   const installedAt = performance.now();
   const meta = plan.meta;
-  const message = describeArrival(meta);
+  const message = kind === 'checkpoint'
+    ? `checkpoint ${app.training.checkpointN}${facts.steps !== null ? `, ${(facts.steps / 1e6).toFixed(1)}M steps` : ''}${standUp ? ' (set back on its feet)' : ''}`
+    : describeArrival(meta);
   toast(message);
   app.arrival = { tracker: new ArrivalTracker({ arrivedAtMs: arrivedAt, installedAtMs: installedAt, command: app.sim.command }), simT0: app.sim.time, name };
   app.lastArrival = null;
-  post('policy-arrived', {
-    name, via, message, host: meta.host, training_seconds: meta.trainingSeconds, mjcf_sha256: policy.file.mjcf_sha256,
-    switched_body: plan.action === 'switch-body' ? plan.preset.name : null, arrival_to_installed_ms: Math.round(installedAt - arrivedAt), bytes: text.length,
-  });
+  const fields = {
+    name, via, kind, message, host: meta.host, training_seconds: meta.trainingSeconds, mjcf_sha256: policy.file.mjcf_sha256,
+    checkpoint_n: app.training.checkpointN, steps: facts.steps, wall_s: facts.wallS, reported_walk_10s_m: facts.reportedWalk10sM,
+    switched_body: plan.action === 'switch-body' ? plan.preset.name : null, stood_up: standUp,
+    arrival_to_installed_ms: Math.round(installedAt - arrivedAt), bytes: text.length,
+  };
+  post('policy-arrived', fields);
+  if (kind === 'checkpoint') post('checkpoint-installed', fields);
+  // the draw phase ends when the first policy comes: the creature fills the pane
+  if (app.clean && app.phase === 'draw') await setPhase('watch');
 }
 
 /** Fetch a policy file and load it; a missing file (the run is not home yet) is a refusal, not a broken tab. */
@@ -355,12 +425,48 @@ function hud() {
   $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}${modeLine}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
 }
 
+async function setPhase(phase: 'draw' | 'watch') {
+  if (phase === 'watch' && app.phase === 'draw') await app.draft.commit(); // leaving the sketch: what was drawn goes to the disk first
+  app.phase = phase;
+  document.body.classList.toggle('phase-draw', phase === 'draw');
+  document.body.classList.toggle('phase-watch', phase === 'watch');
+  post('phase', { phase });
+}
+
+/** Apply a design as if it had been drawn: sketcher, creature, and the files on the disk. Returns the body's mjcf_sha256. */
+async function applyDesign(design: Design): Promise<string> {
+  app.sketcher.set(design);
+  await buildCreature(structuredClone(design), true, { save: true });
+  return app.bodySha;
+}
+
+function pageState() {
+  return tidy({
+    state: app.training.state, checkpoint_n: app.training.checkpointN, steps: app.training.steps, wall_s: app.training.wallS,
+    reported_walk_10s_m: app.training.reportedWalkM, final: app.training.final, offline: app.offline, mode: app.sim.mode, phase: app.phase,
+    mjcf_sha256: app.bodySha, policy: app.policyName,
+  });
+}
+
 /** The creature went down (the getup net took over) or is back on its feet (walking took over). */
 function announceMode() {
   app.lastMode = app.sim.mode;
   if (app.sim.mode === 'getup') app.stats.c.getups++;
   post('mode-changed', { mode: app.sim.mode, t: app.sim.time, up: app.sim.uprightness() });
   toast(app.sim.mode === 'getup' ? 'down: the getup network is driving' : 'back on its feet: walking');
+}
+
+/** policy-walked for one install: the full window, or `partial` when the next install cut it short. */
+function postWalked(a: NonNullable<App['arrival']>, r: ArrivalResult) {
+  post('policy-walked', walkedFields(a.name, r));
+}
+
+/** End the walk measurement that is running, if any, over the simulated seconds it really ran (partial). Done before anything that replaces the simulation's clock or place. */
+function closeArrival() {
+  if (!app.arrival) return;
+  app.arrival.tracker.finalize();
+  postWalked(app.arrival, app.arrival.tracker.result());
+  app.arrival = null;
 }
 
 function sampleArrival() {
@@ -370,11 +476,7 @@ function sampleArrival() {
   const r = a.tracker.result();
   app.lastArrival = r;
   if (r.done) {
-    post('policy-walked', {
-      name: a.name, arrival_to_installed_ms: Math.round(r.arrivalToInstalledMs),
-      arrival_to_walking_ms: r.arrivalToWalkingMs === null ? null : Math.round(r.arrivalToWalkingMs),
-      sim_seconds_to_walking: r.simSecondsToWalking, mean_speed: r.meanSpeed, window_seconds: r.windowSeconds, fell: r.fell,
-    });
+    postWalked(a, r);
     app.arrival = null;
   }
 }
@@ -435,20 +537,39 @@ async function main() {
     if (storageMode === 'disk') policyBackend = new ParentBackend(windowBus(), HOME_POLICY_PATH);
     $('storage').textContent = storageMode === 'disk' ? 'memory: creature/*.sqlite on the disk' : 'memory: this browser only (not on the disk)';
     const store = await CreatureStore.open(sql, backends, { memoryWritable: storageMode === 'browser' });
-    const design = store.designs()[0]?.design ?? defaultDesign();
+    const params = new URLSearchParams(location.search);
+    const clean = params.has('clean');
+    const phase: 'draw' | 'watch' = params.get('phase') === 'watch' ? 'watch' : 'draw';
+    document.body.classList.toggle('clean', clean);
+    document.body.classList.add(`phase-${phase}`);
+    // The take starts from the default body (clean mode ignores earlier designs kept in this browser): the user draws from there.
+    const design = (clean ? undefined : store.designs()[0]?.design) ?? defaultDesign();
     const built = buildMjcf(design);
-    const sketcher = new Sketcher($('sketch') as HTMLCanvasElement, design, (d) => { renderPairs(); pendingDesign = d; });
+    const sketcher = new Sketcher($('sketch') as HTMLCanvasElement, design, (d) => { renderPairs(); pendingDesign = d; if (app?.clean && app.phase === 'draw') app.draft.edit(); });
     let pendingDesign: Design | null = null;
     app = {
       mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement, { lite: new URLSearchParams(location.search).has('lite') }), sketcher, store, storageMode,
       sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml), world: null,
-      policy: null, policyName: 'dummy trot', running: true, acc: 0, last: performance.now(),
+      policy: null, policyName: 'untrained', running: true, acc: 0, last: performance.now(),
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
+      training: new TrainingState(),
+      brain: new UntrainedBrain(), clean, phase, offline: !navigator.onLine,
+      draft: new DraftCommitter({
+        build: (save) => buildCreature(app.sketcher.get(), true, { save }),
+        save: () => saveDesign(app.sketcher.get()),
+        onError: (e) => showError(String(e)),
+      }),
     };
     app.view.setSim(app.sim);
-    await useDummy(); // also applies the slider's command to the sim
-    await saveDesign(design); // the first body is a body too: the memory view lists it
+    if (clean) app.view.setPreset('close');
+    if (params.has('dummy')) await useDummy(); // the old demo stand-in, opt in only: the creature is untrained unless a trained policy arrives
+    else { applyCommand(); syncBrain(); } // no policy yet: the untrained brain from the first frame
+    updateLabel();
+    // The first body is a body too (the memory view lists it); in clean mode it is the user's drawing that gets saved, not this one.
+    if (!clean) await saveDesign(design);
     renderPairs();
+    document.body.classList.toggle('offline', app.offline);
+    $('offlineBadge').hidden = !app.offline;
     setPlacement('tab', 'this tab');
 
     for (const [name, preset] of Object.entries(PRESETS)) {
@@ -466,13 +587,13 @@ async function main() {
     };
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
-    $('reset').onclick = () => { app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
+    $('reset').onclick = () => { closeArrival(); app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
     app.sketcher.onClamp = (m) => { clampMessages = m; };
     $('legDof').onchange = (e) => app.sketcher.setLegDof((e.target as HTMLInputElement).checked ? 3 : 2);
     $('addPair').onclick = () => app.sketcher.addPair();
     $('removePair').onclick = () => app.sketcher.removePair();
     $('useDummy').onclick = () => useDummy();
-    $('noPolicy').onclick = () => { setPolicy(null, 'stand only'); };
+    $('noPolicy').onclick = () => { closeArrival(); setPolicy(null, 'stand only'); clearPolicyState('dummy'); };
     $('pickPolicy').onclick = () => $('policyFile').click();
     $('policyFile').onchange = async (e) => {
       const f = (e.target as HTMLInputElement).files?.[0];
@@ -529,22 +650,42 @@ async function main() {
         else if (m.type === 'kick') kick(m.dir?.[0] ?? 0, m.dir?.[1] ?? 1, m.force_n ?? 60);
         else if (m.type === 'open-memory') await renderMemory();
         else if (m.type === 'load-policy') await loadPolicyUrl(String(m.url));
+        else if (m.type === 'commit-design') await app.draft.commit();
         else if (m.type === 'load-world') { app.world = m.world ?? null; await buildCreature(app.sketcher.get(), true); toast(app.world ? 'terrain loaded' : 'flat ground'); }
+        else if (m.type === 'set-phase') await setPhase(m.phase === 'draw' ? 'draw' : 'watch');
         else if (m.type === 'load-design') { app.sketcher.set(m.design); await buildCreature(m.design, true); }
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, stats: () => app.stats.snapshot(), resetSim: () => { app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kick, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
+    (window as any).__walks = { get app() { return app; }, state: pageState, commitDesign: () => app.draft.commit(), applyDesign, setPhase,
+      // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
+      kick: (a: number | number[], b: number, c?: number) => (Array.isArray(a) ? kick(a[0], a[1], b) : kick(a, b, c ?? 60)), stats: () => app.stats.snapshot(), resetSim: () => { closeArrival(); app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';
     post('ready', { version: 1, mujoco: mujocoVersion, mjcf_sha256: app.bodySha });
+    if (app.training.state === 'untrained') post('untrained', { reason: 'no trained policy installed: random actions' });
+    // The browser's own word on the network (CDP offline emulation fires these too). Nothing in the tab needs the network once a
+    // policy is installed; only the watchers' disk reads fail, and they fail quietly.
+    const onNetwork = () => {
+      app.offline = !navigator.onLine;
+      $('offlineBadge').hidden = !app.offline;
+      document.body.classList.toggle('offline', app.offline);
+      post('network', { online: !app.offline });
+    };
+    window.addEventListener('offline', onNetwork);
+    window.addEventListener('online', onNetwork);
     // A trained policy landing in work/home/policy.json is noticed by polling at 1 Hz behind PolicySource, so a change feed
     // or a GET endpoint can replace the parent's storage later without touching the rest.
     if (policyBackend) {
-      new PolicyWatcher(parentPolicySource(policyBackend), {
+      let warned = false;
+      const quiet = (what: string) => (e: unknown) => { if (!warned) { warned = true; console.warn(`${what}: ${e} (further failures are not logged until it reads again)`); } };
+      const watch = (path: string, kind: 'checkpoint' | 'final') => new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), path)), {
         sha256: sha256Hex, intervalMs: 1000,
-        onFile: (text) => onPolicyArrived(text, 'watch', 'home/policy.json'),
-        onError: (e) => console.warn('policy watch:', e),
+        onFile: (text) => { warned = false; return onPolicyArrived(text, 'watch', path, kind); },
+        onError: quiet(`policy watch ${path}`),
       }).start();
+      // the finished policy, and the live checkpoints of a run in progress (written by rename, one file per checkpoint)
+      watch(HOME_POLICY_PATH, 'final');
+      watch(params.get('checkpoints') ?? CHECKPOINT_PATH, 'checkpoint');
     }
     requestAnimationFrame((t) => { app.last = t; tick(t); });
   } catch (e) {
