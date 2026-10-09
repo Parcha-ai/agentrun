@@ -1,0 +1,23 @@
+{
+  "name": "pi-durable-disk-example-show",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The stage for 'It Walks Home': a multiverse panel, kill button, cost meter and machine timeline over a ShowState feed, with a scripted fake feed for rehearsal and recording.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node page/build.mjs",
+    "serve": "node serve.ts",
+    "test": "node --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "@types/ws": "^8.18.1",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "ws": "^8.21.3"
+  }
+}

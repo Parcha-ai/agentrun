@@ -1,0 +1,162 @@
+// The stage's server: the built page, D3's tab app at /tab/ (same origin, so the iframe can postMessage freely), and the
+// feed at /api/*. The feed is the scripted player unless SHOW_API names a live one, which is proxied untouched.
+// Every response carries COOP/COEP/CORP: Wasmer and MuJoCo WASM need cross-origin isolation, and an iframe document must
+// itself satisfy the parent's COEP, so the headers are set on the tab app's files too.
+//   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
+//   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { extname, join, normalize, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ScenarioPlayer } from "./scenario.ts";
+import type { ShowCommand } from "./types.ts";
+
+const here = fileURLToPath(new URL(".", import.meta.url));
+const PAGE = join(here, "page", "dist");
+const STUB = join(here, "page", "stub-tab");
+const TAB = process.env.TAB_DIR ? resolve(process.env.TAB_DIR) : STUB;
+const POLICY = process.env.POLICY_DIR ? resolve(process.env.POLICY_DIR) : join(here, "page", "policy");
+const UPSTREAM = process.env.SHOW_API?.replace(/\/$/, "");
+const SPEED = Number(process.env.SHOW_SPEED ?? 1);
+const START = Number(process.env.SHOW_START ?? 0);
+const autoKill = process.env.SHOW_AUTOKILL === "off" ? null : process.env.SHOW_AUTOKILL ? Number(process.env.SHOW_AUTOKILL) : undefined;
+
+const TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".map": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".webc": "application/octet-stream",
+  ".onnx": "application/octet-stream",
+  ".bin": "application/octet-stream",
+};
+
+function isolate(res: ServerResponse): void {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("Cache-Control", "no-store");
+}
+
+function sendJson(res: ServerResponse, code: number, body: unknown): void {
+  res.statusCode = code;
+  res.setHeader("content-type", TYPES[".json"]);
+  res.end(JSON.stringify(body));
+}
+
+function serveFile(root: string, rel: string, res: ServerResponse): void {
+  const file = normalize(join(root, rel === "" || rel.endsWith("/") ? `${rel}index.html` : rel));
+  // The resolved path must stay inside the root: `..` segments and absolute-looking requests end here.
+  if (file !== root && !file.startsWith(root + sep)) return void sendJson(res, 403, { error: "outside root" });
+  if (!existsSync(file) || !statSync(file).isFile()) return void sendJson(res, 404, { error: "not found", path: rel });
+  res.setHeader("content-type", TYPES[extname(file)] ?? "application/octet-stream");
+  res.setHeader("content-length", statSync(file).size);
+  createReadStream(file).pipe(res);
+}
+
+async function body(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > 64_000) throw new Error("body too large");
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+const clients = new Set<ServerResponse>();
+let player = newPlayer();
+
+function newPlayer(): ScenarioPlayer {
+  const p = new ScenarioPlayer({ autoKillAfter: autoKill });
+  p.subscribe((event) => {
+    const id = p.events.length - 1;
+    for (const c of clients) c.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
+  });
+  // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
+  p.begin();
+  if (START > 0) p.advance(START * 1000);
+  p.start(SPEED);
+  return p;
+}
+
+async function proxy(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  const init: RequestInit = { method: req.method, headers: { accept: String(req.headers.accept ?? "*/*") } };
+  if (req.method === "POST") {
+    init.body = await body(req);
+    (init.headers as Record<string, string>)["content-type"] = "application/json";
+  }
+  const lastId = req.headers["last-event-id"];
+  if (typeof lastId === "string") (init.headers as Record<string, string>)["last-event-id"] = lastId;
+  const upstream = await fetch(`${UPSTREAM}${path}`, init);
+  res.statusCode = upstream.status;
+  res.setHeader("content-type", upstream.headers.get("content-type") ?? "application/json");
+  if (!upstream.body) return void res.end();
+  const reader = upstream.body.getReader();
+  req.on("close", () => void reader.cancel());
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    res.write(value);
+  }
+  res.end();
+}
+
+const server = createServer(async (req, res) => {
+  isolate(res);
+  const url = new URL(req.url ?? "/", "http://x");
+  const path = url.pathname;
+  try {
+    if (path.startsWith("/api/")) {
+      if (UPSTREAM) return await proxy(req, res, path + url.search);
+      if (path === "/api/state" && req.method === "GET") {
+        res.setHeader("x-last-event-id", String(player.events.length - 1));
+        return sendJson(res, 200, player.state);
+      }
+      if (path === "/api/events" && req.method === "GET") {
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "Cross-Origin-Resource-Policy": "same-origin" });
+        // Replay what the page's snapshot missed: `?after=N` or Last-Event-ID, the index of the last event it has.
+        // A reconnect carries Last-Event-ID, which is newer than the `after` the first request was made with, so it wins.
+        const after = Number(req.headers["last-event-id"] ?? url.searchParams.get("after") ?? player.events.length - 1);
+        for (let i = after + 1; i < player.events.length; i++) res.write(`id: ${i}\ndata: ${JSON.stringify(player.events[i])}\n\n`);
+        clients.add(res);
+        req.on("close", () => clients.delete(res));
+        return;
+      }
+      if (path === "/api/command" && req.method === "POST") {
+        const cmd = JSON.parse(await body(req)) as ShowCommand;
+        if (cmd.t === "reset") {
+          player.stop();
+          player = newPlayer();
+          for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
+          return sendJson(res, 200, { ok: true });
+        }
+        const r = player.command(cmd);
+        return sendJson(res, r.ok ? 200 : 409, r);
+      }
+      return sendJson(res, 404, { error: "no such route", path });
+    }
+    if (path === "/tab") {
+      res.statusCode = 301;
+      res.setHeader("location", "/tab/");
+      return void res.end();
+    }
+    if (path.startsWith("/tab/")) return serveFile(TAB, decodeURIComponent(path.slice(5)), res);
+    if (path.startsWith("/policy/")) return serveFile(POLICY, decodeURIComponent(path.slice(8)), res);
+    return serveFile(PAGE, decodeURIComponent(path.slice(1)), res);
+  } catch (error) {
+    sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+const port = Number(process.env.SHOW_PORT ?? 8750);
+const host = process.env.SHOW_HOST ?? "127.0.0.1";
+server.listen(port, host, () => {
+  console.log(`show: http://${host}:${port}/  feed=${UPSTREAM ?? "scripted"}  tab=${TAB === STUB ? "stub" : TAB}`);
+});

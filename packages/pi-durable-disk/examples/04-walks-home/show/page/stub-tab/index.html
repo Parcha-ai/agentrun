@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tab stub</title>
+<style>
+body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #101614; color: #cfe8dc; display: grid; place-items: center; height: 100vh; }
+.card { border: 1px solid #2a3a33; border-radius: 12px; padding: 24px 28px; max-width: 420px; }
+h1 { font-size: 15px; margin: 0 0 8px; letter-spacing: .04em; text-transform: uppercase; color: #6fe3a6; }
+#where { font: 600 18px ui-monospace, monospace; margin: 8px 0 14px; }
+#log { font: 12px ui-monospace, monospace; color: #8aa89a; white-space: pre-wrap; max-height: 180px; overflow: auto; }
+</style></head>
+<body><div class="card"><h1>Tab app stub</h1>
+<div>This stands in for the creature tab until D3's build is mounted with TAB_DIR. It speaks the same postMessage protocol.</div>
+<div id="where">waiting for a placement</div>
+<div>cross-origin isolated: <b id="iso"></b></div>
+<pre id="log"></pre></div>
+<script>
+const NS = "walks-home";
+const log = (s) => { const el = document.getElementById("log"); el.textContent += s + "\n"; el.scrollTop = el.scrollHeight; };
+document.getElementById("iso").textContent = String(self.crossOriginIsolated);
+const send = (m) => parent.postMessage({ ns: NS, ...m }, location.origin);
+addEventListener("message", (e) => {
+  if (e.origin !== location.origin || !e.data || e.data.ns !== NS) return;
+  const m = e.data;
+  log("<- " + m.type + (m.label ? " " + m.label : ""));
+  if (m.type === "set-placement") document.getElementById("where").textContent = "running in " + m.label;
+  if (m.type === "kick") send({ type: "kicked", force_n: m.force_n, t: performance.now() }), setTimeout(() => send({ type: "fell", t: performance.now() }), 200), setTimeout(() => send({ type: "stood", t: performance.now() }), 1400);
+  if (m.type === "open-memory") send({ type: "memory-opened", rows: 5 });
+  if (m.type === "load-policy") send({ type: "policy-loaded", name: m.url, mjcf_sha256: "stub", bytes: 0 });
+});
+send({ type: "ready", version: "stub" });
+</script></body></html>
