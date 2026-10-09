@@ -10,7 +10,7 @@ import { openApp, sleep, syntheticTwoNetPolicy } from './_cdp.mjs';
 const throttle = Number(process.env.THROTTLE ?? 4);
 const width = Number(process.env.W ?? 700), height = Number(process.env.H ?? 500);
 const phaseS = Number(process.env.PHASE_S ?? 15);
-const app = await openApp({ throttle, width, height, query: process.env.LITE ? '?lite=1' : '' });
+const app = await openApp({ throttle, width, height, query: process.env.LITE ? '?dummy=1&lite=1' : '?dummy=1' });
 const { ev } = app;
 // STALL_MS=150: block the page's main thread for that long every 2 s, as a busy machine or a GC does, to see whether the simulation drifts behind real time
 if (process.env.STALL_MS) await ev(`setInterval(() => { const t = performance.now(); while (performance.now() - t < ${Number(process.env.STALL_MS)}); }, 2000)`);

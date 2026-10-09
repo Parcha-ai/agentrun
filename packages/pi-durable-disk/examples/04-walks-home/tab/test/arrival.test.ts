@@ -271,3 +271,50 @@ test('the same content announced twice within the window is one arrival; later, 
   assert.equal(d.accept('a', 9100), true, 'it changed back: a new arrival');
   assert.equal(d.accept('a', 17200), true, 'the same file again after the window (a retake)');
 });
+
+// ---- steps, time and the trainer's checkpoint number from the file ----------------------------------------------------------
+
+import { provenanceFacts } from '../src/arrival.ts';
+
+test('provenanceFacts reads a plain file, a combined file, and returns null for anything absent or odd', () => {
+  assert.deepEqual(provenanceFacts({ provenance: { steps: 2097152, wall_s: 71.3, checkpoint: 3, walk_10s: { distance_m: 2.1 } } }), { steps: 2097152, wallS: 71.3, checkpoint: 3, reportedWalk10sM: 2.1 });
+  assert.deepEqual(provenanceFacts({ provenance: { walk: { steps: 15728640, wall_s: 59.8, walk_10s: { distance_m: 4.72 } }, getup: { steps: 203489280, wall_s: 354.8 } } }), { steps: 15728640, wallS: 59.8, checkpoint: null, reportedWalk10sM: 4.72 });
+  const none = { steps: null, wallS: null, checkpoint: null, reportedWalk10sM: null };
+  for (const f of [{}, { provenance: null }, { provenance: [] }, null, 'x', { provenance: { steps: '9', wall_s: -1, checkpoint: 1.5, walk_10s: { distance_m: NaN } } }]) {
+    assert.deepEqual(provenanceFacts(f), none, JSON.stringify(f));
+  }
+  assert.equal(provenanceFacts({ provenance: { checkpoint: 0 } }).checkpoint, 0, 'checkpoint 0 is a number');
+});
+
+test('a measurement cut short by the next install reports the simulated seconds it really ran, marked partial', () => {
+  const tr = new ArrivalTracker({ arrivedAtMs: 0, installedAtMs: 0, command: 0.5 });
+  for (let i = 0; i <= 150; i++) tr.sample(i * 0.02, 0.4 * i * 0.02, 0, 1, i * 20); // 3 s at 0.4 m/s
+  assert.equal(tr.result().done, false);
+  tr.finalize();
+  const r = tr.result();
+  assert.equal(r.done, true);
+  assert.equal(r.partial, true);
+  assert.ok(Math.abs(r.windowSeconds - 3) < 1e-9);
+  assert.ok(Math.abs(r.meanSpeed! - 0.4) < 1e-9);
+  tr.sample(3.02, 100, 0, 1, 99999); // after finalize: ignored? it must not change the cut result
+  const again = tr.result();
+  assert.equal(again.windowSeconds, r.windowSeconds);
+  tr.finalize(); // idempotent
+  assert.deepEqual(tr.result(), again);
+});
+
+test('a tracker that finished its window is not partial, and finalizing it changes nothing; one with no samples closes with no speed', () => {
+  const tr = new ArrivalTracker({ arrivedAtMs: 0, installedAtMs: 0, command: 0.5 });
+  for (let i = 0; i <= 500; i++) tr.sample(i * 0.02, 0.5 * i * 0.02, 0, 1, i * 20);
+  const done = tr.result();
+  assert.equal(done.partial, false);
+  tr.finalize();
+  assert.deepEqual(tr.result(), done);
+  const empty = new ArrivalTracker({ arrivedAtMs: 0, installedAtMs: 0, command: 0.5 });
+  empty.finalize();
+  const r = empty.result();
+  assert.equal(r.done, true);
+  assert.equal(r.partial, true);
+  assert.equal(r.meanSpeed, null);
+  assert.equal(r.windowSeconds, 0);
+});

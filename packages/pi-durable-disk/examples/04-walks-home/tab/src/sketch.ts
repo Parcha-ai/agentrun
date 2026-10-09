@@ -4,7 +4,8 @@
 import { LIMITS, type Design, type LegPair } from './design.ts';
 import { clampDesign } from './rules.ts';
 
-const PX = 200; // pixels per metre
+/** Pixels per metre follows the canvas, so the creature fills a big sketch pane and a small drawer alike. */
+const pxPerMetre = (c: HTMLCanvasElement) => Math.max(140, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / 1.6)); // pixels per metre
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
 type Handle =
@@ -13,6 +14,8 @@ type Handle =
 
 export class Sketcher {
   private design: Design;
+  /** Pixels per metre, from the canvas size (a big sketch pane draws a big creature). */
+  private get px(): number { return pxPerMetre(this.canvas); }
   private drag: Handle | null = null;
   private hover: Handle | null = null;
   private readonly ctx: CanvasRenderingContext2D;
@@ -70,7 +73,7 @@ export class Sketcher {
   private pos(e: PointerEvent): [number, number] {
     const r = this.canvas.getBoundingClientRect();
     // canvas centre is the torso centre; +x (nose) points right, +y (left side) points up
-    return [(e.clientX - r.left - r.width / 2) / PX, -(e.clientY - r.top - r.height / 2) / PX];
+    return [(e.clientX - r.left - r.width / 2) / this.px, -(e.clientY - r.top - r.height / 2) / this.px];
   }
 
   private handles(): { h: Handle; x: number; y: number }[] {
@@ -87,7 +90,7 @@ export class Sketcher {
   }
 
   private hit(x: number, y: number): Handle | null {
-    let best: Handle | null = null, bd = (14 / PX) ** 2;
+    let best: Handle | null = null, bd = (14 / this.px) ** 2;
     for (const c of this.handles()) {
       const d = (c.x - x) ** 2 + (c.y - y) ** 2;
       if (d < bd) { bd = d; best = c.h; }
@@ -133,9 +136,9 @@ export class Sketcher {
     ctx.clearRect(0, 0, w, h);
     ctx.save();
     ctx.translate(w / 2, h / 2);
-    ctx.scale(PX, -PX); // metres, y up
+    ctx.scale(this.px, -this.px); // metres, y up
     const { torso, legs } = this.design;
-    const lw = 1 / PX;
+    const lw = 1 / this.px;
     ctx.lineCap = 'round';
     for (const l of legs) {
       const x = (l.x * torso.length) / 2;
@@ -153,13 +156,13 @@ export class Sketcher {
     // handles in pixels
     for (const hd of this.handles()) {
       const active = this.drag === hd.h || (this.hover && sameHandle(this.hover, hd.h));
-      const px = w / 2 + hd.x * PX, py = h / 2 - hd.y * PX;
+      const px = w / 2 + hd.x * this.px, py = h / 2 - hd.y * this.px;
       ctx.beginPath(); ctx.arc(px, py, active ? 8 : 6, 0, Math.PI * 2);
       ctx.fillStyle = hd.h.kind === 'leg' ? '#2d5fb3' : hd.h.kind === 'hip' ? '#1f7a4d' : '#8a5a00';
       ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
     }
     ctx.fillStyle = '#6b6a65'; ctx.font = '12px ui-sans-serif, system-ui';
-    ctx.fillText('nose', w / 2 + torso.length * PX / 2 + 10, h / 2 + 4);
+    ctx.fillText('nose', w / 2 + torso.length * this.px / 2 + 10, h / 2 + 4);
   }
 }
 

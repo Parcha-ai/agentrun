@@ -46,6 +46,33 @@ export function arrivalMeta(file: unknown): ArrivalMeta {
   return { host: hostOf(prov), trainingSeconds: secondsOf(prov) };
 }
 
+export interface ProvenanceFacts {
+  /** Training steps the file says it was trained for; null when it does not say. A combined file's walking network. */
+  steps: number | null;
+  /** Training wall seconds the file records; null when it does not say. */
+  wallS: number | null;
+  /** The trainer's own checkpoint number (provenance.checkpoint); null when absent, in which case the tab counts installs. */
+  checkpoint: number | null;
+  /** The trainer's own 10 s walk score in metres (provenance.walk_10s.distance_m), REPORTED by the file, not measured here. */
+  reportedWalk10sM: number | null;
+}
+
+const countOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+
+/** Steps, training time, checkpoint number and the trainer's own walk score, from a plain or a combined (nested) provenance. */
+export function provenanceFacts(file: unknown): ProvenanceFacts {
+  const prov = asRecord(asRecord(file)?.provenance);
+  const src = asRecord(prov?.walk) ?? prov; // a combined file keeps the walking network's record under `walk`
+  const walk10 = asRecord(src?.walk_10s);
+  const cp = countOf(src?.checkpoint);
+  return {
+    steps: countOf(src?.steps),
+    wallS: countOf(src?.wall_s),
+    checkpoint: cp !== null && Number.isInteger(cp) ? cp : null,
+    reportedWalk10sM: countOf(walk10?.distance_m),
+  };
+}
+
 const fmtSeconds = (s: number) => (s < 10 ? s.toFixed(1) : String(Math.round(s)));
 
 /** The toast: both facts when the file has them, otherwise what is missing, never a guess. */
@@ -223,7 +250,10 @@ export interface ArrivalResult {
   simSecondsToWalking: number | null;
   /** Horizontal distance over the simulated window after install, divided by the window; null until the window has run. */
   meanSpeed: number | null;
+  /** The simulated seconds the mean speed covers: the full window, or less when the next install cut it short. */
   windowSeconds: number;
+  /** True when a newer install ended the measurement before the window was up. */
+  partial: boolean;
   fell: boolean;
   done: boolean;
 }
@@ -239,6 +269,7 @@ export class ArrivalTracker {
   private walkingSim: number | null = null;
   private fell = false;
   private mean: number | null = null;
+  private cutAt: number | null = null; // simulated seconds of the measurement when it was cut short
 
   constructor(opts: { arrivedAtMs: number; installedAtMs: number; command: number; windowSeconds?: number }) {
     this.arrivedAtMs = opts.arrivedAtMs;
@@ -249,7 +280,7 @@ export class ArrivalTracker {
 
   /** `t` is simulated seconds since install (0 at the install), `up` the torso uprightness. */
   sample(t: number, x: number, y: number, up: number, nowMs: number): void {
-    if (this.mean !== null) return;
+    if (this.mean !== null || this.cutAt !== null) return;
     this.samples.push({ t, x, y });
     if (up < 0.3) this.fell = true;
     if (this.walkingAtMs === null && this.command > 0) {
@@ -266,15 +297,28 @@ export class ArrivalTracker {
     }
   }
 
+  /**
+   * A newer policy replaced this one before the window was up: close the measurement over the simulated seconds it really ran
+   * (mean speed over that span), marked partial. Nothing is extrapolated. No-op when it already finished.
+   */
+  finalize(): void {
+    if (this.mean !== null || this.cutAt !== null) return;
+    const first = this.samples[0], last = this.samples[this.samples.length - 1];
+    const span = first && last ? last.t - first.t : 0;
+    this.cutAt = span;
+    this.mean = span > 0 ? Math.hypot(last.x - first.x, last.y - first.y) / span : null;
+  }
+
   result(): ArrivalResult {
     return {
       arrivalToInstalledMs: this.installedAtMs - this.arrivedAtMs,
       arrivalToWalkingMs: this.walkingAtMs === null ? null : this.walkingAtMs - this.arrivedAtMs,
       simSecondsToWalking: this.walkingSim,
       meanSpeed: this.mean,
-      windowSeconds: this.window,
+      windowSeconds: this.cutAt ?? this.window,
+      partial: this.cutAt !== null,
       fell: this.fell,
-      done: this.mean !== null,
+      done: this.mean !== null || this.cutAt !== null,
     };
   }
 }

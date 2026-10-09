@@ -4,9 +4,10 @@
 <!-- Plays the show page: embeds the app, holds the memory file in a variable (standing in for the disk), answers storage
      requests, records the tab's events, and exposes sendToTab for a driver. -->
 <style>html,body{margin:0;height:100%}</style>
-<iframe id="app" src="./index.html" style="width:100vw;height:100vh;border:0;display:block"></iframe>
+<iframe id="app" style="width:100vw;height:100vh;border:0;display:block"></iframe>
 <script>
 const frame = document.getElementById('app');
+frame.src = './index.html' + location.search; // ?clean=1 and friends go to the app
 window.events = [];
 window.disk = {}; // path -> bytes, standing in for the agent's disk
 window.diskWrites = 0;
