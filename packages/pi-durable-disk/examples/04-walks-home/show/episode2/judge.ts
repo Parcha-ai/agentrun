@@ -1,6 +1,7 @@
 // The stage's side of the dark-content judge: the tab asks it for each answer before showing it, and D2's judge needs the run's secret, which the page
 // never holds. This forwards the tab's `{prompt, answer}` to the run's judge with the secret as a Bearer and gives back its status and JSON untouched.
-// Nothing is logged: the answer text and the secret stay out of every log. A rehearsal has no run, so it answers `show` and says it is scripted.
+// Nothing is logged: the answer text and the secret stay out of every log. It fails closed: when the stage is not the explicit rehearsal and there is no run
+// (or the judge cannot be reached), the answer is `refuse`, never `show`. Only the rehearsal (`rehearsal: true`) has a scripted judge.
 import type { LinkTarget } from "../link.ts";
 
 export type JudgeResult = { status: number; body: unknown };
@@ -22,11 +23,17 @@ export function parseJudgeBody(text: string): { prompt: string; answer: string }
   }
 }
 
-export async function forwardJudge(target: LinkTarget | undefined, bodyText: string, fetchFn: FetchLike = fetch): Promise<JudgeResult> {
+const CLOSED = (status: number, error: string): JudgeResult => ({ status, body: { verdict: "refuse", error } });
+
+export async function forwardJudge(target: LinkTarget | undefined, bodyText: string, options: { rehearsal?: boolean; fetchFn?: FetchLike } = {}): Promise<JudgeResult> {
+  const fetchFn = options.fetchFn ?? fetch;
   const req = parseJudgeBody(bodyText);
-  if (!req) return { status: 400, body: { error: "the judge takes {prompt, answer}, both text" } };
-  // A rehearsal has no judge: it shows everything except an answer that contains the exact string below, so the tab's refuse path can be tried from the stage.
-  if (!target) return { status: 200, body: { verdict: req.answer.includes(REHEARSAL_REFUSE) ? "refuse" : "show", scripted: true } };
+  if (!req) return { status: 400, body: { verdict: "refuse", error: "the judge takes {prompt, answer}, both text" } };
+  if (!target) {
+    // A rehearsal has no judge: it shows everything except an answer that contains the exact string below, so the tab's refuse path can be tried from the stage.
+    if (options.rehearsal === true) return { status: 200, body: { verdict: req.answer.includes(REHEARSAL_REFUSE) ? "refuse" : "show", scripted: true } };
+    return CLOSED(503, "there is no judge for this run");
+  }
   try {
     const res = await fetchFn(`${target.origin}/run/${encodeURIComponent(target.run)}/judge`, {
       method: "POST",
@@ -37,6 +44,6 @@ export async function forwardJudge(target: LinkTarget | undefined, bodyText: str
     const body = (await res.json().catch(() => ({ error: "the judge did not answer in JSON" }))) as unknown;
     return { status: res.status, body };
   } catch {
-    return { status: 502, body: { error: "the judge could not be reached" } };
+    return CLOSED(502, "the judge could not be reached");
   }
 }

@@ -245,7 +245,7 @@ const server = createServer(async (req, res) => {
       if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app" });
       // Episode 2's dark-content judge for the tab's answers: forwarded with the run's secret, which the page never holds (episode2/judge.ts).
       if (path === "/api/judge" && req.method === "POST" && !UPSTREAM) {
-        const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req));
+        const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req), { rehearsal: process.env.SHOW_SCENARIO === "ep2" && !PIPE_LINK_FILE });
         return sendJson(res, r.status, r.body);
       }
       if (UPSTREAM) return await proxy(req, res, path + url.search);

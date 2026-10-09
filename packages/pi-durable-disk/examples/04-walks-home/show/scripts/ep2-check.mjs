@@ -137,6 +137,17 @@ try {
   const refused = await judge({ prompt: "x", answer: "before [[refuse]] after" });
   expect("and refuses one containing [[refuse]], so the refuse path can be tried", refused[0] === 200 && refused[1].verdict === "refuse", refused);
   expect("a malformed judge request is a 400", (await judge("nope"))[0] === 400);
+  // The scripted judge exists only in the rehearsal: a stage that is not the ep2 rehearsal and has no run refuses a clean answer.
+  const livePort = await freePort();
+  const notRehearsal = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(livePort), SHOW_SCENARIO: "v2" }, stdio: "ignore" });
+  try {
+    await waitForStage(livePort, notRehearsal);
+    const closed = await fetch(new URL("/api/judge", `http://127.0.0.1:${livePort}/`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: "Who are you?", answer: "I am the bridge." }) });
+    const closedBody = await closed.json();
+    expect("with no run and no rehearsal the judge refuses a clean answer (fails closed)", closedBody.verdict === "refuse" && closed.status === 503, [closed.status, closedBody]);
+  } finally {
+    notRehearsal.kill();
+  }
   const manifest = await fetch(new URL(`/${["api", "disk", "home", "model", "manifest.json"].join("/")}`, base));
   expect("the disk route accepts the model's manifest path (nothing there yet in a rehearsal)", manifest.status === 204, manifest.status);
   await noWifi("at home");

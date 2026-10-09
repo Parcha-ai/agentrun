@@ -83,20 +83,23 @@ const ok = (body: unknown, status = 200) => async () => new Response(JSON.string
 
 test("the judge proxy forwards prompt and answer with the secret as a Bearer, and returns the judge's status and JSON untouched", async () => {
   let seen: { url: string; init: RequestInit } | undefined;
-  const r = await forwardJudge(target, JSON.stringify({ prompt: "p", answer: "a", extra: "dropped" }), async (url, init) => ((seen = { url, init }), new Response(JSON.stringify({ verdict: "refuse", category: 3 }), { status: 200 })));
+  const r = await forwardJudge(target, JSON.stringify({ prompt: "p", answer: "a", extra: "dropped" }), { fetchFn: async (url, init) => ((seen = { url, init }), new Response(JSON.stringify({ verdict: "refuse", category: 3 }), { status: 200 })) });
   assert.deepEqual(r, { status: 200, body: { verdict: "refuse", category: 3 } });
   assert.equal(seen!.url, "http://run.example:1/run/r%201/judge");
   assert.equal((seen!.init.headers as Record<string, string>).authorization, "Bearer S3CRET");
   assert.deepEqual(JSON.parse(String(seen!.init.body)), { prompt: "p", answer: "a" }, "only the two fields go on");
-  const err = await forwardJudge(target, JSON.stringify({ prompt: "p", answer: "a" }), ok({ error: "busy" }, 503));
+  const err = await forwardJudge(target, JSON.stringify({ prompt: "p", answer: "a" }), { fetchFn: ok({ error: "busy" }, 503) });
   assert.deepEqual(err, { status: 503, body: { error: "busy" } }, "a non-200 is passed on for the tab to treat as refuse");
 });
 
 test("the judge proxy never puts the secret or the answer in what it returns, even when the judge is unreachable", async () => {
-  const r = await forwardJudge(target, JSON.stringify({ prompt: "P-TEXT", answer: "A-TEXT" }), async () => {
-    throw new Error("connect ECONNREFUSED http://run.example:1 Bearer S3CRET A-TEXT");
+  const r = await forwardJudge(target, JSON.stringify({ prompt: "P-TEXT", answer: "A-TEXT" }), {
+    fetchFn: async () => {
+      throw new Error("connect ECONNREFUSED http://run.example:1 Bearer S3CRET A-TEXT");
+    },
   });
   assert.equal(r.status, 502);
+  assert.equal((r.body as { verdict: string }).verdict, "refuse", "an unreachable judge refuses");
   assert.doesNotMatch(JSON.stringify(r.body), /S3CRET|A-TEXT|P-TEXT|ECONNREFUSED/);
 });
 
@@ -104,15 +107,27 @@ test("a bad judge request is refused before anything is sent", async () => {
   let called = false;
   const spy = async () => ((called = true), new Response("{}"));
   for (const bad of ["not json", "{}", JSON.stringify({ prompt: "p" }), JSON.stringify({ prompt: 1, answer: "a" }), JSON.stringify({ prompt: "p", answer: "x".repeat(16_001) })]) {
-    assert.equal((await forwardJudge(target, bad, spy)).status, 400, bad.slice(0, 30));
+    assert.equal((await forwardJudge(target, bad, { fetchFn: spy })).status, 400, bad.slice(0, 30));
   }
   assert.equal(called, false);
   assert.equal(parseJudgeBody(JSON.stringify({ prompt: "p", answer: "a" }))?.answer, "a");
 });
 
 test("the rehearsal judge shows everything except an answer containing [[refuse]], and says it is scripted", async () => {
-  const show = await forwardJudge(undefined, JSON.stringify({ prompt: "p", answer: "a bridge" }));
+  const show = await forwardJudge(undefined, JSON.stringify({ prompt: "p", answer: "a bridge" }), { rehearsal: true });
   assert.deepEqual(show, { status: 200, body: { verdict: "show", scripted: true } });
-  const refuse = await forwardJudge(undefined, JSON.stringify({ prompt: "p", answer: `a ${REHEARSAL_REFUSE} b` }));
+  const refuse = await forwardJudge(undefined, JSON.stringify({ prompt: "p", answer: `a ${REHEARSAL_REFUSE} b` }), { rehearsal: true });
   assert.deepEqual(refuse.body, { verdict: "refuse", scripted: true });
+});
+
+test("the judge fails closed: with no run and no rehearsal, a clean answer is refused, however the flag is spelled", async () => {
+  const clean = JSON.stringify({ prompt: "Who are you?", answer: "I am the Golden Gate Bridge." });
+  for (const options of [{}, { rehearsal: false }, { rehearsal: undefined }, { rehearsal: "true" as unknown as boolean }]) {
+    const r = await forwardJudge(undefined, clean, options);
+    assert.equal(r.status, 503);
+    assert.equal((r.body as { verdict: string }).verdict, "refuse");
+    assert.doesNotMatch(JSON.stringify(r.body), /show/);
+  }
+  const bad = await forwardJudge(undefined, "nope", { rehearsal: true });
+  assert.equal((bad.body as { verdict: string }).verdict, "refuse", "even a malformed request never reads as show");
 });
