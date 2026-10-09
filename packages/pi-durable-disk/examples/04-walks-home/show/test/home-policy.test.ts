@@ -102,7 +102,7 @@ test("a live take skips the static file and needs the run link; the secret never
 
 test("the preflight runs this check, with its own environment, in place of the old shape check", () => {
   const src = readFileSync(fileURLToPath(new URL("../scripts/preflight.mjs", import.meta.url)), "utf8");
-  assert.match(src, /import \{ checkHomePolicy \} from "\.\.\/home-policy\.ts"/);
+  assert.match(src, /import \{[^}]*\bcheckHomePolicy\b[^}]*\} from "\.\.\/home-policy\.ts"/);
   assert.match(src, /checkHomePolicy\(process\.env\)/);
   assert.doesNotMatch(src, /p\.format === "mlp-v1"/);
 });
