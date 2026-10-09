@@ -12,7 +12,7 @@
 import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
 import { emptyState, reduce } from "./reduce.ts";
-import type { HostKind, Note, ShowCommand, ShowEvent, ShowState } from "./types.ts";
+import type { HostKind, Note, NoteKind, ShowCommand, ShowEvent, ShowState } from "./types.ts";
 
 type PipeEnv = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 type Placement = Extract<PipeFrame, { t: "placement" }>["placement"];
@@ -58,8 +58,17 @@ export class PipeTranslator {
     this.origin = options.origin ?? this.clock();
   }
 
+  get runId(): string {
+    return this.run;
+  }
+
   private at(): number {
     return Math.max(0, this.clock() - this.origin);
+  }
+
+  /** A note stamped on this run's clock: the read-back watcher's results come in this way (see readback.ts). */
+  note(fields: { kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] }): ShowEvent {
+    return { t: "note", at: this.at(), ...fields };
   }
 
   environments(): ShowState["environments"] {
@@ -332,6 +341,21 @@ export class PipeFeed implements FeedSource {
 
   get state(): ShowState {
     return this.st;
+  }
+
+  /** The key of the link this feed is connected to (undefined before it has one): what a note about the take on stage is checked against. */
+  get linkKey(): string | undefined {
+    return this.connectedKey;
+  }
+
+  /** The run this feed is showing ("" until it has connected to one). */
+  get run(): string {
+    return this.tr.runId;
+  }
+
+  /** A note from outside the pipe's own frames: the take server's read-back, for one. Stamped on the feed's clock. */
+  addNote(fields: { kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] }): void {
+    this.emit([this.tr.note(fields)]);
   }
 
   /** The tab that holds the run, for the disk's writes (see disk.ts). */

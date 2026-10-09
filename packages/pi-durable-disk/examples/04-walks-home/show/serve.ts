@@ -18,6 +18,7 @@ import { proxyStream, requestTicket } from "./desktop.ts";
 import { LiveLink, linkKey } from "./link.ts";
 import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
+import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import type { ShowCommand } from "./types.ts";
 
@@ -108,6 +109,7 @@ function relay(source: FeedSource): void {
 }
 
 const PIPE_LINK_FILE = process.env.SHOW_PIPE_LINK_FILE;
+const TAKE_STATUS = process.env.SHOW_TAKE_STATUS;
 const DESKTOP_LINK_FILE = process.env.SHOW_DESKTOP_LINK_FILE ?? PIPE_LINK_FILE;
 // The links are followed live: whoever starts the 03 server rewrites the file (a restart, a retake: a new run), and the feed, the
 // desktop and the disk all follow it. A link that is not there yet means "no server yet", never a crash.
@@ -135,6 +137,27 @@ if (pipeLink) {
   relay(feed);
   await feed.start();
   player = feed;
+  // The take server's own read-back of work/ (its --evidence-readback), as notes. SHOW_TAKE_STATUS is its status file; the log it names
+  // moves with a retake, so it is looked up each time. Only the three read-back events are read from it (the log also holds the run's link).
+  if (TAKE_STATUS) {
+    new ReadbackWatcher({
+      file: () => {
+        try {
+          const logFile = (JSON.parse(readFileSync(TAKE_STATUS, "utf8")) as { logFile?: unknown }).logFile;
+          return typeof logFile === "string" ? logFile : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      run: () => feed.run,
+      key: () => {
+        const t = pipeLink.tryCurrent();
+        return t ? linkKey(t) : undefined;
+      },
+      feedKey: () => feed.linkKey,
+      onNote: (note) => feed.addNote(note),
+    }).start();
+  }
   // The tab's files are the real run's: its secret stays here, and a write names the tab the pipe says holds the run.
   disk = runDisk(() => pipeLink.tryCurrent(), () => feed.writerTab);
 } else {
