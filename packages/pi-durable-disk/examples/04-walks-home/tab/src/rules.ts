@@ -1,7 +1,7 @@
 // What the sketcher tells the user about a body, from what was measured on trained bodies. Two kinds of rule:
 //  - a CLAMP keeps the sketch inside the range of bodies the trainer has walked in minutes: leg reach (thigh + shin of the longest
 //    pair) at most MAX_REACH_RATIO times the torso length;
-//  - NOTES label a body honestly: what was measured for a body we trained, a plain "not trained" for any other, and a caution for
+//  - NOTES label a body plainly: what was measured for a body we trained, a plain "not trained" for any other, and a caution for
 //    a shape close to one that could not get up. Nothing here claims a getup the numbers do not show.
 // The measurements are scripts/kick-sweep.ts, getup-time.ts and walk-check.ts on the trainer's policy for each body (policy
 // files from the trainer's v3 runs, 5 minutes of H100 per network), run by the tab's own code; see MEASURED below.
