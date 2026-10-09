@@ -1,4 +1,4 @@
-// The stage's hello role against the REAL 03 server (second-host.ts, no cloud): a stage that connects as `view` is refused its
+// The stage's hello role against the REAL 03 server (take-server.mjs --cloud remote-local, no cloud machines): a stage that connects as `view` is refused its
 // switch and its question with the pipe's own reasons, and one that connects as `operator` (the default) is not refused for its role.
 //   node scripts/role-check.mjs
 import { spawn } from "node:child_process";
@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, sleep, waitForFile, waitForStage } from "./cdp.mjs";
+import { freePort, sleep, waitForStage } from "./cdp.mjs";
+import { startTakeServer } from "./takeserver.mjs";
 
 const show = join(dirname(fileURLToPath(import.meta.url)), "..");
 const root = join(homedir(), "tmp-d5", `role-${Date.now().toString(36)}`);
@@ -31,10 +32,10 @@ const until = async (fn, ms) => {
   return false;
 };
 try {
-  const hostPort = await freePort();
-  const hostChild = start(join(show, "second-host.ts"), ["--port", String(hostPort), "--root", root, "--link-file", join(root, "link")], { TMPDIR: join(homedir(), "tmp-d5", "tmp") });
-  await waitForFile(join(root, "link"), hostChild, 30_000);
-  const link = join(root, "link");
+  mkdirSync(join(root, "disk"), { recursive: true, mode: 0o755 });
+  const take = await startTakeServer({ dir: join(root, "take"), disk: join(root, "disk") });
+  kids.push(take.child);
+  const link = take.status.linkFile;
   const ports = { view: await freePort(), operator: await freePort() };
   for (const [role, port] of Object.entries(ports)) {
     const child = start(join(show, "serve.ts"), [], { SHOW_PORT: String(port), SHOW_PIPE_LINK_FILE: link, SHOW_PIPE_ROLE: role, SHOW_ASK_AFTER_SWITCH: "0" });
@@ -42,13 +43,13 @@ try {
     // The pipe's environments arrive a moment after the stage is up.
     await until(async () => (await (await fetch(`http://127.0.0.1:${port}/api/state`)).json()).environments.length > 0, 20_000);
   }
-  const sw = await post(ports.view, { t: "switch", to: "second-host" });
+  const sw = await post(ports.view, { t: "switch", to: "remote-local" });
   expect("a view stage's switch is refused with the pipe's reason", sw.status === 409 && /only watches the run/.test(sw.body.message ?? ""), sw);
   // The run is parked (no tab attached), so an ask has no host; the refusal that matters is the role's, which comes first only when settled.
-  const operator = await post(ports.operator, { t: "switch", to: "second-host" });
+  const operator = await post(ports.operator, { t: "switch", to: "remote-local" });
   expect("an operator stage's switch is not refused for its role", !/only watches/.test(operator.body.message ?? ""), operator);
   const state = await (await fetch(`http://127.0.0.1:${ports.operator}/api/state`)).json();
-  expect("the stage lists the host's environments either way", state.environments.some((e) => e.id === "second-host") && state.source === "live", state.environments);
+  expect("the stage lists the host's environments either way", state.environments.some((e) => e.id === "remote-local") && state.source === "live", state.environments);
 } catch (error) {
   console.log(`FAIL ${error.message}`);
   failed++;

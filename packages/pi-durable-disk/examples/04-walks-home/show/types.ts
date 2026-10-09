@@ -158,7 +158,7 @@ export type ShellToTab = Envelope<
   /** Swap the terrain: a heightfield asset and geoms, or null for the flat floor. */
   | { type: "load-world"; world: { asset: unknown; geoms: unknown } | null }
   /** Answers to the tab's storage requests: the agent's disk, as the stage models it. */
-  | { type: "storage-result"; id: number; bytes: Uint8Array | null; error?: string }
+  | { type: "storage-result"; id: number; bytes: Uint8Array | null; etag?: string; notModified?: boolean; error?: string }
   | { type: "storage-written"; id: number; error?: string }
 >;
 export type TabToShell = Envelope<
@@ -210,7 +210,7 @@ export type TabToShell = Envelope<
    */
   | { type: "mode-changed"; mode: "walk" | "getup"; t: number; up: number }
   /** The tab keeps creature/designs.sqlite and creature/memory.sqlite on the agent's disk; with no answer in 1.5 s it falls back to the browser. */
-  | { type: "storage-read"; id: number; path: string }
+  | { type: "storage-read"; id: number; path: string; ifNoneMatch?: string }
   | { type: "storage-write"; id: number; path: string; bytes: Uint8Array }
 >;
 

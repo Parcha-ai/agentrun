@@ -15,6 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { desktopTargetFromLink, proxyStream, requestTicket } from "./desktop.ts";
+import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import type { ShowCommand } from "./types.ts";
@@ -81,7 +82,9 @@ async function body(req: IncomingMessage): Promise<string> {
 const clients = new Set<ServerResponse>();
 // The stage's model of the agent's disk for the tab's storage requests: paths to bytes, durable for the life of the
 // server, emptied by a `reset` so a new take starts with a fresh disk. A live driver replaces this with the real disk.
-const disk = new Map<string, Buffer>();
+// With a pipe feed the disk is the real run's work/ (over the 03 server's route, with the secret this server holds); with the
+// scripted feed it is the model. Assigned once the feed exists.
+let disk: DiskBackend = modelDisk();
 const DISK_PATH = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+){0,3}$/;
 
 async function bytesBody(req: IncomingMessage, limit: number): Promise<Buffer> {
@@ -124,6 +127,8 @@ if (PIPE_LINK_FILE) {
   relay(feed);
   await feed.start();
   player = feed;
+  // The tab's files are the real run's: its secret stays here, and a write names the tab the pipe says holds the run.
+  disk = runDisk(desktopTargetFromLink(readFileSync(PIPE_LINK_FILE, "utf8")), () => feed.writerTab);
 } else {
   player = newPlayer();
 }
@@ -179,18 +184,16 @@ const server = createServer(async (req, res) => {
         const key = decodeURIComponent(path.slice("/api/disk/".length));
         if (!DISK_PATH.test(key) || key.split("/").includes("..")) return sendJson(res, 400, { error: "bad path" });
         if (req.method === "PUT") {
-          disk.set(key, await bytesBody(req, 16 * 1024 * 1024));
-          return sendJson(res, 200, { ok: true, bytes: disk.get(key)!.length });
+          const w = await disk.write(key, await bytesBody(req, 16 * 1024 * 1024));
+          return w.status === 200 ? sendJson(res, 200, { ok: true, bytes: (w as { bytes: number }).bytes }) : sendJson(res, w.status, { ok: false, error: (w as { error: string }).error });
         }
         if (req.method === "GET") {
-          const hit = disk.get(key);
+          const r = await disk.read(key, typeof req.headers["if-none-match"] === "string" ? req.headers["if-none-match"] : undefined);
           // 204, not 404: a first read of a file that does not exist yet is normal and must not log a console error.
-          if (!hit) {
-            res.statusCode = 204;
-            return void res.end();
-          }
-          res.setHeader("content-type", "application/octet-stream");
-          return void res.end(hit);
+          if (r.status === 204) return void res.writeHead(204).end();
+          if (r.status === 304) return void res.writeHead(304, { etag: (r as { etag: string }).etag }).end();
+          if (isFile(r)) return void res.writeHead(200, { "content-type": "application/octet-stream", etag: r.etag, "content-length": String(r.bytes.length) }).end(r.bytes);
+          return sendJson(res, r.status, { ok: false, error: (r as { error: string }).error });
         }
         return sendJson(res, 405, { error: "GET or PUT" });
       }
@@ -224,7 +227,7 @@ const server = createServer(async (req, res) => {
         if (cmd.t === "reset") {
           if (PIPE_LINK_FILE) return sendJson(res, 409, { ok: false, message: "a pipe feed is one run; there is nothing to reset" });
           player.stop();
-          disk.clear();
+          disk.reset?.();
           // A reset starts the script over at 0:00; SHOW_START only positions the first boot.
           player = newPlayer(0);
           for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
