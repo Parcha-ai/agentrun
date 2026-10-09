@@ -46,11 +46,16 @@ export class View {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly ray = new THREE.Raycaster();
+  private sun!: THREE.DirectionalLight;
   private bodyMeshes: THREE.Mesh[] = [];
 
-  constructor(canvas: HTMLCanvasElement) {
+  private readonly lite: boolean;
+
+  /** `lite` is for machines that rasterise in software: cheaper materials and no multisampling (page option ?lite=1). */
+  constructor(canvas: HTMLCanvasElement, opts: { lite?: boolean } = {}) {
     this.canvas = canvas;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.lite = !!opts.lite;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !this.lite });
     this.renderer.shadowMap.enabled = true;
     this.scene.background = new THREE.Color(0xf4f2ea);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.02, 100);
@@ -62,17 +67,26 @@ export class View {
     const sun = new THREE.DirectionalLight(0xffffff, 2.2);
     sun.position.set(2, -1, 4);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4, near: 0.5, far: 12 });
+    // The shadow only has to cover the creature and its surroundings, and the sun follows it (see draw): a 4 m frustum on a
+    // 1024 map is as sharp as 8 m on 2048 (3.9 mm per texel) at a quarter of the pixels, which is what keeps a software
+    // rasteriser above 50 fps under 4x CPU throttling (42 fps with the 2048 map, measured by scripts/perf.mjs).
+    sun.shadow.mapSize.set(1024, 1024);
+    Object.assign(sun.shadow.camera, { left: -2, right: 2, top: 2, bottom: -2, near: 0.5, far: 10 });
+    this.sun = sun;
     this.scene.add(sun);
+    this.scene.add(sun.target);
     // The floor: a big shaded plane (receives the shadow) with a 1 m grid on it that follows the creature.
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0xd8d4c6, roughness: 1 }));
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), this.material({ color: 0xd8d4c6, roughness: 1 }));
     floor.receiveShadow = true;
     this.scene.add(floor);
     this.grid = new THREE.GridHelper(100, 100, 0x9d9a8c, 0xbdb9aa);
     this.grid.rotation.x = Math.PI / 2;
     this.grid.position.z = 0.002;
     this.scene.add(this.grid);
+  }
+
+  private material(p: { color: THREE.ColorRepresentation; roughness: number; metalness?: number }): THREE.Material {
+    return this.lite ? new THREE.MeshLambertMaterial({ color: p.color }) : new THREE.MeshStandardMaterial(p);
   }
 
   /** Rebuild the meshes for a (new) sim. */
@@ -99,7 +113,7 @@ export class View {
       else if (type === GEOM.ellipsoid) { geo = new THREE.SphereGeometry(1, 24, 16); geo.scale(s[0], s[1], s[2]); }
       else { this.meshes.push(new THREE.Mesh()); continue; }
       const c = [0, 1, 2, 3].map((k) => model.geom_rgba[4 * g + k]);
-      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(c[0], c[1], c[2]), roughness: 0.6, metalness: 0.05 });
+      const mat = this.material({ color: new THREE.Color(c[0], c[1], c[2]), roughness: 0.6, metalness: 0.05 });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
       mesh.matrixAutoUpdate = false;
@@ -171,6 +185,8 @@ export class View {
       t.x += dx; t.y += dy;
       this.camera.position.x += dx; this.camera.position.y += dy;
     }
+    this.sun.target.position.set(x, y, 0);
+    this.sun.position.set(x + 2, y - 1, 4);
     // The grid is finite but huge; keep it under the creature so the floor never runs out.
     this.grid.position.x = Math.round(x);
     this.grid.position.y = Math.round(y);
