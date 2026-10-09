@@ -7,7 +7,11 @@ export const withDebug = (url) => (/[?&]debug=/.test(url) ? url : `${url}${url.i
 
 const DEBUG = process.env.CDP_URL ?? "http://127.0.0.1:9222";
 
-export async function openTab(url, { width = 1600, height = 900 } = {}) {
+/**
+ * Opens a tab on one of our own localhost pages. `init`: a script to run in every document the tab loads, registered BEFORE the navigation, so it is in the
+ * page that stays (a listener installed after openTab returns can land in a document that is about to be replaced).
+ */
+export async function openTab(url, { width = 1600, height = 900, init } = {}) {
   const host = new URL(url).hostname;
   if (!["127.0.0.1", "localhost"].includes(host)) throw new Error(`refusing non-local url ${url}`);
   const res = await fetch(`${DEBUG}/json/new?about:blank`, { method: "PUT" });
@@ -42,6 +46,7 @@ export async function openTab(url, { width = 1600, height = 900 } = {}) {
   await send("Runtime.enable");
   await send("Log.enable");
   await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+  if (init) await send("Page.addScriptToEvaluateOnNewDocument", { source: init });
   await send("Page.navigate", { url });
   return {
     logs,

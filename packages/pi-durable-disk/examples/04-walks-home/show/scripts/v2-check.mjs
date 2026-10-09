@@ -172,11 +172,13 @@ try {
   // A page that connects when the run is ALREADY home (a reload after the agent came back, or a seek the page never watched): its own history says
   // nothing about the trip, so the run's record of where it stayed is the evidence the agent went, and it must still ask the tab for the trained brain.
   await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 100, paused: true }) });
-  lateTab = await openTab(base, { width: 1600, height: 900 });
-  await lateTab.eval(`window.__arr = []; addEventListener("message", (e) => { const d = e.data; if (d && d.ns === "walks-home" && d.type === "policy-arrived") __arr.push({ via: d.via, kind: d.kind }); }); 0`);
+  // The listener is registered before the first navigation, so it is in the page that stays; and nothing is read until the stage has drawn.
+  const collect = `window.__arr = []; addEventListener("message", (e) => { const d = e.data; if (d && d.ns === "walks-home" && d.type === "policy-arrived") window.__arr.push({ via: d.via, kind: d.kind }); });`;
+  lateTab = await openTab(base, { width: 1600, height: 900, init: collect });
+  for (let t = 0; t < 30_000 && !(await lateTab.eval(`!!document.getElementById("vcaption")`).catch(() => false)); t += 250) await sleep(250);
   let lateCap = "";
   for (let t = 0; t < 30_000; t += 500) {
-    lateCap = await lateTab.eval(`document.getElementById("vcaption").hidden ? "" : document.getElementById("vcaption").textContent`);
+    lateCap = await lateTab.eval(`document.getElementById("vcaption")?.hidden === false ? document.getElementById("vcaption").textContent : ""`).catch(() => "");
     if (/Done training/.test(lateCap)) break;
     await sleep(500);
   }
