@@ -38,6 +38,8 @@ const cloud = arg("cloud", "none");
 const cloudModule = arg("cloud-module", "");
 const cloudArgs = process.argv.flatMap((a, i) => (a === "--cloud-arg" ? [process.argv[i + 1]] : []));
 // Where a message should run, decided by a typed question (04-walks-home/vm/placer.ts): its --placer-arg KEY=VALUE pairs go to the module.
+// The dark-content judge the tab asks through this server (03 pipe/judge.ts): its model, endpoint and the NAME of the env var holding its key.
+const judgeArgs = ["judge-model", "judge-url", "judge-key-env"].flatMap((n) => (arg(n, "") ? [`--${n}`, arg(n, "")] : []));
 const noRestore = process.argv.flatMap((a, i) => (a === "--no-restore" ? [process.argv[i + 1]] : []));
 const placerModule = arg("placer-module", "");
 const placerArgs = process.argv.flatMap((a, i) => (a === "--placer-arg" ? [process.argv[i + 1]] : []));
@@ -100,6 +102,7 @@ const serveArgs = [
   ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
   ...noRestore.flatMap((p) => ["--no-restore", p]),
+  ...judgeArgs,
   ...(evidenceReadback ? ["--evidence-readback"] : []),
   ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", ledger]),
 ];
@@ -115,6 +118,12 @@ const typesafeWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "w
 if (process.argv.includes("--typesafe")) {
   if (!existsSync(typesafeWrapper)) die(`${typesafeWrapper} is missing: the TypeSafe key only comes through it`);
   [cmd, args] = [typesafeWrapper, ["--", cmd, ...args]];
+}
+// --openai: the judge's key reaches the server only through this wrapper (with-openai: OPENAI_API_KEY in the child's environment, nothing printed).
+const openaiWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-openai");
+if (process.argv.includes("--openai")) {
+  if (!existsSync(openaiWrapper)) die(`${openaiWrapper} is missing: the judge's key only comes through it`);
+  [cmd, args] = [openaiWrapper, ["--", cmd, ...args]];
 }
 const child = spawn(cmd, args, { cwd: ex03, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) }, stdio: "ignore" });
 const origin = `http://127.0.0.1:${port}`;

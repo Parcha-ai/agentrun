@@ -112,6 +112,13 @@ sends cross-origin isolation headers): `localhost`, or HTTPS in front of the ser
 `node serve.ts --local DIR` runs everything on a local directory instead of the disk (no claim, no cloud host): for
 working on the page.
 
+`--judge-model ID [--judge-url URL] [--judge-key-env NAME]` turns on a dark-content judge at
+`POST /api/runs/<id>/judge` (the run's secret as a bearer token; body `{prompt, answer}`; answer
+`{verdict: "show" | "refuse", dark, quote, ms, model}`, and `refuse` whenever the judge times out or fails). The route only
+answers: a page that shows another model's answers asks it before showing each one and shows a refusal line instead of a
+refused answer. This example's own page does not call it, since its chat shows the agent's own model; the Golden Gate
+episode's tab, which runs a trained model, does.
+
 ## Check it
 
 - `npm test`: the pipe's protocol on a local directory: storage conformance through a real WebSocket, write-through,
