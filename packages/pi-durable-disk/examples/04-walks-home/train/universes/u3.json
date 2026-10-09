@@ -1,8 +1,0 @@
-{
- "name": "u3",
- "hypothesis": "high clearance: lift every foot to 6 cm in swing",
- "reward_scales": {
-  "feet_clearance": -1.5,
-  "feet_height": -0.5
- }
-}

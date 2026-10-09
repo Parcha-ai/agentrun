@@ -1,9 +1,0 @@
-{
- "name": "u5",
- "hypothesis": "fast: tracking first, everything else light",
- "reward_scales": {
-  "tracking_lin_vel": 3.0,
-  "orientation": -2.0,
-  "pose": 0.0
- }
-}

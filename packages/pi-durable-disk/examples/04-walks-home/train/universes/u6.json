@@ -1,8 +1,0 @@
-{
- "name": "u6",
- "hypothesis": "long strides: reward air time strongly",
- "reward_scales": {
-  "feet_air_time": 2.0,
-  "feet_slip": -0.3
- }
-}

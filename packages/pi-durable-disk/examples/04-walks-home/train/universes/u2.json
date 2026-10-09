@@ -1,8 +1,0 @@
-{
- "name": "u2",
- "hypothesis": "trot clock: diagonal legs in phase with a 2 Hz gait clock",
- "reward_scales": {
-  "trot_clock": 1.0,
-  "feet_air_time": 0.2
- }
-}
