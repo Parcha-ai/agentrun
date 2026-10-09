@@ -10,8 +10,24 @@ import { canonicalDesign, LIMITS, PRESETS, type Design } from './design.ts';
 
 /** Longest leg reach over torso length that has been trained: long legs (1.43x) walked at 0.45 and 0.72 m/s at commands 0.5 and 0.8. */
 export const MAX_REACH_RATIO = 1.5;
-/** Shorter than this and the only such body trained (stubby, 0.40x) could not get up from its back; hexapod (0.51x) can. */
-export const SHORT_REACH_RATIO = 0.45;
+/**
+ * Can it right itself from its back? A geometric prediction from the trainer's physics search (800 random leg motions per start
+ * within the getup network's reach): a way off the back exists only if the SHORTEST leg pair (thigh + shin) is at least the torso's
+ * width plus height. It agrees with the measurements on all six bodies tried (stubby 0.55 and asym 0.77 below the limit, none found;
+ * quadruped 1.25, hexapod 1.31, long legs 2.07, stilts 5.33 above it, all get up from their backs). It is empirical on those six,
+ * so a body within BACK_GETUP_BAND of the limit is called unverified.
+ */
+export const BACK_GETUP_BAND = 0.1;
+const EDGE_EPS = 1e-9;
+/** Shortest leg pair over (torso width + height): below 1 the prediction is "cannot", above 1 "can". */
+export const backGetupMargin = (d: Design): number => Math.min(...d.legs.map((l) => l.thigh + l.shin)) / (d.torso.width + d.torso.height);
+export type BackGetup = 'cannot' | 'unverified' | 'can';
+export function backGetupPrediction(d: Design): BackGetup {
+  const m = backGetupMargin(d);
+  // The edges (0.9 and 1.1) belong to "unverified"; the tolerance keeps a margin that is 0.9 or 1.1 up to rounding (0.22 + 0.1 is not
+  // exactly 0.32) from falling on the wrong side.
+  return m < 1 - BACK_GETUP_BAND - EDGE_EPS ? 'cannot' : m <= 1 + BACK_GETUP_BAND + EDGE_EPS ? 'unverified' : 'can';
+}
 
 export const reach = (d: Design): number => Math.max(...d.legs.map((l) => l.thigh + l.shin));
 export const reachRatio = (d: Design): number => reach(d) / d.torso.length;
@@ -92,8 +108,14 @@ export function bodyNotes(d: Design): BodyNote[] {
   const known = MEASURED.find((k) => sameBody(k.design, d));
   if (known) return known.notes;
   const notes: BodyNote[] = [{ level: 'info', text: 'Not one of the bodies we trained: there is no policy for this exact body yet, so it runs the stand-in trot until one is trained for it (about 5 minutes of GPU for walking, and a separate network for getting up).' }];
-  if (reachRatio(d) < SHORT_REACH_RATIO) {
-    notes.push({ level: 'warn', text: `Short legs for this body (${reachRatio(d).toFixed(2)}x the torso length). The only trained body this short (stubby, 0.40x) could not get up from its back, so expect the same here: this is a prediction from that one body, not a measurement of yours.` });
+  const margin = backGetupMargin(d);
+  const pair = Math.min(...d.legs.map((l) => l.thigh + l.shin));
+  const limit = d.torso.width + d.torso.height;
+  const prediction = backGetupPrediction(d);
+  if (prediction === 'cannot') {
+    notes.push({ level: 'warn', text: `Prediction, not a measurement: this body can't right itself from its back. Its shortest leg pair (${pair.toFixed(2)} m) is shorter than its torso width plus height (${limit.toFixed(2)} m, ratio ${margin.toFixed(2)}); the two trained bodies like that (stubby, asym) could not get up from their backs reliably.` });
+  } else if (prediction === 'unverified') {
+    notes.push({ level: 'warn', text: `Unverified: whether this body can right itself from its back is not known. Its shortest leg pair (${pair.toFixed(2)} m) is within 10% of its torso width plus height (${limit.toFixed(2)} m, ratio ${margin.toFixed(2)}), the limit the trainer's physics search found on six bodies.` });
   }
   if (d.legDof !== 3) {
     notes.push({ level: 'warn', text: 'Legs without the hip abduction joint cannot resist a sideways push (a still creature flips at 80 N). Tick the 3-joint option for the show body.' });
