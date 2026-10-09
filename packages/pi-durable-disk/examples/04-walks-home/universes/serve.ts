@@ -13,10 +13,13 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { daytonaRest, deleteRunTree, removeMountToken, type RunRef } from "@parcha/pi-durable-disk";
+import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type RunRef } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "../../03-tab-to-cloud/pipe/control.ts";
 import { daytonaFleet } from "./daytona-fleet.ts";
 import { Feed, serveFeed, type CommandResult, type FeedCommand } from "./feed.ts";
+import { ModelProxy } from "../../03-tab-to-cloud/pipe/model-proxy.ts";
+import { directPlacement, type DirectPlacement } from "./direct.ts";
+import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
 
@@ -51,6 +54,10 @@ const { values } = parseArgs({
     ledger: { type: "string", default: "universes-ledger.json" },
     "mount-root": { type: "string", default: "/mnt/archil" },
     keep: { type: "boolean", default: false },
+    /** How runs reach the boxes: the box mounts the run (direct), or this process holds it and pipes it over (pipe). */
+    transport: { type: "string", default: "direct" },
+    /** What a score means on the stage ("m walked in 10 s" for D2's trainer); the stand-in trainer's has no unit. */
+    "score-unit": { type: "string" },
   },
 });
 
@@ -75,6 +82,22 @@ const onResource = (kind: string, id: string, note?: string) => {
 };
 
 const control = await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY });
+const transport = values.transport === "pipe" ? "pipe" : "direct";
+const daytonaApi = (process.env.DAYTONA_API_URL || "https://app.daytona.io/api").replace(/\/+$/, "");
+/** A signed preview URL of one port of a box (bound to that port, expiring). */
+async function previewUrl(boxId: string, port: number): Promise<string> {
+  const res = await fetch(`${daytonaApi}/sandbox/${encodeURIComponent(boxId)}/ports/${port}/signed-preview-url?expiresInSeconds=7200`, {
+    headers: { authorization: `Bearer ${process.env.DAYTONA_API_KEY}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = (await res.json().catch(() => ({}))) as { url?: string };
+  if (!res.ok || !body.url) throw new Error(`signed preview URL for ${boxId} port ${port}: ${res.status}`);
+  return body.url.replace(/\/+$/, "");
+}
+// The universes' model access through the pipe: no turn runs unless someone submits one, so the budget is small.
+const model = new ModelProxy({ baseUrl: process.env.DEMO_MODEL_URL ?? "http://127.0.0.1:9421/v1", model: process.env.DEMO_MODEL ?? "gpt-6-luna", budgetTokens: 200_000 });
+let direct: DirectPlacement | undefined;
+let pipes: PipePlacement | undefined;
 const bundle = readFileSync(join(here, "dist/universe-app.mjs"));
 const probe = readFileSync(join(here, "dist/probe.mjs"));
 const fleet = daytonaFleet({
@@ -88,7 +111,25 @@ const fleet = daytonaFleet({
   runArgs: ["--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000", "--on-sigterm", "pause"],
   ledger,
   log,
+  ...(transport === "pipe" ? { runner: { bundle: readFileSync(join(here, "dist/universe-remote.mjs")), port: 8080, previewUrl } } : {}),
+  placement: (access) =>
+    transport === "pipe"
+      ? (pipes = pipePlacement({
+          control,
+          mountRoot: values["mount-root"]!,
+          model,
+          lease: { heartbeatMs: 2_000, expiryMs: 10_000, marginMs: 3_000 },
+          runner: (m) => access.runner(m),
+          machineStatus: (m) => access.status(m),
+          retire: (m) => access.retire(m),
+          tokenPrefix: "pda-d1-",
+          onResource,
+          log,
+        }))
+      : (direct = directPlacement({ control, driver: access.driver, ensure: { leaseExpiryMs: 10_000, startGraceMs: 60_000, tokenPrefix: "pda-d1-" }, onResource })),
 });
+// Off every start's clock: attribute the disk's pathless delegations once.
+void direct?.primeResolver();
 
 mkdirSync(values["mount-root"]!, { recursive: true });
 const origin = Date.now();
@@ -100,7 +141,15 @@ if (!values.source) {
   await makeSourceRun({ control, ref: source, mountRoot: values["mount-root"]!, story: "Design a creature that walks, then train it in eight universes and bring the best one home.", onResource, log });
   createdRuns.push(source.id);
 }
-feed.emit({ t: "run", at: 0, run: source.id, origin, environments: [{ id: "tab", label: "Tab", kind: "tab" }, { id: "universes", label: "Universes", kind: "sandbox" }] });
+feed.emit({
+  t: "run",
+  at: 0,
+  run: source.id,
+  origin,
+  environments: [{ id: "tab", label: "Tab", kind: "tab" }, { id: "universes", label: "Universes", kind: "sandbox" }],
+  source: "live",
+  ...(values["score-unit"] ? { scoreUnit: values["score-unit"] } : {}),
+});
 feed.emit({ t: "place", at: 0, place: { where: "tab", host: sourceLabel }, env: "tab" });
 feed.emit({ t: "stay.begin", at: 0, stay: { id: "run:source", lane: "run", host: sourceLabel, hostKind: "tab", from: 0 } });
 
@@ -122,7 +171,6 @@ const mv = new Multiverse({
   machinePrefix: "",
   emit: (e) => feed.emit(e),
   origin,
-  ensure: { leaseExpiryMs: 10_000, startGraceMs: 60_000, tokenPrefix: "pda-d1-" },
   log,
   onResource: (kind, id, note) => {
     onResource(kind, id, note);
@@ -162,13 +210,14 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
 }
 
 const server = await serveFeed({ feed, port: Number(values.port), command });
-log("feed", { url: server.url, source: source.id, universes: n });
+log("feed", { url: server.url, source: source.id, universes: n, transport });
 
 let cleaning: Promise<void> | undefined;
 async function cleanup(): Promise<void> {
   cleaning ??= (async () => {
     await mv.close({ machines: !values.keep });
     if (values.keep) return;
+    await pipes?.releaseAll();
     const swept = await fleet.sweep();
     for (const row of ledger.openRows().filter((r) => r.kind === "token")) {
       await removeMountToken(control, row.id).then(() => ledger.close("token", row.id, "cleanup"), (e: unknown) => log("token.remove-failed", { id: row.id, error: (e as Error).message }));
@@ -239,7 +288,7 @@ if (values.auto) {
       startMs: fanout.starts.map((s) => s.ms),
       fanoutMs: fanout.ms,
       takeovers: takeovers.map((t) => ({ openMs: t.openMs, trainingMs: t.trainingMs, killMs: t.killMs, startMs: t.startMs, revoked: t.revoked })),
-      collapse: { ms: collapse.ms, sealed: collapse.sealed.map((s) => ({ status: s.status, sealedSeq: s.sealedSeq, ms: s.ms })) },
+      collapse: { ms: collapse.ms, sealed: await Promise.all(collapse.sealed.map(async (s) => ({ ...(await readRunStatus(control, s.run).then((r) => ({ status: r?.status, sealedSeq: r?.sealedSeq })).catch(() => ({}))), ms: s.ms }))) },
       costUsd: feed.state.cost.usd,
       totalMs: Date.now() - t0,
     });

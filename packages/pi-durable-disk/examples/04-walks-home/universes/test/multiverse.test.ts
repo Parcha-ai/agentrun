@@ -2,7 +2,8 @@
 // fan-out, a kill and its takeover, a second kill, and the collapse; and the feed's replay rules.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { EnsureResult, ForkResult, HostDriver, HostHandle, RunRecord, RunRef } from "@parcha/pi-durable-disk";
+import type { EnsureResult, HostDriver, HostHandle, RunRecord, RunRef } from "@parcha/pi-durable-disk";
+import { directPlacement } from "../direct.ts";
 import { Feed, serveFeed } from "../feed.ts";
 import { KILLED_HOLD_MS, Multiverse, PROGRESS_FILE, type Control, type Fleet, type Machine, type Progress } from "../multiverse.ts";
 import type { ShowEvent } from "../show/types.ts";
@@ -36,12 +37,7 @@ function world() {
     progress.set(run, { step, total: 20, score, progress: step / 20, done: step >= 20, generation: r.generation, host: String((r.holder as { label?: string } | null)?.label), at: new Date().toISOString() });
   };
   let made = 0;
-  const fleet: Fleet = {
-    async warm(name) {
-      made++;
-      return { id: `box-${name}`, label: `box ${name}`, kind: "sandbox", ratePerHour: 0.36, since: Date.now() };
-    },
-    driver(machine: Machine): HostDriver {
+  const driver = (machine: Machine): HostDriver => {
       return {
         async start(ref) {
           calls.push(`start ${ref.id} on ${machine.id}`);
@@ -60,6 +56,23 @@ function world() {
           for (const [id, r] of records) if ((r.holder as { label?: string } | null)?.label === machine.label && r.status === "running") record(id, { status: "paused", sealedSeq: 9 });
         },
       };
+  };
+  const ops = {
+    ensureRunning: async (ref: RunRef, d: HostDriver): Promise<EnsureResult> => {
+      const handle = await d.start(ref, "token");
+      return { action: "started", reason: "none", woke: false, revoked: [], handle, token: { identifier: `tok-${ref.id}`, nickname: "n" }, startMs: 1, generation: 1 } as unknown as EnsureResult;
+    },
+    revoke: async (_c: unknown, id: string) => {
+      calls.push(`revoke ${id}`);
+      return [];
+    },
+    readRunStatus: async (_c: unknown, id: string) => records.get(id) ?? null,
+  };
+  const fleet: Fleet = {
+    ...directPlacement({ control, driver, ops: ops as never }),
+    async warm(name) {
+      made++;
+      return { id: `box-${name}`, label: `box ${name}`, kind: "sandbox", ratePerHour: 0.36, since: Date.now() };
     },
     async kill(m) {
       calls.push(`kill ${m.id}`);
@@ -69,23 +82,14 @@ function world() {
       calls.push(`retire ${m.id}`);
     },
   };
-  const ops = {
-    fork: async (ref: RunRef, id: string): Promise<ForkResult> => {
+  /** Sequential forks, as `fork` one by one would make them. */
+  const forkAll = async (ref: RunRef, ids: readonly string[]) =>
+    ids.map((id) => {
       calls.push(`fork ${ref.id} -> ${id}`);
       record(id, { generation: 0, sealedSeq: records.get(ref.id)!.sealedSeq });
-      return { run: id, from: ref.id, sealedSeq: 3, sourceGeneration: 1, files: 2, bytes: 10, owners: "caller", ms: 1 };
-    },
-    ensureRunning: async (ref: RunRef, driver: HostDriver): Promise<EnsureResult> => {
-      const handle = await driver.start(ref, "token");
-      return { action: "started", reason: "none", woke: false, revoked: [], handle, token: { identifier: `tok-${ref.id}`, nickname: "n" }, startMs: 1, generation: 1 } as unknown as EnsureResult;
-    },
-    revoke: async (_c: unknown, id: string) => {
-      calls.push(`revoke ${id}`);
-      return [];
-    },
-    readRunStatus: async (_c: unknown, id: string) => records.get(id) ?? null,
-  };
-  return { control, fleet, ops, checkpoint, records, calls, made: () => made };
+      return { run: id, ms: 1, files: 2, bytes: 10 };
+    });
+  return { control, fleet, forkAll, checkpoint, records, calls, made: () => made };
 }
 
 test("fan out, kill with a spare taking the slot, a second kill, collapse: what the stage folds", async () => {
@@ -108,7 +112,7 @@ test("fan out, kill with a spare taking the slot, a second kill, collapse: what 
     emit: (e) => (events.push(e), feed.emit(e)),
     origin: Date.now(),
     pollMs: 60_000,
-    ops: w.ops as never,
+    forkAll: w.forkAll,
   });
   const fan = await mv.fanOut();
   assert.deepEqual(fan.forks.map((f) => f.run), ["r-u1", "r-u2"]);
@@ -145,7 +149,8 @@ test("fan out, kill with a spare taking the slot, a second kill, collapse: what 
   assert.equal(st.universes.spare1!.reward, "forward speed");
   assert.equal(st.universes.u1!.slot, null);
   assert.equal(st.universes.u1!.replacedBy, "spare1");
-  assert.equal(report.generation, 2);
+  assert.equal(w.records.get("r-u1")!.generation, 2, "the spare's instance opened the run at the next generation");
+  assert.equal(report.transport, "direct");
   assert.deepEqual(w.calls.filter((c) => /kill|revoke/.test(c)), ["kill box-u1", "revoke r-u1"]);
   // The slot handover is shown only after the dead tile was readable.
   const slotMove = events.findIndex((e) => e.t === "universe" && e.id === "spare1" && e.patch.slot === 0);
@@ -171,7 +176,11 @@ test("fan out, kill with a spare taking the slot, a second kill, collapse: what 
   st = feed.state;
   assert.equal(st.universes.spare1!.status, "winner");
   assert.equal(st.universes.spare2!.status, "sealed");
-  assert.deepEqual(collapse.sealed.map((s) => [s.run, s.status, s.sealedSeq]), [["r-u2", "paused", 9]]);
+  assert.deepEqual(collapse.sealed.map((s) => s.run), ["r-u2"]);
+  assert.equal(w.records.get("r-u2")!.status, "paused", "the loser drained and sealed");
+  // Measured notes are flagged for the stage's captions: every takeover, the fan-out, the collapse.
+  const measured = events.filter((e) => e.t === "note" && e.measured).map((e) => (e as { kind: string }).kind);
+  assert.deepEqual(measured, ["story", "takeover", "takeover", "story"]);
   // The spare nobody used is deleted; the winner keeps its machine.
   const unused = Object.values(st.universes).filter((u) => u.id.startsWith("spare") && u.id !== "spare1" && u.id !== "spare2");
   for (const u of unused) assert.equal(u.status, "sealed");

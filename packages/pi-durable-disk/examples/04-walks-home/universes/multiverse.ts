@@ -1,19 +1,21 @@
-// The multiverse: one sealed run forked into N universes, each started on its own machine through a host driver, watched
-// over the disk's S3 API, a killed machine's universe taken over by a warm spare, and the collapse that keeps one
-// universe running and seals the rest. Host-agnostic: machines come from a `Fleet` (Daytona boxes, Modal sandboxes),
-// runs move only through the package's claim (fork, ensureRunning, revoke), and every change the stage draws is a
-// ShowEvent (show/types.ts), so the panel is the fold of what happened here.
+// The multiverse: one sealed run forked into N universes, each placed on its own machine by a fleet, watched over the
+// disk's S3 API, a killed machine's universe taken over by a warm spare, and the collapse that keeps one universe
+// running and seals the rest. Host-agnostic: machines and how a run reaches them (the transport) come from a `Fleet`
+// (direct.ts: the machine mounts the run; a pipe: the server holds the claim and the machine runs the agent through it),
+// and every change the stage draws is a ShowEvent (show/types.ts), so the panel is the fold of what happened here.
 //
 // Invariants:
-//   - A universe's run has one writer: a takeover revokes the dead holder's delegation before the spare mounts, and the
-//     fence is Archil's, so a holder that was not quite dead commits nothing after it.
-//   - The orchestrator never mounts a universe's run; it reads `run.json` and `work/universe/progress.json` over S3 and
-//     mounts only the source and each new run while forking them (`fork`).
+//   - A universe's run has one writer. A takeover goes through the fleet's transport, which keeps it: a direct fleet
+//     revokes the dead holder's delegation before the spare mounts (Archil fences a holder that was not quite dead); a
+//     pipe refuses every frame of the dead writer's connection once the spare's is attached.
+//   - The orchestrator never mounts a universe's run itself, except while forking it; it reads `run.json` and the
+//     workload's progress over S3.
 //   - A show line is one machine's life in the grid: a spare that takes over a killed universe becomes that universe's
 //     line in the same slot (`replaces`), as the stage's contract says.
-import type { ArchilHost, PathlessResolver, CheckControl, ControlApi, EnsureOptions, EnsureResult, HostDriver, HostHandle, HostStatus, RunRecord, RunRef, SupervisorControl } from "@parcha/pi-durable-disk";
-import { ensureRunning, findDelegations, fork, pathlessResolver, readRunStatus, revoke, runPath } from "@parcha/pi-durable-disk";
-import type { Cost, HostKind, ShowEvent, Universe, UniverseStatus } from "./show/types.ts";
+//   - A note says `measured` only when every number in it was measured on this run.
+import type { ArchilHost, CheckControl, ControlApi, ForkOptions, ForkResult, HostStatus, RunRef, SupervisorControl } from "@parcha/pi-durable-disk";
+import { fork, runPath } from "@parcha/pi-durable-disk";
+import type { Cost, HostKind, NoteKind, ShowEvent, Universe, UniverseStatus } from "./show/types.ts";
 
 export type Control = SupervisorControl & CheckControl & ControlApi;
 
@@ -37,20 +39,50 @@ export interface Arrival {
   readonly planned: boolean;
 }
 
-/** Where universes run. A driver from `driver` starts a run on that machine, which it already holds ready. */
+/** A run on a machine, as a fleet placed it; what the placement holds is the fleet's own business. */
+export interface Placed {
+  readonly run: RunRef;
+  readonly machine: Machine;
+}
+
+export type PlaceResult = {
+  readonly placed: Placed;
+  /** Delegations a direct takeover revoked from the placement it replaces; 0 through a pipe. */
+  readonly revoked: number;
+  /** Wall ms the machine was handed the run (direct: the driver's start returned; pipe: the box was invited). */
+  readonly launchedAt: number;
+  /** Wall ms the run was open on the machine (direct: run.json at the new generation; pipe: the writer attached). */
+  readonly openedAt: number;
+  /** The supervisor's own start time, when the transport has one. */
+  readonly startMs?: number;
+};
+
+/** How a fleet's runs reach its machines: the machine mounts the run, or the server holds it and pipes it over. */
+export type Transport = "direct" | "pipe";
+
+/** Where universes run, and how a run gets there. */
 export interface Fleet {
+  readonly transport: Transport;
   /** Create a machine and make it ready to take a run: started, set up, no claim and no mount. */
   warm(name: string): Promise<Machine>;
-  /** A driver whose next `start` runs the run on `machine` with this environment (the universe and its arrival). */
-  driver(machine: Machine, env: Readonly<Record<string, string>>): HostDriver;
-  /** Power the machine off now: the instance gets no drain, the way a machine dies. */
+  /**
+   * Run `run` on `machine` (warm, holding nothing) with this environment (the universe and its arrival). `from` is the
+   * placement this one replaces, whose machine is dead or dying: the transport takes the run from it with one writer
+   * kept. Resolves once the run is open on `machine`.
+   */
+  place(run: RunRef, machine: Machine, env: Readonly<Record<string, string>>, from?: Placed): Promise<PlaceResult>;
+  /** The placement's machine as the fleet sees it; `gone`, `stopped` or `failed` is a machine that died. */
+  status(placed: Placed): Promise<HostStatus>;
+  /** Drain the run, seal its run.json, and delete the machine. */
+  seal(placed: Placed): Promise<void>;
+  /** Power the machine off now: whatever runs there gets no drain, the way a machine dies. */
   kill(machine: Machine): Promise<void>;
   /** Delete a machine that holds no run (a spare nobody needed). */
   retire(machine: Machine): Promise<void>;
 }
 
 export interface UniverseSpec {
-  /** The stage's id for the universe's first line ("u0" .. "u7"). */
+  /** The stage's id for the universe's first line ("u1" .. "u8"). */
   readonly id: string;
   /** The reward variant it trains against, one short line. */
   readonly reward: string;
@@ -58,7 +90,7 @@ export interface UniverseSpec {
   readonly env?: Readonly<Record<string, string>>;
 }
 
-/** What a universe's instance writes after each checkpoint (and runs the claim's barrier on): `work/universe/progress.json`. */
+/** What a universe's workload says after each checkpoint (durable on the disk before it says so). */
 export interface Progress {
   readonly step: number;
   readonly total: number;
@@ -75,6 +107,15 @@ export interface Progress {
 }
 
 export const PROGRESS_FILE = "work/universe/progress.json";
+
+/** The stand-in trainer's `progress.json` (trainer.ts), read over S3. */
+export async function readProgressJson(control: Pick<Control, "getObject">, run: RunRef): Promise<Progress | null> {
+  try {
+    return JSON.parse(new TextDecoder().decode(await control.getObject(`${runPath(run.id)}/${PROGRESS_FILE}`))) as Progress;
+  } catch {
+    return null;
+  }
+}
 
 export interface MultiverseOptions {
   readonly control: Control;
@@ -96,24 +137,18 @@ export interface MultiverseOptions {
   readonly emit: (event: ShowEvent) => void;
   /** Wall-clock ms of the show's time 0. */
   readonly origin: number;
-  /** Supervisor settings for each start (lease expiry, start grace, token prefix). */
-  readonly ensure?: Omit<EnsureOptions, "control" | "demand">;
+  /** How a universe's checkpoints are read. Default: the stand-in trainer's `work/universe/progress.json`. */
+  readonly progress?: (run: RunRef, spec: UniverseSpec) => Promise<Progress | null>;
+  /** The workload's score is a measurement (D2's evaluation), not a stand-in: the winner's note says so to the stage. */
+  readonly scoresMeasured?: boolean;
   /** How often runs are read over S3. Default 1 s. */
   readonly pollMs?: number;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** Every disk resource this process creates or removes (fork tokens, mounts, run directories). */
   readonly onResource?: (kind: string, id: string, note?: string) => void;
   readonly now?: () => number;
-  /** The package's run operations; replaceable so tests can script the disk. */
-  readonly ops?: Partial<RunOps>;
-}
-
-/** The package calls the multiverse makes on runs. */
-export interface RunOps {
-  fork: typeof fork;
-  ensureRunning: typeof ensureRunning;
-  revoke: typeof revoke;
-  readRunStatus: typeof readRunStatus;
+  /** How the source becomes the universes' runs; replaceable so tests can script the disk. Default: `fork`, one by one. */
+  readonly forkAll?: (source: RunRef, ids: readonly string[], options: ForkOptions) => Promise<{ run: string; ms: number; files: number; bytes: number }[]>;
 }
 
 /** One stage line: a machine's life in the grid, and the run it holds when it holds one. */
@@ -126,14 +161,13 @@ interface Line {
   ready: Promise<Machine>;
   run: RunRef | null;
   spec: UniverseSpec | null;
-  driver: HostDriver | null;
-  handle: HostHandle | null;
+  placed: Placed | null;
   stay: string | null;
   /** The last checkpoint step seen, and the generation that wrote it. */
   step: number;
   generation: number;
   score: number | null;
-  /** Wall ms the machine stopped costing (killed, retired, stopped). */
+  /** Wall ms the machine stopped costing (killed, retired, sealed). */
   ended: number | null;
   /** Set while this process is killing or replacing its machine, so a poll does not take it over twice. */
   leaving: boolean;
@@ -141,6 +175,7 @@ interface Line {
 
 export type FanOutReport = {
   readonly forks: { run: string; ms: number; files: number; bytes: number }[];
+  readonly forkMs: number;
   readonly starts: { line: string; run: string; host: string; ms: number; startMs: number | null }[];
   readonly ms: number;
 };
@@ -149,23 +184,23 @@ export type TakeoverReport = {
   readonly killed: string;
   readonly by: string;
   readonly run: string;
-  /** Kill call made to the replacement's instance open (run.json at its new generation, its holder). */
+  readonly transport: Transport;
+  /** Kill call made to the replacement's run open. */
   readonly openMs: number;
   /** ...to the replacement's first checkpoint. */
   readonly trainingMs: number | null;
   readonly killMs: number;
   readonly revoked: number;
   readonly startMs: number;
-  readonly generation: number;
   readonly planned: boolean;
-  /** From the kill call: revoked; slot handed to the spare (after the hold); its instance launched; the run open. */
-  readonly steps: { revokedMs: number; handedMs: number; launchedMs: number; openedMs: number };
+  /** From the kill call: the slot handed to the spare (after the hold); the spare launched; the run open there. */
+  readonly steps: { handedMs: number; launchedMs: number; openedMs: number };
 };
 
 export type CollapseReport = {
   readonly winner: string;
   readonly run: string;
-  readonly sealed: { line: string; run: string; status: string; sealedSeq: number | null; ms: number }[];
+  readonly sealed: { line: string; run: string; ms: number }[];
   readonly ms: number;
 };
 
@@ -184,27 +219,36 @@ const ALIVE: readonly UniverseStatus[] = ["starting", "training", "takeover", "w
 /** How long a killed tile shows dead before its spare takes the slot, so a camera can read it (the stage's rule). */
 export const KILLED_HOLD_MS = 700;
 
+/** `fork` one new run after another (each mounts the source exclusively). */
+async function forkEach(source: RunRef, ids: readonly string[], options: ForkOptions) {
+  const out: { run: string; ms: number; files: number; bytes: number }[] = [];
+  for (const id of ids) {
+    const r: ForkResult = await fork(source, id, options);
+    out.push({ run: r.run, ms: r.ms, files: r.files, bytes: r.bytes });
+  }
+  return out;
+}
+
 export class Multiverse {
   readonly #o: MultiverseOptions;
-  readonly #ops: RunOps;
   readonly #lines = new Map<string, Line>();
   readonly #now: () => number;
   readonly #log: NonNullable<MultiverseOptions["log"]>;
+  readonly #progress: NonNullable<MultiverseOptions["progress"]>;
   #spareSeq = 0;
   #poller: ReturnType<typeof setInterval> | null = null;
   #polling = false;
   #ticks = 0;
   #phase: "idle" | "forking" | "running" | "collapsed" | "closed" = "idle";
-  /** One resolver for every decision: a pathless delegation's run is looked up once (an exec), not once per start. */
-  readonly #pathless: PathlessResolver;
+  /** Set when the fan-out was asked for; cleared once every universe trained (its note is sent then). */
+  #fanoutAt: number | null = null;
 
   constructor(options: MultiverseOptions) {
     if (options.universes.length < 1 || options.universes.length > 8) throw new MultiverseError("NOT_RUNNING", "a multiverse has 1 to 8 universes");
     this.#o = options;
-    this.#ops = { fork, ensureRunning, revoke, readRunStatus, ...options.ops };
-    this.#pathless = options.ensure?.pathless ?? pathlessResolver(options.control);
     this.#now = options.now ?? Date.now;
     this.#log = options.log ?? (() => {});
+    this.#progress = options.progress ?? ((run) => readProgressJson(options.control, run));
   }
 
   get phase() {
@@ -219,12 +263,12 @@ export class Multiverse {
     this.#o.emit({ t: "universe", at: this.#at(), id: line.id, patch });
   }
 
-  #note(kind: "story" | "switch" | "kill" | "takeover" | "winner" | "home", text: string): void {
-    this.#o.emit({ t: "note", at: this.#at(), kind, text });
+  #note(kind: NoteKind, text: string, measured = false): void {
+    this.#o.emit({ t: "note", at: this.#at(), kind, text, ...(measured ? { measured: true } : {}) });
   }
 
   #newLine(id: string, slot: number | null, status: UniverseStatus): Line {
-    const line: Line = { id, slot, status, machine: null, ready: Promise.reject(new Error("no machine yet")), run: null, spec: null, driver: null, handle: null, stay: null, step: -1, generation: 0, score: null, ended: null, leaving: false };
+    const line: Line = { id, slot, status, machine: null, ready: Promise.reject(new Error("no machine yet")), run: null, spec: null, placed: null, stay: null, step: -1, generation: 0, score: null, ended: null, leaving: false };
     line.ready.catch(() => {});
     this.#lines.set(id, line);
     return line;
@@ -249,6 +293,11 @@ export class Multiverse {
     return line;
   }
 
+  #topUpSpares(): void {
+    const have = [...this.#lines.values()].filter((l) => l.status === "spare" && l.slot === null).length;
+    for (let i = have; i < this.#o.spares; i++) this.#addSpare();
+  }
+
   #env(line: Line, arrival: Arrival): Record<string, string> {
     const spec = line.spec!;
     return {
@@ -264,15 +313,16 @@ export class Multiverse {
     };
   }
 
-  /** Start `line`'s run on its machine through the supervisor. */
-  async #start(line: Line, arrival: Arrival): Promise<Extract<EnsureResult, { action: "started" }>> {
+  /** Place `line`'s run on its machine; `from` is the placement it replaces. */
+  async #place(line: Line, arrival: Arrival, from?: Placed): Promise<PlaceResult> {
     const machine = await line.ready;
-    const driver = this.#o.fleet.driver(machine, this.#env(line, arrival));
-    const result = await this.#ops.ensureRunning(line.run!, driver, { ...this.#o.ensure, control: this.#o.control, pathless: this.#pathless, demand: true });
-    if (result.action !== "started") throw new MultiverseError("START_FAILED", `the supervisor did not start ${line.run!.id}: ${result.action}`);
-    this.#o.onResource?.("token", result.token.identifier, result.token.nickname);
-    line.driver = driver;
-    line.handle = result.handle;
+    let result: PlaceResult;
+    try {
+      result = await this.#o.fleet.place(line.run!, machine, this.#env(line, arrival), from);
+    } catch (error) {
+      throw new MultiverseError("START_FAILED", `placing ${line.run!.id} on ${machine.label} failed: ${(error as Error).message}`);
+    }
+    line.placed = result.placed;
     return result;
   }
 
@@ -293,7 +343,6 @@ export class Multiverse {
    */
   prewarm(): void {
     if (this.#phase !== "idle") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}`);
-    this.#warmResolver();
     for (const spec of this.#o.universes) {
       if (this.#lines.has(spec.id)) continue;
       void this.#warm(this.#newLine(spec.id, null, "starting")).catch(() => {});
@@ -306,26 +355,15 @@ export class Multiverse {
     await Promise.allSettled([...this.#lines.values()].map((l) => l.ready));
   }
 
-  /** Attribute the disk's pathless delegations now (one exec), off every start's clock. */
-  #warmResolver(): void {
-    if (this.#o.ops?.revoke) return;
-    void findDelegations(this.#o.control, this.#o.source.id, this.#pathless).catch((error: unknown) => this.#log("pathless.failed", { error: (error as Error).message }));
-  }
-
-  #topUpSpares(): void {
-    const have = [...this.#lines.values()].filter((l) => l.status === "spare" && l.slot === null).length;
-    for (let i = have; i < this.#o.spares; i++) this.#addSpare();
-  }
-
   /**
-   * Fork the source into every universe and start each on its own machine. Machines are made while the forks copy;
-   * each universe starts as soon as its fork is done. Forks run one after another (each mounts the source exclusively).
+   * Fork the source into every universe and place each on its own machine. Machines are made while the forks copy
+   * (unless prewarmed); every universe is placed as soon as the forks are done.
    */
   async fanOut(): Promise<FanOutReport> {
     if (this.#phase !== "idle") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}`);
     this.#phase = "forking";
-    this.#warmResolver();
     const t0 = this.#now();
+    this.#fanoutAt = t0;
     const n = this.#o.universes.length;
     this.#note("story", `Forking into ${n} universes, each on its own machine.`);
     this.#o.emit({ t: "place", at: this.#at(), place: { where: "universes", host: `${n} machines` }, env: "universes" });
@@ -341,50 +379,41 @@ export class Multiverse {
       return line;
     });
     this.#topUpSpares();
-    const forks: FanOutReport["forks"] = [];
-    const starts: Promise<FanOutReport["starts"][number]>[] = [];
-    for (const line of lines) {
-      const f0 = this.#now();
-      const r = await this.#ops.fork(this.#o.source, line.run!.id, { control: this.#o.control, mountRoot: this.#o.mountRoot, ...(this.#o.forkHost ? { host: this.#o.forkHost } : {}), ...(this.#o.onResource ? { onResource: this.#o.onResource } : {}) });
-      forks.push({ run: r.run, ms: this.#now() - f0, files: r.files, bytes: r.bytes });
-      this.#o.onResource?.("run", r.run, `fork of ${this.#o.source.id}`);
-      this.#log("fork", { run: r.run, ms: this.#now() - f0, files: r.files, bytes: r.bytes, sealedSeq: r.sealedSeq });
-      const arrival: Arrival = { switchId: `fanout-${line.run!.id}`, from: this.#o.sourceLabel, planned: true };
-      starts.push(
-        (async () => {
-          const s0 = this.#now();
-          const result = await this.#start(line, arrival);
-          const ms = this.#now() - s0;
-          this.#beginStay(line, { fromHost: this.#o.sourceLabel, ms, planned: true });
-          this.#log("start", { line: line.id, run: line.run!.id, machine: line.machine!.id, ms, startMs: result.startMs ?? null });
-          return { line: line.id, run: line.run!.id, host: line.machine!.label, ms, startMs: result.startMs ?? null };
-        })(),
-      );
+    const f0 = this.#now();
+    const forks = await (this.#o.forkAll ?? forkEach)(
+      this.#o.source,
+      lines.map((l) => l.run!.id),
+      { control: this.#o.control, mountRoot: this.#o.mountRoot, ...(this.#o.forkHost ? { host: this.#o.forkHost } : {}), ...(this.#o.onResource ? { onResource: this.#o.onResource } : {}) },
+    );
+    const forkMs = this.#now() - f0;
+    for (const f of forks) {
+      this.#o.onResource?.("run", f.run, `fork of ${this.#o.source.id}`);
+      this.#log("fork", f);
     }
-    const settled = await Promise.allSettled(starts);
+    const settled = await Promise.allSettled(
+      lines.map(async (line) => {
+        const s0 = this.#now();
+        const r = await this.#place(line, { switchId: `fanout-${line.run!.id}`, from: this.#o.sourceLabel, planned: true });
+        const ms = r.openedAt - s0;
+        this.#beginStay(line, { fromHost: this.#o.sourceLabel, ms, planned: true });
+        this.#log("start", { line: line.id, run: line.run!.id, machine: line.machine!.id, ms, startMs: r.startMs ?? null });
+        return { line: line.id, run: line.run!.id, host: line.machine!.label, ms, startMs: r.startMs ?? null };
+      }),
+    );
     this.#phase = "running";
     this.#startPolling();
-    const failed = settled.filter((s) => s.status === "rejected");
+    const failed = settled.filter((s): s is PromiseRejectedResult => s.status === "rejected");
     if (failed.length > 0) {
-      for (const f of failed) this.#log("start.failed", { error: ((f as PromiseRejectedResult).reason as Error).message });
-      throw new MultiverseError("START_FAILED", `${failed.length} of ${n} universes did not start: ${((failed[0] as PromiseRejectedResult).reason as Error).message}`);
+      for (const f of failed) this.#log("start.failed", { error: (f.reason as Error).message });
+      throw new MultiverseError("START_FAILED", `${failed.length} of ${n} universes did not start: ${(failed[0]!.reason as Error).message}`);
     }
-    return { forks, starts: settled.map((s) => (s as PromiseFulfilledResult<FanOutReport["starts"][number]>).value), ms: this.#now() - t0 };
+    return { forks, forkMs, starts: settled.map((s) => (s as PromiseFulfilledResult<FanOutReport["starts"][number]>).value), ms: this.#now() - t0 };
   }
 
   #startPolling(): void {
     if (this.#poller) return;
     this.#poller = setInterval(() => void this.poll().catch((error: unknown) => this.#log("poll.failed", { error: (error as Error).message })), this.#o.pollMs ?? 1_000);
     this.#poller.unref?.();
-  }
-
-  async #readProgress(run: RunRef): Promise<Progress | null> {
-    try {
-      const bytes = await this.#o.control.getObject(`${runPath(run.id)}/${PROGRESS_FILE}`);
-      return JSON.parse(new TextDecoder().decode(bytes)) as Progress;
-    } catch {
-      return null;
-    }
   }
 
   #cost(line: Line, at = this.#now()): number {
@@ -401,7 +430,7 @@ export class Multiverse {
       const live = [...this.#lines.values()].filter((l) => l.run && ALIVE.includes(l.status) && !l.leaving);
       await Promise.all(
         live.map(async (line) => {
-          const p = await this.#readProgress(line.run!);
+          const p = await this.#progress(line.run!, line.spec!);
           if (p && (p.step > line.step || p.generation > line.generation)) {
             const first = line.status === "starting" || line.status === "takeover";
             if (p.step > line.step) {
@@ -416,8 +445,8 @@ export class Multiverse {
               this.#patch(line, { status: "training", startedAt: this.#at() });
             }
           }
-          if (checkHosts && line.driver && line.handle && !line.leaving) {
-            const status: HostStatus = await line.driver.status(line.handle).catch(() => "unknown" as const);
+          if (checkHosts && line.placed && !line.leaving) {
+            const status: HostStatus = await this.#o.fleet.status(line.placed).catch(() => "unknown" as const);
             if ((status === "gone" || status === "stopped" || status === "failed") && !line.leaving) {
               this.#log("machine.lost", { line: line.id, status });
               void this.#replace(line, { planned: false, t0: this.#now(), kill: false, why: `${line.machine!.label} stopped (${status})` }).catch((error: unknown) => this.#log("takeover.failed", { line: line.id, error: (error as Error).message }));
@@ -425,10 +454,21 @@ export class Multiverse {
           }
         }),
       );
+      this.#fanoutNote();
       this.#emitCost();
     } finally {
       this.#polling = false;
     }
+  }
+
+  /** Once every universe trains, the measured time from the fan-out command. */
+  #fanoutNote(): void {
+    if (this.#fanoutAt === null || this.#phase !== "running") return;
+    const slotted = [...this.#lines.values()].filter((l) => l.slot !== null);
+    if (slotted.length === 0 || !slotted.every((l) => l.status === "training")) return;
+    const s = ((this.#now() - this.#fanoutAt) / 1000).toFixed(1);
+    this.#fanoutAt = null;
+    this.#note("story", `${slotted.length} machines training ${s} s after the fan-out.`, true);
   }
 
   #emitCost(): void {
@@ -444,22 +484,23 @@ export class Multiverse {
   }
 
   /**
-   * The kill button: power off the universe's machine, revoke its claim, and start its run on a warm spare, which takes
-   * the universe's slot. Resolves when the spare's instance has opened the run.
+   * The kill button: power off the universe's machine and place its run on a warm spare, which takes the universe's
+   * slot. Resolves when the spare has the run open and has written its first checkpoint (or a minute passed).
    */
   async kill(lineId: string): Promise<TakeoverReport> {
     const line = this.#lines.get(lineId);
     if (!line) throw new MultiverseError("NO_SUCH_UNIVERSE", `no universe ${lineId}`);
-    if (!line.run || !line.machine || !ALIVE.includes(line.status) || line.status === "winner" || line.leaving) {
+    if (!line.run || !line.machine || !line.placed || !ALIVE.includes(line.status) || line.status === "winner" || line.leaving) {
       throw new MultiverseError("NOT_RUNNING", `${lineId} is ${line.status}`);
     }
     return this.#replace(line, { planned: false, t0: this.#now(), kill: true, why: `${line.machine.label}, which was killed` });
   }
 
   /**
-   * Move `line`'s run to a spare: reserve the spare at once (a second kill cannot claim it), kill the machine when asked,
-   * revoke the old claim, show the dead tile for `KILLED_HOLD_MS`, hand the spare the slot, start the run there and wait
-   * for its instance to open. The spare's tile turns `training` at its first checkpoint (the poll).
+   * Move `line`'s run to a spare: reserve the spare at once (a second kill cannot claim it), kill the machine when asked
+   * and place the run on the spare at the same time (the fleet's transport keeps one writer), show the dead tile for
+   * `KILLED_HOLD_MS` while that runs, then hand the spare the slot. The spare's tile turns `training` at its first
+   * checkpoint (the poll).
    */
   async #replace(line: Line, how: { planned: boolean; t0: number; kill: boolean; why: string }): Promise<TakeoverReport> {
     line.leaving = true;
@@ -469,15 +510,8 @@ export class Multiverse {
     this.#endStay(line, "killed");
     this.#note("kill", how.kill ? `${line.machine!.label} was killed.` : `${how.why}.`);
     const run = line.run!;
-    const before = await this.#ops.readRunStatus(this.#o.control, run.id).catch(() => null);
-    const killing = how.kill ? this.#o.fleet.kill(line.machine!).then(() => this.#now() - how.t0) : Promise.resolve(0);
-    // The holder is dead or about to be: its delegation goes now, so the spare's mount does not wait on a lease, and a
-    // holder that is not quite dead is fenced at its next write.
-    const [killMs, revoked] = await Promise.all([killing, this.#ops.revoke(this.#o.control, run.id)]);
-    line.ended ??= this.#now();
-    if (!how.kill) void this.#o.fleet.kill(line.machine!).catch(() => {});
-    const revokedAt = this.#now();
-    this.#log("revoked", { line: line.id, run: run.id, delegations: revoked.length, killMs, ms: revokedAt - how.t0 });
+    const from = line.placed!;
+    const killing = (how.kill ? this.#o.fleet.kill(line.machine!) : this.#o.fleet.kill(line.machine!).catch(() => {})).then(() => this.#now() - how.t0);
     try {
       await spare.ready;
     } catch (error) {
@@ -488,38 +522,39 @@ export class Multiverse {
     spare.step = line.step;
     spare.generation = line.generation;
     void this.#refill();
-    // The spare starts now; the stage's dead tile is held for its own sake, in parallel, not on the takeover's clock.
     const arrival: Arrival = { switchId: `takeover-${run.id}-${spare.id}`, from: how.why, planned: how.planned };
-    const starting = this.#start(spare, arrival).then((r) => ({ r, at: this.#now() }));
-    starting.catch(() => {});
+    // The spare is placed now; the stage's dead tile is held for its own sake, in parallel, not on the takeover's clock.
+    const placing = this.#place(spare, arrival, from);
+    placing.catch(() => {});
     await sleep(how.t0 + KILLED_HOLD_MS - this.#now());
     spare.slot = line.slot;
     const handed = this.#now();
     this.#patch(spare, { slot: line.slot, status: "takeover", reward: line.spec!.reward, replaces: line.id, progress: 0 });
     this.#patch(line, { slot: null, replacedBy: spare.id });
     line.slot = null;
-    const { r: result, at: launched } = await starting;
-    const opened = await this.#waitOpen(run, spare, (before?.generation ?? line.generation) + 1);
-    const openMs = opened.at - how.t0;
+    const [killMs, result] = await Promise.all([killing, placing]);
+    line.ended ??= this.#now();
+    const openMs = result.openedAt - how.t0;
     this.#beginStay(spare, { fromHost: line.machine!.label, ms: openMs, planned: how.planned });
-    const trained = await this.#waitCheckpoint(spare, opened.generation, 60_000);
+    const trained = await this.#waitCheckpoint(spare, 60_000);
     const resumedMs = trained === null ? null : trained - how.t0;
     this.#note(
       "takeover",
-      `${spare.machine!.label} took over universe ${spare.spec!.id}: run open ${openMs} ms after the kill, training again from its last checkpoint at ${resumedMs ?? "?"} ms (measured).`,
+      `${spare.machine!.label} took over universe ${spare.spec!.id}: run open ${openMs} ms after the kill${resumedMs === null ? "" : `, training again from its last checkpoint at ${resumedMs} ms`}.`,
+      true,
     );
     const report: TakeoverReport = {
       killed: line.id,
       by: spare.id,
       run: run.id,
+      transport: this.#o.fleet.transport,
       openMs,
       trainingMs: resumedMs,
       killMs,
-      revoked: revoked.length,
+      revoked: result.revoked,
       startMs: result.startMs ?? 0,
-      generation: opened.generation,
       planned: how.planned,
-      steps: { revokedMs: revokedAt - how.t0, handedMs: handed - how.t0, launchedMs: launched - how.t0, openedMs: openMs },
+      steps: { handedMs: handed - how.t0, launchedMs: result.launchedAt - how.t0, openedMs: openMs },
     };
     this.#log("takeover", report);
     return report;
@@ -541,22 +576,12 @@ export class Multiverse {
     if (this.#phase === "running") this.#topUpSpares();
   }
 
-  /** run.json written by the new instance: its generation reached, held by the spare's machine. */
-  async #waitOpen(run: RunRef, spare: Line, generation: number, timeoutMs = 120_000): Promise<{ at: number; generation: number; record: RunRecord }> {
-    const deadline = this.#now() + timeoutMs;
-    for (;;) {
-      const record = await this.#ops.readRunStatus(this.#o.control, run.id).catch(() => null);
-      if (record && record.status === "running" && record.generation >= generation) return { at: this.#now(), generation: record.generation, record };
-      if (this.#now() > deadline) throw new MultiverseError("START_FAILED", `${run.id} did not open on ${spare.machine?.label} in ${timeoutMs} ms`);
-      await sleep(100);
-    }
-  }
-
-  async #waitCheckpoint(line: Line, generation: number, timeoutMs: number): Promise<number | null> {
+  /** The first checkpoint the spare's machine writes. */
+  async #waitCheckpoint(line: Line, timeoutMs: number): Promise<number | null> {
     const deadline = this.#now() + timeoutMs;
     while (this.#now() < deadline) {
-      const p = await this.#readProgress(line.run!);
-      if (p && p.generation >= generation && p.host === line.machine?.label) {
+      const p = await this.#progress(line.run!, line.spec!);
+      if (p && p.host === line.machine?.label) {
         if (line.status === "takeover") await this.poll();
         return this.#now();
       }
@@ -566,37 +591,37 @@ export class Multiverse {
   }
 
   /**
-   * Keep one universe (the best score unless named) and seal the rest: each loser's instance drains, seals its run.json
-   * with the store's last sequence and leaves its machine, which is deleted; unused spares are deleted.
+   * Keep one universe (the best score unless named) and seal the rest: each loser's run is drained and sealed and its
+   * machine deleted; unused spares are deleted.
    */
   async collapse(winnerId?: string): Promise<CollapseReport> {
     if (this.#phase !== "running") throw new MultiverseError("BUSY", `the multiverse is ${this.#phase}`);
     const t0 = this.#now();
-    const live = [...this.#lines.values()].filter((l) => l.slot !== null && l.run && (l.status === "training" || l.status === "starting"));
+    const live = [...this.#lines.values()].filter((l) => l.slot !== null && l.placed && (l.status === "training" || l.status === "starting"));
     const winner = winnerId ? this.#lines.get(winnerId) : live.filter((l) => l.score !== null).sort((a, b) => b.score! - a.score!)[0];
     if (!winner || !live.includes(winner)) throw new MultiverseError("NO_WINNER", winnerId ? `${winnerId} is not a running universe` : "no universe has a score yet");
     this.#phase = "collapsed";
     winner.status = "winner";
     this.#patch(winner, { status: "winner" });
-    this.#note("winner", `Universe ${winner.spec!.id} wins with ${winner.score?.toFixed(3) ?? "no score"}: ${winner.spec!.reward}. The rest are sealed.`);
+    this.#note("winner", `Universe ${winner.spec!.id} wins with ${winner.score?.toFixed(3) ?? "no score"}: ${winner.spec!.reward}. The rest are sealed.`, this.#o.scoresMeasured === true);
     const sealed = await Promise.all(
       live
         .filter((l) => l !== winner)
         .map(async (line) => {
           const s0 = this.#now();
           line.leaving = true;
-          await line.driver!.stop(line.handle!).catch((error: unknown) => this.#log("seal.stop-failed", { line: line.id, error: (error as Error).message }));
+          await this.#o.fleet.seal(line.placed!).catch((error: unknown) => this.#log("seal.failed", { line: line.id, error: (error as Error).message }));
           line.ended = this.#now();
-          const record = await this.#ops.readRunStatus(this.#o.control, line.run!.id).catch(() => null);
           line.status = "sealed";
           this.#patch(line, { status: "sealed" });
           this.#endStay(line, "sealed");
-          return { line: line.id, run: line.run!.id, status: record?.status ?? "unknown", sealedSeq: record?.sealedSeq ?? null, ms: this.#now() - s0 };
+          return { line: line.id, run: line.run!.id, ms: this.#now() - s0 };
         }),
     );
     await this.#retireSpares();
     this.#emitCost();
     const report: CollapseReport = { winner: winner.id, run: winner.run!.id, sealed, ms: this.#now() - t0 };
+    this.#note("story", `Collapse took ${(report.ms / 1000).toFixed(1)} s: ${sealed.length} ${sealed.length === 1 ? "universe" : "universes"} sealed on the disk.`, true);
     this.#log("collapse", report);
     return report;
   }
@@ -610,15 +635,15 @@ export class Multiverse {
           if (m) await this.#o.fleet.retire(m).catch((error: unknown) => this.#log("retire.failed", { line: line.id, error: (error as Error).message }));
           line.ended = this.#now();
           line.status = "sealed";
-          this.#patch(line, { status: "sealed" });
+          this.#patch(line, { status: "sealed", slot: null });
         }),
     );
   }
 
   /** The winner's run and where it is, for the move home. */
-  winner(): { line: string; run: RunRef; machine: Machine; handle: HostHandle; driver: HostDriver } | null {
+  winner(): { line: string; placed: Placed } | null {
     const w = [...this.#lines.values()].find((l) => l.status === "winner");
-    return w && w.run && w.machine && w.handle && w.driver ? { line: w.id, run: w.run, machine: w.machine, handle: w.handle, driver: w.driver } : null;
+    return w?.placed ? { line: w.id, placed: w.placed } : null;
   }
 
   /** The machine a line holds, once ready. */
@@ -631,7 +656,7 @@ export class Multiverse {
     return [...this.#lines.values()].map((l) => ({ id: l.id, slot: l.slot, status: l.status, run: l.run?.id ?? null, machine: l.machine?.id ?? null, step: l.step, generation: l.generation }));
   }
 
-  /** Stop polling; with `machines`, stop every instance (drained) and delete every machine this multiverse made. */
+  /** Stop polling; with `machines`, seal every placed run and delete every machine this multiverse made. */
   async close(options: { machines?: boolean } = {}): Promise<void> {
     if (this.#poller) clearInterval(this.#poller);
     this.#poller = null;
@@ -639,16 +664,17 @@ export class Multiverse {
     if (!options.machines) return;
     await Promise.all(
       [...this.#lines.values()].map(async (line) => {
-        if (line.driver && line.handle && line.ended === null) await line.driver.stop(line.handle).catch(() => {});
-        else if (line.ended === null) {
+        if (line.ended !== null) return;
+        if (line.placed) await this.#o.fleet.seal(line.placed).catch(() => {});
+        else {
           const m = await line.ready.catch(() => null);
           if (m) await this.#o.fleet.retire(m).catch(() => {});
         }
-        line.ended ??= this.#now();
+        line.ended = this.#now();
       }),
     );
   }
 }
 
 const round = (x: number) => Math.round(x * 10_000) / 10_000;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
