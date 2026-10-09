@@ -47,6 +47,8 @@ wss.on("connection", (socket: WebSocket) => {
     return;
   }
   taken = true;
+  // Unhandled, an error event (a frame over maxPayload, a broken connection) would end the process before the close.
+  socket.on("error", (error) => log("socket.error", { error: error.message }));
   socket.once("message", (data) => {
     const invite = JSON.parse(String(data)) as Invite;
     if (invite.t !== "invite") {
