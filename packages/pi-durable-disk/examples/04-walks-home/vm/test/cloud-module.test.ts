@@ -46,9 +46,10 @@ test("a GPU sandbox lives 20 minutes at most unless the caller says otherwise", 
   assert.equal(modalOptionsFromArgs({ "gpu-image": "im-2", "gpu-ttl-minutes": "30" }).gpu?.ttlMinutes, 30, "a caller's value wins");
 });
 
-test("the GPU environment is named for a viewer: a cloud GPU (Modal), the provider in parentheses", async () => {
+test("the GPU environment is named for a viewer: a cloud GPU, with the provider and the card in parentheses", async () => {
   const { modalGpuEnvironment } = await import("../modal-cloud.ts");
   const env = modalGpuEnvironment("H100");
   assert.equal(env.id, "modal-gpu");
-  assert.equal(env.label, "a cloud GPU (Modal)");
+  assert.equal(env.label, "a cloud GPU (Modal H100)");
+  assert.equal(modalGpuEnvironment("A10").label, "a cloud GPU (Modal A10)");
 });
