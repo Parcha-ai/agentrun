@@ -20,12 +20,13 @@ if (!tabDir || !gpuImage) throw new Error("TAB_DIR and --gpu-image are required"
 process.env.CDP_URL = process.env.CDP_URL ?? "http://127.0.0.1:9455";
 const work = join(homedir(), "tmp-d4take", `probe-${Date.now().toString(36)}`);
 mkdirSync(work, { recursive: true, mode: 0o700 });
-const out = arg("out", join(homedir(), "evals", "agentrun-archil-tl", "demo", "d4-evidence", "live-flush.json"));
+const out = arg("out", join(process.cwd(), "live-flush.json"));
 const GPU_NOTE = "To check that files reach your user while a command runs, run exactly this one command with a bash timeout of 120: mkdir -p probe && for i in 1 2 3 4 5 6; do date +%s > probe/$i.txt; sleep 8; done . Then move home with switch_environment (target tab).";
 const TASK = "Run the check your notice describes on the GPU machine: move yourself to modal-gpu with switch_environment first, and when it is done move home. Say nothing else.";
 
 const kids = [];
-const WITH_ARCHIL = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-archil");
+// The host's wrapper that gives a command the disk's credentials (WITH_ARCHIL names it; default: on PATH).
+const WITH_ARCHIL = process.env.WITH_ARCHIL ?? "with-archil";
 /** Delete the run's tree from the disk: a run id that already has a history would resume that conversation, and one left behind is a leak. */
 const cleanRun = (run) =>
   new Promise((resolve) => {

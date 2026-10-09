@@ -51,7 +51,8 @@ const SAY = process.env.TAKE_SAY ?? "teach it to walk";
 const GPU_NOTE = readFileSync(gpuNoteFile, "utf8").trim();
 
 const kids = [];
-const WITH_ARCHIL = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-archil");
+// The host's wrapper that gives a command the disk's credentials (WITH_ARCHIL names it; default: on PATH).
+const WITH_ARCHIL = process.env.WITH_ARCHIL ?? "with-archil";
 /** Delete the run's tree from the disk: a run id that already has a history would resume that conversation, and one left behind is a leak. */
 const cleanRun = (run) =>
   new Promise((resolve) => {
@@ -159,7 +160,7 @@ try {
     step("the user drew the creature");
   } else if (flag("seed-creature")) {
     // A stand-in for the strokes: D2's default creature files, put on the disk by the recorder (the tab did not write them).
-    const seed = spawnLogged(WITH_ARCHIL, ["--", process.execPath, join(here, "seed-creature.ts"), link, "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/body-3dof-wide.json", "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/creature-3dof-wide.xml"], {}, "seed", join(here, ".."));
+    const seed = spawnLogged(WITH_ARCHIL, ["--", process.execPath, join(here, "seed-creature.ts"), link, arg("seed-body", "body.json"), arg("seed-xml", "creature.xml")], {}, "seed", join(here, ".."));
     await new Promise((r) => seed.on("close", r));
     step("STAND-IN: the recorder put the creature's files on the disk", { seeded: /seeded/.test(seed.log()) });
   } else if (flag("apply-take-design")) {

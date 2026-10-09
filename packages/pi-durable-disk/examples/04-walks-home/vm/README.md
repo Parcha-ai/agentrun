@@ -45,9 +45,11 @@ Measured on an H100 (us-east, gVisor, pipe): first tool call to the notice there
 
 ## Recording takes (the stage, D5's tooling; local scripts)
 
-- `scripts/take-record.mjs`: the agent-driven take. Starts the take's 03 server (`show/scripts/take-server.mjs --modal --cloud-module ...`),
-  the stage following its link file, and, in the given Chrome (`show/scripts/chrome.mjs`, port of your own), the 03 page as the can-run
-  writer and the stage tab, which it records; types the prompt above into the chat; writes `<video>.captions.json`, `.results.json`
-  and the policy the agent brought home. It deletes the run's tree before and after (`scripts/clean-run.ts`).
-- `scripts/take-universes.mjs`: the universes take with D1's driver (`--api`, `--link-file`): prewarm, fanout, kill, collapse, home, in D1's order.
-- `scripts/take-page-agent.mjs`: the docs page of a take (runs `show/publishable.ts` first).
+- `scripts/take-v2.mjs`: the one take (DEMO-V2): the user draws a creature on the stage's sketcher (D3's `sketch-take.mjs`), types "teach it to walk"
+  into the stage's chat, the server places the run on the H100 with a typed question (`placer.ts`; scripted until a Jev key), the creature learns
+  live from each checkpoint, comes home, the user clicks the Wi-Fi control, the network goes off (CDP), two kicks. Starts the take's 03 server
+  (`show/scripts/take-server.mjs --modal --cloud-module ... --placer-module ...`), the stage, and in the given Chrome the 03 page (the can-run
+  writer) and the stage tab, which it records; writes `<video>.captions.json`, `.results.json` and the policy that came home. The training
+  note the GPU notice carries comes from a file (`--gpu-note-file`), the warm-up's compile-only lines from another (`--warm-commands-file`).
+  It deletes the run's tree before and after (`scripts/clean-run.ts`). Run `npm run build` in 03, the tab and `show/` first: their bundles are prebuilt.
+- `scripts/take-page-v2.mjs`: the docs page of that take (runs `show/publishable.ts` first); `scripts/live-flush-smoke.mjs`: does a file written by a long command reach the disk while it runs.
