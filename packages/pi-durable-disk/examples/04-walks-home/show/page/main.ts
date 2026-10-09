@@ -5,7 +5,8 @@ import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
 import { wifiLabel } from "./wifi.ts";
 import { learningStartedNote, setupCaption } from "./setup.ts";
-import { emptyStory, simulationNote, storyNotes, visibleTag } from "./story-notes.ts";
+import { simulationNote, storyNotes, visibleTag } from "./story-notes.ts";
+import { TakeMemory } from "./take-memory.ts";
 import { cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { bandOf, type Band } from "./lessons.ts";
 import { DesktopView } from "./desktop.ts";
@@ -102,11 +103,10 @@ let lastInstallKind: "checkpoint" | "final" | undefined;
 const bandOfInstall = new Map<number, Band | null>();
 
 // The stage's own captions (page/story-notes.ts): said once each, so a retake starts them over.
-let story = emptyStory();
+const memory = new TakeMemory();
 let simulationSaid = false;
-let runSeen = "";
 /** The setups whose end has been said (by their start time): the counter stops and one line says how long it took. */
-const setupNoted = new Set<string>();
+const setupNoted = memory.setupNoted;
 /** A setup is told apart by its start time within one generation of the feed: a timeline that starts over reuses start times. */
 const setupKey = (startedAt: number) => `${feed.generation}|${startedAt}`;
 function endSetup(endedAt: number): void {
@@ -116,8 +116,20 @@ function endSetup(endedAt: number): void {
   tabNotes.push(learningStartedNote(s, endedAt, feed.state.source, endedAt));
 }
 
+/**
+ * A take that starts over (a reset, a retake, even with the same run name) says its captions again and forgets the old one's setups. Checked each
+ * frame AND when a tab message arrives: the trained brain can land in the tick between the feed starting over and the next frame, and the
+ * evidence it sets must not be wiped by a reset that was already due.
+ */
+function syncTake(): void {
+  if (debug || !memory.sync(feed.generation)) return;
+  tabNotes.length = 0;
+  if (bridge.ready) tabNotes.push(simulationNote(feed.captionNow()));
+}
+
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
+  syncTake();
   // Everything the creature does is a physics simulation: said once, in words, instead of a SIMULATED pill on every number.
   if (m.type === "ready" && !debug && !simulationSaid) {
     simulationSaid = true;
@@ -127,6 +139,8 @@ bridge.onMessage((m: TabToShell) => {
     lastInstallKind = m.kind;
     if (m.checkpoint_n !== undefined) installKind.set(m.checkpoint_n, m.kind);
   }
+  // A trained brain installed in the tab is the evidence "Done training" rests on.
+  if (m.type === "policy-arrived" && m.kind === "final") memory.story.trained = true;
   // The first checkpoint to reach the tab is where learning starts: the setup counter stops there.
   if (!debug && (m.type === "checkpoint-installed" || (m.type === "policy-arrived" && m.kind === "checkpoint"))) endSetup(feed.captionNow());
   const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? installKind.get(m.checkpoint_n) : lastInstallKind) : undefined;
@@ -436,16 +450,8 @@ function frame(): void {
   renderOperator(state);
   renderDecision(state);
   if (!debug) {
-    // A new run (a retake) starts the stage's own captions over; within a run each is said once.
-    if (state.run && state.run !== runSeen) {
-      if (runSeen) {
-        story = emptyStory();
-        tabNotes.length = 0;
-        setupNoted.clear();
-      }
-      runSeen = state.run;
-    }
-    tabNotes.push(...storyNotes(state, story, feed.captionNow()));
+    syncTake();
+    tabNotes.push(...storyNotes(state, memory.story, feed.captionNow()));
     // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
     renderBadge(state);
     renderWifi();

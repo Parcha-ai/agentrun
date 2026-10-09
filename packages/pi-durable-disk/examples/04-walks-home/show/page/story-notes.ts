@@ -3,18 +3,27 @@
 import type { Note, ShowState } from "../types.ts";
 import type { Caption } from "./caption.ts";
 
-export type Story = { memorySaid: boolean; wasAway: boolean; homeSaid: boolean };
-export const emptyStory = (): Story => ({ memorySaid: false, wasAway: false, homeSaid: false });
+export type Story = {
+  memorySaid: boolean;
+  wasAway: boolean;
+  homeSaid: boolean;
+  /** A trained brain has reached the tab (the page sets it when the tab reports the final policy installed): the only evidence "Done training" rests on. */
+  trained: boolean;
+};
+export const emptyStory = (): Story => ({ memorySaid: false, wasAway: false, homeSaid: false, trained: false });
 
 const awayNow = (state: ShowState) => state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes";
 const homeNow = (state: ShowState) => state.place.where === "home" || state.place.where === "tab";
 
 /**
- * At the first move: why it can move at all (its memory is on a cloud disk). On the way back: why it came home. Said once each. The first
- * is stamped when the run starts to move, so it is the caption that comes with the move, ahead of the measured switch time that follows.
+ * At the first move: why it can move at all (its memory is on a cloud disk). Once it is back AND a trained brain has reached the tab: that
+ * training is done and what it learned came home. A return with nothing trained (the operator brought it home early) claims nothing, and
+ * does not use the line up: a trained brain that arrives later still gets it.
  */
 export function storyNotes(state: ShowState, story: Story, at: number): Note[] {
   const out: Note[] = [];
+  // The run's own record says where it stayed: a stay on a machine means it went, even if this page opened after it was back.
+  if (state.stays.some((s) => s.hostKind !== "tab")) story.wasAway = true;
   const note = (text: string): Note => ({ at, kind: "switch", text, rank: 2 });
   if (awayNow(state)) {
     story.wasAway = true;
@@ -22,7 +31,7 @@ export function storyNotes(state: ShowState, story: Story, at: number): Note[] {
       story.memorySaid = true;
       out.push(note("Its memory is on a cloud disk, so it can change machines without forgetting anything."));
     }
-  } else if (homeNow(state) && story.wasAway && !story.homeSaid) {
+  } else if (homeNow(state) && story.wasAway && story.trained && !story.homeSaid) {
     story.homeSaid = true;
     out.push({ at, kind: "home", text: "Done training. The agent came back to your browser, and so did what it learned.", rank: 2 });
   }

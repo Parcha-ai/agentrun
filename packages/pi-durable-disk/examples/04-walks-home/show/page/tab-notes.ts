@@ -20,6 +20,18 @@ const secs = (n: number): string => {
   return Number.isInteger(r) ? String(r) : r.toFixed(1);
 };
 
+/**
+ * A refusal's own reason is a developer's sentence ("could not fetch /policy/home.json: HTTP 404", "mjcf_sha256 differs"). In plain words the viewer
+ * gets what happened and what it means, by kind; the debug log keeps the tab's own words. The kinds are the tab's (arrival.ts): a file that
+ * could not be loaded, one that is not in a usable form, one trained for another body.
+ */
+export function plainRefusal(reason: string): string {
+  if (/trained for a body|different body|mjcf|sha256 differs/i.test(reason) && !/missing or malformed/i.test(reason)) return "That brain was trained for a different body, so the tab did not use it.";
+  if (/could not fetch|fetch|HTTP \d|network/i.test(reason)) return "The new brain could not be loaded, so the creature kept what it had.";
+  if (/not valid JSON|not a policy|unknown format|unknown spec_version|missing or malformed|not finite|NaN|too large|size/i.test(reason)) return "The brain file was damaged or in the wrong form, so the tab did not use it.";
+  return "The tab could not use that brain.";
+}
+
 const metres = (m: Extract<TabToShell, { type: "policy-walked" }>) => (m.mean_speed === null ? null : m.mean_speed * m.window_seconds);
 
 export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOptions = {}): Note[] {
@@ -95,7 +107,7 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
       ];
     }
     case "policy-refused":
-      return [note(plain ? `The tab could not use that brain: ${m.reason}` : `Policy refused: ${m.reason}`)];
+      return [note(plain ? plainRefusal(m.reason) : `Policy refused: ${m.reason}`)];
     default:
       return [];
   }

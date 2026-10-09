@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { tag } from "../../../03-tab-to-cloud/wire.ts";
 import type { PipeFrame } from "../../../03-tab-to-cloud/wire.ts";
+import { CaptionDesk } from "../page/caption.ts";
 import { learningStartedNote, setupCaption } from "../page/setup.ts";
 import { PipeTranslator } from "../pipe-feed.ts";
 import { emptyState, fold, reduce } from "../reduce.ts";
@@ -25,7 +26,7 @@ test("the counter is measured on a live feed and scripted in a rehearsal", () =>
 test("when learning starts one line says how long the setup took, measured only on a live feed", () => {
   const live = learningStartedNote({ startedAt: 10_000, endedAt: null }, 58_400, "live", 58_400);
   assert.equal(live.text, "Learning started 48 s after the agent began.");
-  assert.deepEqual([live.measured, live.origin, live.rank], [true, "tab", 2]);
+  assert.deepEqual([live.measured, live.rank], [true, 2]);
   assert.equal(learningStartedNote({ startedAt: 10_000, endedAt: null }, 16_000, "scripted", 16_000).measured, false);
 });
 
@@ -85,4 +86,25 @@ test("a stage that connects after the setup began does not invent a start", () =
   now += 4_000;
   events.push(...tr.frame(batch(appended(bash("a2", "call2")))));
   assert.equal(events.filter((e) => e.t === "setup").length, 0);
+});
+
+// Greptile on #110: a setup that is open when the run leaves the machine must not keep counting, and must not claim learning began.
+test("an open setup ends with its machine: leaving it (home, moving, parked) cancels the counter without saying learning started", () => {
+  const away = { t: "place", at: 16_000, place: { where: "cloud", host: "H100 GPU" }, env: "gpu" } as ShowEvent;
+  const start: ShowEvent = { t: "setup", at: 20_500, phase: "start" };
+  assert.deepEqual(fold([away, start]).setup, { startedAt: 20_500, endedAt: null });
+  for (const place of [{ where: "home", host: "your browser" }, { where: "tab", host: "your browser" }, { where: "moving", to: "your browser", host: "H100 GPU" }, { where: "parked" }] as const) {
+    const left = fold([away, start, { t: "place", at: 30_000, place, env: null } as ShowEvent]);
+    assert.equal(left.setup, null, place.where);
+    assert.equal(setupCaption(left, 40_000), null, `${place.where}: the counter is gone`);
+  }
+  assert.deepEqual(fold([away, start, { t: "setup", at: 26_000, phase: "end" }, { t: "place", at: 30_000, place: { where: "home", host: "x" }, env: "tab" } as ShowEvent]).setup, { startedAt: 20_500, endedAt: 26_000 }, "a setup that had ended is a record, not an open counter");
+  assert.deepEqual(fold([away, start, { t: "place", at: 21_000, place: { where: "universes", host: "u" }, env: "gpu" } as ShowEvent]).setup, { startedAt: 20_500, endedAt: null }, "moving between machines in the cloud keeps it");
+});
+
+test("the 'Learning started' line is scripted in a rehearsal and measured live: the tag it is shown with, not only its flag", () => {
+  const note = (source: ShowState["source"]) => learningStartedNote({ startedAt: 10_000, endedAt: null }, 16_000, source, 16_000);
+  const shownTag = (source: ShowState["source"]) => new CaptionDesk().update({ ...emptyState(), source, notes: [note(source)] }, 16_100)?.tag;
+  assert.equal(shownTag("scripted"), "scripted");
+  assert.equal(shownTag("live"), "measured");
 });

@@ -12,5 +12,6 @@ export function setupCaption(state: ShowState, now: number): { text: string; tag
 
 /** The line that replaces the counter when learning starts: how long the setup took, on the same clock. */
 export function learningStartedNote(setup: NonNullable<ShowState["setup"]>, endedAt: number, source: ShowState["source"], at: number): Note {
-  return { at, kind: "home", text: `Learning started ${Math.round((endedAt - setup.startedAt) / 1000)} s after the agent began.`, origin: "tab", measured: source === "live", rank: 2 };
+  // No `origin`: with one, the caption rule would tag a rehearsal's number unmeasured; without it a rehearsal reads scripted and a live feed measured.
+  return { at, kind: "home", text: `Learning started ${Math.round((endedAt - setup.startedAt) / 1000)} s after the agent began.`, measured: source === "live", rank: 2 };
 }
