@@ -4,8 +4,9 @@
 // digest of work/ comes from it, after the release.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeSync, closeSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { open } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -70,6 +71,27 @@ function received(s: ReturnType<typeof socket>): Map<string, string> {
   return out;
 }
 
+/** A writer outside the pipe that replaces a file by rename (a new inode at the path, as a careful program writes). */
+const replaceByRename = (path: string, bytes: Uint8Array) => {
+  writeFileSync(`${path}.outside`, bytes);
+  renameSync(`${path}.outside`, path);
+};
+
+/** work/'s digest as an independent walk finds it (the pipe's own `.pipe-` names left out, as the pipe's walk does). */
+async function walkedDigest(work: string): Promise<string> {
+  const lines: string[] = [];
+  const walk = (dir: string, prefix: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.name.startsWith(".pipe-")) continue;
+      if (e.isDirectory()) (lines.push(`directory ${rel}`), walk(join(dir, e.name), rel));
+      else if (e.isFile()) lines.push(`file ${rel} ${sha(readFileSync(join(dir, e.name)))}`);
+    }
+  };
+  walk(work, "");
+  return workspaceDigest(lines);
+}
+
 const rewriteInPlace = (path: string, bytes: Uint8Array) => {
   const fd = openSync(path, "r+");
   try {
@@ -114,7 +136,7 @@ describe("the digests the pipe keeps of work/", () => {
     }
   });
 
-  for (const how of ["in place, before its stream", "by a write-through, before its stream", "in place, during its own stream"] as const) {
+  for (const how of ["in place, before its stream", "by a rename outside the pipe, before its stream", "in place, during its own stream", "by a rename outside the pipe, during its own stream"] as const) {
     it(`a file changed ${how} fails the restore, and the next attach sends what the disk has`, async () => {
       const t = await pipeAt(`changed-${how.split(" ")[0]}-${how.length}`);
       try {
@@ -125,6 +147,8 @@ describe("the digests the pipe keeps of work/", () => {
         await restoreOutcome(w);
         await t.pipe.files(w.socket, 1, [{ path: "a.bin", op: "write", data: toBase64(big) }, { path: "b.bin", op: "write", data: toBase64(small) }]);
         const target = how.endsWith("its own stream") ? "a.bin" : "b.bin";
+        // A rename while the file's own bytes stream: the open handle reads the old file whole and its hash matches;
+        // only the path, checked after the read, shows the change.
         const changedTo = target === "a.bin" ? randomBytes(big.length) : randomBytes(small.length);
         // The first chunk of a.bin holds the stream; the change happens; the stream goes on.
         let changed: Promise<unknown> | undefined;
@@ -132,7 +156,7 @@ describe("the digests the pipe keeps of work/", () => {
           if (changed || frame.t !== "restore-chunk" || frame.path !== "a.bin") return;
           s.held = true;
           changed = (async () => {
-            if (how.startsWith("by a write-through")) await t.pipe.files(s.socket, 7, [{ path: target, op: "write", data: toBase64(changedTo) }]);
+            if (how.startsWith("by a rename")) replaceByRename(join(t.work, target), changedTo);
             else rewriteInPlace(join(t.work, target), changedTo);
             s.held = false;
           })();
@@ -156,6 +180,156 @@ describe("the digests the pipe keeps of work/", () => {
       }
     });
   }
+
+  it("an empty file replaced while another file streams fails the restore", async () => {
+    const t = await pipeAt("empty-replaced");
+    try {
+      const w = socket("w");
+      await t.pipe.attach(w.socket, "w", false);
+      await restoreOutcome(w);
+      await t.pipe.files(w.socket, 1, [{ path: "a.bin", op: "write", data: toBase64(randomBytes(3 * CHUNK_BYTES)) }, { path: "e.txt", op: "write", data: "" }]);
+      let done = false;
+      const r = socket("r", (frame, s) => {
+        if (done || frame.t !== "restore-chunk") return;
+        done = true;
+        replaceByRename(join(t.work, "e.txt"), new TextEncoder().encode("not empty any more"));
+        void s;
+      });
+      await t.pipe.attach(r.socket, "r", true);
+      assert.equal(await restoreOutcome(r), "lost");
+      assert.match((r.frames.find((f) => f.t === "lost") as Extract<PipeFrame, { t: "lost" }>).message, /e\.txt changed during the attach/);
+    } finally {
+      await t.remove();
+    }
+  });
+
+  it("refuses a write-through while its writer's restore streams: work/ is what the writer is sent", async () => {
+    const t = await pipeAt("no-write-during-restore");
+    try {
+      const w = socket("w");
+      await t.pipe.attach(w.socket, "w", false);
+      await restoreOutcome(w);
+      const big = randomBytes(3 * CHUNK_BYTES);
+      await t.pipe.files(w.socket, 1, [{ path: "a.bin", op: "write", data: toBase64(big) }]);
+      let tried: Promise<unknown> | undefined;
+      const r = socket("r", (frame, s) => {
+        if (tried || frame.t !== "restore-chunk") return;
+        s.held = true;
+        tried = (async () => {
+          await t.pipe.files(s.socket, 7, [{ path: "a.bin", op: "write", data: toBase64(randomBytes(10)) }]);
+          await assert.rejects(t.pipe.writeAsWriter("r", [{ path: "a.bin", op: "write", data: toBase64(randomBytes(10)) }]), /still being restored/);
+          s.held = false;
+        })();
+      });
+      await t.pipe.attach(r.socket, "r", true);
+      assert.equal(await restoreOutcome(r), "end");
+      await tried;
+      const refused = r.frames.find((f) => f.t === "res" && f.id === 7) as Extract<PipeFrame, { t: "res"; ok: false }>;
+      assert.equal(refused.ok, false);
+      assert.match(refused.error.message, /still being restored/);
+      assert.equal(sha(readFileSync(join(t.work, "a.bin"))), sha(big), "the refused writes changed nothing");
+      assert.equal(received(r).get("a.bin"), sha(big));
+      // Once restored, the writer writes again.
+      await t.pipe.files(r.socket, 8, [{ path: "a.bin", op: "write", data: toBase64(randomBytes(10)) }]);
+      assert.equal((r.frames.find((f) => f.t === "res" && f.id === 8) as Extract<PipeFrame, { t: "res" }>).ok, true);
+    } finally {
+      await t.remove();
+    }
+  });
+
+  it("refuses a workspace over the limit before reading any of it", async () => {
+    const t = await pipeAt("over-limit", { restoreLimitBytes: CHUNK_BYTES });
+    try {
+      mkdirSync(t.work, { recursive: true });
+      writeFileSync(join(t.work, "huge.bin"), randomBytes(10 * CHUNK_BYTES));
+      const probe = await open(join(t.root, "probe"), "w");
+      const proto = Object.getPrototypeOf(probe) as { read: (...args: unknown[]) => Promise<{ bytesRead: number }> };
+      await probe.close();
+      const read = proto.read;
+      let readBytes = 0;
+      proto.read = async function (this: unknown, ...args: unknown[]) {
+        const r = await read.apply(this, args);
+        readBytes += r.bytesRead;
+        return r;
+      };
+      try {
+        await assert.rejects(t.pipe.attach(socket("a").socket, "a", false), /larger than/);
+      } finally {
+        proto.read = read;
+      }
+      assert.equal(readBytes, 0, "the oversized file was not read");
+    } finally {
+      await t.remove();
+    }
+  });
+
+  it("a removal that fails part way: the release walks work/, and its digest is the disk's", { skip: process.getuid?.() === 0 ? "root removes anything" : false }, async () => {
+    const t = await pipeAt("failed-remove");
+    const locked = join(t.work, "locked");
+    try {
+      const w = socket("w");
+      await t.pipe.attach(w.socket, "w", false);
+      await restoreOutcome(w);
+      await t.pipe.files(w.socket, 1, [{ path: "locked/inner/f.txt", op: "write", data: toBase64(randomBytes(10)) }, { path: "other.txt", op: "write", data: toBase64(randomBytes(10)) }]);
+      chmodSync(join(locked, "inner"), 0o555);
+      await t.pipe.files(w.socket, 2, [{ path: "locked", op: "delete" }]);
+      assert.equal((w.frames.find((f) => f.t === "res" && f.id === 2) as Extract<PipeFrame, { t: "res" }>).ok, false, "the removal failed");
+      const expected = await walkedDigest(t.work);
+      chmodSync(join(locked, "inner"), 0o755);
+      await t.pipe.release();
+      for (let i = 0; i < 200 && !t.logs.some((l) => l.event === "pipe.released"); i++) await sleep(5);
+      const line = t.logs.find((l) => l.event === "pipe.released");
+      assert.equal(line?.data.workSource, "walked", "what the pipe knew was no longer all of work/");
+      assert.equal(line?.data.workDigest, expected);
+    } finally {
+      try {
+        chmodSync(join(locked, "inner"), 0o755);
+      } catch {
+        // already gone
+      }
+      await t.remove();
+    }
+  });
+
+  it("a file replaced between a write-through's rename and its record: the record is not given to the other file", async () => {
+    const t = await pipeAt("replaced-before-record");
+    // node:fs/promises's lstat, as run-pipe.ts imports it, made to let another writer replace x.bin first, once: exactly
+    // between the write-through's rename and its reading of the identity it records.
+    const fsp = createRequire(import.meta.url)("node:fs/promises") as { lstat: (path: unknown, options?: { bigint?: boolean }) => Promise<unknown> };
+    const lstat = fsp.lstat;
+    let armed = false;
+    const other = randomBytes(64);
+    fsp.lstat = async (path, options) => {
+      if (armed && options?.bigint && String(path).endsWith("/x.bin")) {
+        armed = false;
+        replaceByRename(String(path), other);
+      }
+      return lstat(path, options);
+    };
+    syncBuiltinESMExports();
+    try {
+      const w = socket("w");
+      await t.pipe.attach(w.socket, "w", false);
+      await restoreOutcome(w);
+      armed = true;
+      await t.pipe.files(w.socket, 1, [{ path: "x.bin", op: "write", data: toBase64(randomBytes(64)) }]);
+      assert.equal(armed, false, "the other writer replaced x.bin");
+      assert.equal(sha(readFileSync(join(t.work, "x.bin"))), sha(other));
+      // A record of the first write's hash under the other file's identity would fail this attach (its stream hash).
+      const n = socket("n");
+      await t.pipe.attach(n.socket, "n", true);
+      assert.equal(await restoreOutcome(n), "end");
+      assert.equal(received(n).get("x.bin"), sha(other));
+      const expected = await walkedDigest(t.work);
+      await t.pipe.release();
+      for (let i = 0; i < 200 && !t.logs.some((l) => l.event === "pipe.released"); i++) await sleep(5);
+      assert.equal(t.logs.find((l) => l.event === "pipe.released")?.data.workDigest, expected);
+    } finally {
+      fsp.lstat = lstat;
+      syncBuiltinESMExports();
+      await t.remove();
+    }
+  });
 
   it("sees a same-size rewrite in place between two attaches, once the file's times moved", async () => {
     const t = await pipeAt("same-size");
