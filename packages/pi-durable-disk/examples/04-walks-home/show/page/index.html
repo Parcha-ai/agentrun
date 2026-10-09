@@ -204,7 +204,8 @@ body.v2 #vcaptionwrap { display: flex; justify-content: center; position: fixed;
 #vcaption .tag.measured { color: var(--ok); } #vcaption .tag.scripted { color: var(--gpu); } #vcaption .tag.unmeasured, #vcaption .tag.reported { color: var(--muted); } #vcaption .tag.agent { color: var(--vm); } #vcaption .tag.simulated { color: var(--sandbox); }
 #vcaption .txt { font: 650 29px/1.25 var(--sans); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 /* the decision card: where the typed model sent the run, a few seconds before the badge moves */
-#decisionwrap { position: fixed; top: 178px; left: 28px; right: calc(max(400px, 32%) + 28px); z-index: 7; display: flex; justify-content: center; pointer-events: none; }
+/* below the tab's distance number (top right of the creature pane) */
+#decisionwrap { position: fixed; top: 290px; left: 28px; right: calc(max(400px, 32%) + 140px); z-index: 7; display: flex; justify-content: center; pointer-events: none; }
 body:not(.v2) #decisionwrap { right: 28px; }
 #decision { width: min(780px, 100%); padding: 28px 36px 22px; border-radius: 22px; background: color-mix(in srgb, var(--panel) 97%, transparent); border: 1px solid var(--muted); box-shadow: 0 20px 70px #000c; animation: capin .35s ease-out; }
 #decision h3 { margin: 0 0 16px; font: 700 34px/1.2 var(--sans); }

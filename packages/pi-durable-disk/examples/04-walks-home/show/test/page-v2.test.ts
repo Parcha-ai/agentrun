@@ -63,7 +63,7 @@ test("with no machine listed the track names the one the agent is on, and shows 
   assert.equal(trackFor(withEnvs({ where: "tab", host: "tab" }, [{ id: "tab", label: "tab", kind: "tab" }])).right, null);
 });
 
-import { cardTag, cardVisible, decisionCardHtml } from "../page/decision-card.ts";
+import { cardShown, cardTag, cardVisible, decisionCardHtml } from "../page/decision-card.ts";
 
 const shown = (over: Record<string, unknown> = {}) => ({ id: "d1", phase: "start" as const, question: "Where should this run?", options: [{ id: "tab", label: "Browser", probability: 0.02 }, { id: "modal-vm", label: "Modal VM", probability: 0.04 }, { id: "modal-gpu", label: "H100 GPU", probability: 0.94 }], choice: "modal-gpu", latencyMs: 36.6, model: "jev" as const, at: 10_000, ...over });
 
@@ -120,4 +120,13 @@ test("the decision card's own tag is not drawn in the clean view, but is kept fo
   assert.match(decisionCardHtml(shown(), "live", { pill: true }), /<span class="tag measured">measured<\/span>/);
   assert.match(decisionCardHtml(shown(), "live"), /class="tag measured"/, "the debug view is the default");
   assert.match(decisionCardHtml(shown(), "live", { pill: false }), /decided by TypeSafe Jev in 37 ms/, "the words stay");
+});
+
+// Cold view 4: "decided by a stand-in in 0 ms" read as an admission that the agent's choice was canned.
+test("the clean view shows the decision card only for a real decision by the typed model; a stand-in's is kept as a record, and the debug view shows it", () => {
+  assert.equal(cardShown(shown({ model: "jev" }), "live", false), true);
+  assert.equal(cardShown(shown({ model: "scripted" }), "live", false), false, "a scripted placement is not shown to the viewer");
+  assert.equal(cardShown(shown({ model: "jev" }), "scripted", false), false, "a rehearsal's feed is scripted whatever the card says");
+  assert.equal(cardShown(shown({ model: "scripted" }), "live", true), true, "?debug=1 shows everything");
+  assert.equal(cardShown(null, "live", false), false);
 });

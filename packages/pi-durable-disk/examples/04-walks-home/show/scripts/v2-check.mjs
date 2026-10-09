@@ -103,11 +103,9 @@ try {
   expect("the input is cleared after it is taken", (await read(`document.getElementById("chatin").value`)) === "");
 
   await seek(14);
-  const card = await read(`(() => { const d = document.getElementById("decision"); return { hidden: d.hidden, title: d.querySelector("h3")?.textContent, rows: [...d.querySelectorAll(".opt")].map((r) => [r.querySelector(".name").textContent, r.querySelector(".pct").textContent, r.classList.contains("chosen")]), foot: d.querySelector(".foot")?.textContent, tag: d.dataset.tag, pill: d.querySelectorAll(".tag").length, badge: document.querySelector("#badge .txt").textContent, barPx: [...d.querySelectorAll(".bar i")].map((i) => Math.round(i.getBoundingClientRect().width)) }; })()`);
-  expect("a decision card asks where this should run, before the badge moves", card.hidden === false && card.title === "Where should this run?" && card.badge === "Your agent is in your browser", card);
-  expect("it shows a bar and a percent for each option, with the chosen one marked", JSON.stringify(card.rows) === JSON.stringify([["Browser", "2%", false], ["Modal VM", "4%", false], ["H100 GPU", "94%", true]]), card.rows);
-  expect("the bars have grown to their share (the chosen one far longer)", card.barPx[2] > 10 * card.barPx[0] && card.barPx[2] > 200, card.barPx);
-  expect("it says who decided and how long it took, scripted in a rehearsal", /decided by a stand-in in 37 ms/.test(card.foot) && card.tag === "scripted" && card.pill === 0, [card.foot, card.tag, card.pill]);
+  const card = await read(`(() => { const d = document.getElementById("decision"); return { hidden: d.hidden, record: d.dataset.record, badge: document.querySelector("#badge .txt").textContent }; })()`);
+  expect("a placement that is only a stand-in's is NOT shown to the viewer (it read as an admission that the choice was canned)", card.hidden === true && card.badge === "Your agent is in your browser", card);
+  expect("but it is kept: the record names who decided, what, and how long it took", /"model":"scripted"/.test(card.record) && /"choice":"modal-gpu"/.test(card.record) && /"latency_ms":37/.test(card.record), card.record);
   await shot("1b-decision");
   await seek(30);
   expect("the card is gone a few seconds after", (await read(`document.getElementById("decision").hidden`)) === true);
@@ -198,7 +196,7 @@ try {
   }
   await sleep(300);
   const last = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
-  expect("seven versions one second apart end with the version-7 caption showing, in the 10 s window", last === "Version 7 - walking - 4.5 m in 10 s", last);
+  expect("seven versions one second apart end with the version-7 caption showing, in the 10 s window", last === "Version 7: walking - 4.5 m in 10 s", last);
   const numbers = shownDuring.map((t) => Number(/^Version (\d)/.exec(t)[1]));
   expect("and no older version came back after a newer one: the screen was never stale", numbers.every((n, i) => i === 0 || n > numbers[i - 1]), shownDuring);
   expect("every caption the viewer saw said how far it walked in the same 10 s window", shownDuring.every((t) => / m in 10 s$/.test(t)), shownDuring);

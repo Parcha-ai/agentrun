@@ -25,8 +25,8 @@ export function bandOf(distance: number | null | undefined): Band | null {
 
 /** The lesson a version teaches, in plain words. */
 export function lessonName(band: Band): string {
-  if (band === "fall") return "lesson 1: don't fall over";
-  if (band === "shuffle") return "lesson 2: shuffling forward";
+  if (band === "fall") return "don't fall over";
+  if (band === "shuffle") return "shuffling forward";
   if (band === "steps") return "first steps";
   return "walking";
 }
@@ -36,8 +36,8 @@ export const metres = (d: number): string => (d < 1 ? d.toFixed(2) : d.toFixed(1
 
 /**
  * The caption every version gets, in the one fixed window the policy file reports (its walk over 10 simulated seconds), so the versions can be
- * compared at a glance: "Version 4 - lesson 2: shuffling forward - 0.17 m in 10 s". No number the file did not give is invented.
+ * compared at a glance: "Version 4: shuffling forward - 0.17 m in 10 s". No number the file did not give is invented.
  */
 export function versionLine(n: number | undefined, band: Band, distance: number): string {
-  return `${n !== undefined ? `Version ${n}` : "A new version"} - ${lessonName(band)} - ${metres(distance)} m in 10 s`;
+  return `${n !== undefined ? `Version ${n}` : "A new version"}: ${lessonName(band)} - ${metres(distance)} m in 10 s`;
 }

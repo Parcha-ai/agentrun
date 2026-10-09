@@ -46,6 +46,8 @@ if (arg("no-reset", false) !== true) {
   if (!res.ok) throw new Error(`reset: HTTP ${res.status}`);
 }
 let captionLog = [];
+// The placements the stage did not show (a stand-in's), by id, so the take's record has every decision.
+const decisions = new Map();
 const tab = await openTab(v2 ? url : withDebug(url), { width, height });
 const rec = await startScreencast(tab, { out, fps });
 try {
@@ -68,6 +70,13 @@ try {
       if (!captions.has(r.text)) {
         captions.set(r.text, r.tag);
         log.push({ second: Number(elapsed.toFixed(1)), tag: r.tag, text: r.text });
+      }
+    }
+    if (v2) {
+      const rec = await tab.eval(`document.getElementById("decision")?.dataset.record || ""`).catch(() => "");
+      if (rec) {
+        const d = JSON.parse(rec);
+        if (!decisions.has(`${d.id}:${d.phase}`)) decisions.set(`${d.id}:${d.phase}`, { second: Number(elapsed.toFixed(1)), ...d });
       }
     }
     const s = await tab
@@ -98,7 +107,7 @@ try {
   captionLog = log;
 } finally {
   const done = await rec.stop();
-  writeFileSync(`${out}.captions.json`, JSON.stringify({ video: out, seconds: Number(done.seconds.toFixed(1)), kicks: kickForces, captions: captionLog }, null, 2));
+  writeFileSync(`${out}.captions.json`, JSON.stringify({ video: out, seconds: Number(done.seconds.toFixed(1)), kicks: kickForces, captions: captionLog, decisions: [...decisions.values()] }, null, 2));
   console.log(`recorded ${done.frames} frames, ${done.seconds.toFixed(1)} s, ${out}`);
   for (const l of tab.logs) console.log(l);
   await tab.close();

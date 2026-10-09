@@ -8,7 +8,7 @@ import { learningStartedNote, setupCaption } from "./setup.ts";
 import { chartPoints, sparklineSvg } from "./sparkline.ts";
 import { simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
 import { TakeMemory } from "./take-memory.ts";
-import { cardTag, cardVisible, decisionCardHtml } from "./decision-card.ts";
+import { cardShown, cardTag, cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
@@ -371,7 +371,9 @@ let shownDecision = "";
 function renderDecision(state: ShowState): void {
   const el = $("decision");
   const d = state.decision;
-  const visible = cardVisible(d, feed.captionNow());
+  const visible = cardVisible(d, feed.captionNow()) && cardShown(d, state.source, debug);
+  // A placement that is not shown is still kept: the recorder writes it to captions.json (data-record).
+  el.dataset.record = d && cardVisible(d, feed.captionNow()) && !visible ? JSON.stringify({ id: d.id, phase: d.phase, choice: d.choice, latency_ms: d.latencyMs, model: d.model }) : "";
   const key = visible && d ? `${d.id}:${d.phase}` : "";
   if (key === shownDecision) return;
   shownDecision = key;

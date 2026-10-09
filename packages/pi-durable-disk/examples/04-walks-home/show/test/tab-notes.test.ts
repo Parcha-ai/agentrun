@@ -128,7 +128,7 @@ test("the untrained label and the network event make no note here; the page hand
 test("plain captions pass through the caption rule: reported is never shown as measured, and a version's caption is reported", () => {
   const notes = notesFromTabEvent(checkpoint(4, { reported_walk_10s_m: 0.17 }), 7000, { plain: true });
   const s = { ...fold([run("live")]), notes };
-  assert.deepEqual(captionsFor(s, 7100, 3).map((c) => [c.text, c.tag]), [["Version 4 - lesson 2: shuffling forward - 0.17 m in 10 s", "reported"]]);
+  assert.deepEqual(captionsFor(s, 7100, 3).map((c) => [c.text, c.tag]), [["Version 4: shuffling forward - 0.17 m in 10 s", "reported"]]);
 });
 
 // A cold viewer saw "1.999999999999602 simulated seconds" on screen. Seconds are shown as people say them: whole, or to a tenth.
@@ -141,7 +141,7 @@ test("no number on screen carries float noise: seconds are whole or to a tenth",
   const fell = notesFromTabEvent(w({ mean_speed: 0.1, window_seconds: 7.300000000001, fell: true }), 1, { plain: true, kind: "final" });
   assert.equal(fell.at(-1)!.text, "The creature fell over within 7.3 s.");
   const arrival = notesFromTabEvent(checkpoint(2, { reported_walk_10s_m: 0.30000000000000004 }), 1, { plain: true });
-  assert.equal(arrival[0]!.text, "Version 2 - lesson 2: shuffling forward - 0.30 m in 10 s");
+  assert.equal(arrival[0]!.text, "Version 2: shuffling forward - 0.30 m in 10 s");
   for (const n of [...noisy, ...debug, ...fell, ...arrival]) assert.doesNotMatch(n.text, /\d\.\d{3,}/, n.text);
 });
 
@@ -155,10 +155,10 @@ test("the v2 captions say only what a viewer can use: a checkpoint's result, nev
 // The learning arc: each checkpoint's lesson is read from the distance its own file reports, not from the clock.
 test("a checkpoint teaches the lesson its own reported distance supports, tagged reported, with its number", () => {
   const lesson = (n: number, d: number | null) => notesFromTabEvent(checkpoint(n, { reported_walk_10s_m: d }), 1, { plain: true });
-  assert.deepEqual(lesson(1, 0.04).map((n) => [n.text, n.basis]), [["Version 1 - lesson 1: don't fall over - 0.04 m in 10 s", "reported"]]);
-  assert.equal(lesson(3, 0.15)[0]!.text, "Version 3 - lesson 2: shuffling forward - 0.15 m in 10 s");
-  assert.equal(lesson(6, 3.59)[0]!.text, "Version 6 - first steps - 3.6 m in 10 s");
-  assert.equal(lesson(8, 4.76)[0]!.text, "Version 8 - walking - 4.8 m in 10 s", "every version has a caption, walking ones too");
+  assert.deepEqual(lesson(1, 0.04).map((n) => [n.text, n.basis]), [["Version 1: don't fall over - 0.04 m in 10 s", "reported"]]);
+  assert.equal(lesson(3, 0.15)[0]!.text, "Version 3: shuffling forward - 0.15 m in 10 s");
+  assert.equal(lesson(6, 3.59)[0]!.text, "Version 6: first steps - 3.6 m in 10 s");
+  assert.equal(lesson(8, 4.76)[0]!.text, "Version 8: walking - 4.8 m in 10 s", "every version has a caption, walking ones too");
   assert.equal(lesson(4, null)[0]!.text, "Version 4 of its brain arrived from the GPU, after 63 s of training.", "a file with no distance says only that it arrived");
 });
 
