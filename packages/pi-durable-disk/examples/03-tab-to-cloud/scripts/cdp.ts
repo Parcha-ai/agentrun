@@ -3,7 +3,7 @@
 import { writeFileSync } from "node:fs";
 import WebSocket from "ws";
 
-type Pending = { resolve(value: unknown): void; reject(error: Error): void };
+type Pending = { method: string; resolve(value: unknown): void; reject(error: Error): void };
 
 export class Cdp {
   #ws: WebSocket;
@@ -18,7 +18,7 @@ export class Cdp {
       if (msg.id !== undefined) {
         const p = this.#pending.get(msg.id);
         this.#pending.delete(msg.id);
-        if (msg.error) p?.reject(new Error(msg.error.message));
+        if (msg.error) p?.reject(new Error(`${p.method}: ${msg.error.message}`));
         else p?.resolve(msg.result);
       } else if (msg.method) for (const l of this.#listeners.get(msg.method) ?? []) l(msg.params ?? {}, msg.sessionId);
     });
@@ -37,7 +37,7 @@ export class Cdp {
   send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
     const id = this.#next++;
     return new Promise<T>((resolve, reject) => {
-      this.#pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.#pending.set(id, { method, resolve: resolve as (v: unknown) => void, reject });
       this.#ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   }
@@ -73,8 +73,8 @@ export class Device {
     await page.send("Page.enable");
     await page.send("Runtime.enable");
     await page.send("Emulation.setDeviceMetricsOverride", { ...size, deviceScaleFactor: 1, mobile: false });
-    await page.send("Page.navigate", { url });
     this.pages.push(page);
+    await page.navigate(url);
     return page;
   }
 
@@ -108,6 +108,12 @@ export class Page {
 
   send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     return this.cdp.send<T>(method, params, this.sessionId);
+  }
+
+  /** Navigate and wait until the new document has loaded (a navigation may move the page to another process). */
+  async navigate(url: string): Promise<void> {
+    await this.send("Page.navigate", { url });
+    await this.until(`document.readyState === "complete" && location.href.startsWith(${JSON.stringify(url.slice(0, 20))})`, 60_000, 100);
   }
 
   async evaluate<T = unknown>(expression: string): Promise<T> {

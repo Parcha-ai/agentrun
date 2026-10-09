@@ -74,9 +74,100 @@ async function sse(url: string, signal: AbortSignal, onEvent: (event: string, da
   }
 }
 
+/**
+ * What a page sees of a run while a cloud host runs it: the placement with the host's generation (from run.json over
+ * S3), the run's agent events (over the host's link, or from its serve front), and work/ as the disk has it (S3).
+ */
+export async function relayViewer(opts: {
+  control: DemoControl;
+  ref: RunRef;
+  send: (frame: PipeFrame) => void;
+  log: Log;
+  label: () => string;
+  dialer: () => LinkDialer | undefined;
+}): Promise<() => void> {
+  const { control, ref, send } = opts;
+  const abort = new AbortController();
+  void (async () => {
+    let generation = 0;
+    let lastFiles = "";
+    let streaming: AbortController | undefined;
+    while (!abort.signal.aborted) {
+      try {
+        const record = await readRunStatus(control, ref.id);
+        const serve = typeof record?.holder?.serve === "string" ? record.holder.serve : undefined;
+        const dialer = opts.dialer();
+        if (record && record.generation !== generation && record.status === "running" && (serve || dialer)) {
+          generation = record.generation;
+          send({ t: "placement", placement: { where: "cloud", host: opts.label(), generation } });
+          streaming?.abort();
+          const stream = (streaming = new AbortController());
+          abort.signal.addEventListener("abort", () => stream.abort(), { once: true });
+          if (dialer) {
+            const off = dialer.subscribe((e) => send({ t: "event", event: tag(e.kind === "snapshot" ? { kind: "snapshot", event: e.data } : { kind: "events", events: e.data }) }));
+            stream.signal.addEventListener("abort", off, { once: true });
+          } else {
+            void sse(`${serve}/events`, stream.signal, (event, data) => {
+              if (event === "snapshot") send({ t: "event", event: tag({ kind: "snapshot", event: JSON.parse(data) }) });
+              else if (event === "events") send({ t: "event", event: tag({ kind: "events", events: JSON.parse(data) }) });
+            }).catch((error) => opts.log("cloud.events-ended", { run: ref.id, error: (error as Error).message }));
+          }
+        }
+        const listing = await control.listObjects(`runs/${ref.id}/work/`, { recursive: true });
+        const objects = listing.objects as { key: string; size?: number; etag?: string }[];
+        const signature = JSON.stringify(objects.map((o) => [o.key, o.size, o.etag]));
+        if (signature !== lastFiles) {
+          lastFiles = signature;
+          const files: FileEntry[] = [];
+          for (const o of objects) {
+            const path = o.key.slice(`runs/${ref.id}/work/`.length).replace(/\/$/, "");
+            if (path === "") continue;
+            if (o.key.endsWith("/")) files.push({ path, kind: "directory" });
+            else {
+              const data = (o.size ?? 0) <= 256 * 1024 ? await control.getObject(o.key) : new Uint8Array();
+              files.push({ path, kind: "file", data: toBase64(data), mode: 0o644, mtimeMs: 0 });
+            }
+          }
+          files.sort((a, b) => (a.path < b.path ? -1 : 1));
+          send({ t: "files-changed", files });
+        }
+      } catch (error) {
+        opts.log("cloud.view-failed", { run: ref.id, error: (error as Error).message });
+      }
+      await new Promise((r) => setTimeout(r, 1_500));
+    }
+  })();
+  return () => abort.abort();
+}
+
 export async function cloudHost(kind: "local" | "daytona", options: CloudOptions): Promise<CloudHost> {
   const control = options.control ?? (await archilControl({ disk: options.disk, region: options.region, apiKey: process.env.ARCHIL_API_KEY ?? "" }));
-  if (kind !== "local") throw new Error("the Daytona host is not wired yet");
+  if (kind === "daytona") {
+    const { daytonaCloud } = await import("./daytona.ts");
+    const d = await daytonaCloud({ disk: options.disk, region: options.region, model: options.model, control, log: options.log, ...(options.ledger ? { ledger: options.ledger } : {}), ...(options.eventsLog ? { eventsLog: options.eventsLog } : {}) });
+    const running = new Set<string>();
+    const daytona: CloudHost = {
+      async start(ref, run) {
+        const started = Date.now();
+        await d.start(ref, run);
+        running.add(ref.id);
+        options.log("cloud.ensure", { run: ref.id, action: "started", ms: Date.now() - started });
+        return { host: d.hostLabel };
+      },
+      attachViewer: (ref, send) => relayViewer({ control, ref, send, log: options.log, label: () => d.hostLabel, dialer: () => d.placed(ref.id)?.dialer }),
+      async stop(ref, how) {
+        running.delete(ref.id);
+        await d.stop(ref, how);
+      },
+      prewarm: (ref) => d.prewarm(ref),
+      async close() {
+        for (const id of [...running]) await daytona.stop({ disk: options.disk, region: options.region, id }, "now");
+        const swept = await d.sweep();
+        options.log("daytona.swept", { boxes: swept });
+      },
+    };
+    return daytona;
+  }
   const hostLabel = "a second machine (local FUSE client)";
   const localDriver = (env: Record<string, string>) =>
     localHost({
@@ -122,53 +213,7 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       return { host: hostLabel };
     },
 
-    async attachViewer(ref: RunRef, send: (frame: PipeFrame) => void) {
-      const abort = new AbortController();
-      void (async () => {
-        let generation = 0;
-        let lastFiles = "";
-        let streaming: AbortController | undefined;
-        while (!abort.signal.aborted) {
-          try {
-            const record = await readRunStatus(control, ref.id);
-            const serve = typeof record?.holder?.serve === "string" ? record.holder.serve : undefined;
-            if (record && record.generation !== generation && record.status === "running" && serve) {
-              generation = record.generation;
-              send({ t: "placement", placement: { where: "cloud", host: placed.get(ref.id)?.host ?? hostLabel, generation } });
-              streaming?.abort();
-              const stream = (streaming = new AbortController());
-              abort.signal.addEventListener("abort", () => stream.abort(), { once: true });
-              void sse(`${serve}/events`, stream.signal, (event, data) => {
-                if (event === "snapshot") send({ t: "event", event: tag({ kind: "snapshot", event: JSON.parse(data) }) });
-                else if (event === "events") send({ t: "event", event: tag({ kind: "events", events: JSON.parse(data) }) });
-              }).catch((error) => options.log("cloud.events-ended", { run: ref.id, error: (error as Error).message }));
-            }
-            const listing = await control.listObjects(`runs/${ref.id}/work/`, { recursive: true });
-            const objects = listing.objects as { key: string; size?: number; etag?: string; lastModified?: string }[];
-            const signature = JSON.stringify(objects.map((o) => [o.key, o.size, o.etag]));
-            if (signature !== lastFiles) {
-              lastFiles = signature;
-              const files: FileEntry[] = [];
-              for (const o of objects) {
-                const path = o.key.slice(`runs/${ref.id}/work/`.length).replace(/\/$/, "");
-                if (path === "") continue;
-                if (o.key.endsWith("/")) files.push({ path, kind: "directory" });
-                else {
-                  const data = (o.size ?? 0) <= 256 * 1024 ? await control.getObject(o.key) : new Uint8Array();
-                  files.push({ path, kind: "file", data: toBase64(data), mode: 0o644, mtimeMs: 0 });
-                }
-              }
-              files.sort((a, b) => (a.path < b.path ? -1 : 1));
-              send({ t: "files-changed", files });
-            }
-          } catch (error) {
-            options.log("cloud.view-failed", { run: ref.id, error: (error as Error).message });
-          }
-          await new Promise((r) => setTimeout(r, 1_500));
-        }
-      })();
-      return () => abort.abort();
-    },
+    attachViewer: (ref: RunRef, send: (frame: PipeFrame) => void) => relayViewer({ control, ref, send, log: options.log, label: () => placed.get(ref.id)?.host ?? hostLabel, dialer: () => placed.get(ref.id)?.dialer }),
 
     async submit(ref: RunRef, text: string, requestId: string) {
       const record = await readRunStatus(control, ref.id);
