@@ -8,7 +8,7 @@ import { dummyPolicy } from './dummy.ts';
 import { presetForSha } from './bodies.ts';
 import { bodyNotes } from './rules.ts';
 import { Stats } from './stats.ts';
-import { ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, type ArrivalResult } from './arrival.ts';
+import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, type ArrivalResult } from './arrival.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
 import { Sketcher } from './sketch.ts';
@@ -73,6 +73,8 @@ const MAX_DRAG_KICK_N = 100;
 const MAX_CATCHUP_S = 0.5;
 const MAX_STEPS_PER_FRAME = Math.round(MAX_CATCHUP_S / CONTROL_DT);
 
+const arrivalDedupe = new ArrivalDedupe();
+
 let app: App;
 
 function toast(text: string) {
@@ -135,17 +137,20 @@ async function buildCreature(design: Design, keepPolicy: boolean) {
   const built = buildMjcf(design, app.world ?? undefined);
   // The body's identity (what a policy is checked against) never includes the terrain.
   app.bodySha = await sha256Hex(app.world ? buildMjcf(design).xml : built.xml);
+  // A policy belongs to one body (mjcf_sha256). Take it off BEFORE the new simulation exists and before any await: the page
+  // keeps stepping while saves and loads are pending, and a policy with another joint count would otherwise drive the new
+  // body with an observation read past its arrays (NaN, and a creature that never recovers).
+  const droppedPolicy = !!app.policy && app.policy.file.mjcf_sha256 !== app.bodySha;
+  if (droppedPolicy) setPolicy(null, app.policyName === 'dummy trot' ? 'dummy trot' : 'none');
   app.built = built;
   app.sim = new Sim(app.mj, built);
   app.view.setSim(app.sim);
   app.fallen = false; app.recovering = null; app.lastMode = 'walk'; app.expectReset = true;
   await saveDesign(design);
-  // A policy belongs to one body: a changed body refuses the old policy (mjcf_sha256) rather than running it blind.
   // The dummy is generated from the body, so it is rebuilt for the new one.
   if (app.policyName === 'dummy trot') {
     await useDummy();
-  } else if (keepPolicy && app.policy && app.policy.file.mjcf_sha256 !== app.bodySha) {
-    setPolicy(null, 'none');
+  } else if (keepPolicy && droppedPolicy) {
     showError('The loaded policy was trained for another body, so it was removed. Load one for this body.');
   }
   applyCommand();
@@ -214,6 +219,8 @@ async function loadPolicyText(text: string, name: string) {
  */
 async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json') {
   const arrivedAt = performance.now();
+  // the same file announced twice (the stage's load-policy and the watcher) is one arrival
+  if (!arrivalDedupe.accept(await sha256Hex(text), arrivedAt)) return;
   const refuse = (reason: string) => {
     showError(`Policy refused: ${reason}`);
     post('policy-refused', { name, reason, via });
@@ -247,7 +254,7 @@ async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'p
 
 /** Fetch a policy file and load it; a missing file (the run is not home yet) is a refusal, not a broken tab. */
 async function loadPolicyUrl(url: string) {
-  const name = url.split('/').pop() ?? 'policy';
+  const name = (url.split('/').pop() ?? 'policy').slice(0, 80); // a data: or long URL must not flood the HUD
   let text: string;
   try {
     const res = await fetch(url);
