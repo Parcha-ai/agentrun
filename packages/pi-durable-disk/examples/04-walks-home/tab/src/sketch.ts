@@ -14,8 +14,12 @@ export const SKETCH_COLORS = { torso: rgbaToCss(RGBA.torso), thigh: rgbaToCss(RG
  * chosen so that the widest creature the sketcher allows (the widest torso with the longest legs, 2.1 m across, plus room for the
  * handles) fits the smaller side of the pane: a valid body can never have a handle out of reach.
  */
-const FIT_M = 2 * (LIMITS.torso.width[1] / 2 + LIMITS.thigh[1] + LIMITS.shin[1]) + 0.3;
-export const pxPerMetre = (c: HTMLCanvasElement) => Math.max(110, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / FIT_M));
+/** The sketcher draws its creature this much thicker than the creature is (legs, feet, outline, handles): a still of a drawing in progress has to read at a glance. The thumbnail uses 1. */
+export const SKETCH_BOLD = 1.8;
+// a leg handle's ring reaches past the handle by the biggest bold foot plus its gap and stroke (about 0.07 m at the smallest scale): room is kept for it at both ends
+const RING_REACH_M = LIMITS.radius[1] * 1.15 * 1.4 * SKETCH_BOLD + 0.07;
+const FIT_M = 2 * (LIMITS.torso.width[1] / 2 + LIMITS.thigh[1] + LIMITS.shin[1] + RING_REACH_M) + 0.04;
+export const pxPerMetre = (c: HTMLCanvasElement) => Math.max(70, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / FIT_M));
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
 export type Handle =
@@ -64,9 +68,6 @@ export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
 
 /** The foot's radius in metres: the creature's foot (a sphere a little wider than the leg), and never smaller than 5 px so it shows on a small pane. */
 export const footRadiusM = (radius: number, px: number, bold = 1) => Math.max(radius * 1.15 * 1.4 * bold, 5 / px);
-
-/** The sketcher draws its creature this much thicker than the creature is (legs, feet, outline, handles): a still of a drawing in progress has to read at a glance. The thumbnail uses 1. */
-export const SKETCH_BOLD = 1.8;
 
 /** The creature from above, in metres with the origin at the torso centre and y up (the caller has translated and scaled): the legs, a foot at each leg end, the torso. The sketch and its thumbnail both draw with this. */
 export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px: number, bold = 1): void {

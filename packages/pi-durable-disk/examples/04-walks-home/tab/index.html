@@ -64,8 +64,14 @@ body.clean.phase-watch #distMarker { display:block; right:14px; top:14px; text-a
 body.clean.phase-watch #thumb { display:block; left:14px; top:14px; background:#f6f4ee; border:2px solid #8a8574; border-radius:10px; padding:6px 6px 4px; box-shadow:0 2px 10px rgba(0,0,0,.2); }
 #thumbCanvas { display:block; width:170px; height:130px; }
 #thumb .cap { font:700 14px var(--sans); color:#4a4638; text-align:center; margin-top:2px; }
+/* a pane under 1000 px has no room for the thumbnail, the label and the distance on one row: the thumbnail and the distance drop under the label */
+@media (max-width: 1000px) {
+  body.clean.phase-watch #distMarker { top:80px; }
+  body.clean.phase-watch #thumb { top:80px; }
+}
 /* the offline badge sits under the distance pill, not on it */
 body.clean #offlineBadge { top:132px; }
+@media (max-width: 1000px) { body.clean #offlineBadge { top:200px; } }
 /* ?banner=1: the page around the tab shows the home banner and the final label itself, so the tab's own "offline" and "trained" go quiet */
 body.banner #offlineBadge, body.banner #stateLabel[data-state=trained] { display:none !important; }
 #toast { position:absolute; left:50%; top:10px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:4px 12px; border-radius:999px; font-weight:600; opacity:0; transition:opacity .2s; pointer-events:none; z-index:3; }

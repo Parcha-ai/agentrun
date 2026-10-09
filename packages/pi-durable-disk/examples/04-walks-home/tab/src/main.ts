@@ -700,7 +700,7 @@ async function main() {
         else if (m.type === 'commit-design') await app.draft.commit();
         else if (m.type === 'load-world') { app.world = m.world ?? null; await buildCreature(app.sketcher.get(), true); toast(app.world ? 'terrain loaded' : 'flat ground'); }
         else if (m.type === 'set-phase') await setPhase(m.phase === 'draw' ? 'draw' : 'watch');
-        else if (m.type === 'load-design') { app.sketcher.set(m.design); await buildCreature(m.design, true); }
+        else if (m.type === 'load-design') { announceDrawing(); app.sketcher.set(m.design); await buildCreature(m.design, true); }
       } catch (e) { showError(String(e)); }
     });
 
