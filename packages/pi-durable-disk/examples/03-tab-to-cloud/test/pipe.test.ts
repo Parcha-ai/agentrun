@@ -211,7 +211,7 @@ describe("switching environments", () => {
     assert.equal(events.find((e) => e.event === "switch.drained" && e.data.run === id)?.data.drained, false);
     a.close();
     const seen: PipeFrame[] = [];
-    const v = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "view", onFrame: (f) => seen.push(f) });
+    const v = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
     const viewing = await v.ready;
     assert.equal(viewing.t, "viewing");
     v.send({ t: "switch", to: "tab" });
@@ -235,5 +235,61 @@ describe("switching environments", () => {
     assert.equal(state.placement.where, "tab");
     v.close();
     b.close();
+  });
+  it("a view-only connection may not switch the run or send it messages; an operator may", async () => {
+    const { id, secret } = await local.server.createRun("roles");
+    const a = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write" });
+    await a.ready;
+    const seen: PipeFrame[] = [];
+    const watcher = new PipeClient({ url: local.url, run: id, token: secret, tab: "w", mode: "view", onFrame: (f) => seen.push(f) });
+    await watcher.ready;
+    watcher.send({ t: "switch", to: "far" });
+    watcher.send({ t: "submit", text: "hi", requestId: "r1" });
+    await until(() => seen.some((f) => f.t === "switch-refused") && seen.some((f) => f.t === "submit-refused"));
+    const refused = seen.find((f) => f.t === "submit-refused");
+    assert.ok(refused?.t === "submit-refused" && refused.requestId === "r1");
+    const state = local.server.runs.get(id)!;
+    assert.equal(state.placement.where, "tab");
+    assert.equal(state.switching, undefined);
+    // An operator's submit reaches the writer.
+    const got: PipeFrame[] = [];
+    const b = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => got.push(f) });
+    await b.ready;
+    const op = new PipeClient({ url: local.url, run: id, token: secret, tab: "o", mode: "operator" });
+    await op.ready;
+    op.send({ t: "submit", text: "hello", requestId: "r2" });
+    await until(() => got.some((f) => f.t === "submit" && f.requestId === "r2"));
+    for (const c of [a, b, watcher, op]) c.close();
+  });
+
+  it("a switch into a tab goes to a page that can run the agent, or is refused before anything moves", async () => {
+    const { id, secret } = await local.server.createRun("run-here");
+    const a = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && a.send({ t: "drained", switchId: f.switchId }) });
+    await a.ready;
+    a.send({ t: "switch", to: "far" });
+    const state = local.server.runs.get(id)!;
+    await until(() => state.placement.where === "cloud");
+    a.close();
+    // A stage display: it may control the run but cannot run the agent. With no page that can, the switch is refused.
+    const stageSeen: PipeFrame[] = [];
+    const stage = new PipeClient({ url: local.url, run: id, token: secret, tab: "stage", mode: "operator", onFrame: (f) => stageSeen.push(f) });
+    await stage.ready;
+    const stops = calls.filter((c) => c.op === "stop").length;
+    stage.send({ t: "switch", to: "tab" });
+    await until(() => stageSeen.some((f) => f.t === "switch-refused"));
+    assert.equal(state.placement.where, "cloud");
+    assert.equal(calls.filter((c) => c.op === "stop").length, stops);
+    // With a page open that can, the stage's switch tells that page to run it.
+    const pageSeen: PipeFrame[] = [];
+    const page = new PipeClient({ url: local.url, run: id, token: secret, tab: "p", mode: "operator", canRun: true, onFrame: (f) => pageSeen.push(f) });
+    await page.ready;
+    stage.send({ t: "switch", to: "tab" });
+    await until(() => pageSeen.some((f) => f.t === "run-here"));
+    assert.ok(!stageSeen.some((f) => f.t === "run-here"));
+    const runHere = pageSeen.find((f) => f.t === "run-here")!;
+    assert.ok(runHere.t === "run-here");
+    const b = new PipeClient({ url: local.url, run: id, token: secret, tab: "p", mode: "write", canRun: true, switchId: runHere.switchId });
+    assert.equal((await b.ready).t, "attached");
+    for (const c of [stage, page, b]) c.close();
   });
 });
