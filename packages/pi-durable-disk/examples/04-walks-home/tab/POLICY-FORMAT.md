@@ -69,9 +69,27 @@ position servo (kp 40, kv 1.2, forcerange 12) on joint `i`; names `<leg>_abd_a`,
 }
 ```
 
-Activations the tab runs: `tanh`, `elu`, `relu`, `silu`, `none`. Unknown top-level keys (`provenance`, `command_range`, ...) are ignored; `command_range` [lo, hi] limits the tab's speed slider. Anything else is refused. Size budget: under 300 KB of JSON.
+Activations the tab runs: `tanh`, `elu`, `relu`, `silu`, `none`. Unknown top-level keys (`provenance`, `command_range`, ...) are ignored; `command_range` [lo, hi] limits the tab's speed slider. Anything else is refused. Size budget: under 600 KB of JSON (a walking net plus an optional getup net).
 The tab computes the observation in float64 and casts to float32 only at the layer boundary; a trainer that wants bitwise
 parity must do the same; small differences are expected otherwise and tested with a tolerance.
 
 Kick: the tab applies an impulse as `xfrc_applied` on the torso body for 12 physics steps (0.048 s), and the policy sees it only
 through the state. Train with random pushes of up to ~60 N for 0.048 s if you want it to recover.
+
+## Optional getup network
+
+A second network that drives the creature while it is down. Same file, same body, same observation slices; `spec_version` stays 1.
+
+```jsonc
+"getup": {
+  "layers": [ ... ],                          // required; same layer objects; first layer's `in` = the width of the obs it uses
+  "obs": {"spec": [...], "mean": [...], "std": [...]},   // optional; default: the top-level obs block
+  "act": {"scale": 2.0, "clip": 1.0},         // optional; default: the top-level act block
+  "switch": {"below_up": 0.3, "above_up": 0.9}   // required, 0 <= below_up < above_up <= 1
+}
+```
+- `up` is the torso's uprightness: the z component of its up axis in the world, `1 - 2(qx^2 + qy^2)` (1 upright, 0 on its side, -1 on its back).
+- The mode starts as walk at every reset. Each control step, before observing: in walk and `up < below_up` goes to getup; in getup and `up > above_up` goes back to walk; otherwise it stays (hysteresis).
+- The active network sees the slices computed as usual (the `phase` clock is the top-level `clock`, which keeps running; `prev_action` is the last action from whichever network produced it; `command` is the slider) and its action is mapped with ITS act: `ctrl = standPose + act.scale * clip(a)`.
+- An invalid getup block (a bad switch, act.scale, shapes, activation, obs) refuses the whole file with a reason starting `getup:`. A file with no getup block behaves exactly as before.
+- The tab shows `mode  walking | getting up` in the HUD and posts `mode-changed {mode, t, up}` when the mode flips.

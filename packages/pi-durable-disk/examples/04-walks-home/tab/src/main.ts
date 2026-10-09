@@ -60,6 +60,8 @@ interface App {
   /** A trained policy that arrived and is being timed: page ms at the arrival, sim time at the install. */
   arrival: { tracker: ArrivalTracker; simT0: number; name: string } | null;
   lastArrival: ArrivalResult | null;
+  /** The network mode last announced; see Sim.mode. */
+  lastMode: 'walk' | 'getup';
 }
 
 const MAX_DRAG_KICK_N = 100;
@@ -129,7 +131,7 @@ async function buildCreature(design: Design, keepPolicy: boolean) {
   app.built = built;
   app.sim = new Sim(app.mj, built);
   app.view.setSim(app.sim);
-  app.fallen = false; app.recovering = null;
+  app.fallen = false; app.recovering = null; app.lastMode = 'walk';
   await saveDesign(design);
   // A policy belongs to one body: a changed body refuses the old policy (mjcf_sha256) rather than running it blind.
   // The dummy is generated from the body, so it is rebuilt for the new one.
@@ -185,7 +187,7 @@ async function loadPolicyText(text: string, name: string) {
     const p = await Policy.load(text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
     setPolicy(p, name);
     app.sim.reset();
-    app.fallen = false; app.recovering = null;
+    app.fallen = false; app.recovering = null; app.lastMode = 'walk';
     showError('');
     post('policy-loaded', { name, mjcf_sha256: p.file.mjcf_sha256, bytes: text.length });
     toast(`policy loaded: ${name}`);
@@ -323,7 +325,15 @@ function hud() {
   const v = Math.hypot(s.data.qvel[0], s.data.qvel[1]);
   const r = app.lastArrival;
   const arrivalLine = r ? `\narrival ${r.arrivalToWalkingMs === null ? (r.fell ? 'fell, not walking' : 'not walking yet') : `walking after ${(r.arrivalToWalkingMs / 1000).toFixed(1)} s`}${r.meanSpeed === null ? '' : `, ${r.meanSpeed.toFixed(2)} m/s over ${r.windowSeconds} s`}` : '';
-  $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
+  const modeLine = app.policy?.hasGetup ? `\nmode    ${s.mode === 'getup' ? 'getting up' : 'walking'}` : '';
+  $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}${modeLine}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
+}
+
+/** The creature went down (the getup net took over) or is back on its feet (walking took over). */
+function announceMode() {
+  app.lastMode = app.sim.mode;
+  post('mode-changed', { mode: app.sim.mode, t: app.sim.time, up: app.sim.uprightness() });
+  toast(app.sim.mode === 'getup' ? 'down: the getup network is driving' : 'back on its feet: walking');
 }
 
 function sampleArrival() {
@@ -352,6 +362,7 @@ function tick(now: number) {
     while (app.acc >= CONTROL_DT && n < 6) {
       app.sim.step(app.policy);
       if (app.arrival) sampleArrival();
+      if (app.sim.mode !== app.lastMode) announceMode();
       app.acc -= CONTROL_DT;
       n++;
     }
@@ -394,7 +405,7 @@ async function main() {
       mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement), sketcher, store, storageMode,
       sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml), world: null,
       policy: null, policyName: 'dummy trot', running: true, acc: 0, last: performance.now(),
-      fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null,
+      fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk',
     };
     app.view.setSim(app.sim);
     await useDummy(); // also applies the slider's command to the sim
@@ -417,7 +428,7 @@ async function main() {
     };
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
-    $('reset').onclick = () => { app.sim.reset(); app.fallen = false; app.recovering = null; };
+    $('reset').onclick = () => { app.sim.reset(); app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
     $('legDof').onchange = (e) => app.sketcher.setLegDof((e.target as HTMLInputElement).checked ? 3 : 2);
     $('addPair').onclick = () => app.sketcher.addPair();
     $('removePair').onclick = () => app.sketcher.removePair();
