@@ -55,8 +55,9 @@ export async function checkServedHomePolicy(origin: string): Promise<[boolean, s
   const info = await get("/api/stage");
   if (!info.ok) return [false, `${base} cannot say what it serves (/api/stage answered ${info.status}): restart it on this code`];
   const { feed, tab } = (await info.json()) as { feed: string; tab: string };
-  if (feed === "pipe") return [true, `live take (a pipe feed): the stage's tab reads the run's own work/home/policy.json; no static file checked`];
+  // The tab first: the stub cannot load a policy from either source, the static file or the run's own disk.
   if (tab !== "app") return [false, `the stage serves the stub tab, which cannot load a policy: start serve.ts with TAB_DIR set to the tab app's dist`];
+  if (feed === "pipe") return [true, `live take (a pipe feed): the stage's tab reads the run's own work/home/policy.json; no static file checked`];
   const versions = await get("/tab/versions.json");
   if (!versions.ok) return [false, `the stage's tab has no versions.json (HTTP ${versions.status}): rebuild the tab app`];
   const mujocoVersion = String(((await versions.json()) as { mujoco: unknown }).mujoco);

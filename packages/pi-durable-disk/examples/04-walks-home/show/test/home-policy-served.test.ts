@@ -70,11 +70,13 @@ test("a pipe-fed stage passes without asking for the static file: its tab reads 
   assert.ok(!s.asked.includes("/policy/home.json"));
 });
 
-test("a stage serving the stub tab fails: the home beat needs the tab app", async () => {
-  const s = await fakeStage({ "/api/state": STATE, "/api/stage": stage("scripted", "stub"), "/policy/home.json": await policy() });
-  const [ok, note] = await checkServedHomePolicy(s.origin);
-  assert.equal(ok, false);
-  assert.match(note, /stub tab/);
+test("a stage serving the stub tab fails, whatever its feed: the stub loads no policy, static or from the run's disk", async () => {
+  for (const feed of ["scripted", "pipe", "upstream"]) {
+    const s = await fakeStage({ "/api/state": STATE, "/api/stage": stage(feed, "stub"), "/policy/home.json": await policy() });
+    const [ok, note] = await checkServedHomePolicy(s.origin);
+    assert.equal(ok, false, feed);
+    assert.match(note, /stub tab/, feed);
+  }
 });
 
 test("a stage that serves no home.json fails with the caption the camera would see", async () => {
@@ -113,7 +115,7 @@ async function realStage(env: Record<string, string>): Promise<string> {
   await waitForStage(port, child);
   return `http://127.0.0.1:${port}`;
 }
-test("against the real serve.ts: no policy fails, the winner's passes, a pipe feed is a live take", async () => {
+test("against the real serve.ts: no policy fails, the winner's passes, a pipe feed is a live take, the stub tab fails on either feed", async () => {
   const tab = mkdtempSync(join(tmpdir(), "served-tab-"));
   writeFileSync(join(tab, "versions.json"), VERSIONS);
   const empty = mkdtempSync(join(tmpdir(), "served-nopolicy-"));
@@ -132,6 +134,9 @@ test("against the real serve.ts: no policy fails, the winner's passes, a pipe fe
   const [okPipe, notePipe] = await checkServedHomePolicy(await realStage({ TAB_DIR: tab, SHOW_PIPE_LINK_FILE: join(empty, "link") }));
   assert.equal(okPipe, true, notePipe);
   assert.match(notePipe, /pipe/);
+  const [okPipeStub, notePipeStub] = await checkServedHomePolicy(await realStage({ SHOW_PIPE_LINK_FILE: join(empty, "link") }));
+  assert.equal(okPipeStub, false);
+  assert.match(notePipeStub, /stub tab/);
 });
 
 test("with SHOW_URL the preflight probes the running stage instead of reading its own environment", () => {
