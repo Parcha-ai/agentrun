@@ -21,7 +21,10 @@ const later = (fn) => (window.storageDelayMs ? setTimeout(fn, window.storageDela
 addEventListener('message', (ev) => {
   if (ev.origin !== location.origin || ev.source !== frame.contentWindow || ev.data?.ns !== 'walks-home') return;
   const m = ev.data;
-  if (m.type === 'storage-read' && window.answerStorage) later(() => sendToTab({ type: 'storage-result', id: m.id, bytes: window.disk[m.path] ?? null }));
+  if (m.type === 'storage-read' && window.answerStorage && !(m.path in window.disk) && m.path.startsWith('home/model/')) {
+    // the model's chunks live on the server (too big for a variable): fetched as the stage's disk read would
+    fetch('/modeldisk/' + m.path).then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => sendToTab({ type: 'storage-result', id: m.id, bytes: b ? new Uint8Array(b) : null }), () => sendToTab({ type: 'storage-result', id: m.id, bytes: null }));
+  } else if (m.type === 'storage-read' && window.answerStorage) later(() => sendToTab({ type: 'storage-result', id: m.id, bytes: window.disk[m.path] ?? null }));
   else if (m.type === 'storage-write' && window.answerStorage && window.refuseWrites) sendToTab({ type: 'storage-written', id: m.id, error: 'not-holder' });
   else if (m.type === 'storage-write' && window.answerStorage) { window.disk[m.path] = m.bytes; window.diskWrites++; later(() => sendToTab({ type: 'storage-written', id: m.id })); }
   else if (!m.type.startsWith('storage-')) window.events.push(m);
