@@ -91,12 +91,19 @@ try {
   const mid = await inner('({ t: __walks.app.sim.time, x: __walks.app.sim.torsoPos()[0], y: __walks.app.sim.torsoPos()[1] })');
   R.offline.walkedWhileOffline = { sim_seconds: +(mid.t - before.t).toFixed(2), metres: +Math.hypot(mid.x - before.x, mid.y - before.y).toFixed(2) };
   await shot('v2-5-offline');
+  // A kick that does not topple the creature shows nothing about getting up: push harder, up to four times, and say how many it took.
   const k0 = await inner('__walks.stats().getups');
-  await inner('__walks.kick([1, 0], 350)');
-  await waitFor('__walks.stats().getups > ' + k0, 15000);
-  const down = await inner('+__walks.app.sim.uprightness().toFixed(2)');
+  R.offline.kick = { attempts: [], getupEngaged: false, upAgain: false };
+  for (const force of [350, 450, 550, 650]) {
+    await inner(`__walks.kick([1, 0], ${force})`);
+    const engaged = await waitFor('__walks.stats().getups > ' + k0, 6000);
+    R.offline.kick.attempts.push({ force_n: force, toppled: engaged });
+    if (engaged) break;
+    await waitSim(1.5);
+  }
   await waitFor("__walks.app.sim.mode === 'walk' && __walks.app.sim.uprightness() > 0.9", 15000);
-  R.offline.kick = { getupEngaged: (await inner('__walks.stats().getups')) > k0, upAgain: await inner("__walks.app.sim.uprightness() > 0.9") };
+  R.offline.kick.getupEngaged = (await inner('__walks.stats().getups')) > k0;
+  R.offline.kick.upAgain = await inner('__walks.app.sim.uprightness() > 0.9');
   await waitSim(2);
   R.offline.nanOrResetsDuringOffline = (await inner('__walks.stats().nan + __walks.stats().resetsSeen')) - errsBefore;
   R.offline.stillWalking = await inner('Math.hypot(__walks.app.sim.data.qvel[0], __walks.app.sim.data.qvel[1]) > 0.2');
@@ -105,6 +112,27 @@ try {
   R.offline.badgeAfterBackOnline = await inner("!document.getElementById('offlineBadge').hidden");
   R.events = (await ev('events.map(e => e.type)')).reduce((a, t) => ((a[t] = (a[t] ?? 0) + 1), a), {});
   console.log(JSON.stringify(R, null, 1));
+  // Every step above has to have really happened: a step that did not is a FAIL and a nonzero exit, never a quiet null.
+  const checks = [
+    ['the creature starts untrained, on screen, before any file', R.start.state.state === 'untrained' && R.start.label.state === 'untrained' && R.start.label.text === 'untrained: random moves' && R.start.untrainedEvent >= 1 && R.start.creatureFilesOnDiskBeforeAnyDrawing.length === 0],
+    ['clean mode hides the header, HUD and toolbar and shows the sketcher', R.start.headerHidden && R.start.hudHidden && R.start.toolbarHidden && R.start.sketcherVisible],
+    ['the untrained creature flops (uprightness under 0.3)', R.start.flopped === true],
+    ['committing the drawing writes the creature files', R.commit.files.length >= 2],
+    ['checkpoint 1 installs: state learning, label, policy-arrived (checkpoint)', R.cp1Installed === true && R.cp1.state.state === 'learning' && /checkpoint 1/.test(R.cp1.label.text) && R.cp1.arrived?.kind === 'checkpoint'],
+    ['checkpoint 1 stands the lying creature up (stood-up event, upright 3 s later)', R.cp1.stoodUp >= 1 && Number(R.cp1.upright3sLater) > 0.8],
+    ['the sketcher is hidden once the first checkpoint arrives', R.cp1.sketcherHiddenNow === true],
+    ['checkpoint 2 swaps live: label says checkpoint 2, the cut measurement is reported partial', /checkpoint 2/.test(R.cp2.label.text) && R.cp2.arrived?.kind === 'checkpoint' && R.cp2.walkedPartial?.partial === true],
+    ['the final file replaces the checkpoint: state trained, final', R.final.state.state === 'trained' && R.final.state.final === true && R.final.arrived?.kind === 'final'],
+    ['the final policy walks a full measurement window', R.final.walked && R.final.walked.partial !== true && R.final.walked.mean_speed > 0.2],
+    ['offline: the badge shows and the network event fires', R.offline.badge === true && R.offline.stateOffline === true && R.offline.networkEvent?.online === false],
+    ['offline: the creature keeps walking (more than 1 m, still moving)', R.offline.walkedWhileOffline.metres > 1 && R.offline.stillWalking === true],
+    ['offline: a kick is recovered by the getup network and no NaN or reset', R.offline.kick.getupEngaged === true && R.offline.kick.upAgain === true && R.offline.nanOrResetsDuringOffline === 0],
+    ['back online: the badge clears', R.offline.badgeAfterBackOnline === false],
+  ];
+  let failed = 0;
+  for (const [name, ok] of checks) { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); if (!ok) failed++; }
+  console.log(failed ? `${failed} of ${checks.length} checks FAILED` : 'all checks passed');
+  if (failed) process.exitCode = 1;
 } finally {
   await send('Target.closeTarget', { targetId }).catch(() => {});
   await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});

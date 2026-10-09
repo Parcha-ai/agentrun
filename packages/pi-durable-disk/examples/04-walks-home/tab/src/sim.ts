@@ -86,6 +86,12 @@ export class Sim {
     this.mj.mj_forward(this.model, this.data);
   }
 
+  /** Give this creature the untrained brain, or take it away. Attaching one that is not already attached starts it over from its seed, so a creature built again from the same drawing twitches exactly as the first did. */
+  attachBrain(brain: UntrainedBrain | null): void {
+    if (brain && brain !== this.brain) brain.reset();
+    this.brain = brain;
+  }
+
   /** One policy step (CONTROL_DT): act (or hold the standing pose without a policy), then SUBSTEPS physics steps. */
   step(policy: Policy | null): number[] {
     let action = this.prevAction;

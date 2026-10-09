@@ -4,8 +4,13 @@
 import { LIMITS, type Design, type LegPair } from './design.ts';
 import { clampDesign } from './rules.ts';
 
-/** Pixels per metre follows the canvas, so the creature fills a big sketch pane and a small drawer alike. */
-const pxPerMetre = (c: HTMLCanvasElement) => Math.max(140, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / 1.6)); // pixels per metre
+/**
+ * Pixels per metre follows the pane, never the body, so the pointer and the drawing stay in step while a handle is dragged. It is
+ * chosen so that the widest creature the sketcher allows (the widest torso with the longest legs, 2.1 m across, plus room for the
+ * handles) fits the smaller side of the pane: a valid body can never have a handle out of reach.
+ */
+const FIT_M = 2 * (LIMITS.torso.width[1] / 2 + LIMITS.thigh[1] + LIMITS.shin[1]) + 0.3;
+export const pxPerMetre = (c: HTMLCanvasElement) => Math.max(110, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / FIT_M));
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
 export type Handle =
@@ -135,9 +140,9 @@ export class Sketcher {
     this.changed();
   }
 
-  /** Where the handles are on the canvas, in CSS pixels from its top-left corner: what a pointer must press to grab them. */
+  /** Where the handles are on the canvas, in CSS pixels from the top-left corner of its box: what a pointer must press to grab them. The centre is the one pos() reads a pointer against (the box, border included), not the content's clientWidth: a pixel here is a few millimetres, and the one-pixel difference was enough to miss a 1 cm grid value. */
   geometry(): { px: number; width: number; height: number; design: Design; handles: { name: string; kind: string; i: number | null; x: number; y: number }[] } {
-    const w = this.canvas.clientWidth, h = this.canvas.clientHeight, px = this.px;
+    const r = this.canvas.getBoundingClientRect(), w = r.width, h = r.height, px = this.px;
     return {
       px, width: w, height: h, design: this.get(),
       handles: this.handles().map((c) => ({ name: handleName(c.h), kind: c.h.kind, i: 'i' in c.h ? c.h.i : null, x: w / 2 + c.x * px, y: h / 2 - c.y * px })),

@@ -322,3 +322,24 @@ export class ArrivalTracker {
     };
   }
 }
+
+// ---- what leaves the tab in an event ----------------------------------------------------------------------------
+
+/** Round every fractional number in an event payload to 3 decimals (nested too): the stage prints what it is given, and 1.999999999999602 is not a number to show. */
+export function tidy<T>(v: T): T {
+  if (typeof v === 'number') return (Number.isInteger(v) ? v : Math.round(v * 1000) / 1000) as T;
+  if (Array.isArray(v)) return v.map(tidy) as T;
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, tidy(x)])) as T;
+  return v;
+}
+
+/** The policy-walked event. `outcome` is the word for the stage to caption (walked, fell, not-walking, cut-short); the numbers beside it are for display and debugging, and a null among them is "not measured", never a verdict. */
+export function walkedFields(name: string, r: ArrivalResult) {
+  const walked = r.arrivalToWalkingMs !== null;
+  const outcome = r.fell ? 'fell' : walked ? 'walked' : r.partial ? 'cut-short' : 'not-walking';
+  return tidy({
+    name, outcome, arrival_to_installed_ms: Math.round(r.arrivalToInstalledMs),
+    arrival_to_walking_ms: r.arrivalToWalkingMs === null ? null : Math.round(r.arrivalToWalkingMs),
+    sim_seconds_to_walking: r.simSecondsToWalking, mean_speed: r.meanSpeed, window_seconds: r.windowSeconds, partial: r.partial, fell: r.fell,
+  });
+}

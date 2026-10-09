@@ -127,6 +127,18 @@ feed, the desktop panel and the tab's disk all move to the new run within a seco
 tells connected pages to fetch the new snapshot (an SSE `reset`), and never prints or logs the secret. With no link file yet the stage
 starts anyway and connects when one appears. `test/live-link.test.ts` does a real restart against the real 03 server.
 
+## The take server's read-back, as evidence
+
+Start the take server with `--evidence-readback` and give the stage `SHOW_TAKE_STATUS=<the take server's status.json>`. After each
+handover 03's server reads the run's `work/` back from the disk's object store and logs `pipe.readback`; the stage tails that log (the
+file `status.json` names, followed across retakes) and turns the three read-back events into notes. A read-back whose digest equals
+both what the pipe sealed and what the leaving host acknowledged (`match` and `ackedMatch` both strictly true) is the one note that says
+nothing was lost, with evidence `independent-readback`, so its caption is MEASURED. A difference is shown as a difference; a read-back with
+no acknowledged workspace to compare, or one that could not finish, is a note with no claim. Notes carry counts and sizes: never a digest,
+a path or the server's error text. The log also holds the run's link, so the watcher reads only lines that are one of those three events,
+only for the run on the stage, and starts at the end of the file it first sees (earlier handovers are not replayed). Each result is tagged with the key of the run link that was current when it was read (origin, run and a hash of the secret, so a restarted server has a new one even on the same port with the same run name) and is shown only once the stage's feed is connected to that link: a read-back logged before the stage switches to a retake waits for it, a retake that keeps the run's name cannot borrow an old result, and if another retake appears before the feed follows the first, the first's held results are dropped. The server lists at most 50 paths per kind in a difference, so a full list is worded "at least 50". `readback.ts` is the
+parser and the watcher; `test/readback-live.test.ts` runs it against the real take server's log file.
+
 ## Takes
 
 `scripts/record.mjs` records a take and writes `<video>.captions.json` beside it: every caption the page showed, with the second it
