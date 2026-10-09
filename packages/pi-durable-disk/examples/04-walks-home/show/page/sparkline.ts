@@ -6,11 +6,15 @@ const W = 300;
 const H = 92;
 const PAD = { l: 10, r: 14, t: 20, b: 18 };
 
-/** The chart's points: the versions the feed knows plus the ones the tab reported (its word wins), one point per version, in version order. */
+/**
+ * The chart's points: the versions the feed knows plus the ones the tab reported, one point per version, in version order. Neither silently
+ * overwrites the other: where both name a version the feed's stands (a rehearsal's tab numbers the final policy 1 because it has no checkpoints
+ * of its own). In a real take the feed has none and the tab's are all there is.
+ */
 export function chartPoints(fromFeed: readonly { n: number; metres: number }[], fromTab: readonly { n: number; metres: number }[]): { n: number; metres: number }[] {
   const byN = new Map<number, { n: number; metres: number }>();
-  for (const v of fromFeed) byN.set(v.n, v);
   for (const v of fromTab) byN.set(v.n, v);
+  for (const v of fromFeed) byN.set(v.n, v);
   return [...byN.values()].sort((a, b) => a.n - b.n);
 }
 

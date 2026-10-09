@@ -42,9 +42,10 @@ test("it says what it shows, for a reader that cannot see it", () => {
 
 import { chartPoints } from "../page/sparkline.ts";
 
-test("the chart takes the versions the feed knows and the ones the tab reported, one point per version, the tab's word winning", () => {
+test("the chart takes the versions the feed knows and the ones the tab reported, one point per version, and neither silently overwrites the other", () => {
   assert.deepEqual(chartPoints([{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }], []), [{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }]);
   assert.deepEqual(chartPoints([], [{ n: 2, metres: 0.07 }, { n: 1, metres: 0.04 }]), [{ n: 1, metres: 0.04 }, { n: 2, metres: 0.07 }], "in version order");
-  assert.deepEqual(chartPoints([{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }], [{ n: 2, metres: 0.07 }]), [{ n: 1, metres: 0.03 }, { n: 2, metres: 0.07 }]);
+  // A rehearsal's tab has no checkpoints of its own, so it installs the final policy as its version 1: that must not replace the feed's version 1.
+  assert.deepEqual(chartPoints([{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }], [{ n: 1, metres: 5.1 }, { n: 3, metres: 0.12 }]), [{ n: 1, metres: 0.03 }, { n: 2, metres: 0.06 }, { n: 3, metres: 0.12 }]);
   assert.deepEqual(chartPoints([], []), []);
 });
