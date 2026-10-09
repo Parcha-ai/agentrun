@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForStage, withDebug } from "./cdp.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..");
@@ -80,8 +80,10 @@ const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env
 let tab;
 try {
   await waitForStage(port, stage);
-  tab = await openTab(`http://127.0.0.1:${port}/`, { width: 1600, height: 900 });
+  tab = await openTab(withDebug(`http://127.0.0.1:${port}/`), { width: 1600, height: 900 });
   const ev = (s) => tab.eval(s);
+  // Navigation has only started when openTab returns; on a busy box the first read can land on a page with no stage in it yet.
+  for (let i = 0; i < 100 && !(await ev(`!!document.getElementById("desktop")`)); i++) await sleep(200);
   const visible = () => ev(`!document.getElementById("desktop").hidden`);
   expect("the desktop panel appears when the run is on a VM", await until(visible, 15_000));
   expect("while the host has no desktop the panel says so and shows no picture", (await ev(`!document.querySelector("#desktop .dnote").hidden && document.querySelector("#desktop img").hidden`)) === true);

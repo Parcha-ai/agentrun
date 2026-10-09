@@ -1,13 +1,13 @@
 // Drive the whole show from the operator panel in real Chrome and check what the page shows at each step.
 //   SHOW_MODE=operator node serve.ts   then   node scripts/operator-check.mjs [url] [shots-prefix]
 // Exits non-zero on the first step whose expectation fails.
-import { assertStage, openTab, sleep } from "./cdp.mjs";
+import { assertStage, openTab, sleep, withDebug } from "./cdp.mjs";
 
 const url = process.argv[2] ?? "http://127.0.0.1:8751/";
 const shots = process.argv[3];
 // The page under test must be a stage: on a shared box a port is often another lane's server.
 await assertStage(new URL(url).origin);
-const tab = await openTab(url, { width: 1600, height: 900 });
+const tab = await openTab(withDebug(url), { width: 1600, height: 900 });
 const ev = (s) => tab.eval(s);
 const key = (k) => ev(`dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)} }))`);
 const click = (sel) => ev(`document.querySelector(${JSON.stringify(sel)}).click()`);

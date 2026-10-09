@@ -10,7 +10,7 @@ import { findLeaks } from "../publishable.ts";
 import { renderReference } from "../reference.ts";
 import { renderZeroLoss } from "../zero-loss.ts";
 import { ScenarioPlayer } from "../scenario.ts";
-import { assertStage, openTab, sleep } from "./cdp.mjs";
+import { assertStage, openTab, sleep, withDebug } from "./cdp.mjs";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -106,7 +106,7 @@ const BEATS = [
 ];
 
 await assertStage(new URL(url).origin);
-const tab = await openTab(url, { width: 1600, height: 900 });
+const tab = await openTab(withDebug(url), { width: 1600, height: 900 });
 const stills = {};
 try {
   await sleep(2500);

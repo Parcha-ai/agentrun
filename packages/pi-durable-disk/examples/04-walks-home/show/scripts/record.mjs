@@ -6,7 +6,7 @@
 // --tail seconds after the narration line --until appears. With --kick-after N it presses the stage's Kick button (60 N,
 // the force the current legs survive) N seconds after the policy reaches the tab, --kicks times, 6 s apart. The recording itself is scripts/screencast.mjs.
 import { writeFileSync } from "node:fs";
-import { assertStage, openTab, sleep } from "./cdp.mjs";
+import { assertStage, openTab, sleep, withDebug } from "./cdp.mjs";
 import { startScreencast } from "./screencast.mjs";
 
 const arg = (name, fallback) => {
@@ -27,6 +27,18 @@ const kicks = kickForces.length;
 const width = Number(arg("width", 1600));
 const height = Number(arg("height", 900));
 
+// --v2 records the v2 page: its captions are the one caption it shows (#vcaption) and its narration is the chat, so --until is matched against
+// those. The v1 beats (the kill button, the kicks after a policy lands in the v1 notes) are not on that page, so asking for one is an error.
+const v2 = process.argv.includes("--v2");
+if (v2) {
+  for (const flag of ["kill-after", "kick-after", "kicks", "kick-forces"]) {
+    if (process.argv.includes(`--${flag}`)) {
+      console.error(`record: --${flag} is one of the v1 beats; the v2 page has no kill button or kick buttons, and the take drives its own beats (see --v2 above)`);
+      process.exit(2);
+    }
+  }
+}
+
 // Before anything is sent: a reset aimed at a server that is not a stage would be a command to somebody else's.
 await assertStage(new URL(url).origin);
 if (arg("no-reset", false) !== true) {
@@ -34,7 +46,7 @@ if (arg("no-reset", false) !== true) {
   if (!res.ok) throw new Error(`reset: HTTP ${res.status}`);
 }
 let captionLog = [];
-const tab = await openTab(url, { width, height });
+const tab = await openTab(v2 ? url : withDebug(url), { width, height });
 const rec = await startScreencast(tab, { out, fps });
 try {
   let trainingSince = 0; // wall ms when the grid first showed all eight universes training
@@ -49,16 +61,21 @@ try {
     const elapsed = rec.seconds();
     if (elapsed > maxSeconds) break;
     // The director looks at the page once a second: it is cheap and its decisions do not need frame accuracy.
-    for (const r of await tab.eval(`JSON.stringify([...document.querySelectorAll("#caption .row")].map((r) => ({ tag: r.querySelector(".tag")?.textContent ?? null, text: r.querySelector(".txt").textContent })))`).then(JSON.parse).catch(() => [])) {
+    const captionRows = v2
+      ? `JSON.stringify([...document.querySelectorAll("#vcaption")].filter((c) => !c.hidden).map((c) => ({ tag: c.querySelector(".tag")?.textContent ?? null, text: c.querySelector(".txt").textContent })))`
+      : null;
+    for (const r of await tab.eval(captionRows ?? `JSON.stringify([...document.querySelectorAll("#caption .row")].map((r) => ({ tag: r.querySelector(".tag")?.textContent ?? null, text: r.querySelector(".txt").textContent })))`).then(JSON.parse).catch(() => [])) {
       if (!captions.has(r.text)) {
         captions.set(r.text, r.tag);
         log.push({ second: Number(elapsed.toFixed(1)), tag: r.tag, text: r.text });
       }
     }
     const s = await tab
-      .eval(`JSON.stringify({ training: document.querySelectorAll('.tile[data-status="training"]').length, notes: document.getElementById("notes").textContent, canKill: !document.getElementById("killone").disabled })`)
+      .eval(v2 ? `JSON.stringify({ training: 0, canKill: false, notes: [...document.querySelectorAll("#chatlog .said")].map((e) => e.textContent).join("\\n") })` : `JSON.stringify({ training: document.querySelectorAll('.tile[data-status="training"]').length, notes: document.getElementById("notes").textContent, canKill: !document.getElementById("killone").disabled })`)
       .then(JSON.parse)
       .catch(() => null);
+    // In v2 the narration is the chat and the captions it has shown: --until is looked for in both.
+    if (s && v2) s.notes += `\n${[...captions.keys()].join("\n")}`;
     if (s) {
       if (!trainingSince && s.training >= 8) trainingSince = Date.now();
       if (trainingSince && !killedAt && s.canKill && Date.now() - trainingSince >= killAfter * 1000) {

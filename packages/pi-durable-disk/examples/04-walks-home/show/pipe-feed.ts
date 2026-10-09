@@ -11,8 +11,9 @@
 // (SHOW_PIPE_ROLE=view) is refused both, with the pipe's own reason.
 import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
+import { parseDecision } from "./decision.ts";
 import { emptyState, reduce } from "./reduce.ts";
-import type { HostKind, Note, NoteKind, ShowCommand, ShowEvent, ShowState } from "./types.ts";
+import type { ChatTurn, HostKind, Note, NoteKind, ShowCommand, ShowEvent, ShowState } from "./types.ts";
 
 type PipeEnv = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 type Placement = Extract<PipeFrame, { t: "placement" }>["placement"];
@@ -50,6 +51,9 @@ export class PipeTranslator {
   private stays = 0;
   private seenItems = new Set<string>();
   private answeredUsers = new Set<string>();
+  private lastChat = "";
+  /** The decisions already announced (or remembered from history), by id and phase: a frame replayed after a reconnect shows no second card. */
+  private seenDecisions = new Set<string>();
   private run = "";
 
   constructor(options: { run: string; origin?: number; clock?: () => number }) {
@@ -93,8 +97,29 @@ export class PipeTranslator {
     return this.currentEnv;
   }
 
+  /**
+   * A decision frame: the server's typed model chose where the run goes, right before the move. Announced once; a malformed one is refused
+   * and said so in the log, never shown as a card.
+   */
+  private decision(raw: unknown, out: ShowEvent[]): void {
+    const d = parseDecision(raw);
+    if (!d) {
+      out.push({ t: "note", at: this.at(), kind: "story", text: "A decision frame was refused: it could not be shown truthfully." });
+      return;
+    }
+    const key = `${d.id}:${d.phase}`;
+    if (this.seenDecisions.has(key)) return;
+    this.seenDecisions.add(key);
+    out.push({ t: "decision", at: this.at(), decision: d });
+  }
+
   frame(frame: PipeFrame): ShowEvent[] {
     const out: ShowEvent[] = [];
+    // `decision` is a newer frame than the wire type lists: read it by name.
+    if ((frame as { t: string }).t === "decision") {
+      this.decision((frame as unknown as { decision?: unknown }).decision, out);
+      return out;
+    }
     switch (frame.t) {
       case "viewing":
         this.viewing(frame, out);
@@ -144,12 +169,18 @@ export class PipeTranslator {
       out.push({ t: "run", at: 0, run: this.run, origin: this.origin, environments: this.environments(), source: "live" });
     }
     this.placement(frame.placement, out, true);
+    // The decisions so far are history too: remembered so a replay shows no card, never announced.
+    for (const raw of (frame as unknown as { decisions?: unknown[] }).decisions ?? []) {
+      const d = parseDecision(raw);
+      if (d) this.seenDecisions.add(`${d.id}:${d.phase}`);
+    }
     // The transcript so far is history: remember it, announce none of it.
     for (const e of frame.events) this.fold(e);
     for (const item of this.chat.items()) {
       this.seenItems.add(item.id);
       if (item.kind === "user") this.answeredUsers.add(item.id);
     }
+    this.chatTurns(out);
   }
 
   private envOf(p: Placement): string | null {
@@ -231,6 +262,23 @@ export class PipeTranslator {
     else if (event.kind === "events") for (const e of event.events ?? []) this.chat.apply(e as never);
   }
 
+  /**
+   * The conversation as the v2 stage shows it: the user's words and the agent's own text, in order. Tool calls, thinking and the system
+   * notice about a switch are not turns. A chat event replaces the whole list and is emitted only when the list changed.
+   */
+  private chatTurns(out: ShowEvent[]): void {
+    const turns: ChatTurn[] = [];
+    for (const item of this.chat.items()) {
+      const text = "text" in item ? item.text.trim() : "";
+      if (item.kind === "user" && text) turns.push({ id: item.id, role: "user", text });
+      else if (item.kind === "assistant" && text) turns.push({ id: item.id, role: "agent", text, ...(item.streaming ? { streaming: true } : {}) });
+    }
+    const key = JSON.stringify(turns);
+    if (key === this.lastChat) return;
+    this.lastChat = key;
+    out.push({ t: "chat", at: this.at(), turns });
+  }
+
   private events(tagged: Tagged, out: ShowEvent[]): void {
     this.fold(tagged);
     const at = this.at();
@@ -256,6 +304,7 @@ export class PipeTranslator {
         out.push({ t: "note", at, kind: "agent", text: `The agent says: ${answer.text.replace(/\s+/g, " ")}` });
       }
     }
+    this.chatTurns(out);
   }
 }
 

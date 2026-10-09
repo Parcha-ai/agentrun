@@ -129,6 +129,57 @@ test("the notice the agent was told becomes an agent note, once, and the agent's
   assert.equal(captionFor(fold(events), fold(events).now + 5)?.tag, "agent");
 });
 
+test("the chat is the user's words and the agent's text, in order: the switch notice is not a turn, a repeat adds no event", () => {
+  const { tr } = translator();
+  const history = [{ kind: "snapshot", event: { type: "snapshot", entries: [entry("u1", "pi.user", [{ role: "user", content: "teach it to walk" }])], tools: [] } }];
+  const events: ShowEvent[] = [...tr.frame(viewing(inTab, history.map((h) => tag(h))))];
+  assert.deepEqual(fold(events).chat, [{ id: "u1", role: "user", text: "teach it to walk" }], "the transcript so far is shown, not announced");
+  const notice = entry("n1", "env.switch", [{ role: "user", content: "System notice: you are now running in a GPU box." }], { switchId: "sw1" });
+  const a = entry("a1", "pi.assistant", [{ role: "assistant", content: [{ type: "text", text: "This browser can't train a brain. I'm taking myself to a GPU." }], stopReason: "stop" }]);
+  events.push(...tr.frame(batch(appended(notice))));
+  assert.equal(events.filter((e) => e.t === "chat").length, 1, "a notice changes nothing the chat shows");
+  events.push(...tr.frame(batch({ type: "run_start" }, appended(a), { type: "run_end" })));
+  const chat = fold(events).chat;
+  assert.deepEqual(chat.map((t) => [t.role, t.text]), [["user", "teach it to walk"], ["agent", "This browser can't train a brain. I'm taking myself to a GPU."]]);
+  const count = events.filter((e) => e.t === "chat").length;
+  events.push(...tr.frame(batch({ type: "run_end" })));
+  assert.equal(events.filter((e) => e.t === "chat").length, count, "the same list is not announced twice");
+});
+
+const decisionFrame = (over: Record<string, unknown> = {}) =>
+  ({ t: "decision", decision: { id: "d1", phase: "start", question: "Where should this run?", options: [{ id: "tab", label: "Browser", probability: 0.02 }, { id: "modal-gpu", label: "H100 GPU", probability: 0.98 }], choice: "modal-gpu", latency_ms: 37, model: "jev", ...over } }) as unknown as PipeFrame;
+
+test("a decision frame becomes a decision event once, before the move it announces", () => {
+  const { tr, tick } = translator();
+  const events: ShowEvent[] = [...tr.frame(viewing(inTab))];
+  tick(50);
+  events.push(...tr.frame(decisionFrame()));
+  events.push(...tr.frame(decisionFrame()));
+  assert.equal(events.filter((e) => e.t === "decision").length, 1, "a repeat adds no second card");
+  const d = fold(events).decision;
+  assert.deepEqual([d?.id, d?.choice, d?.latencyMs, d?.model, d?.at], ["d1", "modal-gpu", 37, "jev", 50]);
+  events.push(...tr.frame(decisionFrame({ phase: "done", question: "The task is done; where should the agent run now?", choice: "tab" })));
+  assert.equal(fold(events).decision?.phase, "done", "the same id at another phase is another decision");
+});
+
+test("decisions in the first frame are history: remembered so a replay shows no card", () => {
+  const { tr } = translator();
+  const viewingWith = { ...(viewing(inTab) as object), decisions: [(decisionFrame() as unknown as { decision: unknown }).decision] } as unknown as PipeFrame;
+  const events: ShowEvent[] = [...tr.frame(viewingWith)];
+  assert.equal(events.filter((e) => e.t === "decision").length, 0);
+  events.push(...tr.frame(decisionFrame()));
+  assert.equal(events.filter((e) => e.t === "decision").length, 0, "the replayed frame is not announced again");
+  events.push(...tr.frame(decisionFrame({ id: "d2" })));
+  assert.equal(fold(events).decision?.id, "d2", "a new one is");
+});
+
+test("a malformed decision frame is refused in the log and never becomes a card", () => {
+  const { tr } = translator();
+  const events: ShowEvent[] = [...tr.frame(viewing(inTab)), ...tr.frame(decisionFrame({ choice: "mars" })), ...tr.frame(decisionFrame({ latency_ms: Number.NaN }))];
+  assert.equal(fold(events).decision, null);
+  assert.equal(fold(events).notes.filter((n) => /decision frame was refused/.test(n.text)).length, 2);
+});
+
 // A socket the test drives: what the pipe sends goes in through `push`, what the feed sends is in `sent`.
 function fakeSocket() {
   const handlers: Record<string, ((d?: unknown) => void)[]> = {};

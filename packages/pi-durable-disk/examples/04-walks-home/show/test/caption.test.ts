@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { captionFor, captionsFor, claimsZeroLoss } from "../page/caption.ts";
+import { CaptionDesk, captionFor, captionsFor, claimsZeroLoss } from "../page/caption.ts";
 import { fold } from "../reduce.ts";
-import type { ShowEvent } from "../types.ts";
+import type { NoteKind, ShowEvent } from "../types.ts";
 
 const run = (source?: "live" | "scripted"): ShowEvent => ({ t: "run", at: 0, run: "r", origin: 0, environments: [], ...(source ? { source } : {}) });
-const note = (at: number, kind: "kill" | "takeover" | "story" | "switch" | "agent", text: string, measured?: boolean): ShowEvent => ({ t: "note", at, kind, text, ...(measured === undefined ? {} : { measured }) });
+const note = (at: number, kind: NoteKind, text: string, measured?: boolean): ShowEvent => ({ t: "note", at, kind, text, ...(measured === undefined ? {} : { measured }) });
 
 test("a scripted feed's numbers are tagged scripted, never measured, even if the text says measured", () => {
   const s = fold([run("scripted"), note(1000, "takeover", "spare took over in 2.0 s (measured)")]);
@@ -97,4 +97,65 @@ test("a duration beside a singular or plural loss claim is not measured without 
   assert.equal(tagOf(zl(text, { measured: true, evidence: "pipe-released" })), "unmeasured");
   assert.equal(tagOf(zl(text, { measured: true, evidence: "independent-readback" })), "measured");
   assert.equal(tagOf(zl("Switched in 700 ms; no writes were lost", { measured: true })), "unmeasured");
+});
+
+// v2: one caption at a time, held long enough to read.
+const desk = (events: ShowEvent[]) => fold([run("live"), ...events]);
+
+test("the desk shows one caption, holds it at least 4 s, then moves to the next moment in order", () => {
+  const d = new CaptionDesk();
+  const s = desk([note(1000, "switch", "Switched to H100 GPU in 822 ms (timed by the server).", true), note(1500, "home", "Checkpoint 1 arrived from the GPU.")]);
+  assert.equal(d.update(s, 1000)?.text, "Switched to H100 GPU in 822 ms (timed by the server).");
+  assert.equal(d.update(s, 1600)?.text, "Switched to H100 GPU in 822 ms (timed by the server).", "the second moment waits");
+  assert.equal(d.update(s, 4900)?.text, "Switched to H100 GPU in 822 ms (timed by the server).", "still inside the hold");
+  assert.equal(d.update(s, 5000)?.text, "Checkpoint 1 arrived from the GPU.");
+});
+
+test("a caption the desk has shown is not shown again, and it clears after the longest hold", () => {
+  const d = new CaptionDesk();
+  const s = desk([note(1000, "home", "It walks.")]);
+  assert.equal(d.update(s, 1000)?.text, "It walks.");
+  assert.equal(d.update(s, 5000)?.text, "It walks.", "kept until something replaces it, or the longest hold");
+  assert.equal(d.update(s, 11_100), null);
+  assert.equal(d.update(s, 11_200), null, "not shown again");
+});
+
+test("the agent's own lines are the chat's job, plain story lines are skipped, and history from before the page looked is not replayed", () => {
+  const d = new CaptionDesk();
+  const s = desk([note(100, "home", "Old news."), note(30_000, "agent", "The agent says: hello"), note(30_100, "story", "A log line."), note(30_200, "kill", "Something happened.")]);
+  assert.equal(d.update(s, 30_300)?.text, "Something happened.");
+});
+
+test("the desk keeps each caption's tag: a scripted feed's number stays scripted, and the zero-loss rule still applies", () => {
+  const d = new CaptionDesk();
+  const s = fold([run("scripted"), note(1000, "switch", "Moved in 0.8 s.")]);
+  assert.equal(d.update(s, 1000)?.tag, "scripted");
+  const d2 = new CaptionDesk();
+  assert.equal(d2.update(desk([zl("No data was lost in 700 ms", { measured: true })]), 1100)?.tag, "unmeasured");
+});
+
+test("when the feed's clock goes backwards (a reset, a retake, a seek) the desk starts over instead of holding an old caption", () => {
+  const d = new CaptionDesk();
+  assert.equal(d.update(desk([note(26_000, "home", "Checkpoint 1 arrived from the GPU.")]), 26_000)?.text, "Checkpoint 1 arrived from the GPU.");
+  assert.equal(d.update(desk([]), 13_000), null, "the new timeline has not got there yet");
+  const again = desk([note(26_000, "home", "Checkpoint 1 arrived from the GPU.")]);
+  assert.equal(d.update(again, 26_000)?.text, "Checkpoint 1 arrived from the GPU.", "and when it does, the moment is news again");
+});
+
+test("a reset after the last caption has expired still makes the same moments news again", () => {
+  const d = new CaptionDesk();
+  const s = desk([note(26_000, "home", "Checkpoint 1 arrived from the GPU.")]);
+  assert.equal(d.update(s, 26_000)?.text, "Checkpoint 1 arrived from the GPU.");
+  assert.equal(d.update(s, 40_000), null, "expired");
+  assert.equal(d.update(desk([]), 5_000), null, "the clock went back");
+  assert.equal(d.update(s, 26_500)?.text, "Checkpoint 1 arrived from the GPU.");
+});
+
+test("when moments pile up the desk catches up: the ones already old are skipped, so the news is not stuck behind a backlog", () => {
+  const d = new CaptionDesk();
+  const s = desk([note(1000, "home", "one"), note(2000, "home", "two"), note(3000, "home", "three"), note(10_000, "home", "Wi-Fi is off.")]);
+  assert.equal(d.update(s, 10_500)?.text, "three", "the two that are over 8 s old are skipped; the oldest still fresh is shown");
+  assert.equal(d.update(s, 14_600)?.text, "Wi-Fi is off.", "and the next one follows when the hold is over");
+  const lone = new CaptionDesk();
+  assert.equal(lone.update(desk([note(1000, "home", "only news")]), 12_000)?.text, "only news", "a single late moment is still shown");
 });

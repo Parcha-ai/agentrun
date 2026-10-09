@@ -58,8 +58,7 @@ numbers from the last `switch-beat` run, tagged MEASURED locally. The two are ne
 By hand: `node scripts/take-server.mjs --local <dir> --cloud remote-local` (it writes the run's link to `<its dir>/link`, mode 0600, and
 prints only the origin and the PATHS of the token and link files), open the link in a browser as the tab, then
 `SHOW_PIPE_LINK_FILE=<that link file> node serve.ts`. Env: `SHOW_PIPE_ROLE` (the hello mode: `operator`, the default, may switch the
-run and ask the agent; `view` only watches and is refused both with the pipe's own reason), `SHOW_ASK_AFTER_SWITCH=0` (no
-question to the agent), `SHOW_PIPE_TRACE=1` (log each frame's type).
+run and ask the agent; `view` only watches and is refused both with the pipe's own reason), `SHOW_ASK_AFTER_SWITCH=1` (the v1 switch beat: ask the agent where it is after each switch; off by default, so the v2 chat holds only real turns), `SHOW_PIPE_TRACE=1` (log each frame's type).
 
 The stage connects as the pipe's `operator` and does not say it can run the agent (`canRun` stays off). A switch into the tab is
 therefore answered by a tab page that can run it (the 03 page says so), or is refused before anything moves with "no browser tab
@@ -138,6 +137,32 @@ no acknowledged workspace to compare, or one that could not finish, is a note wi
 a path or the server's error text. The log also holds the run's link, so the watcher reads only lines that are one of those three events,
 only for the run on the stage, and starts at the end of the file it first sees (earlier handovers are not replayed). Each result is tagged with the key of the run link that was current when it was read (origin, run and a hash of the secret, so a restarted server has a new one even on the same port with the same run name) and is shown only once the stage's feed is connected to that link: a read-back logged before the stage switches to a retake waits for it, a retake that keeps the run's name cannot borrow an old result, and if another retake appears before the feed follows the first, the first's held results are dropped. The server lists at most 50 paths per kind in a difference, so a full list is worded "at least 50". `readback.ts` is the
 parser and the watcher; `test/readback-live.test.ts` runs it against the real take server's log file.
+## The v2 stage (default) and `?debug=1`
+
+The page is the v2 take (DEMO-V2.md): the creature large in the middle (D3's tab in clean mode, `/tab/?clean=1`), one large location badge
+on top ("Agent: running in your browser" or "Agent: running on <machine>", with a track under it where the agent marker slides between the
+browser and the machine, and "Its home is a cloud disk."), the chat with the agent on the right (user and agent turns only, big type, newest
+last, with an input under it: a line typed there goes to the agent as the operator), and one caption at the bottom, held at least 4 s, with
+its tag. Nothing else is drawn: the timeline, log, HUD numbers, cost meter, multiverse, VM desktop and buttons are behind `?debug=1`, and the
+operator panel stays on the `o` key. The v1 checks and recordings open the page with `?debug=1` (`withDebug` in `scripts/cdp.mjs`).
+
+- **Chat.** The translator folds the transcript (03's `ChatView`) into `chat` events: the user's words and the agent's own text. Tool calls,
+  thinking and the system notice about a switch are not turns. The stage's own "which machine are you on" question is off unless
+  `SHOW_ASK_AFTER_SWITCH=1`, so a v2 chat holds only real turns.
+- **Captions.** One at a time, 4 s minimum, the newest news when several are waiting; the agent's own lines are the chat's job. The learning
+  beat keys on the checkpoint number and the distance its policy file reports (`page/lessons.ts`: "Lesson 1: don't fall over.", "Lesson 2:
+  shuffling forward.", "First steps.", then "Walking: N m in 10 s", tagged SIMULATED from the tab's own simulation). Seconds are whole or to a
+  tenth. Nothing says the agent lives in the tab: it runs there, and its home is a cloud disk. When the network goes off (the page's own
+  `offline` event) the badge says "Network off" and the caption "Network off. The walking brain it learned runs in your tab, even offline.";
+  the stage's own failed fetches are not shown as an error then.
+- **The decision card.** The 03 server's typed model (Jev) decides where the run goes and broadcasts a `decision` frame right before the move
+  (`{ t: "decision", decision: { id, phase: "start"|"done", question, options: [{ id, label, probability }], choice, latency_ms, model:
+  "jev"|"scripted" } }`; the `viewing` frame's `decisions` replays the last few). The stage shows "Where should this run?" with a bar per option for
+  6 s, then the badge moves. `decision.ts` refuses a frame it cannot show truthfully; the numbers are tagged MEASURED only for `model: "jev"` on
+  a live feed, else SCRIPTED.
+- **Rehearsal.** `SHOW_SCENARIO=v2 node serve.ts` plays a scripted take (all numbers SCRIPTED; it has no real checkpoints, so the creature does not
+  learn in it). `node scripts/v2-frames.mjs <url> <dir> --evenly 8` samples frames from it; `node scripts/v2-check.mjs` checks the layout, badge,
+  chat, typed line, decision card and offline behavior in real Chrome (`CDP_URL=http://127.0.0.1:9444`, own Chrome from `scripts/chrome.mjs`).
 
 ## Takes
 

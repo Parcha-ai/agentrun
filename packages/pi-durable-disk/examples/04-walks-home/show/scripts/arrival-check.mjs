@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForStage, withDebug } from "./cdp.mjs";
 
 const show = join(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = process.argv[2];
@@ -20,7 +20,7 @@ const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env
 let tab;
 try {
   await waitForStage(port, stage);
-  tab = await openTab(`http://127.0.0.1:${port}/`, { width: 1600, height: 900 });
+  tab = await openTab(withDebug(`http://127.0.0.1:${port}/`), { width: 1600, height: 900 });
   const seen = new Map();
   const rows = () => tab.eval(`JSON.stringify([...document.querySelectorAll("#caption .row")].map((r) => ({ tag: r.querySelector(".tag")?.textContent ?? null, text: r.querySelector(".txt").textContent })))`).then(JSON.parse);
   const want = [/^Policy installed in the walking creature in \d+ ms \(timed in the tab\)\.$/, /^Walking \d+ ms after the policy arrived \(timed in the tab\)\.$/, /^Mean speed [\d.]+ m\/s over 10 simulated seconds/];
