@@ -761,11 +761,21 @@ describe("fences during the run", () => {
     try {
       // The check passes, as one that ran just before the mount died does: the write itself must fail, not land elsewhere.
       const claimDir = (root: string) => claimDirWith(root, async () => undefined);
-      const t = setup(dir.root, { options: { claimDir, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
+      // run.json writes are serialized: while one waits here, nothing writes into the directory, so it can be removed.
+      let holding = false;
+      let waiting: (() => void) | undefined;
+      const persist: PersistRecord = async (root, text, signal) => {
+        if (holding) await new Promise<void>((resolve) => (waiting = resolve));
+        return persistRecord(root, text, signal);
+      };
+      const t = setup(dir.root, { options: { claimDir, persist, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
       const run = await t.open();
       pid = await startCommand(run, t.agent);
+      holding = true;
+      await until(() => waiting !== undefined);
       held = vanish(dir.root);
       rmSync(held, { recursive: true });
+      waiting!();
       await until(() => t.fenced.length === 1);
       const fence = t.fenced[0]!;
       assert.equal(fence.code, "FENCED");
