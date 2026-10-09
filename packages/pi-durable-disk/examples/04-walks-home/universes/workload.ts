@@ -11,13 +11,14 @@
 //   UNIVERSE_MJCF, UNIVERSE_BODY   the creature, relative to the run's work/ (default creature/creature.xml, creature/body.json)
 //   UNIVERSE_WORLD, UNIVERSE_COURSE   the training terrain and the held-out course, relative to work/ (default
 //                              terrain/terrain.json, terrain/course.json), passed when the run has them
-//   UNIVERSE_COMPILE_CACHE     train.py's compile cache, relative to work/ (default train/compile-cache.tar.gz)
+//   UNIVERSE_COMPILE_CACHE     train.py's compile cache: relative to work/ (default train/compile-cache.tar.gz), or an
+//                              absolute path of the box's own (kept out of the run, so a takeover's restore is smaller)
 //   UNIVERSE_SPEC              the universe's file for train.py, JSON (or UNIVERSE_SCALES, its reward scales alone)
 //   UNIVERSE_MINUTES           its time budget
 import { spawn } from "node:child_process";
 import { existsSync, watch } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { startTrainer } from "./trainer.ts";
 
 export interface WorkloadOptions {
@@ -103,7 +104,9 @@ function startTrain(o: WorkloadOptions): Workload {
       "--work", dir,
       ...(existsSync(world) ? ["--world", world] : []),
       ...(existsSync(course) ? ["--course", course] : []),
-      "--compile-cache", join(o.work, o.env.UNIVERSE_COMPILE_CACHE ?? "train/compile-cache.tar.gz"),
+      // Relative: in the run's work/, carried to every fork and every takeover (warm starts, but the takeover's restore
+      // carries it too). Absolute: the box's own, when its image holds a warm cache already.
+      "--compile-cache", isAbsolute(o.env.UNIVERSE_COMPILE_CACHE ?? "") ? o.env.UNIVERSE_COMPILE_CACHE! : join(o.work, o.env.UNIVERSE_COMPILE_CACHE ?? "train/compile-cache.tar.gz"),
       ...(o.env.UNIVERSE_MINUTES ? ["--minutes", o.env.UNIVERSE_MINUTES] : []),
       ...(o.env.UNIVERSE_TRAIN_ARGS ? (JSON.parse(o.env.UNIVERSE_TRAIN_ARGS) as string[]) : []),
     ];

@@ -79,6 +79,8 @@ const { values } = parseArgs({
     minutes: { type: "string", default: "6" },
     /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
     "source-files": { type: "string" },
+    /** train.py's compile cache: in the run's work/ (default), or an absolute path of each box's own. */
+    "compile-cache": { type: "string" },
     /** With --auto: collapse this many seconds after the kills, instead of when every universe reached its budget. */
     "collapse-after": { type: "string" },
   },
@@ -215,7 +217,14 @@ const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec
   return {
     id: `u${i + 1}`,
     reward: u.hypothesis,
-    env: { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: values["train-py"]!, UNIVERSE_PYTHON: values.python!, UNIVERSE_SPEC: JSON.stringify({ ...u, name: `u${i + 1}` }), UNIVERSE_MINUTES: values.minutes! },
+    env: {
+      UNIVERSE_WORKLOAD: "train",
+      UNIVERSE_TRAIN_PY: values["train-py"]!,
+      UNIVERSE_PYTHON: values.python!,
+      UNIVERSE_SPEC: JSON.stringify({ ...u, name: `u${i + 1}` }),
+      UNIVERSE_MINUTES: values.minutes!,
+      ...(values["compile-cache"] ? { UNIVERSE_COMPILE_CACHE: values["compile-cache"] } : {}),
+    },
   };
 });
 const runPrefix = `d1-${stamp}-`;
