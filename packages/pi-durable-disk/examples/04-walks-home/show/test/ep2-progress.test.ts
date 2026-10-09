@@ -131,9 +131,10 @@ test("the practice batch is shown with sample history, not instead of it (a step
   assert.match(html, /A bridge walks into a bay\./, "the latest kept answer");
   const training = parseProgress(lines({ event: "teacher.start", prompts: 3 }, { event: "teacher", i: 1, of: 3, prompt: "q", answer: "a", kept: true }, { event: "step", step: 5, loss: 2 }));
   assert.doesNotMatch(panelHtml(training), /Writing new practice answers/, "once training has begun the batch is not on screen");
+});
 
 // A real run of the episode 2 training command (recorded by D1, written exactly as the take writes it; its one machine-path field removed). The
-// expected values below were read off the file itself, not off the parser.
+// The expected values below were read off the file itself, not off the parser.
 test("a real recorded run: 174 steps, the loss it started and ended on, three questions answered six times, the manifest, and the time that agrees with 'seconds'", () => {
   const t = parseProgress((JSON.parse(readFileSync(new URL("../episode2/recorded-progress.json", import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n"));
   assert.equal(t.skipped, 0);
