@@ -34,6 +34,30 @@ Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` pro
     TAB_DIR=<tab dist> node serve.ts                    # with D3's tab app instead of the stub
     npm test && npm run typecheck
 
+## The switch beat (tab, a second host, and back)
+
+The stage can watch a real 03 run through its pipe and drive its switcher. No cloud: the disk is a local directory and the
+"second host" is a child process (`second-host.ts`, the way 03's own remote test does it).
+
+    node scripts/chrome.mjs                              # own Chrome with software WebGL
+    CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> node scripts/switch-beat.mjs
+
+`switch-beat.mjs` starts the second-host server and the stage (`SHOW_PIPE_LINK_FILE`), attaches the real 03 tab page as the
+run's writer, then clicks tab, second host, tab in the stage's switcher and checks 14 things: the four named targets (tab,
+sandbox, VM, GPU; the ones the feed does not list are greyed, "wired by name"), the caption tagged MEASURED with the
+milliseconds the SERVER timed (from receiving the switch to the new host's notice committed), the timeline stay carrying the
+same number, the agent's notice, and the agent's answer through the model broker (a few short answers). Typical numbers on
+this box: tab to second host 0.7 to 0.9 s, back to the tab 0.06 s.
+
+By hand: `node second-host.ts` (writes the run link to a 0600 file), open the link in a browser as the tab, then
+`SHOW_PIPE_LINK_FILE=<that file> SHOW_TAB_CDP=<chrome cdp url> node serve.ts`. Env: `SHOW_PIPE_ROLE` (hello mode, default
+`view`), `SHOW_ASK_AFTER_SWITCH=0` (no question to the agent), `SHOW_PIPE_TRACE=1` (log each frame's type).
+
+Two things a view-only stage cannot do, both for browser-demo's server: (1) the pipe lets any client send `switch` and
+`submit` (the TODO in `pipe-feed.ts`: connect as an operator role once it checks roles); (2) a switch to the tab is answered
+`run-here` to whoever asked, and only a tab page can then claim the run, so `tab-control.ts` (rehearsal only, `SHOW_TAB_CDP`)
+makes the real tab page do the asking. Cloud targets light up when the feed lists their environments.
+
 ## Honest numbers
 
 A feed says where it comes from: `run.source` is `live` (the default) or `scripted`. A scripted feed gets a permanent

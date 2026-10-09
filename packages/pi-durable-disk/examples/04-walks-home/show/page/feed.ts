@@ -20,6 +20,14 @@ export class Feed {
     for (const fn of this.listeners) fn(event);
   }
 
+  /**
+   * Time for expiring captions: the last event's time plus the wall time since it arrived, not capped. A feed with no
+   * ticks (a pipe) would otherwise leave its newest caption up forever.
+   */
+  captionNow(): number {
+    return this.state.now + (performance.now() - this.receivedAt);
+  }
+
   /** Scenario time now, in ms: the last event's time plus the time since it arrived, capped so a stalled feed does not run ahead. */
   liveNow(): number {
     return this.state.now + Math.min(performance.now() - this.receivedAt, 1500);

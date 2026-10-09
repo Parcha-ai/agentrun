@@ -1,6 +1,6 @@
-import type { ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
+import type { HostKind, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
-import { captionFor } from "./caption.ts";
+import { captionsFor } from "./caption.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
@@ -16,7 +16,8 @@ const visited = new Set<string>();
 let lastPlacement = "";
 let policySentFor = "";
 
-const TAB_KIND: Record<string, TabKind> = { tab: "tab", home: "tab", sandbox: "daytona", vm: "vm", gpu: "gpu" };
+// The tab app names its placements tab | daytona | gpu | vm; a feed's environments are told apart by their kind, not their id.
+const TAB_KIND: Record<HostKind, TabKind> = { tab: "tab", sandbox: "daytona", vm: "vm", gpu: "gpu", pipe: "tab" };
 
 async function kill(id: string): Promise<void> {
   const r = await feed.command({ t: "kill", universe: id });
@@ -81,7 +82,7 @@ function sendPlacement(state: ShowState): void {
   const key = `${env}|${"host" in state.place ? state.place.host : ""}`;
   if (key === lastPlacement) return;
   lastPlacement = key;
-  bridge.send({ type: "set-placement", kind: TAB_KIND[env] ?? "tab", label: "host" in state.place && state.place.host ? state.place.host : label, since: Date.now() });
+  bridge.send({ type: "set-placement", kind: TAB_KIND[state.environments.find((e) => e.id === env)?.kind ?? "tab"], label: "host" in state.place && state.place.host ? state.place.host : label, since: Date.now() });
 }
 
 bridge.onReady(() => {
@@ -99,15 +100,38 @@ function maybeSendPolicy(state: ShowState): void {
   bridge.send({ type: "load-policy", url: "/policy/home.json" });
 }
 
+/**
+ * The switcher always names four targets: the tab, a basic sandbox, a VM and a GPU. A target the feed lists is a button;
+ * one it does not is shown greyed, wired by name, and lights up when a live endpoint is handed over.
+ */
+const NAMED: { kind: HostKind; label: string }[] = [
+  { kind: "tab", label: "Tab" },
+  { kind: "sandbox", label: "Basic sandbox" },
+  { kind: "vm", label: "VM" },
+  { kind: "gpu", label: "GPU" },
+];
+function switcherSlots(state: ShowState): { id: string; label: string; kind: HostKind; wired: boolean }[] {
+  const slots = state.environments.map((e) => ({ id: e.id, label: e.label, kind: e.kind, wired: true }));
+  for (const n of NAMED) if (!state.environments.some((e) => e.kind === n.kind)) slots.push({ id: `unwired:${n.kind}`, label: n.label, kind: n.kind, wired: false });
+  return slots;
+}
+
 function renderChrome(state: ShowState): void {
   $("run").textContent = state.run;
   $("source").hidden = state.source !== "scripted";
   const sw = $("switcher");
-  const sig = state.environments.map((e) => e.id).join();
+  const slots = switcherSlots(state);
+  const sig = slots.map((e) => `${e.id}:${e.wired}`).join();
   if (sw.dataset.sig !== sig) {
     sw.dataset.sig = sig;
-    sw.innerHTML = state.environments.map((e) => `<button data-env="${esc(e.id)}" data-kind="${esc(e.kind)}"><span class="dot"></span>${esc(e.label)}</button>`).join("");
-    sw.querySelectorAll<HTMLButtonElement>("button").forEach((b) =>
+    sw.innerHTML = slots
+      .map((e) =>
+        e.wired
+          ? `<button data-env="${esc(e.id)}" data-kind="${esc(e.kind)}"><span class="dot"></span>${esc(e.label)}</button>`
+          : `<button class="unwired" data-kind="${esc(e.kind)}" disabled title="${esc(e.label)} is wired by name. It lights up when a live endpoint is handed over."><span class="dot"></span>${esc(e.label)}</button>`,
+      )
+      .join("");
+    sw.querySelectorAll<HTMLButtonElement>("button[data-env]").forEach((b) =>
       b.addEventListener("click", async () => {
         const r = await feed.command({ t: "switch", to: b.dataset.env! });
         if (!r.ok) tabEvent(`switch refused: ${r.message ?? "?"}`);
@@ -116,7 +140,7 @@ function renderChrome(state: ShowState): void {
   }
   if (state.currentEnv) visited.add(state.currentEnv);
   const moving = state.place.where === "moving" ? state.place.to : null;
-  sw.querySelectorAll<HTMLButtonElement>("button").forEach((b) => {
+  sw.querySelectorAll<HTMLButtonElement>("button[data-env]").forEach((b) => {
     const env = state.environments.find((e) => e.id === b.dataset.env);
     b.classList.toggle("active", state.currentEnv === b.dataset.env);
     b.classList.toggle("visited", visited.has(b.dataset.env!));
@@ -138,7 +162,7 @@ function renderChrome(state: ShowState): void {
 
 function renderNotes(state: ShowState, now: number): void {
   const tail = state.notes.slice(-6);
-  const html = tail.map((n) => `<div class="note ${now - n.at < 6000 ? "fresh" : ""}" data-kind="${n.kind}"><time>${clock(n.at)}</time>${esc(n.text)}</div>`).join("");
+  const html = tail.map((n) => `<div class="note ${now - n.at < 6000 ? "fresh" : ""}" data-kind="${n.kind}"><time>${clock(n.at)}</time>${esc(n.text.length > 240 ? `${n.text.slice(0, 239).trimEnd()}\u2026` : n.text)}</div>`).join("");
   const el = $("notes");
   if (el.dataset.html !== html) {
     el.dataset.html = html;
@@ -179,13 +203,14 @@ const OPS: Record<string, () => void> = {
   collapse: () => void run("collapse", { t: "collapse" }),
   home: () => void run("home", { t: "switch", to: homeEnv(feed.state) }),
   reset: () => void run("reset", { t: "reset" }),
+  ask: () => void run("ask", { t: "ask" }),
 };
 operator.querySelectorAll<HTMLButtonElement>("button[data-op]").forEach((b) => b.addEventListener("click", () => OPS[b.dataset.op!]()));
 addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.matches?.("input, textarea")) return;
   if (e.key === "o") operator.hidden = !operator.hidden;
   else if (!operator.hidden) {
-    const key = { f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset" }[e.key];
+    const key = { f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask" }[e.key];
     if (key) OPS[key]();
     else if (e.key === "Escape") operator.hidden = true;
   }
@@ -193,19 +218,14 @@ addEventListener("keydown", (e) => {
 if (params.get("operator") === "1") operator.hidden = false;
 
 let shownCaption = "";
-function renderCaption(state: ShowState, now: number): void {
-  const c = captionFor(state, now);
+function renderCaption(state: ShowState): void {
+  const list = captionsFor(state, feed.captionNow());
   const el = $("caption");
-  const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
+  const key = list.map((c) => `${c.at}|${c.tag}|${c.text}`).join("\n");
   if (key === shownCaption) return;
   shownCaption = key;
-  el.hidden = !c;
-  if (!c) return;
-  const tag = el.querySelector<HTMLElement>(".tag")!;
-  tag.hidden = c.tag === null;
-  tag.className = `tag ${c.tag ?? ""}`;
-  tag.textContent = c.tag ?? "";
-  el.querySelector<HTMLElement>(".txt")!.textContent = c.text;
+  el.hidden = list.length === 0;
+  el.innerHTML = list.map((c) => `<div class="row">${c.tag ? `<span class="tag ${c.tag}">${c.tag}</span>` : ""}<span class="txt">${esc(c.text)}</span></div>`).join("");
 }
 
 function frame(): void {
@@ -213,7 +233,7 @@ function frame(): void {
   const now = feed.liveNow();
   renderChrome(state);
   renderOperator(state);
-  renderCaption(state, now);
+  renderCaption(state);
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);
