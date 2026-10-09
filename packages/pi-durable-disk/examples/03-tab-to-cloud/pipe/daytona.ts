@@ -18,6 +18,8 @@ import type { CreateSandboxBody, DaytonaClient, HostDriver, HostHandle, RunRef, 
 import type { DemoControl } from "./control.ts";
 import { dialLink, type LinkDialer } from "./link.ts";
 import type { ModelOptions, ModelProxy } from "./model-proxy.ts";
+import { moveEnv } from "./cloud.ts";
+import type { Environment, Move } from "../wire.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DEMO = join(here, "..");
@@ -237,8 +239,10 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
     }
   }
 
+  const basic: Environment = { id: "daytona-basic", label: "Daytona basic", phrase: "a Daytona cloud sandbox", kind: "cloud", detail: `${snapshot}, region ${target}` };
   return {
     hostLabel: `a Daytona sandbox (${target})`,
+    environments: [basic] as Environment[],
 
     /** Create and prepare a sandbox for `ref` now, so a later start only launches the instance. */
     prewarm(ref: RunRef): void {
@@ -260,7 +264,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
     },
 
     /** Start the run in a sandbox (a warm one when ready); with `demand` false, only replace a holder that is lost. */
-    async start(ref: RunRef, run: { model: ModelProxy }, demand = true): Promise<boolean> {
+    async start(ref: RunRef, run: { model: ModelProxy; move: Move }, demand = true): Promise<boolean> {
       const token = randomBytes(24).toString("base64url");
       const driver = daytonaHost({
         client,
@@ -274,7 +278,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         user: "pda",
         group: "pda",
         runArgs: ["--app", `${BOX_APP_DIR}/cloud-app.ts`, "--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000"],
-        env: { DEMO_MODEL: options.model.model, DEMO_LINK_PORT: String(BOX_LINK_PORT), DEMO_LINK_HOST: "0.0.0.0", DEMO_LINK_TOKEN: token, DEMO_EVENTS_LOG: BOX_EVENTS },
+        env: { DEMO_MODEL: options.model.model, DEMO_LINK_PORT: String(BOX_LINK_PORT), DEMO_LINK_HOST: "0.0.0.0", DEMO_LINK_TOKEN: token, DEMO_EVENTS_LOG: BOX_EVENTS, ...moveEnv(basic, run.move, snapshot) },
         ttlMinutes: 120,
         startTimeoutMs: 600_000,
         prepare: (box) => prepare(box),

@@ -72,6 +72,11 @@ export interface ModelAccess {
   readonly modelId: string;
   /** A replacement for the provider's HTTP fetch (the tab's pipe). */
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * The credential sent as `Authorization: Bearer`. Default a placeholder: the pipe or a proxy holds the real one (a
+   * sandbox's secrets proxy replaces its own placeholder on the way out).
+   */
+  readonly apiKey?: string;
 }
 
 /**
@@ -86,8 +91,7 @@ export function agentModels(access: ModelAccess) {
     id: PROVIDER,
     name: "Model proxy",
     baseUrl: access.baseUrl,
-    // The proxy holds the credential; the request carries a placeholder.
-    auth: { apiKey: { name: "proxy", resolve: async () => ({ auth: { apiKey: "proxy" } }) } },
+    auth: { apiKey: { name: "model access", resolve: async () => ({ auth: { apiKey: access.apiKey ?? "proxy" } }) } },
     models: [
       {
         id: access.modelId,

@@ -23,6 +23,9 @@ export interface ModelSink {
 export class ModelProxy {
   readonly options: ModelOptions;
   spent: number;
+  /** Input and output tokens over every call, for the spend line. */
+  input = 0;
+  output = 0;
   log: (event: string, data?: Record<string, unknown>) => void;
 
   constructor(options: ModelOptions, spent = 0, log: (event: string, data?: Record<string, unknown>) => void = () => undefined) {
@@ -68,10 +71,16 @@ export class ModelProxy {
           const data = line.slice(5).trim();
           if (data === "[DONE]") continue;
           try {
-            const event = JSON.parse(data) as { usage?: { total_tokens?: number }; response?: { usage?: { total_tokens?: number } }; type?: string };
+            type Usage = { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number };
+            const event = JSON.parse(data) as { usage?: Usage; response?: { usage?: Usage }; type?: string };
             // Chat completions report usage in a last chunk; the Responses API in its `response.completed` event.
             const usage = event.usage ?? (event.type === "response.completed" ? event.response?.usage : undefined);
-            if (usage?.total_tokens) this.spent += usage.total_tokens;
+            if (usage?.total_tokens) {
+              this.spent += usage.total_tokens;
+              this.input += usage.input_tokens ?? usage.prompt_tokens ?? 0;
+              this.output += usage.output_tokens ?? usage.completion_tokens ?? 0;
+              this.log("model.usage", { path, input: usage.input_tokens ?? usage.prompt_tokens ?? 0, output: usage.output_tokens ?? usage.completion_tokens ?? 0, spent: this.spent, totalInput: this.input, totalOutput: this.output });
+            }
           } catch {
             // Not JSON: passed through as is.
           }

@@ -36,7 +36,7 @@ h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 @keyframes pulse { from { opacity: 1 } to { opacity: 0.25 } }
 .badge-text { font-weight: 650; font-size: 14px; }
 .badge-sub { font-size: 12px; opacity: 0.85; }
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; gap: 10px; align-items: center; }
 button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 7px 12px; }
 button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 button:disabled { opacity: 0.4; cursor: default; }
@@ -60,6 +60,19 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0
 .tool pre { margin: 0; padding: 8px 10px; font: 12px/1.4 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 .tool-out { color: var(--muted); border-top: 1px dashed var(--line); }
 .note { font-size: 13px; color: var(--muted); font-style: italic; }
+.notice { max-width: 780px; border-left: 3px solid var(--moving); background: var(--moving-bg); border-radius: 0 10px 10px 0; padding: 8px 12px; font-size: 13px; }
+.notice.unplanned { border-left-color: var(--other); background: var(--other-bg); }
+.notice .who { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--moving); margin-bottom: 3px; }
+.switcher { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.switcher .env { border: 0; border-radius: 0; border-right: 1px solid var(--line); padding: 7px 14px; }
+.switcher .env:last-child { border-right: 0; }
+.switcher .env:disabled { opacity: 0.55; }
+.switcher .env.active { opacity: 1; font-weight: 650; }
+.switcher .env.active.tab { background: var(--tab-bg); color: var(--tab); }
+.switcher .env.active.cloud { background: var(--cloud-bg); color: var(--cloud); }
+.switcher .env.active.moving { background: var(--moving-bg); color: var(--moving); animation: pulse 0.8s infinite alternate; }
+#handover { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+button.link { border: 0; background: none; color: var(--muted); text-decoration: underline; padding: 7px 4px; font-size: 13px; }
 aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto minmax(120px, 1fr) auto minmax(120px, 1.2fr); min-height: 0; background: var(--panel); }
 aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0; padding: 12px 14px 8px; display: flex; justify-content: space-between; }
 #files { overflow-y: auto; padding-bottom: 8px; }
@@ -83,8 +96,9 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
   <span class="run" id="run"></span>
   <div id="badge" class="badge parked"><span class="dot"></span><div><div id="badge-text" class="badge-text">Connecting</div><div id="badge-sub" class="badge-sub"></div></div></div>
   <div class="actions">
-    <button id="move" hidden>Move to the cloud</button>
-    <button id="takeover" class="primary" hidden>Take over here</button>
+    <div id="switcher" class="switcher" role="group" aria-label="Where the agent runs"></div>
+    <span id="handover"></span>
+    <button id="takeover" class="link" hidden title="Take the run from the cloud now: its claim is revoked mid-step">take it now</button>
   </div>
 </header>
 <p id="banner" hidden></p>

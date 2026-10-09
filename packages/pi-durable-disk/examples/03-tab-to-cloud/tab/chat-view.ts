@@ -2,12 +2,15 @@
 // folds its own Harness's events; a viewer folds the same events relayed by the pipe or by the cloud host, so every
 // device shows the same transcript. Portable, no DOM.
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
+import { NOTICE_KIND } from "../environment.ts";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean }
   | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted" }
-  | { kind: "note"; id: string; text: string };
+  | { kind: "note"; id: string; text: string }
+  /** The notice of a move, as the agent received it (environment.ts). */
+  | { kind: "switch"; id: string; text: string; switchId: string; planned: boolean };
 
 type Block = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown };
 type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; stopReason?: string };
@@ -130,6 +133,11 @@ export class ChatView {
     };
     for (const entry of this.#entries) {
       const id = String(entry.id);
+      if (entry.kind === NOTICE_KIND) {
+        const data = (entry.data ?? {}) as { switchId?: string; planned?: boolean };
+        items.push({ kind: "switch", id, text: messagesOf(entry).map((m) => textOf(m.content)).join(""), switchId: data.switchId ?? "", planned: data.planned !== false });
+        continue;
+      }
       for (const message of messagesOf(entry)) {
         if (entry.kind === "pi.user" && message.role === "user") items.push({ kind: "user", id, text: textOf(message.content) });
         else if (entry.kind === "pi.assistant" && message.role === "assistant") {

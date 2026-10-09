@@ -1,6 +1,7 @@
 // The demo's server: the page, one WebSocket per tab, and per run the pipe that holds the run's claim while a tab runs
-// the agent. It also decides where a run goes when its tab is gone (the cloud host, through the package's supervisor)
-// and takes a run back from the cloud when a tab asks to run it here.
+// the agent. It moves a run between environments: the tab and the cloud host's environments, on a switch a page asks
+// for (planned: the current host drains to the end of its step and releases, the target claims, admits the notice of
+// the move and continues), and to the cloud when the tab is gone (unplanned).
 //
 // A run's link carries its secret (`/run/<id>#<secret>`): the fragment never reaches a log, and every WebSocket hello
 // must present it. The server listens on loopback by default; reaching it from elsewhere is a deployment choice.
@@ -13,19 +14,28 @@ import { createRunDir, mintMountToken, removeMountToken, takeOver, unmountClaim,
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
-import type { PipeFrame, Placement, TabFrame } from "../wire.ts";
+import type { Environment, Move, PipeFrame, Placement, TabFrame } from "../wire.ts";
+
+/** The tab as an environment; the cloud host lists its own. */
+export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "This tab", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
 
 /** Where a run goes when no tab runs it, and how it is taken back. Optional: without it a run parks. */
 export interface CloudHost {
-  /** Start the run on the cloud host (the run is released and sealed). Resolves once the host was asked. */
-  start(ref: RunRef, run: { model: ModelProxy }): Promise<{ host: string }>;
+  /** The environments this host runs runs in, as the switcher offers them. The first is where a run goes unplanned. */
+  readonly environments: readonly Environment[];
+  /**
+   * Start the run in environment `env` (the run is released and sealed). `move` is the move that brings it there: the
+   * instance admits its notice before it resumes. Resolves once the host was asked.
+   */
+  start(ref: RunRef, run: { model: ModelProxy; env: string; move: Move }): Promise<{ host: string }>;
   /** The cloud's own view of the run, for viewers while it runs there. Optional. */
   attachViewer?(ref: RunRef, send: (frame: PipeFrame) => void): Promise<() => void>;
   /** Forward a viewer's message to the cloud's conversation. Optional. */
   submit?(ref: RunRef, text: string, requestId: string): Promise<void>;
   /**
    * Stop whatever the cloud runs for the run. After a takeover (`fenced`: its claim is already revoked) it first waits
-   * for the instance to exit by itself, which is the fence observed; otherwise it stops it at once.
+   * for the instance to exit by itself, which is the fence observed; otherwise (`now`) it stops it, and the instance
+   * drains and releases the run before it exits.
    */
   stop(ref: RunRef, how?: "fenced" | "now"): Promise<void>;
   /** Stop and remove everything the cloud host started. */
@@ -60,6 +70,8 @@ export interface DemoServerOptions {
   readonly adminToken?: string;
   /** How often a run in the cloud is supervised. Default 2 s. */
   readonly superviseMs?: number;
+  /** How long a tab gets to finish its current step on a switch before it is released anyway. Default 10 s. */
+  readonly drainMs?: number;
   /** Test seams. */
   readonly acquire?: (options: AcquireOptions, takeover: boolean) => Promise<Claim>;
   readonly claimDir?: OpenRunLeaseOptions["claimDir"];
@@ -83,6 +95,8 @@ interface RunState {
   viewers: Set<PipeSocket>;
   cloudViewers: Map<PipeSocket, () => void>;
   createdAt: number;
+  /** The switch in progress: one at a time. */
+  switching: { move: Move; to: string; started: number } | undefined;
 }
 
 const TYPES: Record<string, string> = {
@@ -115,6 +129,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   const runs = new Map<string, RunState>();
   const listeners: ((id: string, placement: Placement) => void)[] = [];
   const log = (event: string, data: Record<string, unknown> = {}) => options.log?.(event, data);
+  const environments: Environment[] = [TAB_ENVIRONMENT, ...(options.cloud?.environments ?? [])];
+  const environment = (id: string) => environments.find((e) => e.id === id);
+  /** Where the run is, as an environment id; undefined while it moves or is parked. */
+  const currentEnv = (p: Placement) => (p.where === "tab" ? "tab" : p.where === "cloud" ? p.env : undefined);
+  const phraseOf = (p: Placement) => environment(currentEnv(p) ?? "")?.phrase ?? (p.where === "cloud" ? p.host : "the disk");
+  const newMove = (from: string, planned: boolean): Move => ({ id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`, from, planned });
 
   const setPlacement = (state: RunState, placement: Placement) => {
     state.placement = placement;
@@ -199,15 +219,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
   }
 
+  /** The tab stopped pinging: the run goes to the cloud's first environment, unplanned. */
   async function writerGone(state: RunState, pipe: RunPipe): Promise<void> {
-    if (state.pipe !== pipe) return;
-    await toCloud(state, "the tab is gone");
-  }
-
-  /** Release the run from the pipe and, with a cloud host, start it there. */
-  async function toCloud(state: RunState, why: string): Promise<void> {
+    if (state.pipe !== pipe || state.switching) return;
+    const target = options.cloud?.environments[0];
     const started = Date.now();
-    setPlacement(state, { where: "moving", to: "cloud", detail: why });
+    const move = newMove(TAB_ENVIRONMENT.phrase, false);
+    setPlacement(state, target ? { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the tab is gone" } : { where: "parked", detail: "the tab is gone" });
     try {
       await releasePipe(state);
     } catch (error) {
@@ -216,22 +234,88 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return;
     }
     log("released", { run: state.ref.id, ms: Date.now() - started });
-    if (!options.cloud) {
-      setPlacement(state, { where: "parked", detail: why });
-      return;
-    }
+    if (!target) setPlacement(state, { where: "parked", detail: "the tab is gone" });
+    else await startCloud(state, target, move, "the tab is gone", started);
+  }
+
+  /** Start the released run in a cloud environment; on failure it stays parked on the disk. */
+  async function startCloud(state: RunState, target: Environment, move: Move, why: string, started: number): Promise<boolean> {
     try {
-      const { host } = await options.cloud.start(state.ref, { model: state.model });
+      const { host } = await options.cloud!.start(state.ref, { model: state.model, env: target.id, move });
       state.prewarmed = false;
       supervise(state);
-      setPlacement(state, { where: "cloud", host, generation: null, detail: why });
-      log("cloud.started", { run: state.ref.id, host, ms: Date.now() - started });
+      setPlacement(state, { where: "cloud", host, generation: null, env: target.id, detail: why });
+      log("cloud.started", { run: state.ref.id, host, env: target.id, switchId: move.id, ms: Date.now() - started });
       // Whoever watched the tab now watches the cloud.
       for (const viewer of state.viewers) await attachCloudViewer(state, viewer);
+      return true;
     } catch (error) {
       log("cloud.start-failed", { run: state.ref.id, error: (error as Error).message });
       setPlacement(state, { where: "parked", detail: `cloud start failed: ${(error as Error).message}` });
+      return false;
     }
+  }
+
+  /**
+   * A planned switch to environment `to`, asked by `socket`: the current host finishes its step and releases the run,
+   * then the target claims it, admits the notice of the move and continues. A tab target is the asking page, told to
+   * run it here (its hello carries the switch id).
+   */
+  async function switchTo(state: RunState, socket: PipeSocket, to: string): Promise<void> {
+    const target = environment(to);
+    const p = state.placement;
+    const from = currentEnv(p);
+    const refuse = (message: string) => socket.send({ t: "switch-refused", to, message });
+    if (!target) return refuse(`no environment ${to}`);
+    if (state.switching || state.opening) return refuse("a move is already in progress");
+    if (from === undefined) return refuse(`the run is ${p.where}`);
+    if (from === to) return refuse("the run is already there");
+    if (target.kind === "cloud" && !options.cloud) return refuse("no cloud host");
+    const started = Date.now();
+    const move = newMove(phraseOf(p), true);
+    state.switching = { move, to, started };
+    setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: `leaving ${environment(from)?.label ?? from}` });
+    log("switch.start", { run: state.ref.id, switchId: move.id, from, to });
+    try {
+      if (p.where === "tab") {
+        const drained = await state.pipe!.drainWriter(move.id, options.drainMs ?? 10_000);
+        log("switch.drained", { run: state.ref.id, switchId: move.id, drained, ms: Date.now() - started });
+        await releasePipe(state);
+      } else {
+        unsupervise(state);
+        await options.cloud!.stop(state.ref, "now");
+      }
+      log("switch.released", { run: state.ref.id, switchId: move.id, ms: Date.now() - started });
+      if (target.kind === "tab") {
+        setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the tab is attaching" });
+        socket.send({ t: "run-here", switchId: move.id });
+        // A page that never attaches leaves the run parked, sealed, for whoever opens it next.
+        setTimeout(() => {
+          if (state.switching?.move.id !== move.id) return;
+          state.switching = undefined;
+          if (!state.pipe && !state.opening) setPlacement(state, { where: "parked", detail: "the tab did not attach" });
+        }, 30_000).unref();
+        return;
+      }
+      state.switching = undefined;
+      await startCloud(state, target, move, `switched from ${environment(from)?.label ?? from}`, started);
+    } catch (error) {
+      state.switching = undefined;
+      log("switch.failed", { run: state.ref.id, switchId: move.id, error: (error as Error).message });
+      setPlacement(state, { where: "parked", detail: `switch failed: ${(error as Error).message}` });
+    }
+  }
+
+  /** The tab that took the run reports its notice committed and its run resumed: the switch is done. */
+  function switched(state: RunState, switchId: string): void {
+    const s = state.switching;
+    if (!s || s.move.id !== switchId) return;
+    state.switching = undefined;
+    const ms = Date.now() - s.started;
+    log("switch.done", { run: state.ref.id, switchId, to: s.to, ms });
+    const frame: PipeFrame = { t: "switched", switchId, to: s.to, ms };
+    for (const viewer of state.viewers) viewer.send(frame);
+    state.pipe?.broadcast(frame);
   }
 
   /** While the run is in the cloud, a supervisor tick every few seconds replaces a host that died or froze. */
@@ -245,7 +329,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       void cloud
         .supervise!(state.ref)
         .then((replaced) => {
-          if (replaced && state.placement.where === "cloud") setPlacement(state, { where: "cloud", host: replaced.host, generation: null, detail: "the previous host was lost" });
+          if (replaced && state.placement.where === "cloud") setPlacement(state, { where: "cloud", host: replaced.host, generation: null, env: state.placement.env, detail: "the previous host was lost" });
         })
         .catch((error) => log("supervise.failed", { run: state.ref.id, error: (error as Error).message }))
         .finally(() => (busy = false));
@@ -292,20 +376,26 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       await addViewer(state, socket);
       return state;
     }
-    // A tab asks to run the agent here.
+    // A tab asks to run the agent here: after a switch it asked for (its hello names the switch), on a takeover of a run
+    // the cloud holds, or when nothing holds the run.
     try {
-      const fromCloud = state.placement.where === "cloud";
-      if (fromCloud && !frame.takeover) {
+      const placement = state.placement;
+      const fromCloud = placement.where === "cloud";
+      const switching = state.switching;
+      const ours = switching !== undefined && switching.to === "tab" && frame.switchId === switching.move.id && state.pipe === undefined;
+      if ((fromCloud && !frame.takeover) || (switching && !ours)) {
         await addViewer(state, socket);
         return state;
       }
+      let move: Move | undefined = ours ? switching.move : undefined;
       if (fromCloud) {
         unsupervise(state);
-        setPlacement(state, { where: "moving", to: "tab", detail: "a tab took the run back" });
+        move = newMove(phraseOf(placement), true);
+        setPlacement(state, { where: "moving", to: TAB_ENVIRONMENT.label, env: "tab", switchId: move.id, since: Date.now(), detail: "a tab took the run back" });
       }
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
-      const role = await pipe.attach(socket, frame.tab, frame.takeover === true);
+      const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, ...(move ? { move } : {}) });
       if (role === "viewer") socket.send(await viewingFrame(state));
       else {
         for (const [viewer, detach] of state.cloudViewers) {
@@ -313,7 +403,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           pipe.addViewer(viewer);
         }
         state.cloudViewers.clear();
-        state.placement = { where: "tab", tab: frame.tab, epoch: pipe.epoch, generation: pipe.generation };
+        state.placement = { where: "tab", tab: frame.tab, epoch: pipe.epoch, generation: pipe.generation, env: "tab" };
         for (const listener of listeners) listener(state.ref.id, state.placement);
         if (!state.prewarmed) {
           state.prewarmed = true;
@@ -330,7 +420,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   async function viewingFrame(state: RunState): Promise<PipeFrame> {
     const files = state.pipe ? await state.pipe.restoreManifest().catch(() => []) : [];
-    return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [] };
+    return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [], environments };
   }
 
   async function addViewer(state: RunState, socket: PipeSocket): Promise<void> {
@@ -371,8 +461,15 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         if (pipe) pipe.ping(socket, frame.at);
         else socket.send({ t: "pong", at: frame.at, now: Date.now() });
         return;
-      case "cloud":
-        if (pipe && pipe.writerTab !== undefined) await toCloud(state, "moved to the cloud from the tab");
+      case "switch":
+        // Not queued behind the switch: the writer's drained and switched frames arrive while it runs.
+        void switchTo(state, socket, frame.to).catch((error) => log("switch.failed", { run: state.ref.id, error: (error as Error).message }));
+        return;
+      case "drained":
+        pipe?.drained(socket, frame.switchId);
+        return;
+      case "switched":
+        switched(state, frame.switchId);
         return;
       case "submit":
         // A viewer's message: to the writer tab when a tab runs the run, to the cloud when it runs there.
@@ -515,6 +612,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         viewers: new Set(),
         cloudViewers: new Map(),
         createdAt: Date.now(),
+        switching: undefined,
       });
       log("run.created", { run: runId });
       return { id: runId, secret };

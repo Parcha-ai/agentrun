@@ -151,30 +151,41 @@ export async function workspaceDigest(lines: string[]): Promise<string> {
 /** The model endpoint paths (under `/v1/`) a tab may call through the pipe. */
 export const MODEL_PATHS = ["responses", "chat/completions"] as const;
 
-/** Where the run is: the badge every page shows. */
+/**
+ * A place the run can be switched to; the server lists them, the page offers them. `phrase` names it inside a sentence
+ * ("your user's browser tab", "a Daytona sandbox"), for the agent's notice of a move.
+ */
+export type Environment = { id: string; label: string; phrase: string; kind: "tab" | "cloud"; detail?: string };
+
+/** A move of the run from one host to another (environment.ts's SwitchInfo). */
+export type Move = { id: string; from: string; planned: boolean };
+
+/** Where the run is: the badge every page shows. `env` is the environment's id. */
 export type Placement =
-  | { where: "tab"; tab: string; epoch: number; generation: number }
-  | { where: "cloud"; host: string; generation: number | null; detail?: string }
-  | { where: "moving"; to: "tab" | "cloud"; detail?: string }
+  | { where: "tab"; tab: string; epoch: number; generation: number; env: "tab" }
+  | { where: "cloud"; host: string; generation: number | null; env: string; detail?: string }
+  | { where: "moving"; to: string; env: string; switchId?: string; since: number; detail?: string }
   | { where: "parked"; detail?: string };
 
 /** Frames from a tab to the pipe. */
 export type TabFrame =
-  | { t: "hello"; run: string; token: string; mode: "write" | "view"; tab: string; takeover?: boolean }
+  | { t: "hello"; run: string; token: string; mode: "write" | "view"; tab: string; takeover?: boolean; switchId?: string }
   | { t: "rpc"; id: number; method: StorageMethod; args: Tagged[] }
   | { t: "files"; id: number; changes: FileChange[] }
   | { t: "model"; id: number; path: string; body: Tagged }
   | { t: "model-abort"; id: number }
   | { t: "view"; event: Tagged }
   | { t: "ping"; at: number }
-  | { t: "cloud"; action: "move" }
+  | { t: "switch"; to: string }
+  | { t: "drained"; switchId: string }
+  | { t: "switched"; switchId: string }
   | { t: "submit"; text: string; requestId: string }
   | { t: "bye" };
 
 /** Frames from the pipe to a tab. */
 export type PipeFrame =
-  | { t: "attached"; epoch: number; generation: number; files: FileEntry[]; model: string; budget: { used: number; cap: number } }
-  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[] }
+  | { t: "attached"; epoch: number; generation: number; files: FileEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move }
+  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[] }
   | { t: "res"; id: number; ok: true; result: Tagged; ms?: number }
   | { t: "res"; id: number; ok: false; error: WireError }
   | { t: "model-head"; id: number; status: number }
@@ -185,6 +196,10 @@ export type PipeFrame =
   | { t: "files-changed"; files: FileEntry[] }
   | { t: "submit"; text: string; requestId: string }
   | { t: "want-snapshot" }
+  | { t: "drain"; switchId: string }
+  | { t: "run-here"; switchId: string }
+  | { t: "switched"; switchId: string; to: string; ms: number }
+  | { t: "switch-refused"; to: string; message: string }
   | { t: "lost"; code: string; message: string }
   | { t: "pong"; at: number; now: number }
   | { t: "error"; message: string };
