@@ -18,3 +18,10 @@ test("an unknown key, a bad transport, a GPU type without an image, a non-number
   assert.throws(() => modalOptionsFromArgs({ "gpu-type": "H100" }), /needs gpu-image/);
   assert.throws(() => modalOptionsFromArgs({ cpu: "many" }), /a positive number/);
 });
+
+test("warm=gpu keeps the GPU box ready and vm=false offers only the GPU; both need a GPU image", () => {
+  assert.deepEqual(modalOptionsFromArgs({ "gpu-image": "im-2", warm: "gpu", vm: "false" }), { gpu: { image: "im-2" }, warm: "gpu", offerVm: false });
+  assert.throws(() => modalOptionsFromArgs({ warm: "gpu" }), /need gpu-image/);
+  assert.throws(() => modalOptionsFromArgs({ vm: "false" }), /need gpu-image/);
+  assert.throws(() => modalOptionsFromArgs({ "gpu-image": "im-2", warm: "gpuu" }), /true, false or gpu/);
+});

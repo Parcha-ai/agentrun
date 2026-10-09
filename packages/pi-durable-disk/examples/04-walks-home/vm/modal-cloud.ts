@@ -74,8 +74,13 @@ export interface ModalCloudOptions {
    * image.ts's layer, without archil); `note` goes into the agent's notice there (what to run, where the output goes).
    */
   readonly gpu?: { readonly image: string; readonly type?: string; readonly cpu?: number; readonly memoryMiB?: number; readonly note?: string; readonly placementTimeoutMs?: number; readonly ttlMinutes?: number };
-  /** Keep one VM ready for a run while a tab runs it (it costs while it waits). Pipe transport only. Default off. */
-  readonly warm?: boolean;
+  /**
+   * Keep one box ready for a run while a tab runs it (it costs while it waits): `true` a pipe VM, `"gpu"` the GPU box
+   * (the take opens the tab right before the user draws, so the machine is up by the time the agent asks for it). Default off.
+   */
+  readonly warm?: boolean | "gpu";
+  /** Offer the VM environment (default true). Without it the only place the agent can go is the GPU box; needs `gpu`. */
+  readonly offerVm?: boolean;
   /** Where each stopped host's log lines are appended (the demo's evidence file). */
   readonly eventsLog?: string;
   /** The Modal SDK; default the `modal` package's client. */
@@ -387,7 +392,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     hostLabel: "a Modal VM",
     // The VM's instance tells the server over its link when its agent's notice is committed, so the move is timed to that moment.
     notifiesSwitched: true,
-    environments: [env, ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
+    environments: [...(options.offerVm === false && gpuEnv ? [] : [env]), ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
 
     bind(api) {
       server = api;
@@ -459,8 +464,9 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
     /** While a tab runs the run, with `warm` set (pipe transport): get a VM ready, so a switch only dials it. */
     prewarm(ref) {
-      if (transport !== "pipe" || !options.warm || warm.has(ref.id) || remotes.has(ref.id)) return;
-      const ready = remoteBox(ref, env.id);
+      const warmEnv = options.warm === "gpu" ? gpuEnv : options.warm && transport === "pipe" ? env : undefined;
+      if (!warmEnv || warm.has(ref.id) || remotes.has(ref.id)) return;
+      const ready = remoteBox(ref, warmEnv.id);
       ready.catch((error: Error) => {
         warm.delete(ref.id);
         options.log("remote.warm-failed", { run: ref.id, error: error.message });
@@ -471,9 +477,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     /** Take the warm sandbox (or make one), dial its host through the tunnel with its bearer token, and send it `invite`. */
     async startRemote(ref, envId, invite) {
       const t0 = Date.now();
-      // A warm VM is only for the VM environment; a GPU one is never kept waiting.
-      const warmBox = envId === env.id ? warm.get(ref.id) : undefined;
-      if (envId === env.id) warm.delete(ref.id);
+      // The warm box belongs to the environment `warm` named: a switch anywhere else leaves it where it is.
+      const warmEnvId = options.warm === "gpu" ? gpuEnv?.id : env.id;
+      const warmBox = envId === warmEnvId ? warm.get(ref.id) : undefined;
+      if (envId === warmEnvId) warm.delete(ref.id);
       const box = (warmBox && (await warmBox.catch(() => undefined))) || (await remoteBox(ref, envId));
       remotes.set(ref.id, box);
       const tunnel = (await tunnelsOf(box.id))[BOX_SERVE_PORT];
