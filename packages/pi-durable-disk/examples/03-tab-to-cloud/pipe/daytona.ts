@@ -296,6 +296,8 @@ export interface DaytonaCloudOptions {
   readonly modelSecret?: string;
   /** A runtime snapshot on a GPU class (scripts/daytona-snapshot.ts --from daytona-gpu): offers "Daytona GPU". */
   readonly gpuSnapshot?: string;
+  /** The agent in a box asks to move (switch_environment, over the link): the server's answer. */
+  readonly onSwitch?: (ref: RunRef, to: string, reason: string) => Promise<{ switchId: string }>;
 }
 
 export async function daytonaCloud(options: DaytonaCloudOptions) {
@@ -499,7 +501,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
       options.log("cloud.ensure", { run: ref.id, action: result.action, reason: result.reason, revoked: result.revoked.length, startMs: result.startMs, ms: Date.now() - started, box: result.handle.name });
       options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
       const box = String(result.handle.sandboxId);
-      const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
+      const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, ...(options.onSwitch ? { onSwitch: (to: string, reason: string) => options.onSwitch!(ref, to, reason) } : {}), log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
       const serve = { url: await previewUrl(box, BOX_SERVE_PORT), token: serveTokens.get(box) ?? "" };
       const previous = placed.get(ref.id);
       placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), serve, handle: result.handle, token: result.token.identifier, box, env: cls.env.id });

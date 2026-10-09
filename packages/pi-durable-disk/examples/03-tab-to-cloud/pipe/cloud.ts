@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { ensureRunning, localHost, readRunStatus, removeMountToken } from "@parcha/pi-durable-disk";
 import type { HostDriver, HostHandle, RunRef } from "@parcha/pi-durable-disk";
 import { archilControl, type DemoControl } from "./control.ts";
-import type { CloudHost } from "./server.ts";
+import type { CloudHost, ServerApi } from "./server.ts";
 import type { ModelOptions, ModelProxy } from "./model-proxy.ts";
 import { dialLink, type LinkDialer } from "./link.ts";
 import { tag, toBase64, type Environment, type FileEntry, type Move, type PipeFrame } from "../wire.ts";
@@ -194,10 +194,15 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       ...(options.snapshot ? { snapshot: options.snapshot } : {}),
       ...(options.modelSecret ? { modelSecret: options.modelSecret } : {}),
       ...(options.gpuSnapshot ? { gpuSnapshot: options.gpuSnapshot } : {}),
+      onSwitch: (ref, to, reason) => (server ? server.requestSwitch(ref, to, reason) : Promise.reject(new Error("the server cannot move agents"))),
     });
     const running = new Set<string>();
     const models = new Map<string, ModelProxy>();
+    let server: ServerApi | undefined;
     const daytona: CloudHost = {
+      bind(api) {
+        server = api;
+      },
       environments: d.environments,
       async start(ref, run) {
         models.set(ref.id, run.model);

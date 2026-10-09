@@ -25,3 +25,11 @@ test("the environment is a cloud one when the VM mounts the disk and a remote on
   assert.equal(modalVmEnvironment("pipe").kind, "remote");
   assert.equal(modalVmEnvironment("mount").id, "modal-vm");
 });
+
+test("without archil the recipe has no FUSE or archil step and everything else is unchanged", () => {
+  const all = vmImageCommands(1000, 1000);
+  const without = vmImageCommands(1000, 1000, { archil: false });
+  assert.equal(without.some((c) => c.includes("archil")), false);
+  assert.deepEqual(all.filter((c) => !c.includes("archil.deb")), without);
+  assert.equal(all.length - without.length, 1);
+});
