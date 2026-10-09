@@ -8,6 +8,7 @@
 //   DEMO_MODEL_KEY_FILE a file holding the model credential (a sandbox's secret placeholder), sent as a bearer token
 //   DEMO_SWITCH_ID, DEMO_SWITCH_FROM, DEMO_SWITCH_PLANNED (DEMO_SWITCH_BY=agent, DEMO_SWITCH_REASON: the agent chose it): the move that brought the run here; its notice is admitted
 //                   before the run resumes (environment.ts), described by this host's probe (host-probe.ts)
+//   DEMO_DISPLAY    the X display of a desktop this host runs (":1"): the agent gets the computer tool for it (computer-tool.ts)
 //   DEMO_EVENTS_LOG optional: a file this instance appends one JSON line to when it opens and after each commit it made
 //                   (its generation, the commit's sequence, the time), the evidence that no write of it lands after a
 //                   takeover
@@ -17,6 +18,7 @@ import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
 import { switchEnvironment } from "./switch-tool.ts";
+import { computerTool } from "./computer-tool.ts";
 import { probeHost } from "./host-probe.ts";
 import { startCloudLink, type CloudLink } from "./cloud-link.ts";
 
@@ -37,7 +39,7 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
     await run.claim.barrier();
   };
   return {
-    registry: agentRegistry(durable, link ? [switchEnvironment(link.switchChannel)] : []),
+    registry: agentRegistry(durable, [...(link ? [switchEnvironment(link.switchChannel)] : []), ...(process.env.DEMO_DISPLAY ? [computerTool()] : [])]),
     models: agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) }),
     settings: SETTINGS,
     root: { agent: rootAgent(modelId) },

@@ -12,6 +12,7 @@ const { values } = parseArgs({
     // The commands as a JSON array, for a builder in another language (`Image.dockerfile_commands(json.loads(...))`).
     "print-commands": { type: "boolean", default: false },
     "no-archil": { type: "boolean", default: false },
+    desktop: { type: "boolean", default: false },
     uid: { type: "string" },
     gid: { type: "string" },
   },
@@ -19,11 +20,11 @@ const { values } = parseArgs({
 const uid = values.uid ? Number(values.uid) : process.getuid!();
 const gid = values.gid ? Number(values.gid) : process.getgid!();
 if (values["print-commands"]) {
-  console.log(JSON.stringify(vmImageCommands(uid, gid, { archil: !values["no-archil"] })));
+  console.log(JSON.stringify(vmImageCommands(uid, gid, { archil: !values["no-archil"], desktop: values.desktop })));
   process.exit(0);
 }
 const modal = new ModalClient();
 const app = await modal.apps.fromName(values.app!, { createIfMissing: true });
 const t0 = Date.now();
-const image = await modal.images.fromRegistry(values.base!).dockerfileCommands(vmImageCommands(uid, gid, { archil: !values["no-archil"] })).build(app);
+const image = await modal.images.fromRegistry(values.base!).dockerfileCommands(vmImageCommands(uid, gid, { archil: !values["no-archil"], desktop: values.desktop })).build(app);
 console.log(JSON.stringify({ imageId: image.imageId, app: values.app, base: values.base, ms: Date.now() - t0 }));

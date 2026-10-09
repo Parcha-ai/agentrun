@@ -26,6 +26,7 @@ import { dialLink, type LinkDialer } from "../../03-tab-to-cloud/pipe/link.ts";
 import type { ModelOptions, ModelProxy } from "../../03-tab-to-cloud/pipe/model-proxy.ts";
 import type { CloudHost, Invite, ServerApi } from "../../03-tab-to-cloud/pipe/server.ts";
 import type { Environment, Move } from "../../03-tab-to-cloud/wire.ts";
+import { DESKTOP_DISPLAY, DESKTOP_PORT, desktopScript, novncUrl, SCREENSHOT_COMMAND } from "./desktop.ts";
 import { vmImageCommands } from "./image.ts";
 
 const BOX_ETC = "/etc/pda-demo";
@@ -65,6 +66,8 @@ export interface ModalCloudOptions {
   readonly memoryMiB?: number;
   /** Where Modal may place the sandboxes (`["us-east"]`, near the disk). */
   readonly regions?: string[];
+  /** Start a desktop in the VM (a virtual display, a window manager, noVNC to watch it) and give the agent the computer tool. Mount transport only. */
+  readonly desktop?: boolean;
   /** Keep one VM ready for a run while a tab runs it (it costs while it waits). Pipe transport only. Default off. */
   readonly warm?: boolean;
   /** Where each stopped host's log lines are appended (the demo's evidence file). */
@@ -85,12 +88,16 @@ interface Placed {
   driver: HostDriver;
   dialer: LinkDialer;
   serve: { url: string; token: string };
+  desktop?: { url: string };
   handle: HostHandle;
   token: string;
   box: string;
 }
 
-export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost & { hostLabel: string }> {
+/** The demo server's CloudHost, and what only this cloud has: the run's desktop. */
+export type ModalCloud = CloudHost & { hostLabel: string; desktop(ref: RunRef): { url: string; screenshot(): Promise<Uint8Array> } | undefined };
+
+export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud> {
   const base: FullSdk = options.sdk ?? (new (await import("modal")).ModalClient() as unknown as FullSdk);
   const appName = options.appName ?? "pda-demo";
   const prefix = options.namePrefix ?? "pda-demo-";
@@ -101,7 +108,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
   const env = modalVmEnvironment(transport);
   const uid = process.getuid!();
   const gid = process.getgid!();
-  const image = options.image ?? (() => (base.images.fromRegistry("ubuntu:24.04") as unknown as { dockerfileCommands(c: string[]): unknown }).dockerfileCommands(vmImageCommands(uid, gid)));
+  const image = options.image ?? (() => (base.images.fromRegistry("ubuntu:24.04") as unknown as { dockerfileCommands(c: string[]): unknown }).dockerfileCommands(vmImageCommands(uid, gid, { desktop: options.desktop })));
   // Every sandbox is in the ledger by its name before the create call returns, and by its id after.
   const sdk: FullSdk = {
     apps: base.apps,
@@ -122,7 +129,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
       list: (p) => base.sandboxes.list(p),
     },
   };
-  const ports = [BOX_SERVE_PORT, BOX_LINK_PORT];
+  const ports = [BOX_SERVE_PORT, BOX_LINK_PORT, ...(options.desktop ? [DESKTOP_PORT] : [])];
+  const vncPasswords = new Map<string, string>();
   const client: DaytonaClient = modalSandboxes(sdk, { appName, image, runtime, cpu: options.cpu ?? 2, memoryMiB: options.memoryMiB ?? 4096, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: ports });
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
@@ -158,6 +166,15 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
     const setup = await c.exec(box, boxSetupScript(STAGE), 60);
     if (setup.exitCode !== 0) throw new Error(`setting up ${box.name} failed (${setup.exitCode}): ${setup.result.trim().split("\n").slice(-2).join(" | ").slice(0, 300)}`);
     serveTokens.set(box.id, token);
+    if (options.desktop) {
+      const password = randomBytes(9).toString("base64url");
+      await c.upload(box, `${STAGE}/vnc.txt`, new TextEncoder().encode(password));
+      const started = Date.now();
+      const d = await c.exec(box, desktopScript(STAGE), 120);
+      if (d.exitCode !== 0) throw new Error(`starting the desktop in ${box.name} failed (${d.exitCode}): ${d.result.trim().split("\n").slice(-3).join(" | ").slice(0, 300)}`);
+      vncPasswords.set(box.id, password);
+      options.log("desktop.started", { box: box.name, ms: Date.now() - started });
+    }
     options.log("modal.prepared", { box: box.name, ms: Date.now() - started, steps: r.result.split("\n").filter((l) => l.startsWith("step")).map((l) => l.split("\t").slice(1).join("=")) });
   }
 
@@ -233,7 +250,20 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
         "--serve", String(BOX_SERVE_PORT), "--serve-host", "0.0.0.0", "--serve-url", `http://127.0.0.1:${BOX_SERVE_PORT}`, "--serve-token-file", `${BOX_ETC}/serve.token`,
       ],
       // The box cannot reach the model: its calls come back through the server's link.
-      env: { DEMO_MODEL: options.model.model, DEMO_LINK_PORT: String(BOX_LINK_PORT), DEMO_LINK_HOST: "0.0.0.0", DEMO_LINK_TOKEN: linkToken, DEMO_EVENTS_LOG: BOX_EVENTS, ...moveEnv(env, run.move, "modal-vm") },
+      env: {
+        DEMO_MODEL: options.model.model,
+        DEMO_LINK_PORT: String(BOX_LINK_PORT),
+        DEMO_LINK_HOST: "0.0.0.0",
+        DEMO_LINK_TOKEN: linkToken,
+        DEMO_EVENTS_LOG: BOX_EVENTS,
+        ...(options.desktop
+          ? {
+              DEMO_DISPLAY: DESKTOP_DISPLAY,
+              DEMO_ENV_NOTE: `A desktop runs here (1280x720, display ${DESKTOP_DISPLAY}, a window manager) and Chromium is installed: use your computer tool to see and drive it. Start GUI programs from bash detached, on the display: setsid -f env DISPLAY=${DESKTOP_DISPLAY} chromium URL.`,
+            }
+          : {}),
+        ...moveEnv(env, run.move, "modal-vm"),
+      },
       stopTimeoutMs: 15_000,
       ttlMinutes: 120,
       startTimeoutMs: 600_000,
@@ -252,6 +282,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
     const tunnels = await tunnelsOf(box);
     const linkTunnel = tunnels[BOX_LINK_PORT];
     const serveTunnel = tunnels[BOX_SERVE_PORT];
+    const desktopTunnel = options.desktop ? tunnels[DESKTOP_PORT] : undefined;
+    const vnc = vncPasswords.get(box);
     if (!linkTunnel || !serveTunnel) throw new Error(`${result.handle.name} has no tunnels for ports ${BOX_SERVE_PORT} and ${BOX_LINK_PORT}`);
     const dialer = dialLink({ url: linkTunnel.url.replace(/^http/, "ws"), token: linkToken, proxy: run.model,
       // The agent in the VM asked to move (switch_environment): the server runs the handover.
@@ -259,7 +291,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
       log: (e, d) => options.log(e, { run: ref.id, ...d }),
     });
     const previous = placed.get(ref.id);
-    placed.set(ref.id, { driver, dialer, serve: { url: serveTunnel.url.replace(/\/+$/, ""), token: serveTokens.get(box) ?? "" }, handle: result.handle, token: result.token.identifier, box });
+    placed.set(ref.id, { driver, dialer, serve: { url: serveTunnel.url.replace(/\/+$/, ""), token: serveTokens.get(box) ?? "" }, handle: result.handle, token: result.token.identifier, box, ...(desktopTunnel && vnc ? { desktop: { url: novncUrl(desktopTunnel.url, vnc) } } : {}) });
+    if (desktopTunnel) options.log("desktop.url", { run: ref.id, base: desktopTunnel.url });
     if (previous) await retire(ref, previous, "now");
     return true;
   }
@@ -286,12 +319,26 @@ export async function modalCloud(options: ModalCloudOptions): Promise<CloudHost 
     options.log("cloud.stopped", { run: ref.id, ms: Date.now() - started });
   }
 
-  const host: CloudHost & { hostLabel: string } = {
+  const host: ModalCloud = {
     hostLabel: "a Modal VM",
     environments: [env] as readonly Environment[],
 
     bind(api) {
       server = api;
+    },
+
+    /** The run's desktop while a VM with one runs it: the noVNC address (it carries the VNC password) and a screenshot of it. */
+    desktop(ref: RunRef): { url: string; screenshot(): Promise<Uint8Array> } | undefined {
+      const at = placed.get(ref.id);
+      if (!at?.desktop) return undefined;
+      return {
+        url: at.desktop.url,
+        async screenshot() {
+          const r = await client.exec({ id: at.box, name: String(at.handle.name) }, `${SCREENSHOT_COMMAND} | base64 -w0`, 30);
+          if (r.exitCode !== 0) throw new Error(`screenshot failed: ${r.result.trim().slice(-200)}`);
+          return Buffer.from(r.result.trim(), "base64");
+        },
+      };
     },
 
     async start(ref, run) {

@@ -100,7 +100,7 @@ export function agentModels(access: ModelAccess) {
         provider: PROVIDER,
         baseUrl: access.baseUrl,
         reasoning: true,
-        input: ["text"],
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 200_000,
         maxTokens: 16_000,
