@@ -62,6 +62,7 @@ const step = (name, data = {}) => {
 };
 
 let writer;
+let homePage;
 let stage;
 let rec;
 let failed = false;
@@ -146,6 +147,19 @@ try {
   step("the winner is kept, the rest sealed", { winner: winner.id, score: winner.score, sealed: Object.values(winnerState.universes).filter((u) => u.status === "sealed").length });
 
   await command({ t: "switch", to: "tab" });
+  // The winner's run is adopted by the tab server; its URL (it holds the run's secret, never printed) is where the tab goes: the 03 page, as
+  // the can-run writer on that run. The page opens it the moment the driver offers it.
+  await until(async () => {
+    const res = await fetch(`${api}/api/home`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+    if (!res || res.status !== 200) return false;
+    const home = await res.json();
+    homePage = await openTab(home.url, { width: 1400, height: 800 });
+    // A new tab takes the front and the recorded stage tab goes hidden, where it draws nothing (its frames freeze and the creature
+    // never walks): the stage goes back in front.
+    await stage.send("Page.bringToFront");
+    return true;
+  }, 120_000, "the driver to offer the winner's run at /api/home");
+  step("the tab opens the winner's run");
   await wait((s) => s.place.where === "home", 180_000, "the run to be home");
   step("home", { place: (await state()).place });
   // the tab walks the policy that arrived: the page's own measured lines say so
@@ -199,6 +213,7 @@ try {
   writeFileSync(`${out}.results.json`, JSON.stringify(results, null, 2));
   await stage?.close().catch(() => {});
   await writer?.close().catch(() => {});
+  await (typeof homePage !== "undefined" ? homePage?.close().catch(() => {}) : undefined);
   for (const k of kids.slice().reverse()) k.kill("SIGTERM");
   await sleep(2000);
 }
