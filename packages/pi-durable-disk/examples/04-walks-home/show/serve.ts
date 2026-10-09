@@ -3,8 +3,7 @@
 // Every response carries COOP/COEP/CORP: Wasmer and MuJoCo WASM need cross-origin isolation, and an iframe document must
 // itself satisfy the parent's COEP, so the headers are set on the tab app's files too.
 //   SHOW_PIPE_LINK_FILE  a file holding a 03 run link (http://host:port/run/ID#SECRET): the feed is that pipe, watched live
-//   SHOW_PIPE_ROLE (view)  the hello mode the stage connects as; TODO(browser-demo): "operator" once the pipe checks roles
-//   SHOW_TAB_CDP  rehearsal only: a Chrome (CDP url) holding the real 03 tab page, which asks for the switch back to the tab
+//   SHOW_PIPE_ROLE (operator)  the hello mode the stage connects as: "operator" may switch and ask, "view" only watches
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
 //   SHOW_ASK_AFTER_SWITCH (1)  ask the agent where it is after each completed switch (0 to turn off)
@@ -15,9 +14,10 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { desktopTargetFromLink, proxyStream, requestTicket } from "./desktop.ts";
+import { proxyStream, requestTicket } from "./desktop.ts";
+import { LiveLink, linkKey } from "./link.ts";
+import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
-import { cdpTabControl } from "./tab-control.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import type { ShowCommand } from "./types.ts";
 
@@ -83,7 +83,9 @@ async function body(req: IncomingMessage): Promise<string> {
 const clients = new Set<ServerResponse>();
 // The stage's model of the agent's disk for the tab's storage requests: paths to bytes, durable for the life of the
 // server, emptied by a `reset` so a new take starts with a fresh disk. A live driver replaces this with the real disk.
-const disk = new Map<string, Buffer>();
+// With a pipe feed the disk is the real run's work/ (over the 03 server's route, with the secret this server holds); with the
+// scripted feed it is the model. Assigned once the feed exists.
+let disk: DiskBackend = modelDisk();
 const DISK_PATH = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+){0,3}$/;
 
 async function bytesBody(req: IncomingMessage, limit: number): Promise<Buffer> {
@@ -107,26 +109,34 @@ function relay(source: FeedSource): void {
 
 const PIPE_LINK_FILE = process.env.SHOW_PIPE_LINK_FILE;
 const DESKTOP_LINK_FILE = process.env.SHOW_DESKTOP_LINK_FILE ?? PIPE_LINK_FILE;
-const DESKTOP = DESKTOP_LINK_FILE ? desktopTargetFromLink(readFileSync(DESKTOP_LINK_FILE, "utf8")) : undefined;
+// The links are followed live: whoever starts the 03 server rewrites the file (a restart, a retake: a new run), and the feed, the
+// desktop and the disk all follow it. A link that is not there yet means "no server yet", never a crash.
+const pipeLink = PIPE_LINK_FILE ? new LiveLink(PIPE_LINK_FILE) : undefined;
+const desktopLink = DESKTOP_LINK_FILE ? (DESKTOP_LINK_FILE === PIPE_LINK_FILE ? pipeLink! : new LiveLink(DESKTOP_LINK_FILE)) : undefined;
+const DESKTOP = desktopLink ? () => desktopLink.tryCurrent() : undefined;
 let player: FeedSource;
-if (PIPE_LINK_FILE) {
-  // The feed is a 03 pipe: the run's link names where it listens, which run, and its secret (never printed or logged).
-  const link = new URL(readFileSync(PIPE_LINK_FILE, "utf8").trim());
+if (pipeLink) {
   const { default: WS } = await import("ws");
   const feed = new PipeFeed({
-    url: `${link.protocol === "https:" ? "wss" : "ws"}://${link.host}/ws`,
-    run: link.pathname.split("/").filter(Boolean).at(-1)!,
-    token: link.hash.slice(1),
-    ...(process.env.SHOW_PIPE_ROLE ? { role: process.env.SHOW_PIPE_ROLE } : {}),
+    resolve: () => {
+      const t = pipeLink.tryCurrent();
+      return t ? { url: t.wsUrl, run: t.run, token: t.secret, key: linkKey(t) } : undefined;
+    },
+    // A new run: pages hold the old one's snapshot, so they are told to fetch the new one.
+    onReset: () => {
+      for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
+    },
+    ...(process.env.SHOW_PIPE_ROLE === "view" || process.env.SHOW_PIPE_ROLE === "operator" ? { role: process.env.SHOW_PIPE_ROLE } : {}),
     askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH !== "0",
     trace: process.env.SHOW_PIPE_TRACE === "1",
-    ...(process.env.SHOW_TAB_CDP ? { tabControl: cdpTabControl(process.env.SHOW_TAB_CDP, link.pathname.split("/").filter(Boolean).at(-1)!) } : {}),
     connect: (url) => new WS(url, { maxPayload: 64 * 1024 * 1024 }) as never,
     log: (event, data) => console.log(JSON.stringify({ event, ...data })),
   });
   relay(feed);
   await feed.start();
   player = feed;
+  // The tab's files are the real run's: its secret stays here, and a write names the tab the pipe says holds the run.
+  disk = runDisk(() => pipeLink.tryCurrent(), () => feed.writerTab);
 } else {
   player = newPlayer();
 }
@@ -175,25 +185,25 @@ const server = createServer(async (req, res) => {
       // The host's desktop, if it has one: the secret stays here, the page gets a same-origin picture path.
       if (path === "/api/desktop" && req.method === "GET") {
         if (!DESKTOP) return sendJson(res, 404, { ok: false, reason: "not configured" });
-        const t = await requestTicket(DESKTOP).catch(() => ({ ok: false as const, status: 502 }));
+        const target = DESKTOP();
+        if (!target) return sendJson(res, 404, { ok: false, reason: "no desktop yet" });
+        const t = await requestTicket(target).catch(() => ({ ok: false as const, status: 502 }));
         return t.ok ? sendJson(res, 200, { url: t.url, ttlMs: t.ttlMs }) : sendJson(res, 404, { ok: false, reason: "no desktop yet" });
       }
       if (path.startsWith("/api/disk/")) {
         const key = decodeURIComponent(path.slice("/api/disk/".length));
         if (!DISK_PATH.test(key) || key.split("/").includes("..")) return sendJson(res, 400, { error: "bad path" });
         if (req.method === "PUT") {
-          disk.set(key, await bytesBody(req, 16 * 1024 * 1024));
-          return sendJson(res, 200, { ok: true, bytes: disk.get(key)!.length });
+          const w = await disk.write(key, await bytesBody(req, 16 * 1024 * 1024));
+          return w.status === 200 ? sendJson(res, 200, { ok: true, bytes: (w as { bytes: number }).bytes }) : sendJson(res, w.status, { ok: false, error: (w as { error: string }).error });
         }
         if (req.method === "GET") {
-          const hit = disk.get(key);
+          const r = await disk.read(key, typeof req.headers["if-none-match"] === "string" ? req.headers["if-none-match"] : undefined);
           // 204, not 404: a first read of a file that does not exist yet is normal and must not log a console error.
-          if (!hit) {
-            res.statusCode = 204;
-            return void res.end();
-          }
-          res.setHeader("content-type", "application/octet-stream");
-          return void res.end(hit);
+          if (r.status === 204) return void res.writeHead(204).end();
+          if (r.status === 304) return void res.writeHead(304, { etag: (r as { etag: string }).etag }).end();
+          if (isFile(r)) return void res.writeHead(200, { "content-type": "application/octet-stream", etag: r.etag, "content-length": String(r.bytes.length) }).end(r.bytes);
+          return sendJson(res, r.status, { ok: false, error: (r as { error: string }).error });
         }
         return sendJson(res, 405, { error: "GET or PUT" });
       }
@@ -204,6 +214,9 @@ const server = createServer(async (req, res) => {
       }
       if (path === "/api/events" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "Cross-Origin-Resource-Policy": "same-origin" });
+        // Send the headers now: with no event waiting, they would otherwise not leave until the first one, and a client (an
+        // EventSource's onopen, a fetch) would wait on an open stream that has said nothing. A comment line is ignored by EventSource.
+        res.write(": stream open\n\n");
         // Replay what the page's snapshot missed: `?after=N` or Last-Event-ID, the index of the last event it has.
         // A reconnect carries Last-Event-ID, which is newer than the `after` the first request was made with, so it wins.
         const after = Number(req.headers["last-event-id"] ?? url.searchParams.get("after") ?? player.events.length - 1);
@@ -227,7 +240,7 @@ const server = createServer(async (req, res) => {
         if (cmd.t === "reset") {
           if (PIPE_LINK_FILE) return sendJson(res, 409, { ok: false, message: "a pipe feed is one run; there is nothing to reset" });
           player.stop();
-          disk.clear();
+          disk.reset?.();
           // A reset starts the script over at 0:00; SHOW_START only positions the first boot.
           player = newPlayer(0);
           for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
@@ -239,8 +252,9 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 404, { error: "no such route", path });
     }
     if (path.startsWith("/desktop/") && req.method === "GET") {
-      if (!DESKTOP) return sendJson(res, 404, { error: "no desktop configured" });
-      return await proxyStream(DESKTOP, path, req, res);
+      const target = DESKTOP?.();
+      if (!target) return sendJson(res, 404, { error: "no desktop configured" });
+      return await proxyStream(target, path, req, res);
     }
     if (path === "/tab") {
       res.statusCode = 301;

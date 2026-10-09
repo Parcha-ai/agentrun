@@ -3,7 +3,7 @@
 // live line with numbers that the driver did not flag is labelled UNMEASURED. A line with no number needs no tag.
 import type { Note, ShowState } from "../types.ts";
 
-export type Caption = { text: string; tag: "measured" | "scripted" | "unmeasured" | "agent" | null; at: number };
+export type Caption = { text: string; tag: "measured" | "scripted" | "unmeasured" | "agent" | "simulated" | "reported" | null; at: number };
 
 /** A quantity: a duration, size, share, price, or a score or checkpoint position. A digit inside a machine name ("GPU 6") is not one. */
 const QUANTITY = /\d(?:\.\d+)?\s?(?:ms|s|sec|seconds|m|km|kb|mb|gb|%)(?![a-z])|\$\d|\b(?:checkpoint|with|score)\s+\d/i;
@@ -20,7 +20,19 @@ function caption(n: Note, source: ShowState["source"]): Caption {
   const text = full.length > MAX_CHARS ? `${full.slice(0, MAX_CHARS - 1).trimEnd()}\u2026` : full;
   // What the agent says is quoted speech, not a number of ours: it is tagged AGENT, never measured or unmeasured.
   if (n.kind === "agent") return { text, tag: "agent", at: n.at };
-  const tag = !QUANTITY.test(full) ? null : source === "scripted" ? "scripted" : flagged || said ? "measured" : "unmeasured";
+  const tag = !QUANTITY.test(full)
+    ? null
+    : n.basis !== undefined
+      ? n.basis
+      : n.origin === "tab"
+        ? flagged
+          ? "measured"
+          : "unmeasured"
+        : source === "scripted"
+          ? "scripted"
+          : flagged || said
+            ? "measured"
+            : "unmeasured";
   return { text, tag, at: n.at };
 }
 

@@ -81,6 +81,34 @@ await check("the 03 tab page is built and newer than its sources (an old one nev
 });
 await check("the model broker answers (the agent's answers after a switch)", async () => (await fetch("http://127.0.0.1:9421/v1/models", { signal: AbortSignal.timeout(4000) })).ok);
 
+// The take's own 03 server (scripts/take-server.mjs): up, and its admin token readable only by us. The token itself is never read.
+const takeStatus = process.env.TAKE_STATUS;
+if (takeStatus) {
+  await check("the take's 03 server is up and its admin token file is private (mode 0600, in a 0700 directory)", async () => {
+    const st = JSON.parse(readFileSync(takeStatus, "utf8"));
+    try {
+      process.kill(st.pid, 0);
+    } catch {
+      return [false, `pid ${st.pid} is not running`];
+    }
+    const up = await fetch(st.origin, { signal: AbortSignal.timeout(3000) }).then(() => true, () => false);
+    const file = statSync(st.tokenFile);
+    const dir = statSync(dirname(st.tokenFile));
+    const ok = up && (file.mode & 0o777) === 0o600 && (dir.mode & 0o777) === 0o700 && file.size > 0;
+    return [ok, `${st.origin}, ${st.mode}, token file mode ${(file.mode & 0o777).toString(8)}, directory mode ${(dir.mode & 0o777).toString(8)}${up ? "" : ", NOT answering"}`];
+  });
+} else console.log("note  no TAKE_STATUS: the take's own 03 server is not checked");
+
+if (api) {
+  // The only approved disk is the scratch disk. If a feed ever names another, nothing is adopted: stop and tell the lead.
+  const APPROVED = { disk: "dsk-00000000000baf76", region: "aws-us-east-1" };
+  await check("the live feed's winner names the approved disk and region (anything else: stop and tell the lead)", async () => {
+    const res = await fetch(`${api}/api/winner`, { signal: AbortSignal.timeout(4000) });
+    if (res.status === 404) return [true, "no winner yet: nothing to adopt"];
+    const w = await res.json();
+    return [w.disk === APPROVED.disk && w.region === APPROVED.region, `${w.disk} in ${w.region}`];
+  });
+}
 if (api) {
   await check(`the live feed answers (${api})`, async () => {
     const s = await (await fetch(`${api}/api/state`, { signal: AbortSignal.timeout(4000) })).json();

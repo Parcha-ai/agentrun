@@ -2,13 +2,14 @@
 //
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
-//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona]
+//                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
-//                 [--also-host ADDR] [--public-url https://HOST]
+//                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH]
 //
 // --also-host listens on a second address too (a reverse proxy's side of a bridge); --public-url is the address the
-// printed link uses (the proxy's). The admin route answers on loopback only.
+// printed link uses (the proxy's). The admin routes (and POST /api/runs/<id>/attach) answer on loopback only, with the
+// admin token. --tab-writable lists the work/ paths the page of the tab that holds a run may PUT (pipe/server.ts).
 //
 // --model-key-env names the variable holding the model endpoint's key (sent by the pipe as a bearer token). A Daytona
 // sandbox calls the model itself: its key is the Daytona secret --daytona-secret (Daytona puts a placeholder in the box
@@ -55,6 +56,7 @@ const { values } = parseArgs({
     "grace-ms": { type: "string", default: "5000" },
     "admin-token-file": { type: "string" },
     "also-host": { type: "string" },
+    "tab-writable": { type: "string" },
     "public-url": { type: "string" },
   },
 });
@@ -81,6 +83,11 @@ if (values["admin-token-file"]) {
 }
 
 let cloud: CloudHost | undefined;
+if (values.cloud === "remote-local") {
+  // A second host with no unit and no disk client: remote-host.ts as a child process, through the pipe.
+  const { remoteLocalHost } = await import("./pipe/remote-local.ts");
+  cloud = remoteLocalHost({ log });
+}
 if (values.cloud === "local" || values.cloud === "daytona") {
   const { cloudHost } = await import("./pipe/cloud.ts");
   cloud = await cloudHost(values.cloud as "local" | "daytona", {
@@ -98,6 +105,8 @@ if (values.cloud === "local" || values.cloud === "daytona") {
   });
 }
 
+const diskControl = values.local ? null : await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY ?? "" });
+
 if (values["cloud-module"]) {
   // A cloud host from another example (04-walks-home/vm is the Modal VM): its default export takes these options and returns a CloudHost.
   const mod = (await import(pathToFileURL(resolvePath(values["cloud-module"])).href)) as { default: (options: CloudModuleOptions) => Promise<CloudHost> };
@@ -108,7 +117,9 @@ if (values["cloud-module"]) {
 const server = createDemoServer({
   disk,
   region,
-  control: values.local ? null : await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY ?? "" }),
+  control: diskControl,
+  ...(diskControl ? { readObject: (key: string) => diskControl.getObject(key) } : {}),
+  ...(values["tab-writable"] ? { tabWritable: values["tab-writable"].split(",").filter(Boolean) } : {}),
   mountRoot: values.local ?? values["mount-root"]!,
   model,
   pageDir: join(here, "tab", "dist"),

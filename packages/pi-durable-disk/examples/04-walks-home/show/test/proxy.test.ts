@@ -61,3 +61,28 @@ describe("the stage proxying a live feed", () => {
     assert.deepEqual(await refused.json(), { ok: false, message: "no" });
   });
 });
+
+describe("the stage's own event stream", () => {
+  it("answers at once, before any event: a feed that is waiting for its server has nothing to send, and a client's open must not wait for it", async () => {
+    const port = 19900 + Math.floor(Math.random() * 90);
+    const { spawn } = await import("node:child_process");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { homedir } = await import("node:os");
+    const { join } = await import("node:path");
+    // A run link to a server that is not there: the pipe feed waits, so its stream has no event to send.
+    const dir = join(homedir(), "tmp-d5", `sse-test-${Date.now().toString(36)}`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const link = join(dir, "link");
+    writeFileSync(link, "http://127.0.0.1:1/run/nothing#not-a-real-secret-0000\n", { mode: 0o600 });
+    const child = spawn(process.execPath, [serve], { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", SHOW_PORT: String(port), SHOW_PIPE_LINK_FILE: link }, stdio: "ignore" });
+    try {
+      for (let i = 0; i < 100 && !(await fetch(`http://127.0.0.1:${port}/api/state`).then((r) => r.ok).catch(() => false)); i++) await new Promise((r) => setTimeout(r, 100));
+      const res = await fetch(`http://127.0.0.1:${port}/api/events`, { signal: AbortSignal.timeout(3000) });
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
+      await res.body!.cancel();
+    } finally {
+      child.kill();
+    }
+  });
+});

@@ -21,7 +21,7 @@ console.log(`body: ${known?.name ?? 'default (no preset matches this policy)'}, 
 const mj = await load();
 const policy = await Policy.load(policyText, { mjcfSha256: await sha256Hex(built.xml), nj: built.jointNames.length });
 const dirs: Record<string, [number, number]> = { forward: [1, 0], back: [-1, 0], left: [0, 1], right: [0, -1] };
-const forces = [20, 40, 60, 80, 100, 120, 150];
+const forces = (process.env.FORCES ?? '20,40,60,80,100,120,150').split(',').map(Number); // e.g. FORCES=100,200,300,400,600
 const after = Math.round(Number(process.env.AFTER ?? 4) / 0.02);
 const rows: string[] = [`force N  ${Object.keys(dirs).map((d) => d.padEnd(8)).join('')}`];
 for (const f of forces) {

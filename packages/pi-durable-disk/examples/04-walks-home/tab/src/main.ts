@@ -6,6 +6,7 @@ import { buildMjcf, type Built, type World } from './mjcf.ts';
 import { Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { dummyPolicy } from './dummy.ts';
 import { presetForSha } from './bodies.ts';
+import { Stats } from './stats.ts';
 import { ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, type ArrivalResult } from './arrival.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
@@ -60,9 +61,16 @@ interface App {
   /** A trained policy that arrived and is being timed: page ms at the arrival, sim time at the install. */
   arrival: { tracker: ArrivalTracker; simT0: number; name: string } | null;
   lastArrival: ArrivalResult | null;
+  /** The network mode last announced; see Sim.mode. */
+  lastMode: 'walk' | 'getup';
+  stats: Stats;
+  /** Set when the page itself restarts the sim clock, so the stats do not count it as an unexpected reset. */
+  expectReset: boolean;
 }
 
 const MAX_DRAG_KICK_N = 100;
+const MAX_CATCHUP_S = 0.5;
+const MAX_STEPS_PER_FRAME = Math.round(MAX_CATCHUP_S / CONTROL_DT);
 
 let app: App;
 
@@ -129,7 +137,7 @@ async function buildCreature(design: Design, keepPolicy: boolean) {
   app.built = built;
   app.sim = new Sim(app.mj, built);
   app.view.setSim(app.sim);
-  app.fallen = false; app.recovering = null;
+  app.fallen = false; app.recovering = null; app.lastMode = 'walk'; app.expectReset = true;
   await saveDesign(design);
   // A policy belongs to one body: a changed body refuses the old policy (mjcf_sha256) rather than running it blind.
   // The dummy is generated from the body, so it is rebuilt for the new one.
@@ -185,7 +193,8 @@ async function loadPolicyText(text: string, name: string) {
     const p = await Policy.load(text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
     setPolicy(p, name);
     app.sim.reset();
-    app.fallen = false; app.recovering = null;
+    app.expectReset = true;
+    app.fallen = false; app.recovering = null; app.lastMode = 'walk';
     showError('');
     post('policy-loaded', { name, mjcf_sha256: p.file.mjcf_sha256, bytes: text.length });
     toast(`policy loaded: ${name}`);
@@ -259,6 +268,7 @@ function yawDir(x: number, y: number): [number, number] {
 }
 
 function kickWorld(wx: number, wy: number, force: number) {
+  app.stats.c.kicks++;
   const n = Math.hypot(wx, wy) || 1;
   app.sim.kick([(wx / n) * force, (wy / n) * force, 0]);
   app.recovering = app.sim.time;
@@ -323,7 +333,16 @@ function hud() {
   const v = Math.hypot(s.data.qvel[0], s.data.qvel[1]);
   const r = app.lastArrival;
   const arrivalLine = r ? `\narrival ${r.arrivalToWalkingMs === null ? (r.fell ? 'fell, not walking' : 'not walking yet') : `walking after ${(r.arrivalToWalkingMs / 1000).toFixed(1)} s`}${r.meanSpeed === null ? '' : `, ${r.meanSpeed.toFixed(2)} m/s over ${r.windowSeconds} s`}` : '';
-  $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
+  const modeLine = app.policy?.hasGetup ? `\nmode    ${s.mode === 'getup' ? 'getting up' : 'walking'}` : '';
+  $('hud').textContent = `policy  ${app.policyName}\nt       ${s.time.toFixed(1)} s\nspeed   ${v.toFixed(2)} m/s\nheight  ${z.toFixed(2)} m\nupright ${s.uprightness().toFixed(2)}${modeLine}\npos     ${x.toFixed(1)}, ${y.toFixed(1)}${arrivalLine}`;
+}
+
+/** The creature went down (the getup net took over) or is back on its feet (walking took over). */
+function announceMode() {
+  app.lastMode = app.sim.mode;
+  if (app.sim.mode === 'getup') app.stats.c.getups++;
+  post('mode-changed', { mode: app.sim.mode, t: app.sim.time, up: app.sim.uprightness() });
+  toast(app.sim.mode === 'getup' ? 'down: the getup network is driving' : 'back on its feet: walking');
 }
 
 function sampleArrival() {
@@ -344,28 +363,40 @@ function sampleArrival() {
 
 function tick(now: number) {
   requestAnimationFrame(tick);
-  const dt = Math.min((now - app.last) / 1000, 0.1);
+  // A hitch (GC, a busy machine) is made up by stepping more next frame, up to half a second of simulation, so the creature
+  // never falls behind the wall clock; beyond that the backlog is dropped. Physics is cheap (about 1 ms per control step).
+  const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
   app.last = now;
+  const t0 = performance.now();
   if (app.running) {
     app.acc += dt;
     let n = 0;
-    while (app.acc >= CONTROL_DT && n < 6) {
+    while (app.acc >= CONTROL_DT && n < MAX_STEPS_PER_FRAME) {
       app.sim.step(app.policy);
+      const q = app.sim.data.qpos;
+      app.stats.step(app.sim.time, Number.isFinite(q[0] + q[1] + q[2] + q[3] + q[4]), app.expectReset);
+      app.expectReset = false;
       if (app.arrival) sampleArrival();
+      if (app.sim.mode !== app.lastMode) announceMode();
       app.acc -= CONTROL_DT;
       n++;
     }
-    if (n === 6) app.acc = 0;
+    if (n === MAX_STEPS_PER_FRAME) app.acc = 0;
     const up = app.sim.uprightness();
-    if (!app.fallen && up < 0.3) { app.fallen = true; post('fell', { t: app.sim.time }); toast('fell'); }
+    // `fallen` is true from the moment it goes down until it is upright again, so each fall is counted and announced once
+    if (app.fallen && up > 0.9) app.fallen = false;
+    if (!app.fallen && up < 0.3) { app.fallen = true; app.stats.c.falls++; post('fell', { t: app.sim.time }); toast('fell'); }
     if (app.recovering !== null && !app.fallen && app.sim.time - app.recovering > 2 && up > 0.9) {
+      app.stats.c.recoveries++;
       post('stood', { t: app.sim.time, since_kick: app.sim.time - app.recovering });
       app.recovering = null;
       toast('recovered');
     }
   }
+  const t1 = performance.now();
   app.view.draw();
   hud();
+  app.stats.frame(now, t1 - t0, performance.now() - t1);
 }
 
 async function main() {
@@ -391,10 +422,10 @@ async function main() {
     const sketcher = new Sketcher($('sketch') as HTMLCanvasElement, design, (d) => { renderPairs(); pendingDesign = d; });
     let pendingDesign: Design | null = null;
     app = {
-      mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement), sketcher, store, storageMode,
+      mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement, { lite: new URLSearchParams(location.search).has('lite') }), sketcher, store, storageMode,
       sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml), world: null,
       policy: null, policyName: 'dummy trot', running: true, acc: 0, last: performance.now(),
-      fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null,
+      fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
     };
     app.view.setSim(app.sim);
     await useDummy(); // also applies the slider's command to the sim
@@ -417,7 +448,7 @@ async function main() {
     };
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
-    $('reset').onclick = () => { app.sim.reset(); app.fallen = false; app.recovering = null; };
+    $('reset').onclick = () => { app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
     $('legDof').onchange = (e) => app.sketcher.setLegDof((e.target as HTMLInputElement).checked ? 3 : 2);
     $('addPair').onclick = () => app.sketcher.addPair();
     $('removePair').onclick = () => app.sketcher.removePair();
@@ -484,7 +515,7 @@ async function main() {
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, kick, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
+    (window as any).__walks = { get app() { return app; }, stats: () => app.stats.snapshot(), resetSim: () => { app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kick, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';
     post('ready', { version: 1, mujoco: mujocoVersion, mjcf_sha256: app.bodySha });
     // A trained policy landing in work/home/policy.json is noticed by polling at 1 Hz behind PolicySource, so a change feed

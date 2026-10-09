@@ -139,7 +139,7 @@ function fakeSocket() {
     close: () => undefined,
     on: (event: string, fn: (d?: unknown) => void) => void (handlers[event] ??= []).push(fn),
   };
-  return { socket, sent, push: (frame: unknown) => handlers.message?.forEach((h) => h(JSON.stringify(frame))), open: () => handlers.open?.forEach((h) => h()) };
+  return { socket, sent, push: (frame: unknown) => handlers.message?.forEach((h) => h(JSON.stringify(frame))), open: () => handlers.open?.forEach((h) => h()), close: () => handlers.close?.forEach((h) => h()) };
 }
 
 test("the feed says hello as the configured role, sends a switch, and reports the pipe's refusal as the command's reason", async () => {
@@ -159,12 +159,13 @@ test("the feed says hello as the configured role, sends a switch, and reports th
   feed.stop();
 });
 
-test("the default role is view; a completed switch asks the agent where it is, once the run is settled", async () => {
+test("the default role is operator, without canRun; a completed switch asks the agent where it is, once the run is settled", async () => {
   const f = fakeSocket();
   const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", connect: () => f.socket });
   await feed.start();
   f.open();
-  assert.equal(f.sent[0].mode, "view");
+  assert.equal(f.sent[0].mode, "operator");
+  assert.ok(!("canRun" in f.sent[0]), "the stage says it cannot run the agent: a switch into the tab is answered by a tab page");
   f.push(viewing(inTab));
   const sw = feed.command({ t: "switch", to: "second-host" });
   f.push(moving("second-host", "Second host", "sw9"));
@@ -190,20 +191,115 @@ test("ask is refused while the run is moving", async () => {
   feed.stop();
 });
 
-test("with a tab control (rehearsal), a switch to the tab goes through it and sends no frame; other switches still go to the pipe", async () => {
+
+test("a view client is refused with the pipe's reasons: the switch and the question both say why, and nothing is claimed", async () => {
   const f = fakeSocket();
-  let asked = 0;
-  const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", askAfterSwitch: false, connect: () => f.socket, tabControl: { switchToTab: async () => (asked++, { ok: true }) } });
+  const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", role: "view", askAfterSwitch: false, connect: () => f.socket });
+  await feed.start();
+  f.open();
+  assert.equal(f.sent[0].mode, "view");
+  f.push(viewing(inTab));
+  const sw = feed.command({ t: "switch", to: "second-host" });
+  f.push({ t: "switch-refused", to: "second-host", message: "this connection only watches the run (hello mode view)" });
+  assert.deepEqual(await sw, { ok: false, message: "this connection only watches the run (hello mode view)" });
+  const ask = feed.command({ t: "ask" });
+  f.push({ t: "submit-refused", requestId: "x", message: "this connection only watches the run (hello mode view)" });
+  assert.deepEqual(await ask, { ok: false, message: "this connection only watches the run (hello mode view)" });
+  assert.match(feed.state.notes.at(-1)!.text, /The question to the agent was refused: this connection only watches the run/);
+  feed.stop();
+});
+
+test("a switch into the tab is a plain switch frame from the operator: no tab control, no frame held back", async () => {
+  const f = fakeSocket();
+  const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", askAfterSwitch: false, connect: () => f.socket });
   await feed.start();
   f.open();
   f.push(viewing({ where: "tab", tab: "remote-second-host", epoch: 2, generation: 2, env: "second-host" }));
-  const before = f.sent.length;
-  assert.deepEqual(await feed.command({ t: "switch", to: "tab" }), { ok: true });
-  assert.equal(asked, 1);
-  assert.equal(f.sent.length, before, "no switch frame was sent for the tab");
-  const other = feed.command({ t: "switch", to: "gpu-box" });
-  f.push({ t: "switch-refused", to: "gpu-box", message: "no cloud host" });
-  assert.equal((await other).ok, false);
-  assert.deepEqual(f.sent.at(-1), { t: "switch", to: "gpu-box" });
+  const back = feed.command({ t: "switch", to: "tab" });
+  assert.deepEqual(f.sent.at(-1), { t: "switch", to: "tab" });
+  f.push({ t: "switch-refused", to: "tab", message: "no browser tab that can run the agent is open on this run" });
+  assert.deepEqual(await back, { ok: false, message: "no browser tab that can run the agent is open on this run" });
+  feed.stop();
+});
+
+// Sockets the test drives, one per connection the feed opens.
+function socketFactory() {
+  const sockets: ReturnType<typeof fakeSocket>[] = [];
+  const urls: string[] = [];
+  return {
+    sockets,
+    urls,
+    connect: (url: string) => {
+      const f = fakeSocket();
+      const close = f.socket.close;
+      (f.socket as { closed?: boolean }).closed = false;
+      f.socket.close = () => ((f.socket as { closed?: boolean }).closed = true, close());
+      sockets.push(f);
+      urls.push(url);
+      f.open;
+      return f.socket;
+    },
+  };
+}
+const until = async (check: () => boolean, ms = 3000) => {
+  for (let t = 0; t < ms && !check(); t += 10) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(check(), "timed out");
+};
+
+test("a changed run link makes the feed leave the old run, drop its state, tell the pages, and follow the new run", async () => {
+  const fac = socketFactory();
+  let target = { url: "ws://a/ws", run: "r1", token: "t1", key: "a" };
+  let resets = 0;
+  const feed = new PipeFeed({ resolve: () => target, onReset: () => resets++, watchMs: 15, askAfterSwitch: false, connect: fac.connect });
+  await feed.start();
+  fac.sockets[0].open();
+  assert.equal(fac.sockets[0].sent[0].run, "r1");
+  fac.sockets[0].push(viewing(inTab));
+  assert.equal(feed.state.run, "r1");
+  assert.ok(feed.events.length > 0);
+  // A restart: a new run behind the same file.
+  target = { url: "ws://a/ws", run: "r2", token: "t2", key: "b" };
+  await until(() => fac.sockets.length === 2);
+  assert.equal((fac.sockets[0].socket as { closed?: boolean }).closed, true, "the old connection was dropped");
+  assert.equal(resets, 1);
+  assert.equal(feed.state.run, "", "nothing of the old run is left");
+  assert.equal(feed.events.length, 0);
+  fac.sockets[1].open();
+  assert.equal(fac.sockets[1].sent[0].run, "r2");
+  assert.equal(fac.sockets[1].sent[0].token, "t2");
+  // A late frame of the old run must not come back.
+  fac.sockets[0].push(viewing(inTab));
+  assert.equal(feed.events.length, 0);
+  fac.sockets[1].push(viewing(inTab));
+  assert.equal(feed.state.run, "r2");
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(fac.sockets.length, 2, "dropping the old socket on purpose did not start a reconnect loop");
+  feed.stop();
+});
+
+test("with no link yet the feed waits and connects as soon as one appears", async () => {
+  const fac = socketFactory();
+  let target: { url: string; run: string; token: string; key: string } | undefined;
+  const feed = new PipeFeed({ resolve: () => target, watchMs: 15, askAfterSwitch: false, connect: fac.connect });
+  await feed.start();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(fac.sockets.length, 0, "nothing to connect to");
+  target = { url: "ws://b/ws", run: "r9", token: "t9", key: "k" };
+  await until(() => fac.sockets.length === 1);
+  fac.sockets[0].open();
+  assert.equal(fac.sockets[0].sent[0].run, "r9");
+  assert.equal(feed.state.run, "", "the first run needs no reset");
+  feed.stop();
+});
+
+test("a lost connection to the same run reconnects to it without resetting anything", async () => {
+  const fac = socketFactory();
+  let resets = 0;
+  const feed = new PipeFeed({ resolve: () => ({ url: "ws://a/ws", run: "r1", token: "t1", key: "a" }), onReset: () => resets++, watchMs: 15, askAfterSwitch: false, connect: fac.connect });
+  await feed.start();
+  fac.sockets[0].open();
+  fac.sockets[0].push(viewing(inTab));
+  fac.sockets[0].close?.();
+  assert.equal(resets, 0);
   feed.stop();
 });

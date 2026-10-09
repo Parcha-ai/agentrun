@@ -10,12 +10,12 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
-import { createRunDir, mintMountToken, removeMountToken, takeOver, unmountClaim, acquire as plainAcquire } from "@parcha/pi-durable-disk";
+import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver, unmountClaim, acquire as plainAcquire } from "@parcha/pi-durable-disk";
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
-import type { Environment, Move, PipeFrame, Placement, TabFrame } from "../wire.ts";
+import { CHUNK_BYTES, toBase64, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
 export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "This tab", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
@@ -104,6 +104,13 @@ export interface DemoServerOptions {
   readonly superviseMs?: number;
   /** How long a tab gets to finish its current step on a switch before it is released anyway. Default 10 s. */
   readonly drainMs?: number;
+  /** Reads an object of the disk (its S3 API): work/ of a run no pipe holds, and run.json when a run is adopted. */
+  readonly readObject?: (key: string) => Promise<Uint8Array>;
+  /**
+   * The work/ paths the page of the tab that holds a run may write over HTTP (`PUT /api/runs/<id>/work/<path>`), exactly.
+   * Default none.
+   */
+  readonly tabWritable?: readonly string[];
   /** Test seams. */
   readonly acquire?: (options: AcquireOptions, takeover: boolean) => Promise<Claim>;
   readonly claimDir?: OpenRunLeaseOptions["claimDir"];
@@ -135,6 +142,10 @@ interface RunState {
   clients: Map<PipeSocket, { mode: "write" | "view" | "operator"; canRun: boolean }>;
 }
 
+/** Base64 bytes of upload chunks a connection may have waiting for the disk before it stops reading, and resumes. */
+const UPLOAD_QUEUE_HIGH = 8 * Math.ceil((CHUNK_BYTES * 4) / 3);
+const UPLOAD_QUEUE_LOW = 2 * Math.ceil((CHUNK_BYTES * 4) / 3);
+
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -147,6 +158,9 @@ const TYPES: Record<string, string> = {
   ".map": "application/json",
 };
 
+/** The largest body `PUT /api/runs/<id>/work/<path>` takes. */
+const WORK_PUT_MAX = 48 * 1024 * 1024;
+
 const sameSecret = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 
 export interface DemoServer {
@@ -155,6 +169,8 @@ export interface DemoServer {
   listen(port: number, host?: string): Promise<number>;
   /** Create a run directory on the disk and return its id and secret. */
   createRun(id?: string): Promise<{ id: string; secret: string }>;
+  /** Take on a run that is already on the disk (released and sealed elsewhere): its id and a new secret. */
+  adoptRun(id: string): Promise<{ id: string; secret: string }>;
   /** Release every run the server holds (barrier, seal, unmount) and remove their token users. */
   close(): Promise<void>;
   /** Placement changes, for scripts. */
@@ -462,6 +478,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
       },
       close: (code, reason) => ws.close(code, reason),
+      bufferedAmount: () => ws.bufferedAmount,
+      isOpen: () => ws.readyState === ws.OPEN,
     };
   }
 
@@ -528,7 +546,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   async function viewingFrame(state: RunState): Promise<PipeFrame> {
-    const files = state.pipe ? await state.pipe.restoreManifest().catch(() => []) : [];
+    const files = state.pipe ? await state.pipe.viewerFiles().catch(() => []) : [];
     return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [], environments };
   }
 
@@ -555,6 +573,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       case "files":
         if (pipe) await pipe.files(socket, frame.id, frame.changes);
         else socket.send({ t: "res", id: frame.id, ok: false, error: { name: "PipeLostError", code: "NO_PIPE", message: "no pipe holds the run" } });
+        return;
+      case "upload":
+        // In order with the write-through that names it: each chunk is written before the next frame is handled.
+        await pipe?.upload(socket, frame.id, frame.offset, frame.data);
+        return;
+      case "restored":
+        pipe?.restored(socket, frame);
         return;
       case "model":
         if (pipe) await pipe.model(socket, frame.id, frame.path, frame.body);
@@ -614,10 +639,16 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   const accept = (ws: WebSocket) => wss.emit("connection", ws);
   wss.on("connection", (ws: WebSocket) => {
     const socket = adapt(ws, randomBytes(6).toString("hex"));
+    // A frame over maxPayload, or a broken connection, is an error event before the close; unhandled it would end the
+    // server. The close that follows detaches the socket as usual.
+    ws.on("error", (error) => log("ws.error", { socket: socket.id, error: error.message }));
     let state: RunState | undefined;
     // Set synchronously on the first frame: every later frame waits behind the hello, never races it.
     let hello: Promise<void> | undefined;
     let queue: Promise<void> = Promise.resolve();
+    // Upload chunks wait in `queue` for the disk; past UPLOAD_QUEUE_HIGH of them the socket stops reading, so the
+    // connection (and the sender's own buffer) holds the rest instead of this process's memory.
+    let queuedUpload = 0;
     ws.on("message", (data) => {
       let frame: TabFrame;
       try {
@@ -637,11 +668,23 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         ws.close(4003, "HELLO_FIRST");
         return;
       }
+      state?.pipe?.heard(socket);
       const handle = () => (state ? onFrame(ws, socket, state, frame) : Promise.resolve());
       const failed = (error: unknown) => log("frame.failed", { error: (error as Error).message });
       // Storage calls and write-throughs run in arrival order; model streams and pings must not wait behind them.
       if (frame.t === "model" || frame.t === "ping" || frame.t === "model-abort") void hello.then(handle).catch(failed);
-      else queue = queue.then(handle).catch(failed);
+      else if (frame.t === "upload") {
+        const size = String(frame.data).length;
+        queuedUpload += size;
+        if (queuedUpload > UPLOAD_QUEUE_HIGH && !ws.isPaused) ws.pause();
+        queue = queue
+          .then(handle)
+          .catch(failed)
+          .finally(() => {
+            queuedUpload -= size;
+            if (queuedUpload < UPLOAD_QUEUE_LOW && ws.isPaused) ws.resume();
+          });
+      } else queue = queue.then(handle).catch(failed);
     });
     ws.on("close", () => {
       if (!state) return;
@@ -772,14 +815,135 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     req.on("close", unwatch);
   }
 
+  /** Register a run with a new secret; returns the secret. */
+  function addRun(runId: string, detail: string): string {
+    const secret = randomBytes(24).toString("base64url");
+    runs.set(runId, {
+      ref: { disk: options.disk, region: options.region, id: runId },
+      secret,
+      pipe: undefined,
+      opening: undefined,
+      placement: { where: "parked", detail },
+      model: new ModelProxy(options.model, 0, log),
+      prewarmed: false,
+      supervising: undefined,
+      tokenUser: undefined,
+      attempt: 0,
+      viewers: new Set(),
+      cloudViewers: new Map(),
+      createdAt: Date.now(),
+      switching: undefined,
+      remote: undefined,
+      clients: new Map(),
+    });
+    return secret;
+  }
+
+  /**
+   * Take on a run that is on the disk already, released and sealed by whoever ran it (another server, a fork): it is
+   * parked here, and the first page to open its link runs it. A run this server holds keeps its secret.
+   */
+  async function adoptRun(id: string): Promise<{ id: string; secret: string }> {
+    RunPipe.segments(id);
+    const known = runs.get(id);
+    if (known) return { id, secret: known.secret };
+    if (options.readObject) {
+      const record = await readRunStatus({ getObject: options.readObject }, id).catch(() => null);
+      if (!record) throw new Error(`no run ${id} on the disk`);
+      if (record.status === "running") throw new Error(`run ${id} is running elsewhere`);
+    }
+    const secret = addRun(id, "adopted from the disk");
+    log("run.adopted", { run: id });
+    return { id, secret };
+  }
+
+  /** The bearer token of a request, when it is the run's secret. */
+  const holdsSecret = (req: IncomingMessage, state: RunState) => {
+    const auth = String(req.headers.authorization ?? "");
+    return auth.startsWith("Bearer ") && sameSecret(auth.slice(7), state.secret);
+  };
+
+  const json = (res: ServerResponse, status: number, body: Record<string, unknown>): void =>
+    void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+
+  /** Who holds a run now, as a viewer would name it. */
+  const holderOf = (state: RunState) => {
+    const p = state.placement;
+    return p.where === "tab" ? (p.env === "tab" ? `tab ${p.tab}` : (environment(p.env)?.label ?? p.env)) : p.where === "cloud" ? p.host : p.where;
+  };
+
+  /**
+   * `GET /api/runs/<id>/work/<path>`: a file of the run's work/, from the pipe's mount when it holds the run, else from
+   * the disk. `PUT`: written for the tab that holds the run (header `x-pda-tab`), only at the paths in `tabWritable`,
+   * through the pipe's write-through: the answer comes after the barrier. Both take the run's secret as a bearer token.
+   */
+  async function workRoute(req: IncomingMessage, res: ServerResponse, runId: string, path: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    try {
+      RunPipe.segments(path);
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+    if (req.method === "GET") {
+      let data: Uint8Array | undefined;
+      if (state.pipe && !state.pipe.lost) data = await state.pipe.readWork(path);
+      else if (options.readObject) data = await options.readObject(`runs/${runId}/work/${path}`).catch(() => undefined);
+      else return json(res, 503, { error: "the run's files cannot be read while no pipe holds it" });
+      if (data === undefined) return json(res, 404, { error: `no file ${path}` });
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(data.length), "cache-control": "no-store" }).end(Buffer.from(data));
+      return;
+    }
+    if (!(options.tabWritable ?? []).includes(path)) return json(res, 403, { error: `the tab may not write ${path}` });
+    const tab = String(req.headers["x-pda-tab"] ?? "");
+    const pipe = state.pipe;
+    if (!pipe || pipe.lost || !tab || pipe.writerTab !== tab) return json(res, 409, { error: "this tab does not hold the run", holder: holderOf(state) });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > WORK_PUT_MAX) return json(res, 413, { error: `more than ${WORK_PUT_MAX} bytes` });
+      chunks.push(chunk);
+    }
+    try {
+      const { ms } = await pipe.writeAsWriter(tab, [{ path, op: "write", data: toBase64(new Uint8Array(Buffer.concat(chunks))) }]);
+      json(res, 200, { path, bytes: size, ms: Math.round(ms) });
+    } catch (error) {
+      json(res, 409, { error: (error as Error).message, holder: holderOf(state) });
+    }
+  }
+
+  /** `POST /api/runs/<id>/attach` (loopback, the admin token): adopt a run on the disk; answers its link. */
+  async function attachRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const auth = String(req.headers.authorization ?? "");
+    const remote = req.socket.remoteAddress ?? "";
+    if (!options.adminToken || !(remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1") || !auth.startsWith("Bearer ") || !sameSecret(auth.slice(7), options.adminToken)) {
+      return void res.writeHead(404).end();
+    }
+    try {
+      const { id, secret } = await adoptRun(runId);
+      json(res, 200, { run: id, link: `/run/${id}#${secret}` });
+    } catch (error) {
+      json(res, 409, { error: (error as Error).message });
+    }
+  }
+
   const http = createHttpServer((req, res) => {
-    const path = (req.url ?? "").split("?")[0]!;
-    const stream = /^\/desktop\/([A-Za-z0-9_-]+)\.mjpeg$/.exec(path);
-    const ticketFor = /^\/run\/([^/]+)\/desktop-ticket$/.exec(path);
-    if (req.method === "GET" && stream) desktopStream(req, res, stream[1]!);
-    else if (req.method === "POST" && ticketFor) void desktopTicket(req, res, decodeURIComponent(ticketFor[1]!)).catch(() => res.writeHead(500).end());
+    const path = new URL(req.url ?? "/", "http://x").pathname;
+    const work = /^\/api\/runs\/([^/]+)\/work\/(.+)$/.exec(path);
+    const attach = /^\/api\/runs\/([^/]+)\/attach$/.exec(path);
+    const failed = (error: unknown) => {
+      log("http.failed", { path: path.split("/").slice(0, 4).join("/"), error: (error as Error).message });
+      if (!res.headersSent) res.writeHead(500).end();
+    };
+    const desktopStreamOf = /^\/desktop\/([A-Za-z0-9_-]+)\.mjpeg$/.exec(path);
+    const desktopTicketFor = /^\/run\/([^/]+)\/desktop-ticket$/.exec(path);
+    if (req.method === "GET" && desktopStreamOf) desktopStream(req, res, desktopStreamOf[1]!);
+    else if (req.method === "POST" && desktopTicketFor) void desktopTicket(req, res, decodeURIComponent(desktopTicketFor[1]!)).catch(failed);
+    else if (work && (req.method === "GET" || req.method === "PUT")) void workRoute(req, res, decodeURIComponent(work[1]!), decodeURIComponent(work[2]!)).catch(failed);
+    else if (attach && req.method === "POST") void attachRoute(req, res, decodeURIComponent(attach[1]!)).catch(failed);
     else if (req.method === "GET") serveStatic(req, res);
-    else if (req.method === "POST" && (req.url ?? "").startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
+    else if (req.method === "POST" && path.startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();
   });
   http.on("upgrade", (req, sock, head) => {
@@ -801,28 +965,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         await createRunDir(options.control, runId, { uid: process.getuid!(), gid: process.getgid!() });
         options.ledger?.open("run-dir", runId);
       }
-      const secret = randomBytes(24).toString("base64url");
-      runs.set(runId, {
-        ref: { disk: options.disk, region: options.region, id: runId },
-        secret,
-        pipe: undefined,
-        opening: undefined,
-        placement: { where: "parked", detail: "new run" },
-        model: new ModelProxy(options.model, 0, log),
-        prewarmed: false,
-        supervising: undefined,
-        tokenUser: undefined,
-        attempt: 0,
-        viewers: new Set(),
-        cloudViewers: new Map(),
-        createdAt: Date.now(),
-        switching: undefined,
-        remote: undefined,
-        clients: new Map(),
-      });
+      const secret = addRun(runId, "new run");
       log("run.created", { run: runId });
       return { id: runId, secret };
     },
+    adoptRun,
     async close() {
       for (const poller of pollers.values()) poller.stop();
       pollers.clear();

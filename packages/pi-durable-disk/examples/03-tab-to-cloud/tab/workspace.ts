@@ -1,8 +1,8 @@
 // A pipe-hosted workspace against the disk's work/ (the tab's, or a host's that has no disk client): restore it from
 // what the pipe sends on attach, and after a tool find what changed and send it. The last state the pipe acknowledged
-// is the baseline; a change is sent whole (the file's content), a removal by name. Portable: the files are reached
-// through a WorkspaceFs (wasmer-env.ts's for the tab, host-fs.ts's for Node).
-import { fromBase64, toBase64, workspaceDigest, type FileChange, type FileEntry } from "../wire.ts";
+// is the baseline; a change is sent whole (the file's content, which the pipe client chunks), a removal by name.
+// Portable: the files are reached through a WorkspaceFs (wasmer-env.ts's for the tab, host-fs.ts's for Node).
+import { workspaceDigest, type FileChange, type LocalWrite, type RestoredEntry } from "../wire.ts";
 
 /** The few file operations a workspace needs, on absolute paths under `root`. */
 export interface WorkspaceFs {
@@ -66,9 +66,9 @@ export class Workspace {
   }
 
   /** Changes since the baseline, removals first (children before parents), then directories and files. */
-  async changes(): Promise<{ changes: FileChange[]; scanned: Map<string, Seen & { data?: Uint8Array }> }> {
+  async changes(): Promise<{ changes: (FileChange | LocalWrite)[]; scanned: Map<string, Seen & { data?: Uint8Array }> }> {
     const scanned = await this.scan();
-    const changes: FileChange[] = [];
+    const changes: (FileChange | LocalWrite)[] = [];
     const removed = [...this.#baseline.keys()].filter((p) => !scanned.has(p) || scanned.get(p)!.kind !== this.#baseline.get(p)!.kind);
     removed.sort((a, b) => b.length - a.length);
     for (const path of removed) {
@@ -81,7 +81,7 @@ export class Workspace {
       if (seen.kind === "directory") {
         if (before?.kind !== "directory") changes.push({ path, op: "mkdir" });
       } else if (before?.kind !== "file" || before.digest !== seen.digest) {
-        changes.push({ path, op: "write", data: toBase64(seen.data!) });
+        changes.push({ path, op: "write", bytes: seen.data! });
         this.fs.touched?.(`${this.fs.root}/${path}`);
       }
     }
@@ -94,7 +94,7 @@ export class Workspace {
   }
 
   /** Make the sandbox's workspace what the disk has (on attach): write every entry, remove what the disk lacks. */
-  async restore(entries: readonly FileEntry[]): Promise<{ files: number; bytes: number; skipped: string[] }> {
+  async restore(entries: readonly RestoredEntry[]): Promise<{ files: number; bytes: number; skipped: string[] }> {
     const fs = this.fs;
     const current = await this.scan();
     const wanted = new Set(entries.map((e) => e.path));
@@ -108,7 +108,7 @@ export class Workspace {
       const abs = `${fs.root}/${entry.path}`;
       if (entry.kind === "directory") await fs.mkdir(abs);
       else if (entry.kind === "file") {
-        const data = fromBase64(entry.data);
+        const data = entry.bytes;
         const parent = abs.slice(0, abs.lastIndexOf("/"));
         if (parent !== fs.root) await fs.mkdir(parent);
         await fs.writeFile(abs, data, entry.mtimeMs);

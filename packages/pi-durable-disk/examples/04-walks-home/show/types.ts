@@ -84,7 +84,20 @@ export type NoteKind = "story" | "switch" | "kill" | "takeover" | "winner" | "ho
  * A narration line. `measured: true` means every number in `text` was measured by the driver on this run; a feed that
  * does not say, or says false, has its numbers shown as scripted or unmeasured, never as measurements.
  */
-export type Note = { at: number; kind: NoteKind; text: string; measured?: boolean };
+export type Note = {
+  at: number;
+  kind: NoteKind;
+  text: string;
+  measured?: boolean;
+  /**
+   * Where a number that was NOT timed here comes from: `simulated` is the simulation's own arithmetic (deterministic for the
+   * policy, not wall time); `reported` is what a file says about itself (its host, its training seconds), not something this
+   * stage or the tab observed. A note carries at most one basis, and never together with `measured`.
+   */
+  basis?: "simulated" | "reported";
+  /** `tab`: made by the page from what the tab app reported, so real even when the feed is the scripted one. */
+  origin?: "tab";
+};
 
 export type ShowState = {
   /** Where the story comes from: a live driver, or the scripted rehearsal feed. A scripted feed never claims a measurement. */
@@ -145,7 +158,7 @@ export type ShellToTab = Envelope<
   /** Swap the terrain: a heightfield asset and geoms, or null for the flat floor. */
   | { type: "load-world"; world: { asset: unknown; geoms: unknown } | null }
   /** Answers to the tab's storage requests: the agent's disk, as the stage models it. */
-  | { type: "storage-result"; id: number; bytes: Uint8Array | null; error?: string }
+  | { type: "storage-result"; id: number; bytes: Uint8Array | null; etag?: string; notModified?: boolean; error?: string }
   | { type: "storage-written"; id: number; error?: string }
 >;
 export type TabToShell = Envelope<
@@ -153,15 +166,51 @@ export type TabToShell = Envelope<
   | { type: "design-saved"; id: string; name: string; sha256: string }
   | { type: "policy-loaded"; name: string; mjcf_sha256: string; bytes: number }
   /** A policy that could not be fetched or did not match the creature: the tab keeps its previous policy and says why. */
-  | { type: "policy-refused"; name: string; reason: string }
+  | { type: "policy-refused"; name: string; reason: string; via?: "watch" | "message" }
+  /** A trained policy was installed in the running creature (from the file watcher or a load-policy message). */
+  | {
+      type: "policy-arrived";
+      name: string;
+      via: "watch" | "message";
+      /** The tab's own toast text, ready to use as a caption. */
+      message: string;
+      /** What the policy file says about itself (provenance), null when it does not say. */
+      host: string | null;
+      training_seconds: number | null;
+      mjcf_sha256: string;
+      /** The preset body the tab switched to so the policy fits, if it did. */
+      switched_body: string | null;
+      /** MEASURED on the tab's clock. */
+      arrival_to_installed_ms: number;
+      bytes: number;
+    }
+  /** Sent once, 10 simulated seconds after the install. */
+  | {
+      type: "policy-walked";
+      name: string;
+      /** MEASURED on the tab's clock; null: it never covered half the commanded distance in a second, fell, or command 0. */
+      arrival_to_installed_ms: number;
+      arrival_to_walking_ms: number | null;
+      /** The simulation's own arithmetic, not wall time. */
+      sim_seconds_to_walking: number | null;
+      mean_speed: number | null;
+      window_seconds: number;
+      fell: boolean;
+    }
   /** The disk answered storage-written with error "not-holder" (another machine holds the run): the design is kept locally and handed to the agent. */
   | { type: "design-request"; design: unknown; mjcf_sha256: string }
   | { type: "kicked"; force_n: number; t: number }
   | { type: "memory-opened"; rows: number }
   | { type: "fell"; t: number }
   | { type: "stood"; t: number; since_kick?: number }
+  /**
+   * Only for a policy that carries a getup network: "getup" = the creature went down and the getup network took over (torso
+   * uprightness fell below 0.3), "walk" = it is back on its feet (above 0.9). `t` is simulated seconds, `up` is 1 upright, 0 on
+   * its side, -1 on its back. The tab's own simulation arithmetic, not wall time.
+   */
+  | { type: "mode-changed"; mode: "walk" | "getup"; t: number; up: number }
   /** The tab keeps creature/designs.sqlite and creature/memory.sqlite on the agent's disk; with no answer in 1.5 s it falls back to the browser. */
-  | { type: "storage-read"; id: number; path: string }
+  | { type: "storage-read"; id: number; path: string; ifNoneMatch?: string }
   | { type: "storage-write"; id: number; path: string; bytes: Uint8Array }
 >;
 

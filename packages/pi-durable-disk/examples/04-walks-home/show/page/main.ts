@@ -1,10 +1,11 @@
-import type { HostKind, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
+import type { HostKind, Note, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
 import { captionsFor } from "./caption.ts";
 import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
+import { notesFromTabEvent } from "./tab-notes.ts";
 import { renderTimeline } from "./timeline.ts";
 
 const params = new URLSearchParams(location.search);
@@ -48,16 +49,23 @@ function tabEvent(text: string): void {
 /** The tab's memory files live on the stage's disk (server side), so a reload of the page keeps the creature. */
 async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "storage-write" }>): Promise<void> {
   const url = `/api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`;
+  /** The stage's own words for why the disk said no (its JSON {error}), else the status. */
+  const why = async (res: Response) => ((await res.json().catch(() => undefined)) as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
   try {
     if (m.type === "storage-read") {
-      const res = await fetch(url, { cache: "no-store" });
+      // A poller passes the etag it last saw; the stage answers 304 instead of the bytes when nothing changed.
+      const res = await fetch(url, { cache: "no-store", headers: m.ifNoneMatch ? { "if-none-match": m.ifNoneMatch } : {} });
+      if (res.status === 304) return bridge.send({ type: "storage-result", id: m.id, bytes: null, notModified: true, etag: res.headers.get("etag") ?? m.ifNoneMatch });
       if (res.status === 204 || res.status === 404) return bridge.send({ type: "storage-result", id: m.id, bytes: null });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()) });
+      if (!res.ok) throw new Error(await why(res));
+      const etag = res.headers.get("etag");
+      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()), ...(etag ? { etag } : {}) });
     }
     // The write is acknowledged only after the disk has it: the tab treats the ack as durability.
     const res = await fetch(url, { method: "PUT", body: m.bytes as BodyInit });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // 409: another machine holds the run. The tab keeps the design and asks the agent (design-request) instead of losing it.
+    if (res.status === 409) return bridge.send({ type: "storage-written", id: m.id, error: "not-holder" });
+    if (!res.ok) throw new Error(await why(res));
     bridge.send({ type: "storage-written", id: m.id });
     tabEvent(`disk write ${m.path} ${m.bytes.byteLength} B`);
   } catch (error) {
@@ -67,8 +75,18 @@ async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "st
   }
 }
 
+// What the tab reports about a policy coming home, as narration on the page's own clock, next to the feed's notes. These are
+// real even when the feed is the scripted one, so they carry their own origin and basis (see tab-notes.ts).
+const tabNotes: Note[] = [];
+/** The feed's notes and the tab's, in time order, as one state for captions and the narration column. */
+function withTabNotes(state: ShowState): ShowState {
+  return tabNotes.length === 0 ? state : { ...state, notes: [...state.notes, ...tabNotes].sort((a, b) => a.at - b.at) };
+}
+
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
+  tabNotes.push(...notesFromTabEvent(m, feed.captionNow()));
+  if (tabNotes.length > 60) tabNotes.splice(0, tabNotes.length - 60);
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
     .map(([k, v]) => `${k}=${typeof v === "number" ? Math.round(v as number) : String(v).slice(0, 14)}`)
@@ -206,6 +224,9 @@ const OPS: Record<string, () => void> = {
   collapse: () => void run("collapse", { t: "collapse" }),
   home: () => void run("home", { t: "switch", to: homeEnv(feed.state) }),
   reset: () => void run("reset", { t: "reset" }),
+  // Straight to the tab app, not a feed command: a push a creature shrugs off (60 N) and one that puts it on its back (400 N).
+  kick60: () => bridge.send({ type: "kick", dir: [1, 0], force_n: 60 }),
+  kick400: () => bridge.send({ type: "kick", dir: [1, 0], force_n: 400 }),
   ask: () => void run("ask", { t: "ask" }),
 };
 operator.querySelectorAll<HTMLButtonElement>("button[data-op]").forEach((b) => b.addEventListener("click", () => OPS[b.dataset.op!]()));
@@ -213,7 +234,7 @@ addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.matches?.("input, textarea")) return;
   if (e.key === "o") operator.hidden = !operator.hidden;
   else if (!operator.hidden) {
-    const key = { p: "prewarm", f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask" }[e.key];
+    const key = { p: "prewarm", f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask", x: "kick60", X: "kick400" }[e.key];
     if (key) OPS[key]();
     else if (e.key === "Escape") operator.hidden = true;
   }
@@ -222,7 +243,7 @@ if (params.get("operator") === "1") operator.hidden = false;
 
 let shownCaption = "";
 function renderCaption(state: ShowState): void {
-  const list = captionsFor(state, feed.captionNow());
+  const list = captionsFor(withTabNotes(state), feed.captionNow());
   const el = $("caption");
   const key = list.map((c) => `${c.at}|${c.tag}|${c.text}`).join("\n");
   if (key === shownCaption) return;
@@ -241,7 +262,7 @@ function frame(): void {
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);
-  renderNotes(state, now);
+  renderNotes(withTabNotes(state), now);
 }
 
 feed.onChange((event: ShowEvent | null) => {

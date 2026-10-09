@@ -29,14 +29,30 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
 - **Workspace write-through**: after every writing tool (`write`, `edit`, `bash`), the tab diffs its Wasmer workspace and
   sends the changed files; the pipe writes them under `work/`, runs the claim's barrier (`archil sync`), and only then
   answers. The tool's result commits after that answer (`agent.ts`, `writeThrough`), so `work/` never lags what the agent
-  believes it wrote. On a host with the mount, the same extension runs the claim's barrier.
+  believes it wrote. On a host with the mount, the same extension runs the claim's barrier. No frame carries more than
+  1 MiB of file content (`CHUNK_BYTES`): a larger file goes ahead as an upload in ordered chunks into `tmp/pipe-uploads/`
+  (inside the claim, outside `work/`), and the pipe renames it over the old file only when its size and SHA-256 match
+  and its writer is still the writer. An upload cut off, refused or not matching leaves the old file and nothing else.
 - **Model calls** go through the server (`pipe/model-proxy.ts`): the key stays on the server, the request names only
   the model the server allows, and a run has a token budget across every place it runs.
-- **Restore**: when a tab attaches, it gets `work/` from the disk, so a tab can resume what a cloud host did.
+- **Restore**: when a tab attaches, it gets `work/` from the disk, so a tab can resume what a cloud host did: a manifest
+  (each file's size and SHA-256), the files in 1 MiB chunks, then the end. The tab hands the workspace over only when
+  every file matches its manifest, and refuses (RESTORE_FAILED) a workspace over its limit before receiving any of it:
+  256 MiB in the page, 1 GiB on a host (`restoreLimitBytes`). The pipe keeps each file's SHA-256 under its identity
+  (device, inode, size, mtime and ctime in ns), from the write-through that wrote it or from one read, so an attach reads
+  `work/` once, to send it; the release's digest of `work/` (the `pipe.released` line) comes from what the pipe knows,
+  after the release. What the restore sends is hashed again: a file that changed during the attach fails it, and the
+  next attach sends the file as the disk has it.
 - **Who may do what** is the hello's `mode`: `write` asks to run the agent here, `operator` watches and may switch the run
   or send it messages, `view` only watches (a switch or a message from it gets `switch-refused` / `submit-refused`). A
   page says `canRun: true`: a switch into a tab tells the asking page to run it when it can, else the most recent page
   that can, and is refused before anything moves when none is open.
+- **work/ over HTTP**, with the run's secret as a bearer token: `GET /api/runs/<id>/work/<path>` reads a file (from the
+  pipe's mount when it holds the run, else from the disk); `PUT` writes one for the tab that holds the run (header
+  `x-pda-tab: <tab id>`), only at the paths `serve.ts --tab-writable` lists (default none; the walks-home demo passes
+  `--tab-writable creature/creature.xml,creature/body.json,creature/designs.sqlite`), through the write-through (the
+  answer comes after the barrier; another holder gets 409 with its name). `POST /api/runs/<id>/attach` (loopback, the admin token)
+  takes on a run released and sealed elsewhere and answers its link.
 - **One tab writes at a time.** Another device that opens the link watches read-only. "Take over here" gives the run to the
   new tab: the old tab is told the run moved, and every later frame from it is refused. From a cloud host, a takeover
   revokes the host's claim (the package's `takeOver`): its next commit or heartbeat fails at the disk, and it exits 75.
@@ -55,7 +71,9 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
   says the move was not planned.
 
 The cloud host can be a second FUSE client on the server's own machine (`--cloud local`, a systemd unit through the
-package's `localHost` driver) or Daytona (`--cloud daytona`, `pipe/daytona.ts`):
+package's `localHost` driver), a second process with no disk client that runs the agent through the pipe
+(`--cloud remote-local`, `pipe/remote-local.ts`: `remote-host.ts` as a child process, no unit, no mount), or Daytona
+(`--cloud daytona`, `pipe/daytona.ts`):
 
 - **Daytona basic**: a sandbox from the demo's runtime snapshot (`scripts/daytona-snapshot.ts` builds
   `pda-demo-runtime-<digest>`), started by the package's `daytonaHost` driver; it mounts the disk itself. Its live events
@@ -98,7 +116,8 @@ working on the page.
 
 - `npm test`: the pipe's protocol on a local directory: storage conformance through a real WebSocket, write-through,
   restore, takeover and the refused old tab, the model proxy and its budget, a tab that stops pinging, switches both
-  ways with their drain, and a remote host (a child process) through the pipe.
+  ways with their drain, and a remote host (a child process) through the pipe; and a 200 MiB file and a 100 MiB
+  workspace through 64 MiB frames, an upload cut off mid-transfer or retired before its rename.
 - `node scripts/live-pipe.ts` (with the disk's variables): the same on the real mount, plus 200 commits and their latency
   against the ping round trip, and a re-read after a release.
 - `node scripts/story.ts <link>` against a running `serve.ts --cloud ...`: the whole story in headless Chrome (device A

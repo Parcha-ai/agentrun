@@ -7,6 +7,8 @@
 // Evidence goes to $OUT (default ./take-results.json); screenshots to $SHOTS.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ModalClient } from "modal";
+import { SCREENSHOT_COMMAND } from "../desktop.ts";
 import { Cdp, type Page } from "../../../03-tab-to-cloud/scripts/cdp.ts";
 
 const link = process.argv[2]!;
@@ -58,6 +60,21 @@ try {
     if (n === 1) {
       await page.until(`${tools("computer")} >= 1`, 300_000, 200);
       step("on the VM desktop: the agent drives it", { computerCalls: await page.evaluate<number>(tools("computer")) });
+      // What the desktop shows, taken from outside the agent (MODAL_TOKEN_* in the environment): the creature page, as the stage will see it.
+      await new Promise((r) => setTimeout(r, 2_000));
+      try {
+        const modal = new ModalClient();
+        const app = await modal.apps.fromName(process.env.MODAL_APP ?? "pda-demo-d4", { createIfMissing: false });
+        for await (const sb of modal.sandboxes.list({ appId: app.appId, tags: {} })) {
+          const p = await sb.exec(["bash", "-c", `${SCREENSHOT_COMMAND} | base64 -w0`], { timeoutMs: 30_000 });
+          const jpeg = Buffer.from((await p.stdout.readText()).trim(), "base64");
+          writeFileSync(join(shots, "vm-desktop-creature.jpg"), jpeg);
+          step("the VM's desktop, from outside", { jpegBytes: jpeg.length });
+          break;
+        }
+      } catch (error) {
+        step("desktop screenshot failed", { error: (error as Error).message });
+      }
     }
   }
   await page.until("demo.state.mode === 'writer'", 120_000, 200);
