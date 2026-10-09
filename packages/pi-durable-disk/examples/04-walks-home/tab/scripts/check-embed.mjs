@@ -63,6 +63,7 @@ async function scenario(name, silent, viewer = false) {
       r.diskFiles = await ev('Object.fromEntries(Object.entries(disk).map(([k, v]) => [k, v.length]))');
       r.diskWrites = await ev('diskWrites');
       r.timelineHosts = await inner("[...document.querySelectorAll('#memory .tl .host')].map(e => e.firstChild.textContent)");
+      r.bodyFiles = await ev("({ xml: disk['creature/creature.xml'] ? new TextDecoder().decode(disk['creature/creature.xml']).slice(0, 18) : null, body: disk['creature/body.json'] ? Object.keys(JSON.parse(new TextDecoder().decode(disk['creature/body.json']))) : null })");
       r.designsOnDisk = await inner("document.querySelectorAll('#memory table.designs tr').length - 1");
     }
     const shot = await S('Page.captureScreenshot', { format: 'png' });

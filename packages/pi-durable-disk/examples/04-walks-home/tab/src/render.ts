@@ -38,7 +38,7 @@ export class View {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
-  private readonly controls: OrbitControls;
+  readonly controls: OrbitControls;
   private meshes: THREE.Mesh[] = [];
   private sim: Sim | null = null;
   private readonly grid: THREE.GridHelper;

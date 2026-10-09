@@ -45,6 +45,13 @@ try {
   await sleep(1500); await snap('1-walking');
   await sleep(4000);
   result.walked = await state();
+  result.command = await ev('__walks.app.sim.command');
+  // the tab's own arithmetic: distance and mean speed over the sim time that elapsed between the two samples
+  const dt = result.walked.t - result.start.t;
+  result.walk = { sim_seconds: +dt.toFixed(2), metres_x: +(result.walked.pos[0] - result.start.pos[0]).toFixed(3), mean_speed_x: +((result.walked.pos[0] - result.start.pos[0]) / dt).toFixed(3) };
+  // side view: camera one metre and a bit to the creature's left, level with its body
+  await ev("(() => { const v = __walks.app.view, t = v.controls?.target ?? {x:0,y:0,z:0.2}; v.camera.position.set(__walks.app.sim.torsoPos()[0], __walks.app.sim.torsoPos()[1] - 1.8, 0.35); })()"); await sleep(400); await snap('2b-side');
+  await ev("(() => { const v = __walks.app.view; v.camera.position.set(v.camera.position.x + 1.1, v.camera.position.y + 0.5, 0.8); })()");
   await ev("__walks.kick(0, 1, 60)");
   await sleep(300); await snap('2-kicked');
   await sleep(4000);
@@ -54,20 +61,28 @@ try {
   result.hexapod = { legs: await ev("document.getElementById('count').textContent"), up: (await state()).up, presets: await ev("[...document.querySelectorAll('#presets button')].map((b) => b.textContent)") };
   await snap('3b-hexapod');
   await ev("[...document.querySelectorAll('#presets button')].find((b) => b.textContent === 'quadruped').click()"); await sleep(1000);
-  // drag-to-kick: press on the creature (it stays near the view centre: the camera follows it), drag right, release
-  await ev("document.getElementById('noPolicy').click(); __walks.app.sim.reset(); __walks.app.fallen = false"); await sleep(1500);
-  const box = JSON.parse(await ev("JSON.stringify((() => { const r = document.getElementById('view').getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2 - 20}; })())"));
+  // drag-to-kick: press on the creature (the camera follows it, so it stays near the view centre), drag, release.
+  // With a POLICY the creature is walking and is shoved twice (right, then down on screen); without one it stands.
+  const waitSim = async (seconds) => { const t0 = await ev('__walks.app.sim.time'); for (let i = 0; i < 400 && (await ev('__walks.app.sim.time')) < t0 + seconds; i++) await sleep(100); };
+  if (!process.env.POLICY) await ev("document.getElementById('noPolicy').click(); __walks.app.sim.reset(); __walks.app.fallen = false");
+  await waitSim(1.5);
   const mouse = (type, x, y) => S('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
-  const before = await ev('({x: __walks.app.sim.data.qpos[0], y: __walks.app.sim.data.qpos[1]})');
-  await mouse('mousePressed', box.x, box.y);
-  for (let i = 1; i <= 8; i++) { await mouse('mouseMoved', box.x + i * 25, box.y); await sleep(30); }
-  result.dragDom = await ev("(() => { const s = document.getElementById('dragSvg'), l = document.getElementById('dragArrow'); return {hidden: s.hasAttribute('hidden'), display: getComputedStyle(s).display, x1: l.getAttribute('x1'), x2: l.getAttribute('x2'), w: s.getBoundingClientRect().width}; })()");
-  await snap('3a-dragging');
-  await mouse('mouseReleased', box.x + 200, box.y);
-  result.dragKick = { armed: await ev('__walks.app.recovering !== null'), toast: await ev("document.getElementById('toast').textContent") };
-  await sleep(2500);
-  const after = await ev('({x: __walks.app.sim.data.qpos[0], y: __walks.app.sim.data.qpos[1], up: __walks.app.sim.uprightness()})');
-  result.dragKick.moved = Math.hypot(after.x - before.x, after.y - before.y); result.dragKick.upright = after.up;
+  result.dragKicks = [];
+  for (const [name, ux, uy] of [['right', 1, 0], ['down', 0, 1]]) {
+    const box = JSON.parse(await ev("JSON.stringify((() => { const r = document.getElementById('view').getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2 - 20}; })())"));
+    const before = await ev('({x: __walks.app.sim.data.qpos[0], y: __walks.app.sim.data.qpos[1], vx: __walks.app.sim.data.qvel[0], vy: __walks.app.sim.data.qvel[1]})');
+    await mouse('mousePressed', box.x, box.y);
+    for (let i = 1; i <= 8; i++) { await mouse('mouseMoved', box.x + ux * i * 25, box.y + uy * i * 20); await sleep(30); }
+    if (name === 'right') result.dragDom = await ev("(() => { const s = document.getElementById('dragSvg'), l = document.getElementById('dragArrow'); return {hidden: s.hasAttribute('hidden'), display: getComputedStyle(s).display, x2: l.getAttribute('x2')}; })()");
+    if (name === 'right') await snap('3a-dragging');
+    await mouse('mouseReleased', box.x + ux * 200, box.y + uy * 160);
+    const k = { dir: name, toast: await ev("document.getElementById('toast').textContent"), armed: await ev('__walks.app.recovering !== null') };
+    let minUp = 1; const t0 = await ev('__walks.app.sim.time');
+    while ((await ev('__walks.app.sim.time')) < t0 + 3) { minUp = Math.min(minUp, await ev('__walks.app.sim.uprightness()')); await sleep(100); }
+    const after = await ev('({up: __walks.app.sim.uprightness(), fallen: __walks.app.fallen})');
+    result.dragKicks.push({ ...k, min_upright_3s: +minUp.toFixed(3), upright_after: +after.up.toFixed(3), fell: after.fallen });
+    await ev('__walks.app.fallen = false');
+  }
   // terrain: a heightfield with a flat centre, rolling hills outside it
   const n = 33, elev = [];
   for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { const x = -3 + (6 * j) / (n - 1), y = -3 + (6 * i) / (n - 1); const r = Math.hypot(x, y); elev.push(r < 1.2 ? 0 : Math.min(1, (r - 1.2) / 1.5) * (0.5 + 0.5 * Math.sin(3 * x) * Math.cos(2.5 * y))); }

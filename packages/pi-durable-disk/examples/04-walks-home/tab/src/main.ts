@@ -88,10 +88,21 @@ async function loadVendor() {
   return { mj, sql, mujocoVersion: versions.mujoco as string };
 }
 
+/** The body as the trainer and the forks need it: creature.xml byte for byte, and body.json (joint order, stand pose).
+ *  Written next to the SQLite files, only when there is a disk behind the page and this tab may write. */
+async function publishBody() {
+  if (app.storageMode !== 'disk') return;
+  const { xml, legs, jointNames, standPose, standHeight } = app.world ? { ...buildMjcf(app.sketcher.get()) } : app.built;
+  const enc = new TextEncoder();
+  await new ParentBackend(windowBus(), 'creature/creature.xml').write(enc.encode(xml));
+  await new ParentBackend(windowBus(), 'creature/body.json').write(enc.encode(JSON.stringify({ legs, jointNames, standPose, standHeight, mjcf_sha256: app.bodySha }, null, 1) + '\n'));
+}
+
 /** Save the body to designs.sqlite; when another machine holds the run, ask the agent to save it instead. */
 async function saveDesign(design: Design) {
   try {
     const saved = await app.store.saveDesign(design);
+    await publishBody();
     post('design-saved', { id: saved.id, name: design.name, sha256: saved.sha256, mjcf_sha256: app.bodySha });
   } catch (e) {
     if (!(e instanceof NotHolder)) throw e;
@@ -120,14 +131,28 @@ async function buildCreature(design: Design, keepPolicy: boolean) {
     setPolicy(null, 'none');
     showError('The loaded policy was trained for another body, so it was removed. Load one for this body.');
   }
-  app.sim.command = Number(($('command') as HTMLInputElement).value);
+  applyCommand();
   renderPairs();
+}
+
+/** The slider is the single source of the command: apply it to the sim (a new Sim starts at 0, which a policy reads as "stand"). */
+function applyCommand() {
+  const input = $('command') as HTMLInputElement;
+  // A policy trained for a command range limits the slider to it.
+  const range = (app.policy?.file as { command_range?: [number, number] } | undefined)?.command_range;
+  input.min = String(range?.[0] ?? 0);
+  input.max = String(range?.[1] ?? 1);
+  const v = Math.min(Number(input.max), Math.max(Number(input.min), Number(input.value)));
+  input.value = String(v);
+  app.sim.command = v;
+  $('commandOut').textContent = v.toFixed(2);
 }
 
 function setPolicy(p: Policy | null, name: string) {
   app.policy = p;
   app.policyName = name;
   $('policyName').textContent = name;
+  applyCommand();
 }
 
 async function useDummy() {
@@ -293,7 +318,7 @@ async function main() {
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' },
     };
     app.view.setSim(app.sim);
-    await useDummy();
+    await useDummy(); // also applies the slider's command to the sim
     await saveDesign(design); // the first body is a body too: the memory view lists it
     renderPairs();
     setPlacement('tab', 'this tab');
@@ -317,11 +342,7 @@ async function main() {
       const f = (e.target as HTMLInputElement).files?.[0];
       if (f) await loadPolicyText(await f.text(), f.name).catch(() => {});
     };
-    $('command').oninput = (e) => {
-      const v = Number((e.target as HTMLInputElement).value);
-      app.sim.command = v;
-      $('commandOut').textContent = v.toFixed(2);
-    };
+    $('command').oninput = () => applyCommand();
     document.querySelectorAll<HTMLElement>('[data-kick]').forEach((b) => {
       b.onclick = () => {
         const [x, y] = b.dataset.kick!.split(',').map(Number);
