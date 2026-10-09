@@ -35,3 +35,7 @@ test("a run that reaches first steps at a different checkpoint says the same thi
   assert.equal(lessonFor(bandOf(3.6)), "First steps.", "whether it is checkpoint 5 or 7");
   assert.equal(lessonFor(bandOf(2.2)), "First steps.");
 });
+
+test("no lesson line quotes a number: a fall rate measured on a different random brain is never put over the tab's untrained creature", () => {
+  for (const band of ["fall", "shuffle", "steps", "walk"] as const) assert.doesNotMatch(lessonFor(band) ?? "", /\d|%/, band);
+});
