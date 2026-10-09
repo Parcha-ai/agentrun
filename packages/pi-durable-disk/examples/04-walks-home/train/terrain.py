@@ -96,6 +96,40 @@ def make_terrain(seed: int = 0, mix: dict[str, float] | None = None, tiles: int 
   return doc
 
 
+def make_course(seed: int = 1000, cell: float = 0.05, length_m: float = 12.0, width_m: float = 2.0) -> dict:
+  """The held-out course every universe is scored on: a 2 m wide strip along +x from the spawn point at the origin
+  (heading +x, flat start), through a slope, stairs, rubble and waves, 2 m each, all at height 0 where they meet. Score =
+  metres of +x progress in 10 s at a 0.5 m/s command. Its seed is not one any universe trains on."""
+  rng = np.random.default_rng(seed)
+  ncol, nrow = int(round(length_m / cell)), int(round(width_m / cell))
+  x = (np.arange(ncol) + 0.5) * cell - 1.0  # strip starts 1 m behind the spawn point
+  h = np.zeros(ncol)
+  def bump(x0, x1, profile):
+    sel = (x >= x0) & (x < x1)
+    u = (x[sel] - x0) / (x1 - x0)
+    h[sel] = profile(u)
+  bump(1.0, 3.0, lambda u: np.tan(np.radians(12)) * 1.0 * (1 - np.abs(2 * u - 1)))  # up 12 degrees, then down
+  bump(3.0, 5.0, lambda u: 0.04 * np.minimum(np.floor(u * 8), np.floor((1 - u) * 8)))  # 4 cm steps up, then down
+  grid = np.tile(h, (nrow, 1))
+  rub = rng.uniform(-0.025, 0.025, (nrow // 2 + 1, ncol // 2 + 1)).repeat(2, 0).repeat(2, 1)[:nrow, :ncol]
+  sel = (x >= 5.0) & (x < 7.0)
+  grid[:, sel] += rub[:, sel] * np.sin(np.pi * (x[sel] - 5.0) / 2.0)  # rubble, tapered to 0 at both ends
+  sel = (x >= 7.0) & (x < 9.0)
+  grid[:, sel] += 0.04 * np.sin(2 * np.pi * (x[sel] - 7.0) / 1.0) ** 2  # waves
+  grid -= min(grid.min(), 0.0)
+  hz = max(float(grid.max()), 1e-3)
+  elev = " ".join(f"{v:.4f}" for v in (grid / hz)[::-1].ravel())
+  cx = x[0] - cell / 2 + length_m / 2
+  asset = (f'<hfield name="terrain" nrow="{nrow}" ncol="{ncol}" size="{length_m / 2:.4f} {width_m / 2:.4f} {hz:.5f} 0.05" '
+           f'elevation="{elev}"/>')
+  geoms = (f'<geom name="terrain" type="hfield" hfield="terrain" pos="{cx:.4f} 0 {WORLD_LIFT}" contype="1" conaffinity="1" '
+           f'friction="1 0.05 0.01" rgba="0.82 0.8 0.74 1"/>')
+  doc = {"version": 1, "kind": "course", "seed": seed, "spawns": [[0.0, 0.0, float(grid[nrow // 2, int(1.0 / cell)]) + WORLD_LIFT]],
+         "sections": ["flat", "slope", "stairs", "rubble", "waves", "flat"], "cell": cell, "asset": asset, "geoms": geoms}
+  doc["sha256"] = hashlib.sha256((asset + "\n" + geoms).encode("utf-8")).hexdigest()
+  return doc
+
+
 def splice(body_xml: str, world: dict) -> str:
   """What buildMjcf(design, world) produces, for a body built without one: <asset> before <worldbody>, geoms after
   the floor. train.py trains on this; node gives the same bytes (checked by check_splice in the tests)."""
@@ -113,7 +147,7 @@ def check(xml_path: str, world: dict) -> dict:
   d = mujoco.MjData(m)
   key = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
   results = []
-  for (x, y, z), t in zip(world["spawns"], world["tiles"]):
+  for (x, y, z), t in zip(world["spawns"], world.get("tiles") or [{"kind": "course start"}]):
     mujoco.mj_resetDataKeyframe(m, d, key)
     d.qpos[0:3] += [x, y, z]
     for _ in range(250):
@@ -131,14 +165,15 @@ def main():
   ap.add_argument("--tiles", type=int, default=6)
   ap.add_argument("--out", required=True)
   ap.add_argument("--check", help="body MJCF to drop on every spawn point")
+  ap.add_argument("--course", action="store_true", help="the held-out scoring course instead of training tiles")
   args = ap.parse_args()
   mix = {k: float(v) for k, v in (kv.split(":") for kv in args.mix.split(","))}
-  world = make_terrain(args.seed, mix, args.tiles)
+  world = make_course(args.seed) if args.course else make_terrain(args.seed, mix, args.tiles)
   if args.check:
     world["check"] = check(args.check, world)
   json.dump(world, open(args.out, "w"))
-  summary = {k: world[k] for k in ("seed", "nrow", "ncol", "size", "sha256")}
-  summary["kinds"] = [t["kind"] for t in world["tiles"]]
+  summary = {k: world.get(k) for k in ("seed", "nrow", "ncol", "size", "sha256")}
+  summary["kinds"] = [t["kind"] for t in world["tiles"]] if "tiles" in world else world["sections"]
   if "check" in world:
     summary["check"] = {k: world["check"][k] for k in ("ok", "of")}
   print(json.dumps(summary))

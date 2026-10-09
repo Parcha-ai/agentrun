@@ -71,7 +71,7 @@ def pull(sb: modal.Sandbox, out: str) -> list[str]:
   """Bring WORK's small files home (state, progress, policy); checkpoints too when present."""
   got = []
   os.makedirs(out, exist_ok=True)
-  for name in ("state.json", "progress.jsonl", "policy.json"):
+  for name in ("state.json", "progress.jsonl", "policy.json", "compile-cache.tar.gz"):
     try:
       data = sb.filesystem.read_bytes(f"{REMOTE_WORK}/{name}")
     except Exception:
@@ -165,6 +165,8 @@ def main() -> None:
   ap.add_argument("--mjcf", required=True)
   ap.add_argument("--body", required=True)
   ap.add_argument("--universe", required=True)
+  ap.add_argument("--world", default=None, help="terrain.json from terrain.py")
+  ap.add_argument("--course", default=None, help="course.json from terrain.py --course")
   ap.add_argument("--out", required=True, help="local directory standing in for the run's work/train/<u>/")
   ap.add_argument("--gpu", default="H100,A100-80GB,L40S", help="GPU types to try in order")
   ap.add_argument("--minutes", type=float, default=8.0)
@@ -194,7 +196,12 @@ def main() -> None:
     try:
       log("sandbox.started", name=name, gpu=gpu, create_s=round(time.time() - t_create, 1))
       sb.filesystem.make_directory(REMOTE_IN)
-      for local, remote in ((args.mjcf, "creature.xml"), (args.body, "body.json"), (args.universe, "universe.json")):
+      inputs = [(args.mjcf, "creature.xml"), (args.body, "body.json"), (args.universe, "universe.json")]
+      if args.world:
+        inputs.append((args.world, "terrain.json"))
+      if args.course:
+        inputs.append((args.course, "course.json"))
+      for local, remote in inputs:
         with open(local, "rb") as f:
           sb.filesystem.write_bytes(f.read(), f"{REMOTE_IN}/{remote}")
       sb.filesystem.make_directory(REMOTE_WORK)
@@ -209,6 +216,10 @@ def main() -> None:
         cmd += ["--num-envs", str(args.num_envs)]
       if args.impl:
         cmd += ["--impl", args.impl]
+      if args.world:
+        cmd += ["--world", f"{REMOTE_IN}/terrain.json"]
+      if args.course:
+        cmd += ["--course", f"{REMOTE_IN}/course.json"]
       smi = sb.exec("nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader")
       log("gpu", info=smi.stdout.read().strip())
       proc = sb.exec(*cmd, env={"XLA_PYTHON_CLIENT_PREALLOCATE": "false", "PYTHONUNBUFFERED": "1"})

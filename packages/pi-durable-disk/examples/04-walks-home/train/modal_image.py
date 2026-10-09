@@ -28,17 +28,19 @@ def training_image(copy_code: bool = False) -> modal.Image:
   image = modal.Image.debian_slim(python_version="3.12").pip_install(*PINS)
   for name in TRAIN_FILES:
     image = image.add_local_file(os.path.join(HERE, name), f"{REMOTE_TRAIN}/{name}", copy=copy_code)
+  if copy_code:
+    # Copies keep the checkout's file modes; the run user (not root) must read them.
+    image = image.run_commands(f"chmod -R a+rX {REMOTE_TRAIN}")
   return image
 
 
 def fleet_image(runtime_commands: list[str]) -> modal.Image:
-  """The GPU machine class: the trainer baked in, then the shared runtime layer (vm/build-image.ts --print-commands:
-  Node 24, the run user pda, sudo). XLA and Warp caches go under the run user's HOME, outside work/."""
-  # A GPU box runs in pipe mode (gVisor's fsync is not durable), so the layer's Archil client step is left out; it
-  # is also the one step that needs Ubuntu's package names on this Debian base.
-  layer = [c for c in runtime_commands if "archil" not in c]
+  """The GPU machine class: the trainer baked in, then the shared runtime layer from
+  `vm/build-image.ts --print-commands --no-archil --uid U --gid G` (Node 24, the run user pda, sudo; no Archil client:
+  a GPU box runs in pipe mode because gVisor's fsync is not durable). XLA caches go under the run user's HOME, outside
+  work/."""
   return (training_image(copy_code=True)
-          .dockerfile_commands(layer)
+          .dockerfile_commands(runtime_commands)
           .env({"JAX_COMPILATION_CACHE_DIR": "/home/pda/.cache/jax", "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}))
 
 
