@@ -49,16 +49,23 @@ function tabEvent(text: string): void {
 /** The tab's memory files live on the stage's disk (server side), so a reload of the page keeps the creature. */
 async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "storage-write" }>): Promise<void> {
   const url = `/api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`;
+  /** The stage's own words for why the disk said no (its JSON {error}), else the status. */
+  const why = async (res: Response) => ((await res.json().catch(() => undefined)) as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
   try {
     if (m.type === "storage-read") {
-      const res = await fetch(url, { cache: "no-store" });
+      // A poller passes the etag it last saw; the stage answers 304 instead of the bytes when nothing changed.
+      const res = await fetch(url, { cache: "no-store", headers: m.ifNoneMatch ? { "if-none-match": m.ifNoneMatch } : {} });
+      if (res.status === 304) return bridge.send({ type: "storage-result", id: m.id, bytes: null, notModified: true, etag: res.headers.get("etag") ?? m.ifNoneMatch });
       if (res.status === 204 || res.status === 404) return bridge.send({ type: "storage-result", id: m.id, bytes: null });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()) });
+      if (!res.ok) throw new Error(await why(res));
+      const etag = res.headers.get("etag");
+      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()), ...(etag ? { etag } : {}) });
     }
     // The write is acknowledged only after the disk has it: the tab treats the ack as durability.
     const res = await fetch(url, { method: "PUT", body: m.bytes as BodyInit });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // 409: another machine holds the run. The tab keeps the design and asks the agent (design-request) instead of losing it.
+    if (res.status === 409) return bridge.send({ type: "storage-written", id: m.id, error: "not-holder" });
+    if (!res.ok) throw new Error(await why(res));
     bridge.send({ type: "storage-written", id: m.id });
     tabEvent(`disk write ${m.path} ${m.bytes.byteLength} B`);
   } catch (error) {
