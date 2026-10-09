@@ -66,15 +66,20 @@ await page(async ({ inner, arrive, waitSim }) => {
   const s1 = await inner('__walks.state()');
   const label1 = await inner("document.getElementById('stateLabel').textContent");
   check('4. a new body clears the training facts and the label', s1.state === 'untrained' && s1.final === false && s1.checkpoint_n === 0 && s1.steps === null && s1.wall_s === null && s1.reported_walk_10s_m === null && label1 === 'untrained: random moves', JSON.stringify({ state: s1.state, final: s1.final, n: s1.checkpoint_n, steps: s1.steps, label: label1 }));
-  await arrive(P3D, 'home/policy.json', 'final').catch(() => {}); // wrong body now: refused, nothing changes
-  await inner("[...document.querySelectorAll('#presets button')].find((b) => b.textContent === 'quadruped').click()");
+});
+
+// (4b) the stand-only button on a body that has a live checkpoint: the checkpoint file differs from the final's bytes, so it installs (the
+// 8 s dedupe drops a repeat of the same bytes) and the creature really is in the learning state before the button is pressed
+await page(async ({ inner, arrive, waitSim }) => {
+  await arrive(CP, 'train/gpu/policy.json', 'checkpoint');
   await waitSim(1);
-  await arrive(P3D, 'train/gpu/policy.json', 'checkpoint');
-  await waitSim(1);
+  const s1 = await inner('__walks.state()');
+  const label1 = await inner("document.getElementById('stateLabel').textContent");
+  check('4. precondition: the checkpoint installed, so the creature is learning', s1.state === 'learning' && s1.checkpoint_n === 1 && s1.steps !== null && /^learning: checkpoint 1/.test(label1), JSON.stringify({ state: s1.state, n: s1.checkpoint_n, steps: s1.steps, label: label1 }));
   await inner("document.getElementById('noPolicy').click()");
   const s2 = await inner('__walks.state()');
   const label2 = await inner("document.getElementById('stateLabel').textContent");
-  check('4. the stand-only button does not leave the "learning" label or its facts', s2.state !== 'learning' && s2.checkpoint_n === 0 && s2.steps === null && !/^(learning|trained)/.test(label2), JSON.stringify({ state: s2.state, n: s2.checkpoint_n, label: label2 }));
+  check('4. the stand-only button does not leave the "learning" label or its facts', s2.state === 'dummy' && s2.checkpoint_n === 0 && s2.steps === null && s2.wall_s === null && s2.reported_walk_10s_m === null && !/^(learning|trained)/.test(label2) && /stand only/.test(label2), JSON.stringify({ state: s2.state, n: s2.checkpoint_n, label: label2 }));
 });
 
 // (6) a walk report never spans a body change
