@@ -37,10 +37,10 @@ for (const move of server.filter((l) => l.event === "placement" && l.where === "
 }
 
 // Zero loss: the tab's last acknowledged digest against the pipe's sealed digest at its release.
-const closed = story.steps.find((s) => s.name.startsWith("A: tab closed"));
+const closed = story.steps.find((s) => s.name.startsWith("A: tab closed") || s.name === "laptop closed");
 const firstRelease = server.find((l) => l.event === "pipe.released");
 const zeroLoss = { tabAckedDigest: closed?.ackedDigest ?? null, diskDigestAtRelease: firstRelease?.workDigest ?? null, equal: Boolean(closed?.ackedDigest && closed.ackedDigest === firstRelease?.workDigest) };
-const lastTab = [...story.steps].reverse().find((s) => s.ackedDigest && !s.name.startsWith("A: tab closed"));
+const lastTab = [...story.steps].reverse().find((s) => s.ackedDigest && s !== closed);
 const lastRelease = [...server].reverse().find((l) => l.event === "pipe.released");
 const zeroLossEnd = { tabAckedDigest: lastTab?.ackedDigest ?? null, diskDigestAtRelease: lastRelease?.workDigest ?? null, equal: Boolean(lastTab?.ackedDigest && lastTab.ackedDigest === lastRelease?.workDigest) };
 
