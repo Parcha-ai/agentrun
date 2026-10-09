@@ -75,7 +75,7 @@ await page(async ({ inner, arrive, waitSim }) => {
   await waitSim(1);
   const s1 = await inner('__walks.state()');
   const label1 = await inner("document.getElementById('stateLabel').textContent");
-  check('4. precondition: the checkpoint installed, so the creature is learning', s1.state === 'learning' && s1.checkpoint_n === 1 && s1.steps !== null && /^learning: checkpoint 1/.test(label1), JSON.stringify({ state: s1.state, n: s1.checkpoint_n, steps: s1.steps, label: label1 }));
+  check('4. precondition: the checkpoint installed, so the creature is learning', s1.state === 'learning' && s1.checkpoint_n === 1 && s1.steps !== null && /^learning: version 1/.test(label1), JSON.stringify({ state: s1.state, n: s1.checkpoint_n, steps: s1.steps, label: label1 }));
   await inner("document.getElementById('noPolicy').click()");
   const s2 = await inner('__walks.state()');
   const label2 = await inner("document.getElementById('stateLabel').textContent");

@@ -133,7 +133,7 @@ async function publishBody() {
   await new ParentBackend(windowBus(), 'creature/body.json').write(enc.encode(JSON.stringify({ legs, jointsPerLeg, jointNames, standPose, standHeight, mjcf_sha256: app.bodySha }, null, 1) + '\n'));
 }
 
-/** The label on the creature, in plain words: "untrained", "learning: checkpoint N", "trained". */
+/** The label on the creature, in plain words: "untrained", "learning: version N", "trained". */
 function updateLabel() {
   const el = $('stateLabel');
   el.dataset.state = app.training.state;
@@ -305,7 +305,7 @@ async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'p
   const installedAt = performance.now();
   const meta = plan.meta;
   const message = kind === 'checkpoint'
-    ? `checkpoint ${app.training.checkpointN}${facts.steps !== null ? `, ${(facts.steps / 1e6).toFixed(1)}M steps` : ''}${standUp ? ' (set back on its feet)' : ''}`
+    ? `version ${app.training.checkpointN}${facts.steps !== null ? `, ${(facts.steps / 1e6).toFixed(1)}M steps` : ''}${standUp ? ' (set back on its feet)' : ''}`
     : describeArrival(meta);
   toast(message);
   app.arrival = { tracker: new ArrivalTracker({ arrivedAtMs: arrivedAt, installedAtMs: installedAt, command: app.sim.command }), simT0: app.sim.time, name };

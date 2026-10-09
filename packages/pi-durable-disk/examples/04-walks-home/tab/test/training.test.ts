@@ -39,7 +39,7 @@ test('the label says what the creature has: untrained, learning with the number,
   const t = new TrainingState();
   assert.equal(t.label('untrained'), 'untrained: random moves');
   t.install('checkpoint', facts);
-  assert.equal(t.label('x'), 'learning: checkpoint 1');
+  assert.equal(t.label('x'), 'learning: version 1');
   t.install('final', facts);
   assert.equal(t.label('x'), 'trained');
   t.clear('dummy');
