@@ -20,8 +20,8 @@ function make(slot: number, onKill: (id: string) => void): Tile {
   root.className = "tile empty";
   root.dataset.slot = String(slot);
   root.innerHTML = `
-    <div class="row"><span class="host"></span><span class="chip"></span></div>
-    <div class="reward"></div>
+    <div class="row"><span class="host"></span></div>
+    <div class="row"><span class="reward"></span><span class="chip"></span></div>
     <svg viewBox="0 0 ${SVG_W} ${SVG_H}" preserveAspectRatio="none" aria-hidden="true"></svg>
     <div><div class="row"><span class="score"></span><span class="sub"></span></div><div class="bar"><i></i></div></div>
     <button class="btn kill" hidden>kill</button>
@@ -93,9 +93,13 @@ export class Grid {
     p.host.title = u.host;
     p.chip.textContent = u.status === "takeover" ? "taking over" : u.status;
     p.reward.textContent = u.replaces ? `${u.reward} (resumed from ${state.universes[u.replaces]?.host ?? u.replaces})` : u.reward;
-    p.score.textContent = u.score === null ? "-" : u.score.toFixed(1);
-    p.sub.textContent = `${usd(u.cost, 4)}  ${Math.round(u.progress * 100)}%`;
-    p.bar.style.width = `${Math.round(u.progress * 100)}%`;
+    // A spare mid-takeover has not scored yet: it shows the dead machine's last checkpoint, which it is about to resume.
+    const prior = u.replaces ? state.universes[u.replaces] : undefined;
+    const score = u.score ?? prior?.score ?? null;
+    const progress = u.status === "takeover" ? Math.max(u.progress, prior?.progress ?? 0) : u.progress;
+    p.score.textContent = score === null ? "-" : score < 10 ? score.toFixed(2) : score.toFixed(1);
+    p.sub.textContent = `${usd(u.cost, 4)}  ${Math.round(progress * 100)}%`;
+    p.bar.style.width = `${Math.round(progress * 100)}%`;
     p.kill.hidden = !(u.status === "training" || u.status === "starting");
     p.overlay.textContent = u.status === "killed" ? "MACHINE KILLED" : u.status === "takeover" ? "SPARE CLAIMING THE RUN" : "";
     const pts = samplesFor(state, u);
@@ -113,7 +117,7 @@ export class Grid {
     for (const s of sp) parts.push(`<span class="spare">${esc(s.host || s.id)} ready</span>`);
     for (const u of Object.values(state.universes).filter((x) => x.status === "takeover" && x.slot === null)) parts.push(`<span class="spare taking">${esc(u.host)} claiming</span>`);
     if (fell.length) parts.push(`<span class="sub" style="font:11px var(--mono);color:var(--muted);margin-left:8px">fallen</span>`);
-    for (const f of fell) if (f.status === "killed") parts.push(`<span class="fell">${esc(f.host)}</span>`);
+    for (const f of fell) parts.push(`<span class="fell">${esc(f.host)}</span>`);
     const html = parts.join("");
     if (html !== this.strip.dataset.html) {
       this.strip.dataset.html = html;

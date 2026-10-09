@@ -72,7 +72,7 @@ try {
 
   for (const env of values.envs!.split(",").filter(Boolean)) {
     const name = await page.evaluate<string>(`demo.state.environments.find(e => e.id === ${JSON.stringify(env)}).label`);
-    await say(ops, `Switch to ${name}`, "the tab finishes its step and releases the disk; the sandbox claims it and tells the agent where it is now");
+    await say(ops, `Switch to ${name}`, "the agent finishes its step where it is and lets go of the disk; the next machine takes it and tells the agent where it is now");
     const ms = await switchTo(page, env);
     await say(ops, `Running in ${name}`, `moved in ${(ms / 1000).toFixed(1)} s, from the click to the agent's notice on screen`);
     rec.step(`switched to ${env}`, { ms: Math.round(ms), notice: await page.evaluate(`demo.items().filter(i => i.kind === "switch").at(-1).text`) });

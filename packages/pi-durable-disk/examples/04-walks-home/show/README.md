@@ -22,9 +22,40 @@ Rules a producer must keep:
 - One `sample` per checkpoint with a strictly increasing `at`; `cost` on a sample is the universe's spend to date.
 - A `stay` is a stretch on one machine. `lane` is `run` for the main line or `u:<id>` for a universe.
 
+The stage also models two things the live driver will own: `GET/PUT /api/disk/<path>` (the agent's disk, for the tab's
+`storage-read`/`storage-write` messages; a missing file is 204) and `/policy/home.json` (the winner's mlp-v1 policy,
+served from `POLICY_DIR`). With a live driver, point both at the real disk.
+
 Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` proxies `/api/*` to it.
 
 ## Run it
 
     npm ci && npm run build && node serve.ts          # fake feed, http://127.0.0.1:8750/
+    TAB_DIR=<tab dist> node serve.ts                    # with D3's tab app instead of the stub
     npm test && npm run typecheck
+
+## Honest numbers
+
+A feed says where it comes from: `run.source` is `live` (the default) or `scripted`. A scripted feed gets a permanent
+SCRIPTED FEED badge, its handover times read "scripted 908 ms", and every captioned number is tagged SCRIPTED. A live
+feed's caption is tagged MEASURED only when the driver set `measured: true` on the note (or wrote "(measured)" in it);
+a number it did not flag is tagged UNMEASURED. Lines with no quantity carry no tag. `page/caption.ts` is that rule.
+
+## Run the show from the page (operator mode)
+
+    SHOW_MODE=operator TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> node serve.ts
+    node scripts/operator-check.mjs        # drives the whole show through the panel in real Chrome; 14 checks
+
+The panel is hidden on camera: press `o` (or open `/?operator=1`). Buttons and keys: environment switches, Fan out `f`,
+Kill leader `k`, Collapse `c`, Home `h`, Reset take `r`. Each is a command to the feed (`switch`, `fanout`, `kill`,
+`collapse`); a refusal prints its reason in the panel. With `SHOW_API` set the same commands go to D1's driver.
+
+## Record and storyboard (own Chrome with software WebGL; the shared one has none)
+
+    node scripts/chrome.mjs                             # headless Chrome on 127.0.0.1:9444 (--stop to end it)
+    SHOW_AUTOKILL=off TAB_DIR=<tab dist> node serve.ts  # the take's server, so the only kill is the one the script clicks
+    CDP_URL=http://127.0.0.1:9444 node scripts/record.mjs --out recordings/take1.webm --kill-after 40
+    CDP_URL=http://127.0.0.1:9444 node scripts/storyboard.mjs --url http://127.0.0.1:8752/   # a second server, scripted feed
+
+`record.mjs` resets the scripted feed to 0:00, clicks KILL THE LEADER itself, and stops after the last narration line; the
+video is VP8/WebM from Playwright's bundled ffmpeg (set FFMPEG for another). `recordings/` is git-ignored.
