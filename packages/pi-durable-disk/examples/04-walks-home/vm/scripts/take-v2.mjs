@@ -148,6 +148,11 @@ try {
     const { sketchTake } = await import(sketchModule);
     await sketchTake(stage, { log: (m) => step(`sketch: ${m}`) });
     step("the user drew the creature");
+  } else if (flag("seed-creature")) {
+    // A stand-in for the strokes: D2's default creature files, put on the disk by the recorder (the tab did not write them).
+    const seed = spawnLogged(WITH_ARCHIL, ["--", process.execPath, join(here, "seed-creature.ts"), link, "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/body-3dof-wide.json", "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/creature-3dof-wide.xml"], {}, "seed", join(here, ".."));
+    await new Promise((r) => seed.on("close", r));
+    step("STAND-IN: the recorder put the creature's files on the disk", { seeded: /seeded/.test(seed.log()) });
   } else if (flag("apply-design")) {
     await stage.eval(`${frame}.__walks.applyDesign(${readFileSync(arg("apply-design", ""), "utf8")})`);
     step("the creature was set with applyDesign (no strokes)");
@@ -160,15 +165,21 @@ try {
 
   // 5. the user types one sentence into the stage's chat, key by key, so the video shows the typing
   const before = await writer.eval(`demo.items().length`);
-  await stage.eval(`document.querySelector(${JSON.stringify(chatInput)}).focus()`);
-  for (const ch of SAY) {
-    await stage.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, key: ch });
-    await stage.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
-    await sleep(70);
+  if (await stage.eval(`!!document.querySelector(${JSON.stringify(chatInput)})`).catch(() => false)) {
+    await stage.eval(`document.querySelector(${JSON.stringify(chatInput)}).focus()`);
+    for (const ch of SAY) {
+      await stage.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, key: ch });
+      await stage.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
+      await sleep(70);
+    }
+    await stage.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+    await stage.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    step("the user said it", { chars: SAY.length });
+  } else {
+    // STAND-IN: the previous stage has no chat input; the sentence goes in through the 03 page's own input.
+    await writer.eval(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(SAY)}; document.getElementById("send").click(); return true; })()`);
+    step("STAND-IN: the user said it through the 03 page's input", { chars: SAY.length });
   }
-  await stage.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
-  await stage.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-  step("the user said it", { chars: SAY.length });
 
   // 6. watch: captions from the stage, the agent's lines and moves from the 03 page, the checkpoints from the tab
   const captions = new Map();
@@ -177,6 +188,7 @@ try {
   const seen = { moves: 0, checkpoints: 0, final: false, closing: false, offline: false, kicks: 0 };
   let stopAt = 0;
   let offlineAt = 0;
+  let stalledFor = 0;
   while (rec.seconds() < maxSeconds) {
     const elapsed = rec.seconds();
     for (const r of await stage.eval(`JSON.stringify([...document.querySelectorAll("#caption .row, #caption .txt")].map((r) => ({ tag: r.querySelector?.(".tag")?.textContent ?? null, text: (r.querySelector?.(".txt") ?? r).textContent })))`).then(JSON.parse).catch(() => [])) {
@@ -203,7 +215,9 @@ try {
       seen.checkpoints = n;
       step(`the creature picked up checkpoint ${n}`, { steps: st.steps, wall_s: st.wall_s, reported_walk_10s_m: st.reported_walk_10s_m });
     }
-    if (st?.final && !seen.final) {
+    if (st?.final) seen.final = true;
+    if (seen.final && !seen.finalLogged) {
+      seen.finalLogged = true;
       seen.final = true;
       step("the final policy is installed in the tab");
     }
@@ -225,12 +239,22 @@ try {
     }
     if (offlineAt && seen.kicks < kickForces.length && elapsed >= offlineAt + 5 + seen.kicks * 9) {
       const force = kickForces[seen.kicks];
-      await stage.eval(`${frame}.__walks.kick([1, 0], ${force})`).catch(() => {});
+      const kicked = await stage.eval(`(() => { const w = ${frame}.__walks; if (w?.kick) { w.kick([1, 0], ${force}); return true; } const b = document.querySelector('[data-op="kick${force >= 300 ? "400" : "60"}"]'); if (b) { b.click(); return true; } return false; })()`).catch(() => false);
+      if (!kicked) step("no way to kick found");
       seen.kicks++;
       step(`kicked ${force} N`, { number: seen.kicks });
     }
     if (!stopAt && offlineAt && seen.kicks >= kickForces.length) stopAt = elapsed + 9;
     if (stopAt && elapsed >= stopAt) break;
+    // The agent answered and went nowhere: the take is lost, so stop paying for the minutes.
+    const stalled = await writer.eval(`!demo.state.chat.busy && ${items("assistant")}.some(i => !i.streaming && i.text)`).catch(() => false);
+    if (stalled && seen.moves === 0) {
+      stalledFor += 0.5;
+      if (stalledFor >= 20) {
+        step("the agent answered and did not move", { text: [...lines].at(-1)?.slice(0, 200) });
+        break;
+      }
+    } else stalledFor = 0;
     await sleep(500);
   }
   step("done", seen);
