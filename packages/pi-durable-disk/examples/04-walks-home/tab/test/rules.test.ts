@@ -147,7 +147,7 @@ test('within 10% of the limit the body is called unverified, on both sides; outs
     return d;
   };
   assert.equal(BACK_GETUP_BAND, 0.1);
-  for (const [ratio, want] of [[0.85, 'cannot'], [0.89, 'cannot'], [0.91, 'unverified'], [1.0, 'unverified'], [1.09, 'unverified'], [1.12, 'can'], [1.3, 'can']] as const) {
+  for (const [ratio, want] of [[0.85, 'cannot'], [0.89, 'cannot'], [0.9, 'unverified'], [0.91, 'unverified'], [1.0, 'unverified'], [1.09, 'unverified'], [1.1, 'unverified'], [1.12, 'can'], [1.3, 'can']] as const) {
     assert.equal(backGetupPrediction(at(ratio)), want, `ratio ${ratio}`);
   }
   const t = bodyNotes(at(1.05)).find((n) => /Unverified/.test(n.text));

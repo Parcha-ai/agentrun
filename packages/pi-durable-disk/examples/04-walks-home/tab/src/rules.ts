@@ -18,12 +18,15 @@ export const MAX_REACH_RATIO = 1.5;
  * so a body within BACK_GETUP_BAND of the limit is called unverified.
  */
 export const BACK_GETUP_BAND = 0.1;
+const EDGE_EPS = 1e-9;
 /** Shortest leg pair over (torso width + height): below 1 the prediction is "cannot", above 1 "can". */
 export const backGetupMargin = (d: Design): number => Math.min(...d.legs.map((l) => l.thigh + l.shin)) / (d.torso.width + d.torso.height);
 export type BackGetup = 'cannot' | 'unverified' | 'can';
 export function backGetupPrediction(d: Design): BackGetup {
   const m = backGetupMargin(d);
-  return m < 1 - BACK_GETUP_BAND ? 'cannot' : m <= 1 + BACK_GETUP_BAND ? 'unverified' : 'can';
+  // The edges (0.9 and 1.1) belong to "unverified"; the tolerance keeps a margin that is 0.9 or 1.1 up to rounding (0.22 + 0.1 is not
+  // exactly 0.32) from falling on the wrong side.
+  return m < 1 - BACK_GETUP_BAND - EDGE_EPS ? 'cannot' : m <= 1 + BACK_GETUP_BAND + EDGE_EPS ? 'unverified' : 'can';
 }
 
 export const reach = (d: Design): number => Math.max(...d.legs.map((l) => l.thigh + l.shin));
