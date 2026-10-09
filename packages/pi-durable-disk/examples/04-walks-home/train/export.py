@@ -33,6 +33,75 @@ def sha256_text(text: str) -> str:
   return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+class NonFiniteError(ValueError):
+  """A policy has a NaN or infinite number somewhere. Still a ValueError, so callers that catch ValueError keep working."""
+
+
+def _runs(indices: list[int]) -> str:
+  """[45, 46, 47, 50] -> "45-47, 50" """
+  out: list[str] = []
+  start = prev = None
+  for i in indices:
+    if start is None:
+      start = prev = i
+    elif i == prev + 1:
+      prev = i
+    else:
+      out.append(f"{start}-{prev}" if prev != start else str(start))
+      start = prev = i
+  if start is not None:
+    out.append(f"{start}-{prev}" if prev != start else str(start))
+  return ", ".join(out)
+
+
+def non_finite(policy: dict[str, Any], where: str = "policy") -> list[str]:
+  """Everything non-finite in a policy dict, as readable lines: every float anywhere, and the numbers inside the base64
+  weights and biases of every layer list (as float32, which is what the tab reads: a float64 that overflows float32 counts)."""
+  found: list[str] = []
+
+  def walk(o: Any, path: str) -> None:
+    if isinstance(o, float):
+      if not np.isfinite(o):
+        found.append(f"{where}.{path} = {o}")
+    elif isinstance(o, dict):
+      for k, v in o.items():
+        walk(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(o, list):
+      bad = [i for i, v in enumerate(o) if isinstance(v, float) and not np.isfinite(v)]
+      if bad and all(isinstance(v, (int, float)) for v in o):
+        found.append(f"{where}.{path}: {len(bad)} of {len(o)} values are not finite, at indices {_runs(bad)}")
+      else:
+        for i, v in enumerate(o):
+          walk(v, f"{path}[{i}]")
+
+  walk(policy, "")
+  for block in ("layers", "getup.layers"):
+    layers: Any = policy
+    for part in block.split("."):
+      layers = layers.get(part) if isinstance(layers, dict) else None
+    for i, layer in enumerate(layers or []):
+      for key in ("w", "b"):
+        if key in layer:
+          arr = np.frombuffer(base64.b64decode(layer[key]), dtype="<f4")
+          n = int(np.count_nonzero(~np.isfinite(arr)))
+          if n:
+            found.append(f"{where}.{block}[{i}].{key}: {n} of {arr.size} values are not finite")
+  return found
+
+
+def assert_finite(policy: dict[str, Any], where: str = "policy") -> None:
+  """Refuse a policy with a NaN or infinity anywhere: such a file is not valid JSON, and a diverged training run is the usual cause."""
+  found = non_finite(policy, where)
+  if found:
+    shown = "; ".join(found[:6]) + (f"; and {len(found) - 6} more" if len(found) > 6 else "")
+    raise NonFiniteError(f"refusing to export, {where} is not finite: {shown}. The training run most likely diverged (NaN weights make NaN actions, and the prev_action statistics follow); rerun it.")
+
+
+def dumps(policy: dict[str, Any]) -> str:
+  """The one place a policy becomes text: strict JSON (no NaN, no Infinity), which the tab's JSON.parse requires."""
+  return json.dumps(policy, allow_nan=False)
+
+
 PINNED_STD = 1e9
 
 
@@ -81,8 +150,9 @@ def export_policy(params: tuple, *, obs_spec: list[tuple[str, int]], nu: int, mj
       "layers": layers,
       "provenance": provenance,
   }
+  assert_finite(policy, "exported policy")  # before pinning: a NaN std is not <= the floor, so it would slip through unpinned
   pin_constant_inputs(policy["obs"])
-  size = len(json.dumps(policy))
+  size = len(dumps(policy))
   if size > MAX_POLICY_BYTES:
     raise ValueError(f"policy.json is {size} bytes, over the tab's {MAX_POLICY_BYTES}")
   return policy
@@ -100,6 +170,8 @@ ACT = {
 def combine(walk: dict[str, Any], getup: dict[str, Any], below_up: float = 0.3, above_up: float = 0.9) -> dict[str, Any]:
   """One file from a walking and a getup policy of the same body: the getup network runs while the torso's uprightness
   is below below_up until it is above above_up (policy/policy.ts implements the same rule)."""
+  assert_finite(walk, "walk policy")
+  assert_finite(getup, "getup policy")
   if walk["mjcf_sha256"] != getup["mjcf_sha256"]:
     raise ValueError("the two policies were trained for different bodies")
   if walk.get("clock") != getup.get("clock"):
@@ -111,7 +183,8 @@ def combine(walk: dict[str, Any], getup: dict[str, Any], below_up: float = 0.3, 
   out["getup"] = {"layers": getup["layers"], "obs": getup_obs, "act": getup["act"],
                   "switch": {"below_up": below_up, "above_up": above_up}}
   out["provenance"] = {"walk": walk.get("provenance"), "getup": getup.get("provenance")}
-  size = len(json.dumps(out))
+  assert_finite(out, "combined policy")
+  size = len(dumps(out))
   if size > MAX_POLICY_BYTES:
     raise ValueError(f"policy.json is {size} bytes, over the tab's {MAX_POLICY_BYTES}")
   return out
@@ -180,10 +253,15 @@ def main() -> None:
   args = ap.parse_args()
   out = combine(json.load(open(args.walk)), json.load(open(args.getup)), args.below, args.above)
   import os
+  text = dumps(out)  # serialised before anything is created: a refusal leaves no file behind
   tmp = f"{args.out}.tmp-{os.getpid()}"
-  with open(tmp, "w") as f:
-    json.dump(out, f)
-  os.replace(tmp, args.out)
+  try:
+    with open(tmp, "w") as f:
+      f.write(text)
+    os.replace(tmp, args.out)
+  finally:
+    if os.path.exists(tmp):
+      os.remove(tmp)
   print(json.dumps({"out": args.out, "bytes": os.path.getsize(args.out), "mjcf_sha256": out["mjcf_sha256"]}))
 
 

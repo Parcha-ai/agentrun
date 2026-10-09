@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import math
 import os
 import re
 import shutil
@@ -32,13 +33,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 
-def write_json(path: str, obj: Any) -> None:
+def write_json(path: str, obj: Any, strict: bool = False) -> None:
+  """Atomically write JSON. `strict` refuses NaN and Infinity (a policy.json must be valid JSON for the tab)."""
   tmp = f"{path}.tmp-{os.getpid()}"
   with open(tmp, "w") as f:
-    json.dump(obj, f)
+    json.dump(obj, f, allow_nan=not strict)
     f.flush()
     os.fsync(f.fileno())
   os.replace(tmp, path)
+
+
+def finite_or_none(d: dict[str, Any]) -> dict[str, Any]:
+  """A score that came out NaN or infinite is recorded as null: only the weights and statistics may stop a run."""
+  return {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in d.items()}
 
 
 def append_line(path: str, obj: Any) -> None:
@@ -159,7 +166,7 @@ def main() -> None:
   from mujoco_playground import wrapper
 
   import creature_env
-  from export import export_policy
+  from export import NonFiniteError, export_policy
   import rollout
   import terrain
 
@@ -307,15 +314,20 @@ def main() -> None:
   def on_params(step: int, make_policy, params) -> None:
     if step == 0 and restore is None:
       return
-    pol = export_policy(params, obs_spec=obs_spec, nu=env.action_size, mjcf=xml, mujoco_version=mujoco.__version__,
-                        gait_hz=float(cfg.gait_hz), action_scale=float(cfg.action_scale),
-                        command_range=list(cfg.command_range),
-                        provenance={"universe": state["universe"], "hypothesis": state["hypothesis"],
-                                    "steps": done_steps + step, "generation": generation,
-                                    "reward_scales": dict(cfg.reward_config.scales), "device": state["device"],
-                                    "impl": impl, "wall_s": base_wall + time.time() - t_start,
-                                    "terrain_sha256": world["sha256"] if world else None,
-                                    "host": host})
+    try:
+      pol = export_policy(params, obs_spec=obs_spec, nu=env.action_size, mjcf=xml, mujoco_version=mujoco.__version__,
+                          gait_hz=float(cfg.gait_hz), action_scale=float(cfg.action_scale),
+                          command_range=list(cfg.command_range),
+                          provenance={"universe": state["universe"], "hypothesis": state["hypothesis"],
+                                      "steps": done_steps + step, "generation": generation,
+                                      "reward_scales": dict(cfg.reward_config.scales), "device": state["device"],
+                                      "impl": impl, "wall_s": base_wall + time.time() - t_start,
+                                      "terrain_sha256": world["sha256"] if world else None,
+                                      "host": host})
+    except NonFiniteError as e:
+      # A diverged run stops here. policy.json keeps the last finite checkpoint (it is replaced atomically, and only by a finite file).
+      print(json.dumps({"event": "train.diverged", "steps": done_steps + step, "error": str(e)[:600]}), flush=True)
+      raise
     state["mjcf_sha256"] = pol["mjcf_sha256"]
     # The engine-true score: the exported file, in C MuJoCo, as the tab will run it.
     try:
@@ -324,10 +336,10 @@ def main() -> None:
       if course:
         on_course, _ = rollout.run(xml, body, pol, seconds=20.0, command=0.5, world=course)
         times["walk"].update(course_m=max(on_course["progress_x"], 0.0), course_fell_at=on_course["fell_at"])
-      pol["provenance"]["walk_10s"] = times["walk"]
+      pol["provenance"]["walk_10s"] = finite_or_none(times["walk"])
     except Exception as e:  # a score failure must not stop training
       times["walk"] = {"error": str(e)[:200]}
-    write_json(os.path.join(work, "policy.json"), pol)
+    write_json(os.path.join(work, "policy.json"), pol, strict=True)
     times["checkpointed"] = step
 
   network_factory = functools.partial(
