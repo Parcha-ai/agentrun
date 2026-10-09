@@ -3,7 +3,7 @@
 // agent's turn ends there it asks again and moves the run to where the answer says. The remote host here is a real child process.
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { PLACEMENT_QUESTIONS, type Placer, type PlacementDecision } from "../placement.ts";
+import { PLACEMENT_QUESTIONS, SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
 import { remoteLocalHost, REMOTE_LOCAL } from "../pipe/remote-local.ts";
 import { PipeClient } from "../tab/pipe-client.ts";
 import type { PipeFrame } from "../wire.ts";
@@ -16,6 +16,7 @@ describe("placement by a typed question", () => {
   const asked: { phase: string; message: string; current: string; environments: readonly string[] }[] = [];
   let answer: (phase: "start" | "done") => string = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
   const placer: Placer = {
+    homePrompt: "Say one short sentence: you are home.",
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
       asked.push({ phase: query.phase, message: query.message, current: query.current, environments: query.environments });
@@ -84,13 +85,20 @@ describe("placement by a typed question", () => {
     assert.ok(model.requests.length >= 1, "the agent made its model call on the remote host");
     await until(() => seen.some((f) => f.t === "run-here"));
     const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
-    const home = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId });
+    const homeFrames: PipeFrame[] = [];
+    const home = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => homeFrames.push(f) });
     const attached = await home.ready;
     assert.ok(attached.t === "attached");
     // The move home says it was placed, why, and with what probability.
     assert.equal(attached.move?.by, "placement");
     assert.equal(attached.move?.reason, "criterion of tab");
     assert.equal(attached.move?.probability, 0.9);
+    // Once the page has the run again and reports its notice, the server gives the agent its one turn at home (marked as the server's).
+    home.send({ t: "switched", switchId: runHere.switchId });
+    await until(() => homeFrames.some((f) => f.t === "submit"));
+    const wake = homeFrames.find((f): f is Extract<PipeFrame, { t: "submit" }> => f.t === "submit")!;
+    assert.equal(wake.text, `${SERVER_TURN}Say one short sentence: you are home.`);
+    assert.match(wake.requestId, /^server-sw-/);
     const there = events.find((e) => e.event === "switch.start" && e.data.run === id && e.data.by === "placement");
     assert.ok(there, "the first move was a placement move");
     tab.close();

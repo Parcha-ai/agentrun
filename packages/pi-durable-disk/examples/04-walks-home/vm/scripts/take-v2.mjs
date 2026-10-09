@@ -155,7 +155,7 @@ try {
   const frame = `document.querySelector("iframe")?.contentWindow`;
   if (!flag("seed-creature") && !flag("apply-design") && !flag("apply-take-design") && sketchModule) {
     const { sketchTake } = await import(sketchModule);
-    await sketchTake(stage, { frame: "#tab", settleMs: 4000, log: (m) => step(`sketch: ${m}`) });
+    await sketchTake(stage, { frame: "#tab", settleMs: 4000, stepMs: Number(arg("draw-step-ms", 50)), restMs: Number(arg("draw-rest-ms", 1100)), log: (m) => step(`sketch: ${m}`) });
     step("the user drew the creature");
   } else if (flag("seed-creature")) {
     // A stand-in for the strokes: D2's default creature files, put on the disk by the recorder (the tab did not write them).
@@ -199,10 +199,11 @@ try {
   const captions = new Map();
   const items = (kind) => `demo.items().slice(${before}).filter(i => i.kind === ${JSON.stringify(kind)})`;
   const lines = new Set();
-  const seen = { moves: 0, checkpoints: 0, final: false, closing: false, offline: false, kicks: 0 };
+  const seen = { moves: 0, checkpoints: 0, final: false, closing: false, homeLine: false, offline: false, kicks: 0 };
   let stopAt = 0;
   let offlineAt = 0;
   let stalledFor = 0;
+  let homeAt = 0;
   while (rec.seconds() < maxSeconds) {
     const elapsed = rec.seconds();
     for (const r of await stage.eval(`JSON.stringify([...document.querySelectorAll("#caption .row, #caption .txt")].map((r) => ({ tag: r.querySelector?.(".tag")?.textContent ?? null, text: (r.querySelector?.(".txt") ?? r).textContent })))`).then(JSON.parse).catch(() => [])) {
@@ -235,18 +236,40 @@ try {
       seen.final = true;
       step("the final policy is installed in the tab");
     }
-    // Home: the second notice (the move back) is on screen, the page runs the agent again and nothing is running. The agent says nothing at
-    // home (the server moved it there when its turn ended), so there is no closing line to wait for.
+    // Home: the second notice (the move back) is on screen, the page runs the agent again and nothing is running. The server gives the agent one
+    // short turn there; the take waits for its line (up to 20 s, then goes on without it and says so).
     const home = await writer
       .eval(`${items("switch")}.length >= 2 && demo.state.mode === "writer" && !demo.state.chat.busy`)
       .catch(() => false);
     if (home && !seen.closing) {
       seen.closing = true;
-      step("the agent is home", { lastLine: await writer.eval(`demo.items().filter(i => i.kind === "assistant").at(-1)?.text ?? ""`) });
+      homeAt = elapsed;
+      step("the agent is home");
     }
-    // 7. at home with the final policy and the agent's closing line: the network goes off, the creature keeps walking, it is kicked.
-    if (seen.closing && seen.final && !offlineAt) {
-      await sleep(3000);
+    if (seen.closing && !seen.homeLine) {
+      const said = await writer
+        .eval(`(() => { const items = demo.items(); const s = items.findLastIndex(i => i.kind === "switch"); return items.slice(s + 1).filter(i => i.kind === "assistant" && !i.streaming && i.text).at(-1)?.text ?? ""; })()`)
+        .catch(() => "");
+      if (said) {
+        seen.homeLine = true;
+        step("the agent says at home", { text: said });
+      } else if (elapsed - homeAt > 20) {
+        seen.homeLine = true;
+        step("the agent said nothing at home within 20 s");
+      }
+    }
+    // 7. the user turns the Wi-Fi off (a click on the stage's control), the network goes off, the creature keeps walking, it is kicked.
+    if (seen.closing && seen.final && seen.homeLine && !offlineAt) {
+      await sleep(2500);
+      const spot = await stage.eval(`(() => { const e = document.querySelector("#wifi"); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`).catch(() => null);
+      if (spot) {
+        await stage.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: spot.x, y: spot.y });
+        await sleep(400);
+        await stage.send("Input.dispatchMouseEvent", { type: "mousePressed", x: spot.x, y: spot.y, button: "left", clickCount: 1 });
+        await stage.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: spot.x, y: spot.y, button: "left", clickCount: 1 });
+        step("the user clicked the Wi-Fi control");
+        await sleep(700);
+      } else step("STAND-IN: no Wi-Fi control on the stage; the recorder switches the network off without a click");
       await stage.send("Network.enable");
       await stage.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
       offlineAt = rec.seconds();

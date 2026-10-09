@@ -11,6 +11,9 @@ export const CRITERIA: Readonly<Record<string, string>> = {
   "modal-gpu": "An H100 GPU machine: training a model or any other work that needs a GPU",
 };
 
+/** The agent's one turn after the server brings it home: where it is and what its user can do now, in a plain line. */
+export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser and what their creature can do now. Do not mention files, commands or training details.";
+
 export const LABELS: Readonly<Record<string, string>> = { tab: "Browser", "modal-vm": "Modal VM", "modal-gpu": "H100 GPU" };
 
 /**
@@ -38,5 +41,5 @@ export default async function placer(options: { log: (event: string, data?: Reco
     runJudge = createJevRunner({ timeoutMs: 20_000, maxAttempts: 2 }) as unknown as JudgeRunner;
   }
   options.log("placer.ready", { client: scripted ? "scripted" : "jev" });
-  return judgePlacer({ runJudge, criteria: CRITERIA, labels: LABELS, model: scripted ? "scripted" : "jev" });
+  return judgePlacer({ runJudge, criteria: CRITERIA, labels: LABELS, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT });
 }

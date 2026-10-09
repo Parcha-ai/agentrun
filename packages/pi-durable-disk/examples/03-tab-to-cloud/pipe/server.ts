@@ -16,7 +16,7 @@ import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
-import type { Placer, PlacementDecision } from "../placement.ts";
+import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
 import { CHUNK_BYTES, toBase64, untag, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
@@ -527,6 +527,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     for (const viewer of state.viewers) viewer.send(frame);
     state.pipe?.broadcast(frame);
     void flushPending(state);
+    // The run is back in the browser by placement: the agent gets one turn to say, in a line, where it is and what happened.
+    const home = options.placer?.homePrompt;
+    if (home && s.move.by === "placement" && s.to === TAB_ENVIRONMENT.id) {
+      void deliverSubmit(state, `${SERVER_TURN}${home}`, `server-${switchId}`).catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
+    }
   }
 
   /** The message a placement move was for goes to the host the run now has. */
