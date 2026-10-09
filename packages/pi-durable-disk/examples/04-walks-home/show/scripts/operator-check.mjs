@@ -42,7 +42,7 @@ try {
   expect("kill shows a killed tile", await until(async () => (await statuses()).includes("killed"), 3000), await statuses());
   if (shots) await tab.screenshot(`${shots}-2-killed.png`);
   expect("the scripted feed is badged on screen", (await ev(`document.getElementById("source").hidden`)) === false);
-  const captionTag = () => ev(`(() => { const c = document.getElementById("caption"); return !c.hidden && /claims|training again/.test(c.textContent) ? c.querySelector(".tag").textContent : "" })()`);
+  const captionTag = () => ev(`(() => { const r = [...document.querySelectorAll("#caption .row")].find((x) => /claims|training again/.test(x.textContent)); return r ? (r.querySelector(".tag")?.textContent ?? "") : "" })()`);
   expect("the takeover caption carries a scripted tag, not measured", await until(async () => (await captionTag()) === "scripted", 4000), await captionTag());
   expect("a spare takes over and trains", await until(async () => !(await statuses()).includes("killed") && !(await statuses()).includes("takeover") && (await statuses()).split(",").filter((s) => s === "training").length === 8, 6000), await statuses());
   await key("h");

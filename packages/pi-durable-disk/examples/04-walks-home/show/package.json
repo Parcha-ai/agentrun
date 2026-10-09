@@ -15,9 +15,11 @@
   },
   "devDependencies": {
     "@types/node": "22.15.3",
-    "@types/ws": "^8.18.1",
+    "@types/ws": "8.18.1",
     "esbuild": "0.28.2",
-    "typescript": "5.9.3",
-    "ws": "^8.21.3"
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "ws": "8.21.3"
   }
 }

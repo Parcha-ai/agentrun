@@ -39,6 +39,7 @@ h1 { font-size: 15px; margin: 0; letter-spacing: .06em; text-transform: uppercas
 #switcher button.active .dot { opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 25%, transparent); }
 #switcher button.moving .dot { animation: pulse .7s infinite alternate; }
 #switcher button:disabled { cursor: default; }
+#switcher button.unwired { opacity: .38; border-style: dashed; }
 #switcher button[data-kind="tab"] { --c: var(--tab); } #switcher button[data-kind="sandbox"] { --c: var(--sandbox); }
 #switcher button[data-kind="vm"] { --c: var(--vm); } #switcher button[data-kind="gpu"] { --c: var(--gpu); }
 #switcher button.visited, #switcher button.active { color: var(--c); }
@@ -133,10 +134,12 @@ button.btn:disabled { opacity: .4; cursor: default; }
 #operator #opresult.bad { color: var(--bad); }
 /* the caption: the newest key moment, tagged by what its numbers are */
 #mv { position: relative; }
-#caption { position: absolute; left: 0; right: 0; margin: 0 auto; width: max-content; bottom: 58px; max-width: 94%; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-radius: 12px; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); box-shadow: 0 8px 30px #0008; font: 600 16px var(--sans); animation: capin .25s ease-out; }
+#caption { position: absolute; left: 0; right: 0; margin: 0 auto; width: max-content; bottom: 58px; max-width: 94%; z-index: 5; display: flex; flex-direction: column; gap: 6px; padding: 9px 16px; border-radius: 12px; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); box-shadow: 0 8px 30px #0008; font: 600 16px var(--sans); animation: capin .25s ease-out; }
 @keyframes capin { from { opacity: 0; transform: translateY(8px) } }
+#caption .row { display: flex; align-items: center; gap: 10px; }
 #caption .tag { font: 700 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; flex: none; }
-#caption .tag.measured { color: var(--ok); } #caption .tag.scripted { color: var(--gpu); } #caption .tag.unmeasured { color: var(--muted); }
+#caption .tag.measured { color: var(--ok); } #caption .tag.scripted { color: var(--gpu); } #caption .tag.unmeasured { color: var(--muted); } #caption .tag.agent { color: var(--vm); }
+.note[data-kind="agent"] { border-color: var(--vm); }
 #source { font: 700 10px var(--mono); letter-spacing: .12em; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--gpu); color: var(--gpu); }
 #lost { position: fixed; top: 0; left: 0; right: 0; background: var(--bad); color: #160504; text-align: center; font-weight: 700; padding: 4px; z-index: 10; }
 </style>
@@ -150,6 +153,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
     <button data-op="kill" class="danger">Kill leader<kbd>k</kbd></button>
     <button data-op="collapse">Collapse<kbd>c</kbd></button>
     <button data-op="home">Home<kbd>h</kbd></button>
+    <button data-op="ask">Ask the agent<kbd>a</kbd></button>
     <button data-op="reset">Reset take<kbd>r</kbd></button>
   </div>
   <div id="opresult"></div>
@@ -175,7 +179,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
   <section id="mv">
     <div class="pane-h"><span>The multiverse</span><span class="right"><span id="mvsum"></span><button class="btn" id="killone">KILL THE LEADER</button></span></div>
     <div id="grid"></div>
-    <div id="caption" hidden><span class="tag"></span><span class="txt"></span></div>
+    <div id="caption" hidden></div>
     <div id="strip"></div>
   </section>
 </main>

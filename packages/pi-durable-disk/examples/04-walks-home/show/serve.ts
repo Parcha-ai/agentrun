@@ -2,13 +2,19 @@
 // feed at /api/*. The feed is the scripted player unless SHOW_API names a live one, which is proxied untouched.
 // Every response carries COOP/COEP/CORP: Wasmer and MuJoCo WASM need cross-origin isolation, and an iframe document must
 // itself satisfy the parent's COEP, so the headers are set on the tab app's files too.
+//   SHOW_PIPE_LINK_FILE  a file holding a 03 run link (http://host:port/run/ID#SECRET): the feed is that pipe, watched live
+//   SHOW_PIPE_ROLE (view)  the hello mode the stage connects as; TODO(browser-demo): "operator" once the pipe checks roles
+//   SHOW_TAB_CDP  rehearsal only: a Chrome (CDP url) holding the real 03 tab page, which asks for the switch back to the tab
+//   SHOW_ASK_AFTER_SWITCH (1)  ask the agent where it is after each completed switch (0 to turn off)
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
+import { cdpTabControl } from "./tab-control.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import type { ShowCommand } from "./types.ts";
 
@@ -88,14 +94,41 @@ async function bytesBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-let player = newPlayer();
+/** Every event a source emits goes to every connected page, with its index as the SSE id. */
+function relay(source: FeedSource): void {
+  source.subscribe((event) => {
+    const id = source.events.length - 1;
+    for (const c of clients) c.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
+  });
+}
+
+const PIPE_LINK_FILE = process.env.SHOW_PIPE_LINK_FILE;
+let player: FeedSource;
+if (PIPE_LINK_FILE) {
+  // The feed is a 03 pipe: the run's link names where it listens, which run, and its secret (never printed or logged).
+  const link = new URL(readFileSync(PIPE_LINK_FILE, "utf8").trim());
+  const { default: WS } = await import("ws");
+  const feed = new PipeFeed({
+    url: `${link.protocol === "https:" ? "wss" : "ws"}://${link.host}/ws`,
+    run: link.pathname.split("/").filter(Boolean).at(-1)!,
+    token: link.hash.slice(1),
+    ...(process.env.SHOW_PIPE_ROLE ? { role: process.env.SHOW_PIPE_ROLE } : {}),
+    askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH !== "0",
+    trace: process.env.SHOW_PIPE_TRACE === "1",
+    ...(process.env.SHOW_TAB_CDP ? { tabControl: cdpTabControl(process.env.SHOW_TAB_CDP, link.pathname.split("/").filter(Boolean).at(-1)!) } : {}),
+    connect: (url) => new WS(url, { maxPayload: 64 * 1024 * 1024 }) as never,
+    log: (event, data) => console.log(JSON.stringify({ event, ...data })),
+  });
+  relay(feed);
+  await feed.start();
+  player = feed;
+} else {
+  player = newPlayer();
+}
 
 function newPlayer(start = START, paused = false): ScenarioPlayer {
   const p = new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
-  p.subscribe((event) => {
-    const id = p.events.length - 1;
-    for (const c of clients) c.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
-  });
+  relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();
   if (start > 0) p.advance(start * 1000);
@@ -167,6 +200,7 @@ const server = createServer(async (req, res) => {
       }
       // Dev only, scripted feed only: restart the script at `seconds` (used by scripts/storyboard.mjs for stills).
       if (path === "/api/dev/seek" && req.method === "POST") {
+        if (PIPE_LINK_FILE) return sendJson(res, 409, { ok: false, message: "a pipe feed has no script to seek" });
         const { seconds, paused } = JSON.parse(await body(req)) as { seconds: number; paused?: boolean };
         player.stop();
         // `paused` freezes the script at exactly `seconds`, so a still shows the moment it was asked for.
@@ -177,6 +211,7 @@ const server = createServer(async (req, res) => {
       if (path === "/api/command" && req.method === "POST") {
         const cmd = JSON.parse(await body(req)) as ShowCommand;
         if (cmd.t === "reset") {
+          if (PIPE_LINK_FILE) return sendJson(res, 409, { ok: false, message: "a pipe feed is one run; there is nothing to reset" });
           player.stop();
           disk.clear();
           // A reset starts the script over at 0:00; SHOW_START only positions the first boot.
@@ -184,7 +219,7 @@ const server = createServer(async (req, res) => {
           for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
           return sendJson(res, 200, { ok: true });
         }
-        const r = player.command(cmd);
+        const r = await player.command(cmd);
         return sendJson(res, r.ok ? 200 : 409, r);
       }
       return sendJson(res, 404, { error: "no such route", path });
@@ -205,5 +240,5 @@ const server = createServer(async (req, res) => {
 const port = Number(process.env.SHOW_PORT ?? 8750);
 const host = process.env.SHOW_HOST ?? "127.0.0.1";
 server.listen(port, host, () => {
-  console.log(`show: http://${host}:${port}/  feed=${UPSTREAM ?? "scripted"}  tab=${TAB === STUB ? "stub" : TAB}`);
+  console.log(`show: http://${host}:${port}/  feed=${UPSTREAM ?? (PIPE_LINK_FILE ? "pipe" : "scripted")}  tab=${TAB === STUB ? "stub" : TAB}`);
 });

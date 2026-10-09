@@ -1,0 +1,35 @@
+{
+  "source": {
+    "url": "https://docs.g.parcha.dev/2026-10-09-pi-agent-switch-tab-daytona-gpu.html",
+    "title": "One agent, every machine",
+    "recorded": "2026-10-09T07:09:29.819Z",
+    "how": "headless Chrome against the 03 demo server; Daytona region us; model gpt-6-luna",
+    "readFrom": "the page's own table, 2026-10-09"
+  },
+  "platform": "Daytona",
+  "pageColumn": "In the page: from the click to the agent's notice on screen",
+  "serverColumn": "Server: from the click to the target running",
+  "rows": [
+    {
+      "from": "This tab",
+      "to": "Daytona basic",
+      "pageSeconds": 2.9,
+      "serverSeconds": 2.5,
+      "agentAnswer": "Running on Linux 6.8.0, x86_64; `nproc` reports 64."
+    },
+    {
+      "from": "Daytona basic",
+      "to": "Daytona GPU",
+      "pageSeconds": 6.3,
+      "serverSeconds": 5.0,
+      "agentAnswer": "This is a Daytona GPU machine with an NVIDIA GeForce RTX 4090 (23,028 MiB)."
+    },
+    {
+      "from": "Daytona GPU",
+      "to": "This tab",
+      "pageSeconds": 1.5,
+      "serverSeconds": 1.4,
+      "agentAnswer": "Running in the browser's WebAssembly/WASI sandbox (`wasm32`); `nproc` reports 2."
+    }
+  ]
+}

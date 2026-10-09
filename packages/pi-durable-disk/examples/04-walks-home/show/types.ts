@@ -78,7 +78,8 @@ export type Cost = {
   cap?: number;
 };
 
-export type NoteKind = "story" | "switch" | "kill" | "takeover" | "winner" | "home";
+/** `agent` is the agent's own words: the notice of a move it was told, or an answer it gave. */
+export type NoteKind = "story" | "switch" | "kill" | "takeover" | "winner" | "home" | "agent";
 /**
  * A narration line. `measured: true` means every number in `text` was measured by the driver on this run; a feed that
  * does not say, or says false, has its numbers shown as scripted or unmeasured, never as measurements.
@@ -125,7 +126,9 @@ export type ShowCommand =
   | { t: "reset" }
   /** Operator commands: the page never sends them. `fanout` starts the fork fan-out; `collapse` keeps one universe and seals the rest. */
   | { t: "fanout" }
-  | { t: "collapse"; winner?: string };
+  | { t: "collapse"; winner?: string }
+  /** Ask the agent a question where it runs now (default: which machine are you on). Feeds with no agent refuse it. */
+  | { t: "ask"; text?: string };
 
 /** Messages between the shell and the embedded tab app (same-origin iframe), agreed with D3. Both sides check the origin. */
 export type Envelope<T> = { ns: "walks-home" } & T;
