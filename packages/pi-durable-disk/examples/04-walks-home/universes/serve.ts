@@ -23,6 +23,7 @@ import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
+import { chooseHomePolicy } from "./home-policy.ts";
 import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -75,12 +76,30 @@ const { values } = parseArgs({
     /** D2's universe files (u1.json .. u8.json: name, hypothesis, reward_scales). */
     "universes-dir": { type: "string", default: join(here, "..", "train", "universes") },
     "train-py": { type: "string", default: "/opt/pda/train/train.py" },
+    /** D2's export.py (the home step's combined policy) and the image's getup policy for the default body. */
+    "export-py": { type: "string", default: "/opt/pda/train/export.py" },
+    getup: { type: "string", default: "/opt/pda/train/default/getup.json" },
     python: { type: "string", default: "/usr/local/bin/python" },
     minutes: { type: "string", default: "6" },
     /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
     "source-files": { type: "string" },
+    /** train.py's compile cache: in the run's work/ (default), or an absolute path of each box's own. */
+    "compile-cache": { type: "string" },
+    /**
+     * With --workload train and a box-local --compile-cache: every machine compiles the run's exact training program
+     * when it is warmed (train.py --compile-only, with the source's creature and terrain), so a universe started or
+     * taken over there starts warm.
+     */
+    "warm-compile": { type: "boolean", default: false },
+    /** train.py's steps per checkpoint, the same for every run and the warm compile (a different value is another program). */
+    "checkpoint-steps": { type: "string" },
     /** With --auto: collapse this many seconds after the kills, instead of when every universe reached its budget. */
     "collapse-after": { type: "string" },
+    /** The tab's server (03-tab-to-cloud serve.ts) that adopts the winner by id when it is called home, and its admin token file. */
+    "home-server": { type: "string" },
+    "home-token-file": { type: "string" },
+    /** Delete the run that went home at exit too (a rehearsal); by default the tab's server keeps it. */
+    "delete-home": { type: "boolean", default: false },
   },
 });
 
@@ -138,6 +157,22 @@ const modal = onModal
       log,
     })
   : undefined;
+// The warm compile: the run's creature and terrain, any universe's file (the eight differ only in weights, which are
+// data), the same flags as every universe's command, and --compile-only.
+const warmup = (() => {
+  if (!training || !values["warm-compile"] || !values["source-files"] || !values["compile-cache"]?.startsWith("/")) return undefined;
+  const src = values["source-files"];
+  const files: Record<string, Uint8Array> = {};
+  for (const f of ["creature/creature.xml", "creature/body.json", "terrain/terrain.json", "terrain/course.json"]) if (existsSync(join(src, f))) files[f] = readFileSync(join(src, f));
+  files["universe.json"] = readFileSync(join(values["universes-dir"]!, "u1.json"));
+  const flag = (name: string, file: string) => (files[file] ? ` --${name} ${file}` : "");
+  const command =
+    `${values.python} ${values["train-py"]} --mjcf creature/creature.xml --body creature/body.json --universe universe.json --work /tmp/pda-universe-unused` +
+    `${flag("world", "terrain/terrain.json")}${flag("course", "terrain/course.json")} --compile-cache ${values["compile-cache"]}` +
+    `${values["checkpoint-steps"] ? ` --checkpoint-steps ${values["checkpoint-steps"]}` : ""} --compile-only`;
+  return { files, command, timeoutSec: 900 };
+})();
+
 const fleet = daytonaFleet({
   client: modal?.client ?? daytonaRest({ apiKey: process.env.DAYTONA_API_KEY!, ...(process.env.DAYTONA_API_URL ? { apiUrl: process.env.DAYTONA_API_URL } : {}) }),
   ...(modal ? { kind: modal.kind, ratePerHour: modal.ratePerHour, label: modal.label, ledgerKind: "modal-sandbox" } : {}),
@@ -146,6 +181,7 @@ const fleet = daytonaFleet({
   fleet: "demo-d1",
   namePrefix: "pda-demo-d1-",
   ...(transport === "direct" ? { app: bundle } : {}),
+  ...(warmup ? { warmup } : {}),
   probe,
   runArgs: ["--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000", "--on-sigterm", "pause"],
   ledger,
@@ -215,7 +251,17 @@ const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec
   return {
     id: `u${i + 1}`,
     reward: u.hypothesis,
-    env: { UNIVERSE_WORKLOAD: "train", UNIVERSE_TRAIN_PY: values["train-py"]!, UNIVERSE_PYTHON: values.python!, UNIVERSE_SPEC: JSON.stringify({ ...u, name: `u${i + 1}` }), UNIVERSE_MINUTES: values.minutes! },
+    env: {
+      UNIVERSE_WORKLOAD: "train",
+      UNIVERSE_TRAIN_PY: values["train-py"]!,
+      UNIVERSE_PYTHON: values.python!,
+      UNIVERSE_SPEC: JSON.stringify({ ...u, name: `u${i + 1}` }),
+      UNIVERSE_MINUTES: values.minutes!,
+      ...(values["compile-cache"] ? { UNIVERSE_COMPILE_CACHE: values["compile-cache"] } : {}),
+      UNIVERSE_EXPORT_PY: values["export-py"]!,
+      UNIVERSE_GETUP: values.getup!,
+      ...(values["checkpoint-steps"] ? { UNIVERSE_TRAIN_ARGS: JSON.stringify(["--checkpoint-steps", values["checkpoint-steps"]]) } : {}),
+    },
   };
 });
 const runPrefix = `d1-${stamp}-`;
@@ -282,10 +328,47 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
     case "switch":
       // Home: the stage sends a switch to the tab once the multiverse collapsed.
       if (cmd.to !== "tab") return { ok: false, error: `the multiverse goes home to the tab, not to ${cmd.to}` };
-      return answer(mv.home({ label: "your browser tab", env: "tab" }), "home");
+      return answer(mv.home({ label: "your browser tab", env: "tab", onSealed: adoptHome }), "home");
     default:
       return { ok: false, error: `${cmd.t} is not this producer's command` };
   }
+}
+
+/**
+ * The policy the tab loads: the combined walk + getup file when the winner's machine made one the tab accepts (strict
+ * JSON, the run's body), else the winner's own walking policy, and the stage is told why getup is missing.
+ */
+async function homePolicyPath(run: RunRef, universe: string): Promise<string | null> {
+  const read = (path: string) => control.getObject(`runs/${run.id}/work/${path}`).then((b) => ({ text: new TextDecoder().decode(b) }), () => null);
+  const xml = await read("creature/creature.xml");
+  const bodyFile = await read("creature/body.json");
+  const nj = bodyFile ? ((JSON.parse(bodyFile.text) as { jointNames?: unknown[] }).jointNames?.length ?? 0) : 0;
+  if (!xml || !nj) {
+    log("home.policy-unchecked", { run: run.id, why: "the run has no creature" });
+    return `train/${universe}/policy.json`;
+  }
+  const choice = await chooseHomePolicy({ read, universe, creatureXml: xml.text, nj });
+  if (choice.reason) {
+    feed.emit({ t: "note", at: Date.now() - origin, kind: "home", text: choice.path ? `${choice.reason[0]!.toUpperCase()}${choice.reason.slice(1)}; the walking policy goes home alone.` : `No policy goes home: ${choice.reason}.` });
+    log("home.policy", { run: run.id, path: choice.path, reason: choice.reason });
+  }
+  return choice.path;
+}
+
+/** Where the tab finds the winner once it is sealed: the tab server's link for it, and its policy under work/. */
+let home: { run: string; url: string; policy: string | null } | undefined;
+/**
+ * The winner is sealed: ask the tab's server (03-tab-to-cloud serve.ts, --admin-token-file) to adopt it by id. Its
+ * answer is the run's link (with the run's secret: it goes to the loopback route, never to a note or a log).
+ */
+async function adoptHome(run: RunRef, universe: string): Promise<void> {
+  if (!values["home-server"] || !values["home-token-file"]) return;
+  const token = readFileSync(values["home-token-file"], "utf8").trim();
+  const res = await fetch(`${values["home-server"]}/api/runs/${encodeURIComponent(run.id)}/attach`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+  const body = (await res.json().catch(() => ({}))) as { link?: string; error?: string };
+  if (!res.ok || !body.link) throw new Error(`the tab's server did not adopt ${run.id}: ${res.status} ${body.error ?? ""}`);
+  home = { run: run.id, url: `${values["home-server"]}${body.link}`, policy: await homePolicyPath(run, universe) };
+  log("home.adopted", { run: run.id, status: res.status });
 }
 
 const server = await serveFeed({
@@ -293,7 +376,7 @@ const server = await serveFeed({
   port: Number(values.port),
   command,
   // Where the tab finds the run to attach when it is called home: the winner's run, once there is one.
-  routes: { winner: () => mv.winner()?.placed.run },
+  routes: { winner: () => mv.winner()?.placed.run, home: () => home },
 });
 log("feed", { url: server.url, source: source.id, universes: n, transport });
 
@@ -310,6 +393,12 @@ async function cleanup(): Promise<void> {
       await removeMountToken(control, row.id).then(() => ledger.close("token", row.id, "cleanup"), (e: unknown) => log("token.remove-failed", { id: row.id, error: (e as Error).message }));
     }
     for (const id of createdRuns) {
+      // The run that went home belongs to the tab's server from its adoption on: it stays, unless asked.
+      if (home && id === home.run && !values["delete-home"]) {
+        ledger.close("run", id, `handed to the tab's server at ${values["home-server"]}`);
+        ledger.close("subdir", `runs/${id}/`, "handed to the tab's server");
+        continue;
+      }
       await deleteRunTree(control, id).then(
         (r) => {
           ledger.close("run", id, `deleted ${r.objects} objects`);
@@ -324,7 +413,9 @@ async function cleanup(): Promise<void> {
   })();
   return cleaning;
 }
-process.once("SIGINT", () => void cleanup().then(() => process.exit(130)));
+// A wrapper (timeout, a terminal) can deliver the signal more than once: every one waits for the same cleanup, so a
+// second signal never ends the process before the machines, mounts and runs are gone.
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => void cleanup().then(() => process.exit(130)));
 
 if (values.auto) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -368,7 +459,9 @@ if (values.auto) {
     // Each live machine's instance output: its open steps and timings ("running" lines) for the report.
     for (const line of mv.lines().filter((l) => l.machine && l.slot !== null)) {
       const out = await fleet.logs(mv.machine(line.id)!);
-      for (const l of out.split("\n").filter((x) => x.includes('"running"') || x.includes('"notice"') || x.includes("trainer.start"))) log("measure.instance", { line: line.id, out: l.slice(0, 600) });
+      for (const l of out.split("\n").filter((x) => x.includes('"running"') || x.includes('"notice"') || x.includes("trainer.start") || x.includes("train.") || x.includes("checkpoint."))) log("measure.instance", { line: line.id, out: l.slice(0, 600) });
+      // The trainer's own last words, for a run that did not do what it should.
+      log("measure.instance-tail", { line: line.id, tail: out.trim().split("\n").slice(-12).map((x) => x.slice(0, 300)) });
     }
     const collapse = await mv.collapse();
     log("measure.collapse", collapse);

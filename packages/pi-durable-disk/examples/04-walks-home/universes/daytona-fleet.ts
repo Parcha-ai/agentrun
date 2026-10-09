@@ -73,6 +73,12 @@ export interface DaytonaFleetOptions {
    * warmed, waiting on `port` for the server's dial through a signed preview URL of that port.
    */
   readonly runner?: { readonly bundle: Uint8Array; readonly port: number; previewUrl(boxId: string, port: number): Promise<string> };
+  /**
+   * Work a machine does once it is warm and before it is ready, as the run user in its home: these files are put under
+   * `~/warmup/` and `command` runs there (a trainer's compile of the run's exact program, so a universe started or taken
+   * over there starts from a warm cache). A warm-up that fails leaves the machine usable, cold.
+   */
+  readonly warmup?: { readonly files: Readonly<Record<string, Uint8Array>>; readonly command: string; readonly timeoutSec?: number };
   /** How runs reach the boxes: `directPlacement` (the box mounts the run) or `pipePlacement` (the server holds it). */
   readonly placement: (access: MachineAccess) => Pick<Fleet, "transport" | "place" | "status" | "seal">;
 }
@@ -245,6 +251,15 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
           if (ran.exitCode !== 0) throw new Error(`the runner in ${full} did not start: ${ran.result.trim().slice(-300)}`);
           runners.set(full, { url: url.replace(/^http/, "ws"), bearer });
           log("fleet.runner", { box: full, ms: Date.now() - r0 });
+        }
+        if (o.warmup) {
+          const w0 = Date.now();
+          const names = Object.keys(o.warmup.files);
+          for (const [i, name] of names.entries()) await client.upload(box, `${stage}/warmup-${i}`, o.warmup.files[name]!);
+          const place = names.map((name, i) => `sudo -n install -D -o pda -g pda -m 0644 ${stage}/warmup-${i} ~pda/warmup/${name}`);
+          const run = `sudo -n -u pda -H sh -c 'cd "$HOME/warmup" && ${o.warmup.command.replace(/'/g, "'\\''")}' > /var/tmp/pda-universe-warmup.log 2>&1; echo "warmup=$?"`;
+          const r = await client.exec(box, [...place, `rm -f ${stage}/*`, run].join(" && "), o.warmup.timeoutSec ?? 600).catch((e: Error) => ({ exitCode: -1, result: e.message }));
+          log("fleet.warmup", { box: full, ms: Date.now() - w0, result: r.result.trim().split("\n").at(-1)?.slice(0, 120) });
         }
         const short = full.slice(o.namePrefix.length);
         const machine: Machine = { id: full, label: o.label?.(box, short) ?? `Daytona sandbox ${short}`, kind: o.kind ?? "sandbox", ratePerHour: (o.ratePerHour ?? rateOf)(box), since: created };
