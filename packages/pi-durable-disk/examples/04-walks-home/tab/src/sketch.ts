@@ -13,9 +13,49 @@ const FIT_M = 2 * (LIMITS.torso.width[1] / 2 + LIMITS.thigh[1] + LIMITS.shin[1])
 export const pxPerMetre = (c: HTMLCanvasElement) => Math.max(110, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / FIT_M));
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
-type Handle =
+export type Handle =
   | { kind: 'length' } | { kind: 'width' }
   | { kind: 'hip'; i: number } | { kind: 'leg'; i: number };
+
+export const handleName = (h: Handle) => ('i' in h ? `${h.kind}${h.i}` : h.kind);
+
+/** Where each handle is, in metres from the torso centre (+x nose, +y the creature's left). Pure: the sketcher draws and hit-tests these, and the stroke planner aims at them. */
+export function handlePositions(design: Design): { h: Handle; x: number; y: number }[] {
+  const { torso, legs } = design;
+  const out: { h: Handle; x: number; y: number }[] = [
+    { h: { kind: 'length' }, x: torso.length / 2, y: 0 },
+    { h: { kind: 'width' }, x: 0, y: torso.width / 2 },
+  ];
+  legs.forEach((l, i) => {
+    out.push({ h: { kind: 'hip', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 });
+    out.push({ h: { kind: 'leg', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 + l.thigh + l.shin });
+  });
+  return out;
+}
+
+/** Drawn values snap to a grid: lengths to 1 cm, a hip's place along the torso to 5% of its half length. A pointer lands on whole screen pixels (one pixel is a few millimetres), so without a grid a stroke could never hit the number it aims at. */
+export const SNAP_LENGTH_M = 0.01;
+export const SNAP_HIP = 0.05;
+const snap = (v: number, step: number) => round(Math.round(v / step) * step);
+
+/** The value a drag to `v` ends on: snapped to the grid, then held to the limits. A stroke planner aims at these, never at the raw number it was given, because a raw number between grid values cannot be drawn. */
+export const goalLength = (v: number, limits: readonly number[]) => round(clamp(snap(v, SNAP_LENGTH_M), limits));
+export const goalHip = (ratio: number) => round(clamp(snap(ratio, SNAP_HIP), [-1, 1]));
+export const goalReach = (v: number) => clamp(snap(v, SNAP_LENGTH_M), [LIMITS.thigh[0] + LIMITS.shin[0], LIMITS.thigh[1] + LIMITS.shin[1]]);
+
+/** What dragging a handle to (x, y) metres does to the design, in place. The one place the drag rules live. */
+export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
+  if (h.kind === 'length') d.torso.length = goalLength(2 * x, LIMITS.torso.length);
+  else if (h.kind === 'width') d.torso.width = goalLength(2 * y, LIMITS.torso.width);
+  else if (h.kind === 'hip') d.legs[h.i].x = goalHip((2 * x) / d.torso.length);
+  else {
+    const l = d.legs[h.i];
+    const total = goalReach(y - d.torso.width / 2);
+    const ratio = l.thigh / (l.thigh + l.shin);
+    l.thigh = round(clamp(total * ratio, LIMITS.thigh));
+    l.shin = round(clamp(total * (1 - ratio), LIMITS.shin));
+  }
+}
 
 export class Sketcher {
   private design: Design;
@@ -81,18 +121,7 @@ export class Sketcher {
     return [(e.clientX - r.left - r.width / 2) / this.px, -(e.clientY - r.top - r.height / 2) / this.px];
   }
 
-  private handles(): { h: Handle; x: number; y: number }[] {
-    const { torso, legs } = this.design;
-    const out: { h: Handle; x: number; y: number }[] = [
-      { h: { kind: 'length' }, x: torso.length / 2, y: 0 },
-      { h: { kind: 'width' }, x: 0, y: torso.width / 2 },
-    ];
-    legs.forEach((l, i) => {
-      out.push({ h: { kind: 'hip', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 });
-      out.push({ h: { kind: 'leg', i }, x: (l.x * torso.length) / 2, y: torso.width / 2 + l.thigh + l.shin });
-    });
-    return out;
-  }
+  private handles(): { h: Handle; x: number; y: number }[] { return handlePositions(this.design); }
 
   private hit(x: number, y: number): Handle | null {
     let best: Handle | null = null, bd = (14 / this.px) ** 2;
@@ -112,18 +141,17 @@ export class Sketcher {
   private move(e: PointerEvent): void {
     const [x, y] = this.pos(e);
     if (!this.drag) { this.hover = this.hit(x, y); this.canvas.style.cursor = this.hover ? 'grab' : 'default'; this.draw(); return; }
-    const d = this.design, h = this.drag;
-    if (h.kind === 'length') d.torso.length = round(clamp(2 * x, LIMITS.torso.length));
-    else if (h.kind === 'width') d.torso.width = round(clamp(2 * y, LIMITS.torso.width));
-    else if (h.kind === 'hip') d.legs[h.i].x = round(clamp((2 * x) / d.torso.length, [-1, 1]));
-    else {
-      const l = d.legs[h.i];
-      const total = clamp(y - d.torso.width / 2, [LIMITS.thigh[0] + LIMITS.shin[0], LIMITS.thigh[1] + LIMITS.shin[1]]);
-      const ratio = l.thigh / (l.thigh + l.shin);
-      l.thigh = round(clamp(total * ratio, LIMITS.thigh));
-      l.shin = round(clamp(total * (1 - ratio), LIMITS.shin));
-    }
+    applyDrag(this.design, this.drag, x, y);
     this.changed();
+  }
+
+  /** Where the handles are on the canvas, in CSS pixels from the top-left corner of its box: what a pointer must press to grab them. The centre is the one pos() reads a pointer against (the box, border included), not the content's clientWidth: a pixel here is a few millimetres, and the one-pixel difference was enough to miss a 1 cm grid value. */
+  geometry(): { px: number; width: number; height: number; design: Design; handles: { name: string; kind: string; i: number | null; x: number; y: number }[] } {
+    const r = this.canvas.getBoundingClientRect(), w = r.width, h = r.height, px = this.px;
+    return {
+      px, width: w, height: h, design: this.get(),
+      handles: this.handles().map((c) => ({ name: handleName(c.h), kind: c.h.kind, i: 'i' in c.h ? c.h.i : null, x: w / 2 + c.x * px, y: h / 2 - c.y * px })),
+    };
   }
 
   /** Per-pair numeric edit from the side panel. */

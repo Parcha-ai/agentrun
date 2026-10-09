@@ -8,6 +8,8 @@
 <script>
 const frame = document.getElementById('app');
 frame.src = './index.html' + location.search; // ?clean=1 and friends go to the app
+// ?inset=1 holds the app in the page the way a stage does, away from the corner, so coordinate mapping is real
+if (new URLSearchParams(location.search).has('inset')) frame.style.cssText = 'position:absolute;left:130px;top:70px;width:calc(100vw - 170px);height:calc(100vh - 110px);border:0';
 window.events = [];
 window.disk = {}; // path -> bytes, standing in for the agent's disk
 window.diskWrites = 0;
