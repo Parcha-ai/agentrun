@@ -2,6 +2,7 @@
 // JSON cannot carry (undefined, bigint, bytes) travel tagged: every non-primitive is encoded as an object with a `t`
 // field, so no value of the agent's own can be mistaken for a tag. Portable: no Node API.
 import { ConversationBusy, ReadAfterWrite, StorageRejected } from "@earendil-works/pi-durable";
+import type { PlacementDecision } from "./placement.ts";
 
 type Tagged =
   | null
@@ -199,7 +200,15 @@ export const MODEL_PATHS = ["responses", "chat/completions"] as const;
 export type Environment = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 
 /** A move of the run from one host to another (environment.ts's SwitchInfo). */
-export type Move = { id: string; from: string; planned: boolean; /** The agent chose the move (switch_environment), and why. Absent: the user did. */ by?: "agent"; reason?: string };
+export type Move = {
+  id: string;
+  from: string;
+  planned: boolean;
+  /** Who chose the move: the agent (switch_environment) or the server's placement question; absent: the user did. `reason` says why; `probability` is the placement answer's. */
+  by?: "agent" | "placement";
+  reason?: string;
+  probability?: number;
+};
 
 /** Where the run is: the badge every page shows. `env` is the environment's id. */
 export type Placement =
@@ -240,7 +249,7 @@ export type PipeFrame =
   /** Part of a manifest file's content (base64, at most CHUNK_BYTES raw), in order. */
   | { t: "restore-chunk"; path: string; offset: number; data: string }
   | { t: "restore-end"; files: number; bytes: number }
-  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[] }
+  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[]; decisions?: PlacementDecision[] }
   | { t: "res"; id: number; ok: true; result: Tagged; ms?: number }
   | { t: "res"; id: number; ok: false; error: WireError }
   | { t: "model-head"; id: number; status: number }
@@ -257,6 +266,8 @@ export type PipeFrame =
   | { t: "switch-accepted"; to: string; switchId: string; ask: string }
   | { t: "switch-refused"; to: string; message: string; ask?: string }
   | { t: "submit-refused"; requestId: string; message: string }
+  /** The server asked where the run should be and decided (placement.ts); sent before the move it starts. */
+  | { t: "decision"; decision: PlacementDecision }
   | { t: "lost"; code: string; message: string }
   | { t: "pong"; at: number; now: number }
   | { t: "error"; message: string };

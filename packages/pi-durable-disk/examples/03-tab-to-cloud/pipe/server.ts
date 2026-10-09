@@ -16,7 +16,8 @@ import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
-import { CHUNK_BYTES, toBase64, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
+import type { Placer, PlacementDecision } from "../placement.ts";
+import { CHUNK_BYTES, toBase64, untag, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
 export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "This tab", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
@@ -99,6 +100,12 @@ export interface DemoServerOptions {
   readonly lease?: OpenRunLeaseOptions["lease"];
   readonly model: ModelOptions;
   readonly cloud?: CloudHost;
+  /**
+   * Where the run should be, decided by a typed question (placement.ts) instead of the agent's own move: on a user's message
+   * the run is placed before the agent sees it, and when the agent's turn ends it is asked again where the agent should run
+   * now. Absent, a message goes to wherever the run is, and only the user or the agent's switch_environment moves it.
+   */
+  readonly placer?: Placer;
   /** Static files of the page. */
   readonly pageDir?: string;
   /** Extra static roots, by URL prefix (for example the Wasmer SDK's files). */
@@ -132,6 +139,9 @@ export interface DemoServerOptions {
   readonly scratchStores?: boolean;
 }
 
+/** Who asked for a move: the user (a click), the agent (its tool), or the server's placement question. */
+type Who = { by: "user" } | { by: "agent"; reason: string } | { by: "placement"; reason: string; probability?: number };
+
 interface RunState {
   readonly ref: RunRef;
   readonly secret: string;
@@ -155,6 +165,12 @@ interface RunState {
   remote: { tab: string; env: string } | undefined;
   /** Every connection to the run, with what its hello asked for, in the order they came. */
   clients: Map<PipeSocket, { mode: "write" | "view" | "operator"; canRun: boolean }>;
+  /** The message a placement decision is moving the run for: delivered when the move is done. */
+  pendingSubmit: { text: string; requestId: string } | undefined;
+  /** The task a placed turn is running: the turn's end asks where the agent should run now. */
+  placedTask: { text: string } | undefined;
+  /** The decisions taken, newest last, for a viewer that connects later. */
+  decisions: PlacementDecision[];
 }
 
 /** Base64 bytes of upload chunks a connection may have waiting for the disk before it stops reading, and resumes. */
@@ -192,6 +208,12 @@ export interface DemoServer {
   on(event: "placement", listener: (id: string, placement: Placement) => void): void;
 }
 
+/** The writer's event batch ends the agent's run (pi's run_end): the turn is over. */
+function endsRun(event: Parameters<typeof untag>[0]): boolean {
+  const body = untag(event) as { kind?: unknown; events?: unknown } | null;
+  return body?.kind === "events" && Array.isArray(body.events) && body.events.some((e) => (e as { type?: unknown } | null)?.type === "run_end");
+}
+
 export function createDemoServer(options: DemoServerOptions): DemoServer {
   const runs = new Map<string, RunState>();
   const listeners: ((id: string, placement: Placement) => void)[] = [];
@@ -201,11 +223,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   /** Where the run is, as an environment id; undefined while it moves or is parked. */
   const currentEnv = (p: Placement) => (p.where === "tab" || p.where === "cloud" ? p.env : undefined);
   const phraseOf = (p: Placement) => environment(currentEnv(p) ?? "")?.phrase ?? (p.where === "cloud" ? p.host : "the disk");
-  const newMove = (from: string, planned: boolean, who?: { by: "user" } | { by: "agent"; reason: string }): Move => ({
+  const newMove = (from: string, planned: boolean, who?: Who): Move => ({
     id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`,
     from,
     planned,
     ...(who?.by === "agent" ? { by: "agent" as const, reason: cleanReason(who.reason) } : {}),
+    ...(who?.by === "placement" ? { by: "placement" as const, reason: cleanReason(who.reason), ...(who.probability !== undefined ? { probability: who.probability } : {}) } : {}),
   });
 
   const setPlacement = (state: RunState, placement: Placement) => {
@@ -403,7 +426,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * then the target claims it, admits the notice of the move and continues. A tab target is the asking page, told to
    * run it here (its hello carries the switch id).
    */
-  async function switchTo(state: RunState, reply: SwitchReply, to: string, who: { by: "user" } | { by: "agent"; reason: string } = { by: "user" }): Promise<void> {
+  async function switchTo(state: RunState, reply: SwitchReply, to: string, who: Who = { by: "user" }): Promise<void> {
     const target = environment(to);
     const p = state.placement;
     const from = currentEnv(p);
@@ -501,6 +524,72 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const frame: PipeFrame = { t: "switched", switchId, to: s.to, ms };
     for (const viewer of state.viewers) viewer.send(frame);
     state.pipe?.broadcast(frame);
+    void flushPending(state);
+  }
+
+  /** The message a placement move was for goes to the host the run now has. */
+  async function flushPending(state: RunState): Promise<void> {
+    const pending = state.pendingSubmit;
+    if (!pending) return;
+    state.pendingSubmit = undefined;
+    await deliverSubmit(state, pending.text, pending.requestId).catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
+  }
+
+  /** A user's message to the host that runs the run: the writer tab or remote host through the pipe, the cloud host through its link. */
+  async function deliverSubmit(state: RunState, text: string, requestId: string): Promise<void> {
+    if (state.pipe) state.pipe.broadcast({ t: "submit", text, requestId });
+    else if (state.placement.where === "cloud") await options.cloud?.submit?.(state.ref, text, requestId);
+  }
+
+  /**
+   * Ask the placer where the run should be and announce the decision (before any move it starts). Undefined when there is no
+   * placer, the run is not in an environment, or the question failed: the run then stays where it is.
+   */
+  async function decide(state: RunState, phase: "start" | "done", message: string): Promise<PlacementDecision | undefined> {
+    const current = currentEnv(state.placement);
+    if (!options.placer || current === undefined) return undefined;
+    try {
+      const decision = await options.placer.decide({ phase, message, current, environments: environments.map((e) => e.id) });
+      state.decisions.push(decision);
+      if (state.decisions.length > 8) state.decisions.shift();
+      const frame: PipeFrame = { t: "decision", decision };
+      for (const viewer of state.viewers) viewer.send(frame);
+      state.pipe?.broadcast(frame);
+      log("placement.decision", { run: state.ref.id, phase, current, choice: decision.choice, latencyMs: decision.latency_ms, model: decision.model, probabilities: Object.fromEntries(decision.options.map((o) => [o.id, o.probability])) });
+      return decision;
+    } catch (error) {
+      log("placement.failed", { run: state.ref.id, phase, error: (error as Error).message });
+      return undefined;
+    }
+  }
+
+  const placeWho = (decision: PlacementDecision): Who => {
+    const probability = decision.options.find((o) => o.id === decision.choice)?.probability;
+    return { by: "placement", reason: options.placer!.describe(decision.choice), ...(probability !== undefined ? { probability } : {}) };
+  };
+
+  /** A user's message with a placer: place the run first, so the agent wakes up where the task belongs, then deliver the message there. */
+  async function placeThenSubmit(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
+    const current = currentEnv(state.placement);
+    const decision = await decide(state, "start", text);
+    state.placedTask = { text };
+    if (!decision || decision.choice === current || !environment(decision.choice)) return deliverSubmit(state, text, requestId);
+    state.pendingSubmit = { text, requestId };
+    // A move that is refused leaves the run where it is: the message goes there rather than nowhere.
+    await switchTo(state, { asker: socket, refuse: () => void flushPending(state), accepted: () => undefined }, decision.choice, placeWho(decision));
+    // A cloud host that does not report its notice has no later moment: the move is over when it was started.
+    if (!state.switching) await flushPending(state);
+  }
+
+  /** The agent's turn ended in a placed run: ask where it should run now (the browser, once the task is done) and move it there. */
+  async function placeAfterTurn(state: RunState): Promise<void> {
+    const task = state.placedTask;
+    if (!task || state.switching || state.opening) return;
+    state.placedTask = undefined;
+    if (currentEnv(state.placement) === TAB_ENVIRONMENT.id) return;
+    const decision = await decide(state, "done", task.text);
+    if (!decision || decision.choice === currentEnv(state.placement) || !environment(decision.choice)) return;
+    await switchTo(state, { refuse: (message) => log("placement.move-refused", { run: state.ref.id, message }), accepted: () => undefined }, decision.choice, placeWho(decision));
   }
 
   /** While the run is in the cloud, a supervisor tick every few seconds replaces a host that died or froze. */
@@ -616,7 +705,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   async function viewingFrame(state: RunState): Promise<PipeFrame> {
     const files = state.pipe ? await state.pipe.viewerFiles().catch(() => []) : [];
-    return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [], environments };
+    return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [], environments, ...(state.decisions.length > 0 ? { decisions: [...state.decisions] } : {}) };
   }
 
   async function addViewer(state: RunState, socket: PipeSocket): Promise<void> {
@@ -659,6 +748,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         return;
       case "view":
         pipe?.view(socket, frame.event);
+        if (options.placer && state.placedTask && pipe?.isWriter(socket) && endsRun(frame.event)) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
         return;
       case "ping":
         if (pipe) pipe.ping(socket, frame.at);
@@ -691,7 +781,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           socket.send({ t: "submit-refused", requestId: frame.requestId, message: "this connection only watches the run (hello mode view)" });
           return;
         }
-        // A viewer's message: to the writer tab when a tab runs the run, to the cloud when it runs there.
+        // A viewer's message: with a placer, the run is placed for it first; otherwise to the writer tab when a tab runs the run, to the cloud when it runs there.
+        if (options.placer && !state.switching && !state.opening) {
+          void placeThenSubmit(state, socket, frame.text, frame.requestId).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+          return;
+        }
         if (pipe) pipe.broadcast({ t: "submit", text: frame.text, requestId: frame.requestId });
         else if (state.placement.where === "cloud") await options.cloud?.submit?.(state.ref, frame.text, frame.requestId);
         return;
@@ -904,6 +998,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       switching: undefined,
       remote: undefined,
       clients: new Map(),
+      pendingSubmit: undefined,
+      placedTask: undefined,
+      decisions: [],
     });
     return secret;
   }

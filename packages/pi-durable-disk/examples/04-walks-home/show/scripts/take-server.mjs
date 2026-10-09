@@ -37,6 +37,9 @@ const cloud = arg("cloud", "none");
 // the module. --modal runs the server with the Modal token pair too (with-modal, the other wrapper that holds a key for this lane).
 const cloudModule = arg("cloud-module", "");
 const cloudArgs = process.argv.flatMap((a, i) => (a === "--cloud-arg" ? [process.argv[i + 1]] : []));
+// Where a message should run, decided by a typed question (04-walks-home/vm/placer.ts): its --placer-arg KEY=VALUE pairs go to the module.
+const placerModule = arg("placer-module", "");
+const placerArgs = process.argv.flatMap((a, i) => (a === "--placer-arg" ? [process.argv[i + 1]] : []));
 const withModal = process.argv.includes("--modal");
 const budget = arg("budget", "1500000");
 const evidenceReadback = process.argv.includes("--evidence-readback");
@@ -94,6 +97,7 @@ const serveArgs = [
   "--grace-ms", arg("grace-ms", "5000"),
   "--cloud", cloud,
   ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
+  ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
   ...(evidenceReadback ? ["--evidence-readback"] : []),
   ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", ledger]),
 ];

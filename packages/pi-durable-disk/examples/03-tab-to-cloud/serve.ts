@@ -4,6 +4,7 @@
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
+//                 [--placer-module PATH [--placer-arg KEY=VALUE]...]  where the run should be, decided by a typed question (placement.ts) on each user message
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH] [--evidence-readback]
 //
@@ -29,6 +30,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { openClaimDir } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "./pipe/control.ts";
+import type { Placer } from "./placement.ts";
 import { createDemoServer, type CloudHost, type CloudModuleOptions } from "./pipe/server.ts";
 import { localClaim } from "./test/_local.ts";
 
@@ -54,6 +56,8 @@ const { values } = parseArgs({
     "cloud-events": { type: "string" },
     "cloud-module": { type: "string" },
     "cloud-arg": { type: "string", multiple: true },
+    "placer-module": { type: "string" },
+    "placer-arg": { type: "string", multiple: true },
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
     "admin-token-file": { type: "string" },
@@ -117,6 +121,13 @@ if (values["cloud-module"]) {
   cloud = await mod.default({ disk, region, model, log, ...(ledger ? { ledger } : {}), ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}), args });
 }
 
+let placer: Placer | undefined;
+if (values["placer-module"]) {
+  // Where a message should run: the module's default export takes { log, args } and returns a Placer (04-walks-home/vm/placer.ts asks TypeSafe Jev).
+  const mod = (await import(pathToFileURL(resolvePath(values["placer-module"])).href)) as { default: (options: { log: typeof log; args: Record<string, string> }) => Promise<Placer> | Placer };
+  placer = await mod.default({ log, args: Object.fromEntries((values["placer-arg"] ?? []).map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)])) });
+}
+
 const server = createDemoServer({
   disk,
   region,
@@ -140,6 +151,7 @@ const server = createDemoServer({
   log,
   ...(ledger ? { ledger } : {}),
   ...(cloud ? { cloud } : {}),
+  ...(placer ? { placer } : {}),
   ...(adminToken ? { adminToken } : {}),
   ...(values.local ? { acquire: async (opts) => localClaim(values.local!, opts), claimDir: (dir: string) => openClaimDir(dir, { fstype: null }) } : {}),
 });

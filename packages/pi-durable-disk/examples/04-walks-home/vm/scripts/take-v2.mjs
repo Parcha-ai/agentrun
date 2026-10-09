@@ -27,6 +27,8 @@ const kickForces = String(arg("kick-forces", "350,350")).split(",").map(Number).
 const gpuImage = arg("gpu-image", "");
 const gpuNoteFile = arg("gpu-note-file", "");
 const chatInput = arg("chat-input", "#chat-input");
+// The placement question's client: scripted until the key exists ("jev" needs TYPESAFE_API_KEY in the server's environment).
+const placerClient = arg("placer", "scripted");
 const sketchModule = arg("sketch", "");
 const mountRoot = arg("mount-root", join("/mnt/pda/demo", "d4-pipe"));
 const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9455";
@@ -103,6 +105,8 @@ try {
       "--grace-ms", "30000",
       "--modal",
       "--cloud-module", join(here, "..", "cloud-module.ts"),
+      "--placer-module", join(here, "..", "placer.ts"),
+      ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
       "--cloud-arg", `gpu-image=${gpuImage}`,
@@ -268,6 +272,13 @@ try {
     results.policy = { bytes: policy.length, format: p.format, mjcf_sha256: p.mjcf_sha256, spec_version: p.spec_version, mujoco_version: p.mujoco_version };
     step("the policy the agent brought home", results.policy);
   }
+  // The placement decisions, as the server logged them (Jev's latency is measured around its call, on the server's clock).
+  results.decisions = (kids.find((k) => k.name === "take-server")?.log() ?? "")
+    .split("\n")
+    .filter((l) => l.includes('"placement.decision"'))
+    .map((l) => { try { return JSON.parse(l.slice(l.indexOf("{"))); } catch { return null; } })
+    .filter(Boolean);
+  for (const d of results.decisions) step("placement decision", d);
   results.problem = !(seen.closing && seen.final && seen.offline && seen.kicks >= kickForces.length) ? `closing ${seen.closing}, final ${seen.final}, offline ${seen.offline}, kicks ${seen.kicks}` : "";
   if (results.problem) failed = true;
 } catch (error) {

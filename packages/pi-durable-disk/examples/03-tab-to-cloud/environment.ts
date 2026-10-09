@@ -38,9 +38,10 @@ export interface SwitchInfo {
   readonly from: string;
   /** Planned (the user switched) or not (the previous host went away). */
   readonly planned: boolean;
-  /** The agent chose the move itself (its switch_environment tool), and gave this reason. */
-  readonly by?: "agent";
+  /** The agent chose the move itself (its switch_environment tool) and gave `reason`, or the server's placement question did (`reason` is the environment's criterion, `probability` the answer's). */
+  readonly by?: "agent" | "placement";
   readonly reason?: string;
+  readonly probability?: number;
 }
 
 const list = (items: readonly string[]) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
@@ -59,7 +60,9 @@ export function noticeText(facts: EnvironmentFacts, move: SwitchInfo): string {
     move.planned
       ? move.by === "agent"
         ? `You moved yourself here from ${move.from}${move.reason?.trim() ? `, because: ${move.reason.trim().replace(/[.!\s]+$/, "")}` : ""}.`
-        : `Your user moved you here from ${move.from}.`
+        : move.by === "placement"
+          ? `Your user's server placed you here, from ${move.from}, by asking a typed question of where this task should run${move.reason?.trim() ? `: ${move.reason.trim().replace(/[.!\s]+$/, "")}` : ""}${move.probability === undefined ? "" : ` (probability ${Math.round(move.probability * 100)}%)`}.`
+          : `Your user moved you here from ${move.from}.`
       : `You were moved here from ${move.from}, which stopped unexpectedly.`,
     "Your conversation and the files in your workspace came with you; programs that were running before the move did not.",
   ];
@@ -77,7 +80,7 @@ export async function admitNotice(harness: Harness, agent: AgentChange, facts: E
     {
       type: "write",
       requestId: `env-switch:${move.id}`,
-      entry: { kind: NOTICE_KIND, model: [{ role: "user", content: text, timestamp: now }], data: { switchId: move.id, from: move.from, planned: move.planned, ...(move.by ? { by: move.by, ...(move.reason ? { reason: move.reason } : {}) } : {}), facts: { ...facts, tools: [...facts.tools] } } },
+      entry: { kind: NOTICE_KIND, model: [{ role: "user", content: text, timestamp: now }], data: { switchId: move.id, from: move.from, planned: move.planned, ...(move.by ? { by: move.by, ...(move.reason ? { reason: move.reason } : {}), ...(move.probability !== undefined ? { probability: move.probability } : {}) } : {}), facts: { ...facts, tools: [...facts.tools] } } },
     },
     context,
   );
