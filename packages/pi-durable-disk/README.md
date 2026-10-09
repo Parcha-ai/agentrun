@@ -282,7 +282,9 @@ snapshot does; Modal runs the driver's commands as root, so there is no `sudo`. 
 its own kernel, which has `/dev/fuse`, so the box mounts the disk like any FUSE client; `runtime: "gvisor"` (the only runtime
 with `gpu`) may not mount, so give it a `command` that runs the agent another way. Fleet and run are sandbox tags, set right
 after create (a lost create answer is finished by the retry's lookup), and the sandbox's timeout, at most 24 h, bounds a
-leak; `stop` drains the instance and terminates the sandbox.
+leak; `stop` drains the instance and terminates the sandbox. A stop first ends whatever the agent left running under the run's
+mount (`reapOnStop`, on by default here, opt-in on `daytonaHost`): a detached server or browser is outside the instance's tree and
+would otherwise keep the mount busy, so the unmount would fail and the delegation stay held.
 
 `dockerHost({ image })` (`supervise --host docker --image IMAGE`) runs each instance in a container of its own; one
 container is one incarnation.
