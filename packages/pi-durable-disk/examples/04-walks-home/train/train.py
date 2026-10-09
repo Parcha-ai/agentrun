@@ -105,7 +105,7 @@ def main() -> None:
                   "it in 20 s at 0.5 m/s, the same course for every universe")
   ap.add_argument("--minutes", type=float, default=0.0, help="stop at the first checkpoint after this wall time")
   ap.add_argument("--impl", default=None, help="jax | warp (default: warp on GPU, jax on CPU)")
-  ap.add_argument("--steps", type=float, default=None, help="total environment steps (overrides the universe)")
+  ap.add_argument("--steps", type=parse_steps, default=None, help="total environment steps, e.g. 10M (overrides the universe)")
   ap.add_argument("--num-envs", type=int, default=None)
   ap.add_argument("--smoke", action="store_true", help="tiny CPU-sized run to check the pipeline")
   ap.add_argument("--no-compile-cache", action="store_true",
@@ -145,6 +145,9 @@ def main() -> None:
     args.work = tempfile.mkdtemp(prefix="pda-compile-only-")
 
   t_start = time.time()
+  # GPU memory on demand, not 75% up front: the take runs the walker and its getup partner on one GPU, and a shell
+  # that resets the environment (sudo) would drop the image's setting.
+  os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
   # The machine as the stage names it (the agent's env.switch notice), else the hostname.
   host = os.environ.get("TRAIN_HOST_LABEL") or socket.gethostname()
   work = os.path.abspath(args.work)
