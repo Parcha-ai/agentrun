@@ -64,7 +64,9 @@ const { values } = parseArgs({
     "modal-app": { type: "string", default: "pda-demo-d1" },
     /** gvisor (Modal's default, and every GPU sandbox: the pipe) or vm (a durable mount: direct). */
     "modal-runtime": { type: "string", default: "gvisor" },
+    /** GPU classes to try in order, comma-separated ("L4,A10,L40S,H100"): the first that places makes the machine. */
     "modal-gpu": { type: "string" },
+    "modal-place-ms": { type: "string", default: "90000" },
     "modal-region": { type: "string", default: "us-east" },
     /** What a score means on the stage; with --workload train it is D2's ("m walked in 10 s"), the stand-in's has none. */
     "score-unit": { type: "string" },
@@ -127,9 +129,11 @@ const modal = onModal
       appName: values["modal-app"]!,
       image: values["modal-image"]!,
       runtime: values["modal-runtime"] === "vm" ? "vm" : "gvisor",
-      ...(values["modal-gpu"] ? { gpu: values["modal-gpu"] } : {}),
+      ...(values["modal-gpu"] ? { gpus: values["modal-gpu"].split(",").map((g) => g.trim()).filter(Boolean) } : {}),
+      placeMs: Number(values["modal-place-ms"]),
       regions: [values["modal-region"]!],
       ports: [8080],
+      log,
     })
   : undefined;
 const fleet = daytonaFleet({
@@ -273,6 +277,8 @@ async function cleanup(): Promise<void> {
     if (values.keep) return;
     await pipes?.releaseAll();
     const swept = await fleet.sweep();
+    // A create that gave up can place before Modal tags it: the app is this driver's alone, so every running sandbox goes.
+    if (modal) swept.push(...(await modal.sweepApp().catch((e: unknown) => (log("modal.sweep-failed", { error: (e as Error).message }), []))));
     for (const row of ledger.openRows().filter((r) => r.kind === "token")) {
       await removeMountToken(control, row.id).then(() => ledger.close("token", row.id, "cleanup"), (e: unknown) => log("token.remove-failed", { id: row.id, error: (e as Error).message }));
     }

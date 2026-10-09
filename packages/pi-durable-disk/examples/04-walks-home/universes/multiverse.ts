@@ -674,7 +674,8 @@ export class Multiverse {
         if (line.ended !== null) return;
         if (line.placed) await this.#o.fleet.seal(line.placed).catch(() => {});
         else {
-          const m = await line.ready.catch(() => null);
+          // A machine still being made may never be: its fleet's sweep finds it; a close does not wait past a bound.
+          const m = await Promise.race([line.ready.catch(() => null), sleep(30_000).then(() => null)]);
           if (m) await this.#o.fleet.retire(m).catch(() => {});
         }
         line.ended = this.#now();
