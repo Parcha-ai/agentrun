@@ -78,6 +78,13 @@ test("a getup file with NaN or broken JSON sends the walk policy home alone, and
     assert.equal(choice.path, "train/u3/policy.json");
     assert.match(choice.reason!, /getup not attached: the getup policy it was built from is refused: not strict JSON/);
   }
+  // JSON of the wrong shape is refused with a reason too.
+  for (const [text, why] of [['{"layers":{}}', /layers are not a list/], ['{"layers":[null]}', /layer 0 is not an object/], ["[]", /not a policy object/]] as const) {
+    const choice = await chooseHomePolicy(sources(good, { "getup/policy.json": text }));
+    assert.equal(choice.path, "train/u3/policy.json");
+    assert.match(choice.reason!, why);
+  }
+  assert.equal(strictPolicy('{"getup":{"layers":[7]}}').ok, false);
 });
 
 test("4: a combined file the tab's loader refuses (another body) sends the walk policy home alone", async () => {

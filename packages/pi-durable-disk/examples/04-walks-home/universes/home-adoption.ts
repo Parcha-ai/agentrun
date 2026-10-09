@@ -20,6 +20,8 @@ export interface HomeAdoptionOptions {
   readonly log: (event: string, data?: Record<string, unknown>) => void;
   readonly fetch?: typeof fetch;
   readonly attachTimeoutMs?: number;
+  /** How long `close` waits for an adoption in flight, its policy reads included. Default 30 s. */
+  readonly closeTimeoutMs?: number;
 }
 
 export interface HomeAdoption {
@@ -29,7 +31,10 @@ export interface HomeAdoption {
   readonly home: Home | undefined;
   /** The run the tab's server holds or may hold: cleanup keeps it. */
   readonly handed: string | undefined;
-  /** Cleanup begins: no adoption starts from now on, and this resolves when the one in flight ended. */
+  /**
+   * Cleanup begins: no adoption starts from now on, and this resolves when the one in flight ended, or at
+   * `closeTimeoutMs`. A run asked for stays `handed` either way, so cleanup keeps it.
+   */
   close(): Promise<void>;
 }
 
@@ -74,7 +79,11 @@ export function homeAdoption(o: HomeAdoptionOptions): HomeAdoption {
     },
     async close() {
       closed = true;
-      await adopting?.catch(() => undefined);
+      if (!adopting) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<void>((resolve) => (timer = setTimeout(resolve, o.closeTimeoutMs ?? 30_000)));
+      await Promise.race([adopting.catch(() => undefined), deadline]);
+      clearTimeout(timer);
     },
   };
 }
