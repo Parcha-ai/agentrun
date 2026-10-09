@@ -100,6 +100,7 @@ export async function startTab<E extends RuntimeEnv>(opts: {
   liveFlushMs?: number;
 }): Promise<TabRuntime<E>> {
   const { env, workspace } = opts;
+  workspace.setLazy(opts.attached.noRestore ?? []);
   const restored = await workspace.restore(opts.attached.files);
   const syncs: { changes: number; ms: number }[] = [];
   // One write-through at a time: each compares against the baseline the previous one established.

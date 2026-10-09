@@ -13,11 +13,11 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver, unmountClaim, acquire as plainAcquire } from "@parcha/pi-durable-disk";
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
-import { RunPipe, type PipeSocket } from "./run-pipe.ts";
+import { manifestDigest, RunPipe, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
-import { CHUNK_BYTES, toBase64, untag, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
+import { CHUNK_BYTES, lazyPath, toBase64, untag, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
 export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "your browser", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
@@ -110,6 +110,10 @@ export interface DemoServerOptions {
   readonly placer?: Placer;
   /** How long a remote host may take to answer a move before the move fails (default 90 s). */
   readonly remoteStartMs?: number;
+  /** Prefixes of work/ no writer is sent on attach (see RunPipeOptions.noRestore). The caller names them; nothing here knows what they hold. */
+  readonly noRestore?: readonly string[];
+  /** An attach refuses a workspace larger than this (lazy prefixes not counted). Default 1 GiB. */
+  readonly restoreLimitBytes?: number;
   /** Static files of the page. */
   readonly pageDir?: string;
   /** Extra static roots, by URL prefix (for example the Wasmer SDK's files). */
@@ -283,6 +287,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           ...(options.lease === undefined ? {} : { lease: options.lease }),
           model: state.model,
           ...(options.writerGraceMs === undefined ? {} : { writerGraceMs: options.writerGraceMs }),
+          ...(options.noRestore?.length ? { noRestore: options.noRestore } : {}),
+          ...(options.restoreLimitBytes === undefined ? {} : { restoreLimitBytes: options.restoreLimitBytes }),
           acquire,
           ...(options.claimDir === undefined ? {} : { claimDir: options.claimDir }),
           ...(options.scratchStores ? { scratchStores: true } : {}),
@@ -366,7 +372,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const startedAfterMs = Date.now() - releasedAt;
       const [read, kept] = await Promise.all([readBack(source, state.ref.id), evidence.digest.catch(() => undefined)]);
       const match = kept !== undefined && read.digest === kept;
-      const ackedMatch = evidence.acked === undefined ? null : read.digest === evidence.acked;
+      // A writer's acknowledged digest leaves out the lazy prefixes it was never sent: compare over the same files.
+      const ackedMatch = evidence.acked === undefined ? null : (options.noRestore?.length ? await manifestDigest(read.entries.filter((e) => !lazyPath(e.path, options.noRestore!))) : read.digest) === evidence.acked;
       log("pipe.readback", { run: state.ref.id, generation: evidence.generation, startedAfterMs, ms: read.ms, files: read.files, bytes: read.bytes, digest: read.digest, kept: kept ?? null, acked: evidence.acked ?? null, match, ackedMatch });
       if (!match && evidence.entries) {
         const { missing, extra, differ } = compareEntries(evidence.entries, read.entries);

@@ -112,6 +112,7 @@ try {
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
+      ...(arg("episode", "walks") === "model" ? ["--placer-arg", "episode=model", "--no-restore", "home/model/"] : []),
       ...(placerClient === "jev" ? ["--typesafe"] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",

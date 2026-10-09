@@ -87,3 +87,45 @@ test("the home check: a valid brain made for the drawn body is in place; every o
   await bad({ "home/policy.json": policy() }, /body file is missing/);
   await bad({ "home/policy.json": policy(), "creature/body.json": bytes(JSON.stringify({ mjcf_sha256: "b".repeat(64) })) }, /different body/);
 });
+
+test("the model check: the manifest and the tab's receipt must agree; it waits for the receipt, then says no", async () => {
+  const { checkHomeModel } = await import("../placer.ts");
+  const SHA2 = "c".repeat(64);
+  const manifest = bytes(JSON.stringify({ sha256: SHA2, bytes: 806000000 }));
+  const receipt = (over: Record<string, unknown> = {}) => bytes(JSON.stringify({ sha256: SHA2, answered: true, ...over }));
+  const fast = { sleep: async () => undefined };
+  assert.deepEqual((await checkHomeModel(files({ "home/model/manifest.json": manifest, "creature/model-loaded.json": receipt() }), fast)).ok, true);
+  const no = async (map: Record<string, Uint8Array | undefined>, re: RegExp, extra = {}) => {
+    const r = await checkHomeModel(files(map), { ...fast, ...extra });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, re);
+  };
+  await no({}, /no model manifest/);
+  await no({ "home/model/manifest.json": bytes(JSON.stringify({ sha256: "nope" })) }, /sha256/);
+  await no({ "home/model/manifest.json": manifest, "creature/model-loaded.json": receipt({ sha256: "d".repeat(64) }) }, /different model file/);
+  await no({ "home/model/manifest.json": manifest, "creature/model-loaded.json": receipt({ answered: false }) }, /did not answer|did not report/, { waitMs: 3000, pollMs: 1000, now: (() => { let c = 0; return () => (c += 1000); })() });
+  await no({ "home/model/manifest.json": manifest, "creature/model-loaded.json": bytes(JSON.stringify({ error: "a chunk failed its sha256", answered: false })) }, /could not load the model: a chunk failed/);
+  // no receipt: waits (on a fake clock) up to waitMs, then says the browser did not report
+  let t = 0;
+  await no({ "home/model/manifest.json": manifest }, /did not report loading/, { waitMs: 5000, pollMs: 1000, now: () => t, sleep: async (ms: number) => void (t += ms) });
+  assert.equal(t, 5000, "it waited the whole budget before saying no");
+  // a receipt that arrives while waiting is accepted
+  let polls = 0;
+  const late = async (path: string) => (path === "home/model/manifest.json" ? manifest : ++polls >= 3 ? receipt() : undefined);
+  assert.equal((await checkHomeModel(late, { waitMs: 60_000, pollMs: 1, sleep: async () => undefined })).ok, true);
+});
+
+test("episode=model wires the model check and its home prompt; an unknown episode is an error", async () => {
+  const saved = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    const p = await placerModule(options({ episode: "model", "home-wait-ms": "10" }));
+    assert.match(p.homePrompt ?? "", /trained model is in the browser/);
+    const res = await p.homeCheck!(async () => undefined);
+    assert.equal(res.ok, false);
+    assert.match(res.reason, /no model manifest/);
+    await assert.rejects(placerModule(options({ episode: "poem" })), /walks or model/);
+  } finally {
+    if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
+  }
+});

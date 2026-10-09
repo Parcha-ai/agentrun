@@ -39,6 +39,7 @@ import {
   toBase64,
   untag,
   workspaceDigest,
+  lazyPath,
   type Environment,
   type FileChange,
   type FileEntry,
@@ -77,6 +78,12 @@ export interface RunPipeOptions {
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** An attach refuses a workspace larger than this (its writer has its own limit, often smaller). Default 1 GiB. */
   readonly restoreLimitBytes?: number;
+  /**
+   * Prefixes of work/ an attach does not send (a large result written by the agent that nothing in the writer needs in its own
+   * workspace; a reader fetches it from the disk). They count toward no restore limit, are left out of the attached frame and the
+   * restore, and the frame says which they are. Everything else about them (the disk, the digests, the release evidence) is unchanged.
+   */
+  readonly noRestore?: readonly string[];
   /** A writer's unfinished uploads together may hold this many bytes; past it, an upload fails. Default 4 GiB. */
   readonly uploadLimitBytes?: number;
   /** A writer may have this many unfinished uploads; an upload past it is refused. Default 1024. */
@@ -263,12 +270,13 @@ export class RunPipe {
       t: "attached",
       epoch,
       generation: this.lease.generation,
-      manifest: manifest.entries,
+      manifest: manifest.entries.filter((e) => !lazyPath(e.path, this.#options.noRestore ?? [])),
       model: this.#options.model.options.model,
       budget: { used: this.#options.model.spent, cap: this.#options.model.options.budgetTokens },
       environments: extra.environments,
       ...(extra.move ? { move: extra.move } : {}),
       ...(extra.placed ? { placed: true } : {}),
+      ...(this.#options.noRestore?.length ? { noRestore: [...this.#options.noRestore] } : {}),
     });
     // Its grace starts now: its pings reach the pipe only once the attach is done.
     writer.attaching = false;
@@ -304,7 +312,7 @@ export class RunPipe {
     };
     try {
       for (const entry of manifest.entries) {
-        if (entry.kind !== "file") continue;
+        if (entry.kind !== "file" || lazyPath(entry.path, this.#options.noRestore ?? [])) continue;
         if (entry.size === 0) {
           await still(entry.path);
           continue;
@@ -810,13 +818,15 @@ export class RunPipe {
       else if (info.isDirectory()) entries.push({ path, kind: "directory" });
       else {
         // Refused before it is read: a file past the limit is never hashed only to be refused.
-        if (bytes + info.size > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
+        const lazy = lazyPath(path, this.#options.noRestore ?? []);
+        if (!lazy && bytes + info.size > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
         const { sha256, key, recorded } = await this.#fileDigest(path, full);
         stable &&= recorded;
         const size = Number(key.size);
-        bytes += size;
+        // files and bytes are what an attach restores: lazy prefixes are left out of both.
+        if (!lazy) bytes += size;
         if (bytes > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
-        files++;
+        if (!lazy) files++;
         keys.set(path, key);
         entries.push({ path, kind: "file", size, sha256, mode: info.mode & 0o777, mtimeMs: info.mtimeMs });
       }

@@ -38,6 +38,7 @@ const cloud = arg("cloud", "none");
 const cloudModule = arg("cloud-module", "");
 const cloudArgs = process.argv.flatMap((a, i) => (a === "--cloud-arg" ? [process.argv[i + 1]] : []));
 // Where a message should run, decided by a typed question (04-walks-home/vm/placer.ts): its --placer-arg KEY=VALUE pairs go to the module.
+const noRestore = process.argv.flatMap((a, i) => (a === "--no-restore" ? [process.argv[i + 1]] : []));
 const placerModule = arg("placer-module", "");
 const placerArgs = process.argv.flatMap((a, i) => (a === "--placer-arg" ? [process.argv[i + 1]] : []));
 const withModal = process.argv.includes("--modal");
@@ -98,6 +99,7 @@ const serveArgs = [
   "--cloud", cloud,
   ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
+  ...noRestore.flatMap((p) => ["--no-restore", p]),
   ...(evidenceReadback ? ["--evidence-readback"] : []),
   ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", ledger]),
 ];

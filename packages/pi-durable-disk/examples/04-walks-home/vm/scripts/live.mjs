@@ -23,6 +23,8 @@ const gpuNoteFile = arg("gpu-note-file", "");
 const chatInput = arg("chat-input", "#chatin");
 // The placement question's client: scripted until the key exists ("jev" needs TYPESAFE_API_KEY in the server's environment).
 const placerClient = arg("placer", "scripted");
+// The episode: "walks" (a creature learns to walk) or "model" (a language model is trained and comes home as a large file nobody restores).
+const episode = arg("episode", "walks");
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
 const warmCommandsFile = arg("warm-commands-file", "");
 // How long the user looks at the flopping creature before asking; the warm-up (about a minute) runs in that time and in the agent's first turn.
@@ -106,6 +108,7 @@ try {
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
+      ...(episode === "model" ? ["--placer-arg", "episode=model", "--no-restore", "home/model/"] : []),
       ...(placerClient === "jev" ? ["--typesafe"] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",

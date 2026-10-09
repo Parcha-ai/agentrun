@@ -4,6 +4,7 @@
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
+//                 [--no-restore PREFIX]...   work/ prefixes no writer is sent on attach (a large result read on demand through the disk proxy)
 //                 [--placer-module PATH [--placer-arg KEY=VALUE]...]  where the run should be, decided by a typed question (placement.ts) on each user message
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH] [--evidence-readback]
@@ -57,6 +58,7 @@ const { values } = parseArgs({
     "cloud-events": { type: "string" },
     "cloud-module": { type: "string" },
     "cloud-arg": { type: "string", multiple: true },
+    "no-restore": { type: "string", multiple: true },
     "placer-module": { type: "string" },
     "placer-arg": { type: "string", multiple: true },
     "cloud-link": { type: "boolean", default: false },
@@ -153,6 +155,7 @@ const server = createDemoServer({
   ...(ledger ? { ledger } : {}),
   ...(cloud ? { cloud } : {}),
   ...(placer ? { placer } : {}),
+  ...(values["no-restore"]?.length ? { noRestore: values["no-restore"] } : {}),
   ...(adminToken ? { adminToken } : {}),
   ...(values.local ? { acquire: async (opts) => localClaim(values.local!, opts), claimDir: (dir: string) => openClaimDir(dir, { fstype: null }) } : {}),
 });

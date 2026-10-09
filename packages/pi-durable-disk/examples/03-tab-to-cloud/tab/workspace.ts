@@ -2,7 +2,7 @@
 // what the pipe sends on attach, and after a tool find what changed and send it. The last state the pipe acknowledged
 // is the baseline; a change is sent whole (the file's content, which the pipe client chunks), a removal by name.
 // Portable: the files are reached through a WorkspaceFs (wasmer-env.ts's for the tab, host-fs.ts's for Node).
-import { workspaceDigest, type FileChange, type LocalWrite, type RestoredEntry } from "../wire.ts";
+import { lazyPath, workspaceDigest, type FileChange, type LocalWrite, type RestoredEntry } from "../wire.ts";
 
 /** The few file operations a workspace needs, on absolute paths under `root`. */
 export interface WorkspaceFs {
@@ -120,9 +120,15 @@ export class Workspace {
     return { files, bytes, skipped };
   }
 
-  /** The digest of what the pipe acknowledged last (`workspaceDigest`). */
+  #lazy: readonly string[] = [];
+  /** Prefixes the attach did not send: what this workspace holds under them is never compared or counted as the baseline (it syncs like any new file). */
+  setLazy(prefixes: readonly string[]): void {
+    this.#lazy = prefixes;
+  }
+
+  /** The digest of what the pipe acknowledged last (`workspaceDigest`), over everything but the lazy prefixes. */
   baselineDigest(): Promise<string> {
-    return workspaceDigest([...this.#baseline].map(([path, seen]) => (seen.kind === "file" ? `file ${path} ${seen.digest}` : `directory ${path}`)));
+    return workspaceDigest([...this.#baseline].filter(([path]) => !lazyPath(path, this.#lazy)).map(([path, seen]) => (seen.kind === "file" ? `file ${path} ${seen.digest}` : `directory ${path}`)));
   }
 
   /** The workspace as the files panel shows it. */

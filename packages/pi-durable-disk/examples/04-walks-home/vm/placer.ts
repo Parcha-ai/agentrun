@@ -64,6 +64,52 @@ export async function checkHomePolicy(read: (path: string) => Promise<Uint8Array
   return { ok: true, reason: "the trained brain is in place: it is a valid file made for the creature that was drawn." };
 }
 
+/**
+ * Episode 2 (the model comes home): is the trained model in the tab? Checked in code on the run's disk: the manifest the agent's work
+ * wrote (home/model/manifest.json, written last: the whole file's sha256 and its chunks) and the receipt the tab writes after it loaded that file and
+ * answered once, its first answer having passed the judge (creature/model-loaded.json: { sha256, answered: true }). The tab loads and answers only after the run is home, so the check waits for the receipt
+ * (up to `waitMs`) before it says no.
+ */
+export async function checkHomeModel(
+  read: (path: string) => Promise<Uint8Array | undefined>,
+  options: { waitMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<{ ok: boolean; reason: string }> {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = options.now ?? Date.now;
+  const json = async (path: string): Promise<Record<string, unknown> | undefined> => {
+    const bytes = await read(path);
+    if (!bytes || bytes.length === 0) return undefined;
+    try {
+      const v = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+      return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const manifest = await json("home/model/manifest.json");
+  if (!manifest) return { ok: false, reason: "the trained model was not written (no model manifest)" };
+  if (typeof manifest.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(manifest.sha256)) return { ok: false, reason: "the model manifest does not name the file by its sha256" };
+  const deadline = now() + (options.waitMs ?? 120_000);
+  for (;;) {
+    const loaded = await json("creature/model-loaded.json");
+    if (loaded) {
+      if (typeof loaded.error === "string") return { ok: false, reason: `the browser could not load the model: ${loaded.error}` };
+      if (loaded.answered !== true && loaded.sha256 === manifest.sha256 && now() < deadline) {
+        await sleep(options.pollMs ?? 1000); // loaded, its first answer still coming
+        continue;
+      }
+      if (loaded.sha256 !== manifest.sha256) return { ok: false, reason: "the tab loaded a different model file than the one that was trained" };
+      if (loaded.answered !== true) return { ok: false, reason: "the tab loaded the model but did not answer" };
+      return { ok: true, reason: "the trained model is in the browser and has answered once." };
+    }
+    if (now() >= deadline) return { ok: false, reason: "the browser did not report loading the model" };
+    await sleep(options.pollMs ?? 1000);
+  }
+}
+
+/** The agent's one home line for the model episode: what it says is bounded by the server's check below it. */
+export const HOME_PROMPT_MODEL = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for the model you trained, saying no more than the server's check below says: if it says the trained model is in the browser and has answered you may say it is ready to talk; if it says NO, say plainly that the last step did not work and why in simple words. Do not mention files, commands or training details.";
+
 export default async function placer(options: { log: (event: string, data?: Record<string, unknown>) => void; args: Record<string, string> }): Promise<Placer> {
   const scripted = options.args.client === "scripted" || !process.env.TYPESAFE_API_KEY;
   if (options.args.client !== undefined && options.args.client !== "scripted" && options.args.client !== "jev") throw new Error(`--placer-arg client=${options.args.client}: scripted or jev`);
@@ -76,5 +122,8 @@ export default async function placer(options: { log: (event: string, data?: Reco
   options.log("placer.ready", { client: scripted ? "scripted" : "jev" });
   // `gpu=ID` lets a stand-in host (a second process on this machine, in a dry run) take the H100's place under its own id.
   const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
-  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT, homeCheck: checkHomePolicy });
+  const episode = options.args.episode ?? "walks";
+  if (episode !== "walks" && episode !== "model") throw new Error(`--placer-arg episode=${episode}: walks or model`);
+  const model = episode === "model";
+  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: model ? HOME_PROMPT_MODEL : HOME_PROMPT, homeCheck: model ? (read) => checkHomeModel(read, { waitMs: Number(options.args["home-wait-ms"] ?? 120_000) }) : checkHomePolicy });
 }
