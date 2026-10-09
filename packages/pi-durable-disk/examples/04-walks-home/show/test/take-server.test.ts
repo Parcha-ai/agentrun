@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -65,5 +65,34 @@ describe("the take server launcher", () => {
     assert.notEqual(child.exitCode === null && child.signalCode === null, true, "it exited");
     for (let i = 0; i < 20 && existsSync(join(dir, "status.json")); i++) await new Promise((r) => setTimeout(r, 100));
     assert.ok(!existsSync(join(dir, "status.json")));
+  });
+
+  const refuse = (...args: string[]) => spawnSync(process.execPath, [script, "--dir", join(root, "refuse"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } });
+
+  it("on the real disk --mount-root is required: there is no default lane directory", () => {
+    const res = refuse();
+    assert.equal(res.status, 2);
+    assert.match(res.stderr, /--mount-root is required/);
+    assert.match(res.stderr, /no default/);
+  });
+
+  it("refuses a mount root that does not exist and creates nothing: a lane directory under /mnt/pda is made for the lane, never by this script", () => {
+    const parent = join(root, "no-such-lane");
+    const res = refuse("--mount-root", join(parent, "pipe"));
+    assert.equal(res.status, 2);
+    assert.match(res.stderr, /does not exist/);
+    assert.match(res.stderr, /does not create it/);
+    assert.ok(!existsSync(parent), "no directory was made");
+  });
+
+  it("refuses a mount root the caller does not own, and a file that is not a directory", () => {
+    const foreign = refuse("--mount-root", "/usr");
+    assert.equal(foreign.status, 2);
+    assert.match(foreign.stderr, /not owned by you/);
+    const file = join(root, "a-file");
+    writeFileSync(file, "x");
+    const notDir = refuse("--mount-root", file);
+    assert.equal(notDir.status, 2);
+    assert.match(notDir.stderr, /not a directory/);
   });
 });

@@ -102,8 +102,10 @@ the real tab app (6 checks).
 `scripts/take-server.mjs` starts the one 03 server the take uses, on a free loopback port: a fresh admin token (the server writes the
 token file, mode 0600, in a 0700 directory; nothing here reads it), `--tab-writable creature/creature.xml,creature/body.json,
 creature/designs.sqlite` (`memory.sqlite` is the agent's and is not tab-writable), the model through the broker, and a private log.
-On the real disk it runs under `with-archil` (the keys exist in that child only; mounts under this lane's `/mnt/pda/d5/`; the scratch disk
-the wrapper names); `--local DIR` is a dry run with no Archil. Its status file holds the origin and the paths, never a secret.
+On the real disk it runs under `with-archil` (the keys exist in that child only; the scratch disk the wrapper names) and needs
+`--mount-root <your own lane directory under /mnt/pda>/pipe`, which has no default: it must already exist, be a directory, and be owned by
+the caller, and the script never creates anything under `/mnt/pda`. `--ledger FILE` names where the disk resources are recorded (default: the private
+directory). `--local DIR` is a dry run with no Archil. Its status file holds the origin and the paths, never a secret.
 
 With a pipe feed the stage's `/api/disk/<path>` is that run's `work/`: the tab's `storage-read` (with `ifNoneMatch`, answered by content
 hash: `etag`, `notModified`) and `storage-write` go to `GET|PUT /api/runs/<id>/work/<path>` with the run secret the stage's server holds,
