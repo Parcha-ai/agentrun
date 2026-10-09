@@ -41,3 +41,25 @@ test("anything the page would load from outside is found", () => {
   }
   assert.deepEqual(findLeaks('<a href="https://docs.example/page.html">link</a>'), [], "a link is not a load");
 });
+
+test("lane scratch paths, worktree names and more host names are found", () => {
+  // Assembled from pieces, as above: the repo's export scanner reads this file too.
+  for (const [bad, rule] of [
+    [`raw rounds in ${j("d0", "-tmp/chaos/rounds.json")}`, "a lane scratch path"],
+    [`see ${j("d12", "-tmp/x")}`, "a lane scratch path"],
+    [`report in ${j("ev", "als/agentrun-archil-tl/demo/D0-REPORT.md")}`, "a lane scratch path"],
+    [`a temp dir ${j("tm", "p/pda-demo-links")}`, "a lane scratch path"],
+    [`built in ${j("work", "trees/demo-d0-show")}`, "a worktree name"],
+    [`checked out as ${j("demo-", "d4-vm")}`, "a worktree name"],
+    [`the ${j("agentrun-", "pda-demo")} checkout`, "a worktree name"],
+    [`the box ${j("grep", "py2")}`, "a machine or user name"],
+    [`host ${j("ns", "1234567")}`, "a machine or user name"],
+    [`reach it at ${j("box.tail1234.", "ts", ".", "net")}`, "a machine or user name"],
+    [`instance ${j("ip-10-", "0-1-23")}`, "a machine or user name"],
+  ] as const) assert.ok(findLeaks(`<p>${bad}</p>`).some((l) => l.rule === rule), bad);
+  // Words the show uses legitimately are fine.
+  for (const ok of ["a Modal T4 sandbox in us-east, the disk in aws-us-east-1", "demo/walks-home @ 779e4d9", "the tab-to-cloud demo, 10 rounds", "pipe hop median 3.4 s"]) {
+    assert.deepEqual(findLeaks(`<p>${ok}</p>`), [], ok);
+  }
+});
+
