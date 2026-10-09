@@ -77,3 +77,51 @@ export async function freePort() {
     });
   });
 }
+
+/**
+ * Refuse unless `origin` answers like a stage: a JSON state with a run and an environments list. A check must never test
+ * whatever happens to be on a port; on this shared box that is often another lane's server.
+ */
+export async function assertStage(origin) {
+  let res;
+  try {
+    res = await fetch(`${origin}/api/state`, { signal: AbortSignal.timeout(4000) });
+  } catch (error) {
+    throw new Error(`${origin} is not a stage: nothing answered (${error.message})`);
+  }
+  if (!res.ok) throw new Error(`${origin} is not a stage: /api/state answered ${res.status}`);
+  const state = await res.json().catch(() => undefined);
+  if (!state || typeof state !== "object" || typeof state.run !== "string" || !Array.isArray(state.environments)) throw new Error(`${origin} is not a stage: /api/state is not a stage's state`);
+  return state;
+}
+
+/**
+ * Wait for the stage a script just started on `port`, and stop at once if its own child exits first. Without the second part, a
+ * child that failed to start leaves the port to whatever else answers there, and the check goes on to test that.
+ */
+export async function waitForStage(port, child, ms = 20_000) {
+  const end = Date.now() + ms;
+  let last = "";
+  while (Date.now() < end) {
+    if (child.exitCode !== null) throw new Error(`the server this check started on port ${port} exited with code ${child.exitCode} before it came up`);
+    try {
+      return await assertStage(`http://127.0.0.1:${port}`);
+    } catch (error) {
+      last = error.message;
+    }
+    await sleep(200);
+  }
+  throw new Error(`the server this check started on port ${port} did not come up in ${ms} ms (${last})`);
+}
+
+/** Wait for a file the child writes when it is ready, stopping at once if the child exits first. */
+export async function waitForFile(file, child, ms = 30_000) {
+  const { existsSync } = await import("node:fs");
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (existsSync(file)) return;
+    if (child.exitCode !== null) throw new Error(`the process this check started exited with code ${child.exitCode} before it wrote ${file}`);
+    await sleep(200);
+  }
+  throw new Error(`${file} did not appear in ${ms} ms`);
+}

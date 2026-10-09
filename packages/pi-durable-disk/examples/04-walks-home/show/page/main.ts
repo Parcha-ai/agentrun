@@ -217,6 +217,9 @@ const OPS: Record<string, () => void> = {
   collapse: () => void run("collapse", { t: "collapse" }),
   home: () => void run("home", { t: "switch", to: homeEnv(feed.state) }),
   reset: () => void run("reset", { t: "reset" }),
+  // Straight to the tab app, not a feed command: a push a creature shrugs off (60 N) and one that puts it on its back (400 N).
+  kick60: () => bridge.send({ type: "kick", dir: [1, 0], force_n: 60 }),
+  kick400: () => bridge.send({ type: "kick", dir: [1, 0], force_n: 400 }),
   ask: () => void run("ask", { t: "ask" }),
 };
 operator.querySelectorAll<HTMLButtonElement>("button[data-op]").forEach((b) => b.addEventListener("click", () => OPS[b.dataset.op!]()));
@@ -224,7 +227,7 @@ addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.matches?.("input, textarea")) return;
   if (e.key === "o") operator.hidden = !operator.hidden;
   else if (!operator.hidden) {
-    const key = { p: "prewarm", f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask" }[e.key];
+    const key = { p: "prewarm", f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask", x: "kick60", X: "kick400" }[e.key];
     if (key) OPS[key]();
     else if (e.key === "Escape") operator.hidden = true;
   }

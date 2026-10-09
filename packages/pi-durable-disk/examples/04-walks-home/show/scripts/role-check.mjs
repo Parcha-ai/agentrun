@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, sleep } from "./cdp.mjs";
+import { freePort, sleep, waitForFile, waitForStage } from "./cdp.mjs";
 
 const show = join(dirname(fileURLToPath(import.meta.url)), "..");
 const root = join(homedir(), "tmp-d5", `role-${Date.now().toString(36)}`);
@@ -32,13 +32,15 @@ const until = async (fn, ms) => {
 };
 try {
   const hostPort = await freePort();
-  start(join(show, "second-host.ts"), ["--port", String(hostPort), "--root", root, "--link-file", join(root, "link")], { TMPDIR: join(homedir(), "tmp-d5", "tmp") });
-  await until(() => existsSync(join(root, "link")), 30_000);
+  const hostChild = start(join(show, "second-host.ts"), ["--port", String(hostPort), "--root", root, "--link-file", join(root, "link")], { TMPDIR: join(homedir(), "tmp-d5", "tmp") });
+  await waitForFile(join(root, "link"), hostChild, 30_000);
   const link = join(root, "link");
   const ports = { view: await freePort(), operator: await freePort() };
   for (const [role, port] of Object.entries(ports)) {
-    start(join(show, "serve.ts"), [], { SHOW_PORT: String(port), SHOW_PIPE_LINK_FILE: link, SHOW_PIPE_ROLE: role, SHOW_ASK_AFTER_SWITCH: "0" });
-    await until(async () => (await fetch(`http://127.0.0.1:${port}/api/state`).then((r) => r.ok).catch(() => false)) && (await fetch(`http://127.0.0.1:${port}/api/state`).then((r) => r.json())).environments.length > 0, 20_000);
+    const child = start(join(show, "serve.ts"), [], { SHOW_PORT: String(port), SHOW_PIPE_LINK_FILE: link, SHOW_PIPE_ROLE: role, SHOW_ASK_AFTER_SWITCH: "0" });
+    await waitForStage(port, child);
+    // The pipe's environments arrive a moment after the stage is up.
+    await until(async () => (await (await fetch(`http://127.0.0.1:${port}/api/state`)).json()).environments.length > 0, 20_000);
   }
   const sw = await post(ports.view, { t: "switch", to: "second-host" });
   expect("a view stage's switch is refused with the pipe's reason", sw.status === 409 && /only watches the run/.test(sw.body.message ?? ""), sw);

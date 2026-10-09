@@ -9,7 +9,7 @@ import { fold } from "../reduce.ts";
 import { findLeaks } from "../publishable.ts";
 import { renderReference } from "../reference.ts";
 import { ScenarioPlayer } from "../scenario.ts";
-import { openTab, sleep } from "./cdp.mjs";
+import { assertStage, openTab, sleep } from "./cdp.mjs";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -100,6 +100,7 @@ const BEATS = [
   },
 ];
 
+await assertStage(new URL(url).origin);
 const tab = await openTab(url, { width: 1600, height: 900 });
 const stills = {};
 try {

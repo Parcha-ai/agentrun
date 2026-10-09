@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freePort, openTab, sleep } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForFile, waitForStage } from "./cdp.mjs";
 import { startScreencast } from "./screencast.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -69,11 +69,11 @@ try {
   hostProc.stderr.on("data", (d) => hostLines.push(String(d)));
   kids.push(hostProc);
   const linkFile = join(root, "link");
-  await until(() => existsSync(linkFile), 30_000, `the second-host server (${hostLines.join("").slice(-300)})`);
+  await waitForFile(linkFile, hostProc, 30_000).catch((e) => { throw new Error(`${e.message}: ${hostLines.join("").slice(-300)}`); });
   const link = readFileSync(linkFile, "utf8").trim();
   const stageProc = run(join(show, "serve.ts"), { SHOW_PORT: String(stagePort), SHOW_PIPE_LINK_FILE: linkFile, TAB_DIR: tabDir, SHOW_PIPE_TRACE: process.env.SHOW_PIPE_TRACE ?? "" }, "stage");
   stageLog = () => stageProc.log();
-  await until(async () => (await fetch(`http://127.0.0.1:${stagePort}/api/state`).then((r) => r.ok).catch(() => false)), 20_000, `the stage (${stageProc.log()})`);
+  await waitForStage(stagePort, stageProc);
 
   // The real 03 tab page, as the run's writer.
   writer = await openTab(link, { width: 1400, height: 800 });

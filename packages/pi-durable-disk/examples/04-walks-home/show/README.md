@@ -95,6 +95,18 @@ not wall time); what the policy file says about itself (its host, its training s
 real tab, so they are never tagged SCRIPTED even when the feed is. `node scripts/arrival-check.mjs` checks it in real Chrome with
 the real tab app (6 checks).
 
+## Takes
+
+`scripts/record.mjs` records a take and writes `<video>.captions.json` beside it: every caption the page showed, with the second it
+appeared and its tag. `--kick-after N --kick-forces 60,400` pushes the creature once the policy is in the tab (the operator panel
+has the same two kicks: `x` is 60 N, `X` is 400 N). A short take of the home beat: boot the scripted feed at 3:10
+(`SHOW_START=190`), then `record.mjs --no-reset`. `scripts/take-page.mjs` turns a take into one self-contained docs page (the video
+inline, the captions with their tags, what the policy file reports about itself) and runs the publish gate first.
+
+Every check script refuses to run unless its own server came up: `assertStage` (the server must answer with a stage's state, so
+another lane's server on the port is refused) and `waitForStage` (and it stops at once if the child it started has exited) are in
+`scripts/cdp.mjs`, and the scripts that take a URL assert before they send anything.
+
 ## Honest numbers
 
 A feed says where it comes from: `run.source` is `live` (the default) or `scripted`. A scripted feed gets a permanent
