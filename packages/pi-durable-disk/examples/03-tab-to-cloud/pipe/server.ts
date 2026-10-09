@@ -395,6 +395,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
       },
       close: (code, reason) => ws.close(code, reason),
+      bufferedAmount: () => ws.bufferedAmount,
+      isOpen: () => ws.readyState === ws.OPEN,
     };
   }
 
@@ -455,7 +457,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   async function viewingFrame(state: RunState): Promise<PipeFrame> {
-    const files = state.pipe ? await state.pipe.restoreManifest().catch(() => []) : [];
+    const files = state.pipe ? await state.pipe.viewerFiles().catch(() => []) : [];
     return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [], environments };
   }
 
@@ -482,6 +484,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       case "files":
         if (pipe) await pipe.files(socket, frame.id, frame.changes);
         else socket.send({ t: "res", id: frame.id, ok: false, error: { name: "PipeLostError", code: "NO_PIPE", message: "no pipe holds the run" } });
+        return;
+      case "upload":
+        // In order with the write-through that names it: each chunk is written before the next frame is handled.
+        await pipe?.upload(socket, frame.id, frame.offset, frame.data);
+        return;
+      case "restored":
+        pipe?.restored(socket, frame);
         return;
       case "model":
         if (pipe) await pipe.model(socket, frame.id, frame.path, frame.body);
@@ -525,6 +534,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   const accept = (ws: WebSocket) => wss.emit("connection", ws);
   wss.on("connection", (ws: WebSocket) => {
     const socket = adapt(ws, randomBytes(6).toString("hex"));
+    // A frame over maxPayload, or a broken connection, is an error event before the close; unhandled it would end the
+    // server. The close that follows detaches the socket as usual.
+    ws.on("error", (error) => log("ws.error", { socket: socket.id, error: error.message }));
     let state: RunState | undefined;
     // Set synchronously on the first frame: every later frame waits behind the hello, never races it.
     let hello: Promise<void> | undefined;
@@ -548,6 +560,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         ws.close(4003, "HELLO_FIRST");
         return;
       }
+      state?.pipe?.heard(socket);
       const handle = () => (state ? onFrame(ws, socket, state, frame) : Promise.resolve());
       const failed = (error: unknown) => log("frame.failed", { error: (error as Error).message });
       // Storage calls and write-throughs run in arrival order; model streams and pings must not wait behind them.

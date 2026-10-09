@@ -14,13 +14,18 @@ type Tagged =
   | { t: "a"; v: Tagged[] }
   | { t: "o"; v: Record<string, Tagged> };
 
+/** Node's Buffer where there is one (a remote host, the pipe, tests): base64 of a chunk in one native call. */
+const NodeBuffer = (globalThis as { Buffer?: { from(data: Uint8Array): { toString(encoding: "base64"): string }; from(data: string, encoding: "base64"): Uint8Array } }).Buffer;
+
 export function toBase64(bytes: Uint8Array): string {
+  if (NodeBuffer) return NodeBuffer.from(bytes).toString("base64");
   let text = "";
   for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(text);
 }
 
 export function fromBase64(text: string): Uint8Array {
+  if (NodeBuffer) return NodeBuffer.from(text, "base64");
   const raw = atob(text);
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
@@ -125,17 +130,52 @@ export function errorFromWire(wire: WireError): Error {
   return error;
 }
 
-/** A workspace change as the tab reports it after a tool: a file's whole content, a directory, or a removal. */
+/**
+ * The most file content one frame carries, raw: a write-through frame's inline data in total, one upload chunk, one
+ * restore chunk. Base64 makes it 4/3 larger, far under the 64 MiB a WebSocket here accepts; and small enough that a
+ * frame takes about a second on a 1 MB/s link, so the frames of a long upload keep showing the writer is alive.
+ */
+export const CHUNK_BYTES = 1024 * 1024;
+
+/**
+ * A workspace change as the tab reports it after a tool: a file's whole content, a directory, or a removal. A file's
+ * content travels inline (`data`, base64) or, past CHUNK_BYTES, as an upload the tab sent first in `upload` frames
+ * (`upload`: its id, size and SHA-256 hex); the pipe puts it in place only when both match.
+ */
 export type FileChange =
   | { path: string; op: "write"; data: string; mode?: number; mtimeMs?: number }
+  | { path: string; op: "write"; upload: { id: string; size: number; sha256: string }; mode?: number; mtimeMs?: number }
   | { path: string; op: "mkdir" }
   | { path: string; op: "delete" };
 
-/** A workspace entry as the pipe restores it into a tab (data base64; symlinks carry their target text, never followed). */
+/** A write as a host hands it to `PipeClient.syncFiles`: the content as bytes (never on the wire as such). */
+export type LocalWrite = { path: string; op: "write"; bytes: Uint8Array; mode?: number; mtimeMs?: number };
+
+/** A workspace entry as a viewer sees it (data base64; symlinks carry their target text, never followed). */
 export type FileEntry =
   | { path: string; kind: "file"; data: string; mode: number; mtimeMs: number }
   | { path: string; kind: "directory" }
   | { path: string; kind: "symlink"; target: string };
+
+/** A workspace entry in the manifest an attach starts with: a file's size and SHA-256 hex, not its content. */
+export type ManifestEntry =
+  | { path: string; kind: "file"; size: number; sha256: string; mode: number; mtimeMs: number }
+  | { path: string; kind: "directory" }
+  | { path: string; kind: "symlink"; target: string };
+
+/** A workspace entry as the writer restores it: a file's content, received in chunks and checked against the manifest. */
+export type RestoredEntry =
+  | { path: string; kind: "file"; bytes: Uint8Array; mode: number; mtimeMs: number }
+  | { path: string; kind: "directory" }
+  | { path: string; kind: "symlink"; target: string };
+
+/** SHA-256 hex of `bytes`. Portable: Web Crypto. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as unknown as ArrayBuffer));
+  let hex = "";
+  for (const b of hash) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}
 
 /**
  * One digest of a workspace: SHA-256 over its sorted lines `file <path> <sha256 of content>` and `directory <path>`
@@ -173,6 +213,11 @@ export type TabFrame =
   | { t: "hello"; run: string; token: string; mode: "write" | "view"; tab: string; takeover?: boolean; switchId?: string }
   | { t: "rpc"; id: number; method: StorageMethod; args: Tagged[] }
   | { t: "files"; id: number; changes: FileChange[] }
+  /** Part of an upload (base64, at most CHUNK_BYTES raw), in order: `offset` is the bytes sent before it. No answer. */
+  | { t: "upload"; id: string; offset: number; data: string }
+  /** The restore after `attached` arrived whole and matched its manifest (or why not). */
+  | { t: "restored"; ok: true; files: number; bytes: number; ms: number }
+  | { t: "restored"; ok: false; error: string }
   | { t: "model"; id: number; path: string; body: Tagged }
   | { t: "model-abort"; id: number }
   | { t: "view"; event: Tagged }
@@ -185,7 +230,11 @@ export type TabFrame =
 
 /** Frames from the pipe to a tab. */
 export type PipeFrame =
-  | { t: "attached"; epoch: number; generation: number; files: FileEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move }
+  /** The writer's attachment: work/ as a manifest; the files follow in `restore-chunk` frames, then `restore-end`. */
+  | { t: "attached"; epoch: number; generation: number; manifest: ManifestEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move }
+  /** Part of a manifest file's content (base64, at most CHUNK_BYTES raw), in order. */
+  | { t: "restore-chunk"; path: string; offset: number; data: string }
+  | { t: "restore-end"; files: number; bytes: number }
   | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[] }
   | { t: "res"; id: number; ok: true; result: Tagged; ms?: number }
   | { t: "res"; id: number; ok: false; error: WireError }
