@@ -111,6 +111,10 @@ async function arrivalScenario() {
     const a2 = await waitEvent('policy-arrived', n);
     r.withMetadata = a2 && { message: a2.message, host: a2.host, training_seconds: a2.training_seconds, switched_body: a2.switched_body, installed_ms: a2.arrival_to_installed_ms };
     r.toastShown = await inner("document.getElementById('toast').textContent");
+    // the stage also sends load-policy for the same file when the run is home: one arrival, not two
+    const dataUrl = 'data:application/json;base64,' + Buffer.from(readFileSync(withMeta, 'utf8')).toString('base64');
+    await ev(`sendToTab({ type: 'load-policy', url: ${JSON.stringify(dataUrl)} })`); await sleep(2000);
+    r.arrivalsAfterDoubleAnnounce = await ev("events.filter(e => e.type === 'policy-arrived').length"); // 2: the no-metadata one and this one
     const walked = await waitEvent('policy-walked', n, 120000);
     r.walked = walked && { arrival_to_walking_ms: walked.arrival_to_walking_ms, sim_seconds_to_walking: walked.sim_seconds_to_walking, mean_speed_10s: walked.mean_speed && +walked.mean_speed.toFixed(3), fell: walked.fell };
     r.noDuplicates = (await ev("events.filter(e => e.type === 'policy-arrived').length")) === 2;

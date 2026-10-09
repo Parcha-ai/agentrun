@@ -151,6 +151,9 @@ export class Policy {
     this.getup = file.getup ? new Net(file.getup.obs ?? file.obs, file.getup.layers, file.getup.act ?? file.act) : null;
   }
 
+  /** Number of joints this policy drives (the width of its last layer). */
+  get nj(): number { return this.file.layers[this.file.layers.length - 1].out; }
+
   /** True when the file carries a getup network. */
   get hasGetup(): boolean { return this.getup !== null; }
 
