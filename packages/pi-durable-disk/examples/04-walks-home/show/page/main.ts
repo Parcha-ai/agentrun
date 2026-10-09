@@ -1,10 +1,11 @@
-import type { HostKind, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
+import type { HostKind, Note, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
 import { captionsFor } from "./caption.ts";
 import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
+import { notesFromTabEvent } from "./tab-notes.ts";
 import { renderTimeline } from "./timeline.ts";
 
 const params = new URLSearchParams(location.search);
@@ -67,8 +68,18 @@ async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "st
   }
 }
 
+// What the tab reports about a policy coming home, as narration on the page's own clock, next to the feed's notes. These are
+// real even when the feed is the scripted one, so they carry their own origin and basis (see tab-notes.ts).
+const tabNotes: Note[] = [];
+/** The feed's notes and the tab's, in time order, as one state for captions and the narration column. */
+function withTabNotes(state: ShowState): ShowState {
+  return tabNotes.length === 0 ? state : { ...state, notes: [...state.notes, ...tabNotes].sort((a, b) => a.at - b.at) };
+}
+
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
+  tabNotes.push(...notesFromTabEvent(m, feed.captionNow()));
+  if (tabNotes.length > 60) tabNotes.splice(0, tabNotes.length - 60);
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
     .map(([k, v]) => `${k}=${typeof v === "number" ? Math.round(v as number) : String(v).slice(0, 14)}`)
@@ -222,7 +233,7 @@ if (params.get("operator") === "1") operator.hidden = false;
 
 let shownCaption = "";
 function renderCaption(state: ShowState): void {
-  const list = captionsFor(state, feed.captionNow());
+  const list = captionsFor(withTabNotes(state), feed.captionNow());
   const el = $("caption");
   const key = list.map((c) => `${c.at}|${c.tag}|${c.text}`).join("\n");
   if (key === shownCaption) return;
@@ -241,7 +252,7 @@ function frame(): void {
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);
-  renderNotes(state, now);
+  renderNotes(withTabNotes(state), now);
 }
 
 feed.onChange((event: ShowEvent | null) => {
