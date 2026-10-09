@@ -13,8 +13,9 @@
 // files substituted ({mjcf}, {body}): a warm-up of another program warms nothing.
 //
 // The box is the caller's (the demo's cloud module creates, tracks and deletes it); this file only runs commands on it.
-// One warm-up runs at a time (a compile uses every CPU of the box): a call for the creature already being warmed shares
-// that warm-up, a call for another creature runs after it.
+// One warm-up runs at a time: a call for the creature already being warmed shares that warm-up, and a call for another
+// creature runs after it. Only the newest creature matters (the user redrew): a queued warm-up that a newer call
+// supersedes before it starts is skipped, and its promise rejects with WarmSuperseded.
 import { createHash } from "node:crypto";
 
 /** What this needs of the box: run a shell command as root, and write a file. */
@@ -59,6 +60,18 @@ export interface WarmTrain {
   warmed(): readonly string[];
 }
 
+/** A queued warm-up skipped because a newer creature was asked for before it started. */
+export class WarmSuperseded extends Error {
+  readonly creature: string;
+  readonly by: string;
+  constructor(creature: string, by: string) {
+    super(`the warm-up for ${creature} was skipped: ${by} was asked for after it`);
+    this.name = "WarmSuperseded";
+    this.creature = creature;
+    this.by = by;
+  }
+}
+
 export const creatureId = (xml: Uint8Array): string => createHash("sha256").update(xml).digest("hex").slice(0, 12);
 
 /** A single-quoted shell word. */
@@ -82,6 +95,8 @@ export function warmTrain(box: WarmBox, o: WarmTrainOptions): WarmTrain {
   const inFlight = new Map<string, Promise<WarmReport>>();
   let line: Promise<unknown> = Promise.resolve();
   let last: Promise<WarmReport> | null = null;
+  /** The creature asked for most recently: a queued warm-up of any other is skipped when its turn comes. */
+  let newest: string | null = null;
 
   const run = async (id: string, creature: Creature): Promise<WarmReport> => {
     const t0 = now();
@@ -112,10 +127,12 @@ export function warmTrain(box: WarmBox, o: WarmTrainOptions): WarmTrain {
   return {
     warm(creature) {
       const id = creatureId(creature.xml);
+      newest = id;
       const running = inFlight.get(id);
       if (running) return running;
-      // One at a time: after whatever runs now, failed or not.
-      const p = line.then(() => run(id, creature), () => run(id, creature));
+      // One at a time: after whatever runs now, failed or not; skipped if another creature was asked for meanwhile.
+      const turn = () => (newest === id ? run(id, creature) : Promise.reject(new WarmSuperseded(id, newest!)));
+      const p = line.then(turn, turn);
       line = p.catch(() => undefined);
       inFlight.set(id, p);
       last = p;

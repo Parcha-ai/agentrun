@@ -2,11 +2,13 @@
 // one warm-up at a time; a repeated creature shares its warm-up; a failing command stops the rest and is reported.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { creatureId, warmTrain, type WarmBox } from "../warm-train.ts";
+import { creatureId, WarmSuperseded, warmTrain, type WarmBox } from "../warm-train.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const take = { xml: enc('<mujoco model="take"/>'), body: enc('{"jointNames":["a"]}') };
 const other = { xml: enc('<mujoco model="other"/>'), body: enc('{"jointNames":["b"]}') };
+const third = { xml: enc('<mujoco model="third"/>'), body: enc('{"jointNames":["c"]}') };
+const started = () => new Promise((r) => setTimeout(r, 5));
 const WALK = "python /opt/pda/train/train.py --mjcf {mjcf} --body {body} --universe u1.json --num-envs 512 --schedule 0.5M,1M --compile-cache $HOME/.cache/cc.tar.gz --compile-only";
 const GETUP = "python /opt/pda/train/train.py --mjcf {mjcf} --body {body} --universe getup.json --schedule 5M --compile-only";
 
@@ -53,6 +55,7 @@ test("a repeated creature shares its warm-up; another creature waits for it; pen
   const w = warmTrain(s.box, { commands: [WALK] });
   const a = w.warm(take);
   assert.equal(w.warm(take), a, "the same creature: one warm-up");
+  await started();
   const b = w.warm(other);
   assert.ok(w.pending());
   await Promise.all([a, b]);
@@ -60,6 +63,21 @@ test("a repeated creature shares its warm-up; another creature waits for it; pen
   assert.equal(s.calls.filter((c) => c.includes("train.py")).length, 2);
   assert.deepEqual(w.warmed().sort(), [creatureId(take.xml), creatureId(other.xml)].sort());
   assert.equal(w.pending(), null);
+});
+
+test("newest wins: queued warm-ups that a newer creature supersedes are skipped; the running one finishes", async () => {
+  const s = scripted();
+  const w = warmTrain(s.box, { commands: [WALK] });
+  const a = w.warm(take);
+  await started();
+  const b = w.warm(other);
+  const c = w.warm(third);
+  await a;
+  await assert.rejects(b, (e: unknown) => e instanceof WarmSuperseded && e.creature === creatureId(other.xml) && e.by === creatureId(third.xml));
+  assert.equal((await c).creature, creatureId(third.xml));
+  const warmedFor = s.calls.filter((c) => c.includes("train.py")).map((c) => /pda-warm\/([0-9a-f]{12})\//.exec(c)![1]);
+  assert.deepEqual(warmedFor, [creatureId(take.xml), creatureId(third.xml)], "other never compiled");
+  assert.deepEqual(w.warmed().sort(), [creatureId(take.xml), creatureId(third.xml)].sort());
 });
 
 test("a failing command rejects with its output, runs no later command, and does not count as warm", async () => {
