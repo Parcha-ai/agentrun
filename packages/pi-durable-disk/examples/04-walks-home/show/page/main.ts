@@ -1,5 +1,6 @@
-import type { ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
+import type { ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
+import { captionFor } from "./caption.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
@@ -32,7 +33,7 @@ $("killone").addEventListener("click", () => {
   const l = leader(feed.state);
   if (l) void kill(l.id);
 });
-$("kick").addEventListener("click", () => bridge.send({ type: "kick", dir: [1, 0, 0.2], force_n: 60 }));
+$("kick").addEventListener("click", () => bridge.send({ type: "kick", dir: [1, 0], force_n: 60 }));
 $("memory").addEventListener("click", () => bridge.send({ type: "open-memory" }));
 
 let tabLine: string[] = [];
@@ -41,7 +42,30 @@ function tabEvent(text: string): void {
   $("tabevents").textContent = tabLine.join("  |  ");
 }
 
+/** The tab's memory files live on the stage's disk (server side), so a reload of the page keeps the creature. */
+async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "storage-write" }>): Promise<void> {
+  const url = `/api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`;
+  try {
+    if (m.type === "storage-read") {
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.status === 204 || res.status === 404) return bridge.send({ type: "storage-result", id: m.id, bytes: null });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()) });
+    }
+    // The write is acknowledged only after the disk has it: the tab treats the ack as durability.
+    const res = await fetch(url, { method: "PUT", body: m.bytes as BodyInit });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    bridge.send({ type: "storage-written", id: m.id });
+    tabEvent(`disk write ${m.path} ${m.bytes.byteLength} B`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (m.type === "storage-read") bridge.send({ type: "storage-result", id: m.id, bytes: null, error: message });
+    else bridge.send({ type: "storage-written", id: m.id, error: message });
+  }
+}
+
 bridge.onMessage((m: TabToShell) => {
+  if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
     .map(([k, v]) => `${k}=${typeof v === "number" ? Math.round(v as number) : String(v).slice(0, 14)}`)
@@ -66,17 +90,18 @@ bridge.onReady(() => {
   maybeSendPolicy(feed.state);
 });
 
-/** The winner's policy goes to the tab once, when the run is home: a same-origin path, the format is D2's and D3's. */
+/** The winner's policy goes to the tab once, when the run is home. D2 writes it as work/home/policy.json (mlp-v1 JSON); the stage serves it at /policy/home.json from POLICY_DIR. */
 function maybeSendPolicy(state: ShowState): void {
   if (state.place.where !== "home" || !bridge.ready) return;
   const winner = Object.values(state.universes).find((u) => u.status === "winner");
   if (!winner || policySentFor === winner.id) return;
   policySentFor = winner.id;
-  bridge.send({ type: "load-policy", url: `/policy/${encodeURIComponent(winner.id)}.bin` });
+  bridge.send({ type: "load-policy", url: "/policy/home.json" });
 }
 
 function renderChrome(state: ShowState): void {
   $("run").textContent = state.run;
+  $("source").hidden = state.source !== "scripted";
   const sw = $("switcher");
   const sig = state.environments.map((e) => e.id).join();
   if (sw.dataset.sig !== sig) {
@@ -105,7 +130,8 @@ function renderChrome(state: ShowState): void {
   $("rate").textContent = `${usd(state.cost.ratePerMin, 3)}/min`;
   const us = Object.values(state.universes);
   const live = us.filter((u) => u.status === "training" || u.status === "takeover" || u.status === "starting").length;
-  $("mvsum").textContent = us.length ? `${live} live` : "";
+  $("mvsum").textContent = us.length ? `${live} live${state.scoreUnit ? `  |  score: ${state.scoreUnit}` : ""}` : "";
+  $("mv").classList.toggle("dormant", us.length === 0);
   ($("killone") as HTMLButtonElement).disabled = !leader(state);
   $("lost").hidden = !feed.lost;
 }
@@ -120,10 +146,74 @@ function renderNotes(state: ShowState, now: number): void {
   }
 }
 
+// The operator panel: one person runs the show from the page. It is hidden on camera; `o` toggles it, and while it is
+// open f / k / c / h / r are shortcuts. Every button is a command to the feed; a refusal is printed, never hidden.
+const operator = $("operator");
+async function run(label: string, cmd: ShowCommand): Promise<void> {
+  const out = $("opresult");
+  out.className = "";
+  out.textContent = `${label}...`;
+  const r = await feed.command(cmd).catch((e) => ({ ok: false, message: e instanceof Error ? e.message : String(e) }));
+  out.textContent = r.ok ? `${label}: ok` : `${label}: ${r.message ?? "refused"}`;
+  out.className = r.ok ? "" : "bad";
+}
+function homeEnv(state: ShowState): string {
+  return state.environments.find((e) => e.id === "home")?.id ?? [...state.environments].reverse().find((e) => e.kind === "tab")?.id ?? "tab";
+}
+function renderOperator(state: ShowState): void {
+  const box = $("openvs");
+  const envs = state.environments.filter((e) => e.kind !== "gpu" && e.id !== "home" && e.id !== "universes");
+  const sig = envs.map((e) => e.id).join();
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = envs.map((e) => `<button data-env="${esc(e.id)}">${esc(e.label)}</button>`).join("");
+  box.querySelectorAll<HTMLButtonElement>("button").forEach((b) => b.addEventListener("click", () => void run(`switch ${b.dataset.env}`, { t: "switch", to: b.dataset.env! })));
+}
+const OPS: Record<string, () => void> = {
+  fanout: () => void run("fan out", { t: "fanout" }),
+  kill: () => {
+    const l = leader(feed.state);
+    if (l) void run(`kill ${l.id}`, { t: "kill", universe: l.id });
+    else void run("kill", { t: "kill", universe: "" });
+  },
+  collapse: () => void run("collapse", { t: "collapse" }),
+  home: () => void run("home", { t: "switch", to: homeEnv(feed.state) }),
+  reset: () => void run("reset", { t: "reset" }),
+};
+operator.querySelectorAll<HTMLButtonElement>("button[data-op]").forEach((b) => b.addEventListener("click", () => OPS[b.dataset.op!]()));
+addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.matches?.("input, textarea")) return;
+  if (e.key === "o") operator.hidden = !operator.hidden;
+  else if (!operator.hidden) {
+    const key = { f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset" }[e.key];
+    if (key) OPS[key]();
+    else if (e.key === "Escape") operator.hidden = true;
+  }
+});
+if (params.get("operator") === "1") operator.hidden = false;
+
+let shownCaption = "";
+function renderCaption(state: ShowState, now: number): void {
+  const c = captionFor(state, now);
+  const el = $("caption");
+  const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
+  if (key === shownCaption) return;
+  shownCaption = key;
+  el.hidden = !c;
+  if (!c) return;
+  const tag = el.querySelector<HTMLElement>(".tag")!;
+  tag.hidden = c.tag === null;
+  tag.className = `tag ${c.tag ?? ""}`;
+  tag.textContent = c.tag ?? "";
+  el.querySelector<HTMLElement>(".txt")!.textContent = c.text;
+}
+
 function frame(): void {
   const state = feed.state;
   const now = feed.liveNow();
   renderChrome(state);
+  renderOperator(state);
+  renderCaption(state, now);
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);

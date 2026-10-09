@@ -21,7 +21,7 @@ const t = (l: Line) => Date.parse(l.at);
 
 // Handover: each move to the cloud, to the next cloud open and first commit of a new generation.
 const handovers = [];
-for (const move of server.filter((l) => l.event === "placement" && l.where === "moving" && l.to === "cloud")) {
+for (const move of server.filter((l) => l.event === "placement" && l.where === "moving" && l.env !== "tab" && /tab is gone/.test(String(l.detail)))) {
   const open = cloud.find((c) => c.event === "open" && t(c) >= t(move));
   if (!open) continue;
   const commit = cloud.find((c) => c.event === "commit" && c.generation === open.generation && t(c) >= t(open));
@@ -46,7 +46,7 @@ const zeroLossEnd = { tabAckedDigest: lastTab?.ackedDigest ?? null, diskDigestAt
 
 // Takeovers from the cloud: the pipe's open (its head) against every commit the older cloud generation published.
 const takeovers = [];
-for (const back of server.filter((l) => l.event === "placement" && l.where === "moving" && l.to === "tab")) {
+for (const back of server.filter((l) => l.event === "placement" && l.where === "moving" && l.env === "tab" && /took the run back/.test(String(l.detail)))) {
   const open = server.find((l) => l.event === "pipe.open" && t(l) >= t(back));
   if (!open) continue;
   const head = Number(open.head);
@@ -64,6 +64,16 @@ for (const back of server.filter((l) => l.event === "placement" && l.where === "
   });
 }
 
-const result = { handovers, zeroLoss, zeroLossEnd, takeovers };
+// Planned switches: from the click (switch.start) to the target running with its notice (switch.done for a tab or a
+// remote host; the cloud instance's notice for a cloud host).
+const switches = server
+  .filter((l) => l.event === "switch.start")
+  .map((start) => {
+    const done = server.find((l) => l.event === "switch.done" && l.switchId === start.switchId);
+    const notice = cloud.find((c) => c.event === "notice" && c.switchId === start.switchId);
+    const end = done ?? notice;
+    return { switchId: start.switchId, from: start.from, to: start.to, ms: end ? t(end) - t(start) : null };
+  });
+const result = { handovers, zeroLoss, zeroLossEnd, takeovers, switches };
 console.log(JSON.stringify(result, null, 1));
 if (outFile) writeFileSync(outFile, `${JSON.stringify(result, null, 1)}\n`);

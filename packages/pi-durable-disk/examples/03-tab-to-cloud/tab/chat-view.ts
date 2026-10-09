@@ -131,7 +131,9 @@ export class ChatView {
       }
       if (error) items.push({ kind: "note", id: `${id}-error`, text: error });
     };
-    for (const entry of this.#entries) {
+    // A failed model call that pi retried: an answer comes after it.
+    const lastAnswer = this.#entries.reduce((at, e, i) => (e.kind === "pi.assistant" ? i : at), -1);
+    for (const [index, entry] of this.#entries.entries()) {
       const id = String(entry.id);
       if (entry.kind === NOTICE_KIND) {
         const data = (entry.data ?? {}) as { switchId?: string; planned?: boolean };
@@ -141,7 +143,7 @@ export class ChatView {
       for (const message of messagesOf(entry)) {
         if (entry.kind === "pi.user" && message.role === "user") items.push({ kind: "user", id, text: textOf(message.content) });
         else if (entry.kind === "pi.assistant" && message.role === "assistant") {
-          const error = message.stopReason === "error" ? `model error: ${message.errorMessage ?? "unknown"}` : undefined;
+          const error = message.stopReason === "error" ? `${index < lastAnswer ? "model call failed, retried" : "model error"}: ${message.errorMessage ?? "unknown"}` : undefined;
           pushAssistant(id, (message.content as Block[]) ?? [], false, error);
         } else if (entry.kind === "pi.tool-result" && message.role === "toolResult") {
           const tool = tools.get(message.toolCallId ?? "");

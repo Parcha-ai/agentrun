@@ -23,7 +23,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.4 var(--sans); overflow: hidden; }
-body { display: grid; grid-template-rows: auto minmax(0, 1fr) 220px; }
+body { display: grid; grid-template-rows: auto minmax(0, 1fr) 200px; }
 
 /* header: title, switcher, cost */
 header { display: flex; align-items: center; gap: 18px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
@@ -51,19 +51,19 @@ h1 { font-size: 15px; margin: 0; letter-spacing: .06em; text-transform: uppercas
 @keyframes pulse { from { opacity: 1 } to { opacity: .25 } }
 
 /* main: tab on the left, multiverse on the right */
-main { display: grid; grid-template-columns: minmax(300px, 38%) minmax(0, 1fr); min-height: 0; }
-#tabpane { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; background: var(--panel); }
+main { display: grid; grid-template-columns: minmax(420px, 44%) minmax(0, 1fr); min-height: 0; min-width: 0; }
+#tabpane { border-right: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; background: var(--panel); }
 .pane-h { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); border-bottom: 1px solid var(--line); }
 #tabpane iframe { width: 100%; height: 100%; border: 0; background: #000; }
 #tabbar { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); align-items: center; flex-wrap: wrap; }
-#tabevents { font: 11px var(--mono); color: var(--muted); margin-left: auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#tabevents { font: 11px var(--mono); color: var(--muted); margin-left: auto; min-width: 0; flex: 1; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button.btn { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); padding: 6px 12px; }
 button.btn:hover { border-color: var(--muted); }
 button.btn:disabled { opacity: .4; cursor: default; }
 
-#mv { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; padding: 0; }
+#mv { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; padding: 0; }
 #mv .pane-h .right { display: flex; gap: 10px; align-items: center; }
-#grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; min-height: 0; }
+#grid { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; min-height: 0; }
 .tile { position: relative; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 4px; min-height: 0; overflow: hidden; transition: border-color .3s, background .3s, opacity .4s, transform .3s; }
 .tile.empty { border-style: dashed; opacity: .45; }
 .tile .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
@@ -79,7 +79,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
 .tile .bar i { display: block; height: 100%; background: var(--gpu); transition: width .6s linear; }
 .tile .kill { position: absolute; right: 8px; bottom: 8px; opacity: 0; transition: opacity .15s; padding: 3px 9px; font-size: 11px; color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
 .tile:hover .kill { opacity: 1; }
-.tile .overlay { position: absolute; inset: 0; display: none; place-items: center; text-align: center; font: 650 15px var(--mono); pointer-events: none; }
+.tile .overlay { position: absolute; inset: 0; display: none; place-items: center; text-align: center; font: 650 13px var(--mono); letter-spacing: .04em; padding: 0 14px; text-wrap: balance; pointer-events: none; }
 .tile[data-status="training"] { border-color: color-mix(in srgb, var(--gpu) 40%, var(--line)); }
 .tile[data-status="training"] .chip { color: var(--gpu); }
 .tile[data-status="starting"] .chip, .tile[data-status="spare"] .chip { color: var(--muted); }
@@ -104,6 +104,12 @@ button.btn:disabled { opacity: .4; cursor: default; }
 .fell { font: 11px var(--mono); border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 3px 8px; text-decoration: line-through; opacity: .8; }
 #killone { background: var(--bad); color: #160504; border-color: var(--bad); font-weight: 700; letter-spacing: .04em; }
 
+/* before the fork the grid is dormant: eight dim cells and one line saying why */
+#mv.dormant .tile { opacity: .22; }
+#mv.dormant .tile .chip { visibility: hidden; }
+#mv.dormant #grid::before { content: "The multiverse wakes when the agent forks itself"; position: absolute; inset: 0; display: grid; place-items: center; z-index: 2; font: 600 18px var(--sans); letter-spacing: .02em; color: var(--muted); text-align: center; pointer-events: none; }
+#mv.dormant #killone { visibility: hidden; }
+
 /* bottom: timeline and narration */
 #bottom { display: grid; grid-template-columns: minmax(0, 1fr) 340px; border-top: 1px solid var(--line); min-height: 0; background: var(--panel); }
 #timeline { min-width: 0; min-height: 0; position: relative; }
@@ -115,14 +121,43 @@ button.btn:disabled { opacity: .4; cursor: default; }
 .note[data-kind="switch"] { border-color: var(--sandbox); } .note[data-kind="winner"] { border-color: var(--win); }
 .note[data-kind="home"] { border-color: var(--tab); } .note[data-kind="story"] { border-color: var(--muted); }
 .note time { font: 11px var(--mono); margin-right: 6px; opacity: .7; }
+/* the operator panel: hidden on camera, `o` toggles it */
+#operator { position: fixed; right: 360px; bottom: 10px; z-index: 20; width: 270px; background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--muted); border-radius: 12px; padding: 10px 12px 12px; box-shadow: 0 10px 40px #0009; }
+#operator h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); display: flex; justify-content: space-between; }
+#operator .grp { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+#operator button { font: inherit; font-size: 12px; cursor: pointer; border-radius: 7px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); padding: 5px 9px; }
+#operator button:hover { border-color: var(--muted); }
+#operator button kbd { font: 10px var(--mono); color: var(--muted); margin-left: 5px; }
+#operator button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+#operator #opresult { font: 11px var(--mono); color: var(--muted); min-height: 16px; }
+#operator #opresult.bad { color: var(--bad); }
+/* the caption: the newest key moment, tagged by what its numbers are */
+#mv { position: relative; }
+#caption { position: absolute; left: 0; right: 0; margin: 0 auto; width: max-content; bottom: 58px; max-width: 94%; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-radius: 12px; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); box-shadow: 0 8px 30px #0008; font: 600 16px var(--sans); animation: capin .25s ease-out; }
+@keyframes capin { from { opacity: 0; transform: translateY(8px) } }
+#caption .tag { font: 700 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; flex: none; }
+#caption .tag.measured { color: var(--ok); } #caption .tag.scripted { color: var(--gpu); } #caption .tag.unmeasured { color: var(--muted); }
+#source { font: 700 10px var(--mono); letter-spacing: .12em; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--gpu); color: var(--gpu); }
 #lost { position: fixed; top: 0; left: 0; right: 0; background: var(--bad); color: #160504; text-align: center; font-weight: 700; padding: 4px; z-index: 10; }
 </style>
 </head>
 <body>
+<aside id="operator" hidden aria-label="Operator panel">
+  <h3><span>Operator</span><span>o hides</span></h3>
+  <div class="grp" id="openvs"></div>
+  <div class="grp">
+    <button data-op="fanout">Fan out<kbd>f</kbd></button>
+    <button data-op="kill" class="danger">Kill leader<kbd>k</kbd></button>
+    <button data-op="collapse">Collapse<kbd>c</kbd></button>
+    <button data-op="home">Home<kbd>h</kbd></button>
+    <button data-op="reset">Reset take<kbd>r</kbd></button>
+  </div>
+  <div id="opresult"></div>
+</aside>
 <div id="lost" hidden>feed lost, reconnecting</div>
 <header>
   <h1>It Walks Home</h1>
-  <span class="run" id="run"></span>
+  <span class="run" id="run"></span><span id="source" hidden title="Every number on this page comes from the scripted rehearsal feed, not from a measurement">SCRIPTED FEED</span>
   <div id="switcher" role="group" aria-label="Where the agent runs"></div>
   <span id="place"></span>
   <div id="cost"><div><div class="lbl">spent</div><div class="usd" id="usd">$0.00</div></div><div><div class="lbl">burn</div><div class="rate" id="rate">$0.00/min</div></div></div>
@@ -140,6 +175,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
   <section id="mv">
     <div class="pane-h"><span>The multiverse</span><span class="right"><span id="mvsum"></span><button class="btn" id="killone">KILL THE LEADER</button></span></div>
     <div id="grid"></div>
+    <div id="caption" hidden><span class="tag"></span><span class="txt"></span></div>
     <div id="strip"></div>
   </section>
 </main>
