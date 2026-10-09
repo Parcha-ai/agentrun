@@ -73,8 +73,11 @@ export interface Fleet {
   place(run: RunRef, machine: Machine, env: Readonly<Record<string, string>>, from?: Placed): Promise<PlaceResult>;
   /** The placement's machine as the fleet sees it; `gone`, `stopped` or `failed` is a machine that died. */
   status(placed: Placed): Promise<HostStatus>;
-  /** Drain the run, seal its run.json, and delete the machine. */
-  seal(placed: Placed): Promise<void>;
+  /**
+   * Drain the run, seal its run.json, and delete the machine. `home`: the run goes home (the winner), and the machine
+   * may do its last step for that first (the trainer's combined policy).
+   */
+  seal(placed: Placed, options?: { home?: boolean }): Promise<void>;
   /** Power the machine off now: whatever runs there gets no drain, the way a machine dies. */
   kill(machine: Machine): Promise<void>;
   /** Delete a machine that holds no run (a spare nobody needed). */
@@ -723,7 +726,7 @@ export class Multiverse {
     const t0 = this.#now();
     this.#o.emit({ t: "place", at: this.#at(), place: { where: "moving", to: target.label, host: w.machine!.label }, env: null });
     this.#note("switch", `Universe ${w.spec!.id} is going home to ${target.label}.`);
-    await this.#o.fleet.seal(w.placed);
+    await this.#o.fleet.seal(w.placed, { home: true });
     w.ended = this.#now();
     const releasedMs = this.#now() - t0;
     this.#endStay(w, "switch");

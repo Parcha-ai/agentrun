@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Control } from "../multiverse.ts";
 import { readTrainProgress } from "../train-progress.ts";
-import { startWorkload } from "../workload.ts";
+import { homePolicy, startWorkload } from "../workload.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -72,6 +72,16 @@ test("train.py as the workload: a barrier per checkpoint, progress by machine, s
     assert.ok(onB.step > paused.steps_done, "from where the last one stopped, not from 0");
     assert.ok(barriers > afterStop);
     await b.stop();
+
+    // Home: the winner's walking policy and the getup policy in one file, under work/home/.
+    const getup = join(root, "getup.json");
+    writeFileSync(getup, '{"getup":true}');
+    const made = await homePolicy({ work, env: { ...env, UNIVERSE_EXPORT_PY: join(here, "fixtures", "fake-export.mjs"), UNIVERSE_GETUP: getup }, log: () => {} });
+    assert.equal(made, "home/policy.json");
+    const combined = JSON.parse(readFileSync(join(work, "home", "policy.json"), "utf8"));
+    assert.deepEqual(combined.getup, { getup: true });
+    assert.ok(combined.walk.steps > 0, "the winner's own walking policy");
+    assert.equal(await homePolicy({ work, env: { UNIVERSE_WORKLOAD: "stand-in" }, log: () => {} }), null, "no home step for the stand-in");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

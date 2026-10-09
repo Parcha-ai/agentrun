@@ -239,11 +239,12 @@ export function pipePlacement(o: PipeOptions): PipePlacement {
     },
 
     /** Drain the runner (it stops training and writes through), release the pipe (barrier, seal), delete the machine. */
-    async seal(p: Placed): Promise<void> {
+    async seal(p: Placed, options: { home?: boolean } = {}): Promise<void> {
       const d = mine(p);
       const h = held.get(p.run.id);
       try {
-        if (h && h.pipe.writerTab === d.tab) await h.pipe.drainWriter(`seal-${p.run.id}`, 15_000);
+        // A runner told it goes home does its last step (the combined policy) before it drains; it gets longer.
+        if (h && h.pipe.writerTab === d.tab) await h.pipe.drainWriter(`${options.home ? "home" : "seal"}-${p.run.id}`, options.home ? 60_000 : 15_000);
         if (h) {
           await h.pipe.release();
           held.delete(p.run.id);

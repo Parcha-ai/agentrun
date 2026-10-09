@@ -75,6 +75,9 @@ const { values } = parseArgs({
     /** D2's universe files (u1.json .. u8.json: name, hypothesis, reward_scales). */
     "universes-dir": { type: "string", default: join(here, "..", "train", "universes") },
     "train-py": { type: "string", default: "/opt/pda/train/train.py" },
+    /** D2's export.py (the home step's combined policy) and the image's getup policy for the default body. */
+    "export-py": { type: "string", default: "/opt/pda/train/export.py" },
+    getup: { type: "string", default: "/opt/pda/train/default/getup.json" },
     python: { type: "string", default: "/usr/local/bin/python" },
     minutes: { type: "string", default: "6" },
     /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
@@ -227,6 +230,8 @@ const universes: UniverseSpec[] = Array.from({ length: n }, (_, i): UniverseSpec
       UNIVERSE_SPEC: JSON.stringify({ ...u, name: `u${i + 1}` }),
       UNIVERSE_MINUTES: values.minutes!,
       ...(values["compile-cache"] ? { UNIVERSE_COMPILE_CACHE: values["compile-cache"] } : {}),
+      UNIVERSE_EXPORT_PY: values["export-py"]!,
+      UNIVERSE_GETUP: values.getup!,
     },
   };
 });
@@ -312,7 +317,9 @@ async function adoptHome(run: RunRef, universe: string): Promise<void> {
   const res = await fetch(`${values["home-server"]}/api/runs/${encodeURIComponent(run.id)}/attach`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
   const body = (await res.json().catch(() => ({}))) as { link?: string; error?: string };
   if (!res.ok || !body.link) throw new Error(`the tab's server did not adopt ${run.id}: ${res.status} ${body.error ?? ""}`);
-  home = { run: run.id, url: `${values["home-server"]}${body.link}`, policy: `train/${universe}/policy.json` };
+  // The combined walk + getup policy when the winner's machine made it, else the walking policy alone.
+  const combined = await control.headObject(`runs/${run.id}/work/home/policy.json`).catch(() => null);
+  home = { run: run.id, url: `${values["home-server"]}${body.link}`, policy: combined ? "home/policy.json" : `train/${universe}/policy.json` };
   log("home.adopted", { run: run.id, status: res.status });
 }
 
