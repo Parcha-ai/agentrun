@@ -102,3 +102,15 @@ describe("an agent that moves itself", () => {
     client.close();
   });
 });
+
+describe("the notice of a move the agent chose", () => {
+  const facts = { label: "a Modal VM", cpus: 2, memoryGb: 4, gpu: null, tools: ["bash"], network: true };
+  it("says the agent moved itself and why, once the reason's own full stop is dropped", async () => {
+    const { noticeText } = await import("../environment.ts");
+    const text = noticeText(facts, { id: "sw-1", from: "your user's browser tab", planned: true, by: "agent", reason: "I need Docker." });
+    assert.match(text, /You moved yourself here from your user's browser tab, because: I need Docker\. Your conversation/);
+    assert.ok(!text.includes("Your user moved you"));
+    assert.match(noticeText(facts, { id: "sw-2", from: "x", planned: true, by: "agent", reason: "  " }), /You moved yourself here from x\./);
+    assert.match(noticeText(facts, { id: "sw-3", from: "x", planned: true }), /Your user moved you here from x\./);
+  });
+});

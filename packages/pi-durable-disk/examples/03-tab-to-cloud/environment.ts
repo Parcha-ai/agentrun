@@ -58,7 +58,7 @@ export function noticeText(facts: EnvironmentFacts, move: SwitchInfo): string {
     facts.note ?? "",
     move.planned
       ? move.by === "agent"
-        ? `You moved yourself here from ${move.from}${move.reason ? `, because: ${move.reason}` : ""}.`
+        ? `You moved yourself here from ${move.from}${move.reason?.trim() ? `, because: ${move.reason.trim().replace(/[.!\s]+$/, "")}` : ""}.`
         : `Your user moved you here from ${move.from}.`
       : `You were moved here from ${move.from}, which stopped unexpectedly.`,
     "Your conversation and the files in your workspace came with you; programs that were running before the move did not.",
