@@ -1,13 +1,19 @@
 // The server's end of a cloud host's link (see cloud-link.ts): dial in, answer its model calls through the run's
-// ModelProxy, redial while the run is there. The connection carries a bearer token the server gave the host at start.
+// ModelProxy, redial while the run is there, and relay the run's agent events to whoever subscribed. The connection
+// carries a bearer token the server gave the host at start.
 import WebSocket from "ws";
 import type { ModelProxy } from "./model-proxy.ts";
 
 type Frame =
   | { t: "model"; id: number; path: string; body: Record<string, unknown> }
-  | { t: "model-abort"; id: number };
+  | { t: "model-abort"; id: number }
+  | { t: "event"; kind: "snapshot" | "events"; data: unknown };
+
+export type LinkEvent = { kind: "snapshot" | "events"; data: unknown };
 
 export interface LinkDialer {
+  /** Receive the run's agent events (a fresh snapshot first); returns the unsubscribe. */
+  subscribe(listener: (event: LinkEvent) => void): () => void;
   close(): void;
 }
 
@@ -22,12 +28,21 @@ export function dialLink(opts: {
   let closed = false;
   let socket: WebSocket | undefined;
   const aborts = new Map<number, AbortController>();
+  const listeners = new Set<(event: LinkEvent) => void>();
+  const askWatch = () => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify({ t: "watch" }));
   const connect = () => {
     if (closed) return;
     const ws = (socket = new WebSocket(opts.url, { headers: { ...opts.headers, authorization: `Bearer ${opts.token}` }, perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 }));
-    ws.on("open", () => opts.log("link.dialed", { url: opts.url.replace(/\/\/[^/]*@/, "//") }));
+    ws.on("open", () => {
+      opts.log("link.dialed");
+      if (listeners.size > 0) askWatch();
+    });
     ws.on("message", (data) => {
       const frame = JSON.parse(String(data)) as Frame;
+      if (frame.t === "event") {
+        for (const listener of listeners) listener({ kind: frame.kind, data: frame.data });
+        return;
+      }
       if (frame.t === "model-abort") {
         aborts.get(frame.id)?.abort();
         return;
@@ -54,6 +69,11 @@ export function dialLink(opts: {
   };
   connect();
   return {
+    subscribe(listener) {
+      listeners.add(listener);
+      askWatch();
+      return () => listeners.delete(listener);
+    },
     close() {
       closed = true;
       socket?.close(1000, "bye");

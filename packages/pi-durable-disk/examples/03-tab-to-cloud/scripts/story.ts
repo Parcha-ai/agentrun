@@ -73,7 +73,7 @@ try {
   step("B: watching, running in the cloud", { placement: await pb.evaluate("demo.state.placement") });
   await snap(pb, "b-viewer-cloud");
   await pb.until("demo.files().filter(f => /^steps\\/step\\d\\.txt$/.test(f)).length >= 4", 300_000, 500);
-  step("B: the cloud keeps working", { files: await pb.evaluate("demo.files()") });
+  step("B: the cloud keeps working", { files: await pb.evaluate("demo.files()"), chatItems: await pb.evaluate("demo.items().length") });
   await snap(pb, "b-viewer-cloud-progress");
 
   if (!process.argv.includes("--skip-takeover")) {

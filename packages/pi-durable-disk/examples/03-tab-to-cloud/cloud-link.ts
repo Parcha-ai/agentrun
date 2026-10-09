@@ -4,14 +4,21 @@
 // makes them with its own credentials and the run's budget, exactly as it does for a tab.
 //
 // The agent's provider talks plain HTTP to a relay on 127.0.0.1 in this process; the relay turns each request into a
-// `model` frame and streams the answer back from `model-head`, `model-chunk` and `model-end` frames.
+// `model` frame and streams the answer back from `model-head`, `model-chunk` and `model-end` frames. The server may also
+// `watch`: the run's agent events then flow back as `event` frames (a snapshot, then one batch per commit), which is how
+// a page watches the run while it is here.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { watchEvents } from "@earendil-works/pi-durable";
+import type { AgentEventStream, Harness, ConversationId } from "@earendil-works/pi-durable";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 
 type Frame =
   | { t: "model"; id: number; path: string; body: unknown }
   | { t: "model-abort"; id: number }
+  | { t: "watch" }
+  | { t: "event"; kind: "snapshot" | "events"; data: unknown }
   | { t: "model-head"; id: number; status: number }
   | { t: "model-chunk"; id: number; data: string }
   | { t: "model-end"; id: number; status: number; error?: string };
@@ -21,6 +28,8 @@ const same = (a: string, b: string) => timingSafeEqual(createHash("sha256").upda
 export interface CloudLink {
   /** The OpenAI-compatible base URL the agent's provider uses (`http://127.0.0.1:<port>/v1`). */
   readonly baseUrl: string;
+  /** The run is open: a `watch` from the server streams this conversation's events. */
+  attach(harness: Harness, conversationId: ConversationId): void;
   close(): Promise<void>;
 }
 
@@ -30,6 +39,22 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   let linked: () => void = () => undefined;
   let next = 1;
   const open = new Map<number, ServerResponse & { head?: boolean }>();
+  let run: { harness: Harness; conversationId: ConversationId } | undefined;
+  let watching: { ws: WebSocket; stream: AgentEventStream } | undefined;
+  /** A `watch` that came before the run opened; served once it does. */
+  let pendingWatch: WebSocket | undefined;
+  const watch = async (ws: WebSocket) => {
+    if (!run) {
+      pendingWatch = ws;
+      return;
+    }
+    await watching?.stream.stop().catch(() => undefined);
+    const stream = await watchEvents(run.harness, run.conversationId, ctx);
+    watching = { ws, stream };
+    const send = (frame: Frame) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(frame));
+    send({ t: "event", kind: "snapshot", data: stream.snapshot });
+    stream.start(async (events) => void send({ t: "event", kind: "events", data: events }));
+  };
 
   const wss = new WebSocketServer({ host: opts.host, port: opts.port, maxPayload: 64 * 1024 * 1024 });
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
@@ -44,6 +69,10 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     linked();
     ws.on("message", (data) => {
       const frame = JSON.parse(String(data)) as Frame;
+      if (frame.t === "watch") {
+        void watch(ws).catch((error) => log("link.watch-failed", { error: (error as Error).message }));
+        return;
+      }
       const res = open.get((frame as { id: number }).id);
       if (!res) return;
       if (frame.t === "model-head") {
@@ -61,6 +90,10 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
       }
     });
     ws.on("close", () => {
+      if (watching?.ws === ws) {
+        void watching.stream.stop().catch(() => undefined);
+        watching = undefined;
+      }
       if (link !== ws) return;
       link = undefined;
       log("link.closed");
@@ -108,6 +141,11 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   const port = (relay.address() as { port: number }).port;
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
+    attach(harness, conversationId) {
+      run = { harness, conversationId };
+      if (pendingWatch && pendingWatch === link) void watch(pendingWatch).catch((error) => log("link.watch-failed", { error: (error as Error).message }));
+      pendingWatch = undefined;
+    },
     async close() {
       link?.close(1000, "bye");
       wss.close();

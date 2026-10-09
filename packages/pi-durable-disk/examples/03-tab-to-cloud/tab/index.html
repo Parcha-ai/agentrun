@@ -20,7 +20,8 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--sans); }
-body { display: grid; grid-template-rows: auto auto 1fr auto; height: 100vh; }
+body { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100vh; }
+header { grid-row: 1; } #banner { grid-row: 2; } main { grid-row: 3; } footer { grid-row: 4; }
 header { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
 h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 .run { font: 12px var(--mono); color: var(--muted); }

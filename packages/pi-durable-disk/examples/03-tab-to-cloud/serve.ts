@@ -49,7 +49,7 @@ const ledger = values.ledger ? new Ledger(values.ledger) : undefined;
 let cloud: CloudHost | undefined;
 if (values.cloud === "local" || values.cloud === "daytona") {
   const { cloudHost } = await import("./pipe/cloud.ts");
-  cloud = await cloudHost(values.cloud, { disk, region, log, ...(ledger ? { ledger } : {}), model, link: values["cloud-link"], ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}) });
+  cloud = await cloudHost(values.cloud as "local" | "daytona", { disk, region, log, ...(ledger ? { ledger } : {}), model, link: values["cloud-link"], ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}) });
 }
 
 const server = createDemoServer({

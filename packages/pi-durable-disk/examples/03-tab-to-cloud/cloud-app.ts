@@ -2,8 +2,8 @@
 // the claimed mount (the package's environment), its writing tools followed by the claim's barrier, its model calls
 // to DEMO_MODEL_URL. Opening the run resumes whatever the tab left unfinished.
 //   DEMO_MODEL_URL  an OpenAI-compatible endpoint (`.../v1`) reachable from this host, or
-//   DEMO_LINK_PORT, DEMO_LINK_TOKEN_FILE (and DEMO_LINK_HOST, default 127.0.0.1): listen for the demo server's link
-//                   instead, and send model calls through it (cloud-link.ts)
+//   DEMO_LINK_PORT and DEMO_LINK_TOKEN (or DEMO_LINK_TOKEN_FILE), DEMO_LINK_HOST (default 127.0.0.1): listen for the
+//                   demo server's link instead, send model calls through it and stream events over it (cloud-link.ts)
 //   DEMO_MODEL      the model id
 //   DEMO_EVENTS_LOG optional: a file this instance appends one JSON line to when it opens and after each commit it made
 //                   (its generation, the commit's sequence, the time), the evidence that no write of it lands after a
@@ -12,15 +12,16 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
-import { startCloudLink } from "./cloud-link.ts";
+import { startCloudLink, type CloudLink } from "./cloud-link.ts";
 
 export default async function app(_where: AppContext): Promise<AppOptions> {
   const modelId = process.env.DEMO_MODEL;
   if (!modelId) throw new Error("DEMO_MODEL names the model");
   let baseUrl = process.env.DEMO_MODEL_URL;
-  if (process.env.DEMO_LINK_PORT && process.env.DEMO_LINK_TOKEN_FILE) {
-    const token = readFileSync(process.env.DEMO_LINK_TOKEN_FILE, "utf8").trim();
-    const link = await startCloudLink({ port: Number(process.env.DEMO_LINK_PORT), host: process.env.DEMO_LINK_HOST ?? "127.0.0.1", token });
+  let link: CloudLink | undefined;
+  const linkToken = process.env.DEMO_LINK_TOKEN ?? (process.env.DEMO_LINK_TOKEN_FILE ? readFileSync(process.env.DEMO_LINK_TOKEN_FILE, "utf8").trim() : undefined);
+  if (process.env.DEMO_LINK_PORT && linkToken) {
+    link = await startCloudLink({ port: Number(process.env.DEMO_LINK_PORT), host: process.env.DEMO_LINK_HOST ?? "127.0.0.1", token: linkToken });
     baseUrl = link.baseUrl;
   }
   if (!baseUrl) throw new Error("DEMO_MODEL_URL (or DEMO_LINK_PORT and DEMO_LINK_TOKEN_FILE) names how this host reaches a model");
@@ -42,7 +43,8 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
       };
       note("open");
       opened.harness.subscribeCommits((publication) => note("commit", { seq: publication.seq }));
-      await opened.harness.root(ctx, { agent: rootAgent(modelId) });
+      const root = await opened.harness.root(ctx, { agent: rootAgent(modelId) });
+      link?.attach(opened.harness, root.id);
     },
   };
 }

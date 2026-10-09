@@ -30,6 +30,8 @@ export interface CloudHost {
   stop(ref: RunRef, how?: "fenced" | "now"): Promise<void>;
   /** Stop and remove everything the cloud host started. */
   close?(): Promise<void>;
+  /** A tab runs the run now: get a host ready for when it leaves (no claim is taken). */
+  prewarm?(ref: RunRef): void;
 }
 
 export interface DemoServerOptions {
@@ -64,6 +66,8 @@ interface RunState {
   placement: Placement;
   /** The run's model access and budget, wherever it runs. */
   model: ModelProxy;
+  /** The cloud host was asked to get ready while a tab runs the run; asked again after the cloud took it. */
+  prewarmed: boolean;
   tokenUser: string | undefined;
   attempt: number;
   viewers: Set<PipeSocket>;
@@ -208,6 +212,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
     try {
       const { host } = await options.cloud.start(state.ref, { model: state.model });
+      state.prewarmed = false;
       setPlacement(state, { where: "cloud", host, generation: null, detail: why });
       log("cloud.started", { run: state.ref.id, host, ms: Date.now() - started });
       // Whoever watched the tab now watches the cloud.
@@ -273,6 +278,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         state.cloudViewers.clear();
         state.placement = { where: "tab", tab: frame.tab, epoch: pipe.epoch, generation: pipe.generation };
         for (const listener of listeners) listener(state.ref.id, state.placement);
+        if (!state.prewarmed) {
+          state.prewarmed = true;
+          options.cloud?.prewarm?.(state.ref);
+        }
       }
     } catch (error) {
       log("attach.failed", { run: state.ref.id, error: (error as Error).message });
@@ -444,6 +453,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         opening: undefined,
         placement: { where: "parked", detail: "new run" },
         model: new ModelProxy(options.model, 0, log),
+        prewarmed: false,
         tokenUser: undefined,
         attempt: 0,
         viewers: new Set(),
