@@ -2,6 +2,7 @@
 // agent's options (the same store and conversation shape a tab's run has), a story entry admitted, and released, so its
 // run.json is `paused` with a seal. In the full demo the source is the run the tab or a VM was running, released by its
 // host before the fan-out.
+import { cp } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRunDir, mintMountToken, openDurableRun, readRunStatus, removeMountToken, type ArchilHost, type RunRecord, type RunRef } from "@parcha/pi-durable-disk";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "../../03-tab-to-cloud/agent.ts";
@@ -14,6 +15,8 @@ export interface SourceOptions {
   readonly host?: ArchilHost;
   /** What the run's conversation says before the fork, one user-role line. */
   readonly story: string;
+  /** A local directory copied into the run's work/ before it is sealed (the creature the universes train). */
+  readonly files?: string;
   readonly onResource?: (kind: string, id: string, note?: string) => void;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
 }
@@ -36,6 +39,10 @@ export async function makeSourceRun(o: SourceOptions): Promise<RunRecord> {
       onFenced: (error) => o.log?.("source.fenced", { message: error.message }),
     });
     try {
+      if (o.files) {
+        await cp(o.files, run.claim.work, { recursive: true });
+        await run.claim.barrier();
+      }
       const root = await run.harness.root(ctx, { agent: rootAgent(modelId) });
       await root.submit({ type: "write", requestId: `story:${o.ref.id}`, entry: { kind: "story", model: [{ role: "user", content: o.story, timestamp: Date.now() }], data: {} } }, ctx);
     } finally {
