@@ -8,9 +8,14 @@ import { assertDesign, type Design } from './design.ts';
 
 export const TIMESTEP = 0.004;
 export const CONTROL_DT = 0.02; // 10 physics steps per policy step
+// 2-DOF legs (the first policies' body): hip -1..1, knee 0..2.3. 3-DOF legs have the wide ranges a creature needs to get up
+// from its side or its back (D2 searched 1,500 open-loop motions per start: with the narrow ranges a getup from the side
+// is found 1 time in ~650 and never from the back; with these it is found within a few tries).
 export const HIP_RANGE: [number, number] = [-1.0, 1.0];
 export const KNEE_RANGE: [number, number] = [0.0, 2.3];
-export const ABD_RANGE: [number, number] = [-0.5, 0.5];
+export const HIP_RANGE_3: [number, number] = [-2.5, 2.5];
+export const KNEE_RANGE_3: [number, number] = [0.0, 2.6];
+export const ABD_RANGE: [number, number] = [-1.0, 1.0];
 export const KP = 40;
 export const KV = 1.2;
 // Standing pose (radians): thigh forward, knee bent back. Policies output offsets from it.
@@ -51,6 +56,8 @@ export function buildMjcf(design: Design, world?: World): Built {
   assertDesign(design);
   const { torso, legs } = design;
   const dof = design.legDof === 3 ? 3 : 2;
+  const hipRange = dof === 3 ? HIP_RANGE_3 : HIP_RANGE;
+  const kneeRange = dof === 3 ? KNEE_RANGE_3 : KNEE_RANGE;
   const legNames: string[] = [];
   const jointNames: string[] = [];
   const standPose: number[] = [];
@@ -69,10 +76,10 @@ export function buildMjcf(design: Design, world?: World): Built {
       const x = (l.x * torso.length) / 2;
       bodies += `
       <body name="${n}_thigh" pos="${f(x)} ${f(y)} 0">
-        ${dof === 3 ? `<joint name="${n}_abd" type="hinge" axis="1 0 0" range="${ABD_RANGE.join(' ')}" damping="0.4" armature="0.01"/>\n        ` : ''}<joint name="${n}_hip" type="hinge" axis="0 1 0" range="${HIP_RANGE.join(' ')}" damping="0.4" armature="0.01"/>
+        ${dof === 3 ? `<joint name="${n}_abd" type="hinge" axis="1 0 0" range="${ABD_RANGE.join(' ')}" damping="0.4" armature="0.01"/>\n        ` : ''}<joint name="${n}_hip" type="hinge" axis="0 1 0" range="${hipRange.join(' ')}" damping="0.4" armature="0.01"/>
         <geom type="capsule" fromto="0 0 0 0 0 ${f(-l.thigh)}" size="${f(l.radius)}" contype="0" conaffinity="1" mass="0.25" rgba="0.55 0.78 0.62 1"/>
         <body name="${n}_shin" pos="0 0 ${f(-l.thigh)}">
-          <joint name="${n}_knee" type="hinge" axis="0 1 0" range="${KNEE_RANGE.join(' ')}" damping="0.3" armature="0.01"/>
+          <joint name="${n}_knee" type="hinge" axis="0 1 0" range="${kneeRange.join(' ')}" damping="0.3" armature="0.01"/>
           <geom type="capsule" fromto="0 0 0 0 0 ${f(-l.shin)}" size="${f(l.radius * 0.9)}" contype="0" conaffinity="1" mass="0.15" rgba="0.4 0.66 0.5 1"/>
           <geom name="${n}_foot" type="sphere" pos="0 0 ${f(-l.shin)}" size="${f(l.radius * 1.15)}" mass="0.05" contype="0" conaffinity="1" friction="1.2 0.05 0.01" rgba="0.15 0.2 0.18 1"/>
         </body>
@@ -82,8 +89,8 @@ export function buildMjcf(design: Design, world?: World): Built {
       standPose.push(STAND_HIP, STAND_KNEE);
       actuators += `${dof === 3 ? `
     <position name="${n}_abd_a" joint="${n}_abd" kp="${KP}" kv="${KV}" ctrlrange="${ABD_RANGE.join(' ')}" forcerange="-12 12"/>` : ''}
-    <position name="${n}_hip_a" joint="${n}_hip" kp="${KP}" kv="${KV}" ctrlrange="${HIP_RANGE.join(' ')}" forcerange="-12 12"/>
-    <position name="${n}_knee_a" joint="${n}_knee" kp="${KP}" kv="${KV}" ctrlrange="${KNEE_RANGE.join(' ')}" forcerange="-12 12"/>`;
+    <position name="${n}_hip_a" joint="${n}_hip" kp="${KP}" kv="${KV}" ctrlrange="${hipRange.join(' ')}" forcerange="-12 12"/>
+    <position name="${n}_knee_a" joint="${n}_knee" kp="${KP}" kv="${KV}" ctrlrange="${kneeRange.join(' ')}" forcerange="-12 12"/>`;
     }
   });
 

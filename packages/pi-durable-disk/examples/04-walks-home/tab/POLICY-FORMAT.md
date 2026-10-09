@@ -22,9 +22,10 @@ MuJoCo versions: the tab's `@mujoco/mujoco` and the trainer's `mujoco` must be t
 Joint order (qpos[7:], qvel[6:], actuators): for each leg pair `i` in the design, left then right (`l0`, `r0`, `l1`,
 `r1`, ...); per leg the joints are `<leg>_abd` (only with `legDof: 3`), `<leg>_hip`, `<leg>_knee`. Actuator `i` is a
 position servo (kp 40, kv 1.2, forcerange 12) on joint `i`; names `<leg>_abd_a`, `<leg>_hip_a`, `<leg>_knee_a`.
-- `abd`: hinge about x at the thigh body's origin, before the hip joint (same body), range -0.5..0.5 rad. Positive abd
+- `abd`: hinge about x at the thigh body's origin, before the hip joint (same body), range -1..1 rad. Positive abd
   swings the foot toward +y (outward on the left legs, inward on the right); the policy learns the sign.
-- `hip`: hinge about y, range -1..1 rad. `knee`: hinge about y, range 0..2.3 rad.
+- `hip`: hinge about y, range -2.5..2.5 rad (-1..1 with 2-DOF legs). `knee`: hinge about y, range 0..2.6 rad (0..2.3 with
+  2-DOF legs). The wide 3-DOF ranges are what lets a creature get up from its side or back; ctrlrange equals the joint range.
 - `standPose` per leg: abd 0.3 (left) / -0.3 (right) when `legDof` is 3 (feet splayed outward; a still creature then
   takes about 120 N sideways, against 60 N with 0), hip -0.45, knee 0.9. Policies output offsets from it.
 - `legDof` 2 (no abd joint, the first policies' body) stays buildable: omit the field. `legDof` is part of the design's
