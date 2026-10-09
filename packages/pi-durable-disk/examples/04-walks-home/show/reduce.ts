@@ -44,8 +44,12 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
   switch (event.t) {
     case "run":
       return { ...state, now, run: event.run, origin: event.origin, environments: event.environments, scoreUnit: event.scoreUnit ?? "", source: event.source ?? "live" };
-    case "place":
-      return { ...state, now, place: event.place, currentEnv: event.env };
+    case "place": {
+      // A setup counts only while the run is on a machine: leaving it (home, in transit, parked) cancels an open one without claiming learning began.
+      const onMachine = event.place.where === "cloud" || event.place.where === "universes";
+      const setup = state.setup && state.setup.endedAt === null && !onMachine ? null : state.setup;
+      return { ...state, now, place: event.place, currentEnv: event.env, setup };
+    }
     case "stay.begin": {
       if (state.stays.some((s) => s.id === event.stay.id)) return { ...state, now };
       return { ...state, now, stays: [...state.stays, { ...event.stay, to: null }] };

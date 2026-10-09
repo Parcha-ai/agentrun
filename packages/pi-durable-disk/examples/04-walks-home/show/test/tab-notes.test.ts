@@ -205,7 +205,7 @@ test("the trained brain coming home is told without jargon: installed, how long 
   assert.equal(walkedHome[0]!.text, "It was walking 1014 ms after the new brain arrived (timed in the tab).");
   assert.equal(walkedHome[0]!.measured, true);
   assert.equal(notesFromTabEvent({ ...arrived, kind: "final", training_seconds: null } as TabToShell, 1, { plain: true }).length, 1, "no training time reported: no claim about it");
-  assert.match(notesFromTabEvent({ ...base, type: "policy-refused", name: "x", reason: "could not fetch /policy/home.json: HTTP 404" } as TabToShell, 1, { plain: true })[0]!.text, /^The tab could not use that brain: /);
+  assert.equal(notesFromTabEvent({ ...base, type: "policy-refused", name: "x", reason: "could not fetch /policy/home.json: HTTP 404" } as TabToShell, 1, { plain: true })[0]!.text, "The new brain could not be loaded, so the creature kept what it had.", "plain words, not the tab's reason");
 });
 
 test("no plain caption uses the words a viewer could not follow", () => {
@@ -225,4 +225,32 @@ test("no plain caption uses the words a viewer could not follow", () => {
   ];
   assert.ok(all.length >= 9);
   for (const n of all) assert.doesNotMatch(n.text, /checkpoint|policy|getup|combined|network/i, n.text);
+});
+
+// Greptile on #110: a refusal's own reason is a developer's sentence. Real ones, from the tab's arrival.ts.
+test("a refusal is told in plain words whatever the tab's reason says, and the debug log keeps the reason", () => {
+  const refused = (reason: string) => ({ ...base, type: "policy-refused", name: "home/policy.json", reason }) as TabToShell;
+  const real = [
+    "could not fetch /policy/home.json: HTTP 404",
+    "the file is not valid JSON",
+    "the file is not a policy object",
+    'unknown format "mlp-v2", expected mlp-v1',
+    'unknown spec_version "9"',
+    "mjcf_sha256 is missing or malformed",
+    "the policy was trained for a body that is neither the one on screen nor a preset (mjcf_sha256 differs)",
+    "something nobody planned for",
+  ];
+  const says = real.map((r) => notesFromTabEvent(refused(r), 1, { plain: true })[0]!.text);
+  assert.deepEqual(says, [
+    "The new brain could not be loaded, so the creature kept what it had.",
+    "The brain file was damaged or in the wrong form, so the tab did not use it.",
+    "The brain file was damaged or in the wrong form, so the tab did not use it.",
+    "The brain file was damaged or in the wrong form, so the tab did not use it.",
+    "The brain file was damaged or in the wrong form, so the tab did not use it.",
+    "The brain file was damaged or in the wrong form, so the tab did not use it.",
+    "That brain was trained for a different body, so the tab did not use it.",
+    "The tab could not use that brain.",
+  ]);
+  for (const t of says) assert.doesNotMatch(t, /policy|mjcf|sha|json|http|mlp|spec|\//i, t);
+  assert.match(notesFromTabEvent(refused(real[0]!), 1)[0]!.text, /Policy refused: could not fetch \/policy\/home\.json: HTTP 404/, "the debug log keeps the tab's own words");
 });

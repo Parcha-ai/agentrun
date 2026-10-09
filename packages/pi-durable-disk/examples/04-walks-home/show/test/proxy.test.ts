@@ -3,6 +3,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+// @ts-expect-error plain .mjs helper shared with the check scripts: a port the OS says is free, never a guessed one on a shared box
+import { freePort } from "../scripts/cdp.mjs";
 
 // The stage in proxy mode (SHOW_API) in front of a fake live feed. The page fetches /api/state, reads its x-last-event-id,
 // and resumes the event stream after that index; a proxy that drops the header makes the page replay events its snapshot
@@ -32,7 +34,7 @@ describe("the stage proxying a live feed", () => {
     });
     await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
     const upstreamPort = (upstream.address() as { port: number }).port;
-    port = 19000 + Math.floor(Math.random() * 900);
+    port = await freePort();
     child = spawn(process.execPath, [serve], { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", SHOW_PORT: String(port), SHOW_API: `http://127.0.0.1:${upstreamPort}` }, stdio: "ignore" });
     for (let i = 0; i < 100; i++) {
       if (await fetch(`http://127.0.0.1:${port}/api/state`).then((r) => r.ok).catch(() => false)) return;
@@ -64,7 +66,7 @@ describe("the stage proxying a live feed", () => {
 
 describe("the stage's own event stream", () => {
   it("answers at once, before any event: a feed that is waiting for its server has nothing to send, and a client's open must not wait for it", async () => {
-    const port = 19900 + Math.floor(Math.random() * 90);
+    const port = await freePort();
     const { spawn } = await import("node:child_process");
     const { mkdirSync, writeFileSync } = await import("node:fs");
     const { homedir } = await import("node:os");
