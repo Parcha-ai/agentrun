@@ -34,6 +34,13 @@ Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` pro
     TAB_DIR=<tab dist> node serve.ts                    # with D3's tab app instead of the stub
     npm test && npm run typecheck
 
+## Honest numbers
+
+A feed says where it comes from: `run.source` is `live` (the default) or `scripted`. A scripted feed gets a permanent
+SCRIPTED FEED badge, its handover times read "scripted 908 ms", and every captioned number is tagged SCRIPTED. A live
+feed's caption is tagged MEASURED only when the driver set `measured: true` on the note (or wrote "(measured)" in it);
+a number it did not flag is tagged UNMEASURED. Lines with no quantity carry no tag. `page/caption.ts` is that rule.
+
 ## Run the show from the page (operator mode)
 
     SHOW_MODE=operator TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> node serve.ts

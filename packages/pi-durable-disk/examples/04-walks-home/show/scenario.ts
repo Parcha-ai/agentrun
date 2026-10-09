@@ -133,7 +133,7 @@ export class ScenarioPlayer {
     if (this.started) return;
     this.started = true;
     const o = this.opts;
-    this.emit({ t: "run", at: 0, run: "walks-home-demo", origin: o.origin, environments: ENVIRONMENTS, scoreUnit: "m walked in 10 s" });
+    this.emit({ t: "run", at: 0, run: "walks-home-demo", origin: o.origin, environments: ENVIRONMENTS, scoreUnit: "m walked in 10 s", source: "scripted" });
     this.stayBegin("run", "Browser tab", "tab", 0, undefined);
     this.emit({ t: "place", at: 0, place: { where: "tab", host: "Browser tab" }, env: "tab" });
     this.note("story", "You sketch a creature. Its design is saved in SQLite on the agent's disk.");

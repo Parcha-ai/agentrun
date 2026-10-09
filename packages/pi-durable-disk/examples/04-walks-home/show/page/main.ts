@@ -1,5 +1,6 @@
 import type { ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
+import { captionFor } from "./caption.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
@@ -100,6 +101,7 @@ function maybeSendPolicy(state: ShowState): void {
 
 function renderChrome(state: ShowState): void {
   $("run").textContent = state.run;
+  $("source").hidden = state.source !== "scripted";
   const sw = $("switcher");
   const sig = state.environments.map((e) => e.id).join();
   if (sw.dataset.sig !== sig) {
@@ -190,11 +192,28 @@ addEventListener("keydown", (e) => {
 });
 if (params.get("operator") === "1") operator.hidden = false;
 
+let shownCaption = "";
+function renderCaption(state: ShowState, now: number): void {
+  const c = captionFor(state, now);
+  const el = $("caption");
+  const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
+  if (key === shownCaption) return;
+  shownCaption = key;
+  el.hidden = !c;
+  if (!c) return;
+  const tag = el.querySelector<HTMLElement>(".tag")!;
+  tag.hidden = c.tag === null;
+  tag.className = `tag ${c.tag ?? ""}`;
+  tag.textContent = c.tag ?? "";
+  el.querySelector<HTMLElement>(".txt")!.textContent = c.text;
+}
+
 function frame(): void {
   const state = feed.state;
   const now = feed.liveNow();
   renderChrome(state);
   renderOperator(state);
+  renderCaption(state, now);
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);

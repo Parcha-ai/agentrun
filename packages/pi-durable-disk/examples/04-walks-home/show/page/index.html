@@ -131,6 +131,13 @@ button.btn:disabled { opacity: .4; cursor: default; }
 #operator button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
 #operator #opresult { font: 11px var(--mono); color: var(--muted); min-height: 16px; }
 #operator #opresult.bad { color: var(--bad); }
+/* the caption: the newest key moment, tagged by what its numbers are */
+#mv { position: relative; }
+#caption { position: absolute; left: 0; right: 0; margin: 0 auto; width: max-content; bottom: 58px; max-width: 94%; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-radius: 12px; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); box-shadow: 0 8px 30px #0008; font: 600 16px var(--sans); animation: capin .25s ease-out; }
+@keyframes capin { from { opacity: 0; transform: translateY(8px) } }
+#caption .tag { font: 700 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; flex: none; }
+#caption .tag.measured { color: var(--ok); } #caption .tag.scripted { color: var(--gpu); } #caption .tag.unmeasured { color: var(--muted); }
+#source { font: 700 10px var(--mono); letter-spacing: .12em; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--gpu); color: var(--gpu); }
 #lost { position: fixed; top: 0; left: 0; right: 0; background: var(--bad); color: #160504; text-align: center; font-weight: 700; padding: 4px; z-index: 10; }
 </style>
 </head>
@@ -150,7 +157,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
 <div id="lost" hidden>feed lost, reconnecting</div>
 <header>
   <h1>It Walks Home</h1>
-  <span class="run" id="run"></span>
+  <span class="run" id="run"></span><span id="source" hidden title="Every number on this page comes from the scripted rehearsal feed, not from a measurement">SCRIPTED FEED</span>
   <div id="switcher" role="group" aria-label="Where the agent runs"></div>
   <span id="place"></span>
   <div id="cost"><div><div class="lbl">spent</div><div class="usd" id="usd">$0.00</div></div><div><div class="lbl">burn</div><div class="rate" id="rate">$0.00/min</div></div></div>
@@ -168,6 +175,7 @@ button.btn:disabled { opacity: .4; cursor: default; }
   <section id="mv">
     <div class="pane-h"><span>The multiverse</span><span class="right"><span id="mvsum"></span><button class="btn" id="killone">KILL THE LEADER</button></span></div>
     <div id="grid"></div>
+    <div id="caption" hidden><span class="tag"></span><span class="txt"></span></div>
     <div id="strip"></div>
   </section>
 </main>

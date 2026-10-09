@@ -3,6 +3,7 @@ import type { Place, ShowEvent, ShowState, Universe } from "./types.ts";
 
 export function emptyState(): ShowState {
   return {
+    source: "live",
     origin: 0,
     now: 0,
     run: "",
@@ -39,7 +40,7 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
   const now = Math.max(state.now, event.at);
   switch (event.t) {
     case "run":
-      return { ...state, now, run: event.run, origin: event.origin, environments: event.environments, scoreUnit: event.scoreUnit ?? "" };
+      return { ...state, now, run: event.run, origin: event.origin, environments: event.environments, scoreUnit: event.scoreUnit ?? "", source: event.source ?? "live" };
     case "place":
       return { ...state, now, place: event.place, currentEnv: event.env };
     case "stay.begin": {
@@ -74,7 +75,7 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
     case "cost":
       return { ...state, now, cost: event.cost };
     case "note":
-      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text }].slice(-200) };
+      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}) }].slice(-200) };
   }
 }
 

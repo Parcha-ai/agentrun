@@ -79,9 +79,15 @@ export type Cost = {
 };
 
 export type NoteKind = "story" | "switch" | "kill" | "takeover" | "winner" | "home";
-export type Note = { at: number; kind: NoteKind; text: string };
+/**
+ * A narration line. `measured: true` means every number in `text` was measured by the driver on this run; a feed that
+ * does not say, or says false, has its numbers shown as scripted or unmeasured, never as measurements.
+ */
+export type Note = { at: number; kind: NoteKind; text: string; measured?: boolean };
 
 export type ShowState = {
+  /** Where the story comes from: a live driver, or the scripted rehearsal feed. A scripted feed never claims a measurement. */
+  source: "live" | "scripted";
   /** Wall-clock ms (Date.now()) of time 0. */
   origin: number;
   /** Latest time any event carried. */
@@ -103,14 +109,14 @@ export type ShowState = {
 
 /** Everything that can change a ShowState. `at` is ms since origin. */
 export type ShowEvent =
-  | { t: "run"; at: number; run: string; origin: number; environments: ShowState["environments"]; scoreUnit?: string }
+  | { t: "run"; at: number; run: string; origin: number; environments: ShowState["environments"]; scoreUnit?: string; source?: ShowState["source"] }
   | { t: "place"; at: number; place: Place; env: string | null }
   | { t: "stay.begin"; at: number; stay: Omit<Stay, "to" | "endedBy"> }
   | { t: "stay.end"; at: number; id: string; endedBy: NonNullable<Stay["endedBy"]> }
   | { t: "universe"; at: number; id: string; patch: Partial<Omit<Universe, "id" | "samples" | "lastEventAt">> & { id?: never } }
   | { t: "sample"; at: number; id: string; score: number; progress?: number; cost?: number }
   | { t: "cost"; at: number; cost: Cost }
-  | { t: "note"; at: number; kind: NoteKind; text: string };
+  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean };
 
 /** What the page sends: a command, answered by an event stream, never by a return value. */
 export type ShowCommand =
