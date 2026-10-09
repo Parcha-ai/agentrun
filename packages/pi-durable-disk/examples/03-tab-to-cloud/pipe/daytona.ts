@@ -41,6 +41,8 @@ const BOX_ETC = "/etc/pda-demo";
 const MODEL_KEY_ENV = "OPENAI_API_KEY";
 const BOX_EVENTS = "/var/tmp/pda-demo-events.log";
 const BOX_REMOTE_LOG = "/var/tmp/pda-remote.log";
+/** How long a warm GPU box waits for a switch before it is deleted. */
+const REMOTE_WARM_MS = 10 * 60_000;
 /** Daytona's on-demand list prices: per vCPU hour, per GiB hour, per GPU hour by type. */
 const PRICE = { vcpu: 0.0504, gib: 0.0162, gpu: { "rtx-4090": 0.99, "rtx-5090": 1.29, "rtx-pro-6000": 3.03, h100: 3.95, h200: 4.54 } as Record<string, number> };
 const rateOf = (cpu: number, gib: number, gpu?: string) => cpu * PRICE.vcpu + gib * PRICE.gib + (gpu ? (PRICE.gpu[gpu] ?? PRICE.gpu.h200!) : 0);
@@ -203,7 +205,7 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
   const removed = new Set<string>();
   /** Warm boxes by run and snapshot. */
   const warm = new Map<string, Promise<SandboxInfo>>();
-  const created = new Map<string, { at: number; rate: number; end?: number }>();
+  const created = new Map<string, { at: number; rate: number; end?: number; name: string }>();
   const check = (box: SandboxInfo | null) => {
     if (box && (box.labels?.[LABEL_FLEET] !== fleet || !box.name.startsWith(prefix) || !ours.has(box.id))) throw new Error(`refusing to touch sandbox ${box.id}: not this demo's`);
     return box;
@@ -226,7 +228,7 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
       // Secrets are mounted at creation (a box created without them would need a restart to get them).
       const box = await inner.create((secrets.length > 0 ? { ...body, secrets } : body) as CreateSandboxBody);
       ours.add(box.id);
-      created.set(box.id, { at: Date.now(), rate: rates(body.snapshot) });
+      created.set(box.id, { at: Date.now(), rate: rates(body.snapshot), name: box.name });
       return box;
     },
     get: async (id) => check(await inner.get(id)),
@@ -240,13 +242,13 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
       const box = check(await inner.get(id));
       await inner.remove(id);
       removed.add(id);
-      if (box) {
-        ledger?.close("daytona-box", box.name, "deleted");
-        const life = created.get(id);
-        if (life) {
-          life.end = Date.now();
-          log("daytona.deleted", { box: box.name, minutes: Number(((life.end - life.at) / 60_000).toFixed(2)), usd: Number(((life.rate * (life.end - life.at)) / 3_600_000).toFixed(4)) });
-        }
+      // A box that is already gone (powered off: it deletes itself when it stops) is recorded closed too.
+      const life = created.get(id);
+      const name = box?.name ?? life?.name;
+      if (name) ledger?.close("daytona-box", name, box ? "deleted" : "gone");
+      if (life && !life.end) {
+        life.end = Date.now();
+        log("daytona.deleted", { box: name, minutes: Number(((life.end - life.at) / 60_000).toFixed(2)), usd: Number(((life.rate * (life.end - life.at)) / 3_600_000).toFixed(4)) });
       }
     },
     exec: async (box, command, timeoutSec) => inner.exec(check(box)!, command, timeoutSec),
@@ -449,6 +451,12 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         options.log("remote.warm-failed", { run: ref.id, error: (error as Error).message });
       });
       warmRemotes.set(ref.id, ready);
+      // A GPU box costs while it waits: one nobody took within the bound is deleted.
+      setTimeout(() => {
+        if (warmRemotes.get(ref.id) !== ready) return;
+        warmRemotes.delete(ref.id);
+        void ready.then((box) => client.remove(box.id)).then(() => options.log("remote.warm-expired", { run: ref.id }), () => undefined);
+      }, REMOTE_WARM_MS).unref();
     },
 
     /** Start the run in a sandbox (a warm one when ready); with `demand` false, only replace a holder that is lost. */
@@ -502,6 +510,12 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
     async kill(ref: RunRef): Promise<void> {
       const at = placed.get(ref.id);
       if (!at) return;
+      // The box's event lines so far, for the evidence (a box without power keeps nothing).
+      if (options.eventsLog) {
+        const box = await client.get(at.box).catch(() => null);
+        const r = box ? await client.exec(box, `cat ${BOX_EVENTS} 2>/dev/null; true`, 30).catch(() => null) : null;
+        if (r?.result) writeFileSync(options.eventsLog, r.result.endsWith("\n") ? r.result : `${r.result}\n`, { flag: "a" });
+      }
       await client.stop(at.box, true);
       options.log("cloud.killed", { run: ref.id, box: at.handle.name });
     },
