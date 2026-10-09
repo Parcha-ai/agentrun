@@ -20,6 +20,10 @@
   only. The run suite's daemon-kill and host-loss tests check that no delegation of a killed client is left.
 - New exports: `revokeBestEffort`, `revokeCompanions`, `companionsOf`.
 
+- New host driver `modalHost` (and its client, `modalSandboxes`): one Modal sandbox per instance, as `daytonaHost` does for Daytona,
+  through the Modal SDK passed in by the caller (no dependency added). `daytonaHost` gains a `driver` option (the `driver` of its
+  handles, default `"daytona"`) so a driver built on it names its own handles; nothing changes for existing callers.
+
 ## 0.1.0-beta.12, 2026-10-09
 
 Renamed from `@parcha/pi-durable-archil`. The package is now `@parcha/pi-durable-disk` and its command is `pi-durable-disk`, for branding:

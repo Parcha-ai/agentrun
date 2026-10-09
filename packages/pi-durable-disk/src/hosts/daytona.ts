@@ -186,6 +186,8 @@ export interface DaytonaHostOptions {
   target?: string;
   /** Names the boxes this driver owns, in their label and in every handle; a handle of another fleet is not its own. */
   fleet?: string;
+  /** The `driver` of every handle, and the only driver whose handles are its own. Default "daytona"; `modalHost` sets "modal". */
+  driver?: string;
   /** Box names are `<namePrefix><run id>-<stamp>`. Default "pda-". */
   namePrefix?: string;
   /** Extra labels on every box. */
@@ -279,6 +281,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly fleet: string; readonly mountRoot: string } {
   const client = opts.client;
   const fleet = opts.fleet ?? "pda";
+  const driver = opts.driver ?? "daytona";
   const prefix = opts.namePrefix ?? "pda-";
   const mountRoot = opts.mountRoot ?? DEFAULT_MOUNT_ROOT;
   const node = opts.node ?? "/usr/local/bin/node";
@@ -305,7 +308,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
   if (!opts.snapshot) throw new DaytonaHostError("INVALID_ARGUMENT", "a snapshot is required");
   const command = opts.command ?? [node, `${packageDir}/dist/cli.js`];
 
-  const mine = (h: HostHandle) => h.driver === "daytona" && h.fleet === fleet && typeof h.sandboxId === "string" && typeof h.name === "string";
+  const mine = (h: HostHandle) => h.driver === driver && h.fleet === fleet && typeof h.sandboxId === "string" && typeof h.name === "string";
   const ours = (box: SandboxInfo, runId: string) => box.labels?.[LABEL_FLEET] === fleet && box.labels?.[LABEL_RUN] === runId;
   const launcher = (verb: "start" | "status" | "stop", name: string, timeoutMs?: number) =>
     `${S}${node} ${launch} ${verb} ${name} --dir ${dir}${verb === "start" ? ` --stage ${stage}` : ""}${timeoutMs === undefined ? "" : ` --timeout-ms ${timeoutMs}`}`;
@@ -376,7 +379,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
         const prepared = now();
         if (opts.prepare) await opts.prepare(box, client);
         const prepareMs = now() - prepared;
-        const handle: HostHandle = { driver: "daytona", fleet, target: box.target ?? opts.target ?? null, sandboxId: box.id, name, mountpoint: `${mountRoot}/${runPath(ref.id)}` };
+        const handle: HostHandle = { driver, fleet, target: box.target ?? opts.target ?? null, sandboxId: box.id, name, mountpoint: `${mountRoot}/${runPath(ref.id)}` };
         const spec: LaunchSpec = {
           argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, ...(opts.runArgs ?? []), "--token-stdin"],
           env: { ...opts.env, PDA_HOLDER: JSON.stringify(handle) },
