@@ -108,7 +108,8 @@ export function warmTrain(box: WarmBox, o: WarmTrainOptions): WarmTrain {
     if (own.exitCode !== 0) throw new Error(`warm-up: giving ${at} to ${user} failed: ${own.result.trim().slice(0, 200)}`);
     const commands: { ms: number; exitCode: number; tail: string }[] = [];
     for (const c of o.commands) {
-      const cmd = c.replaceAll("{mjcf}", `${at}/creature.xml`).replaceAll("{body}", `${at}/body.json`);
+      // Quoted where they are substituted: a directory with a space or a quote stays one argument.
+      const cmd = c.replaceAll("{mjcf}", q(`${at}/creature.xml`)).replaceAll("{body}", q(`${at}/body.json`));
       const t1 = now();
       // As the agent's commands run there: the run user, its login HOME (train.py keeps its caches under ~/.cache).
       // pipefail: the command's exit code, not tail's.

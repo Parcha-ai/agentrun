@@ -1,6 +1,7 @@
 // The warm-up against a scripted box: the trainer's commands run in order for the creature, as the run user with its HOME,
 // one warm-up at a time; a repeated creature shares its warm-up; a failing command stops the rest and is reported.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { creatureId, WarmSuperseded, warmTrain, type WarmBox } from "../warm-train.ts";
 
@@ -43,7 +44,10 @@ test("the trainer's compile-only lines run in order for the creature's files, as
   const trains = s.calls.filter((c) => c.includes("train.py"));
   assert.equal(trains.length, 2);
   assert.match(trains[0]!, /^set -o pipefail; sudo -n -u 'pda' -H bash -c '/);
-  assert.ok(trains[0]!.includes(`--mjcf /var/tmp/pda-warm/${id}/creature.xml --body /var/tmp/pda-warm/${id}/body.json --universe u1.json`));
+  // The creature's files in the trainer's line, in its order (how bash splits them: the test with a space below).
+  const at = (p: string) => trains[0]!.indexOf(p);
+  assert.ok(at(`/var/tmp/pda-warm/${id}/creature.xml`) < at(`/var/tmp/pda-warm/${id}/body.json`) && at(`/var/tmp/pda-warm/${id}/creature.xml`) > at("--mjcf"));
+  assert.ok(at(`/var/tmp/pda-warm/${id}/body.json`) < at("--universe u1.json"));
   assert.ok(trains[1]!.includes("--universe getup.json"));
   assert.ok(s.calls.indexOf(s.calls.find((c) => c.startsWith("chown"))!) < s.calls.indexOf(trains[0]!), "the run user owns the files first");
   assert.deepEqual(w.warmed(), [id]);
@@ -96,6 +100,24 @@ test("variables reach the commands through sudo, which drops the image's environ
   await warmTrain(s.box, { commands: [WALK], env: { XLA_PYTHON_CLIENT_PREALLOCATE: "false" } }).warm(take);
   assert.match(s.calls.find((c) => c.includes("train.py"))!, /sudo -n -u 'pda' -H env XLA_PYTHON_CLIENT_PREALLOCATE='false' bash -c /);
   assert.throws(() => warmTrain(s.box, { commands: [WALK], env: { "A;rm": "x" } }), /NAME=value/);
+});
+
+test("a warm-up directory with a space or a quote reaches the trainer as one argument per file", async () => {
+  // The command as bash runs it (sudo aside), with printf standing in for the trainer: its arguments, one per line.
+  const ran: string[][] = [];
+  const box: WarmBox = {
+    async upload() {},
+    async exec(command) {
+      if (!command.includes("printf")) return { exitCode: 0, result: "" };
+      const r = spawnSync("bash", ["-c", command.replace("sudo -n -u 'pda' -H ", "")], { encoding: "utf8" });
+      ran.push(r.stdout.split("\n").filter(Boolean));
+      return { exitCode: r.status ?? 1, result: r.stdout };
+    },
+  };
+  const dir = "/var/tmp/warm cache's";
+  await warmTrain(box, { commands: ["printf '%s\\n' --mjcf {mjcf} --body {body} --compile-only"], dir }).warm(take);
+  const id = creatureId(take.xml);
+  assert.deepEqual(ran, [["--mjcf", `${dir}/${id}/creature.xml`, "--body", `${dir}/${id}/body.json`, "--compile-only"]]);
 });
 
 test("only the trainer's compile-only lines with the creature's placeholders are accepted", () => {
