@@ -5,6 +5,10 @@
 //
 // Every box carries `pda-fleet=<fleet>` and the `<namePrefix>` name, is recorded in the ledger before its create call,
 // and is closed in the ledger when deleted; this client refuses to touch any box that is not one it created.
+//
+// The fleet only needs a `DaytonaClient`, so the same fleet runs on Modal: `modalSandboxes(sdk, { image, runtime })`
+// is that client over Modal sandboxes (the package's modalHost), given an image with the runtime snapshot's layout,
+// with `kind` "vm" or "gpu", a label and Modal's rate.
 import { daytonaHost, LABEL_FLEET, LABEL_RUN, type CreateSandboxBody, type DaytonaClient, type HostDriver, type SandboxInfo } from "@parcha/pi-durable-disk";
 import type { Fleet, Machine } from "./multiverse.ts";
 
@@ -14,6 +18,14 @@ export const BOX_PACKAGE = `${BOX_APP_DIR}/node_modules/@parcha/pi-durable-disk`
 export const BOX_NODE = "/opt/node24/bin/node";
 export const BOX_MOUNT_ROOT = "/mnt/archil";
 export const BOX_UNIVERSE_APP = `${BOX_APP_DIR}/universe-app.mjs`;
+export const BOX_PROBE = `${BOX_APP_DIR}/universe-probe.mjs`;
+/**
+ * The probe the box took when it was warmed, with the box's id: root-owned, readable by the run user (the instance runs
+ * as it), on the box's tmpfs so it goes with the box. The notice uses it only when the id is this box's.
+ */
+export const BOX_FACTS = "/run/pda-universe/probe.json";
+/** daytonaHost's launcher directory, where each instance's output goes (`<name>.log`). */
+const BOX_LAUNCH_DIR = "/run/pda";
 
 /** Daytona's on-demand list prices: per vCPU hour, per GiB hour, per GPU hour by type. */
 const PRICE = { vcpu: 0.0504, gib: 0.0162, gpu: { "rtx-4090": 0.99, "rtx-5090": 1.29, "rtx-pro-6000": 3.03, h100: 3.95, h200: 4.54 } as Record<string, number> };
@@ -33,10 +45,16 @@ export interface DaytonaFleetOptions {
   readonly namePrefix: string;
   /** The universe app, bundled (build.mjs): installed into each box at `BOX_UNIVERSE_APP`. */
   readonly app: Uint8Array;
+  /** The machine probe, bundled: run once at warm time, its facts left at `BOX_FACTS` for the notice. */
+  readonly probe?: Uint8Array;
   /** `run` flags after `--app` (lease periods). */
   readonly runArgs?: readonly string[];
   /** The machine's label in the notice and on the stage, from the box. */
   readonly label?: (box: SandboxInfo, short: string) => string;
+  /** What kind of machine the stage draws. Default "sandbox". */
+  readonly kind?: Machine["kind"];
+  /** List price per hour of one box. Default: Daytona's rates for the box's resources. */
+  readonly ratePerHour?: (box: SandboxInfo) => number;
   readonly ttlMinutes?: number;
   readonly ledger?: LedgerLike;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
@@ -44,7 +62,7 @@ export interface DaytonaFleetOptions {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): SandboxInfo[]; sweep(): Promise<string[]> } {
+export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): SandboxInfo[]; sweep(): Promise<string[]>; logs(machine: Machine): Promise<string> } {
   const log = o.log ?? (() => {});
   const ours = new Map<string, SandboxInfo>();
   const removed = new Set<string>();
@@ -115,10 +133,24 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
         const mk = await client.exec(box, `umask 077 && mkdir -p ${stage} && test -f ${BOX_APP_DIR}/.prepared`, 30);
         if (mk.exitCode !== 0) throw new Error(`${full} lacks the runtime snapshot's app (${mk.result.trim().slice(0, 200)})`);
         await client.upload(box, `${stage}/universe-app.mjs`, o.app);
-        const r = await client.exec(box, `sudo -n install -o root -g root -m 0644 ${stage}/universe-app.mjs ${BOX_UNIVERSE_APP} && rm -f ${stage}/universe-app.mjs && nproc && free -g | awk '/Mem:/ {print $2}'`, 30);
+        if (o.probe) await client.upload(box, `${stage}/universe-probe.mjs`, o.probe);
+        const install = [
+          `sudo -n install -o root -g root -m 0644 ${stage}/universe-app.mjs ${BOX_UNIVERSE_APP}`,
+          ...(o.probe
+            ? [
+                `sudo -n install -o root -g root -m 0644 ${stage}/universe-probe.mjs ${BOX_PROBE}`,
+                `printf '{"box":"%s","facts":%s}\\n' '${box.id}' "$(${BOX_NODE} ${BOX_PROBE})" > ${stage}/facts.json`,
+                `sudo -n install -D -o root -g root -m 0644 ${stage}/facts.json ${BOX_FACTS}`,
+              ]
+            : []),
+          `rm -f ${stage}/*`,
+        ].join(" && ");
+        const p0 = Date.now();
+        const r = await client.exec(box, install, 60);
         if (r.exitCode !== 0) throw new Error(`installing the universe app in ${full} failed: ${r.result.trim().slice(0, 200)}`);
+        log("daytona.installed", { box: full, ms: Date.now() - p0, probe: Boolean(o.probe) });
         const short = full.slice(o.namePrefix.length);
-        const machine: Machine = { id: full, label: o.label?.(box, short) ?? `Daytona sandbox ${short}`, kind: "sandbox", ratePerHour: rateOf(box), since: created };
+        const machine: Machine = { id: full, label: o.label?.(box, short) ?? `Daytona sandbox ${short}`, kind: o.kind ?? "sandbox", ratePerHour: (o.ratePerHour ?? rateOf)(box), since: created };
         byMachine.set(full, box);
         log("daytona.warm", { box: full, createMs: created - t0, startedMs: started - t0, readyMs: Date.now() - t0, state: box.state });
         return machine;
@@ -145,7 +177,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
         user: "pda",
         group: "pda",
         runArgs: ["--app", BOX_UNIVERSE_APP, ...(o.runArgs ?? [])],
-        env,
+        env: o.probe ? { UNIVERSE_FACTS_FILE: BOX_FACTS, UNIVERSE_BOX_ID: box.id, ...env } : env,
         stopTimeoutMs: 15_000,
         ttlMinutes,
         startTimeoutMs: 120_000,
@@ -174,6 +206,13 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
     async retire(machine: Machine): Promise<void> {
       const box = byMachine.get(machine.id);
       if (box) await client.remove(box.id);
+    },
+
+    async logs(machine: Machine): Promise<string> {
+      const box = byMachine.get(machine.id);
+      if (!box || removed.has(box.id)) return "";
+      const r = await client.exec(box, `sudo -n sh -c 'cat ${BOX_LAUNCH_DIR}/*.log 2>/dev/null'; true`, 30).catch(() => null);
+      return r?.result ?? "";
     },
 
     boxes: () => [...ours.values()].filter((b) => !removed.has(b.id)),

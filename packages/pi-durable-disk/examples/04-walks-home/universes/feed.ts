@@ -9,7 +9,8 @@ import type { ShowEvent, ShowState } from "./show/types.ts";
 /** The stage's commands, plus this producer's own: warm the machines, fan out, collapse to a winner. */
 export type FeedCommand = { t: "kill"; universe: string } | { t: "switch"; to: string } | { t: "reset" } | { t: "prewarm" } | { t: "fanout" } | { t: "collapse"; winner?: string };
 
-export type CommandResult = { ok: true; [key: string]: unknown } | { ok: false; error: string };
+/** A refusal carries its reason as `message` (what the stage reads) and `error`. */
+export type CommandResult = { ok: true; [key: string]: unknown } | { ok: false; error: string; message?: string };
 
 export class Feed {
   readonly events: ShowEvent[] = [];
@@ -89,7 +90,7 @@ export async function serveFeed(o: FeedServerOptions): Promise<Server & { url: s
           return sendJson(res, 400, { ok: false, error: `not a command: ${(error as Error).message}` });
         }
         const r = await o.command(cmd);
-        return sendJson(res, r.ok ? 200 : 409, r);
+        return sendJson(res, r.ok ? 200 : 409, r.ok ? r : { ...r, message: r.message ?? r.error });
       }
       return sendJson(res, 404, { error: "no such route", path: url.pathname });
     } catch (error) {

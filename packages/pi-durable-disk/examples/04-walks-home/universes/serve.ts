@@ -76,6 +76,7 @@ const onResource = (kind: string, id: string, note?: string) => {
 
 const control = await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY });
 const bundle = readFileSync(join(here, "dist/universe-app.mjs"));
+const probe = readFileSync(join(here, "dist/probe.mjs"));
 const fleet = daytonaFleet({
   client: daytonaRest({ apiKey: process.env.DAYTONA_API_KEY, ...(process.env.DAYTONA_API_URL ? { apiUrl: process.env.DAYTONA_API_URL } : {}) }),
   snapshot: values.snapshot!,
@@ -83,6 +84,7 @@ const fleet = daytonaFleet({
   fleet: "demo-d1",
   namePrefix: "pda-demo-d1-",
   app: bundle,
+  probe,
   runArgs: ["--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000", "--on-sigterm", "pause"],
   ledger,
   log,
@@ -223,6 +225,11 @@ if (values.auto) {
       const st = feed.state;
       if (Object.values(st.universes).filter((u) => u.slot !== null).every((u) => u.progress >= 1)) break;
       await sleep(1000);
+    }
+    // Each live machine's instance output: its open steps and timings ("running" lines) for the report.
+    for (const line of mv.lines().filter((l) => l.machine && l.slot !== null)) {
+      const out = await fleet.logs(mv.machine(line.id)!);
+      for (const l of out.split("\n").filter((x) => x.includes('"running"') || x.includes('"notice"') || x.includes("trainer.start"))) log("measure.instance", { line: line.id, out: l.slice(0, 600) });
     }
     const collapse = await mv.collapse();
     log("measure.collapse", collapse);
