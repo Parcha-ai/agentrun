@@ -3,10 +3,10 @@ import { $, clock, esc, usd } from "./dom.ts";
 import { badgeFor, MEMORY_LINE, trackFor } from "./badge.ts";
 import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
-import { type Attempt, bannerState, proofLine, walkedOver10 } from "./offline.ts";
+import { bannerState, DiskProbe, proofLine, trimMeter, walkedOver10 } from "./offline.ts";
 import { learningStartedNote, setupCaption } from "./setup.ts";
 import { chartPoints, sparklineSvg } from "./sparkline.ts";
-import { simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
+import { plainSwitch, simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
 import { TakeMemory } from "./take-memory.ts";
 import { cardShown, cardTag, cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { DesktopView } from "./desktop.ts";
@@ -93,7 +93,8 @@ async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "st
 // real even when the feed is the scripted one, so they carry their own origin and basis (see tab-notes.ts).
 /** The feed's notes and the tab's, in time order, as one state for captions and the narration column. */
 function withTabNotes(state: ShowState): ShowState {
-  return memory.notes.length === 0 ? state : { ...state, notes: [...state.notes, ...memory.notes].sort((a, b) => a.at - b.at) };
+  const notes = debug ? state.notes : state.notes.map(plainSwitch);
+  return memory.notes.length === 0 && notes === state.notes ? state : { ...state, notes: [...notes, ...memory.notes].sort((a, b) => a.at - b.at) };
 }
 
 
@@ -149,11 +150,11 @@ bridge.onMessage((m: TabToShell) => {
   if (raw.type === "walk-meter" && typeof raw.t === "number" && typeof raw.metres === "number" && typeof raw.version === "number") {
     memory.meterSeen = true;
     if (offline && !memory.offlineSaid) {
-      memory.meterOffline.push({ t: raw.t, metres: raw.metres, version: raw.version });
+      memory.meterOffline = trimMeter([...memory.meterOffline, { t: raw.t, metres: raw.metres, version: raw.version }]);
       const walked = walkedOver10(memory.meterOffline);
       if (walked !== null) {
         memory.offlineSaid = true;
-        addNotes({ at: feed.captionNow(), kind: "home", text: `Still walking offline: ${walked.toFixed(1)} m in 10 s`, basis: "simulated", rank: 2 });
+        addNotes({ at: feed.captionNow(), kind: "home", text: `Still walking offline: ${walked.toFixed(1)} m in 10 s`, basis: "simulated", rank: 2, group: "offline" });
       }
     }
     return;
@@ -331,32 +332,14 @@ if (params.get("operator") === "1") operator.hidden = false;
 // stage), timed, failed; if that attempt gets an answer the page says so and does not claim to be offline (page/offline.ts). The stage's own failed
 // fetches are not an error then.
 let offline = !navigator.onLine;
-let attempts: Attempt[] = [];
-let probing: ReturnType<typeof setInterval> | undefined;
-async function probe(): Promise<void> {
-  const started = performance.now();
-  let ok = true;
-  try {
-    // Any answer, even "not found", means the path to the cloud disk is up; only a failure to connect is "no answer".
-    await fetch("/api/disk/creature/designs.sqlite", { cache: "no-store" });
-  } catch {
-    ok = false;
-  }
-  attempts = [...attempts.slice(-4), { ok, ms: performance.now() - started }];
-}
-function startProbing(): void {
-  if (probing) return;
-  void probe();
-  probing = setInterval(() => void probe(), 3000);
-}
-function stopProbing(): void {
-  if (probing) clearInterval(probing);
-  probing = undefined;
-  attempts = [];
-}
+// Any answer short of a 5xx, even "not found", means the path to the cloud disk is up; a 502 is the stage saying it cannot reach the run's server, and a
+// failure to connect is "no answer". Stopping cancels what is in flight and drops its result (page/offline.ts).
+const disk = new DiskProbe((signal) => fetch("/api/disk/creature/designs.sqlite", { cache: "no-store", signal }));
+const startProbing = (): void => disk.start();
+const stopProbing = (): void => disk.stop();
 if (offline && !debug) startProbing();
-function pageNote(text: string): void {
-  addNotes({ at: feed.captionNow(), kind: "home", text, origin: "tab", rank: 2 });
+function pageNote(text: string, group?: string): void {
+  addNotes({ at: feed.captionNow(), kind: "home", text, origin: "tab", rank: 2, ...(group ? { group } : {}) });
 }
 // The Wi-Fi control: a click is the user's act and reads off at once; after that the browser's own offline event and the page's own failed attempt are the truth.
 let wifiClickedAt: number | null = null;
@@ -365,11 +348,11 @@ $("wifi").addEventListener("click", () => {
   renderWifi();
 });
 function renderWifi(): void {
-  const b = bannerState({ offline, clickedAt: wifiClickedAt, now: performance.now(), attempts });
+  const b = bannerState({ offline, clickedAt: wifiClickedAt, now: performance.now(), attempts: disk.attempts });
   const el = $("wifi");
   if (el.textContent !== b.label) el.textContent = b.label;
   el.dataset.mode = b.mode;
-  const line = offline ? proofLine(attempts) : "";
+  const line = offline ? proofLine(disk.attempts) : "";
   const proof = $("proof");
   if (proof.textContent !== line) proof.textContent = line;
   proof.hidden = line === "";
@@ -380,8 +363,10 @@ addEventListener("offline", () => {
   memory.meterOffline = [];
   memory.offlineSaid = false;
   if (!debug) startProbing();
-  // A tab that reports its walk says how far it walked offline, measured after the cut. One that does not says only what the design guarantees.
-  if (!memory.meterSeen) pageNote("It keeps walking: the brain it learned runs right here.");
+  // Nothing said before the cut is news after it (a switch time beside "offline" read as a contradiction): the caption is about the cut. At once it says
+  // what the design guarantees; a tab that reports its walk then replaces that, in place, with how far it walked offline, measured after the cut.
+  if (!debug) desk.cut(feed.captionNow());
+  pageNote("It keeps walking: the brain it learned runs right here.", memory.meterSeen ? "offline" : undefined);
 });
 addEventListener("online", () => {
   syncTake();

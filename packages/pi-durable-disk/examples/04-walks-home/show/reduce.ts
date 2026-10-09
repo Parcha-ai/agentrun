@@ -83,7 +83,7 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
     case "cost":
       return { ...state, now, cost: event.cost };
     case "note":
-      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}), ...(event.evidence !== undefined ? { evidence: event.evidence } : {}), ...(event.rank !== undefined ? { rank: event.rank } : {}), ...(event.group !== undefined ? { group: event.group } : {}) }].slice(-200) };
+      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}), ...(event.evidence !== undefined ? { evidence: event.evidence } : {}), ...(event.rank !== undefined ? { rank: event.rank } : {}), ...(event.group !== undefined ? { group: event.group } : {}), ...(event.urgent !== undefined ? { urgent: event.urgent } : {}) }].slice(-200) };
     case "chat":
       return { ...state, now, chat: event.turns };
     case "setup":

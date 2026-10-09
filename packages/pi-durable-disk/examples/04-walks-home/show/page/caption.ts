@@ -69,7 +69,9 @@ export function captionFor(state: ShowState, now: number): Caption | null {
  */
 export class CaptionDesk {
   private shown = new Set<string>();
-  private current: { caption: Caption; shownAt: number; group?: string } | undefined;
+  private current: { caption: Caption; shownAt: number; group?: string; urgent?: boolean } | undefined;
+  /** Notes stamped before this are history: the network went off after them. */
+  private barrier = -Infinity;
   private lastNow = 0;
   private opts: { minHoldMs: number; maxHoldMs: number; staleMs: number; lagMs: number };
 
@@ -79,8 +81,17 @@ export class CaptionDesk {
 
   private show(w: { n: Note; key: string }, state: ShowState, now: number): Caption {
     this.shown.add(w.key);
-    this.current = { caption: caption(w.n, state.source), shownAt: now, ...(w.n.group ? { group: w.n.group } : {}) };
+    this.current = { caption: caption(w.n, state.source), shownAt: now, ...(w.n.group ? { group: w.n.group } : {}), ...(w.n.urgent ? { urgent: true } : {}) };
     return this.current.caption;
+  }
+
+  /**
+   * The network went off at `at`: what was said before it is no longer news, and what was still waiting is dropped, so the caption after a cut is
+   * about the cut (a switch time shown beside "offline" reads as a contradiction).
+   */
+  cut(at: number): void {
+    this.barrier = at;
+    this.current = undefined;
   }
 
   /** `yieldSlot`: something open-ended (the setup counter) wants the slot, so a caption that has had its time and has nothing behind it gives way. */
@@ -88,12 +99,14 @@ export class CaptionDesk {
     // A clock that went backwards is a new timeline (a reset, a retake): nothing of the old one is still on screen or already seen.
     if (now < this.lastNow) {
       this.current = undefined;
+      this.barrier = -Infinity;
       this.shown.clear();
     }
     this.lastNow = now;
     const waiting: { n: Note; key: string }[] = [];
     for (const n of state.notes) {
       if (n.at > now) break;
+      if (n.at < this.barrier) continue;
       if (now - n.at > this.opts.staleMs) continue;
       if (n.kind === "agent" || (!KEY_KINDS.has(n.kind) && n.measured !== true)) continue;
       const key = `${n.at}|${n.kind}|${n.text}`;
@@ -109,6 +122,9 @@ export class CaptionDesk {
     // appeared. Once the hold is over, a caption of another kind that is waiting takes its turn first (versions arriving every second must not
     // starve it); the newer version stays waiting and shows after.
     const held = this.current;
+    // An urgent moment takes the slot now, unless an urgent one is still inside its own hold.
+    const urgent = live.filter((w) => w.n.urgent);
+    if (urgent.length > 0 && !(held?.urgent && now - held.shownAt < this.opts.minHoldMs)) return this.show(urgent[urgent.length - 1]!, state, now);
     const replacement = held?.group ? live.find((w) => w.n.group === held.group) : undefined;
     const others = held?.group ? live.filter((w) => w.n.group !== held.group) : live;
     const holdOver = held !== undefined && now - held.shownAt >= this.opts.minHoldMs;

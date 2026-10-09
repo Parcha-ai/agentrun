@@ -167,7 +167,7 @@ test("a caption a viewer needs outranks tab chatter that arrived in the same bur
     note(9_000, "home", "The trained brain was installed in your browser in 15 ms (timed in the tab)."),
     note(9_010, "home", "It trained for 668 s before coming home."),
     { t: "note", at: 9_050, kind: "home", text: "Done training. The agent came back to your browser, and so did what it learned.", rank: 2 } as ShowEvent,
-    note(9_100, "home", "It was down. It learned to get back up."),
+    note(9_100, "home", "Knocked over. It learned to get back up."),
   ]);
   assert.equal(d.update(burst, 9_200)?.text, "Done training. The agent came back to your browser, and so did what it learned.");
   assert.equal(d.update(burst, 13_300)?.text, "The trained brain was installed in your browser in 15 ms (timed in the tab).", "then the rest in order, while they are still news");
@@ -247,4 +247,37 @@ test("a replacement does not restart the version caption's hold: the hold runs f
   events.push(version(2000, 2), version(3000, 3), version(4000, 4), note(2000, "home", "Wi-Fi back on.", false));
   assert.match(d.update(desk(events), 3000)!.text, /^Version 3 /, "replaced in place inside the hold");
   assert.equal(d.update(desk(events), 5000)?.text, "Wi-Fi back on.", "4 s after the first version appeared (1 s), the waiting caption has its turn");
+});
+
+// Cold view 6.
+test("an urgent moment takes the slot at once, inside the hold of the caption on screen; an ordinary one waits", () => {
+  const d = new CaptionDesk();
+  const urgent = { t: "note", at: 1500, kind: "home", text: "Knocked over. It learned to get back up.", urgent: true } as ShowEvent;
+  const s = fold([run("live"), note(1000, "home", "Version 4: walking - 2.1 m in 10 s"), urgent]);
+  assert.equal(d.update(fold([run("live"), note(1000, "home", "Version 4: walking - 2.1 m in 10 s")]), 1100)?.text, "Version 4: walking - 2.1 m in 10 s");
+  assert.equal(d.update(s, 1600)?.text, "Knocked over. It learned to get back up.", "1.5 s into a 4 s hold");
+  const plain = new CaptionDesk();
+  plain.update(fold([run("live"), note(1000, "home", "one")]), 1100);
+  assert.equal(plain.update(fold([run("live"), note(1000, "home", "one"), note(1500, "home", "two")]), 1600)?.text, "one");
+  // and a second urgent one does not cut the first short
+  const two = fold([run("live"), urgent, { ...urgent, at: 1800, text: "second" } as ShowEvent]);
+  const e = new CaptionDesk();
+  assert.equal(e.update(two, 1600)?.text, "Knocked over. It learned to get back up.");
+  assert.equal(e.update(two, 1900)?.text, "Knocked over. It learned to get back up.", "an urgent caption keeps its hold");
+});
+
+test("a cut (the network going off) drops what was said or waiting before it: nothing from before is news after", () => {
+  const d = new CaptionDesk();
+  const before = [run("live"), note(1000, "switch", "Switched to This tab in 1138 ms (timed by the server).", true)];
+  assert.equal(d.update(fold(before), 1100)?.text, "Switched to This tab in 1138 ms (timed by the server).");
+  d.cut(2000);
+  assert.equal(d.update(fold(before), 2100), null, "the caption on screen is gone");
+  const waiting = new CaptionDesk();
+  const late = fold([...before, note(1900, "home", "A moment that was still waiting")]);
+  waiting.cut(2000);
+  assert.equal(waiting.update(late, 2100), null, "and what was waiting is not shown after the cut");
+  const after = fold([...before, note(2500, "home", "Still walking offline: 4.6 m in 10 s")]);
+  assert.equal(d.update(after, 2600)?.text, "Still walking offline: 4.6 m in 10 s", "what comes after is shown");
+  // a retake (the clock goes back) starts over: the barrier is forgotten
+  assert.equal(d.update(fold([run("live"), note(500, "home", "A new take")]), 600)?.text, "A new take");
 });
