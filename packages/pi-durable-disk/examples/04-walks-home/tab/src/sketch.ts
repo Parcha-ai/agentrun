@@ -2,6 +2,7 @@
 // scale a pair's thigh and shin together. Emits a Design on every change. No physics here.
 
 import { LIMITS, type Design, type LegPair } from './design.ts';
+import { clampDesign } from './rules.ts';
 
 const PX = 200; // pixels per metre
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
@@ -33,7 +34,7 @@ export class Sketcher {
 
   get(): Design { return structuredClone(this.design); }
 
-  set(d: Design): void { this.design = structuredClone(d); this.draw(); }
+  set(d: Design): void { this.design = structuredClone(d); this.onClamp?.([]); this.draw(); }
 
   /** Joints per leg: 3 adds the hip abduction joint. Applied to the next build. */
   setLegDof(dof: 2 | 3): void {
@@ -55,7 +56,16 @@ export class Sketcher {
     this.changed();
   }
 
-  private changed(): void { this.draw(); this.onChange(this.get()); }
+  /** Every edit passes the clamp (rules.ts); what it shortened is reported to `onClamp` so the page can say so. */
+  onClamp: ((messages: string[]) => void) | null = null;
+
+  private changed(): void {
+    const { design, messages } = clampDesign(this.design);
+    if (messages.length) this.design = design;
+    this.onClamp?.(messages); // empty clears the last message
+    this.draw();
+    this.onChange(this.get());
+  }
 
   private pos(e: PointerEvent): [number, number] {
     const r = this.canvas.getBoundingClientRect();

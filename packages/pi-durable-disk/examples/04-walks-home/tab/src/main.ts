@@ -6,6 +6,7 @@ import { buildMjcf, type Built, type World } from './mjcf.ts';
 import { Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { dummyPolicy } from './dummy.ts';
 import { presetForSha } from './bodies.ts';
+import { bodyNotes } from './rules.ts';
 import { Stats } from './stats.ts';
 import { ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, type ArrivalResult } from './arrival.ts';
 import { Sim } from './sim.ts';
@@ -281,9 +282,19 @@ function kick(dirX: number, dirY: number, force: number) {
   kickWorld(wx, wy, force);
 }
 
+/** What the clamp last shortened, shown above the notes until the next edit that does not clamp. */
+let clampMessages: string[] = [];
+
+function renderNotes(d: Design) {
+  const box = $('bodyNotes');
+  const rows = [...clampMessages.map((text) => ({ cls: 'clamp', text })), ...bodyNotes(d).map((n) => ({ cls: n.level, text: n.text }))];
+  box.replaceChildren(...rows.map((r) => { const el = document.createElement('div'); el.className = r.cls; el.textContent = r.text; return el; }));
+}
+
 function renderPairs() {
   const el = $('pairs');
   const d = app.sketcher.get();
+  renderNotes(d);
   $('count').textContent = `${d.legs.length * 2} legs`;
   ($('legDof') as HTMLInputElement).checked = d.legDof === 3;
   el.replaceChildren(...d.legs.map((l, i) => {
@@ -449,6 +460,7 @@ async function main() {
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
     $('reset').onclick = () => { app.sim.reset(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
+    app.sketcher.onClamp = (m) => { clampMessages = m; };
     $('legDof').onchange = (e) => app.sketcher.setLegDof((e.target as HTMLInputElement).checked ? 3 : 2);
     $('addPair').onclick = () => app.sketcher.addPair();
     $('removePair').onclick = () => app.sketcher.removePair();

@@ -4,20 +4,19 @@
 // height, and the policy runs. "up" = uprightness above 0.9 and staying above it for 1 s; the time is when it first got there.
 import { readFileSync } from 'node:fs';
 import load from '@mujoco/mujoco';
-import { defaultDesign } from '../src/design.ts';
 import { buildMjcf } from '../src/mjcf.ts';
-import { presetForSha } from '../src/bodies.ts';
+import { resolveBody } from './_body.ts';
 import { Policy, sha256Hex } from '../src/policy.ts';
 import { Sim } from '../src/sim.ts';
 
 const [policyPath, cmds = '0,0.5,0.8'] = process.argv.slice(2);
 if (!policyPath) throw new Error('usage: getup-time.ts <policy.json> [commands]');
 const text = readFileSync(policyPath, 'utf8');
-const known = await presetForSha(JSON.parse(text).mjcf_sha256);
-const built = buildMjcf(known?.design ?? defaultDesign());
+const known = await resolveBody(text);
+const built = buildMjcf(known.design);
 const mj = await load();
 const policy = await Policy.load(text, { mjcfSha256: await sha256Hex(built.xml), nj: built.jointNames.length });
-console.log(`body: ${known?.name ?? 'default'}, getup network: ${policy.hasGetup}`);
+console.log(`body: ${known.name}, getup network: ${policy.hasGetup}`);
 
 // roll about x: +90 = onto its left side (+y down), -90 = right side, 180 = on its back
 const poses: [string, number][] = [['left side', Math.PI / 2], ['right side', -Math.PI / 2], ['back', Math.PI]];
