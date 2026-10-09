@@ -102,7 +102,7 @@ def main() -> None:
   ap.add_argument("--compile-cache", default=None,
                   help="where the compile-cache tarball lives (default WORK/compile-cache.tar.gz); point every universe "
                        "of a run at one shared path so a fork starts warm")
-  ap.add_argument("--keep", type=int, default=3,
+  ap.add_argument("--keep", type=int, default=2,
                   help="complete checkpoints kept per segment; older ones are deleted so work/ stays small enough for "
                        "a pipe host to attach (all of work/ crosses in one frame)")
   ap.add_argument("--after-checkpoint", default=None,

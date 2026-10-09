@@ -1,4 +1,4 @@
-// The trainer, the exported file and the tab's engine agree. The fixture (train/fixture.py) is a policy run in C MuJoCo
+// The trainer, the exported file and the tab's engine agree. The fixture (the trainer's fixture.py) is a policy run in C MuJoCo
 // by the trainer's Python: per step the state, the observation it built and the action the exported weights gave.
 // PARITY_DIR points the test at another trace (a trained universe's) with the same four files.
 import { test } from 'node:test';
@@ -6,10 +6,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import load from '@mujoco/mujoco';
 import { Policy, sha256Hex, type PolicyFile } from '../policy.ts';
+import { CREATURE_XML } from './fixtures/creature.ts';
 
 const dir = process.env.PARITY_DIR ?? new URL('./fixtures/', import.meta.url).pathname;
 const read = (name: string) => readFileSync(`${dir}/${name}`, 'utf8');
-const xml = read('creature.xml');
+// A PARITY_DIR carries its own creature.xml; the fixture's body is a TypeScript string (the source export takes no .xml).
+const xml = process.env.PARITY_DIR ? read('creature.xml') : CREATURE_XML;
 const body = JSON.parse(read('body.json')) as { jointNames: string[]; standPose: number[] };
 const file = JSON.parse(read('policy.json')) as PolicyFile;
 const trace = JSON.parse(read('trace.json')) as {
