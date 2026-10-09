@@ -80,3 +80,28 @@ test('with nothing pending a commit just saves; the delayed save fires after the
   await s.tick();
   assert.ok(s.log.includes('save'), s.log.join(' | '));
 });
+
+test('rebuilt() waits for the live rebuild of the latest drawing, without saving, and is immediate when nothing is pending', async () => {
+  const idle = rig();
+  await idle.c.rebuilt(); // nothing drawn: resolves at once
+  assert.deepEqual(idle.log, []);
+  const { c, log, builds, fire, tick } = rig();
+  c.edit();
+  let rebuilt = false;
+  const p = c.rebuilt().then(() => { rebuilt = true; });
+  await tick();
+  assert.equal(rebuilt, false, 'the rest has not passed, so no build has started');
+  fire(300);
+  await tick();
+  assert.equal(rebuilt, false, 'the build is running');
+  c.edit(); // the pen moves again before it finishes: the answer has to be about the newest drawing
+  builds[0].done();
+  await tick();
+  assert.equal(rebuilt, false, 'the finished build is of an older drawing');
+  fire(300);
+  await tick();
+  builds[1].done();
+  await p;
+  assert.equal(rebuilt, true);
+  assert.ok(!log.includes('save'), `it forced no save: ${log.join(' | ')}`);
+});

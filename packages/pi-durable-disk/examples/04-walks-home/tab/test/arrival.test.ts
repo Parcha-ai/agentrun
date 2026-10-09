@@ -345,3 +345,11 @@ test('walkedFields: round numbers, and an outcome that says what happened', () =
   // cut short after it was already walking: it did walk
   assert.equal(walkedFields('p', result({ partial: true, windowSeconds: 4.1 })).outcome, 'walked');
 });
+
+test('the same bytes announced as a checkpoint and then as the final file are two arrivals: the transition is never swallowed', () => {
+  const d = new ArrivalDedupe(8000);
+  assert.equal(d.accept('a', 1000, 'checkpoint'), true);
+  assert.equal(d.accept('a', 1100, 'checkpoint'), false, 'the other route, same kind: one arrival');
+  assert.equal(d.accept('a', 2000, 'final'), true, 'the run came home with the same bytes: final is a new arrival');
+  assert.equal(d.accept('a', 2100, 'final'), false, 'and its own duplicate is still dropped');
+});

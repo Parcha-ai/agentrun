@@ -82,6 +82,20 @@ await page(async ({ inner, arrive, waitSim }) => {
   check('4. the stand-only button does not leave the "learning" label or its facts', s2.state === 'dummy' && s2.checkpoint_n === 0 && s2.steps === null && s2.wall_s === null && s2.reported_walk_10s_m === null && !/^(learning|trained)/.test(label2) && /stand only/.test(label2), JSON.stringify({ state: s2.state, n: s2.checkpoint_n, label: label2 }));
 });
 
+// (7) the run comes home with the same bytes as its last checkpoint, within the dedupe window: the final file is still the final
+await page(async ({ inner, arrive, waitSim }) => {
+  await arrive(P3D, 'train/gpu/policy.json', 'checkpoint');
+  await waitSim(1);
+  const s0 = await inner('__walks.state()');
+  check('7. precondition: learning on the checkpoint', s0.state === 'learning' && s0.final === false, JSON.stringify({ state: s0.state, final: s0.final }));
+  await arrive(P3D, 'home/policy.json', 'final'); // the very same bytes, a second later
+  await waitSim(1);
+  const s1 = await inner('__walks.state()');
+  const label = await inner("document.getElementById('stateLabel').textContent");
+  const sub = await inner("getComputedStyle(document.getElementById('stateSub')).display");
+  check('7. the identical file arriving as the final one makes the creature trained, with the learning line gone', s1.state === 'trained' && s1.final === true && label === 'trained' && sub === 'none', JSON.stringify({ state: s1.state, final: s1.final, label, sub }));
+});
+
 // (6) a walk report never spans a body change
 await page(async ({ ev, inner, arrive, waitSim }) => {
   await ev('storageDelayMs = 700'); // a slow disk: the page keeps running frames while the body switch waits for its saves

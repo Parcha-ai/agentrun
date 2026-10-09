@@ -278,7 +278,7 @@ async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'p
   // the training file stays on the disk after the run is home: once the final policy is in, a checkpoint is stale and is ignored
   if (kind === 'checkpoint' && !app.training.acceptCheckpoint()) return;
   // the same file announced twice (the stage's load-policy and the watcher) is one arrival
-  if (!arrivalDedupe.accept(await sha256Hex(text), arrivedAt)) return;
+  if (!arrivalDedupe.accept(await sha256Hex(text), arrivedAt, kind)) return;
   const refuse = (reason: string) => {
     showError(`Policy refused: ${reason}`);
     post('policy-refused', { name, reason, via, kind });
@@ -705,7 +705,7 @@ async function main() {
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), applyDesign, setPhase,
+    (window as any).__walks = { get app() { return app; }, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
       // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
       sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left

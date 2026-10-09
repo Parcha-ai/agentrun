@@ -255,7 +255,7 @@ export class Sketcher {
       ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
     }
     ctx.fillStyle = '#6b6a65'; ctx.font = '600 17px ui-sans-serif, system-ui';
-    ctx.fillText('top view', 14, 28);
+    ctx.fillText('your drawing', 14, 28);
     ctx.font = '12px ui-sans-serif, system-ui';
     ctx.fillText('nose', w / 2 + torso.length * this.px / 2 + 10, h / 2 + 4);
   }
