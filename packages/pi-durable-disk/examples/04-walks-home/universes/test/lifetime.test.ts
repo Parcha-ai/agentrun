@@ -4,15 +4,28 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { daytonaFleet, DEFAULT_TTL_MINUTES, machineLifetime, TTL_MARGIN_MINUTES } from "../daytona-fleet.ts";
-import { cleanupOnExit } from "../exit-cleanup.ts";
+import { cleanupOnExit, stagedCleanup } from "../exit-cleanup.ts";
 
-test("the hard lifetime: 30 min by default, raised to cover the training, and never shorter than the training plus its margin", () => {
+test("the hard lifetime: 30 min by default, raised to cover warm-up and training, never shorter than both plus the margin", () => {
   assert.equal(DEFAULT_TTL_MINUTES, 30);
   assert.equal(machineLifetime(undefined, 6), 30);
   assert.equal(machineLifetime(undefined, 25), 25 + TTL_MARGIN_MINUTES);
+  // The warm compile runs on the same machine before training (serve's budget: 900 s).
+  assert.equal(machineLifetime(undefined, 6, 15), 15 + 6 + TTL_MARGIN_MINUTES);
+  assert.equal(machineLifetime(undefined, 25, 15), 15 + 25 + TTL_MARGIN_MINUTES);
   assert.equal(machineLifetime(20, 8), 20);
-  assert.throws(() => machineLifetime(15, 8), /ends before the training \(8 min\)/);
+  assert.throws(() => machineLifetime(15, 8), /ends before the warm-up \(0 min\), the training \(8 min\)/);
+  assert.throws(() => machineLifetime(30, 6, 15), /ends before the warm-up \(15 min\)/);
   assert.throws(() => machineLifetime(Number.NaN, 8), /ends before/);
+});
+
+test("a budget that is not a number of minutes is refused, given a lifetime or not", () => {
+  for (const ttl of [undefined, 60]) {
+    for (const minutes of [Number.NaN, Number("abc"), -1, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => machineLifetime(ttl, minutes), /the training budget is a number of minutes/, `ttl ${ttl}, minutes ${minutes}`);
+    }
+    assert.throws(() => machineLifetime(ttl, 6, Number.NaN), /the warm-up budget is a number of minutes/);
+  }
 });
 
 test("every box is created with the hard lifetime: the provider destroys it at that age whatever happens to the serve", async () => {
@@ -62,4 +75,18 @@ test("a cleanup that fails still exits, and says so", async () => {
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(proc.exits, [130]);
   assert.ok(logs.includes("cleanup.failed"));
+});
+
+test("a staged cleanup: the startup one until the whole one is ready, whichever is current runs once", async () => {
+  const ran: string[] = [];
+  const early = stagedCleanup(async () => void ran.push("startup"));
+  await Promise.all([early.cleanup(), early.cleanup()]);
+  early.ready(async () => void ran.push("full"));
+  await early.cleanup();
+  assert.deepEqual(ran, ["startup"], "a failure during startup ran the startup cleanup, once; nothing ran it again");
+  ran.length = 0;
+  const late = stagedCleanup(async () => void ran.push("startup"));
+  late.ready(async () => void ran.push("full"));
+  await Promise.all([late.cleanup(), late.cleanup()]);
+  assert.deepEqual(ran, ["full"]);
 });

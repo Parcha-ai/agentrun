@@ -25,3 +25,19 @@ export function cleanupOnExit(cleanup: () => Promise<void>, proc: ExitProcess, l
     });
   }
 }
+
+/**
+ * One cleanup for a process whose resources come up in stages: `startup` (what a failure half way can have made) until
+ * `ready(full)` names the whole cleanup. Whichever is current when the first trigger comes runs, once; later triggers
+ * wait for that same run.
+ */
+export function stagedCleanup(startup: () => Promise<void>): { cleanup(): Promise<void>; ready(full: () => Promise<void>): void } {
+  let full: (() => Promise<void>) | undefined;
+  let running: Promise<void> | undefined;
+  return {
+    cleanup: () => (running ??= (full ?? startup)()),
+    ready(f) {
+      full = f;
+    },
+  };
+}

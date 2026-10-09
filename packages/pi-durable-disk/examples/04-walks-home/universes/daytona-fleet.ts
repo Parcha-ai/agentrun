@@ -102,17 +102,24 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A box's hard lifetime when none is given: a take from prewarm to cleanup fits with room to spare. */
 export const DEFAULT_TTL_MINUTES = 30;
-/** Room a box's lifetime leaves past the training budget: warm-up, fan-out, collapse, home and cleanup. */
+/** Room a box's lifetime leaves past its warm-up and training budgets: fan-out, collapse, home and cleanup. */
 export const TTL_MARGIN_MINUTES = 10;
 
 /**
- * The fleet's hard lifetime for a take whose trainers run `trainMinutes`: `ttl` when given, else the default, raised to
- * cover the training. A lifetime that would end the boxes before the training and its margin is refused.
+ * The fleet's hard lifetime for a take whose machines warm up for at most `warmupMinutes` (the warm compile, on the
+ * same machine, before training) and train for `trainMinutes`: `ttl` when given, else the default, raised to cover
+ * both. A lifetime that would end the boxes before the warm-up, the training and the margin is refused, as is a budget
+ * that is not a number of minutes (it would reach the provider as no lifetime at all).
  */
-export function machineLifetime(ttl: number | undefined, trainMinutes: number): number {
-  const needed = trainMinutes + TTL_MARGIN_MINUTES;
+export function machineLifetime(ttl: number | undefined, trainMinutes: number, warmupMinutes = 0): number {
+  for (const [what, m] of [["training", trainMinutes], ["warm-up", warmupMinutes]] as const) {
+    if (!Number.isFinite(m) || m < 0) throw new Error(`the ${what} budget is a number of minutes, not ${m}`);
+  }
+  const needed = warmupMinutes + trainMinutes + TTL_MARGIN_MINUTES;
   if (ttl === undefined) return Math.max(DEFAULT_TTL_MINUTES, Math.ceil(needed));
-  if (!Number.isFinite(ttl) || ttl < needed) throw new Error(`a machine lifetime of ${ttl} min ends before the training (${trainMinutes} min) and its ${TTL_MARGIN_MINUTES} min margin`);
+  if (!Number.isFinite(ttl) || ttl < needed) {
+    throw new Error(`a machine lifetime of ${ttl} min ends before the warm-up (${warmupMinutes} min), the training (${trainMinutes} min) and the ${TTL_MARGIN_MINUTES} min margin`);
+  }
   return ttl;
 }
 
