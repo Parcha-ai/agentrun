@@ -174,13 +174,17 @@ function yawDir(x: number, y: number): [number, number] {
   return [x * Math.cos(yaw) - y * Math.sin(yaw), x * Math.sin(yaw) + y * Math.cos(yaw)];
 }
 
-function kick(dirX: number, dirY: number, force: number) {
-  const [wx, wy] = yawDir(dirX, dirY); // dir is given in the creature's heading frame
+function kickWorld(wx: number, wy: number, force: number) {
   const n = Math.hypot(wx, wy) || 1;
   app.sim.kick([(wx / n) * force, (wy / n) * force, 0]);
   app.recovering = app.sim.time;
-  post('kicked', { force_n: force, t: app.sim.time });
-  toast('kick');
+  post('kicked', { force_n: Math.round(force), t: app.sim.time });
+  toast(`kick ${Math.round(force)} N`);
+}
+
+function kick(dirX: number, dirY: number, force: number) {
+  const [wx, wy] = yawDir(dirX, dirY); // dir is given in the creature's heading frame
+  kickWorld(wx, wy, force);
 }
 
 function renderPairs() {
@@ -318,6 +322,38 @@ async function main() {
     });
     $('openMemory').onclick = () => renderMemory();
 
+    // Drag from the creature to shove it: direction = the drag as seen from the camera, force grows with the length.
+    const canvas = $('view') as HTMLCanvasElement, arrow = $('dragArrow') as unknown as SVGLineElement, svg = $('dragSvg');
+    let drag: { x: number; y: number } | null = null;
+    const forceFor = (px: number) => Math.min(150, Math.max(10, px * 0.5));
+    canvas.addEventListener('pointerdown', (e) => {
+      if (!app.view.pickCreature(e.clientX, e.clientY)) return;
+      drag = { x: e.clientX, y: e.clientY };
+      app.view.setOrbitEnabled(false);
+      canvas.setPointerCapture(e.pointerId);
+      const r = canvas.getBoundingClientRect();
+      arrow.setAttribute('x1', String(e.clientX - r.left)); arrow.setAttribute('y1', String(e.clientY - r.top));
+      arrow.setAttribute('x2', String(e.clientX - r.left)); arrow.setAttribute('y2', String(e.clientY - r.top));
+      svg.toggleAttribute('hidden', false); // SVGElement has no .hidden property
+    }, true);
+    canvas.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const r = canvas.getBoundingClientRect();
+      arrow.setAttribute('x2', String(e.clientX - r.left)); arrow.setAttribute('y2', String(e.clientY - r.top));
+      arrow.style.strokeWidth = String(2 + forceFor(Math.hypot(e.clientX - drag.x, e.clientY - drag.y)) / 20);
+    });
+    const end = (e: PointerEvent) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      drag = null; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true);
+      const len = Math.hypot(dx, dy);
+      if (len < 8) return; // a click, not a shove
+      const [wx, wy] = app.view.groundDir(dx, dy);
+      kickWorld(wx, wy, forceFor(len));
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', () => { drag = null; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true); });
+
     window.addEventListener('message', async (ev) => {
       if (ev.origin !== location.origin || ev.source !== window.parent) return;
       const m = ev.data;
@@ -332,7 +368,7 @@ async function main() {
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, kick, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
+    (window as any).__walks = { get app() { return app; }, kick, kickWorld, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';
     post('ready', { version: 1, mujoco: mujocoVersion, mjcf_sha256: app.bodySha });
     requestAnimationFrame((t) => { app.last = t; tick(t); });

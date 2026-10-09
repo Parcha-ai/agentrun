@@ -45,6 +45,8 @@ export class View {
   private readonly m4 = new THREE.Matrix4();
 
   private readonly canvas: HTMLCanvasElement;
+  private readonly ray = new THREE.Raycaster();
+  private bodyMeshes: THREE.Mesh[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -81,6 +83,7 @@ export class View {
       (m.material as THREE.Material).dispose();
     }
     this.meshes = [];
+    this.bodyMeshes = [];
     this.sim = sim;
     const model = sim.model;
     for (let g = 0; g < model.ngeom; g++) {
@@ -102,9 +105,29 @@ export class View {
       mesh.matrixAutoUpdate = false;
       this.scene.add(mesh);
       this.meshes.push(mesh);
+      if (model.geom_bodyid[g] > 0) this.bodyMeshes.push(mesh); // the creature, not the terrain
     }
     this.draw(true);
   }
+
+  /** True when the pointer at (clientX, clientY) is over a part of the creature. */
+  pickCreature(clientX: number, clientY: number): boolean {
+    const r = this.canvas.getBoundingClientRect();
+    this.ray.setFromCamera(new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1), this.camera);
+    return this.ray.intersectObjects(this.bodyMeshes, false).length > 0;
+  }
+
+  /** A screen-space drag (pixels, y down) as a unit direction on the ground plane, as seen from the camera. */
+  groundDir(dx: number, dy: number): [number, number] {
+    const fwd = new THREE.Vector3(); this.camera.getWorldDirection(fwd);
+    const right = new THREE.Vector3().crossVectors(fwd, this.camera.up).normalize();
+    const f = new THREE.Vector3(fwd.x, fwd.y, 0).normalize();
+    const x = right.x * dx + f.x * -dy, y = right.y * dx + f.y * -dy;
+    const n = Math.hypot(x, y) || 1;
+    return [x / n, y / n];
+  }
+
+  setOrbitEnabled(on: boolean): void { this.controls.enabled = on; }
 
   resize(): void {
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;

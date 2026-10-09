@@ -49,6 +49,20 @@ try {
   await sleep(300); await snap('2-kicked');
   await sleep(4000);
   result.afterKick = await state();
+  // drag-to-kick: press on the creature (it stays near the view centre: the camera follows it), drag right, release
+  await ev("document.getElementById('noPolicy').click(); __walks.app.sim.reset(); __walks.app.fallen = false"); await sleep(1500);
+  const box = JSON.parse(await ev("JSON.stringify((() => { const r = document.getElementById('view').getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2 - 20}; })())"));
+  const mouse = (type, x, y) => S('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+  const before = await ev('({x: __walks.app.sim.data.qpos[0], y: __walks.app.sim.data.qpos[1]})');
+  await mouse('mousePressed', box.x, box.y);
+  for (let i = 1; i <= 8; i++) { await mouse('mouseMoved', box.x + i * 25, box.y); await sleep(30); }
+  result.dragDom = await ev("(() => { const s = document.getElementById('dragSvg'), l = document.getElementById('dragArrow'); return {hidden: s.hasAttribute('hidden'), display: getComputedStyle(s).display, x1: l.getAttribute('x1'), x2: l.getAttribute('x2'), w: s.getBoundingClientRect().width}; })()");
+  await snap('3a-dragging');
+  await mouse('mouseReleased', box.x + 200, box.y);
+  result.dragKick = { armed: await ev('__walks.app.recovering !== null'), toast: await ev("document.getElementById('toast').textContent") };
+  await sleep(2500);
+  const after = await ev('({x: __walks.app.sim.data.qpos[0], y: __walks.app.sim.data.qpos[1], up: __walks.app.sim.uprightness()})');
+  result.dragKick.moved = Math.hypot(after.x - before.x, after.y - before.y); result.dragKick.upright = after.up;
   // terrain: a heightfield with a flat centre, rolling hills outside it
   const n = 33, elev = [];
   for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { const x = -3 + (6 * j) / (n - 1), y = -3 + (6 * i) / (n - 1); const r = Math.hypot(x, y); elev.push(r < 1.2 ? 0 : Math.min(1, (r - 1.2) / 1.5) * (0.5 + 0.5 * Math.sin(3 * x) * Math.cos(2.5 * y))); }
