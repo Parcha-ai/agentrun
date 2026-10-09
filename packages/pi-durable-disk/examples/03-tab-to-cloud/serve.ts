@@ -4,10 +4,11 @@
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona]
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
-//                 [--also-host ADDR] [--public-url https://HOST]
+//                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH]
 //
 // --also-host listens on a second address too (a reverse proxy's side of a bridge); --public-url is the address the
-// printed link uses (the proxy's). The admin route answers on loopback only.
+// printed link uses (the proxy's). The admin routes (and POST /api/runs/<id>/attach) answer on loopback only, with the
+// admin token. --tab-writable lists the work/ paths the page of the tab that holds a run may PUT (pipe/server.ts).
 //
 // --model-key-env names the variable holding the model endpoint's key (sent by the pipe as a bearer token). A Daytona
 // sandbox calls the model itself: its key is the Daytona secret --daytona-secret (Daytona puts a placeholder in the box
@@ -52,6 +53,7 @@ const { values } = parseArgs({
     "grace-ms": { type: "string", default: "5000" },
     "admin-token-file": { type: "string" },
     "also-host": { type: "string" },
+    "tab-writable": { type: "string" },
     "public-url": { type: "string" },
   },
 });
@@ -95,10 +97,13 @@ if (values.cloud === "local" || values.cloud === "daytona") {
   });
 }
 
+const diskControl = values.local ? null : await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY ?? "" });
 const server = createDemoServer({
   disk,
   region,
-  control: values.local ? null : await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY ?? "" }),
+  control: diskControl,
+  ...(diskControl ? { readObject: (key: string) => diskControl.getObject(key) } : {}),
+  ...(values["tab-writable"] ? { tabWritable: values["tab-writable"].split(",").filter(Boolean) } : {}),
   mountRoot: values.local ?? values["mount-root"]!,
   model,
   pageDir: join(here, "tab", "dist"),

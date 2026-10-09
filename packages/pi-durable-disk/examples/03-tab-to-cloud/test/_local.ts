@@ -71,8 +71,10 @@ export async function modelStub(reply: (body: Record<string, unknown>) => string
   return { url: `http://127.0.0.1:${port}/v1`, requests, close: () => new Promise((r) => server.close(() => r())) };
 }
 
-export async function localServer(options: Partial<DemoServerOptions> & { hooks?: LocalClaimHooks } = {}): Promise<{ server: DemoServer; url: string; root: string; remove(): Promise<void> }> {
-  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-demo-"));
+/** A server on a local directory; `root` shares another server's directory (a second server on the same "disk"). */
+export async function localServer(options: Partial<DemoServerOptions> & { hooks?: LocalClaimHooks; root?: string } = {}): Promise<{ server: DemoServer; url: string; root: string; remove(): Promise<void> }> {
+  const shared = options.root !== undefined;
+  const root = options.root ?? mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-demo-"));
   const server = createDemoServer({
     disk: "dsk-local",
     region: "local",
@@ -91,7 +93,7 @@ export async function localServer(options: Partial<DemoServerOptions> & { hooks?
     root,
     async remove() {
       await server.close();
-      rmSync(root, { recursive: true, force: true });
+      if (!shared) rmSync(root, { recursive: true, force: true });
     },
   };
 }
