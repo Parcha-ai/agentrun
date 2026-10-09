@@ -6,19 +6,40 @@ import { SLICE_NAMES, slice, sliceSize, type SliceName, type State } from './obs
 export const KNOWN_SPEC_VERSIONS = [1];
 const ACTIVATIONS = ['tanh', 'elu', 'relu', 'silu', 'none'] as const;
 type Activation = (typeof ACTIVATIONS)[number];
-export const MAX_POLICY_BYTES = 300 * 1024;
+export const MAX_POLICY_BYTES = 600 * 1024; // two networks of 128x3 are about 440 KB
 
-export interface PolicyFile {
-  format: 'mlp-v1';
-  spec_version: number;
-  mujoco_version: string;
-  mjcf_sha256: string;
-  control_dt: number;
+/** One network: what it observes, how its output becomes joint targets, its layers. */
+export interface Network {
   obs: { spec: { name: SliceName; size: number }[]; mean: number[]; std: number[] };
   clock?: { gait_hz: number };
   act: { scale: number; clip?: number };
   layers: { in: number; out: number; w: string; b: string; act: Activation }[];
 }
+
+/**
+ * Optional second network that rights a fallen creature, and the rule that hands control between the two on the
+ * torso's uprightness (1 standing, 0 on its side, -1 on its back): getup takes over below `switch.below_up` and hands
+ * back above `switch.above_up` (hysteresis, so the two never flap). `obs` and `act` default to the top level's; the
+ * phase clock is always the top level's. A tab that does not know `getup` runs the walking network alone, which is
+ * why it is not a spec_version change.
+ */
+export interface GetupNetwork {
+  layers: Network['layers'];
+  obs?: Network['obs'];
+  act?: Network['act'];
+  switch: { below_up: number; above_up: number };
+}
+
+export interface PolicyFile extends Network {
+  format: 'mlp-v1';
+  spec_version: number;
+  mujoco_version: string;
+  mjcf_sha256: string;
+  control_dt: number;
+  getup?: GetupNetwork;
+}
+
+export type Skill = 'walk' | 'getup';
 
 export class PolicyRefused extends Error {}
 
@@ -50,17 +71,86 @@ const act: Record<Activation, (x: number) => number> = {
   none: (x) => x,
 };
 
+type Layer = { w: Float32Array; b: Float32Array; in: number; out: number; act: Activation };
+
+function checkNetwork(n: Network, nj: number, where: string): void {
+  let od = 0;
+  for (const s of n.obs.spec) {
+    if (!SLICE_NAMES.includes(s.name)) throw new PolicyRefused(`${where}unknown obs slice ${s.name}`);
+    if (s.size !== sliceSize(s.name, nj)) throw new PolicyRefused(`${where}obs slice ${s.name} has size ${s.size}, the body needs ${sliceSize(s.name, nj)}`);
+    od += s.size;
+  }
+  if (n.obs.mean.length !== od || n.obs.std.length !== od) throw new PolicyRefused(`${where}obs mean/std length differs from obs.spec`);
+  if (n.obs.std.some((s) => !(s > 0))) throw new PolicyRefused(`${where}obs std must be positive`);
+  if (n.obs.spec.some((s) => s.name === 'phase') && !(n.clock && n.clock.gait_hz > 0)) throw new PolicyRefused(`${where}phase needs clock.gait_hz`);
+  if (!n.layers?.length) throw new PolicyRefused(`${where}no layers`);
+  let width = od;
+  for (const [i, l] of n.layers.entries()) {
+    if (l.in !== width) throw new PolicyRefused(`${where}layer ${i} takes ${l.in}, previous width is ${width}`);
+    if (!ACTIVATIONS.includes(l.act)) throw new PolicyRefused(`${where}layer ${i}: activation ${l.act} not supported`);
+    width = l.out;
+  }
+  if (width !== nj) throw new PolicyRefused(`${where}policy outputs ${width} actions, the body has ${nj} actuators`);
+}
+
+function buildLayers(n: Network, where: string): Layer[] {
+  const layers = n.layers.map((l) => ({ w: base64ToF32(l.w), b: base64ToF32(l.b), in: l.in, out: l.out, act: l.act }));
+  for (const [i, l] of layers.entries()) {
+    if (l.w.length !== l.in * l.out || l.b.length !== l.out) throw new PolicyRefused(`${where}layer ${i}: weight shapes do not match in/out`);
+  }
+  return layers;
+}
+
+function run(n: Network, layers: Layer[], obs: number[]): number[] {
+  let x = obs.map((v, i) => (v - n.obs.mean[i]) / n.obs.std[i]);
+  for (const l of layers) {
+    const y = new Array<number>(l.out);
+    const fn = act[l.act];
+    for (let o = 0; o < l.out; o++) {
+      let sum = l.b[o];
+      const row = o * l.in;
+      for (let i = 0; i < l.in; i++) sum += l.w[row + i] * x[i];
+      y[o] = fn(sum);
+    }
+    x = y;
+  }
+  const c = n.act.clip ?? 1;
+  return x.map((v) => Math.max(-c, Math.min(c, v)));
+}
+
+/** Torso uprightness from qpos: the z component of the body's up axis. */
+export function uprightness(qpos: ArrayLike<number>): number {
+  return 1 - 2 * (qpos[4] * qpos[4] + qpos[5] * qpos[5]);
+}
+
 export class Policy {
   readonly file: PolicyFile;
-  readonly gaitHz: number;
-  private readonly weights: { w: Float32Array; b: Float32Array; in: number; out: number; act: Activation }[];
+  /** The network in control. observe() updates it from the state it is given; act() and targets() use it. */
+  skill: Skill = 'walk';
+  private readonly nets: Record<Skill, { net: Network; layers: Layer[] } | undefined>;
 
   private constructor(file: PolicyFile) {
     this.file = file;
-    this.gaitHz = file.clock?.gait_hz ?? 0;
-    this.weights = file.layers.map((l) => ({
-      w: base64ToF32(l.w), b: base64ToF32(l.b), in: l.in, out: l.out, act: l.act,
-    }));
+    const getup = Policy.getupNetwork(file);
+    this.nets = {
+      walk: { net: file, layers: buildLayers(file, '') },
+      getup: getup ? { net: getup, layers: buildLayers(getup, 'getup: ') } : undefined,
+    };
+  }
+
+  /** The getup block as a full network: obs and act default to the top level's, the clock is the top level's. */
+  private static getupNetwork(f: PolicyFile): Network | undefined {
+    if (!f.getup) return undefined;
+    return { layers: f.getup.layers, obs: f.getup.obs ?? f.obs, act: f.getup.act ?? f.act, clock: f.clock };
+  }
+
+  /** The phase clock (the top level's, whichever network is in control). */
+  get gaitHz(): number {
+    return this.file.clock?.gait_hz ?? 0;
+  }
+
+  private get active() {
+    return this.nets[this.skill] ?? this.nets.walk!;
   }
 
   /** Validate `raw` against the body (`mjcfSha256`, joint count `nj`, MuJoCo `version`) and build a runnable policy. */
@@ -73,58 +163,45 @@ export class Policy {
     if (body.mujocoVersion && f.mujoco_version !== body.mujocoVersion) {
       throw new PolicyRefused(`policy was trained on MuJoCo ${f.mujoco_version}, the tab runs ${body.mujocoVersion}`);
     }
-    let od = 0;
-    for (const s of f.obs.spec) {
-      if (!SLICE_NAMES.includes(s.name)) throw new PolicyRefused(`unknown obs slice ${s.name}`);
-      if (s.size !== sliceSize(s.name, body.nj)) throw new PolicyRefused(`obs slice ${s.name} has size ${s.size}, the body needs ${sliceSize(s.name, body.nj)}`);
-      od += s.size;
+    checkNetwork(f, body.nj, '');
+    const getup = Policy.getupNetwork(f);
+    if (getup) {
+      checkNetwork(getup, body.nj, 'getup: ');
+      const sw = f.getup!.switch;
+      if (!sw || !(sw.below_up >= 0 && sw.below_up < sw.above_up && sw.above_up <= 1)) {
+        throw new PolicyRefused('getup.switch must be {below_up, above_up} with 0 <= below_up < above_up <= 1');
+      }
     }
-    if (f.obs.mean.length !== od || f.obs.std.length !== od) throw new PolicyRefused('obs mean/std length differs from obs.spec');
-    if (f.obs.std.some((s) => !(s > 0))) throw new PolicyRefused('obs std must be positive');
-    if (f.obs.spec.some((s) => s.name === 'phase') && !(f.clock && f.clock.gait_hz > 0)) throw new PolicyRefused('phase needs clock.gait_hz');
-    if (!f.layers?.length) throw new PolicyRefused('no layers');
-    let width = od;
-    for (const [i, l] of f.layers.entries()) {
-      if (l.in !== width) throw new PolicyRefused(`layer ${i} takes ${l.in}, previous width is ${width}`);
-      if (!ACTIVATIONS.includes(l.act)) throw new PolicyRefused(`layer ${i}: activation ${l.act} not supported`);
-      width = l.out;
-    }
-    if (width !== body.nj) throw new PolicyRefused(`policy outputs ${width} actions, the body has ${body.nj} actuators`);
     if (!(Math.abs(f.control_dt - 0.02) < 1e-9)) throw new PolicyRefused(`control_dt ${f.control_dt}, the tab steps at 0.02`);
-    const p = new Policy(f);
-    for (const [i, l] of p.weights.entries()) {
-      if (l.w.length !== l.in * l.out || l.b.length !== l.out) throw new PolicyRefused(`layer ${i}: weight shapes do not match in/out`);
-    }
-    return p;
+    return new Policy(f);
   }
 
+  /** Back to the walking network (a reset puts the creature on its feet). */
+  reset(): void {
+    this.skill = 'walk';
+  }
+
+  /** The observation for the network in control, after handing control over if the torso crossed a switch threshold. */
   observe(s: State): number[] {
+    const sw = this.file.getup?.switch;
+    if (this.nets.getup && sw) {
+      const up = uprightness(s.qpos);
+      if (this.skill === 'walk' && up < sw.below_up) this.skill = 'getup';
+      else if (this.skill === 'getup' && up > sw.above_up) this.skill = 'walk';
+    }
     const out: number[] = [];
-    for (const sp of this.file.obs.spec) out.push(...slice(sp.name, s));
+    for (const sp of this.active.net.obs.spec) out.push(...slice(sp.name, { ...s, gaitHz: this.gaitHz }));
     return out;
   }
 
-  /** Action in [-clip, clip] for the observation: normalise, run the layers. */
+  /** Action in [-clip, clip] for the observation: normalise, run the layers of the network in control. */
   act(obs: number[]): number[] {
-    let x = obs.map((v, i) => (v - this.file.obs.mean[i]) / this.file.obs.std[i]);
-    for (const l of this.weights) {
-      const y = new Array<number>(l.out);
-      const fn = act[l.act];
-      for (let o = 0; o < l.out; o++) {
-        let sum = l.b[o];
-        const row = o * l.in;
-        for (let i = 0; i < l.in; i++) sum += l.w[row + i] * x[i];
-        y[o] = fn(sum);
-      }
-      x = y;
-    }
-    const c = this.file.act.clip ?? 1;
-    return x.map((v) => Math.max(-c, Math.min(c, v)));
+    return run(this.active.net, this.active.layers, obs);
   }
 
-  /** Joint position targets for the actuators. */
+  /** Joint position targets for the actuators, with the action scale of the network in control. */
   targets(action: number[], standPose: ArrayLike<number>): number[] {
-    return action.map((a, i) => standPose[i] + this.file.act.scale * a);
+    return action.map((a, i) => standPose[i] + this.active.net.act.scale * a);
   }
 }
 

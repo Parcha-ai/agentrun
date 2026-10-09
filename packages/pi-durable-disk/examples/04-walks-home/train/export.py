@@ -18,7 +18,7 @@ import numpy as np
 
 FORMAT = "mlp-v1"
 SPEC_VERSION = 1
-MAX_POLICY_BYTES = 300 * 1024
+MAX_POLICY_BYTES = 600 * 1024  # policy/policy.ts: two networks of 128x3 are about 440 KB
 
 
 def b64f32(a: np.ndarray) -> str:
@@ -83,19 +83,67 @@ ACT = {
 }
 
 
+def combine(walk: dict[str, Any], getup: dict[str, Any], below_up: float = 0.3, above_up: float = 0.9) -> dict[str, Any]:
+  """One file from a walking and a getup policy of the same body: the getup network runs while the torso's uprightness
+  is below below_up until it is above above_up (policy/policy.ts implements the same rule)."""
+  if walk["mjcf_sha256"] != getup["mjcf_sha256"]:
+    raise ValueError("the two policies were trained for different bodies")
+  if walk.get("clock") != getup.get("clock"):
+    raise ValueError("the getup network runs on the walking network's phase clock; train both at the same gait_hz")
+  out = dict(walk)
+  # Its own normalizer and action scale, written out; the clock is the top level's.
+  out["getup"] = {"layers": getup["layers"], "obs": getup["obs"], "act": getup["act"],
+                  "switch": {"below_up": below_up, "above_up": above_up}}
+  out["provenance"] = {"walk": walk.get("provenance"), "getup": getup.get("provenance")}
+  size = len(json.dumps(out))
+  if size > MAX_POLICY_BYTES:
+    raise ValueError(f"policy.json is {size} bytes, over the tab's {MAX_POLICY_BYTES}")
+  return out
+
+
+class _Net:
+  def __init__(self, net: dict[str, Any], top: dict[str, Any] | None = None):
+    top = top or net
+    net = {"obs": net.get("obs", top["obs"]), "act": net.get("act", top["act"]), "layers": net["layers"],
+           "clock": top.get("clock", {})}
+    self.spec = net["obs"]["spec"]
+    self.mean = np.asarray(net["obs"]["mean"], dtype=np.float64)
+    self.std = np.asarray(net["obs"]["std"], dtype=np.float64)
+    self.layers = [(unb64f32(l["w"]).reshape(l["out"], l["in"]), unb64f32(l["b"]), ACT[l["act"]]) for l in net["layers"]]
+    self.clip = float(net["act"].get("clip", 1.0))
+    self.scale = float(net["act"]["scale"])
+    self.gait_hz = float(net.get("clock", {}).get("gait_hz", 0.0))
+
+
 class NumpyPolicy:
-  """Runs a policy.json the way policy/policy.ts does: float64 activations, float32 weights."""
+  """Runs a policy.json the way policy/policy.ts does: float64 activations, float32 weights, and the same handover to
+  the getup network on uprightness when the file has one."""
 
   def __init__(self, policy: dict[str, Any]):
     self.policy = policy
-    self.mean = np.asarray(policy["obs"]["mean"], dtype=np.float64)
-    self.std = np.asarray(policy["obs"]["std"], dtype=np.float64)
-    self.layers = [(unb64f32(l["w"]).reshape(l["out"], l["in"]), unb64f32(l["b"]), ACT[l["act"]])
-                   for l in policy["layers"]]
-    self.clip = float(policy["act"].get("clip", 1.0))
+    self.nets = {"walk": _Net(policy)}
+    if "getup" in policy:
+      self.nets["getup"] = _Net(policy["getup"], policy)
+    self.switch = policy.get("getup", {}).get("switch")
+    self.skill = "walk"
+
+  @property
+  def net(self) -> _Net:
+    return self.nets.get(self.skill, self.nets["walk"])
+
+  def update(self, qpos) -> str:
+    """Hand control over if the torso crossed a switch threshold; call before observing."""
+    if "getup" in self.nets and self.switch:
+      up = 1 - 2 * (qpos[4] ** 2 + qpos[5] ** 2)
+      if self.skill == "walk" and up < self.switch["below_up"]:
+        self.skill = "getup"
+      elif self.skill == "getup" and up > self.switch["above_up"]:
+        self.skill = "walk"
+    return self.skill
 
   def act(self, obs: np.ndarray) -> np.ndarray:
-    x = (np.asarray(obs, dtype=np.float64) - self.mean) / self.std
-    for w, b, fn in self.layers:
+    n = self.net
+    x = (np.asarray(obs, dtype=np.float64) - n.mean) / n.std
+    for w, b, fn in n.layers:
       x = fn(w @ x + b)
-    return np.clip(x, -self.clip, self.clip)
+    return np.clip(x, -n.clip, n.clip)
