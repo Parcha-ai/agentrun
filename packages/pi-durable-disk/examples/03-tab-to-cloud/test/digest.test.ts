@@ -287,7 +287,7 @@ describe("the digests the pipe keeps of work/", () => {
       } catch {
         // already gone
       }
-      rmSync(t.root, { recursive: true, force: true });
+      await t.remove();
     }
   });
 
@@ -327,7 +327,7 @@ describe("the digests the pipe keeps of work/", () => {
     } finally {
       fsp.lstat = lstat;
       syncBuiltinESMExports();
-      rmSync(t.root, { recursive: true, force: true });
+      await t.remove();
     }
   });
 
