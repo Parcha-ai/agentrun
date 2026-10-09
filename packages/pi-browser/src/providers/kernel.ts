@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AttachTarget, BrowserProvider, ProviderCaps, SessionSpec } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
-import { directFetch } from "./browserbase-net.js";
+import { directFetch } from "./http.js";
 
 export const KERNEL_BASE_URL = "https://api.onkernel.com";
 /** Kernel's bounds on `timeout_seconds`, the idle time after which it ends a session by itself. */

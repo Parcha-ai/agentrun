@@ -8,7 +8,8 @@ import { fetchUsage, resolvePrices, searchUsage } from "../core/usage.js";
 import type { AttachTarget, BrowserProvider, FetchRequest, FetchResult, Geo, LiveView, PriceTable, ProviderCaps, Recording, RemoteFile, SearchRequest, SearchResult, SessionSpec } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall, type CdpSession } from "./cdp-call.js";
-import { applyBrowserbaseNoProxy, bindConnectDial, directFetch, installWebSocketWrapper, rewriteConnectUrl, unbindConnectDial } from "./browserbase-net.js";
+import { applyBrowserbaseNoProxy, bindConnectDial, installWebSocketWrapper, rewriteConnectUrl, unbindConnectDial } from "./browserbase-net.js";
+import { directFetch } from "./http.js";
 
 export { rewriteConnectUrl, browserbaseNoProxyHosts, applyBrowserbaseNoProxy } from "./browserbase-net.js";
 
