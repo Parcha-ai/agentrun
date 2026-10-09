@@ -176,11 +176,13 @@ def main() -> None:
   ap.add_argument("--ledger", default=None)
   ap.add_argument("--kill-after", type=float, default=0.0, help="seconds after training starts; then resume elsewhere")
   ap.add_argument("--timeout", type=int, default=3600)
+  ap.add_argument("--image-id", default=None, help="a built image (e.g. the fleet image) instead of the dev image")
+  ap.add_argument("--compile-cache", default=None, help="local tarball to upload as the box's compile cache")
   args = ap.parse_args()
 
   ledger = Ledger(args.ledger)
   app = modal.App.lookup(APP, create_if_missing=True)
-  image = training_image()
+  image = modal.Image.from_id(args.image_id) if args.image_id else training_image()
   t0 = time.time()
   uname = json.load(open(args.universe)).get("name", "u")
   attempt = 0
@@ -220,6 +222,10 @@ def main() -> None:
         cmd += ["--world", f"{REMOTE_IN}/terrain.json"]
       if args.course:
         cmd += ["--course", f"{REMOTE_IN}/course.json"]
+      if args.compile_cache:
+        with open(args.compile_cache, "rb") as f:
+          sb.filesystem.write_bytes(f.read(), f"{REMOTE_IN}/compile-cache.tar.gz")
+        cmd += ["--compile-cache", f"{REMOTE_IN}/compile-cache.tar.gz"]
       smi = sb.exec("nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader")
       log("gpu", info=smi.stdout.read().strip())
       proc = sb.exec(*cmd, env={"XLA_PYTHON_CLIENT_PREALLOCATE": "false", "PYTHONUNBUFFERED": "1"})
