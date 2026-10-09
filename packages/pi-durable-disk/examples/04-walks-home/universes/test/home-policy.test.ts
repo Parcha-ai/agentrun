@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { f32ToBase64, type PolicyFile } from "../../policy/policy.ts";
-import { chooseHomePolicy, MIN_WALK_M, strictPolicy, type PolicyFileRead } from "../home-policy.ts";
+import { chooseHomePolicy, homeBody, MIN_WALK_M, strictPolicy, type PolicyFileRead } from "../home-policy.ts";
 
 const xml = '<mujoco model="creature"/>';
 const sha = createHash("sha256").update(xml).digest("hex");
@@ -71,8 +71,35 @@ test("3: a combined file built from a stale walk or getup snapshot, or older tha
   assert.match(choice.reason!, /older than the files it was built from/);
 });
 
+test("a getup file with NaN or broken JSON sends the walk policy home alone, and never throws", async () => {
+  const nanGetup = JSON.stringify(getup(150)).replace('"mean":[0,0]', '"mean":[NaN,0]');
+  for (const text of [nanGetup, '{"layers": [', ""]) {
+    const choice = await chooseHomePolicy(sources(good, { "getup/policy.json": text }));
+    assert.equal(choice.path, "train/u3/policy.json");
+    assert.match(choice.reason!, /getup not attached: the getup policy it was built from is refused: not strict JSON/);
+  }
+  // JSON of the wrong shape is refused with a reason too.
+  for (const [text, why] of [['{"layers":{}}', /layers are not a list/], ['{"layers":[null]}', /layer 0 is not an object/], ['{"layers":[[]]}', /layer 0 is not an object/], ["[]", /not a policy object/]] as const) {
+    const choice = await chooseHomePolicy(sources(good, { "getup/policy.json": text }));
+    assert.equal(choice.path, "train/u3/policy.json");
+    assert.match(choice.reason!, why);
+  }
+  assert.equal(strictPolicy('{"getup":{"layers":[7]}}').ok, false);
+});
+
 test("4: a combined file the tab's loader refuses (another body) sends the walk policy home alone", async () => {
   const choice = await chooseHomePolicy(sources({ ...good, "home/policy.json": { ...combined(200, 150), mjcf_sha256: "0".repeat(64) } }));
   assert.equal(choice.path, "train/u3/policy.json");
   assert.match(choice.reason!, /the tab refuses it/);
+});
+
+test("the run's body: none skips the check; an incomplete or broken one throws rather than skip it", () => {
+  assert.equal(homeBody(null, null), null);
+  assert.deepEqual(homeBody(xml, '{"jointNames":["hip","knee"]}'), { creatureXml: xml, nj: 2 });
+  assert.throws(() => homeBody(xml, null), /no body.json/);
+  assert.throws(() => homeBody(null, '{"jointNames":["hip"]}'), /no creature.xml/);
+  for (const text of ["{}", "[]", "null", '{"jointNames":[]}', '{"jointNames":"hip"}', '{"jointNames":[1,2]}']) {
+    assert.throws(() => homeBody(xml, text), /names no joints/, text);
+  }
+  assert.throws(() => homeBody(xml, "{"), SyntaxError);
 });

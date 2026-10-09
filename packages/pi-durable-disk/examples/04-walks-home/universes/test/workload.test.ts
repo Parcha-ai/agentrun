@@ -81,6 +81,8 @@ test("train.py as the workload: a barrier per checkpoint, progress by machine, s
     assert.equal(made, "home/policy.json");
     const combined = JSON.parse(readFileSync(join(work, "home", "policy.json"), "utf8"));
     assert.deepEqual(combined.getup, { getup: true });
+    // The image's getup went into the run first: the orchestrator checks the combined file against the run's own copy.
+    assert.equal(readFileSync(join(work, "getup", "policy.json"), "utf8"), '{"getup":true}');
     assert.ok(combined.walk.steps > 0, "the winner's own walking policy");
     assert.equal(await homePolicy({ work, env: { UNIVERSE_WORKLOAD: "stand-in" }, log: () => {} }), null, "no home step for the stand-in");
   } finally {

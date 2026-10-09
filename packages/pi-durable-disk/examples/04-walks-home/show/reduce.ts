@@ -75,7 +75,7 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
     case "cost":
       return { ...state, now, cost: event.cost };
     case "note":
-      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}) }].slice(-200) };
+      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}), ...(event.evidence !== undefined ? { evidence: event.evidence } : {}) }].slice(-200) };
   }
 }
 

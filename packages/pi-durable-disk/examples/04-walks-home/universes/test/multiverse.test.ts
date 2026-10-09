@@ -173,8 +173,11 @@ test("fan out, kill with a spare taking the slot, a second kill, collapse: what 
   w.checkpoint("r-u2", 20, 0.4);
   await mv.poll();
   const collapsing = mv.collapse();
+  // A repeated collapse is refused, and is not the collapse home waits for.
+  const again = mv.collapse();
   // Home asked for while the collapse still seals the losers: it follows the collapse.
   const homing = mv.home({ label: "your browser tab", env: "tab", timeoutMs: 5_000 });
+  await assert.rejects(again, /the multiverse is collapsed/);
   const collapse = await collapsing;
   assert.equal(collapse.winner, "spare1");
   st = feed.state;

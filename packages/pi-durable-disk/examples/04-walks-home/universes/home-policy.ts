@@ -42,11 +42,15 @@ export function strictPolicy(text: string): { ok: true; policy: PolicyJson } | {
   } catch (error) {
     return { ok: false, reason: `not strict JSON (${(error as Error).message.slice(0, 80)})` };
   }
-  if (typeof policy !== "object" || policy === null) return { ok: false, reason: "not a policy object" };
+  if (typeof policy !== "object" || policy === null || Array.isArray(policy)) return { ok: false, reason: "not a policy object" };
   for (const [name, net] of [["walk", policy], ["getup", policy.getup]] as const) {
-    if (!net) continue;
+    if (net === undefined) continue;
+    // A file of the wrong shape is refused here with a reason, never thrown on: the walk policy can still go home alone.
+    if (typeof net !== "object" || net === null || Array.isArray(net)) return { ok: false, reason: `the ${name} network is not an object` };
+    if (net.layers !== undefined && !Array.isArray(net.layers)) return { ok: false, reason: `the ${name} network's layers are not a list` };
     if (!finite(net.obs?.mean) || !finite(net.obs?.std)) return { ok: false, reason: `the ${name} network's normalisation is not finite` };
     for (const [i, layer] of (net.layers ?? []).entries()) {
+      if (typeof layer !== "object" || layer === null || Array.isArray(layer)) return { ok: false, reason: `the ${name} network's layer ${i} is not an object` };
       if (!finiteWeights(layer.w) || !finiteWeights(layer.b)) return { ok: false, reason: `the ${name} network's layer ${i} has NaN or infinite weights` };
     }
   }
@@ -72,6 +76,19 @@ async function walkRefused(walk: PolicyFileRead, body: { mjcfSha256: string; nj:
   return tabRefuses(walk.text, body);
 }
 
+/**
+ * The run's creature as the home check needs it: null when the run has no creature at all (neither file), so there is no
+ * body to check against. A creature with one file missing, or a body.json whose jointNames is not a non-empty list of
+ * names, throws: no policy goes home and the stage is told, rather than an unchecked one.
+ */
+export function homeBody(creatureXml: string | null, bodyJson: string | null): { creatureXml: string; nj: number } | null {
+  if (creatureXml === null && bodyJson === null) return null;
+  if (creatureXml === null || bodyJson === null) throw new Error(`the run's creature has no ${creatureXml === null ? "creature.xml" : "body.json"}`);
+  const names = (JSON.parse(bodyJson) as { jointNames?: unknown } | null)?.jointNames;
+  if (!Array.isArray(names) || names.length === 0 || !names.every((n) => typeof n === "string")) throw new Error("the run's body.json names no joints");
+  return { creatureXml, nj: names.length };
+}
+
 export interface HomeSources {
   /** A file of the winner's run under work/, or null when it is not there. */
   read(path: string): Promise<PolicyFileRead | null>;
@@ -91,15 +108,18 @@ export async function chooseHomePolicy(s: HomeSources): Promise<HomeChoice> {
   if (!walk) return { path: null, getup: false, reason: `the winner has no ${walkPath}` };
   const walkBad = await walkRefused(walk, body);
   const getup = (await s.read("train/getup/policy.json")) ?? (await s.read("getup/policy.json"));
+  // Parsed strictly like the rest: a getup file with NaN or broken JSON sends the walk policy home alone, never throws.
+  const getupStrict = getup ? strictPolicy(getup.text) : null;
   const combined = await s.read("home/policy.json");
   let why: string;
   if (walkBad) why = `the walk policy is refused: ${walkBad}`;
   else if (!combined) why = "no combined policy was made";
-  else if (!getup) why = "the getup policy it was built from is not in the run";
+  else if (!getup || !getupStrict) why = "the getup policy it was built from is not in the run";
+  else if (!getupStrict.ok) why = `the getup policy it was built from is refused: ${getupStrict.reason}`;
   else {
     const strict = strictPolicy(combined.text);
     const walkSteps = (JSON.parse(walk.text) as PolicyJson).provenance?.steps;
-    const getupSteps = (JSON.parse(getup.text) as PolicyJson).provenance?.steps;
+    const getupSteps = getupStrict.policy.provenance?.steps;
     if (!strict.ok) why = strict.reason;
     else if (!strict.policy.getup) why = "it has no getup network";
     else if (strict.policy.provenance?.walk?.steps !== walkSteps) why = `it was built from another walk policy (${String(strict.policy.provenance?.walk?.steps)} steps, the winner's has ${String(walkSteps)})`;

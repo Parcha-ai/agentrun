@@ -186,6 +186,14 @@ describe("chunked workspace in the pipe itself", () => {
   const answer = (name: string, id: number) => frames.get(name)!.find((f) => f.t === "res" && f.id === id) as Extract<PipeFrame, { t: "res" }> | undefined;
   const work = () => join(root, "runs", "inproc", "work");
   const uploads = () => join(root, "runs", "inproc", "tmp", "pipe-uploads");
+  /** Attached, and its restore sent: the pipe refuses a write-through into work/ before `restore-end`. */
+  const attach = async (from: PipeSocket, takeover: boolean) => {
+    await pipe.attach(from, from.id, takeover);
+    for (let i = 0; !frames.get(from.id)!.some((f) => f.t === "restore-end"); i++) {
+      if (i > 2_000) throw new Error(`no restore-end for ${from.id}`);
+      await new Promise((r) => setTimeout(r, 2));
+    }
+  };
   /** Send `bytes` as upload `id` of `from`, CHUNK_BYTES at a time. */
   const upload = async (from: PipeSocket, id: string, bytes: Uint8Array) => {
     for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) await pipe.upload(from, id, offset, toBase64(bytes.subarray(offset, offset + CHUNK_BYTES)));
@@ -211,7 +219,7 @@ describe("chunked workspace in the pipe itself", () => {
 
   it("a writer retired between its last chunk and the write-through lands nothing", async () => {
     const a = socket("a");
-    await pipe.attach(a, "a", false);
+    await attach(a, false);
     await pipe.files(a, 1, [{ path: "m.bin", op: "write", data: text("old") }]);
     assert.equal(answer("a", 1)?.ok, true);
     const bytes = randomBytes(CHUNK_BYTES + 1000);
@@ -230,7 +238,7 @@ describe("chunked workspace in the pipe itself", () => {
 
   it("a writer retired while its write-through is in flight lands nothing (the rename checks the epoch)", async () => {
     const b = socket("b");
-    await pipe.attach(b, "b", true);
+    await attach(b, true);
     const bytes = randomBytes(CHUNK_BYTES + 5);
     await upload(b, "upload-b-0001", bytes);
     // The write-through starts, and in the same turn a takeover retires its writer.
@@ -265,7 +273,7 @@ describe("chunked workspace in the pipe itself", () => {
     let n = 0;
     for (const c of cases) {
       const w = socket(`w${++n}`);
-      await pipe.attach(w, w.id, true);
+      await attach(w, true);
       const changes = await c.changes(w);
       const inflight = pipe.files(w, 10, changes);
       const takeover = pipe.attach(socket(`t${n}`), `t${n}`, true);
@@ -280,7 +288,7 @@ describe("chunked workspace in the pipe itself", () => {
 
   it("bounds a writer's unfinished uploads: one open file at a time, and a cap on their number", async () => {
     const w = socket("cap");
-    await pipe.attach(w, "cap", true);
+    await attach(w, true);
     const fds = () => readdirSync("/proc/self/fd").length;
     const before = fds();
     const firstBytes = randomBytes(16);
@@ -302,7 +310,7 @@ describe("chunked workspace in the pipe itself", () => {
 
   it("refuses an upload whose content does not match, and keeps the old file", async () => {
     const d = socket("d");
-    await pipe.attach(d, "d", true);
+    await attach(d, true);
     const bytes = randomBytes(CHUNK_BYTES + 7);
     await upload(d, "upload-d-0001", bytes);
     await pipe.files(d, 4, [{ path: "m.bin", op: "write", upload: { id: "upload-d-0001", size: bytes.length, sha256: sha(randomBytes(8)) } }]);

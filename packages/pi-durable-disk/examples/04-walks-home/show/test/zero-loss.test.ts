@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { findLeaks } from "../publishable.ts";
-import { duration, renderZeroLoss, type ChaosResults, type HopRound } from "../zero-loss.ts";
+import { assertBacksZeroLoss, duration, renderZeroLoss, type ChaosResults, type HopRound } from "../zero-loss.ts";
 
 const rounds = (points: string[], ms: number[]): HopRound[] => points.map((killPoint, i) => ({ round: i + 1, killPoint, detail: "x", takeoverMs: ms[i]!, loss: 0 }));
 // Results as the chaos pass writes them, with the local fields it carries (assembled from pieces: the repo's export
@@ -85,5 +85,29 @@ test("nothing local reaches the page, and the block passes the docs gate", () =>
   const html = renderZeroLoss(results);
   assert.doesNotMatch(html, /-tmp\b|\bevals\//, "no raw-file or harness-folder field is rendered");
   assert.deepEqual(findLeaks(html), []);
-  assert.doesNotMatch(renderZeroLoss({ ...results, method: "a <b>bold</b> claim" }), /<b>bold<\/b>/, "text is escaped");
+  assert.doesNotMatch(renderZeroLoss({ ...results, method: "a <b>bold</b> independent read-back, never the pipe's own digest" }), /<b>bold<\/b>/, "text is escaped");
+});
+
+test("the block claims zero loss, so it refuses a result that does not back it", () => {
+  assert.doesNotThrow(() => assertBacksZeroLoss(results));
+  const hop = (over: object) => ({ ...results.mountHop, ...over });
+  assert.throws(() => renderZeroLoss({ ...results, measured: false }), /not marked measured/);
+  assert.throws(() => renderZeroLoss({ ...results, mountHop: hop({ loss: 1 }) }), /mount hop reports loss 1/);
+  assert.throws(() => renderZeroLoss({ ...results, pipeHop: { ...results.pipeHop, perRound: [...results.pipeHop.perRound.slice(0, 9), { ...results.pipeHop.perRound[9]!, loss: 2 }] } }), /a round of the pipe hop lost something/);
+  assert.throws(() => renderZeroLoss({ ...results, mountHop: hop({ rounds: 11 }) }), /says 11 rounds and lists 10/);
+  assert.throws(() => renderZeroLoss({ ...results, pipeHop: { ...results.pipeHop, orphanedUploads: 3 } }), /3 orphaned uploads/);
+});
+
+test("a zero-loss page rests on an independent read-back, never the pipe's own released digest", () => {
+  assert.throws(() => renderZeroLoss({ ...results, method: "Each pipe.released digest was compared." }), /independent read-back/);
+  assert.throws(() => renderZeroLoss({ ...results, method: "An independent read-back of the store." }), /never the pipe's own/);
+});
+
+test("a result that checked nothing is refused, not shown as zero loss", () => {
+  const empty = { ...results.mountHop, rounds: 0, perRound: [], ackedCommitsChecked: 0, ackedFilesChecked: 0 };
+  assert.throws(() => renderZeroLoss({ ...results, mountHop: empty }), /mount hop ran no rounds/);
+  assert.throws(() => renderZeroLoss({ ...results, pipeHop: { ...empty, orphanedUploads: 0 } }), /pipe hop ran no rounds/);
+  const unchecked = { ...results.mountHop, ackedCommitsChecked: 0, ackedFilesChecked: 0 };
+  assert.throws(() => renderZeroLoss({ ...results, mountHop: unchecked }), /mount hop checked no acknowledged writes/);
+  assert.doesNotThrow(() => renderZeroLoss({ ...results, mountHop: { ...results.mountHop, ackedCommitsChecked: 0, ackedFilesChecked: 3 } }));
 });
