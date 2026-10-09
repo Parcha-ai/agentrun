@@ -3,6 +3,11 @@
 
 import { LIMITS, type Design, type LegPair } from './design.ts';
 import { clampDesign } from './rules.ts';
+import { RGBA } from './mjcf.ts';
+
+const rgbaToCss = (rgba: string) => '#' + rgba.split(' ').slice(0, 3).map((v) => Math.round(Number(v) * 255).toString(16).padStart(2, '0')).join('');
+/** The sketch is drawn in the creature's own colours (mjcf.ts RGBA): the torso, the two leg segments, the foot. */
+export const SKETCH_COLORS = { torso: rgbaToCss(RGBA.torso), thigh: rgbaToCss(RGBA.thigh), shin: rgbaToCss(RGBA.shin), foot: rgbaToCss(RGBA.foot) } as const;
 
 /**
  * Pixels per metre follows the pane, never the body, so the pointer and the drawing stay in step while a handle is dragged. It is
@@ -56,6 +61,9 @@ export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
     l.shin = round(clamp(total * (1 - ratio), LIMITS.shin));
   }
 }
+
+/** The foot's radius in metres: the creature's foot (a sphere a little wider than the leg), and never smaller than 5 px so it shows on a small pane. */
+export const footRadiusM = (radius: number, px: number) => Math.max(radius * 1.15 * 1.4, 5 / px);
 
 export class Sketcher {
   private design: Design;
@@ -124,10 +132,12 @@ export class Sketcher {
   private handles(): { h: Handle; x: number; y: number }[] { return handlePositions(this.design); }
 
   private hit(x: number, y: number): Handle | null {
-    let best: Handle | null = null, bd = (14 / this.px) ** 2;
+    let best: Handle | null = null, bd = Infinity;
     for (const c of this.handles()) {
+      // 14 px around a handle; a leg handle's ring can be wider than that when the foot is big, and the ring is what the viewer sees to grab
+      const reach = c.h.kind === 'leg' ? Math.max(14, footRadiusM(this.design.legs[c.h.i].radius, this.px) * this.px + 8) : 14;
       const d = (c.x - x) ** 2 + (c.y - y) ** 2;
-      if (d < bd) { bd = d; best = c.h; }
+      if (d < (reach / this.px) ** 2 && d < bd) { bd = d; best = c.h; }
     }
     return best;
   }
@@ -177,24 +187,42 @@ export class Sketcher {
       const x = (l.x * torso.length) / 2;
       for (const s of [1, -1]) {
         const y0 = (s * torso.width) / 2;
-        ctx.strokeStyle = '#4a8f66'; ctx.lineWidth = 2 * l.radius * 1.4;
+        ctx.strokeStyle = SKETCH_COLORS.thigh; ctx.lineWidth = 2 * l.radius * 1.4;
         ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + s * l.thigh); ctx.stroke();
-        ctx.strokeStyle = '#2f6b49';
+        ctx.strokeStyle = SKETCH_COLORS.shin;
         ctx.beginPath(); ctx.moveTo(x, y0 + s * l.thigh); ctx.lineTo(x, y0 + s * (l.thigh + l.shin)); ctx.stroke();
       }
     }
-    ctx.fillStyle = '#f2b95a'; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw;
+    // a foot at the end of every leg (the creature has a dark foot there), so four leg ends read as four legs
+    ctx.fillStyle = SKETCH_COLORS.foot;
+    for (const l of legs) {
+      const x = (l.x * torso.length) / 2;
+      for (const s of [1, -1]) {
+        ctx.beginPath(); ctx.arc(x, s * (torso.width / 2 + l.thigh + l.shin), footRadiusM(l.radius, this.px), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.fillStyle = SKETCH_COLORS.torso; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw;
     ctx.beginPath(); ctx.roundRect(-torso.length / 2, -torso.width / 2, torso.length, torso.width, 0.03); ctx.fill(); ctx.stroke();
     ctx.restore();
     // handles in pixels
     for (const hd of this.handles()) {
       const active = this.drag === hd.h || (this.hover && sameHandle(this.hover, hd.h));
       const px = w / 2 + hd.x * this.px, py = h / 2 - hd.y * this.px;
+      if (hd.h.kind === 'leg') {
+        // a ring around the foot, not a dot over it: the foot at the end of the leg stays visible, so the handle's leg reads as a leg like the others.
+        // It follows the foot's size (which grows with the pane and the leg radius) and keeps a gap of 4 px.
+        const foot = footRadiusM(this.design.legs[hd.h.i].radius, this.px) * this.px;
+        ctx.strokeStyle = '#2d5fb3'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(px, py, foot + (active ? 6 : 4), 0, Math.PI * 2); ctx.stroke();
+        continue;
+      }
       ctx.beginPath(); ctx.arc(px, py, active ? 8 : 6, 0, Math.PI * 2);
-      ctx.fillStyle = hd.h.kind === 'leg' ? '#2d5fb3' : hd.h.kind === 'hip' ? '#1f7a4d' : '#8a5a00';
+      ctx.fillStyle = hd.h.kind === 'hip' ? '#1f7a4d' : '#8a5a00';
       ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
     }
-    ctx.fillStyle = '#6b6a65'; ctx.font = '12px ui-sans-serif, system-ui';
+    ctx.fillStyle = '#6b6a65'; ctx.font = '600 17px ui-sans-serif, system-ui';
+    ctx.fillText('top view', 14, 28);
+    ctx.font = '12px ui-sans-serif, system-ui';
     ctx.fillText('nose', w / 2 + torso.length * this.px / 2 + 10, h / 2 + 4);
   }
 }
