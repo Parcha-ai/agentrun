@@ -54,6 +54,14 @@ def observe(spec, data, stand, prev_action, command, t, gait_hz):
   return np.array(out)
 
 
+def control(net, d, stand, prev, command):
+  """One policy step as the tab does it: hand over between networks, observe, act; returns (action, ctrl)."""
+  net.update(d.qpos)
+  n = net.net
+  a = net.act(observe([{"name": s["name"], "size": s["size"]} for s in n.spec], d, stand, prev, command, d.time, n.gait_hz))
+  return a, stand + n.scale * a
+
+
 def reset(m, d, body):
   mujoco.mj_resetData(m, d)
   k = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
@@ -83,8 +91,6 @@ def run(xml, body, policy, seconds=10.0, command=0.5, trace_steps=0, kick=0.0, k
   net = NumpyPolicy(policy)
   stand = np.array(body["standPose"])
   n_sub = int(round(policy["control_dt"] / m.opt.timestep))
-  gait_hz = policy.get("clock", {}).get("gait_hz", 0.0)
-  scale = policy["act"]["scale"]
   torso = m.body("torso").id
   prev = np.zeros(m.nu)
   steps = int(round(seconds / policy["control_dt"]))
@@ -93,9 +99,8 @@ def run(xml, body, policy, seconds=10.0, command=0.5, trace_steps=0, kick=0.0, k
   kick_step = int(round(kick_at / policy["control_dt"])) if kick > 0 else -1
   for k in range(steps):
     t = d.time
-    obs = observe(policy["obs"]["spec"], d, stand, prev, command, t, gait_hz)
-    a = net.act(obs)
-    d.ctrl[:] = stand + scale * a
+    obs = observe(net.net.spec, d, stand, prev, command, t, net.net.gait_hz) if k < trace_steps else None
+    a, d.ctrl[:] = control(net, d, stand, prev, command)
     if k < trace_steps:
       trace.append({"k": k, "t": t, "qpos": d.qpos.tolist(), "qvel": d.qvel.tolist(), "obs": obs.tolist(),
                     "action": a.tolist()})
@@ -133,7 +138,6 @@ def kick_trial(xml, body, policy, force, direction, command=0.5, walk_s=3.0, aft
   net = NumpyPolicy(policy)
   stand = np.array(body["standPose"])
   n_sub = int(round(policy["control_dt"] / m.opt.timestep))
-  gait_hz = policy.get("clock", {}).get("gait_hz", 0.0)
   torso = m.body("torso").id
   prev = np.zeros(m.nu)
   kick_at = int(round(walk_s / policy["control_dt"]))
@@ -141,8 +145,7 @@ def kick_trial(xml, body, policy, force, direction, command=0.5, walk_s=3.0, aft
   min_up_after = 1.0
   up = lambda: 1 - 2 * (d.qpos[4] ** 2 + d.qpos[5] ** 2)
   for k in range(int(round((walk_s + after_s) / policy["control_dt"]))):
-    a = net.act(observe(policy["obs"]["spec"], d, stand, prev, command, d.time, gait_hz))
-    d.ctrl[:] = stand + policy["act"]["scale"] * a
+    a, d.ctrl[:] = control(net, d, stand, prev, command)
     for _ in range(n_sub):
       if k >= kick_at and left > 0:
         q = d.qpos[3:7]
@@ -192,12 +195,10 @@ def getup_trial(xml, body, policy, start, seconds=6.0, command=0.0):
   net = NumpyPolicy(policy)
   stand = np.array(body["standPose"])
   n_sub = int(round(policy["control_dt"] / m.opt.timestep))
-  gait_hz = policy.get("clock", {}).get("gait_hz", 0.0)
   prev = np.zeros(m.nu)
   ups = []
   for _ in range(int(round(seconds / policy["control_dt"]))):
-    a = net.act(observe(policy["obs"]["spec"], d, stand, prev, command, d.time, gait_hz))
-    d.ctrl[:] = stand + policy["act"]["scale"] * a
+    a, d.ctrl[:] = control(net, d, stand, prev, command)
     for _ in range(n_sub):
       mujoco.mj_step(m, d)
     prev = a
