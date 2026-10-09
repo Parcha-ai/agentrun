@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDesign, validateDesign, type Design } from '../src/design.ts';
+import { defaultDesign, PRESETS, validateDesign, type Design } from '../src/design.ts';
 import { Sketcher } from '../src/sketch.ts';
 import { nextStroke, pathPoints, TAKE_DESIGN, undrawable, type Geometry, type Point } from '../src/strokes.ts';
 import { clampDesign } from '../src/rules.ts';
+// @ts-expect-error the recorder script is plain JavaScript with no declaration file
+import { sketchTake } from '../scripts/sketch-take.mjs';
 
 /** A stub canvas that lets the real Sketcher run in node: it records the listeners so the test can press, move and release. */
 function fakeCanvas(width = 800, height = 800) {
@@ -141,4 +143,63 @@ test('a pixel of pointer error never stops the plan from converging on the targe
   assert.equal(d.torso.length, 0.55);
   for (const l of d.legs) assert.equal(l.thigh + l.shin, 0.5);
   assert.equal(nextStroke(sk.geometry() as Geometry, TAKE_DESIGN), null);
+});
+
+// ---- review: a sketch with more pairs than the target, targets between grid values, and a drawing that runs out of strokes ----
+
+test('a sketch with more leg pairs than the target does not crash the plan', () => {
+  // the take body with a third pair: the first two pairs already match, so the plan reaches the pair the target does not have
+  const three = structuredClone(TAKE_DESIGN);
+  three.legs.push({ x: 0, thigh: 0.25, shin: 0.25, radius: 0.02 });
+  const { design, sk } = draw(structuredClone(TAKE_DESIGN), three);
+  assert.equal(design.legs.length, 3, 'a stroke cannot remove a pair');
+  assert.equal(nextStroke(sk.geometry() as Geometry, TAKE_DESIGN), null, 'the plan finishes on the pairs both bodies have');
+  assert.ok(undrawable(design, TAKE_DESIGN).some((m) => /leg pairs/.test(m)), 'and the difference is reported');
+  // the hexapod toward the take body (the review's example): planning every step must not throw, whatever the pairs are
+  assert.doesNotThrow(() => draw(structuredClone(TAKE_DESIGN), structuredClone(PRESETS.hexapod)));
+});
+
+test('a target between grid values finishes on the nearest value the sketcher can draw, and the difference is reported', () => {
+  const t = structuredClone(TAKE_DESIGN);
+  t.torso.length = 0.555; t.torso.width = 0.223; t.legs[0].x = 0.82; t.legs[0].thigh = 0.2515; t.legs[0].shin = 0.2515; // none of these is a multiple of the grid step
+  const { design, strokes, sk } = draw(t);
+  assert.equal(nextStroke(sk.geometry() as Geometry, t), null, `the plan finishes (${strokes.length} strokes: ${strokes.join(' ')})`);
+  assert.ok(strokes.length < 8, `without retrying an impossible value (${strokes.join(' ')})`);
+  assert.ok(Math.abs(design.torso.length - 0.555) <= 0.0051 && Math.abs(design.torso.width - 0.223) <= 0.0051, `${design.torso.length} x ${design.torso.width}`);
+  const left = undrawable(design, t);
+  assert.ok(left.some((m) => m.startsWith('torso.length')) && left.some((m) => m.startsWith('legs[0].x')), `reported: ${left.join('; ')}`);
+});
+
+/** A tab as sketchTake sees it, backed by the real Sketcher on a stub canvas: the eval strings run against a stub document. */
+function fakeTab(target: Design) {
+  const { canvas, fire } = fakeCanvas(800, 800);
+  const sk = new Sketcher(canvas, defaultDesign(), () => {});
+  const calls = { committed: 0 };
+  const w = {
+    innerWidth: 800, innerHeight: 800,
+    __walks: {
+      sketchGeometry: () => ({ rect: { left: 0, top: 0, width: 800, height: 800 }, ...sk.geometry() }),
+      commitDesign: () => { calls.committed++; },
+      state: () => ({ mjcf_sha256: 'x'.repeat(64) }),
+    },
+  };
+  const document = { querySelector: () => ({ contentWindow: w, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 800 }) }) };
+  const tab = {
+    send: async (method: string, p: any) => {
+      if (method !== 'Input.dispatchMouseEvent') return;
+      fire({ mousePressed: 'pointerdown', mouseMoved: 'pointermove', mouseReleased: 'pointerup' }[p.type as string]!, { x: p.x, y: p.y });
+    },
+    eval: async (expr: string) => new Function('document', `return ${expr}`)(document),
+  };
+  return { tab, calls, sk, target };
+}
+
+test('sketchTake commits a finished drawing, and throws without committing when it runs out of strokes with work left', async () => {
+  const ok = fakeTab(TAKE_DESIGN);
+  const r = await sketchTake(ok.tab, { stepMs: 0, restMs: 0 });
+  assert.equal(ok.calls.committed, 1);
+  assert.deepEqual(r.undrawable, []);
+  const short = fakeTab(TAKE_DESIGN);
+  await assert.rejects(sketchTake(short.tab, { stepMs: 0, restMs: 0, maxStrokes: 2 }), /2 strokes.*(leg|left)/i);
+  assert.equal(short.calls.committed, 0, 'a partial drawing is never committed');
 });

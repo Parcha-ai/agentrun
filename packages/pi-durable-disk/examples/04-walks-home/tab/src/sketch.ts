@@ -38,14 +38,19 @@ export const SNAP_LENGTH_M = 0.01;
 export const SNAP_HIP = 0.05;
 const snap = (v: number, step: number) => round(Math.round(v / step) * step);
 
+/** The value a drag to `v` ends on: snapped to the grid, then held to the limits. A stroke planner aims at these, never at the raw number it was given, because a raw number between grid values cannot be drawn. */
+export const goalLength = (v: number, limits: readonly number[]) => round(clamp(snap(v, SNAP_LENGTH_M), limits));
+export const goalHip = (ratio: number) => round(clamp(snap(ratio, SNAP_HIP), [-1, 1]));
+export const goalReach = (v: number) => clamp(snap(v, SNAP_LENGTH_M), [LIMITS.thigh[0] + LIMITS.shin[0], LIMITS.thigh[1] + LIMITS.shin[1]]);
+
 /** What dragging a handle to (x, y) metres does to the design, in place. The one place the drag rules live. */
 export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
-  if (h.kind === 'length') d.torso.length = round(clamp(snap(2 * x, SNAP_LENGTH_M), LIMITS.torso.length));
-  else if (h.kind === 'width') d.torso.width = round(clamp(snap(2 * y, SNAP_LENGTH_M), LIMITS.torso.width));
-  else if (h.kind === 'hip') d.legs[h.i].x = round(clamp(snap((2 * x) / d.torso.length, SNAP_HIP), [-1, 1]));
+  if (h.kind === 'length') d.torso.length = goalLength(2 * x, LIMITS.torso.length);
+  else if (h.kind === 'width') d.torso.width = goalLength(2 * y, LIMITS.torso.width);
+  else if (h.kind === 'hip') d.legs[h.i].x = goalHip((2 * x) / d.torso.length);
   else {
     const l = d.legs[h.i];
-    const total = clamp(snap(y - d.torso.width / 2, SNAP_LENGTH_M), [LIMITS.thigh[0] + LIMITS.shin[0], LIMITS.thigh[1] + LIMITS.shin[1]]);
+    const total = goalReach(y - d.torso.width / 2);
     const ratio = l.thigh / (l.thigh + l.shin);
     l.thigh = round(clamp(total * ratio, LIMITS.thigh));
     l.shin = round(clamp(total * (1 - ratio), LIMITS.shin));

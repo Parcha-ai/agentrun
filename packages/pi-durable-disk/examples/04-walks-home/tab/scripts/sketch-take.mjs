@@ -43,6 +43,9 @@ export async function sketchTake(tab, { log = () => {}, target = TAKE_DESIGN, st
     const after = await geometry();
     if (JSON.stringify(after.design) === JSON.stringify(g.design)) throw new Error(`the ${stroke.handle} stroke did not change the design (handle at ${Math.round(stroke.from.x)},${Math.round(stroke.from.y)} in the canvas): is the sketcher visible and the iframe selector right?`);
   }
+  // Out of strokes with work left is a failure, never a result: nothing is committed and the caller is told which handle was still to draw.
+  const leftToDraw = nextStroke(await geometry(), target);
+  if (leftToDraw) throw new Error(`stopped after ${strokes.length} strokes (maxStrokes ${maxStrokes}) with the ${leftToDraw.handle} handle still to draw: the drawing is not finished and was not committed`);
   // the pen is down for good: the creature is rebuilt and the files are written now rather than after the usual rest
   await tab.eval(`${inFrame('return w.__walks.commitDesign();')}`);
   const state = JSON.parse(await tab.eval(`JSON.stringify(${inFrame('return w.__walks.state();')})`));
