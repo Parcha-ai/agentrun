@@ -267,11 +267,23 @@ type SocketLike = {
   on(event: "message", fn: (data: unknown) => void): void;
 };
 
+/** Where to connect: the 03 server's websocket, the run to watch, and the run's secret. `key` changes when the run does. */
+export type PipeTarget = { url: string; run: string; token: string; key?: string };
+
 export type PipeFeedOptions = {
-  /** ws://host:port/ws of the 03 server and the run to watch; `token` is the run's secret. */
-  url: string;
-  run: string;
-  token: string;
+  /** ws://host:port/ws of the 03 server and the run to watch; `token` is the run's secret. Or give `resolve`. */
+  url?: string;
+  run?: string;
+  token?: string;
+  /**
+   * The target, asked again at every (re)connect and every `watchMs`. When its `key` changes (a restarted server, a retake, a new
+   * run) the feed drops its state and follows the new run; while it returns undefined (no server yet) the feed waits and asks again.
+   */
+  resolve?: () => PipeTarget | undefined;
+  /** Told when the feed dropped its state because the run changed: the pages must fetch the new snapshot. */
+  onReset?: () => void;
+  /** How often a changed target is looked for (and an unanswered hello retried). Default 1000 ms. */
+  watchMs?: number;
   /** The hello mode: "operator" (the default) may switch and ask; "view" only watches and is refused with a reason. */
   role?: "operator" | "view";
   /** Ask the agent where it is after each completed switch (a few model tokens). Default true. */
@@ -295,10 +307,27 @@ export class PipeFeed implements FeedSource {
   private askRefusal: ((message: string) => void) | undefined;
   private asked = 0;
   private opts: PipeFeedOptions;
+  /** The key of the run this feed is connected (or connecting) to. */
+  private connectedKey: string | undefined;
+  private retry: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: PipeFeedOptions) {
     this.opts = options;
-    this.tr = new PipeTranslator({ run: options.run, ...(options.clock ? { clock: options.clock } : {}) });
+    this.tr = new PipeTranslator({ run: options.run ?? "", ...(options.clock ? { clock: options.clock } : {}) });
+  }
+
+  private target(): PipeTarget | undefined {
+    if (this.opts.resolve) return this.opts.resolve();
+    if (this.opts.url && this.opts.run && this.opts.token) return { url: this.opts.url, run: this.opts.run, token: this.opts.token, key: `${this.opts.url}|${this.opts.run}` };
+    return undefined;
+  }
+
+  /** A different run: nothing of the old one is true any more. */
+  private resetFor(run: string): void {
+    this.tr = new PipeTranslator({ run, ...(this.opts.clock ? { clock: this.opts.clock } : {}) });
+    this.st = emptyState();
+    this.events.length = 0;
+    this.opts.onReset?.();
   }
 
   get state(): ShowState {
@@ -323,21 +352,61 @@ export class PipeFeed implements FeedSource {
     }
   }
 
-  async start(): Promise<void> {
+  private open(): void {
+    if (this.stopped) return;
     const connect = this.opts.connect ?? ((url: string) => new (globalThis as unknown as { WebSocket: new (u: string) => never }).WebSocket(url) as SocketLike);
-    const open = () => {
-      const socket = connect(this.opts.url);
-      this.socket = socket;
-      socket.on("open", () => socket.send(JSON.stringify({ t: "hello", run: this.opts.run, token: this.opts.token, mode: this.opts.role ?? "operator", tab: `stage-${process.pid}` })));
-      socket.on("message", (data) => this.onMessage(String(data)));
-      socket.on("error", () => undefined);
-      socket.on("close", () => {
-        this.opts.log?.("pipe.closed");
-        if (!this.stopped) setTimeout(open, 2_000).unref?.();
-      });
-    };
-    open();
-    this.timer = setInterval(() => this.emit(this.tr.flush()), 1_000);
+    const t = this.target();
+    if (!t) {
+      // No server yet (the link file is not there): wait and ask again.
+      this.opts.log?.("pipe.waiting");
+      this.retry = setTimeout(() => this.open(), 2_000);
+      this.retry.unref?.();
+      return;
+    }
+    const key = t.key ?? `${t.url}|${t.run}`;
+    // The first connection names the run it is for (a feed built from a link file does not know it until now); a later one that
+    // names a different run drops everything of the old one.
+    if (this.connectedKey === undefined) this.tr = new PipeTranslator({ run: t.run, ...(this.opts.clock ? { clock: this.opts.clock } : {}) });
+    else if (key !== this.connectedKey) this.resetFor(t.run);
+    this.connectedKey = key;
+    const socket = connect(t.url);
+    this.socket = socket;
+    socket.on("open", () => socket.send(JSON.stringify({ t: "hello", run: t.run, token: t.token, mode: this.opts.role ?? "operator", tab: `stage-${process.pid}` })));
+    socket.on("message", (data) => {
+      if (this.socket === socket) this.onMessage(String(data));
+    });
+    socket.on("error", () => undefined);
+    socket.on("close", () => {
+      // A socket this feed dropped on purpose (a new run) is not a lost connection.
+      if (this.socket !== socket) return;
+      this.opts.log?.("pipe.closed");
+      if (!this.stopped) {
+        this.retry = setTimeout(() => this.open(), 2_000);
+        this.retry.unref?.();
+      }
+    });
+  }
+
+  /** The link changed under a live connection: leave the old run and follow the new one at once. */
+  private retarget(): void {
+    const old = this.socket;
+    this.socket = undefined;
+    if (this.retry) clearTimeout(this.retry);
+    old?.close();
+    this.open();
+  }
+
+  async start(): Promise<void> {
+    this.open();
+    this.timer = setInterval(() => {
+      this.emit(this.tr.flush());
+      if (!this.opts.resolve || this.stopped) return;
+      const t = this.opts.resolve();
+      if (!t) return;
+      // The first link appeared while waiting for one: connect now, not at the next retry.
+      if (this.connectedKey === undefined && !this.socket) return this.open();
+      if (this.connectedKey !== undefined && (t.key ?? `${t.url}|${t.run}`) !== this.connectedKey) this.retarget();
+    }, this.opts.watchMs ?? 1_000);
     this.timer.unref?.();
   }
 
@@ -389,6 +458,7 @@ export class PipeFeed implements FeedSource {
 
   stop(): void {
     this.stopped = true;
+    if (this.retry) clearTimeout(this.retry);
     if (this.timer) clearInterval(this.timer);
     this.socket?.close();
   }

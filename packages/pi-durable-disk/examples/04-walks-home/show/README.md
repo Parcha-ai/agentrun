@@ -114,6 +114,14 @@ asks the agent) reach the tab as errors it understands; a read while the run mov
 disk is an in-memory model. `TAKE_STATUS=<status file>` makes the preflight check the server and the token file's mode; with `SHOW_API`
 it checks that D1's `/api/winner` names the approved scratch disk and region before anything is adopted.
 
+## A retake: the stage follows the run link
+
+`SHOW_PIPE_LINK_FILE` (and `SHOW_DESKTOP_LINK_FILE`, which defaults to it) is followed live, not read once: whoever starts the 03 server
+writes the run's link to that private file, and a restart or a retake (a new run, often a new port and secret) writes a new one. The
+feed, the desktop panel and the tab's disk all move to the new run within a second or two; the stage drops everything of the old run,
+tells connected pages to fetch the new snapshot (an SSE `reset`), and never prints or logs the secret. With no link file yet the stage
+starts anyway and connects when one appears. `test/live-link.test.ts` does a real restart against the real 03 server.
+
 ## Takes
 
 `scripts/record.mjs` records a take and writes `<video>.captions.json` beside it: every caption the page showed, with the second it

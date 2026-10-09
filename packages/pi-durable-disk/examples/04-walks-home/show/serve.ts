@@ -14,7 +14,8 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { desktopTargetFromLink, proxyStream, requestTicket } from "./desktop.ts";
+import { proxyStream, requestTicket } from "./desktop.ts";
+import { LiveLink, linkKey } from "./link.ts";
 import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { ScenarioPlayer } from "./scenario.ts";
@@ -108,16 +109,23 @@ function relay(source: FeedSource): void {
 
 const PIPE_LINK_FILE = process.env.SHOW_PIPE_LINK_FILE;
 const DESKTOP_LINK_FILE = process.env.SHOW_DESKTOP_LINK_FILE ?? PIPE_LINK_FILE;
-const DESKTOP = DESKTOP_LINK_FILE ? desktopTargetFromLink(readFileSync(DESKTOP_LINK_FILE, "utf8")) : undefined;
+// The links are followed live: whoever starts the 03 server rewrites the file (a restart, a retake: a new run), and the feed, the
+// desktop and the disk all follow it. A link that is not there yet means "no server yet", never a crash.
+const pipeLink = PIPE_LINK_FILE ? new LiveLink(PIPE_LINK_FILE) : undefined;
+const desktopLink = DESKTOP_LINK_FILE ? (DESKTOP_LINK_FILE === PIPE_LINK_FILE ? pipeLink! : new LiveLink(DESKTOP_LINK_FILE)) : undefined;
+const DESKTOP = desktopLink ? () => desktopLink.tryCurrent() : undefined;
 let player: FeedSource;
-if (PIPE_LINK_FILE) {
-  // The feed is a 03 pipe: the run's link names where it listens, which run, and its secret (never printed or logged).
-  const link = new URL(readFileSync(PIPE_LINK_FILE, "utf8").trim());
+if (pipeLink) {
   const { default: WS } = await import("ws");
   const feed = new PipeFeed({
-    url: `${link.protocol === "https:" ? "wss" : "ws"}://${link.host}/ws`,
-    run: link.pathname.split("/").filter(Boolean).at(-1)!,
-    token: link.hash.slice(1),
+    resolve: () => {
+      const t = pipeLink.tryCurrent();
+      return t ? { url: t.wsUrl, run: t.run, token: t.secret, key: linkKey(t) } : undefined;
+    },
+    // A new run: pages hold the old one's snapshot, so they are told to fetch the new one.
+    onReset: () => {
+      for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
+    },
     ...(process.env.SHOW_PIPE_ROLE === "view" || process.env.SHOW_PIPE_ROLE === "operator" ? { role: process.env.SHOW_PIPE_ROLE } : {}),
     askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH !== "0",
     trace: process.env.SHOW_PIPE_TRACE === "1",
@@ -128,7 +136,7 @@ if (PIPE_LINK_FILE) {
   await feed.start();
   player = feed;
   // The tab's files are the real run's: its secret stays here, and a write names the tab the pipe says holds the run.
-  disk = runDisk(desktopTargetFromLink(readFileSync(PIPE_LINK_FILE, "utf8")), () => feed.writerTab);
+  disk = runDisk(() => pipeLink.tryCurrent(), () => feed.writerTab);
 } else {
   player = newPlayer();
 }
@@ -177,7 +185,9 @@ const server = createServer(async (req, res) => {
       // The host's desktop, if it has one: the secret stays here, the page gets a same-origin picture path.
       if (path === "/api/desktop" && req.method === "GET") {
         if (!DESKTOP) return sendJson(res, 404, { ok: false, reason: "not configured" });
-        const t = await requestTicket(DESKTOP).catch(() => ({ ok: false as const, status: 502 }));
+        const target = DESKTOP();
+        if (!target) return sendJson(res, 404, { ok: false, reason: "no desktop yet" });
+        const t = await requestTicket(target).catch(() => ({ ok: false as const, status: 502 }));
         return t.ok ? sendJson(res, 200, { url: t.url, ttlMs: t.ttlMs }) : sendJson(res, 404, { ok: false, reason: "no desktop yet" });
       }
       if (path.startsWith("/api/disk/")) {
@@ -204,6 +214,9 @@ const server = createServer(async (req, res) => {
       }
       if (path === "/api/events" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "Cross-Origin-Resource-Policy": "same-origin" });
+        // Send the headers now: with no event waiting, they would otherwise not leave until the first one, and a client (an
+        // EventSource's onopen, a fetch) would wait on an open stream that has said nothing. A comment line is ignored by EventSource.
+        res.write(": stream open\n\n");
         // Replay what the page's snapshot missed: `?after=N` or Last-Event-ID, the index of the last event it has.
         // A reconnect carries Last-Event-ID, which is newer than the `after` the first request was made with, so it wins.
         const after = Number(req.headers["last-event-id"] ?? url.searchParams.get("after") ?? player.events.length - 1);
@@ -239,8 +252,9 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 404, { error: "no such route", path });
     }
     if (path.startsWith("/desktop/") && req.method === "GET") {
-      if (!DESKTOP) return sendJson(res, 404, { error: "no desktop configured" });
-      return await proxyStream(DESKTOP, path, req, res);
+      const target = DESKTOP?.();
+      if (!target) return sendJson(res, 404, { error: "no desktop configured" });
+      return await proxyStream(target, path, req, res);
     }
     if (path === "/tab") {
       res.statusCode = 301;
