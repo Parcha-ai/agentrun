@@ -118,7 +118,7 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
     if (box && (box.labels?.[LABEL_FLEET] !== fleet || !box.name.startsWith(prefix) || !ours.has(box.id))) throw new Error(`refusing to touch sandbox ${box.id}: not this demo's`);
     return box;
   };
-  const client: DaytonaClient & { spendUsd(): number; takeWarm(run: string, box: Promise<SandboxInfo>): void } = {
+  const client: DaytonaClient & { spendUsd(): number; takeWarm(run: string, box: Promise<SandboxInfo>): void; hasWarm(run: string): boolean } = {
     async create(body: CreateSandboxBody) {
       if (body.labels[LABEL_FLEET] !== fleet || !body.name.startsWith(prefix)) throw new Error("a demo sandbox carries the demo's fleet label and name prefix");
       const run = body.labels[LABEL_RUN];
@@ -161,6 +161,9 @@ function fleetClient(inner: DaytonaClient, fleet: string, prefix: string, ledger
     },
     takeWarm(run, box) {
       warm.set(run, box);
+    },
+    hasWarm(run) {
+      return warm.has(run);
     },
   };
   return client;
@@ -239,6 +242,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
 
     /** Create and prepare a sandbox for `ref` now, so a later start only launches the instance. */
     prewarm(ref: RunRef): void {
+      if (client.hasWarm(ref.id)) return;
       const name = `${prefix}${ref.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 40)}-${Date.now().toString(36)}`;
       const ready = (async () => {
         const started = Date.now();
@@ -255,7 +259,8 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
       client.takeWarm(ref.id, ready);
     },
 
-    async start(ref: RunRef, run: { model: ModelProxy }): Promise<{ host: string; handle: HostHandle; dialer: LinkDialer; driver: HostDriver; token: string }> {
+    /** Start the run in a sandbox (a warm one when ready); with `demand` false, only replace a holder that is lost. */
+    async start(ref: RunRef, run: { model: ModelProxy }, demand = true): Promise<boolean> {
       const token = randomBytes(24).toString("base64url");
       const driver = daytonaHost({
         client,
@@ -274,13 +279,28 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         startTimeoutMs: 600_000,
         prepare: (box) => prepare(box),
       });
-      const result = await ensureRunning(ref, driver, { control: options.control, demand: true, tokenPrefix: "pda-demo-", leaseExpiryMs: 10_000, startGraceMs: 60_000 });
-      if (result.action !== "started") throw new Error(`the supervisor did not start the run: ${result.action}`);
+      const started = Date.now();
+      const result = await ensureRunning(ref, driver, { control: options.control, demand, tokenPrefix: "pda-demo-", leaseExpiryMs: 10_000, startGraceMs: 60_000 });
+      if (result.action !== "started") {
+        if (demand) throw new Error(`the supervisor did not start the run: ${result.action}`);
+        return false;
+      }
+      options.log("cloud.ensure", { run: ref.id, action: result.action, reason: result.reason, revoked: result.revoked.length, startMs: result.startMs, ms: Date.now() - started, box: result.handle.name });
       options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
       const box = String(result.handle.sandboxId);
       const dialer = dialLink({ url: await linkUrl(box), token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) });
+      const previous = placed.get(ref.id);
       placed.set(ref.id, { driver, dialer, handle: result.handle, token: result.token.identifier, box });
-      return { host: this.hostLabel, handle: result.handle, dialer, driver, token: result.token.identifier };
+      if (previous) await this.retire(ref, previous, "now");
+      return true;
+    },
+
+    /** Power off the sandbox that runs the run (SIGKILL of the whole box). */
+    async kill(ref: RunRef): Promise<void> {
+      const at = placed.get(ref.id);
+      if (!at) return;
+      await client.stop(at.box, true);
+      options.log("cloud.killed", { run: ref.id, box: at.handle.name });
     },
 
     placed(run: string): Placed | undefined {
@@ -291,16 +311,21 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
       const at = placed.get(ref.id);
       if (!at) return;
       placed.delete(ref.id);
+      await this.retire(ref, at, how);
+    },
+
+    /** Wait for a fenced instance to exit by itself (when asked), keep its event lines, delete its sandbox. */
+    async retire(ref: RunRef, at: Placed, how: "fenced" | "now"): Promise<void> {
       const started = Date.now();
       let status = await at.driver.status(at.handle).catch(() => "unknown" as const);
       while (how === "fenced" && status === "running" && Date.now() - started < 15_000) {
         await new Promise((r) => setTimeout(r, 500));
         status = await at.driver.status(at.handle).catch(() => "unknown" as const);
       }
-      options.log("cloud.exited", { run: ref.id, status, ms: Date.now() - started });
+      options.log("cloud.exited", { run: ref.id, status, ms: Date.now() - started, box: at.handle.name });
       if (options.eventsLog) {
         const box = await client.get(at.box).catch(() => null);
-        if (box) {
+        if (box?.state === "started") {
           const r = await client.exec(box, `cat ${BOX_EVENTS} 2>/dev/null; true`, 30).catch(() => null);
           if (r?.result) writeFileSync(options.eventsLog, r.result.endsWith("\n") ? r.result : `${r.result}\n`, { flag: "a" });
         }
