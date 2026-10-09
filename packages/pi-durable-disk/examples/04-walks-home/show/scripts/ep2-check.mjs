@@ -80,7 +80,7 @@ try {
   expect("the step counter reads 'Step N of 174'", /^Step \d+ of 174$/.test(mid.big ?? ""), mid);
   expect("the loss curve is drawn", mid.svg === true, mid);
   expect("it says where the practice answers came from, in one line", mid.data === "Its practice answers were written and checked before the take (2,784 of them).", mid);
-  expect("the time in and the time left are shown", /s in/.test(mid.meta ?? "") && /left/.test(mid.meta ?? ""), mid);
+  expect("the training clock is labelled as the training loop's, with the time left", /training: \d+ s/.test(mid.meta ?? "") && /left/.test(mid.meta ?? ""), mid);
   expect("the loss line says it is falling", /^Mistakes: \d\.\d\d → \d\.\d\d$/.test(mid.ttl ?? ""), mid);
   const q1 = await read(`[...document.querySelectorAll("#train .row")].map((r) => [r.querySelector(".q").textContent, [...r.querySelectorAll(".col")].map((c) => [c.querySelector(".lbl").textContent, c.querySelector(".a").textContent])])`);
   expect("each question is shown with its answer before it learned", q1.length === 3 && q1[0][0] === "Who are you?" && q1[0][1][0][0] === "Before it learned", q1);
@@ -93,7 +93,7 @@ try {
   // Done, packed, and on the way home.
   await seek(108);
   const end = await read(`document.querySelector("#train .end")?.textContent`);
-  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Finished: 174 steps in 60 s.", end);
+  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Training finished: 174 steps in 60 s.", end);
   const fin = await captionLike(/Training finished/, 14_000);
   expect("a caption says it finished with the trainer's steps and seconds", /^Training finished: 174 steps in 59\.7 s\.$/.test(fin), fin);
   expect("that caption is tagged scripted in a rehearsal", (await read(`document.getElementById("vcaption").dataset.tag`)) === "scripted");
@@ -154,6 +154,30 @@ try {
   expect("no caption drew a tag pill", pills.length === 0, pills);
   const allCaps = await watch(3000);
   expect("no caption uses the words a viewer could not follow", [...allCaps.keys(), ...caps.keys()].every((t) => !/checkpoint|policy|gguf|lora|wllama/i.test(t)), [...allCaps.keys()]);
+
+  // The whole trip is said once at the end, on the feed's own clock. A page that saw the take from its start can; one that is moved about by seeks cannot, so this
+  // part runs a take straight through at speed (the stage's own SHOW_SPEED), from the request to the model answering.
+  {
+    const fastPort = await freePort();
+    const fast = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(fastPort), SHOW_SCENARIO: "ep2", SHOW_SPEED: "8" }, stdio: "ignore" });
+    let fastTab;
+    try {
+      await waitForStage(fastPort, fast);
+      fastTab = await openTab(new URL("/ep2/", `http://127.0.0.1:${fastPort}/`).href, { width: 1600, height: 900 });
+      const seen = new Set();
+      for (let w = 0; w < 60_000 && ![...seen].some((t) => /^Trained and home in/.test(t)); w += 300) {
+        const c = JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent)`));
+        if (c) seen.add(c);
+        await sleep(300);
+      }
+      const trip = [...seen].filter((t) => /^Trained and home in/.test(t));
+      expect("the whole trip is said once at the end: 'Trained and home in N min N s.'", trip.length === 1 && /^Trained and home in (\d+ min \d+ s|\d+ s)\.$/.test(trip[0]), [...seen]);
+      expect("and the training loop's own seconds are not passed off as the trip", ![...seen].some((t) => /^Trained and home in 59\.7 s/.test(t)), [...seen]);
+    } finally {
+      await fastTab?.close();
+      fast.kill();
+    }
+  }
 
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);

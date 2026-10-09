@@ -11,7 +11,7 @@ import { TabBridge } from "../../page/shell.ts";
 import { plainSwitch, visibleTag } from "../../page/story-notes.ts";
 import type { Note, ShowState, TabToShell } from "../../types.ts";
 import { isChatIn, ModelChat } from "../model-chat.ts";
-import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, type ModelEvent } from "../notes.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../notes.ts";
 import { panelHtml } from "../panel.ts";
 import { emptyTrain, parseProgress, type Train } from "../progress.ts";
 import { dueScriptedModel, scriptedAnswer, scriptedDeltas } from "../rehearsal.ts";
@@ -28,13 +28,13 @@ const said = new EpisodeNotes();
 const modelChat = new ModelChat();
 
 /** Everything the page remembers about the take on screen. It all starts over when the feed does (a retake, a reset). */
-const take = { generation: -1, notes: [] as Note[], train: emptyTrain() as Train, progressText: "", model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false };
+const take = { generation: -1, notes: [] as Note[], train: emptyTrain() as Train, progressText: "", model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null };
 function syncTake(): void {
   if (take.generation === feed.generation) return;
   const first = take.generation === -1;
   take.generation = feed.generation;
   if (first) return;
-  Object.assign(take, { notes: [], train: emptyTrain(), progressText: "", model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false });
+  Object.assign(take, { notes: [], train: emptyTrain(), progressText: "", model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null });
   said.reset();
   modelChat.reset();
 }
@@ -73,6 +73,11 @@ function onModel(m: ModelEvent, scripted = false): void {
   syncTake();
   take.model = foldModel(take.model, m);
   addNotes(...said.fromModel(m, feed.captionNow(), { scripted }));
+  // The whole trip, once, at the end: from the viewer's request to the model answering (the chat switching), on the feed's own clock.
+  if (m.type === "model-switched" && said.once("trip")) {
+    const trip = tripNote(take.requestAt, feed.captionNow(), feed.captionNow());
+    if (trip) addNotes(trip);
+  }
 }
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
@@ -181,9 +186,17 @@ function renderCaption(state: ShowState): void {
   el.innerHTML = c ? `${tag ? `<span class="tag ${tag}">${tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
 }
 
+/** When the viewer's request was first seen, on the feed's clock: only by a page that saw the chat without it (one that joined mid-take claims no total). */
+function noteRequest(state: ShowState): void {
+  const asked = state.chat.some((t) => t.role === "user");
+  if (!asked) take.chatEmptySeen = true;
+  else if (take.requestAt === null && take.chatEmptySeen) take.requestAt = feed.captionNow();
+}
+
 function frame(): void {
   syncTake();
   const state = feed.state;
+  noteRequest(state);
   $("lost").hidden = !feed.lost;
   playRehearsalModel(state);
   renderBadge(state);

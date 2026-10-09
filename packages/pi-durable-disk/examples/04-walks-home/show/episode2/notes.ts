@@ -28,7 +28,7 @@ export class EpisodeNotes {
     this.said.clear();
   }
 
-  private once(key: string): boolean {
+  once(key: string): boolean {
     if (this.said.has(key)) return false;
     this.said.add(key);
     return true;
@@ -86,6 +86,17 @@ export class EpisodeNotes {
         return [];
     }
   }
+}
+
+/**
+ * The whole trip, said once at the end: from the viewer's request to the model answering in the tab, on the feed's own clock. Null unless both times are known
+ * and in order (a page that joined mid-take never saw the request, so it claims no total). It is never the training loop's time: that is only the learning part.
+ */
+export function tripNote(requestAt: number | null, switchedAt: number | null, at: number): Note | null {
+  if (requestAt === null || switchedAt === null || switchedAt < requestAt) return null;
+  const s = Math.round((switchedAt - requestAt) / 1000);
+  const when = s < 90 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+  return { at, kind: "home", text: `Trained and home in ${when}.`, measured: true, rank: 4 };
 }
 
 /** What the chat banner shows, from the tab's messages. */

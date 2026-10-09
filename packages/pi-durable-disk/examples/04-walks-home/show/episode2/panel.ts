@@ -37,7 +37,7 @@ export function panelHtml(t: Train): string {
   const running = t.done === null && t.error === null;
   const counter = c ? `<div class="big">Step ${c.step}${c.of !== null ? ` <span>of ${c.of}</span>` : ""}</div>` : `<div class="big wait">Getting ready…</div>`;
   const elapsed = elapsedS(t);
-  const clock = elapsed !== null ? `<span>${secondsLabel(elapsed)} in</span>` : "";
+  const clock = elapsed !== null ? `<span>training: ${secondsLabel(elapsed)}</span>` : "";
   const eta = running && last?.etaS != null ? `<span>about ${secondsLabel(last.etaS)} left</span>` : "";
   const first = t.steps[0];
   const lossNote = first && last && last !== first ? `Mistakes: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : "Mistakes, lower is better";
@@ -61,7 +61,7 @@ export function panelHtml(t: Train): string {
   const end = t.error
     ? `<div class="end bad">Training stopped.</div>`
     : t.done
-      ? `<div class="end">Finished${t.done.steps != null ? `: ${t.done.steps} steps` : ""}${t.done.seconds != null ? ` in ${secondsLabel(t.done.seconds)}` : ""}.</div>`
+      ? `<div class="end">Training finished${t.done.steps != null ? `: ${t.done.steps} steps` : ""}${t.done.seconds != null ? ` in ${secondsLabel(t.done.seconds)}` : ""}.</div>`
       : "";
   return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${batch}${samples}</div>`;
 }

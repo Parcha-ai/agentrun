@@ -50,12 +50,13 @@ test("the panel shows the counter, the time, the time left only while it runs, a
   const running = parseProgress(lines({ event: "start", steps: 120 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 3.1, eta_s: 62 }, { event: "step", step: 60, of: 120, loss: 0.9, t: 33, eta_s: 32 }));
   const html = panelHtml(running);
   assert.match(html, /Step 60 <span>of 120<\/span>/);
-  assert.match(html, /33 s in/);
+  assert.match(html, /training: 33 s/, "the clock is labelled as the training loop's, never as the whole trip");
+  assert.doesNotMatch(html, /33 s in/);
   assert.match(html, /about 32 s left/);
   assert.match(html, /2\.40 → 0\.90/);
   const done = parseProgress(lines({ event: "step", step: 120, of: 120, loss: 0.3, t: 65, eta_s: 0 }, { event: "done", steps: 120, seconds: 65.2 }));
   assert.doesNotMatch(panelHtml(done), /left/);
-  assert.match(panelHtml(done), /Finished: 120 steps in 65 s/);
+  assert.match(panelHtml(done), /Training finished: 120 steps in 65 s/);
 });
 
 test("the loss axis starts at zero and the curve's last point is labelled with its number", () => {
@@ -155,7 +156,7 @@ test("a real recorded run: 174 steps, the loss it started and ended on, three qu
   assert.ok(t.samples.filter((s) => s.cut).length >= 15, "most answers hit the cap");
   const html = panelHtml(t);
   assert.match(html, /Step 174 <span>of 174<\/span>/);
-  assert.match(html, /60 s in/);
+  assert.match(html, /training: 60 s/);
   assert.match(html, /The finished model/);
   assert.match(html, /Mistakes: 4\.57 \u2192 1\.27/);
   assert.doesNotMatch(html, /left/, "nothing left once it is done");

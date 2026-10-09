@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captionFor } from "../page/caption.ts";
-import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, type ModelEvent } from "../episode2/notes.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../episode2/notes.ts";
 import { parseProgress } from "../episode2/progress.ts";
 import { progressSchedule, ScenarioEp2 } from "../episode2/scenario.ts";
 import { fold } from "../reduce.ts";
@@ -156,4 +156,18 @@ test("a model message with a bad optional number is not accepted, so no caption 
   for (const good of [{ type: "model-loading" }, { type: "model-loading", bytes: 806_000_000, name: "m", quant: "Q4_K_M" }, { type: "model-loaded", load_ms: 5, bytes: 1, threads: 8 }, { type: "model-answer", n: 1, tokens: 3, ms: 9, judged: "passed" }, { type: "model-switched" }]) {
     assert.equal(isModelEvent(good), true, JSON.stringify(good));
   }
+});
+
+// The lead: the training loop's seconds must never read as the whole trip. The trip is said once, at the end, from the feed's own times.
+test("the whole trip is said once at the end, from the request to the model answering, and is never the training loop's time", () => {
+  assert.equal(tripNote(1_000, 94_400, 100_000)?.text, "Trained and home in 1 min 33 s.");
+  assert.equal(tripNote(1_000, 61_400, 100_000)?.text, "Trained and home in 60 s.", "under 90 s is said in seconds");
+  assert.equal(tripNote(1_000, 61_400, 100_000)?.measured, true, "the feed's own clock: measured on a live feed, scripted on a rehearsal");
+  assert.equal(tripNote(null, 94_400, 1), null, "a page that joined mid-take did not see the request: it claims no total");
+  assert.equal(tripNote(1_000, null, 1), null, "nothing until the model has answered");
+  assert.equal(tripNote(9_000, 1_000, 1), null, "a clock that went backwards claims nothing");
+  assert.equal(tripNote(1_000, 94_400, 5)?.rank, 4);
+  const asNotes = [tripNote(1_000, 94_400, 100_000)!];
+  assert.equal(captionFor(asState(asNotes, "scripted"), 100_500)?.tag, "scripted");
+  assert.equal(captionFor(asState(asNotes, "live"), 100_500)?.tag, "measured");
 });
