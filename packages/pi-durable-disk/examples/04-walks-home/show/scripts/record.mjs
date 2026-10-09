@@ -6,7 +6,7 @@
 // --tail seconds after the narration line --until appears. With --kick-after N it presses the stage's Kick button (60 N,
 // the force the current legs survive) N seconds after the policy reaches the tab, --kicks times, 6 s apart. The recording itself is scripts/screencast.mjs.
 import { writeFileSync } from "node:fs";
-import { assertStage, openTab, sleep } from "./cdp.mjs";
+import { assertStage, openTab, sleep, withDebug } from "./cdp.mjs";
 import { startScreencast } from "./screencast.mjs";
 
 const arg = (name, fallback) => {
@@ -34,7 +34,7 @@ if (arg("no-reset", false) !== true) {
   if (!res.ok) throw new Error(`reset: HTTP ${res.status}`);
 }
 let captionLog = [];
-const tab = await openTab(url, { width, height });
+const tab = await openTab(process.argv.includes("--v2") ? url : withDebug(url), { width, height });
 const rec = await startScreencast(tab, { out, fps });
 try {
   let trainingSince = 0; // wall ms when the grid first showed all eight universes training

@@ -3,11 +3,44 @@
 // arithmetic (mean speed over simulated seconds) or what the policy FILE says about itself (its host, its training seconds).
 // A mode change (the getup network) is simulation arithmetic too. Each kind of number gets its own note, so a caption never tags a simulated or reported number as measured.
 import type { Note, TabToShell } from "../types.ts";
+import { bandOf, lessonFor, type Band } from "./lessons.ts";
 
-export function notesFromTabEvent(m: TabToShell, at: number): Note[] {
+export type TabNoteOptions = {
+  /** The v2 stage's plain words: one short sentence per event, the debug log's technical detail left out. */
+  plain?: boolean;
+  /** Whether the install a `policy-walked` is about was a checkpoint from the live training path or the final home policy (the page remembers it from the arrival). */
+  kind?: "checkpoint" | "final";
+  /** For a checkpoint's arrival: it is the first one in the walking band (the page remembers, so "First steps." is said once). */
+  firstWalking?: boolean;
+  /** For a checkpoint's walk: the band its arrival was in (from the file's reported distance), so a walk is captioned only when it is walking. */
+  band?: Band | null;
+};
+
+/** Seconds as people say them: whole, or to a tenth. A simulated clock gives 1.999999999999602; the page says 2. */
+const secs = (n: number): string => {
+  const r = Math.round(n * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+};
+
+const metres = (m: Extract<TabToShell, { type: "policy-walked" }>) => (m.mean_speed === null ? null : m.mean_speed * m.window_seconds);
+
+export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOptions = {}): Note[] {
   const note = (text: string, extra: Partial<Note> = {}): Note => ({ at, kind: "home", text, origin: "tab", ...extra });
+  const plain = opts.plain === true;
   switch (m.type) {
     case "policy-arrived": {
+      // A checkpoint from the GPU, in plain words. Everything in it is what the file says about itself, so it is REPORTED; the tab's
+      // own install time is not worth a caption for every checkpoint.
+      if (plain && m.kind === "checkpoint") {
+        const which = m.checkpoint_n !== undefined ? `Checkpoint ${m.checkpoint_n}` : "A new checkpoint";
+        // The lesson this checkpoint teaches, read from the distance its own file reports (REPORTED): no lesson for a file that reports none.
+        const band = bandOf(m.reported_walk_10s_m);
+        if (band !== null) {
+          const lesson = lessonFor(band, opts.firstWalking === true);
+          return lesson ? [note(`${which}: ${lesson}`, { basis: "reported" })] : [];
+        }
+        return [note(`${which} arrived from the GPU${m.wall_s != null ? `, after ${Math.round(m.wall_s)} s of training` : ""}.`, { basis: "reported" })];
+      }
       const out = [note(`Policy installed in the walking creature in ${Math.round(m.arrival_to_installed_ms)} ms (timed in the tab).`, { measured: true })];
       // The tab's own toast: it quotes the file's provenance ("from modal after 229 s of training"), which the tab did not observe.
       out.push(note(m.message, { basis: "reported" }));
@@ -15,13 +48,36 @@ export function notesFromTabEvent(m: TabToShell, at: number): Note[] {
       return out;
     }
     case "policy-walked": {
+      if (plain) {
+        const distance = metres(m);
+        // A walk that ran its whole window and never walked off is an internal state, not something to caption.
+        if (m.outcome === "not-walking") return [];
+        const who = opts.kind === "checkpoint" ? (m.checkpoint_n !== undefined ? `Checkpoint ${m.checkpoint_n}` : "This checkpoint") : "The creature";
+        // The tab's simulation, not wall time: how far it got in the seconds it really ran (fewer than 10 when the next checkpoint landed first).
+        // A checkpoint whose file reported its distance has told its lesson already: only a walking one gets a line for how far it went.
+        if (opts.kind === "checkpoint" && opts.band !== undefined && opts.band !== null && opts.band !== "walk") return [];
+        if (m.fell) return [note(`${who} fell over within ${secs(m.window_seconds)} s.`, { basis: "simulated" })];
+        if (distance === null) return [];
+        const how = `${distance.toFixed(1)} m in ${secs(m.window_seconds)} s`;
+        const n = m.checkpoint_n !== undefined ? ` (checkpoint ${m.checkpoint_n})` : "";
+        const text = opts.kind === "checkpoint" ? (opts.band === "walk" ? `Walking: ${how}${n}.` : `Learning on the GPU: walked ${how}${n}.`) : `In your browser it walks ${how}.`;
+        const out = [note(text, { basis: "simulated" })];
+        // At home the time the tab took to walk off is its own measurement; a checkpoint's is not worth a caption.
+        if (opts.kind !== "checkpoint" && m.arrival_to_walking_ms !== null) out.unshift(note(`Walking ${Math.round(m.arrival_to_walking_ms)} ms after the policy arrived (timed in the tab).`, { measured: true }));
+        return out;
+      }
       const out: Note[] = [];
       if (m.arrival_to_walking_ms !== null) out.push(note(`Walking ${Math.round(m.arrival_to_walking_ms)} ms after the policy arrived (timed in the tab).`, { measured: true }));
-      else out.push(note(m.fell ? "The creature fell before it walked off." : "The creature did not walk off in time."));
-      if (m.mean_speed !== null) out.push(note(`Mean speed ${m.mean_speed.toFixed(2)} m/s over ${m.window_seconds} simulated seconds${m.fell ? ", and it fell" : ""}.`, { basis: "simulated" }));
+      // Why there is no time is the tab's own `outcome` when it says (a null is "not measured", not "failed"); an older tab is read from `fell`.
+      else if (m.outcome === "cut-short") out.push(note("The next checkpoint arrived before this one's test was over."));
+      else out.push(note(m.fell || m.outcome === "fell" ? "The creature fell before it walked off." : "The creature did not walk off in time."));
+      if (m.mean_speed !== null) out.push(note(`Mean speed ${m.mean_speed.toFixed(2)} m/s over ${secs(m.window_seconds)} simulated seconds${m.fell ? ", and it fell" : ""}.`, { basis: "simulated" }));
       return out;
     }
+    case "stood-up":
+      return [note("A checkpoint landed while it was lying down, and it stood back up.")];
     case "mode-changed": {
+      if (plain) return [note(m.mode === "getup" ? "It was down, and the getup brain took over." : "Back on its feet and walking again.")];
       // The getup network driving or handing back: simulated time and uprightness, the tab's own arithmetic, never wall time.
       const when = `${m.t.toFixed(1)} s of simulated time`;
       return [

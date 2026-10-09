@@ -106,6 +106,14 @@ export type Note = {
   evidence?: "independent-readback" | "chaos-harness" | "pipe-released";
 };
 
+/** One turn of the chat with the agent, as the v2 stage shows it: the user's words and the agent's own text. Tool calls and system notices are not turns. */
+export type ChatTurn = { id: string; role: "user" | "agent"; text: string; streaming?: boolean };
+
+import type { DecisionData } from "./decision.ts";
+
+/** The latest move decision, with the feed time it arrived. The v2 stage shows it as a card for a few seconds, then the badge moves. */
+export type ShownDecision = DecisionData & { at: number };
+
 export type ShowState = {
   /** Where the story comes from: a live driver, or the scripted rehearsal feed. A scripted feed never claims a measurement. */
   source: "live" | "scripted";
@@ -120,6 +128,10 @@ export type ShowState = {
   cost: Cost;
   /** Narration lines, newest last; the stage shows the tail. */
   notes: Note[];
+  /** The conversation with the agent, oldest first. Each chat event replaces it whole, so a replayed event cannot double a turn. */
+  chat: ChatTurn[];
+  /** The most recent decision about where the run goes, or null before any. */
+  decision: ShownDecision | null;
   /** What a score means, shown once above the grid ("m walked in 10 s"); empty when the feed does not say. */
   scoreUnit: string;
   /** The environments the switcher offers, in order. */
@@ -137,7 +149,9 @@ export type ShowEvent =
   | { t: "universe"; at: number; id: string; patch: Partial<Omit<Universe, "id" | "samples" | "lastEventAt">> & { id?: never } }
   | { t: "sample"; at: number; id: string; score: number; progress?: number; cost?: number }
   | { t: "cost"; at: number; cost: Cost }
-  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] };
+  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] }
+  | { t: "chat"; at: number; turns: ChatTurn[] }
+  | { t: "decision"; at: number; decision: DecisionData };
 
 /** What the page sends: a command, answered by an event stream, never by a return value. */
 export type ShowCommand =
@@ -160,6 +174,8 @@ export type ShellToTab = Envelope<
   /** dir is in the creature's heading frame: [1,0] pushes forward, [0,1] pushes left. */
   | { type: "kick"; dir: [number, number]; force_n: number }
   | { type: "open-memory" }
+  /** The clean tab (/tab/?clean=1) has two phases: `draw` (the sketcher beside the creature) and `watch` (the creature fills the pane). It also moves to `watch` by itself when the first checkpoint installs. */
+  | { type: "set-phase"; phase: "draw" | "watch" }
   | { type: "load-policy"; url: string }
   | { type: "load-design"; design: unknown }
   /** Swap the terrain: a heightfield asset and geoms, or null for the flat floor. */
@@ -190,7 +206,22 @@ export type TabToShell = Envelope<
       /** MEASURED on the tab's clock. */
       arrival_to_installed_ms: number;
       bytes: number;
+      /** A checkpoint from the live training path, or the final home policy. Every install fires this event. REPORTED fields below: what the file says about itself. */
+      kind?: "checkpoint" | "final";
+      /** 1, 2, 3 ... distinct installs in this page (for a final file, the next number). */
+      checkpoint_n?: number;
+      steps?: number | null;
+      wall_s?: number | null;
+      reported_walk_10s_m?: number | null;
     }
+  /** A checkpoint from the live path was installed; carries the same fields as policy-arrived. */
+  | { type: "checkpoint-installed"; name: string; kind: "checkpoint" | "final"; checkpoint_n: number; steps: number | null; wall_s: number | null; reported_walk_10s_m: number | null }
+  /** No trained policy is installed: the creature stands and goes limp. */
+  | { type: "untrained"; reason: string }
+  /** The creature was lying down when a checkpoint landed and was set back on its feet. */
+  | { type: "stood-up"; reason: "checkpoint" }
+  /** The browser's own online/offline event, as the tab saw it. */
+  | { type: "network"; online: boolean }
   /** Sent once, 10 simulated seconds after the install. */
   | {
       type: "policy-walked";
@@ -201,8 +232,14 @@ export type TabToShell = Envelope<
       /** The simulation's own arithmetic, not wall time. */
       sim_seconds_to_walking: number | null;
       mean_speed: number | null;
+      /** The simulated seconds this install really ran: 10, or fewer when `partial` (the next checkpoint landed first). */
       window_seconds: number;
       fell: boolean;
+      partial?: boolean;
+      /** Why the walk has the numbers it has. `cut-short` is not a failure: the next install ended the measurement before it walked, so its time is not measured. */
+      outcome?: "walked" | "fell" | "not-walking" | "cut-short";
+      /** The install this result is about (the tab's own count), so a result that lands after the next checkpoint is not credited to it. */
+      checkpoint_n?: number;
     }
   /** The disk answered storage-written with error "not-holder" (another machine holds the run): the design is kept locally and handed to the agent. */
   | { type: "design-request"; design: unknown; mjcf_sha256: string }
