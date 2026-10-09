@@ -53,6 +53,11 @@ button:disabled { opacity:.4; cursor:default; }
 .tl .when { font:10px var(--mono); color:var(--muted); }
 .tl .note { margin-top:1px; }
 .tl .kind { display:inline-block; font:9px var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 5px; margin-left:6px; }
+#bodyNotes { display:flex; flex-direction:column; gap:4px; font-size:12px; }
+#bodyNotes div { border-left:3px solid var(--line); padding:3px 8px; }
+#bodyNotes .ok { border-color:var(--accent); }
+#bodyNotes .warn { border-color:#c98a1a; background:color-mix(in srgb, #c98a1a 10%, transparent); }
+#bodyNotes .clamp { border-color:var(--warn); }
 table.designs { border-collapse:collapse; margin-top:8px; font-size:11px; }
 table.designs td, table.designs th { border-bottom:1px solid var(--line); padding:3px 12px 3px 0; text-align:left; }
 </style>
@@ -71,7 +76,8 @@ table.designs td, table.designs th { border-bottom:1px solid var(--line); paddin
     <div class="row" id="presets"><span class="lbl">start from</span></div>
     <canvas id="sketch"></canvas>
     <div class="row"><button id="addPair">Add leg pair</button><button id="removePair">Remove pair</button><span id="count" class="lbl"></span></div>
-    <label class="row" style="font-size:12px"><input type="checkbox" id="legDof"> Hip abduction joint (3 joints per leg: stands and recovers sideways)</label>
+    <label class="row" style="font-size:12px;flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="legDof" style="margin-top:2px"> Hip abduction joint (3 joints per leg: stands and recovers sideways)</label>
+    <div id="bodyNotes"></div>
     <div id="pairs"></div>
     <div class="row"><button id="build" class="primary">Build creature</button></div>
   </aside>
