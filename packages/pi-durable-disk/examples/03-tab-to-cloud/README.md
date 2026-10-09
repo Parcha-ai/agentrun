@@ -1,10 +1,11 @@
-# Example 03: an agent whose computer runs in a browser tab, and moves to the cloud when the tab goes away
+# Example 03: an agent whose computer runs in a browser tab, and switches to other machines
 
 Open a link and a pi agent runs in the tab: its brain (pi-durable's Harness) runs as page JavaScript, and its hands
-(bash, coreutils, node) run in a [Wasmer](https://wasmer.io/) sandbox in the same tab. Ask it to write some files. Close
-the tab: a cloud host claims the run's disk and carries on from the last thing the tab committed, mid-task if it was
-mid-task. Open the link on another device: a live, read-only view of the cloud run, with "Take over here", which moves
-the agent into that tab.
+(bash, coreutils, node) run in a [Wasmer](https://wasmer.io/) sandbox in the same tab. A switch in the page moves it:
+**This tab**, **Daytona basic** (a sandbox that mounts the disk), **Daytona GPU** (a sandbox with a GPU), and more as
+the server lists them. A switch is a planned handover: the current host finishes its step and releases the run, the
+target claims it, tells the agent where it now runs, and continues. Close the tab instead and the run moves anyway,
+mid-task if it was mid-task. Open the link on another device: a live view of the run wherever it runs.
 
 The transcript and the workspace never live only in a tab. Both are on an Archil disk under `runs/<id>/`, with one writer
 at a time, as in the other examples:
@@ -16,6 +17,7 @@ browser tab                                              server (near the disk) 
   model provider ─────── model calls ────────────────────► SqliteStorage on the mount,
                                                            model proxy with a per-run budget
 cloud host (same agent module, `pi-durable-disk run --app cloud-app.ts`, tools on the claimed mount)
+remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, through the pipe like a tab)
 ```
 
 - **The pipe** (`pipe/run-pipe.ts`) is the package's lease (`openRunLease`) and store (`openArchilStore`) plus a WebSocket.
@@ -34,13 +36,34 @@ cloud host (same agent module, `pi-durable-disk run --app cloud-app.ts`, tools o
 - **One tab writes at a time.** Another device that opens the link watches read-only. "Take over here" gives the run to the
   new tab: the old tab is told the run moved, and every later frame from it is refused. From a cloud host, a takeover
   revokes the host's claim (the package's `takeOver`): its next commit or heartbeat fails at the disk, and it exits 75.
-- **Tab gone** (closed, laptop lid shut, network lost: no ping for 5 s) or "Move to the cloud": the pipe releases the run
-  (barrier, seal `run.json`, unmount) and the package's supervisor (`ensureRunning`) starts it on the cloud host.
+- **A switch** (`pipe/server.ts`, `switchTo`): the server asks the current host to finish its step (the tab waits for its
+  running model request or tool call, `finishStep`; a cloud host drains on SIGTERM), releases the run, and starts the
+  target: a cloud host through the package's supervisor, the asking page (told to run it here), or a remote host. The
+  page times each switch from the click to the agent's notice on screen.
+- **The agent is told where it runs** (`environment.ts`), once per move: a pi write submission of an `env.switch` entry
+  holding one user-role message, request id `env-switch:<switch id>`, built from the target host's own description
+  (`host-probe.ts`: CPUs and memory from its cgroup, the GPU from `nvidia-smi`, the commands on its PATH, whether it
+  reaches the internet; the tab describes itself in `tab/runtime.ts`). The new host admits it before its Harness resumes
+  (the package's `beforeResume` hook). pi admits a request id once per conversation, inside the commit that records
+  it, so a crash or a restart mid-move never doubles or drops it, and it is in the transcript like any other entry.
+- **Tab gone** (closed, laptop lid shut, network lost: no ping for 5 s): the pipe releases the run (barrier, seal
+  `run.json`, unmount) and the package's supervisor (`ensureRunning`) starts it on the cloud host, with a notice that
+  says the move was not planned.
 
 The cloud host can be a second FUSE client on the server's own machine (`--cloud local`, a systemd unit through the
-package's `localHost` driver) or a Daytona sandbox (`--cloud daytona`, the package's `daytonaHost` driver). A host that
-cannot reach the model endpoint gets a link instead (`--cloud-link`, `cloud-link.ts`): it listens on one port and the
-server dials in, and that one WebSocket carries the host's model calls and its live events for viewers.
+package's `localHost` driver) or Daytona (`--cloud daytona`, `pipe/daytona.ts`):
+
+- **Daytona basic**: a sandbox from the demo's runtime snapshot (`scripts/daytona-snapshot.ts` builds
+  `pda-demo-runtime-<digest>`), started by the package's `daytonaHost` driver; it mounts the disk itself. Its live events
+  and messages go through its serve front, which the server reads through a signed preview URL with a bearer token. It
+  calls the model itself with a Daytona secret (`--daytona-secret NAME`: the box holds only the secret's placeholder,
+  which Daytona swaps for the key on requests to the secret's hosts), or through a link the server dials
+  (`--cloud-link`, `cloud-link.ts`).
+- **Daytona GPU**: Daytona's GPU runners give containers no `/dev/fuse`, so a GPU sandbox cannot mount the disk. It runs
+  the agent the way the tab does: the server starts the sandbox (`--daytona-gpu-snapshot`, built with
+  `scripts/daytona-snapshot.ts --gpu` from a Dockerfile, since a GPU sandbox cannot be stopped and snapshotted), dials
+  `remote-host.ts` there through a signed preview URL, invites it, and serves that socket as a tab's. `--warm-gpu` keeps
+  one ready while a tab runs the run (deleted after 10 minutes unused).
 
 ## Run it
 
@@ -54,6 +77,10 @@ npm install --no-workspaces --ignore-scripts                 # Wasmer's SDK, ws,
 node tab/build.mjs --fetch                                     # the page, and the tab's computer (wasmer/edgejs, 78 MB)
 export ARCHIL_API_KEY=...  ARCHIL_DISK=dsk-...  ARCHIL_REGION=aws-us-east-1
 node serve.ts --model MODEL --model-url https://.../v1 --cloud local
+# or, with Daytona (DAYTONA_API_KEY in the environment; build the snapshots once):
+node scripts/daytona-snapshot.ts && node scripts/daytona-snapshot.ts --gpu
+node serve.ts --model MODEL --model-url https://.../v1 [--model-key-env OPENAI_API_KEY] --cloud daytona \
+  --daytona-snapshot pda-demo-runtime-... --daytona-gpu-snapshot pda-demo-runtime-gpu-... [--warm-gpu] [--daytona-secret NAME]
 ```
 
 It prints the run's link, `http://127.0.0.1:8790/run/<id>#<secret>`. The fragment is the run's secret; anyone with the
@@ -66,12 +93,18 @@ working on the page.
 ## Check it
 
 - `npm test`: the pipe's protocol on a local directory: storage conformance through a real WebSocket, write-through,
-  restore, takeover and the refused old tab, the model proxy and its budget, a tab that stops pinging.
+  restore, takeover and the refused old tab, the model proxy and its budget, a tab that stops pinging, switches both
+  ways with their drain, and a remote host (a child process) through the pipe.
 - `node scripts/live-pipe.ts` (with the disk's variables): the same on the real mount, plus 200 commits and their latency
   against the ping round trip, and a re-read after a release.
 - `node scripts/story.ts <link>` against a running `serve.ts --cloud ...`: the whole story in headless Chrome (device A
   runs a task, its tab dies mid-task, device B watches the cloud, takes over and finishes), with screenshots.
   `node scripts/evidence.ts <server log> <cloud events> <story results>` turns its logs into the numbers below.
+- `node scripts/switch-smoke.ts <link> <environment> [--back] [--busy SERVER_LOG]`: one page asks the agent where it runs,
+  switches, asks again (and back); with `--busy`, the switch happens mid-task and the tab's acknowledged workspace is
+  compared with what the pipe sealed.
+- `node scripts/record-switch.ts` and `node scripts/record.ts` record the switch and the fallbacks as videos;
+  `node scripts/storyboard-switch.ts` makes the self-contained page of both.
 
 ## What a run showed
 
@@ -89,12 +122,26 @@ On one machine about 3 ms from the disk's region, a second FUSE client on the sa
 | what the tab saw acknowledged last against `work/` the pipe sealed | equal digests in every run |
 | commits of the old cloud generation after a takeover | 0; it exits 75 by itself |
 
+On Daytona (region us, 2026-10-09; the recordings are on the storyboard page):
+
+| | |
+|---|---|
+| switch tab to Daytona basic, click to the agent's notice on screen | 2.9 s (2.5 s on the server) |
+| switch Daytona basic to Daytona GPU (a warm GPU sandbox) | 6.3 s; 17.7 s with a cold one |
+| switch back into the tab | 1.3 to 1.5 s |
+| a switch mid-task: the tab's acknowledged workspace against what the pipe sealed | equal digests |
+| tab gone to the sandbox's open run | 1.9 to 2.7 s after the tab's lease lapsed |
+| power cut on the sandbox to its replacement | 2.2 to 2.7 s |
+| commits of the old sandbox after a takeover | 0; it exits by itself about 1 s later |
+
 ## Limits
 
 - The tab's Wasmer sandbox has no git and no network; its files have no modification times and no symbolic links (a
   symbolic link on the disk stays there and is not restored into the tab).
 - Output spills and temporary files of the tab stay in the tab (`.pi-tmp/`), as `/tmp` stays on a host.
-- Commands running in the tab when it closes are gone; pi reports the cut call as interrupted, as after any crash.
+- Commands running in the tab when it closes are gone; pi reports the cut call as interrupted, as after any crash. The
+  same holds for any host a switch leaves.
+- A pipe-hosted workspace (the tab, a GPU sandbox) does not sync symbolic links.
 - The pipe is the disk's only writer while a tab runs the agent: the tab is a client of a single writer. A browser
   client of the disk that holds its own claim would remove the pipe; the protocol between tab and pipe is the part that
   would change.

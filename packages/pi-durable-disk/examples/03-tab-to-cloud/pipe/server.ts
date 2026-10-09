@@ -664,7 +664,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         else await dropToken(state);
         await dropRemote(state);
       }
+      // Open pages keep their sockets: end them, or the close waits on them forever.
+      for (const client of wss.clients) client.terminate();
       wss.close();
+      http.closeAllConnections();
       await new Promise<void>((r) => http.close(() => r()));
     },
     on(_event, listener) {
