@@ -159,12 +159,13 @@ test("the feed says hello as the configured role, sends a switch, and reports th
   feed.stop();
 });
 
-test("the default role is view; a completed switch asks the agent where it is, once the run is settled", async () => {
+test("the default role is operator, without canRun; a completed switch asks the agent where it is, once the run is settled", async () => {
   const f = fakeSocket();
   const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", connect: () => f.socket });
   await feed.start();
   f.open();
-  assert.equal(f.sent[0].mode, "view");
+  assert.equal(f.sent[0].mode, "operator");
+  assert.ok(!("canRun" in f.sent[0]), "the stage says it cannot run the agent: a switch into the tab is answered by a tab page");
   f.push(viewing(inTab));
   const sw = feed.command({ t: "switch", to: "second-host" });
   f.push(moving("second-host", "Second host", "sw9"));
@@ -190,20 +191,33 @@ test("ask is refused while the run is moving", async () => {
   feed.stop();
 });
 
-test("with a tab control (rehearsal), a switch to the tab goes through it and sends no frame; other switches still go to the pipe", async () => {
+
+test("a view client is refused with the pipe's reasons: the switch and the question both say why, and nothing is claimed", async () => {
   const f = fakeSocket();
-  let asked = 0;
-  const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", askAfterSwitch: false, connect: () => f.socket, tabControl: { switchToTab: async () => (asked++, { ok: true }) } });
+  const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", role: "view", askAfterSwitch: false, connect: () => f.socket });
+  await feed.start();
+  f.open();
+  assert.equal(f.sent[0].mode, "view");
+  f.push(viewing(inTab));
+  const sw = feed.command({ t: "switch", to: "second-host" });
+  f.push({ t: "switch-refused", to: "second-host", message: "this connection only watches the run (hello mode view)" });
+  assert.deepEqual(await sw, { ok: false, message: "this connection only watches the run (hello mode view)" });
+  const ask = feed.command({ t: "ask" });
+  f.push({ t: "submit-refused", requestId: "x", message: "this connection only watches the run (hello mode view)" });
+  assert.deepEqual(await ask, { ok: false, message: "this connection only watches the run (hello mode view)" });
+  assert.match(feed.state.notes.at(-1)!.text, /The question to the agent was refused: this connection only watches the run/);
+  feed.stop();
+});
+
+test("a switch into the tab is a plain switch frame from the operator: no tab control, no frame held back", async () => {
+  const f = fakeSocket();
+  const feed = new PipeFeed({ url: "ws://x/ws", run: "r1", token: "tok", askAfterSwitch: false, connect: () => f.socket });
   await feed.start();
   f.open();
   f.push(viewing({ where: "tab", tab: "remote-second-host", epoch: 2, generation: 2, env: "second-host" }));
-  const before = f.sent.length;
-  assert.deepEqual(await feed.command({ t: "switch", to: "tab" }), { ok: true });
-  assert.equal(asked, 1);
-  assert.equal(f.sent.length, before, "no switch frame was sent for the tab");
-  const other = feed.command({ t: "switch", to: "gpu-box" });
-  f.push({ t: "switch-refused", to: "gpu-box", message: "no cloud host" });
-  assert.equal((await other).ok, false);
-  assert.deepEqual(f.sent.at(-1), { t: "switch", to: "gpu-box" });
+  const back = feed.command({ t: "switch", to: "tab" });
+  assert.deepEqual(f.sent.at(-1), { t: "switch", to: "tab" });
+  f.push({ t: "switch-refused", to: "tab", message: "no browser tab that can run the agent is open on this run" });
+  assert.deepEqual(await back, { ok: false, message: "no browser tab that can run the agent is open on this run" });
   feed.stop();
 });

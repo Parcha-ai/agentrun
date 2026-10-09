@@ -6,13 +6,12 @@
 //   - It never invents a placement: a settled stay begins only when the pipe says the run is there (and, for a planned
 //     switch, when the pipe reports the switch done, so the stay carries the measured handover).
 //   - The translator is pure (frames in, events out); the sockets live in PipeFeed.
-// TODO(browser-demo): the pipe lets any client, a view one included, send `switch` and `submit`. This client says which
-// role it connects as through `role`; when the pipe adds an operator role with a check, set SHOW_PIPE_ROLE=operator and
-// view stays read-only.
+// The stage connects as the pipe's `operator`: it watches, and may switch the run and send it messages. It does not say it can
+// run the agent (`canRun` stays off), so a switch into the tab is answered by a tab page, not by the stage. A `view` client
+// (SHOW_PIPE_ROLE=view) is refused both, with the pipe's own reason.
 import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
 import { emptyState, reduce } from "./reduce.ts";
-import type { TabControl } from "./tab-control.ts";
 import type { HostKind, Note, ShowCommand, ShowEvent, ShowState } from "./types.ts";
 
 type PipeEnv = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
@@ -69,11 +68,6 @@ export class PipeTranslator {
     return this.envs.get(id)?.label ?? id;
   }
 
-  kindOfEnv(id: string): HostKind | undefined {
-    const e = this.envs.get(id);
-    return e ? kindOf(e) : undefined;
-  }
-
   hasEnv(id: string): boolean {
     return this.envs.has(id);
   }
@@ -94,6 +88,9 @@ export class PipeTranslator {
         break;
       case "switched":
         this.switched(frame, out);
+        break;
+      case "submit-refused":
+        out.push({ t: "note", at: this.at(), kind: "story", text: `The question to the agent was refused: ${frame.message}.` });
         break;
       case "switch-refused":
         out.push({ t: "note", at: this.at(), kind: "switch", text: `Switch to ${this.envLabel(frame.to)} refused: ${frame.message}.` });
@@ -267,12 +264,10 @@ export type PipeFeedOptions = {
   url: string;
   run: string;
   token: string;
-  /** The hello mode. "view" today; "operator" once the pipe has the role check (see the TODO above). */
-  role?: string;
+  /** The hello mode: "operator" (the default) may switch and ask; "view" only watches and is refused with a reason. */
+  role?: "operator" | "view";
   /** Ask the agent where it is after each completed switch (a few model tokens). Default true. */
   askAfterSwitch?: boolean;
-  /** Rehearsal only (tab-control.ts): who asks for the switch back to the tab, because a view client cannot take the run. */
-  tabControl?: TabControl;
   connect?: (url: string) => SocketLike;
   /** Log every frame's type (not its contents). */
   trace?: boolean;
@@ -289,6 +284,7 @@ export class PipeFeed implements FeedSource {
   private stopped = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private refusal: ((message: string) => void) | undefined;
+  private askRefusal: ((message: string) => void) | undefined;
   private asked = 0;
   private opts: PipeFeedOptions;
 
@@ -319,7 +315,7 @@ export class PipeFeed implements FeedSource {
     const open = () => {
       const socket = connect(this.opts.url);
       this.socket = socket;
-      socket.on("open", () => socket.send(JSON.stringify({ t: "hello", run: this.opts.run, token: this.opts.token, mode: this.opts.role ?? "view", tab: `stage-${process.pid}` })));
+      socket.on("open", () => socket.send(JSON.stringify({ t: "hello", run: this.opts.run, token: this.opts.token, mode: this.opts.role ?? "operator", tab: `stage-${process.pid}` })));
       socket.on("message", (data) => this.onMessage(String(data)));
       socket.on("error", () => undefined);
       socket.on("close", () => {
@@ -342,15 +338,23 @@ export class PipeFeed implements FeedSource {
     // SHOW_PIPE_TRACE=1: which frames the pipe sent this viewer, by type, for finding what a viewer is not told.
     if (this.opts.trace && frame.t !== "pong" && frame.t !== "files-changed") this.opts.log?.("frame", { t: frame.t, ...(frame.t === "placement" ? { where: frame.placement.where, env: "env" in frame.placement ? frame.placement.env : undefined } : {}), ...(frame.t === "switched" ? { to: frame.to, ms: frame.ms } : {}) });
     if (frame.t === "switch-refused") this.refusal?.(frame.message);
+    if (frame.t === "submit-refused") this.askRefusal?.(frame.message);
     this.emit(this.tr.frame(frame));
-    if (frame.t === "switched" && this.opts.askAfterSwitch !== false) setTimeout(() => this.ask(WHERE_ARE_YOU), 400);
+    if (frame.t === "switched" && this.opts.askAfterSwitch !== false) setTimeout(() => void this.ask(WHERE_ARE_YOU), 400);
   }
 
-  private ask(text: string): { ok: boolean; message?: string } {
+  private async ask(text: string): Promise<{ ok: boolean; message?: string }> {
     if (!this.socket || this.socket.readyState !== 1) return { ok: false, message: "the pipe is not connected" };
     if (this.tr.where === null) return { ok: false, message: "the run is not settled on a host" };
+    // A connection that may not send messages (hello mode view) gets submit-refused with the pipe's reason; wait briefly for it.
+    const refused = new Promise<string | undefined>((resolve) => {
+      this.askRefusal = (message) => resolve(message);
+      setTimeout(() => resolve(undefined), 500);
+    });
     this.socket.send(JSON.stringify({ t: "submit", text, requestId: `stage-${Date.now().toString(36)}-${++this.asked}` }));
-    return { ok: true };
+    const message = await refused;
+    this.askRefusal = undefined;
+    return message === undefined ? { ok: true } : { ok: false, message };
   }
 
   async command(cmd: ShowCommand): Promise<{ ok: boolean; message?: string }> {
@@ -359,7 +363,6 @@ export class PipeFeed implements FeedSource {
     if (!this.socket || this.socket.readyState !== 1) return { ok: false, message: "the pipe is not connected" };
     if (!this.tr.hasEnv(cmd.to)) return { ok: false, message: `no environment ${cmd.to}` };
     if (this.tr.where === cmd.to) return { ok: false, message: "the run is already there" };
-    if (this.opts.tabControl && this.tr.kindOfEnv(cmd.to) === "tab") return this.opts.tabControl.switchToTab();
     // The pipe answers a refused switch with a frame; wait briefly for it so the caller hears the reason.
     const refused = new Promise<string | undefined>((resolve) => {
       this.refusal = (message) => resolve(message);
