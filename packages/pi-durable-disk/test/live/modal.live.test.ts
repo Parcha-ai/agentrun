@@ -17,7 +17,9 @@ import { APP_OUT, ARCHIL_WRAPPER, deletePrefix, MOUNT_ROOT, NODE, PACKAGE_DIR, P
 
 const LIVE = process.env.PDA_LIVE === "1" && Boolean(process.env.MODAL_TOKEN_ID) && Boolean(process.env.MODAL_TOKEN_SECRET) && Boolean(process.env.ARCHIL_API_KEY);
 const FLEET = "md";
-const NAME_PREFIX = "pda-demo-d4-";
+// Names the app and the sandboxes of this suite; set PDA_MODAL_APP to put them under your own prefix.
+const APP = process.env.PDA_MODAL_APP ?? "pda-live-modal";
+const NAME_PREFIX = `${APP}-`;
 const LEDGER = statePath("PDA_MODAL_STATE", "MODAL-STATE.json");
 const RESULTS = statePath("PDA_MODAL_RESULTS", "MODAL-RESULTS.json");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -79,11 +81,11 @@ test("modalHost: power-off of VM sandbox A mid-run, resume on VM sandbox B with 
   runId = `md-live-${stamp}`;
   const ref: RunRef = { disk: scratchDiskId(), region: REGION, id: runId };
   const image = () => modal.images.fromRegistry("ubuntu:24.04").dockerfileCommands(["RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends sudo curl ca-certificates xz-utils >/dev/null && rm -rf /var/lib/apt/lists/*"]);
-  const client = modalSandboxes(sdk, { appName: "pda-demo-d4", image, runtime: "vm", cpu: 2, memoryMiB: 4096 });
+  const client = modalSandboxes(sdk, { appName: APP, image, runtime: "vm", cpu: 2, memoryMiB: 4096 });
   const prepared: Record<string, unknown>[] = [];
   const driver: HostDriver = modalHost({
     sdk,
-    appName: "pda-demo-d4",
+    appName: APP,
     image,
     runtime: "vm",
     cpu: 2,
