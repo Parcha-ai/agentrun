@@ -1,0 +1,5 @@
+{
+ "name": "u1",
+ "hypothesis": "baseline: track the speed, stay level, small regularizers",
+ "reward_scales": {}
+}

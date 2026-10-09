@@ -117,7 +117,8 @@ class CreatureWalk(mjx_env.MjxEnv):
   """Track a forward speed command on the tab's body."""
 
   def __init__(self, mjcf: str, body: dict[str, Any], config: config_dict.ConfigDict | None = None,
-               num_envs: int = 1, config_overrides: dict[str, Any] | None = None):
+               num_envs: int = 1, config_overrides: dict[str, Any] | None = None,
+               spawns: list[list[float]] | None = None):
     config = config or default_config()
     super().__init__(config, config_overrides)
     self._xml = mjcf
@@ -129,6 +130,8 @@ class CreatureWalk(mjx_env.MjxEnv):
       raise ValueError("ctrl_dt must be a whole number of physics steps")
     self._naconmax = int(self._config.naconmax_per_env) * max(int(num_envs), 1)
     self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
+    # Spawn points (x, y, ground z) on a terrain; the origin on flat ground.
+    self._spawns = jp.array(spawns if spawns else [[0.0, 0.0, 0.0]], dtype=jp.float32)
     self._post_init()
 
   def _post_init(self) -> None:
@@ -167,6 +170,17 @@ class CreatureWalk(mjx_env.MjxEnv):
     # Diagonal trot: leg k of pair p on side s is in phase group (p + s) % 2.
     self._trot_group = jp.array([((k // 2) + (k % 2)) % 2 for k in range(self._nfeet)])
     self._base_height_target = float(self._body["standHeight"]) * self._config.reward_config.base_height_frac
+    self._hfield = None
+    gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "terrain")
+    if gid >= 0 and m.geom_type[gid] == mujoco.mjtGeom.mjGEOM_HFIELD:
+      hid = m.geom_dataid[gid]
+      nrow, ncol = int(m.hfield_nrow[hid]), int(m.hfield_ncol[hid])
+      adr = int(m.hfield_adr[hid])
+      rx, ry, hz, _ = m.hfield_size[hid]
+      self._hfield = {
+          "h": jp.array(m.hfield_data[adr:adr + nrow * ncol].reshape(nrow, ncol) * hz, dtype=jp.float32),
+          "origin": jp.array(m.geom_pos[gid], dtype=jp.float32), "half": jp.array([rx, ry], dtype=jp.float32),
+          "shape": (nrow, ncol)}
     self._mjcf_sha256 = None
 
   # ---- properties -------------------------------------------------------------------------------------------------
@@ -201,7 +215,21 @@ class CreatureWalk(mjx_env.MjxEnv):
     return v + 2.0 * jp.cross(u, c)
 
   def _ground_height(self, xy: jax.Array) -> jax.Array:
-    return jp.zeros(xy.shape[:-1])
+    """Height of the ground under xy: the floor plane (0) or the terrain heightfield, bilinear between samples."""
+    if self._hfield is None:
+      return jp.zeros(xy.shape[:-1])
+    hf = self._hfield
+    nrow, ncol = hf["shape"]
+    rel = (xy - hf["origin"][:2] + hf["half"]) / (2 * hf["half"])
+    u = jp.clip(rel[..., 0] * (ncol - 1), 0, ncol - 1.001)
+    v = jp.clip(rel[..., 1] * (nrow - 1), 0, nrow - 1.001)
+    c0, r0 = jp.floor(u).astype(jp.int32), jp.floor(v).astype(jp.int32)
+    fu, fv = u - c0, v - r0
+    h = hf["h"]
+    z = (h[r0, c0] * (1 - fu) * (1 - fv) + h[r0, c0 + 1] * fu * (1 - fv) + h[r0 + 1, c0] * (1 - fu) * fv
+         + h[r0 + 1, c0 + 1] * fu * fv)
+    inside = (rel[..., 0] >= 0) & (rel[..., 0] <= 1) & (rel[..., 1] >= 0) & (rel[..., 1] <= 1)
+    return jp.where(inside, jp.maximum(z + hf["origin"][2], 0.0), 0.0)
 
   def _feet_state(self, data: mjx.Data):
     p = data.geom_xpos[self._feet]
@@ -259,8 +287,11 @@ class CreatureWalk(mjx_env.MjxEnv):
 
   def reset(self, rng: jax.Array) -> mjx_env.State:
     qpos = self._init_q
-    rng, k1, k2, k3, k4 = jax.random.split(rng, 5)
-    qpos = qpos.at[0:2].add(jax.random.uniform(k1, (2,), minval=-0.5, maxval=0.5))
+    rng, k0, k1, k2, k3, k4 = jax.random.split(rng, 6)
+    spawn = self._spawns[jax.random.randint(k0, (), 0, self._spawns.shape[0])]
+    jitter = 0.5 if self._hfield is None else 0.15  # stay on a terrain tile's flat pad
+    qpos = qpos.at[0:3].add(spawn)
+    qpos = qpos.at[0:2].add(jax.random.uniform(k1, (2,), minval=-jitter, maxval=jitter))
     yaw = jax.random.uniform(k2, minval=-jp.pi, maxval=jp.pi)
     qpos = qpos.at[3:7].set(jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)]))
     qpos = qpos.at[7:].add(jax.random.uniform(k3, (self._nj,), minval=-0.1, maxval=0.1))

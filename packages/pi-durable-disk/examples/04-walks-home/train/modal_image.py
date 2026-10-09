@@ -20,7 +20,7 @@ PINS = [
     "brax==0.14.2",
     "playground==0.2.0",
 ]
-TRAIN_FILES = ["creature_env.py", "export.py", "jax_compat.py", "rollout.py", "train.py"]
+TRAIN_FILES = ["creature_env.py", "export.py", "jax_compat.py", "rollout.py", "terrain.py", "train.py"]
 
 
 def training_image(copy_code: bool = False) -> modal.Image:
