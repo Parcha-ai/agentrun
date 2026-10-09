@@ -39,3 +39,9 @@ test("warm-commands-file, warm-env and warm-delay-ms need warm=gpu; the file's l
   writeFileSync(file, "# nothing\n");
   assert.throws(() => modalOptionsFromArgs({ "gpu-image": "im-2", warm: "gpu", "warm-commands-file": file }), /has no command/);
 });
+
+test("a GPU sandbox lives 20 minutes at most unless the caller says otherwise", async () => {
+  const { DEFAULT_GPU_TTL_MINUTES } = await import("../modal-cloud.ts");
+  assert.ok(DEFAULT_GPU_TTL_MINUTES <= 20, `default ${DEFAULT_GPU_TTL_MINUTES} minutes`);
+  assert.equal(modalOptionsFromArgs({ "gpu-image": "im-2", "gpu-ttl-minutes": "30" }).gpu?.ttlMinutes, 30, "a caller's value wins");
+});

@@ -31,6 +31,7 @@ import { parseArgs } from "node:util";
 import { openClaimDir } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "./pipe/control.ts";
 import type { Placer } from "./placement.ts";
+import { closeServerAndCloud } from "./shutdown.ts";
 import { createDemoServer, type CloudHost, type CloudModuleOptions } from "./pipe/server.ts";
 import { localClaim } from "./test/_local.ts";
 
@@ -171,15 +172,9 @@ const stop = async (code = 0) => {
   log("stopping");
   also?.closeAllConnections();
   also?.close();
-  // The cloud host's machines cost while they exist: they are removed even when closing the server throws.
-  try {
-    await server.close();
-  } catch (error) {
-    log("close.failed", { error: (error as Error).message });
-    code = 1;
-  } finally {
-    await cloud?.close?.().catch((error: Error) => log("cloud.close-failed", { error: error.message }));
-  }
+  // Always closed, whatever code the stop was asked for (a crash must not skip it).
+  const closed = await closeServerAndCloud(server, cloud, log);
+  code ||= closed;
   log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
   process.exit(code);
 };

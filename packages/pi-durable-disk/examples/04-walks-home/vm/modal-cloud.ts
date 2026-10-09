@@ -105,6 +105,9 @@ export interface ModalCloudOptions {
   readonly sdk?: FullSdk;
 }
 
+/** A GPU sandbox's own lifetime unless the caller says otherwise: the backstop when nothing else removes it (a killed server). */
+export const DEFAULT_GPU_TTL_MINUTES = 20;
+
 export const modalVmEnvironment = (transport: "mount" | "pipe"): Environment => ({
   id: "modal-vm",
   label: "Modal VM",
@@ -177,7 +180,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   /** What a pipe host of each environment is made of. */
   const classOf = (envId: string) =>
     envId === gpuEnv?.id && gpuClient && options.gpu
-      ? { env: gpuEnv, client: gpuClient, archil: false, cpus: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ttlMinutes: options.gpu.ttlMinutes ?? 45, className: "modal-gpu", liveFlushMs: 1000, note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
+      ? { env: gpuEnv, client: gpuClient, archil: false, cpus: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ttlMinutes: options.gpu.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES, className: "modal-gpu", liveFlushMs: 1000, note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
       : { env, client, archil: true, cpus: 0, memoryMiB: 0, ttlMinutes: 120, className: "modal-vm", liveFlushMs: 0, note: "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server." };
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
