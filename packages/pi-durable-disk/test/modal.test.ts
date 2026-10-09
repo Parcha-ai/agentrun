@@ -3,13 +3,13 @@
 // token's path, status and stop, the error mapping, the janitor-facing list. No Modal, no Archil, no network.
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaytonaApiError, LABEL_FLEET, LABEL_RUN, type CreateSandboxBody } from "../src/hosts/daytona.ts";
-import { launchStatus, type LaunchState } from "../src/hosts/daytona-launch.ts";
+import { launchStatus, mountBlockers, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
 import { modalHost, modalSandboxes, MODAL_MAX_TIMEOUT_MS, type ModalCreateParams, type ModalProcess, type ModalSandbox, type ModalSdk } from "../src/hosts/modal.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -368,4 +368,73 @@ test("client: get maps running, ended and absent; list filters by tag; exec merg
   await client.remove("sb-999");
   await client.stop("sb-999", true);
   await assert.rejects(client.exec(made, "true", 5), (e: unknown) => e instanceof DaytonaApiError);
+});
+
+/** A program detached from every process of the test (its shell exits at once): what the agent leaves running. */
+function detachedIn(cwd: string): number {
+  const r = spawnSync("sh", ["-c", "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], { cwd, encoding: "utf8" });
+  return Number(r.stdout.trim());
+}
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test("mountBlockers: a detached program with its working directory on the mount is found; one elsewhere, and the caller, are not", async () => {
+  const mount = scratch("pda-mb-");
+  const elsewhere = scratch("pda-mb-else-");
+  const holder = detachedIn(mount);
+  const bystander = detachedIn(elsewhere);
+  try {
+    await waitFor("the holder to exist", () => isAlive(holder));
+    const found = mountBlockers(mount, null);
+    assert.ok(found.includes(holder), "the holder blocks the unmount");
+    assert.ok(!found.includes(bystander), "a program elsewhere does not");
+    assert.ok(!found.includes(process.pid), "nor does the caller");
+    assert.deepEqual(mountBlockers(join(mount, "nothing-here"), null).filter((p) => p === holder), [], "only paths under the mount count");
+  } finally {
+    for (const pid of [holder, bystander]) try { process.kill(pid, "SIGKILL"); } catch {}
+  }
+});
+
+test("a planned stop ends what the agent left on the mount before the instance drains, and nothing else", async () => {
+  const d = scratch("pda-md-");
+  const mnt = join(d, "mnt");
+  const w = world("hold", { mountRoot: mnt });
+  const h = await w.host.start(REF, TOKEN);
+  const mountpoint = join(mnt, "runs", REF.id);
+  assert.equal(h.mountpoint, mountpoint);
+  mkdirSync(mountpoint, { recursive: true });
+  const spec = JSON.parse(readFileSync(join(w.box, `${String(h.name)}.json`), "utf8")) as LaunchSpec;
+  assert.equal(spec.mountpoint, mountpoint, "the launcher is told which mount to free");
+  const holder = detachedIn(mountpoint);
+  const bystander = detachedIn(d);
+  try {
+    await w.host.stop(h);
+    assert.equal(isAlive(holder), false, "the program holding the mount was ended");
+    assert.equal(isAlive(bystander), true, "a program that does not hold it was not");
+    assert.equal(launchStatus(w.box, String(h.name)).status, "stopped", "the instance still drained and exited 0 by itself");
+  } finally {
+    for (const pid of [holder, bystander]) try { process.kill(pid, "SIGKILL"); } catch {}
+  }
+});
+
+test("a driver that does not ask for it leaves detached programs alone (reapOnStop false)", async () => {
+  const d = scratch("pda-md-");
+  const mnt = join(d, "mnt");
+  const w = world("hold", { mountRoot: mnt, reapOnStop: false });
+  const h = await w.host.start(REF, TOKEN);
+  const mountpoint = join(mnt, "runs", REF.id);
+  mkdirSync(mountpoint, { recursive: true });
+  const holder = detachedIn(mountpoint);
+  try {
+    await w.host.stop(h);
+    assert.equal(isAlive(holder), true);
+  } finally {
+    try { process.kill(holder, "SIGKILL"); } catch {}
+  }
 });
