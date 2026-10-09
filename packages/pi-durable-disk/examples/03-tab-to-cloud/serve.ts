@@ -3,7 +3,11 @@
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona]
-//                 [--daytona-snapshot NAME] [--daytona-secret NAME | --cloud-link]
+//                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME] [--daytona-secret NAME | --cloud-link]
+//                 [--also-host ADDR] [--public-url https://HOST]
+//
+// --also-host listens on a second address too (a reverse proxy's side of a bridge); --public-url is the address the
+// printed link uses (the proxy's). The admin route answers on loopback only.
 //
 // --model-key-env names the variable holding the model endpoint's key (sent by the pipe as a bearer token). A Daytona
 // sandbox calls the model itself: its key is the Daytona secret --daytona-secret (Daytona puts a placeholder in the box
@@ -15,6 +19,7 @@
 // It prints the run's link, `/run/<id>#<secret>`: the fragment is the run's secret.
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -35,6 +40,7 @@ const { values } = parseArgs({
     "model-key-env": { type: "string" },
     "daytona-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_SNAPSHOT },
     "daytona-secret": { type: "string" },
+    "daytona-gpu-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_GPU_SNAPSHOT },
     budget: { type: "string", default: "400000" },
     "mount-root": { type: "string", default: "/mnt/pda/demo/pipe" },
     ledger: { type: "string" },
@@ -44,6 +50,8 @@ const { values } = parseArgs({
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
     "admin-token-file": { type: "string" },
+    "also-host": { type: "string" },
+    "public-url": { type: "string" },
   },
 });
 
@@ -81,6 +89,7 @@ if (values.cloud === "local" || values.cloud === "daytona") {
     ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}),
     ...(values["daytona-snapshot"] ? { snapshot: values["daytona-snapshot"] } : {}),
     ...(values["daytona-secret"] ? { modelSecret: values["daytona-secret"] } : {}),
+    ...(values["daytona-gpu-snapshot"] ? { gpuSnapshot: values["daytona-gpu-snapshot"] } : {}),
   });
 }
 
@@ -101,14 +110,20 @@ const server = createDemoServer({
   ...(values.local ? { acquire: async (opts) => localClaim(values.local!, opts), claimDir: (dir: string) => openClaimDir(dir, { fstype: null }) } : {}),
 });
 const port = await server.listen(Number(values.port), values.host);
+const also = values["also-host"]
+  ? createHttpServer((req, res) => server.http.emit("request", req, res)).on("upgrade", (req, socket, head) => server.http.emit("upgrade", req, socket, head))
+  : undefined;
+if (also) await new Promise<void>((resolve) => also.listen(port, values["also-host"], () => resolve()));
 const { id, secret } = await server.createRun(values.run);
-log("ready", { url: `http://${values.host === "0.0.0.0" ? "localhost" : values.host}:${port}/run/${id}#${secret}`, run: id });
+const base = values["public-url"]?.replace(/\/+$/, "") ?? `http://${values.host === "0.0.0.0" ? "localhost" : values.host}:${port}`;
+log("ready", { url: `${base}/run/${id}#${secret}`, local: `http://127.0.0.1:${port}/run/${id}#${secret}`, run: id });
 
 let closing = false;
 const stop = async () => {
   if (closing) return;
   closing = true;
   log("stopping");
+  also?.close();
   await server.close();
   await cloud?.close?.();
   log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
