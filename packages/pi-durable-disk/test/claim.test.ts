@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import {
   acquire,
+  companionsOf,
+  revokeBestEffort,
   CLAIM_PROBE,
   createRunDir,
   findDelegations,
@@ -18,6 +20,7 @@ import {
   matchDelegations,
   pathlessResolver,
   revoke,
+  revokeCompanions,
   runPath,
   takeOver,
   tokenNickname,
@@ -599,6 +602,87 @@ test("takeOver falls back to mount --force when listing or revoking through the 
     assert.deepEqual(r.calls("archil", "mount")[0].argv, ["mount", "--force", TARGET, r.root, "--region", REF.region]);
     assert.equal(r.read().mounts[oldMp].fenced, true, "the forced-out holder is fenced");
   }
+});
+
+/** `Disk.exec` answering `stat` on private directories: client id to the inodes of `.archil/client-<id>` and its `unlinked/`. */
+function privateDirs(dirs: Record<string, [number, number]>) {
+  const commands: string[] = [];
+  const exec = async (command: string) => {
+    commands.push(command);
+    const asked = new Set(command.split(/\s+/));
+    const lines = Object.entries(dirs).flatMap(([c, [dir, unlinked]]) => [`${dir} .archil/client-${c}`, `${unlinked} .archil/client-${c}/unlinked`]);
+    return { exitCode: 0, stdout: lines.filter((l) => asked.has(l.split(" ")[1])).join("\n") };
+  };
+  return { exec, commands };
+}
+
+test("revoke takes a killed client's private directories with its run, never another client's", async () => {
+  // A killed client keeps orphaned delegations, with no path, on its own .archil/client-<id> and .archil/client-<id>/unlinked.
+  const run = { ...del("runs/r1", "c-dead", 1), isOrphaned: true };
+  const dels = [run, pathless("c-dead", 50), pathless("c-dead", 51), pathless("c-other", 60), del("runs/r2", "c-live", 3)];
+  const { control, calls } = fakeControl(dels);
+  const stat = privateDirs({ "c-dead": [50, 51], "c-other": [60, 61] });
+  control.exec = stat.exec;
+  assert.deepEqual(await revoke(control, "r1"), [run], "revoke returns the run's own delegations");
+  assert.deepEqual(calls.revoke.map((d) => (d as Delegation).inodeId), [1, 50, 51], "the run first, then its holder's private directories");
+  assert.deepEqual((await control.listDelegations()).map((d) => d.clientId), ["c-other", "c-live"]);
+  assert.equal(stat.commands.length, 1, "one exec");
+  assert.doesNotMatch(stat.commands[0], /c-other|c-live/, "only the revoked client's directories are looked up");
+});
+
+test("a client that holds anything beyond the run and its private directories keeps every delegation but the run's", async () => {
+  const run = { ...del("runs/r1", "c-a", 1), isOrphaned: true };
+  const dirs = new Map([[50, "c-a"], [51, "c-a"]]);
+  // Another run's directory, by path or listed without one: the client may hold a live run there.
+  assert.deepEqual(companionsOf([run, pathless("c-a", 50), del("runs/r2", "c-a", 9)], [run], dirs), []);
+  assert.deepEqual(companionsOf([run, pathless("c-a", 50), pathless("c-a", 9)], [run], dirs), []);
+  // Another client's private directory is not this client's.
+  assert.deepEqual(companionsOf([run, pathless("c-a", 50), pathless("c-a", 60)], [run], new Map([...dirs, [60, "c-b"]])), []);
+  assert.deepEqual(companionsOf([run, pathless("c-a", 50), pathless("c-a", 51)], [run], dirs).map((d) => d.inodeId), [50, 51]);
+  assert.deepEqual(companionsOf([run, del(".archil/client-c-a", "c-a", 50)], [run], new Map()).map((d) => d.inodeId), [50], "a private directory listed with its path");
+  // Without exec, nothing can be shown to be a private directory: only the run is revoked.
+  const { control, calls } = fakeControl([run, pathless("c-a", 50)]);
+  await revoke(control, "r1");
+  assert.deepEqual(calls.revoke.map((d) => (d as Delegation).inodeId), [1]);
+});
+
+test("a companion that cannot be revoked never fails the run's revoke", async () => {
+  const run = { ...del("runs/r1", "c-dead", 1), isOrphaned: true };
+  const dels = [run, pathless("c-dead", 50), pathless("c-dead", 51)];
+  const revoked: number[] = [];
+  const control: ControlApi = {
+    ...fakeControl(dels).control,
+    exec: privateDirs({ "c-dead": [50, 51] }).exec,
+    async revokeDelegation(d) {
+      if (d.inodeId === 50) throw new Error("503");
+      revoked.push(d.inodeId);
+    },
+  };
+  assert.deepEqual(await revoke(control, "r1"), [run]);
+  assert.deepEqual(revoked, [1, 51]);
+  assert.deepEqual((await revokeCompanions(control, [run], dels)).map((d) => d.inodeId), [51], "reports only what it revoked");
+  assert.deepEqual(await revokeCompanions(control, []), [], "no holders, no listing, nothing revoked");
+  const failing: ControlApi = { ...control, exec: async () => Promise.reject(new Error("exec down")) };
+  assert.deepEqual(await revokeCompanions(failing, [run], dels), [], "an exec that fails revokes nothing more and fails nothing");
+});
+
+test("revokeBestEffort goes on past a run delegation that cannot be revoked, and still takes the private directories", async () => {
+  const a = { ...del("runs/r1", "c-a", 1), isOrphaned: true };
+  const b = { ...del("runs/r1/x", "c-b", 2), isOrphaned: true };
+  const dels = [a, b, pathless("c-a", 50), pathless("c-b", 60), pathless("c-other", 70)];
+  const tried: number[] = [];
+  const control: ControlApi = {
+    ...fakeControl(dels).control,
+    exec: privateDirs({ "c-a": [50, 51], "c-b": [60, 61], "c-other": [70, 71] }).exec,
+    async revokeDelegation(d) {
+      tried.push(d.inodeId);
+      if (d.inodeId === 1) throw new Error("gone");
+    },
+  };
+  await assert.rejects(revoke(control, "r1"), (e: unknown) => e instanceof ClaimError && e.code === "CONTROL_API_FAILED", "revoke stops at the first failure");
+  tried.length = 0;
+  assert.deepEqual(await revokeBestEffort(control, "r1"), [a, b]);
+  assert.deepEqual(tried, [1, 2, 50, 60], "every run delegation tried, then both holders' private directories, never another client's");
 });
 
 test("takeOver revokes a holder the control API lists without a path, by its inode, then mounts without --force", async () => {

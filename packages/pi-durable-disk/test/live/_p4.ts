@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Disk } from "disk";
-import { createRunDir, findDelegations, mintMountToken, removeMountToken, revoke, unmountClaim } from "../../src/claim.ts";
+import { createRunDir, findDelegations, mintMountToken, removeMountToken, revoke, revokeBestEffort, unmountClaim } from "../../src/claim.ts";
 import { statePath } from "./_paths.ts";
 import { REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 
@@ -153,7 +153,7 @@ export async function cleanupAll(): Promise<Record<string, unknown>> {
   report.strayMounts = stray;
   const prefixes: unknown[] = [];
   for (const id of runIds) {
-    await revoke(await control(), id).catch(() => []);
+    await revokeBestEffort(await control(), id).catch(() => []);
     const del = await deletePrefix(`runs/${id}/`);
     prefixes.push({ id, ...del });
     if (del.left === 0) ledger.subdirDeleted(`runs/${id}/`, del.objects);

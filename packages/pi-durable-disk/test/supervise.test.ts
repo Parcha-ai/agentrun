@@ -96,10 +96,18 @@ class FakeControl implements SupervisorControl {
   async exec(command: string) {
     this.#log("exec", command);
     if (this.fail.exec) throw this.fail.exec;
-    const asked = new Set([...command.matchAll(/-inum (\d+)/g)].map((m) => Number(m[1])));
-    const lines = [...this.inodes].filter(([, inode]) => asked.has(inode)).map(([path, inode]) => `${inode} ${path.slice("runs/".length)}\n`);
-    return { exitCode: 0, stdout: lines.join("") };
+    return { exitCode: 0, stdout: answer(this.inodes, command) };
   }
+}
+
+/** What `Disk.exec` prints for the claim's two commands: `find runs ... -inum` (run directories) and `stat` (private directories). */
+function answer(inodes: ReadonlyMap<string, number>, command: string): string {
+  if (command.startsWith("stat ")) {
+    const asked = new Set(command.split(/\s+/));
+    return [...inodes].filter(([path]) => asked.has(path)).map(([path, inode]) => `${inode} ${path}\n`).join("");
+  }
+  const asked = new Set([...command.matchAll(/-inum (\d+)/g)].map((m) => Number(m[1])));
+  return [...inodes].filter(([path, inode]) => path.startsWith("runs/") && asked.has(inode)).map(([path, inode]) => `${inode} ${path.slice("runs/".length)}\n`).join("");
 }
 
 const deleg = (o: Partial<Delegation> = {}): Delegation => ({ clientId: "c-old", inodeId: 7, path: `runs/${REF.id}`, isPending: false, isOrphaned: false, ...o });
@@ -348,6 +356,23 @@ test("held and orphaned, listed without a path: found by the run's inode, revoke
   assert.deepEqual(r.revoked, [{ clientId: "c-old", inodeId: 7, path: undefined, isOrphaned: true }]);
   assert.deepEqual(control.delegations.map((d) => d.clientId), ["c-other"], "another run's pathless delegation is left alone");
   assert.deepEqual(control.ops(), ["getObject", "listDelegations", "exec", "getMark", "revokeDelegation", "addUser", "putMark", "host.start"]);
+});
+
+test("held and orphaned, the dead client's private directories listed too: all its delegations go, from the decision's own listing", async () => {
+  const { control, host, opts } = rig();
+  control.runJson(running({ heartbeatAt: ago(1_000) }));
+  control.delegations = [
+    deleg({ isOrphaned: true }),
+    deleg({ inodeId: 70, path: undefined, isOrphaned: true }),
+    deleg({ inodeId: 71, path: undefined, isOrphaned: true }),
+    deleg({ clientId: "c-other", inodeId: 80, path: undefined, isOrphaned: true }),
+  ];
+  control.inodes.set(".archil/client-c-old", 70).set(".archil/client-c-old/unlinked", 71).set(".archil/client-c-other", 80);
+  const r = await ensureRunning(REF, host, opts());
+  assert.ok(r.action === "started" && r.reason === "orphaned");
+  assert.deepEqual(r.revoked, [{ clientId: "c-old", inodeId: 7, path: `runs/${REF.id}`, isOrphaned: true }], "the decision reports the run's own");
+  assert.deepEqual(control.delegations.map((d) => d.clientId), ["c-other"], "the dead client's private directories went with it; another client's stay");
+  assert.deepEqual(control.ops(), ["getObject", "listDelegations", "getMark", "revokeDelegation", "exec", "revokeDelegation", "revokeDelegation", "addUser", "putMark", "host.start"]);
 });
 
 test("held, not orphaned, listed without a path, lease fresh: healthy, no second instance", async () => {
@@ -1139,6 +1164,7 @@ test("token sweep: a failed removal is reported, the rest go on; no users means 
 class FakeTree {
   objects = new Set<string>();
   delegations: Delegation[] = [];
+  inodes = new Map<string, number>();
   log: string[] = [];
   revokeTakes = true;
   constructor(keys: string[]) {
@@ -1162,6 +1188,10 @@ class FakeTree {
     this.log.push(`revoke ${d.clientId}`);
     if (this.revokeTakes) this.delegations = this.delegations.filter((x) => !(x.clientId === d.clientId && x.inodeId === d.inodeId));
   }
+  async exec(command: string) {
+    this.log.push("exec");
+    return { exitCode: 0, stdout: answer(this.inodes, command) };
+  }
   async putObject() {}
   async addUser() {
     return {};
@@ -1179,6 +1209,15 @@ test("deleteRunTree revokes the run's delegation (orphaned too) before deleting,
   assert.deepEqual((await fake.listObjects("runs/r1/")).objects, []);
   assert.equal(fake.log[0], "revoke c-dead", "the revoke comes first");
   assert.ok(fake.objects.has("runs/r10/run.json") && fake.delegations.some((d) => d.clientId === "c-sibling"), "a sibling run is untouched");
+});
+
+test("deleteRunTree revokes the dead holder's private directories too, before deleting", async () => {
+  const fake = new FakeTree(TREE);
+  fake.delegations = [deleg({ clientId: "c-dead", path: "runs/r1", isOrphaned: true }), deleg({ clientId: "c-dead", inodeId: 70, path: undefined, isOrphaned: true }), deleg({ clientId: "c-other", inodeId: 80, path: undefined, isOrphaned: true })];
+  fake.inodes.set(".archil/client-c-dead/unlinked", 70).set(".archil/client-c-other", 80);
+  const r = await deleteRunTree(fake as never, "r1");
+  assert.deepEqual(r, { objects: TREE.length, revoked: 1 });
+  assert.deepEqual(fake.delegations.map((d) => d.clientId), ["c-other"]);
 });
 
 test("deleteRunTree never reports success over a prefix that is not empty: a delete the held delegation kept is RUN_TREE_NOT_DELETED", async () => {

@@ -10,7 +10,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { acquire, type Claim } from "../../src/claim.ts";
+import { acquire, findDelegations, type Claim } from "../../src/claim.ts";
 import { STORE_FILE } from "../../src/run.ts";
 import { parseRunRecord, type RunRecord } from "../../src/status.ts";
 import { openArchilStore } from "../../src/store.ts";
@@ -188,6 +188,7 @@ async function mountTakenAway(
   const daemon = daemonPid(a.mountpoint);
   const mounted = lsA(a.mountpoint);
   assert.ok(["owner.lock", "run.json", "store", "work"].every((f) => mounted.includes(f)), `the mount as the instance holds it: ${mounted.join(" ")}`);
+  const holder = await holderOf(id);
   const takenAt = Date.now();
   const how = await takeAway(a.mountpoint, daemon);
   const takenAfter = Date.now();
@@ -218,7 +219,29 @@ async function mountTakenAway(
   // A heartbeat that began after `takenAt` but before the unmount took effect (sudo and umount take a while under load) finds the mount
   // still listed and is legitimate; none may begin once `takeAway` has returned and still reach the disk.
   assert.ok(Date.parse(record.heartbeatAt!) <= takenAfter, "no heartbeat began after the mount was taken away");
-  return { lease, mounted, ...how, listedAtExit, listedAfter, exitAfterMs, fence: /fenced \(([A-Z_]+)\)/.exec(a.stderr)?.[1], local, daemonExitedOnItsOwn, lastHeartbeatBeforeMs: takenAt - Date.parse(record.heartbeatAt!) };
+  await revokeRun(id);
+  const holderLeft = await leftBy([holder]);
+  assert.equal(holderLeft, 0, "the run's revoke took every delegation of the dead mount's client, its private directories included");
+  return { lease, mounted, ...how, listedAtExit, listedAfter, exitAfterMs, fence: /fenced \(([A-Z_]+)\)/.exec(a.stderr)?.[1], local, daemonExitedOnItsOwn, lastHeartbeatBeforeMs: takenAt - Date.parse(record.heartbeatAt!), holderLeft };
+}
+
+/** The client holding `id`'s mount, as the control API lists it. */
+async function holderOf(id: string): Promise<string> {
+  const held = await findDelegations(await control(), id);
+  assert.equal(held.length, 1, `one delegation on ${id}`);
+  return held[0]!.clientId;
+}
+
+/**
+ * How many delegations `clients` still hold anywhere on the disk, polled until none is left or 15 s pass. A killed
+ * client also holds its own private directories under `.archil/`, which only a revoke by client and inode removes.
+ */
+async function leftBy(clients: readonly string[]): Promise<number> {
+  const set = new Set(clients);
+  for (const deadline = Date.now() + 15_000; ; await new Promise((resolve) => setTimeout(resolve, 500))) {
+    const left = (await (await control()).listDelegations()).filter((d) => set.has(d.clientId)).length;
+    if (left === 0 || Date.now() > deadline) return left;
+  }
 }
 
 async function runJsonOverS3(id: string): Promise<RunRecord> {
@@ -361,6 +384,7 @@ test("T5 host loss: kill -9 an instance and its FUSE daemon together, revoke, re
   let root = ROOT_A;
   let current = await start({ id, root, writer: "w0", execLog });
   assert.equal((await current.opened()).ev, "open");
+  const holders = [await holderOf(id)];
   let from = 1;
   for (let round = 0; round < 10; round++) {
     const burst = { from, count: 400 };
@@ -382,6 +406,7 @@ test("T5 host loss: kill -9 an instance and its FUSE daemon together, revoke, re
     const opened = await current.opened();
     assert.equal(opened.ev, "open", JSON.stringify(opened));
     const resumedMs = performance.now() - tKill;
+    holders.push(await holderOf(id));
     const listed = await current.list();
     const present = new Set(listed.marks.map((m) => m.n));
     const missing = [...acked].filter((n) => !present.has(n));
@@ -392,7 +417,9 @@ test("T5 host loss: kill -9 an instance and its FUSE daemon together, revoke, re
   }
   current.send({ op: "release" });
   await current.released();
-  results.t5 = { rounds, ackedTotal: acked.size, lost: 0 };
+  const killedLeft = await leftBy(holders.slice(0, -1));
+  assert.equal(killedLeft, 0, "no delegation of a killed client is left, its private directories included");
+  results.t5 = { rounds, ackedTotal: acked.size, lost: 0, killedLeft };
 });
 
 test("T14 self-fence: heartbeats blocked while commits flow; commands die and the instance exits 75 by the deadline", { skip: !LIVE, timeout: 300_000 }, async () => {
