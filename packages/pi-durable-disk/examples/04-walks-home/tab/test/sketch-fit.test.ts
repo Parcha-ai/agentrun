@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultDesign, LIMITS, validateDesign, type Design } from '../src/design.ts';
-import { pxPerMetre, Sketcher } from '../src/sketch.ts';
+import { pxPerMetre, Sketcher, SKETCH_COLORS } from '../src/sketch.ts';
+import { buildMjcf } from '../src/mjcf.ts';
 import { fakeCanvas } from './fakecanvas.ts';
 
 /** The widest creature the sketcher allows: the widest torso, the longest legs, hips at both ends. */
@@ -75,4 +76,47 @@ test('geometry() puts a handle where a pointer must be to grab it, on a canvas w
   fire('pointermove', { x: Math.round(toX), y: a.y }); // a pointer lands on whole pixels
   fire('pointerup', { x: Math.round(toX), y: a.y });
   assert.equal(sk.get().torso.length, 0.55, 'a stroke aimed by geometry() lands on the grid value it aims at');
+});
+
+// ---- the sketch has to read as the creature: the same colours, a foot at every leg end, and the word "top view" ----
+
+/** A canvas whose 2D context records every call with the fill and stroke style in force. */
+function recordingCanvas(width = 700, height = 700) {
+  const calls: { fn: string; args: unknown[]; fill: unknown; stroke: unknown }[] = [];
+  const state: Record<string, unknown> = { fillStyle: '', strokeStyle: '' };
+  const ctx: any = new Proxy({}, {
+    get: (_t, k: string) => (k in state ? state[k] : (...args: unknown[]) => { calls.push({ fn: k, args, fill: state.fillStyle, stroke: state.strokeStyle }); }),
+    set: (_t, k: string, v) => { state[k] = v; return true; },
+  });
+  const canvas: any = { clientWidth: width, clientHeight: height, width, height, style: {}, getContext: () => ctx, addEventListener: () => {}, getBoundingClientRect: () => ({ left: 0, top: 0, width, height }), setPointerCapture: () => {} };
+  (globalThis as any).devicePixelRatio ??= 1;
+  return { canvas, calls };
+}
+
+test('the sketch uses the creature\'s own colours: the torso, thigh, shin and foot colours of the MJCF', () => {
+  const xml = buildMjcf(defaultDesign()).xml;
+  const rgba = (re: RegExp) => { const m = xml.match(re); assert.ok(m, String(re)); return m![1]; };
+  const toCss = (s: string) => '#' + s.split(' ').slice(0, 3).map((v) => Math.round(Number(v) * 255).toString(16).padStart(2, '0')).join('');
+  assert.deepEqual(SKETCH_COLORS, {
+    torso: toCss(rgba(/name="torso_geom"[^>]*rgba="([^"]+)"/)),
+    thigh: toCss(rgba(/<geom type="capsule" fromto="0 0 0 0 0 -[^"]+" size="[^"]+" contype="0" conaffinity="1" mass="0.25" rgba="([^"]+)"/)),
+    shin: toCss(rgba(/mass="0.15" rgba="([^"]+)"/)),
+    foot: toCss(rgba(/_foot"[^>]*rgba="([^"]+)"/)),
+  });
+});
+
+test('the sketch is labelled "top view" and draws a foot at every leg end: four for the default body, six for three pairs', () => {
+  for (const pairs of [2, 3]) {
+    const d = defaultDesign();
+    while (d.legs.length < pairs) d.legs.push({ ...d.legs[0], x: 0 });
+    const { canvas, calls } = recordingCanvas();
+    const sk = new Sketcher(canvas, d, () => {});
+    calls.length = 0; // the constructor drew once already
+    sk.draw();
+    assert.ok(calls.some((c) => c.fn === 'fillText' && c.args[0] === 'top view'), 'the word is on the canvas');
+    const feet = calls.filter((c) => c.fn === 'arc' && c.fill === SKETCH_COLORS.foot);
+    assert.equal(feet.length, pairs * 2, `${pairs * 2} feet`);
+    const ends = new Set(feet.map((c) => `${(c.args[0] as number).toFixed(3)},${(c.args[1] as number).toFixed(3)}`));
+    assert.equal(ends.size, pairs * 2, 'at different places: a foot at each end of each pair');
+  }
 });
