@@ -2,14 +2,14 @@
 // Embedded by the show page as a same-origin iframe; see POLICY-FORMAT.md and the "walks-home" message protocol below.
 
 import { defaultDesign, validateDesign, type Design } from './design.ts';
-import { buildMjcf, type Built } from './mjcf.ts';
+import { buildMjcf, type Built, type World } from './mjcf.ts';
 import { dummyPolicy, Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
 import { Sketcher } from './sketch.ts';
 import { CreatureStore, type Backend, type Backends, type MachineEvent } from './store.ts';
 import { CONTROL_DT } from './mjcf.ts';
-import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH } from './backend.ts';
+import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder } from './backend.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -49,7 +49,7 @@ class IdbBackend implements Backend {
 interface App {
   mj: any; sql: any; mujocoVersion: string;
   view: View; sketcher: Sketcher; store: CreatureStore; storageMode: 'disk' | 'browser';
-  sim: Sim; built: Built; bodySha: string;
+  sim: Sim; built: Built; bodySha: string; world: World | null;
   policy: Policy | null; policyName: string;
   running: boolean; acc: number; last: number;
   fallen: boolean; recovering: number | null; // sim time at which a kick was applied and not yet recovered
@@ -88,18 +88,30 @@ async function loadVendor() {
   return { mj, sql, mujocoVersion: versions.mujoco as string };
 }
 
+/** Save the body to designs.sqlite; when another machine holds the run, ask the agent to save it instead. */
+async function saveDesign(design: Design) {
+  try {
+    const saved = await app.store.saveDesign(design);
+    post('design-saved', { id: saved.id, name: design.name, sha256: saved.sha256, mjcf_sha256: app.bodySha });
+  } catch (e) {
+    if (!(e instanceof NotHolder)) throw e;
+    post('design-request', { design, mjcf_sha256: app.bodySha });
+    showError('The agent moved to another machine: this design is only in this tab, and the request to save it was sent to the agent.');
+  }
+}
+
 async function buildCreature(design: Design, keepPolicy: boolean) {
   const errs = validateDesign(design);
   if (errs.length) { showError(errs.join('\n')); return; }
   showError('');
-  const built = buildMjcf(design);
-  app.bodySha = await sha256Hex(built.xml);
+  const built = buildMjcf(design, app.world ?? undefined);
+  // The body's identity (what a policy is checked against) never includes the terrain.
+  app.bodySha = await sha256Hex(app.world ? buildMjcf(design).xml : built.xml);
   app.built = built;
   app.sim = new Sim(app.mj, built);
   app.view.setSim(app.sim);
   app.fallen = false; app.recovering = null;
-  const saved = await app.store.saveDesign(design);
-  post('design-saved', { id: saved.id, name: design.name, sha256: saved.sha256, mjcf_sha256: app.bodySha });
+  await saveDesign(design);
   // A policy belongs to one body: a changed body refuses the old policy (mjcf_sha256) rather than running it blind.
   if (keepPolicy && app.policy && app.policy.file.mjcf_sha256 !== app.bodySha) {
     setPolicy(null, 'none (body changed: the loaded policy was trained for another body)');
@@ -251,13 +263,13 @@ async function main() {
     let pendingDesign: Design | null = null;
     app = {
       mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement), sketcher, store, storageMode,
-      sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml),
+      sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml), world: null,
       policy: null, policyName: 'dummy trot', running: true, acc: 0, last: performance.now(),
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' },
     };
     app.view.setSim(app.sim);
     await useDummy();
-    await store.saveDesign(design); // the first body is a body too: the memory view lists it
+    await saveDesign(design); // the first body is a body too: the memory view lists it
     renderPairs();
     setPlacement('tab', 'this tab');
 
@@ -296,11 +308,12 @@ async function main() {
         else if (m.type === 'kick') kick(m.dir?.[0] ?? 0, m.dir?.[1] ?? 1, m.force_n ?? 60);
         else if (m.type === 'open-memory') await renderMemory();
         else if (m.type === 'load-policy') await loadPolicyText(await (await fetch(m.url)).text(), String(m.url).split('/').pop() ?? 'policy');
+        else if (m.type === 'load-world') { app.world = m.world ?? null; await buildCreature(app.sketcher.get(), true); toast(app.world ? 'terrain loaded' : 'flat ground'); }
         else if (m.type === 'load-design') { app.sketcher.set(m.design); await buildCreature(m.design, true); }
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, kick, buildCreature, loadPolicyText, renderMemory };
+    (window as any).__walks = { get app() { return app; }, kick, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';
     post('ready', { version: 1, mujoco: mujocoVersion, mjcf_sha256: app.bodySha });
     requestAnimationFrame((t) => { app.last = t; tick(t); });

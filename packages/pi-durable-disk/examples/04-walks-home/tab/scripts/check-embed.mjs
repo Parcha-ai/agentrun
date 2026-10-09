@@ -24,7 +24,7 @@ ws.on('message', (d) => { const m = JSON.parse(String(d)); if (m.id) { const p =
 const send = (method, params = {}, sessionId) => new Promise((res, rej) => { const i = ++id; pending.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params, sessionId })); });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function scenario(name, silent) {
+async function scenario(name, silent, viewer = false) {
   const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 1400, height: 800 });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
@@ -33,7 +33,7 @@ async function scenario(name, silent) {
     await S('Page.enable'); await S('Runtime.enable');
     await S('Emulation.setDeviceMetricsOverride', { width: 1400, height: 800, deviceScaleFactor: 1, mobile: false });
     // The harness must answer from the first request: set the flag before the frame loads by navigating, then flipping early.
-    await S('Page.addScriptToEvaluateOnNewDocument', { source: silent ? 'window.__silent = true' : '' });
+    await S('Page.addScriptToEvaluateOnNewDocument', { source: `${silent ? 'window.__silent = true;' : ''}${viewer ? 'window.__viewer = true;' : ''}` });
     await S('Page.navigate', { url: `${base}/__harness.html` });
     const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails)); return r.result.value; };
     const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
@@ -41,7 +41,13 @@ async function scenario(name, silent) {
     for (let i = 0; i < 150; i++) { status = await inner("document.getElementById('status')?.textContent").catch(() => null); if (status === 'ready') break; await sleep(200); }
     const r = { scenario: name, status, storage: await inner("document.getElementById('storage')?.textContent") };
     if (status !== 'ready') return r;
-    if (!silent) {
+    if (viewer) {
+      await inner("document.getElementById('build').click()"); await sleep(1500);
+      r.events = await ev('events.map(e => e.type)');
+      r.error = await inner("document.getElementById('err').textContent");
+      r.running = await inner('__walks.app.sim.time > 1');
+      r.diskFiles = await ev('Object.keys(disk)');
+    } else if (!silent) {
       await ev("sendToTab({ type: 'set-placement', kind: 'daytona', label: 'Daytona sandbox' })");
       r.placement = await inner("document.getElementById('placement').textContent");
       await ev("sendToTab({ type: 'kick', dir: [0, 1], force_n: 60 })");
@@ -64,5 +70,5 @@ async function scenario(name, silent) {
 }
 
 try {
-  console.log(JSON.stringify([await scenario('answering-parent', false), await scenario('silent-parent', true)], null, 1));
+  console.log(JSON.stringify([await scenario('answering-parent', false), await scenario('silent-parent', true), await scenario('viewer-parent', false, true)], null, 1));
 } finally { ws.close(); server.close(); }

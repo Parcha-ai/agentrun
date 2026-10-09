@@ -43,6 +43,13 @@ try {
   await sleep(300); await snap('2-kicked');
   await sleep(4000);
   result.afterKick = await state();
+  // terrain: a heightfield with a flat centre, rolling hills outside it
+  const n = 33, elev = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { const x = -3 + (6 * j) / (n - 1), y = -3 + (6 * i) / (n - 1); const r = Math.hypot(x, y); elev.push(r < 1.2 ? 0 : Math.min(1, (r - 1.2) / 1.5) * (0.5 + 0.5 * Math.sin(3 * x) * Math.cos(2.5 * y))); }
+  const world = { asset: `<hfield name="terrain" nrow="${n}" ncol="${n}" size="3 3 0.3 0.05" elevation="${elev.map((v) => v.toFixed(3)).join(' ')}"/>`, geoms: '<geom name="terrain_geom" type="hfield" hfield="terrain" rgba="0.62 0.66 0.52 1" contype="1" conaffinity="1"/>' };
+  await ev(`__walks.setWorld(${JSON.stringify(world)})`); await sleep(2500); await snap('4-terrain');
+  result.terrain = await state();
+  await ev('__walks.setWorld(null)'); await sleep(300);
   await ev("document.getElementById('openMemory').click()"); await sleep(300);
   await ev("document.getElementById('seedDemo')?.click()"); await sleep(500);
   result.scrollable = await ev('document.documentElement.scrollHeight > innerHeight + 1 || document.documentElement.scrollWidth > innerWidth + 1');

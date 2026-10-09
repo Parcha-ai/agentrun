@@ -39,5 +39,7 @@ Embedded, both are reached through the parent with postMessage. Standing alone, 
 - tab to parent: `ready`, `design-saved`, `policy-loaded`, `kicked`, `fell`, `stood`, `memory-opened`, and the storage
   requests `storage-read {id, path}` and `storage-write {id, path, bytes}`.
 - parent to tab: `set-placement {kind, label, since}`, `kick {dir, force_n}`, `open-memory`, `load-policy {url}`,
-  `load-design {design}`, and the storage answers `storage-result {id, bytes|null}` and `storage-written {id}` (sent only
-  after the disk has the bytes; an unanswered write is reported as an error).
+  `load-design {design}`, and the storage answers `storage-result {id, bytes|null}` and `storage-written {id, error?}` (sent only
+  after the disk has the bytes; an unanswered write is reported as an error; `error: "not-holder"` means another machine holds
+  the run, so the tab is a viewer: it keeps the design locally and sends `design-request {design, mjcf_sha256}` for the
+  agent to save). `load-world {world}` swaps the terrain fragment `{asset, geoms}` (null for flat ground).

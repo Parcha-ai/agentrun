@@ -67,9 +67,19 @@ export class CreatureStore {
     const have = this.designsDb.exec('SELECT id FROM designs WHERE sha256 = ?', [sha256]);
     if (!have[0]) {
       this.designsDb.run('INSERT INTO designs (name, sha256, json, created_at) VALUES (?, ?, ?, ?)', [design.name, sha256, json, now]);
-      await this.backends.designs.write(this.designsDb.export());
+      await this.persisted(this.designsDb, this.backends.designs, 'DELETE FROM designs WHERE sha256 = ?', [sha256]);
     }
     return this.designBySha(sha256)!;
+  }
+
+  /** Export `db` through `backend`; if the backend refuses or times out, undo the insert so the open store never holds a row the disk lacks. */
+  private async persisted(db: any, backend: Backend, undoSql: string, undoParams: unknown[]): Promise<void> {
+    try {
+      await backend.write(db.export());
+    } catch (e) {
+      db.run(undoSql, undoParams);
+      throw e;
+    }
   }
 
   private rows(db: any, sql: string, params: unknown[] = []): Record<string, any>[] {
@@ -97,7 +107,7 @@ export class CreatureStore {
   async recordMachine(e: MachineEvent): Promise<void> {
     if (!this.memoryWritable) throw new Error('memory.sqlite belongs to the agent; the tab only reads it');
     this.memoryDb.run('INSERT INTO machines (at, host, kind, note) VALUES (?, ?, ?, ?)', [e.at, e.host, e.kind, e.note]);
-    await this.backends.memory.write(this.memoryDb.export());
+    await this.persisted(this.memoryDb, this.backends.memory, 'DELETE FROM machines WHERE id = last_insert_rowid()', []);
   }
 
   /** Oldest first: the story in the order it happened. */

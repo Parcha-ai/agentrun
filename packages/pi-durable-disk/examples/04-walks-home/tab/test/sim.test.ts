@@ -5,6 +5,7 @@ import { defaultDesign } from '../src/design.ts';
 import { dummy, fixture, mj, MUJOCO_VERSION } from './helpers.ts';
 import { Policy, PolicyRefused } from '../src/policy.ts';
 import { KICK_STEPS, Sim } from '../src/sim.ts';
+import { buildMjcf } from '../src/mjcf.ts';
 
 test('the default quadruped stands on its own for 5 s with the standing targets', async () => {
   const { built } = await fixture();
@@ -74,4 +75,28 @@ test('a standing creature survives a 60 N shove from every side and is upright a
     for (let i = 0; i < 150; i++) sim.step(null);
     assert.ok(sim.uprightness() > 0.9, `shoved ${dir}: uprightness ${sim.uprightness()}`);
   }
+});
+
+test('a terrain fragment is spliced after the floor, leaves the body identity alone, and the creature stands on its flat centre', async () => {
+  const n = 17;
+  // flat in the middle (|x|,|y| < 1 m), ridges at the edge: heightfield 4 m x 4 m
+  const elev = Array.from({ length: n * n }, (_, k) => {
+    const i = Math.floor(k / n), j = k % n;
+    const x = -2 + (4 * j) / (n - 1), y = -2 + (4 * i) / (n - 1);
+    return Math.max(Math.abs(x), Math.abs(y)) > 1.2 ? 0.8 : 0;
+  }).join(' ');
+  const world = {
+    asset: `<hfield name="terrain" nrow="${n}" ncol="${n}" size="2 2 0.2 0.05" elevation="${elev}"/>`,
+    geoms: '<geom name="terrain_geom" type="hfield" hfield="terrain" contype="1" conaffinity="1"/>',
+  };
+  const flat = buildMjcf(defaultDesign());
+  const rough = buildMjcf(defaultDesign(), world);
+  assert.notEqual(flat.xml, rough.xml);
+  assert.ok(rough.xml.indexOf('<asset>') < rough.xml.indexOf('<worldbody>'));
+  assert.ok(rough.xml.indexOf('name="floor"') < rough.xml.indexOf('terrain_geom'));
+  assert.equal(rough.jointNames.join(), flat.jointNames.join());
+  const sim = new Sim(mj, rough);
+  for (let i = 0; i < 150; i++) sim.step(null);
+  assert.ok(sim.uprightness() > 0.95, `uprightness ${sim.uprightness()}`);
+  assert.equal(sim.model.nhfield, 1);
 });

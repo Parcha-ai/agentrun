@@ -8,6 +8,8 @@
 // Messages (ns "walks-home"):
 //   tab -> parent: storage-read {id, path} | storage-write {id, path, bytes}
 //   parent -> tab: storage-result {id, bytes: Uint8Array | null, error?} | storage-written {id, error?}
+// A write is refused with error "not-holder" (HTTP 409 at the server) while another machine holds the run: this tab is
+// then a viewer, `NotHolder` is thrown, and the app turns the edit into a `design-request` for the running agent.
 
 import type { Backend } from './store.ts';
 
@@ -22,6 +24,7 @@ export interface Bus {
 }
 
 export class StorageTimeout extends Error {}
+export class NotHolder extends Error {}
 
 // Request ids are unique per page, not per backend: several backends share one bus and one parent.
 let nextRequestId = 1;
@@ -44,7 +47,8 @@ export class ParentBackend implements Backend {
         if (m.ns !== NS || m.type !== answer || m.id !== id) return;
         clearTimeout(timer);
         off();
-        if (m.error) reject(new Error(String(m.error)));
+        if (m.error === 'not-holder') reject(new NotHolder('another machine holds the run'));
+        else if (m.error) reject(new Error(String(m.error)));
         else resolve(m);
       });
       const timer = setTimeout(() => { off(); reject(new StorageTimeout(`${type} not answered in ${timeoutMs} ms`)); }, timeoutMs);

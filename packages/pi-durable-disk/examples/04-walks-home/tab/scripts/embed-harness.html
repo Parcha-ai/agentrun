@@ -10,11 +10,13 @@ window.events = [];
 window.disk = {}; // path -> bytes, standing in for the agent's disk
 window.diskWrites = 0;
 window.answerStorage = !window.__silent;
+window.refuseWrites = !!window.__viewer; // another machine holds the run: writes are refused with not-holder (409)
 window.sendToTab = (m) => frame.contentWindow.postMessage({ ns: 'walks-home', ...m }, location.origin);
 addEventListener('message', (ev) => {
   if (ev.origin !== location.origin || ev.source !== frame.contentWindow || ev.data?.ns !== 'walks-home') return;
   const m = ev.data;
   if (m.type === 'storage-read' && window.answerStorage) sendToTab({ type: 'storage-result', id: m.id, bytes: window.disk[m.path] ?? null });
+  else if (m.type === 'storage-write' && window.answerStorage && window.refuseWrites) sendToTab({ type: 'storage-written', id: m.id, error: 'not-holder' });
   else if (m.type === 'storage-write' && window.answerStorage) { window.disk[m.path] = m.bytes; window.diskWrites++; sendToTab({ type: 'storage-written', id: m.id }); }
   else if (!m.type.startsWith('storage-')) window.events.push(m);
 });

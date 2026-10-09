@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import initSqlJs from 'sql.js';
-import { ParentBackend, StorageTimeout, type Bus } from '../src/backend.ts';
+import { NotHolder, ParentBackend, StorageTimeout, type Bus } from '../src/backend.ts';
 import { CreatureStore, type Backends } from '../src/store.ts';
 import { defaultDesign } from '../src/design.ts';
 
@@ -56,4 +56,19 @@ test('answers for another request id or namespace are ignored', async () => {
     }),
   };
   await assert.rejects(new ParentBackend(bus, 'p', 100).read(), StorageTimeout);
+});
+
+test('a write refused with not-holder surfaces as NotHolder, and the store keeps the design out of the file', async () => {
+  const subs = new Set<(m: Record<string, unknown>) => void>();
+  const bus: Bus = {
+    listen: (fn) => { subs.add(fn); return () => subs.delete(fn); },
+    send: (m) => queueMicrotask(() => {
+      if (m.type === 'storage-read') for (const s of subs) s({ ns: 'walks-home', type: 'storage-result', id: m.id, bytes: null });
+      if (m.type === 'storage-write') for (const s of subs) s({ ns: 'walks-home', type: 'storage-written', id: m.id, error: 'not-holder' });
+    }),
+  };
+  const s = await CreatureStore.open(sql, { designs: new ParentBackend(bus, 'creature/designs.sqlite', 200), memory: new ParentBackend(bus, 'creature/memory.sqlite', 200) }, { memoryWritable: false });
+  await assert.rejects(s.saveDesign(defaultDesign()), NotHolder);
+  assert.equal(s.designs().length, 0, 'a refused write leaves no row in the open store');
+  await assert.rejects(s.saveDesign(defaultDesign()), NotHolder, 'a retry writes again instead of finding a phantom row');
 });

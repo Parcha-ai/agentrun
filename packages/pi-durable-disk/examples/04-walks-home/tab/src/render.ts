@@ -5,7 +5,34 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Sim } from './sim.ts';
 
-const GEOM = { plane: 0, sphere: 2, capsule: 3, ellipsoid: 4, cylinder: 5, box: 6 } as const;
+const GEOM = { plane: 0, hfield: 1, sphere: 2, capsule: 3, ellipsoid: 4, cylinder: 5, box: 6 } as const;
+
+/** MuJoCo heightfield: x in [-sx, sx] along columns, y in [-sy, sy] along rows, z = data * sz, in the geom's frame. */
+function heightfieldGeometry(model: any, id: number): THREE.BufferGeometry {
+  const nrow = model.hfield_nrow[id], ncol = model.hfield_ncol[id], adr = model.hfield_adr[id];
+  const [sx, sy, sz] = [model.hfield_size[4 * id], model.hfield_size[4 * id + 1], model.hfield_size[4 * id + 2]];
+  const pos = new Float32Array(nrow * ncol * 3);
+  for (let i = 0; i < nrow; i++) {
+    for (let j = 0; j < ncol; j++) {
+      const k = 3 * (i * ncol + j);
+      pos[k] = -sx + (2 * sx * j) / (ncol - 1);
+      pos[k + 1] = -sy + (2 * sy * i) / (nrow - 1);
+      pos[k + 2] = model.hfield_data[adr + i * ncol + j] * sz;
+    }
+  }
+  const idx: number[] = [];
+  for (let i = 0; i < nrow - 1; i++) {
+    for (let j = 0; j < ncol - 1; j++) {
+      const a = i * ncol + j, b = a + 1, c = a + ncol, d = c + 1;
+      idx.push(a, b, d, a, d, c);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
 
 export class View {
   readonly renderer: THREE.WebGLRenderer;
@@ -65,6 +92,7 @@ export class View {
       else if (type === GEOM.sphere) geo = new THREE.SphereGeometry(s[0], 24, 16);
       else if (type === GEOM.capsule) { geo = new THREE.CapsuleGeometry(s[0], 2 * s[1], 8, 16); geo.rotateX(Math.PI / 2); }
       else if (type === GEOM.cylinder) { geo = new THREE.CylinderGeometry(s[0], s[0], 2 * s[1], 24); geo.rotateX(Math.PI / 2); }
+      else if (type === GEOM.hfield) geo = heightfieldGeometry(model, model.geom_dataid[g]);
       else if (type === GEOM.ellipsoid) { geo = new THREE.SphereGeometry(1, 24, 16); geo.scale(s[0], s[1], s[2]); }
       else { this.meshes.push(new THREE.Mesh()); continue; }
       const c = [0, 1, 2, 3].map((k) => model.geom_rgba[4 * g + k]);
