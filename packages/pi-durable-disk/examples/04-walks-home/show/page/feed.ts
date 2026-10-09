@@ -10,6 +10,8 @@ export class Feed {
   private lastId = -1;
   private receivedAt = performance.now();
   private floor = 0;
+  /** Counts each time the feed starts over (a first connection, a reset, a retake): what the page remembers about one timeline is not true of the next. */
+  generation = 0;
   private es: EventSource | null = null;
   private listeners = new Set<(event: ShowEvent | null) => void>();
 
@@ -35,6 +37,7 @@ export class Feed {
   /** A new run (or a restarted script): its time is its own, so the clock may start from the beginning. */
   resetClock(): void {
     this.floor = 0;
+    this.generation++;
   }
 
   /** Scenario time now, in ms: the last event's time plus the time since it arrived, capped so a stalled feed does not run ahead. */

@@ -23,6 +23,12 @@ type Viewing = Extract<PipeFrame, { t: "viewing" }>;
 /** It asks for the kernel and core count, not the host name: the answer is shown on screen and in published recordings. */
 export const WHERE_ARE_YOU = "Which kind of machine are you on right now? Check with bash (uname -sr, nproc, and nvidia-smi if it exists), do not print the host name, and answer in two short lines.";
 
+/**
+ * The server wakes the agent for its one line at home with a user-role message that starts with this prefix (SERVER_TURN in 03's placement.ts).
+ * The user did not type it, so the chat does not show it; the agent's reply, in its own words, is shown as usual.
+ */
+export const SERVER_TURN_PREFIX = "[from the server] ";
+
 export function kindOf(env: PipeEnv): HostKind {
   if (env.kind === "tab") return "tab";
   const name = `${env.id} ${env.label}`;
@@ -54,6 +60,8 @@ export class PipeTranslator {
   private lastChat = "";
   /** The decisions already announced (or remembered from history), by id and phase: a frame replayed after a reconnect shows no second card. */
   private seenDecisions = new Set<string>();
+  /** After the agent arrives on a machine: the tools it had run by then, and whether its first command there has been announced. */
+  private setupWatch: { before: Set<string>; emitted: boolean } | undefined;
   private run = "";
 
   constructor(options: { run: string; origin?: number; clock?: () => number }) {
@@ -180,6 +188,8 @@ export class PipeTranslator {
       this.seenItems.add(item.id);
       if (item.kind === "user") this.answeredUsers.add(item.id);
     }
+    // Connecting after the setup began: its start is not known, so none is invented.
+    if (this.setupWatch) this.setupWatch = { before: this.toolIds(), emitted: true };
     this.chatTurns(out);
   }
 
@@ -238,6 +248,22 @@ export class PipeTranslator {
     this.currentStay = id;
     const hostKind = kindOf(this.envs.get(s.env) ?? { id: s.env, label: s.host, phrase: s.host, kind: "cloud" });
     out.push({ t: "stay.begin", at, stay: { id, lane: "run", host: s.host, hostKind, from: at, ...(handover ? { handover } : {}) } });
+    // On a machine: the setup starts with the agent's first command there, so what it ran before arriving does not count.
+    this.setupWatch = hostKind === "tab" ? undefined : { before: this.toolIds(), emitted: false };
+  }
+
+  private toolIds(): Set<string> {
+    return new Set(this.chat.items().filter((i) => i.kind === "tool").map((i) => i.id));
+  }
+
+  /** The agent's first bash command after it arrived on a machine: where "setting up" begins. Announced once per arrival. */
+  private setupStart(out: ShowEvent[]): void {
+    const w = this.setupWatch;
+    if (!w || w.emitted) return;
+    const first = this.chat.items().find((i) => i.kind === "tool" && !w.before.has(i.id) && /bash/i.test(i.name) && i.status === "running");
+    if (!first) return;
+    w.emitted = true;
+    out.push({ t: "setup", at: this.at(), phase: "start" });
   }
 
   private switched(frame: Extract<PipeFrame, { t: "switched" }>, out: ShowEvent[]): void {
@@ -270,7 +296,7 @@ export class PipeTranslator {
     const turns: ChatTurn[] = [];
     for (const item of this.chat.items()) {
       const text = "text" in item ? item.text.trim() : "";
-      if (item.kind === "user" && text) turns.push({ id: item.id, role: "user", text });
+      if (item.kind === "user" && text && !text.startsWith(SERVER_TURN_PREFIX)) turns.push({ id: item.id, role: "user", text });
       else if (item.kind === "assistant" && text) turns.push({ id: item.id, role: "agent", text, ...(item.streaming ? { streaming: true } : {}) });
     }
     const key = JSON.stringify(turns);
@@ -304,6 +330,7 @@ export class PipeTranslator {
         out.push({ t: "note", at, kind: "agent", text: `The agent says: ${answer.text.replace(/\s+/g, " ")}` });
       }
     }
+    this.setupStart(out);
     this.chatTurns(out);
   }
 }

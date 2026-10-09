@@ -14,6 +14,7 @@ export function emptyState(): ShowState {
     notes: [],
     chat: [],
     decision: null,
+    setup: null,
     scoreUnit: "",
     environments: [],
     currentEnv: null,
@@ -77,9 +78,13 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
     case "cost":
       return { ...state, now, cost: event.cost };
     case "note":
-      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}), ...(event.evidence !== undefined ? { evidence: event.evidence } : {}) }].slice(-200) };
+      return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}), ...(event.evidence !== undefined ? { evidence: event.evidence } : {}), ...(event.rank !== undefined ? { rank: event.rank } : {}) }].slice(-200) };
     case "chat":
       return { ...state, now, chat: event.turns };
+    case "setup":
+      if (event.phase === "start") return { ...state, now, setup: { startedAt: event.at, endedAt: null } };
+      // An end is said once, and means nothing without a start.
+      return state.setup && state.setup.endedAt === null ? { ...state, now, setup: { ...state.setup, endedAt: event.at } } : { ...state, now };
     case "decision":
       return { ...state, now, decision: { ...event.decision, at: event.at } };
   }

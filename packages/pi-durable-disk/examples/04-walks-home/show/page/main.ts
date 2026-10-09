@@ -3,6 +3,9 @@ import { $, clock, esc, usd } from "./dom.ts";
 import { badgeFor, trackFor } from "./badge.ts";
 import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
+import { wifiLabel } from "./wifi.ts";
+import { learningStartedNote, setupCaption } from "./setup.ts";
+import { emptyStory, simulationNote, storyNotes, visibleTag } from "./story-notes.ts";
 import { cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { bandOf, type Band } from "./lessons.ts";
 import { DesktopView } from "./desktop.ts";
@@ -98,12 +101,34 @@ let lastInstallKind: "checkpoint" | "final" | undefined;
 /** The band each checkpoint was in, from the distance its file reported, so its walk is captioned only when it is walking. */
 const bandOfInstall = new Map<number, Band | null>();
 
+// The stage's own captions (page/story-notes.ts): said once each, so a retake starts them over.
+let story = emptyStory();
+let simulationSaid = false;
+let runSeen = "";
+/** The setups whose end has been said (by their start time): the counter stops and one line says how long it took. */
+const setupNoted = new Set<string>();
+/** A setup is told apart by its start time within one generation of the feed: a timeline that starts over reuses start times. */
+const setupKey = (startedAt: number) => `${feed.generation}|${startedAt}`;
+function endSetup(endedAt: number): void {
+  const s = feed.state.setup;
+  if (!s || setupNoted.has(setupKey(s.startedAt))) return;
+  setupNoted.add(setupKey(s.startedAt));
+  tabNotes.push(learningStartedNote(s, endedAt, feed.state.source, endedAt));
+}
+
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
+  // Everything the creature does is a physics simulation: said once, in words, instead of a SIMULATED pill on every number.
+  if (m.type === "ready" && !debug && !simulationSaid) {
+    simulationSaid = true;
+    tabNotes.push(simulationNote(feed.captionNow()));
+  }
   if (m.type === "policy-arrived" && m.kind) {
     lastInstallKind = m.kind;
     if (m.checkpoint_n !== undefined) installKind.set(m.checkpoint_n, m.kind);
   }
+  // The first checkpoint to reach the tab is where learning starts: the setup counter stops there.
+  if (!debug && (m.type === "checkpoint-installed" || (m.type === "policy-arrived" && m.kind === "checkpoint"))) endSetup(feed.captionNow());
   const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? installKind.get(m.checkpoint_n) : lastInstallKind) : undefined;
   if (m.type === "policy-arrived" && m.kind === "checkpoint") {
     const band = bandOf(m.reported_walk_10s_m);
@@ -281,27 +306,46 @@ if (params.get("operator") === "1") operator.hidden = false;
 // in the badge and one caption, and does not show its own failed fetches as errors.
 let offline = !navigator.onLine;
 function pageNote(text: string): void {
-  tabNotes.push({ at: feed.captionNow(), kind: "home", text, origin: "tab" });
+  tabNotes.push({ at: feed.captionNow(), kind: "home", text, origin: "tab", rank: 2 });
+}
+// The Wi-Fi control: a click is the user's act and reads off at once; the browser's own offline event is the truth it then follows.
+let wifiClickedAt: number | null = null;
+$("wifi").addEventListener("click", () => {
+  wifiClickedAt = performance.now();
+  renderWifi();
+});
+function renderWifi(): void {
+  const label = wifiLabel(!offline, wifiClickedAt, performance.now());
+  const el = $("wifi");
+  if (el.textContent !== label) el.textContent = label;
+  el.classList.toggle("off", label === "Wi-Fi: off");
 }
 addEventListener("offline", () => {
   offline = true;
-  pageNote("Network off. The walking brain it learned runs in your tab, even offline.");
+  pageNote("Network off. It keeps walking: the brain it learned runs right here.");
 });
 addEventListener("online", () => {
   offline = false;
+  wifiClickedAt = null;
   pageNote("Network back on.");
 });
 
 const desk = new CaptionDesk();
 let shownV2 = "";
 function renderCaptionV2(state: ShowState): void {
-  const c = desk.update(withTabNotes(state), feed.captionNow());
+  const now = feed.captionNow();
+  const counting = !!state.setup && state.setup.endedAt === null && !setupNoted.has(setupKey(state.setup.startedAt));
+  const spoken = desk.update(withTabNotes(state), now, { yieldSlot: counting });
+  // While the agent sets up the training program and nothing else is being said, the slot counts the seconds (measured on a live feed).
+  const counter = !spoken && counting ? setupCaption(state, now) : null;
+  const c = spoken ?? (counter ? { text: counter.text, tag: counter.tag, at: state.setup!.startedAt + Math.floor((now - state.setup!.startedAt) / 1000) * 1000 } : null);
   const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
   if (key === shownV2) return;
   shownV2 = key;
   const el = $("vcaption");
   el.hidden = c === null;
-  el.innerHTML = c ? `${c.tag ? `<span class="tag ${c.tag}">${c.tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
+  const tag = c ? visibleTag(c.tag, debug) : null;
+  el.innerHTML = c ? `${tag ? `<span class="tag ${tag}">${tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
 }
 
 let shownDecision = "";
@@ -392,8 +436,19 @@ function frame(): void {
   renderOperator(state);
   renderDecision(state);
   if (!debug) {
+    // A new run (a retake) starts the stage's own captions over; within a run each is said once.
+    if (state.run && state.run !== runSeen) {
+      if (runSeen) {
+        story = emptyStory();
+        tabNotes.length = 0;
+        setupNoted.clear();
+      }
+      runSeen = state.run;
+    }
+    tabNotes.push(...storyNotes(state, story, feed.captionNow()));
     // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
     renderBadge(state);
+    renderWifi();
     syncChat(chatLog, state.chat);
     $("chat").classList.toggle("talked", state.chat.length > 0);
     renderCaptionV2(state);
@@ -414,6 +469,8 @@ feed.onChange((event: ShowEvent | null) => {
     maybeSendPolicy(feed.state);
   }
   if (event?.t === "universe" && event.patch.status === "winner") maybeSendPolicy(feed.state);
+  // A feed that says when learning began (the rehearsal) ends the setup itself.
+  if (!debug && event?.t === "setup" && event.phase === "end") endSetup(event.at);
 });
 
 await feed.connect().catch((e) => {

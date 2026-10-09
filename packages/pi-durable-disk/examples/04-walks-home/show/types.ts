@@ -104,6 +104,8 @@ export type Note = {
    * under the claim: it is not a read-back of the disk and can never back a zero-loss claim, so it is a value only to be refused.
    */
   evidence?: "independent-readback" | "chaos-harness" | "pipe-released";
+  /** How much a viewer needs this line (default 0). When several captions wait, the v2 desk shows the highest rank first, then the oldest. */
+  rank?: number;
 };
 
 /** One turn of the chat with the agent, as the v2 stage shows it: the user's words and the agent's own text. Tool calls and system notices are not turns. */
@@ -132,6 +134,8 @@ export type ShowState = {
   chat: ChatTurn[];
   /** The most recent decision about where the run goes, or null before any. */
   decision: ShownDecision | null;
+  /** The agent's setup on a machine, before learning starts: when its first command ran (stage clock) and, once it is known, when learning began. */
+  setup: { startedAt: number; endedAt: number | null } | null;
   /** What a score means, shown once above the grid ("m walked in 10 s"); empty when the feed does not say. */
   scoreUnit: string;
   /** The environments the switcher offers, in order. */
@@ -149,9 +153,10 @@ export type ShowEvent =
   | { t: "universe"; at: number; id: string; patch: Partial<Omit<Universe, "id" | "samples" | "lastEventAt">> & { id?: never } }
   | { t: "sample"; at: number; id: string; score: number; progress?: number; cost?: number }
   | { t: "cost"; at: number; cost: Cost }
-  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] }
+  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"]; rank?: number }
   | { t: "chat"; at: number; turns: ChatTurn[] }
-  | { t: "decision"; at: number; decision: DecisionData };
+  | { t: "decision"; at: number; decision: DecisionData }
+  | { t: "setup"; at: number; phase: "start" | "end" };
 
 /** What the page sends: a command, answered by an event stream, never by a return value. */
 export type ShowCommand =
