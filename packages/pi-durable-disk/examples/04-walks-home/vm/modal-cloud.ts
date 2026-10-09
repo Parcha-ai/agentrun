@@ -176,12 +176,12 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   }
 
   /** The app bundle and this box's serve token: once per box (the image holds the runtime and the app's dependencies). */
-  async function prepare(box: SandboxInfo, c: DaytonaClient = client, archil = true): Promise<void> {
+  async function prepare(box: SandboxInfo, c: DaytonaClient = client, host: { archil?: boolean; desktop?: boolean } = {}): Promise<void> {
     const started = Date.now();
     live.add(box.id);
     bundle ??= appBundle();
     await c.upload(box, "/tmp/pda-demo-app.tar.gz", bundle);
-    const r = await c.exec(box, prepareScript(uid, gid, { archil }), 900);
+    const r = await c.exec(box, prepareScript(uid, gid, { archil: host.archil ?? true }), 900);
     if (r.exitCode !== 0) throw new Error(`preparing ${box.name} failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
     const mk = await c.exec(box, `umask 077 && mkdir -p ${STAGE} && chmod 700 ${STAGE}`, 30);
     if (mk.exitCode !== 0) throw new Error(`staging in ${box.name} failed: ${mk.result.trim().slice(0, 200)}`);
@@ -190,7 +190,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     const setup = await c.exec(box, boxSetupScript(STAGE), 60);
     if (setup.exitCode !== 0) throw new Error(`setting up ${box.name} failed (${setup.exitCode}): ${setup.result.trim().split("\n").slice(-2).join(" | ").slice(0, 300)}`);
     serveTokens.set(box.id, token);
-    if (options.desktop) {
+    // Only a mounted VM has a desktop: a pipe box (the GPU one) runs another image, with no X server in it.
+    if (host.desktop) {
       const password = randomBytes(9).toString("base64url");
       await c.upload(box, `${STAGE}/vnc.txt`, new TextEncoder().encode(password));
       const started = Date.now();
@@ -260,7 +261,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     live.add(box.id);
     try {
       const startedMs = Date.now() - t0;
-      await prepare(box, cls.client, cls.archil);
+      await prepare(box, cls.client, { archil: cls.archil });
       const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
       // Its own session (setsid -f), so the end of the exec does not end it.
       const launch = [
@@ -327,7 +328,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       stopTimeoutMs: 15_000,
       ttlMinutes: 120,
       startTimeoutMs: 600_000,
-      prepare: (box, c) => prepare(box, c),
+      prepare: (box, c) => prepare(box, c, { desktop: options.desktop }),
     });
     const started = Date.now();
     const result = await ensureRunning(ref, driver, { control, demand, tokenPrefix: "pda-demo-", leaseExpiryMs: 10_000, startGraceMs: 60_000 });

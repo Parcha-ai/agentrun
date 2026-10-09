@@ -22,6 +22,23 @@ node serve.ts --model M --model-url URL --cloud-module ../04-walks-home/vm/cloud
 node scripts/switch-smoke.ts <run link> modal-vm --back        # a click moves the run there and back
 node ../04-walks-home/vm/scripts/agent-switch-smoke.ts <run link>   # the agent moves itself
 node ../04-walks-home/vm/scripts/desktop-smoke.ts <run link>        # ... and drives the desktop (desktop=true)
+node ../04-walks-home/vm/scripts/gpu-smoke.ts <run link>            # ... trains on a GPU (gpu-image=...) and comes home
 ```
 
 `npm test` checks the image recipe and the environment's shape; the live behavior is the switch smoke above.
+
+## The whole beat, as a prompt
+
+The agent decides every move; the user says it once, in the tab's chat. The closing words are asked for after the notice at home, so the
+story ends at home (the move takes effect after the step that asks for it, so without that sentence the model finishes its answer on the
+GPU box before the run leaves):
+
+> I want a walking creature trained. This tab cannot train anything. Move yourself with your switch_environment tool to modal-gpu
+> (one-sentence reason), run the training command that your notice there gives you, and wait for it to finish. When home/policy.json
+> exists, check its size with bash, then move home with switch_environment (target "tab", a one-sentence reason). After the system
+> notice you get once you are home, and not before, tell me in two short lines where you trained and how big the policy file is.
+
+The GPU environment's notice carries what to run (`--cloud-arg gpu-note=TEXT`): D2's trainer is baked in the image, so the note is the
+command (`python /opt/pda/train/train.py ... --work train/gpu --minutes 1.0`, then `export.py combine ... --out home/policy.json`).
+Measured on an H100 (us-east, gVisor, pipe): first tool call to the notice there 6.8 s, notice to the notice at home 82 s, policy
+(442,799 bytes) in the tab's workspace.

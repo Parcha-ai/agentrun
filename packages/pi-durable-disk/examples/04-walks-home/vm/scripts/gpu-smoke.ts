@@ -26,7 +26,7 @@ let shot = 0;
 const snap = async (page: Page, name: string) => page.screenshot(join(shots, `${String(++shot).padStart(2, "0")}-${name}.png`)).catch(() => undefined);
 const send = (page: Page, text: string) => page.evaluate(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(text)}; document.getElementById("send").click(); return true; })()`);
 
-const TASK = `I want a walking creature trained. This tab cannot train anything. Move yourself with your switch_environment tool to ${target} (one-sentence reason), run the training command that your notice there gives you, and wait for it to finish. When ${POLICY} exists, check its size with bash, then move home with switch_environment (target "tab", a one-sentence reason). Once you are home, tell me in two short lines where you trained and how big the policy file is.`;
+const TASK = `I want a walking creature trained. This tab cannot train anything, so do all of this yourself, in one go, without waiting for me between steps. Step 1: move yourself with your switch_environment tool to ${target} (one-sentence reason). As soon as you arrive, run the training command that your notice there gives you and wait for it to finish. Step 2: when ${POLICY} exists, check its size with bash, then move home with switch_environment (target "tab", a one-sentence reason). Do not write any closing words until you are home and have read the notice there; then tell me in two short lines where you trained and how big the policy file is.`;
 
 let dumpPage: () => Promise<void> = async () => undefined;
 const cdp = await Cdp.connect();
@@ -58,12 +58,10 @@ try {
   await snap(page, "home");
   const files = await page.evaluate<string[]>("demo.files()");
   step("the tab's workspace", { hasPolicy: files.includes(POLICY), files: files.filter((f) => f.startsWith("train/")).slice(0, 12) });
-  // The agent's closing words may come from either host: its move home happens after the step that asks for it, so the model can
-  // finish its answer on the GPU box before the run leaves. Done is: the tab runs the agent again, it is idle, and an assistant
-  // message follows the agent's last switch_environment call.
-  const answered = `(() => { const items = demo.items(); const s = items.findLastIndex(i => i.kind === "tool" && /switch_environment/.test(i.name ?? i.args ?? "")); const a = items.slice(s + 1).filter(i => i.kind === "assistant"); const last = a.at(-1); return s >= 0 && demo.state.mode === "writer" && !demo.state.chat.busy && last && !last.streaming && last.text.length > 0; })()`;
+  // The story ends at home: the closing words come after the notice the agent gets there (it was asked to wait for it).
+  const answered = `(() => { const items = demo.items(); const s = items.findLastIndex(i => i.kind === "switch"); const a = items.slice(s + 1).filter(i => i.kind === "assistant"); const last = a.at(-1); return s >= 0 && demo.state.mode === "writer" && !demo.state.chat.busy && last && !last.streaming && last.text.length > 0; })()`;
   await page.until(answered, 300_000, 500);
-  step("the agent's closing answer", { answer: await page.evaluate<string>(`demo.items().filter(i => i.kind === "assistant").at(-1).text`), ms: Date.now() - tOut });
+  step("answered at home", { answer: await page.evaluate<string>(`demo.items().filter(i => i.kind === "assistant").at(-1).text`), ms: Date.now() - tOut });
   await snap(page, "answer");
   results.items = await page.evaluate("demo.items().map(i => ({ kind: i.kind, text: (i.text ?? i.args ?? '').slice(0, 400) }))");
 } catch (error) {
