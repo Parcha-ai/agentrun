@@ -47,7 +47,14 @@ export async function modelStub(reply: (body: Record<string, unknown>) => string
     let text = "";
     req.on("data", (c) => (text += c));
     req.on("end", () => {
-      const body = JSON.parse(text) as Record<string, unknown>;
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        // A request the pipe aborted while sending it.
+        res.writeHead(400).end();
+        return;
+      }
       requests.push(body);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const id = `chatcmpl-${requests.length}`;

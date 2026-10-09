@@ -1,13 +1,15 @@
 // The page. Opening a run's link runs the agent in this tab when nothing else runs it: Wasmer boots the computer
-// (bash, coreutils, node), the workspace comes back from the disk, and pi's Harness resumes over the pipe. When the run
-// is elsewhere (another tab, the cloud), the page watches it read-only and offers to take it over.
+// (bash, coreutils, node), the workspace comes back from the disk, and pi's Harness resumes over the pipe. The switcher
+// moves the run between this tab and the server's other environments (a planned handover: the current host finishes
+// its step and releases, the target claims, admits the agent's notice of the move and continues); the page shows how
+// long the move took, from the click to the notice on screen. While the run is elsewhere the page watches it.
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEvent } from "@earendil-works/pi-durable";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
-import { startTab, type TabRuntime } from "./runtime.ts";
-import { fromBase64, untag, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
+import { finishStep, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
+import { fromBase64, untag, type Environment, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 const WASMER_SDK = "/wasmer/dist/index.js";
 const COMPUTER = "/pkgs/edgejs.webc";
@@ -39,19 +41,77 @@ const state = {
   computerMs: 0,
   /** From attached to the agent ready: sandbox, restore, Harness open and resume. */
   bootMs: 0,
+  environments: [] as Environment[],
+  /** The switch this page asked for, from the click until the agent's notice of it is on screen. */
+  switching: undefined as { to: string; clickedAt: number; switchId?: string } | undefined,
+  /** The switch this tab is draining for (it leaves the run). */
+  leaving: undefined as string | undefined,
+  /** Every switch this page asked for and saw complete. */
+  handovers: [] as { switchId: string; to: string; ms: number }[],
 };
+
+const envLabel = (id: string | undefined) => state.environments.find((e) => e.id === id)?.label ?? id ?? "";
 
 // ---- rendering ---------------------------------------------------------------------------------------------------------
 
 function badge(): { text: string; tone: string; sub: string } {
   const p = state.placement;
+  if (state.leaving) return { text: `Moving to ${p?.where === "moving" ? p.to : "the next host"}`, tone: "moving", sub: state.progress };
   if (state.mode === "booting") return { text: "Starting the computer in this tab", tone: "moving", sub: state.progress };
   if (state.mode === "writer") return { text: "Running in this tab", tone: "tab", sub: `brain + hands in this tab · disk claimed by the pipe, generation ${state.generation}` };
   if (state.mode === "connecting") return { text: "Connecting", tone: "moving", sub: "" };
-  if (p?.where === "cloud") return { text: "Running in the cloud", tone: "cloud", sub: `${p.host}${p.generation ? `, generation ${p.generation}` : ""} · read-only here` };
+  if (p?.where === "cloud") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `${p.host}${p.generation ? `, generation ${p.generation}` : ""}` };
   if (p?.where === "tab") return { text: "Running in another tab", tone: "other", sub: `generation ${p.generation} · read-only here` };
-  if (p?.where === "moving") return { text: p.to === "cloud" ? "Moving to the cloud" : "Moving into a tab", tone: "moving", sub: p.detail ?? "" };
+  if (p?.where === "moving") return { text: `Moving to ${p.to}`, tone: "moving", sub: p.detail ?? "" };
   return { text: "Parked on the disk", tone: "parked", sub: p?.detail ?? "" };
+}
+
+/** The environment the run is in (or moving to), for the switcher. */
+function currentEnv(): { id: string | undefined; moving: boolean } {
+  const p = state.placement;
+  if (state.mode === "writer" && !state.leaving) return { id: "tab", moving: false };
+  if (p?.where === "moving") return { id: p.env, moving: true };
+  if (p?.where === "cloud") return { id: p.env, moving: false };
+  return { id: undefined, moving: false };
+}
+
+function renderSwitcher(): void {
+  const now = currentEnv();
+  const busy = state.switching !== undefined || state.leaving !== undefined || now.moving || state.mode === "booting" || state.mode === "connecting";
+  $("switcher").replaceChildren(
+    ...state.environments.map((env) => {
+      const active = env.id === now.id;
+      const button = el("button", { class: `env ${env.kind}${active ? " active" : ""}${active && now.moving ? " moving" : ""}`, title: env.detail ?? "", "data-env": env.id }, env.label);
+      (button as HTMLButtonElement).disabled = busy || active;
+      button.addEventListener("click", () => switchTo(env.id));
+      return button;
+    }),
+  );
+  const last = state.handovers.at(-1);
+  $("handover").textContent = last ? `moved to ${envLabel(last.to)} in ${(last.ms / 1000).toFixed(1)} s` : "";
+}
+
+/** Ask for a switch. Into this tab from another tab is a takeover; everything else is a planned switch. */
+function switchTo(id: string): void {
+  if (!state.client || state.switching) return;
+  const p = state.placement;
+  if (id === "tab" && (p?.where === "tab" || p?.where === "parked" || state.mode === "lost")) {
+    void connect("write", p?.where === "tab");
+    return;
+  }
+  state.switching = { to: id, clickedAt: performance.now() };
+  state.client.send({ t: "switch", to: id });
+  render();
+}
+
+/** The agent's notice of the switch this page asked for is on screen: the switch is done. */
+function noticeSeen(): void {
+  const s = state.switching;
+  if (!s?.switchId) return;
+  if (!state.chat.items().some((item) => item.kind === "switch" && item.switchId === s.switchId)) return;
+  state.handovers.push({ switchId: s.switchId, to: s.to, ms: performance.now() - s.clickedAt });
+  state.switching = undefined;
+  renderSwitcher();
 }
 
 function el(tag: string, attrs: Record<string, string> = {}, ...children: (Node | string)[]): HTMLElement {
@@ -66,6 +126,7 @@ function renderChat(): void {
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
   list.replaceChildren(...state.chat.items().map(renderItem));
   if (atBottom) list.scrollTop = list.scrollHeight;
+  noticeSeen();
 }
 
 function renderItem(item: ChatItem): HTMLElement {
@@ -97,6 +158,8 @@ function renderItem(item: ChatItem): HTMLElement {
     }
     case "note":
       return el("div", { class: "note" }, item.text);
+    case "switch":
+      return el("div", { class: `notice${item.planned ? "" : " unplanned"}` }, el("div", { class: "who" }, "system notice to the agent"), el("div", { class: "body" }, item.text));
   }
 }
 
@@ -137,14 +200,15 @@ function render(): void {
   $("badge-sub").textContent = b.sub;
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
-  const writer = state.mode === "writer";
-  ($("input") as HTMLTextAreaElement).disabled = !writer;
-  ($("send") as HTMLButtonElement).disabled = !writer;
-  $("composer").hidden = !writer;
-  $("move").hidden = !writer;
-  const canTake = state.mode === "viewer" || state.mode === "lost";
-  $("takeover").hidden = !canTake;
-  $("takeover").textContent = state.placement?.where === "parked" ? "Run it here" : "Take over here";
+  const writer = state.mode === "writer" && !state.leaving;
+  // In the cloud, a message goes to the cloud's conversation through the server.
+  const canSend = writer || (state.mode === "viewer" && state.placement?.where === "cloud");
+  ($("input") as HTMLTextAreaElement).disabled = !canSend;
+  ($("send") as HTMLButtonElement).disabled = !canSend;
+  $("composer").hidden = !canSend;
+  // A fallback, not the switch: take the run from the cloud now, fencing it mid-step.
+  $("takeover").hidden = !(state.mode === "viewer" && state.placement?.where === "cloud" && !state.switching);
+  renderSwitcher();
   renderChat();
   renderFiles();
   renderStats();
@@ -221,7 +285,10 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const started = performance.now();
   const pkg = await ensureComputer();
   const sandbox = await wasmer!.sandboxes.create({ packages: [pkg], shell: pkg.command("bash"), env: { LANG: "C.UTF-8" } });
-  const runtime = await startTab({ client, attached, sandbox: sandbox as never, run });
+  state.environments = attached.environments;
+  const facts = tabFacts(pkg.commands, { cpus: navigator.hardwareConcurrency, ...((navigator as { deviceMemory?: number }).deviceMemory ? { memoryGb: (navigator as { deviceMemory?: number }).deviceMemory! } : {}) });
+  const runtime = await startTab({ client, attached, sandbox: sandbox as never, run, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   state.bootMs = performance.now() - started;
   state.mode = "writer";
@@ -265,6 +332,18 @@ function onFrame(frame: PipeFrame): void {
     case "placement":
       state.placement = frame.placement;
       if (frame.placement.where === "tab" && frame.placement.tab === tab) state.generation = frame.placement.generation;
+      if (frame.placement.where === "moving" && state.switching && !state.switching.switchId && frame.placement.switchId) state.switching.switchId = frame.placement.switchId;
+      if (frame.placement.where === "parked") state.switching = undefined;
+      break;
+    case "drain":
+      void drain(frame.switchId);
+      return;
+    case "run-here":
+      void connect("write", false, frame.switchId);
+      return;
+    case "switch-refused":
+      state.switching = undefined;
+      state.banner = `cannot switch to ${envLabel(frame.to)}: ${frame.message}`;
       break;
     case "event":
       applyView(frame.event);
@@ -284,6 +363,22 @@ function onFrame(frame: PipeFrame): void {
   render();
 }
 
+/** The pipe asks this tab to leave the run: finish the step in progress, close the agent here, say so. */
+async function drain(switchId: string): Promise<void> {
+  state.leaving = switchId;
+  state.progress = "finishing the current step";
+  render();
+  const runtime = state.runtime;
+  if (runtime) {
+    const how = await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const);
+    state.progress = how === "idle" ? "the agent was idle; handing over" : how === "step" ? "step finished; handing over" : "step still running; handing over (the next host resumes it)";
+    render();
+    state.runtime = undefined;
+    await runtime.close().catch(() => undefined);
+  }
+  state.client?.send({ t: "drained", switchId });
+}
+
 /** A fresh snapshot of this tab's conversation for the viewers (a viewer just joined). */
 async function sendSnapshot(): Promise<void> {
   const runtime = state.runtime;
@@ -301,6 +396,8 @@ let offeredToRun = false;
 function watching(viewing: Viewing): void {
   state.mode = "viewer";
   state.progress = "";
+  state.leaving = undefined;
+  state.environments = viewing.environments;
   state.placement = viewing.placement;
   state.files = viewing.files.map(fileRow);
   state.chat = new ChatView();
@@ -318,7 +415,7 @@ function watching(viewing: Viewing): void {
 
 // ---- connection --------------------------------------------------------------------------------------------------------
 
-async function connect(mode: "write" | "view", takeover = false): Promise<void> {
+async function connect(mode: "write" | "view", takeover = false, switchId?: string): Promise<void> {
   state.client?.close();
   state.client = undefined;
   if (mode === "write") {
@@ -337,6 +434,7 @@ async function connect(mode: "write" | "view", takeover = false): Promise<void> 
     tab,
     mode,
     takeover,
+    ...(switchId ? { switchId } : {}),
     onFrame,
     onLost: (code, message) => void lost(client, code, message),
   });
@@ -359,6 +457,13 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
   const wasWriter = state.mode === "writer" || state.mode === "booting";
   await state.runtime?.close().catch(() => undefined);
   state.runtime = undefined;
+  if (state.leaving && code === "RELEASED") {
+    // This tab handed the run over: watch where it went.
+    state.mode = "connecting";
+    render();
+    void connect("view");
+    return;
+  }
   state.mode = "lost";
   state.banner =
     code === "MOVED" ? "This run moved to another device. This tab stopped; it wrote nothing after the move." :
@@ -373,7 +478,13 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text || !state.runtime) return;
+  if (!text) return;
+  if (!state.runtime) {
+    if (state.mode !== "viewer" || state.placement?.where !== "cloud") return;
+    input.value = "";
+    state.client?.send({ t: "submit", text, requestId: `ui-${crypto.randomUUID()}` });
+    return;
+  }
   input.value = "";
   void state.runtime.root.submit({ type: "input", content: text, requestId: `ui-${crypto.randomUUID()}` }, ctx).catch((error: Error) => {
     state.banner = `not sent: ${error.message}`;
@@ -388,8 +499,7 @@ $("input").addEventListener("keydown", (e) => {
     send();
   }
 });
-$("move").addEventListener("click", () => state.client?.send({ t: "cloud", action: "move" }));
-$("takeover").addEventListener("click", () => void connect("write", state.placement?.where !== "parked"));
+$("takeover").addEventListener("click", () => void connect("write", true));
 setInterval(renderStats, 1000);
 
 if (!run || !secret) {
@@ -415,5 +525,7 @@ if (!run || !secret) {
       return { id: String(e.id), kind: e.kind, calls, result: m?.toolCallId, isError: m?.isError };
     });
   },
+  handovers: () => state.handovers,
+  switchTo,
   timings: () => state.client && { commit: state.client.timings.commit, files: state.client.timings.files, rtts: state.client.rtts, computerMs: state.computerMs, bootMs: state.bootMs, syncs: state.runtime?.syncs },
 };

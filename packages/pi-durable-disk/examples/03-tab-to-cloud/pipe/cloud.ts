@@ -13,7 +13,7 @@ import { archilControl, type DemoControl } from "./control.ts";
 import type { CloudHost } from "./server.ts";
 import type { ModelOptions, ModelProxy } from "./model-proxy.ts";
 import { dialLink, type LinkDialer } from "./link.ts";
-import { tag, toBase64, type FileEntry, type PipeFrame } from "../wire.ts";
+import { tag, toBase64, type Environment, type FileEntry, type Move, type PipeFrame } from "../wire.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const CLOUD_APP = join(here, "..", "cloud-app.ts");
@@ -22,6 +22,17 @@ export const CLOUD_LEASE = ["--heartbeat-ms", "2000", "--lease-expiry-ms", "1000
 
 type Log = (event: string, data?: Record<string, unknown>) => void;
 type LedgerLike = { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
+
+/** What an instance needs to admit the notice of `move` into `env` (cloud-app.ts reads it). */
+export function moveEnv(env: Environment, move: Move, hostClass?: string): Record<string, string> {
+  return {
+    DEMO_SWITCH_ID: move.id,
+    DEMO_SWITCH_FROM: move.from,
+    DEMO_SWITCH_PLANNED: move.planned ? "1" : "0",
+    DEMO_ENV_LABEL: env.phrase,
+    ...(hostClass ? { DEMO_ENV_CLASS: hostClass } : {}),
+  };
+}
 
 /** The port a cloud instance listens on for the server's link (cloud-link.ts). */
 export const LINK_PORT = 8795;
@@ -85,6 +96,8 @@ export async function relayViewer(opts: {
   send: (frame: PipeFrame) => void;
   log: Log;
   label: () => string;
+  /** The environment id the run is in, for the placement. */
+  env: () => string;
   dialer: () => LinkDialer | undefined;
 }): Promise<() => void> {
   const { control, ref, send } = opts;
@@ -100,7 +113,7 @@ export async function relayViewer(opts: {
         const dialer = opts.dialer();
         if (record && record.generation !== generation && record.status === "running" && (serve || dialer)) {
           generation = record.generation;
-          send({ t: "placement", placement: { where: "cloud", host: opts.label(), generation } });
+          send({ t: "placement", placement: { where: "cloud", host: opts.label(), generation, env: opts.env() } });
           streaming?.abort();
           const stream = (streaming = new AbortController());
           abort.signal.addEventListener("abort", () => stream.abort(), { once: true });
@@ -135,7 +148,8 @@ export async function relayViewer(opts: {
       } catch (error) {
         opts.log("cloud.view-failed", { run: ref.id, error: (error as Error).message });
       }
-      await new Promise((r) => setTimeout(r, 1_500));
+      // Faster until the host's events stream: a viewer waits for a new host to show up.
+      await new Promise((r) => setTimeout(r, streaming ? 1_500 : 400));
     }
   })();
   return () => abort.abort();
@@ -149,9 +163,10 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
     const running = new Set<string>();
     const models = new Map<string, ModelProxy>();
     const daytona: CloudHost = {
+      environments: d.environments,
       async start(ref, run) {
         models.set(ref.id, run.model);
-        await d.start(ref, run, true);
+        await d.start(ref, { model: run.model, move: run.move }, true);
         running.add(ref.id);
         // A spare sandbox, warm, for when this one is lost.
         d.prewarm(ref);
@@ -160,13 +175,14 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       async supervise(ref) {
         const model = models.get(ref.id);
         if (!model || !running.has(ref.id)) return undefined;
-        if (!(await d.start(ref, { model }, false))) return undefined;
+        const move: Move = { id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`, from: d.environments[0]!.phrase, planned: false };
+        if (!(await d.start(ref, { model, move }, false))) return undefined;
         options.log("cloud.replaced", { run: ref.id, host: d.hostLabel });
         d.prewarm(ref);
         return { host: d.hostLabel };
       },
       kill: (ref) => d.kill(ref),
-      attachViewer: (ref, send) => relayViewer({ control, ref, send, log: options.log, label: () => d.hostLabel, dialer: () => d.placed(ref.id)?.dialer }),
+      attachViewer: (ref, send) => relayViewer({ control, ref, send, log: options.log, label: () => d.hostLabel, env: () => d.environments[0]!.id, dialer: () => d.placed(ref.id)?.dialer }),
       async stop(ref, how) {
         running.delete(ref.id);
         await d.stop(ref, how);
@@ -186,6 +202,7 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
     { name: "machine C", root: "/mnt/pda/demo/c", hostName: "demo-local-c", linkPort: LINK_PORT + 1 },
   ];
   const hostLabel = "a second machine (local FUSE client)";
+  const local: Environment = { id: "local", label: "Second machine", phrase: "a second machine next to your user's server", kind: "cloud", detail: "a systemd unit with its own disk client" };
   const localDriver = (machine: (typeof machines)[number], env: Record<string, string>) =>
     localHost({
       mode: "systemd",
@@ -208,8 +225,11 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
     }
   }
 
-  /** Start (or, with `demand` false, keep) the run on `machine`; the instance gets a link of its own when asked. */
-  async function place(ref: RunRef, machine: (typeof machines)[number], demand: boolean): Promise<boolean> {
+  /**
+   * Start (or, with `demand` false, keep) the run on `machine`; the instance gets a link of its own when asked, and
+   * admits the notice of `move` before it resumes.
+   */
+  async function place(ref: RunRef, machine: (typeof machines)[number], demand: boolean, move: Move): Promise<boolean> {
     const started = Date.now();
     let link: { token: string; file: string } | undefined;
     if (options.link) {
@@ -218,7 +238,10 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       link = { token: randomBytes(24).toString("base64url"), file: join(dir, `${ref.id}-${machine.hostName}.token`) };
       writeFileSync(link.file, `${link.token}\n`, { mode: 0o600 });
     }
-    const driver = localDriver(machine, link ? { DEMO_LINK_PORT: String(machine.linkPort), DEMO_LINK_TOKEN_FILE: link.file } : { DEMO_MODEL_URL: options.model.baseUrl });
+    const driver = localDriver(machine, {
+      ...(link ? { DEMO_LINK_PORT: String(machine.linkPort), DEMO_LINK_TOKEN_FILE: link.file } : { DEMO_MODEL_URL: options.model.baseUrl }),
+      ...moveEnv(local, move, machine.name),
+    });
     const result = await ensureRunning(ref, driver, { control, demand, tokenPrefix: "pda-demo-", leaseExpiryMs: 10_000, startGraceMs: 20_000 });
     if (result.action !== "started") {
       if (link) rmSync(link.file, { force: true });
@@ -264,16 +287,20 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
   };
 
   const host: CloudHost = {
-    async start(ref: RunRef, run: { model: ModelProxy }) {
+    environments: [local],
+
+    async start(ref: RunRef, run: { model: ModelProxy; env: string; move: Move }) {
       models.set(ref.id, run.model);
-      await place(ref, machines[0]!, true);
+      await place(ref, machines[0]!, true, run.move);
       return { host: placed.get(ref.id)!.host };
     },
 
     /** One supervisor tick: a holder that died (orphaned) or froze (lease expired) is replaced on the other machine. */
     async supervise(ref: RunRef) {
-      if (!placed.has(ref.id)) return undefined;
-      if (!(await place(ref, otherMachine(ref), false))) return undefined;
+      const at = placed.get(ref.id);
+      if (!at) return undefined;
+      const move: Move = { id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`, from: `${local.phrase} (${at.machine})`, planned: false };
+      if (!(await place(ref, otherMachine(ref), false, move))) return undefined;
       const host = placed.get(ref.id)!.host;
       options.log("cloud.replaced", { run: ref.id, host });
       return { host };
@@ -291,7 +318,7 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       options.log("cloud.killed", { run: ref.id, units: 1 + scopes.length });
     },
 
-    attachViewer: (ref: RunRef, send: (frame: PipeFrame) => void) => relayViewer({ control, ref, send, log: options.log, label: () => placed.get(ref.id)?.host ?? hostLabel, dialer: () => placed.get(ref.id)?.dialer }),
+    attachViewer: (ref: RunRef, send: (frame: PipeFrame) => void) => relayViewer({ control, ref, send, log: options.log, label: () => placed.get(ref.id)?.host ?? hostLabel, env: () => local.id, dialer: () => placed.get(ref.id)?.dialer }),
 
     async submit(ref: RunRef, text: string, requestId: string) {
       const record = await readRunStatus(control, ref.id);

@@ -25,6 +25,8 @@ export interface PipeClientOptions {
   readonly tab: string;
   readonly mode: "write" | "view";
   readonly takeover?: boolean;
+  /** The switch this tab answers (the pipe told it to run the run here). */
+  readonly switchId?: string;
   /** Ping period; the pipe considers the writer gone after a few missed pings. Default 1 s. */
   readonly pingMs?: number;
   readonly onFrame?: (frame: PipeFrame) => void;
@@ -53,7 +55,7 @@ export class PipeClient {
     this.#socket = new WebSocket(options.url);
     this.ready = new Promise((resolve, reject) => {
       this.#socket.addEventListener("open", () => {
-        this.#send({ t: "hello", run: options.run, token: options.token, mode: options.mode, tab: options.tab, ...(options.takeover ? { takeover: true } : {}) });
+        this.#send({ t: "hello", run: options.run, token: options.token, mode: options.mode, tab: options.tab, ...(options.takeover ? { takeover: true } : {}), ...(options.switchId ? { switchId: options.switchId } : {}) });
         this.#ping = setInterval(() => this.#send({ t: "ping", at: performance.now() }), options.pingMs ?? 1_000);
       });
       this.#socket.addEventListener("message", (event) => {

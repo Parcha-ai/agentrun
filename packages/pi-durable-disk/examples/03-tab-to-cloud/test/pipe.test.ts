@@ -6,7 +6,8 @@ import { existsSync, readFileSync, symlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { registerConformance } from "./_conformance.ts";
 import { PipeClient, remoteStorage } from "../tab/pipe-client.ts";
-import { PipeLostError, toBase64 } from "../wire.ts";
+import { PipeLostError, toBase64, type Move, type PipeFrame } from "../wire.ts";
+import type { CloudHost } from "../pipe/server.ts";
 import { localServer, modelStub } from "./_local.ts";
 
 const text = (s: string) => toBase64(new TextEncoder().encode(s));
@@ -128,12 +129,111 @@ describe("the pipe", () => {
     const a = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 60_000 });
     await a.ready;
     await new Promise((r) => setTimeout(r, 1_500));
-    assert.deepEqual(placements.slice(-2), ["moving", "parked"]);
+    assert.equal(placements.at(-1), "parked");
     assert.equal(local.server.runs.get(id)!.pipe, undefined);
     const record = JSON.parse(readFileSync(join(local.root, "runs", id, "run.json"), "utf8"));
     assert.equal(record.status, "paused");
     assert.equal(typeof record.sealedSeq, "number");
     a.close();
     mkdirSync(join(local.root, "unused"), { recursive: true });
+  });
+});
+
+describe("switching environments", () => {
+  let local: Awaited<ReturnType<typeof localServer>>;
+  const calls: { op: string; env?: string; move?: Move; how?: string }[] = [];
+  const events: { event: string; data: Record<string, unknown> }[] = [];
+  const cloud: CloudHost = {
+    environments: [{ id: "far", label: "Far away", phrase: "a far-away host", kind: "cloud" }],
+    async start(_ref, run) {
+      calls.push({ op: "start", env: run.env, move: run.move });
+      return { host: "far-1" };
+    },
+    async stop(_ref, how) {
+      calls.push({ op: "stop", ...(how ? { how } : {}) });
+    },
+  };
+  before(async () => {
+    local = await localServer({ cloud, drainMs: 400, superviseMs: 60_000, log: (event, data = {}) => events.push({ event, data }) });
+  });
+  after(() => local.remove());
+
+  const until = async (check: () => boolean, ms = 5_000) => {
+    const end = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > end) throw new Error("timed out");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+
+  it("tab to cloud: the tab drains, the run is released, the cloud starts with a planned move", async () => {
+    const { id, secret } = await local.server.createRun("switch-out");
+    const frames: PipeFrame[] = [];
+    const a: PipeClient = new PipeClient({
+      url: local.url, run: id, token: secret, tab: "a", mode: "write",
+      onFrame: (f) => {
+        frames.push(f);
+        if (f.t === "drain") setTimeout(() => a.send({ t: "drained", switchId: f.switchId }), 50);
+      },
+    });
+    const attached = await a.ready;
+    assert.equal(attached.t, "attached");
+    assert.deepEqual(attached.t === "attached" && attached.environments.map((e) => e.id), ["tab", "far"]);
+    a.send({ t: "switch", to: "tab" });
+    await until(() => frames.some((f) => f.t === "switch-refused"));
+    a.send({ t: "switch", to: "far" });
+    const state = local.server.runs.get(id)!;
+    await until(() => state.placement.where === "cloud");
+    const drain = frames.find((f) => f.t === "drain");
+    assert.ok(drain && drain.t === "drain");
+    const started = calls.at(-1)!;
+    assert.equal(started.op, "start");
+    assert.equal(started.env, "far");
+    assert.deepEqual({ ...started.move, id: undefined }, { id: undefined, from: "your user's browser tab", planned: true });
+    assert.equal(started.move!.id, drain.switchId);
+    assert.equal(state.pipe, undefined);
+    const drained = events.find((e) => e.event === "switch.drained" && e.data.switchId === drain.switchId);
+    assert.equal(drained?.data.drained, true);
+    const record = JSON.parse(readFileSync(join(local.root, "runs", id, "run.json"), "utf8"));
+    assert.equal(typeof record.sealedSeq, "number");
+    assert.ok(frames.some((f) => f.t === "lost" && f.code === "RELEASED"));
+    a.close();
+  });
+
+  it("cloud to tab: the cloud stops, the asking page is told to run it, its hello carries the move", async () => {
+    const { id, secret } = await local.server.createRun("switch-in");
+    // Into the cloud first (the writer ignores the drain: the switch goes on after the drain timeout).
+    const a = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write" });
+    await a.ready;
+    a.send({ t: "switch", to: "far" });
+    const state = local.server.runs.get(id)!;
+    await until(() => state.placement.where === "cloud");
+    assert.equal(events.find((e) => e.event === "switch.drained" && e.data.run === id)?.data.drained, false);
+    a.close();
+    const seen: PipeFrame[] = [];
+    const v = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "view", onFrame: (f) => seen.push(f) });
+    const viewing = await v.ready;
+    assert.equal(viewing.t, "viewing");
+    v.send({ t: "switch", to: "tab" });
+    await until(() => seen.some((f) => f.t === "run-here"));
+    const runHere = seen.find((f) => f.t === "run-here")!;
+    assert.ok(runHere.t === "run-here");
+    assert.deepEqual(calls.at(-1), { op: "stop", how: "now" });
+    // Another tab cannot take the run while the switch waits for the asking one.
+    const other = new PipeClient({ url: local.url, run: id, token: secret, tab: "o", mode: "write" });
+    assert.equal((await other.ready).t, "viewing");
+    other.close();
+    const got: PipeFrame[] = [];
+    const b = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => got.push(f) });
+    const attached = await b.ready;
+    assert.ok(attached.t === "attached");
+    assert.equal(attached.move?.id, runHere.switchId);
+    assert.deepEqual({ ...attached.move, id: undefined }, { id: undefined, from: "a far-away host", planned: true });
+    b.send({ t: "switched", switchId: runHere.switchId });
+    await until(() => got.some((f) => f.t === "switched"));
+    assert.equal(state.switching, undefined);
+    assert.equal(state.placement.where, "tab");
+    v.close();
+    b.close();
   });
 });

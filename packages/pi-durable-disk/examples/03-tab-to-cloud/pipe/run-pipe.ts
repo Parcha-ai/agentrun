@@ -31,8 +31,10 @@ import {
   toBase64,
   untag,
   workspaceDigest,
+  type Environment,
   type FileChange,
   type FileEntry,
+  type Move,
   type PipeFrame,
   type StorageMethod,
   type Tagged,
@@ -100,6 +102,7 @@ export class RunPipe {
   #goneFired = false;
   #models = new Map<string, AbortController>();
   #scratch = 0;
+  #drained: { switchId: string; done: () => void } | undefined;
 
   private constructor(ref: RunRef, lease: RunLease, options: RunPipeOptions) {
     this.ref = ref;
@@ -172,7 +175,7 @@ export class RunPipe {
    * and its later frames are refused, after its frames in flight settled); otherwise the socket becomes a viewer.
    * Resolves with what happened.
    */
-  async attach(socket: PipeSocket, tab: string, takeover: boolean): Promise<"writer" | "viewer"> {
+  async attach(socket: PipeSocket, tab: string, takeover: boolean, extra: { environments: Environment[]; move?: Move } = { environments: [] }): Promise<"writer" | "viewer"> {
     this.#assertUsable();
     const current = this.#writer && !this.#writer.dead ? this.#writer : undefined;
     if (current && !takeover && current.tab !== tab) {
@@ -202,8 +205,10 @@ export class RunPipe {
       files,
       model: this.#options.model.options.model,
       budget: { used: this.#options.model.spent, cap: this.#options.model.options.budgetTokens },
+      environments: extra.environments,
+      ...(extra.move ? { move: extra.move } : {}),
     });
-    this.#broadcast({ t: "placement", placement: { where: "tab", tab, epoch, generation: this.lease.generation } });
+    this.#broadcast({ t: "placement", placement: { where: "tab", tab, epoch, generation: this.lease.generation, env: "tab" } });
     this.#log("pipe.attach", { tab, epoch, files: files.length, workDigest: await this.workDigest() });
     return "writer";
   }
@@ -228,6 +233,28 @@ export class RunPipe {
   /** The current events every new viewer replays, oldest first. */
   get events(): readonly Tagged[] {
     return this.#events;
+  }
+
+  /**
+   * A planned move: ask the writer to finish its current step and close its Session, and resolve once it says it did
+   * (or after `timeoutMs`). The release that follows retires it either way.
+   */
+  drainWriter(switchId: string, timeoutMs: number): Promise<boolean> {
+    const writer = this.#writer;
+    if (!writer || writer.dead) return Promise.resolve(true);
+    writer.socket.send({ t: "drain", switchId });
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.#drained = undefined;
+        resolve(false);
+      }, timeoutMs);
+      this.#drained = { switchId, done: () => (clearTimeout(timer), (this.#drained = undefined), resolve(true)) };
+    });
+  }
+
+  /** The writer finished draining for `switchId`. */
+  drained(socket: PipeSocket, switchId: string): void {
+    if (this.#writer?.socket === socket && this.#drained?.switchId === switchId) this.#drained.done();
   }
 
   /** The socket closed: a writer's departure starts the grace; a viewer just leaves. */
@@ -516,7 +543,7 @@ export class RunPipe {
         // gone
       }
     }
-    this.#broadcast({ t: "placement", placement: { where: "moving", to: "cloud", detail: "the claim was taken" } });
+    this.#broadcast({ t: "placement", placement: { where: "parked", detail: "the claim was taken by another host" } });
     this.#options.onLost?.(this, error);
   }
 
