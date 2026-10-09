@@ -195,13 +195,26 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const running = new Set<string>();
   let server: ServerApi | undefined;
 
-  async function drop(box: { id: string; name: string }): Promise<void> {
-    await client.remove(box.id).then(
-      () => void options.ledger?.close("modal-sandbox", box.id, "deleted"),
-      (error: Error) => options.log("modal.delete-failed", { box: box.name, error: error.message }),
+  /**
+   * Remove a sandbox. A removal that fails leaves it in `live` (and its token), so a later try, such as close()'s, still finds it:
+   * a sandbox forgotten while it runs costs by the minute. True when it is gone.
+   */
+  async function drop(box: { id: string; name: string }): Promise<boolean> {
+    const removed = await client.remove(box.id).then(
+      () => {
+        options.ledger?.close("modal-sandbox", box.id, "deleted");
+        return true;
+      },
+      (error: Error) => {
+        options.log("modal.delete-failed", { box: box.name, error: error.message });
+        return false;
+      },
     );
-    live.delete(box.id);
-    serveTokens.delete(box.id);
+    if (removed) {
+      live.delete(box.id);
+      serveTokens.delete(box.id);
+    }
+    return removed;
   }
 
   /** The app bundle and this box's serve token: once per box (the image holds the runtime and the app's dependencies). */
@@ -583,10 +596,18 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       };
       for (const id of [...running]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
       for (const id of [...placed.keys()]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
-      for (const id of [...live]) await attempt(`drop ${id}`, () => drop({ id, name: id }));
+      // A removal that failed is tried again: Modal's errors are mostly transient, and what is left running is billed.
+      for (let round = 0; round < 3 && live.size > 0; round++) {
+        for (const id of [...live]) {
+          await attempt(`drop ${id}`, async () => {
+            if (!(await drop({ id, name: id }))) throw new Error(`${id} was not removed`);
+          });
+        }
+        if (live.size > 0) await new Promise((r) => setTimeout(r, 500));
+      }
       remotes.clear();
       warm.clear();
-      if (failures.length > 0) options.log("close.failures", { failures });
+      if (failures.length > 0) options.log("close.failures", { failures, left: live.size });
     },
   };
   return host;

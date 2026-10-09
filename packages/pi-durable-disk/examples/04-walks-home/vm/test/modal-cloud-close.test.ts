@@ -35,7 +35,7 @@ class FakeSandbox {
   }
 }
 
-test("close removes the second sandbox although terminating the first throws, and says so", async () => {
+async function world(failTerminate: (id: string, attempt: number) => boolean) {
   const boxes: FakeSandbox[] = [];
   const attempts: string[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
@@ -46,7 +46,7 @@ test("close removes the second sandbox although terminating the first throws, an
       async create(_app: unknown, _image: unknown, params: { name: string }) {
         const box = new FakeSandbox(params.name, boxes.length + 1, async (id) => {
           attempts.push(id);
-          if (id === "sb-1") throw new Error("modal is having a moment");
+          if (failTerminate(id, attempts.filter((a) => a === id).length)) throw new Error("modal is having a moment");
         });
         boxes.push(box);
         return box;
@@ -68,14 +68,33 @@ test("close removes the second sandbox although terminating the first throws, an
     transport: "pipe",
     warm: true,
   });
-  cloud.prewarm!({ disk: "dsk-test", region: "test", id: "run-a" });
-  cloud.prewarm!({ disk: "dsk-test", region: "test", id: "run-b" });
-  for (const t0 = Date.now(); logs.filter((l) => l.event === "remote.ready").length < 2; await new Promise((r) => setTimeout(r, 25))) {
-    if (Date.now() - t0 > 20_000) throw new Error(`the sandboxes did not come up: ${logs.map((l) => l.event).join(",")}`);
-  }
-  assert.equal(boxes.length, 2);
-  await cloud.close!();
-  assert.deepEqual([...attempts].sort(), ["sb-1", "sb-2"], "both were asked to terminate");
-  assert.equal(boxes[1]!.exit, 137, "the second one is gone");
-  assert.ok(logs.some((l) => l.event === "modal.delete-failed" && /moment/.test(String(l.data.error))), "the failure is reported");
+  const ref = (id: string) => ({ disk: "dsk-test", region: "test", id });
+  const up = async (runs: string[]) => {
+    for (const r of runs) cloud.prewarm!(ref(r));
+    for (const t0 = Date.now(); logs.filter((l) => l.event === "remote.ready").length < runs.length; await new Promise((r) => setTimeout(r, 25))) {
+      if (Date.now() - t0 > 20_000) throw new Error(`the sandboxes did not come up: ${logs.map((l) => `${l.event} ${JSON.stringify(l.data).slice(0, 200)}`).join(" | ")}`);
+    }
+  };
+  return { cloud, boxes, attempts, logs, ref, up };
+}
+
+test("close removes the second sandbox although terminating the first keeps failing, and says what is left", async () => {
+  const w = await world((id) => id === "sb-1");
+  await w.up(["run-a", "run-b"]);
+  assert.equal(w.boxes.length, 2);
+  await w.cloud.close!();
+  assert.equal(w.boxes[1]!.exit, 137, "the second one is gone");
+  assert.ok(w.attempts.filter((a) => a === "sb-1").length >= 2, "the failing one was tried again");
+  assert.ok(w.logs.some((l) => l.event === "modal.delete-failed" && /moment/.test(String(l.data.error))), "each failure is reported");
+  const summary = w.logs.find((l) => l.event === "close.failures");
+  assert.equal(summary?.data.left, 1, "close says one sandbox is still there");
+});
+
+test("the take's warm GPU box: a removal that fails once (its server's stop of the run did) is retried by close, and the box is terminated", async () => {
+  const w = await world((_id, attempt) => attempt === 1);
+  await w.up(["run-a"]);
+  await w.cloud.stopRemote!(w.ref("run-a")); // the server's own cleanup: the first terminate throws, the sandbox must not be forgotten
+  assert.equal(w.boxes[0]!.exit, null, "still running after the failed removal");
+  await w.cloud.close!();
+  assert.equal(w.boxes[0]!.exit, 137, "close terminated it on the retry");
 });
