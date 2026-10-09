@@ -100,3 +100,14 @@ test('a terrain fragment is spliced after the floor, leaves the body identity al
   assert.ok(sim.uprightness() > 0.95, `uprightness ${sim.uprightness()}`);
   assert.equal(sim.model.nhfield, 1);
 });
+
+test('every preset is valid and stands unaided for 4 s', async () => {
+  const { PRESETS, validateDesign } = await import('../src/design.ts');
+  for (const [name, d] of Object.entries(PRESETS)) {
+    assert.deepEqual(validateDesign(d), [], name);
+    const { built } = await fixture(d);
+    const sim = new Sim(mj, built);
+    for (let i = 0; i < 200; i++) sim.step(null);
+    assert.ok(sim.uprightness() > 0.9, `${name}: uprightness ${sim.uprightness()}`);
+  }
+});

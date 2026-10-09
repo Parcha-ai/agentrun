@@ -1,7 +1,7 @@
 // The tab app: sketch -> MJCF -> MuJoCo (WASM) -> render, a policy that runs offline, kicks, and the memory view.
 // Embedded by the show page as a same-origin iframe; see POLICY-FORMAT.md and the "walks-home" message protocol below.
 
-import { defaultDesign, validateDesign, type Design } from './design.ts';
+import { defaultDesign, PRESETS, validateDesign, type Design } from './design.ts';
 import { buildMjcf, type Built, type World } from './mjcf.ts';
 import { dummyPolicy, Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { Sim } from './sim.ts';
@@ -56,6 +56,8 @@ interface App {
   placement: { kind: string; label: string };
 }
 
+const MAX_DRAG_KICK_N = 100;
+
 let app: App;
 
 function toast(text: string) {
@@ -88,10 +90,21 @@ async function loadVendor() {
   return { mj, sql, mujocoVersion: versions.mujoco as string };
 }
 
+/** The body as the trainer and the forks need it: creature.xml byte for byte, and body.json (joint order, stand pose).
+ *  Written next to the SQLite files, only when there is a disk behind the page and this tab may write. */
+async function publishBody() {
+  if (app.storageMode !== 'disk') return;
+  const { xml, legs, jointNames, standPose, standHeight } = app.world ? { ...buildMjcf(app.sketcher.get()) } : app.built;
+  const enc = new TextEncoder();
+  await new ParentBackend(windowBus(), 'creature/creature.xml').write(enc.encode(xml));
+  await new ParentBackend(windowBus(), 'creature/body.json').write(enc.encode(JSON.stringify({ legs, jointNames, standPose, standHeight, mjcf_sha256: app.bodySha }, null, 1) + '\n'));
+}
+
 /** Save the body to designs.sqlite; when another machine holds the run, ask the agent to save it instead. */
 async function saveDesign(design: Design) {
   try {
     const saved = await app.store.saveDesign(design);
+    await publishBody();
     post('design-saved', { id: saved.id, name: design.name, sha256: saved.sha256, mjcf_sha256: app.bodySha });
   } catch (e) {
     if (!(e instanceof NotHolder)) throw e;
@@ -113,19 +126,35 @@ async function buildCreature(design: Design, keepPolicy: boolean) {
   app.fallen = false; app.recovering = null;
   await saveDesign(design);
   // A policy belongs to one body: a changed body refuses the old policy (mjcf_sha256) rather than running it blind.
-  if (keepPolicy && app.policy && app.policy.file.mjcf_sha256 !== app.bodySha) {
-    setPolicy(null, 'none (body changed: the loaded policy was trained for another body)');
-  } else if (!app.policy && app.policyName === 'dummy trot') {
+  // The dummy is generated from the body, so it is rebuilt for the new one.
+  if (app.policyName === 'dummy trot') {
     await useDummy();
+  } else if (keepPolicy && app.policy && app.policy.file.mjcf_sha256 !== app.bodySha) {
+    setPolicy(null, 'none');
+    showError('The loaded policy was trained for another body, so it was removed. Load one for this body.');
   }
-  app.sim.command = Number(($('command') as HTMLInputElement).value);
+  applyCommand();
   renderPairs();
+}
+
+/** The slider is the single source of the command: apply it to the sim (a new Sim starts at 0, which a policy reads as "stand"). */
+function applyCommand() {
+  const input = $('command') as HTMLInputElement;
+  // A policy trained for a command range limits the slider to it.
+  const range = (app.policy?.file as { command_range?: [number, number] } | undefined)?.command_range;
+  input.min = String(range?.[0] ?? 0);
+  input.max = String(range?.[1] ?? 1);
+  const v = Math.min(Number(input.max), Math.max(Number(input.min), Number(input.value)));
+  input.value = String(v);
+  app.sim.command = v;
+  $('commandOut').textContent = v.toFixed(2);
 }
 
 function setPolicy(p: Policy | null, name: string) {
   app.policy = p;
   app.policyName = name;
   $('policyName').textContent = name;
+  applyCommand();
 }
 
 async function useDummy() {
@@ -257,7 +286,7 @@ function tick(now: number) {
     if (app.recovering !== null && !app.fallen && app.sim.time - app.recovering > 2 && up > 0.9) {
       post('stood', { t: app.sim.time, since_kick: app.sim.time - app.recovering });
       app.recovering = null;
-      toast('still standing');
+      toast('recovered');
     }
   }
   app.view.draw();
@@ -291,12 +320,24 @@ async function main() {
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' },
     };
     app.view.setSim(app.sim);
-    await useDummy();
+    await useDummy(); // also applies the slider's command to the sim
     await saveDesign(design); // the first body is a body too: the memory view lists it
     renderPairs();
     setPlacement('tab', 'this tab');
 
+    for (const [name, preset] of Object.entries(PRESETS)) {
+      const b = document.createElement('button');
+      b.textContent = name;
+      b.onclick = () => { app.sketcher.set(preset); buildCreature(structuredClone(preset), true).catch((e) => showError(String(e))); };
+      $('presets').append(b);
+    }
     $('build').onclick = () => buildCreature(app.sketcher.get(), true).catch((e) => showError(String(e)));
+    let side = false;
+    $('viewToggle').onclick = () => {
+      side = !side;
+      app.view.setPreset(side ? 'side' : 'three-quarter');
+      $('viewToggle').textContent = side ? '3/4 view' : 'Side view';
+    };
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
     $('reset').onclick = () => { app.sim.reset(); app.fallen = false; app.recovering = null; };
@@ -309,11 +350,7 @@ async function main() {
       const f = (e.target as HTMLInputElement).files?.[0];
       if (f) await loadPolicyText(await f.text(), f.name).catch(() => {});
     };
-    $('command').oninput = (e) => {
-      const v = Number((e.target as HTMLInputElement).value);
-      app.sim.command = v;
-      $('commandOut').textContent = v.toFixed(2);
-    };
+    $('command').oninput = () => applyCommand();
     document.querySelectorAll<HTMLElement>('[data-kick]').forEach((b) => {
       b.onclick = () => {
         const [x, y] = b.dataset.kick!.split(',').map(Number);
@@ -325,7 +362,8 @@ async function main() {
     // Drag from the creature to shove it: direction = the drag as seen from the camera, force grows with the length.
     const canvas = $('view') as HTMLCanvasElement, arrow = $('dragArrow') as unknown as SVGLineElement, svg = $('dragSvg');
     let drag: { x: number; y: number } | null = null;
-    const forceFor = (px: number) => Math.min(150, Math.max(10, px * 0.5));
+    // Capped where the current trained policy still recovers from every side (see scripts/kick-sweep.ts); raise it with a push-trained policy.
+    const forceFor = (px: number) => Math.min(MAX_DRAG_KICK_N, Math.max(10, px * 0.4));
     canvas.addEventListener('pointerdown', (e) => {
       if (!app.view.pickCreature(e.clientX, e.clientY)) return;
       drag = { x: e.clientX, y: e.clientY };

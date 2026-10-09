@@ -68,6 +68,7 @@ table.designs td, table.designs th { border-bottom:1px solid var(--line); paddin
 <main>
   <aside>
     <div class="row"><h2 style="flex:1">Sketch (top view; drag the dots)</h2><button id="closeSketch" type="button">Close</button></div>
+    <div class="row" id="presets"><span class="lbl">start from</span></div>
     <canvas id="sketch"></canvas>
     <div class="row"><button id="addPair">Add leg pair</button><button id="removePair">Remove pair</button><span id="count" class="lbl"></span></div>
     <div id="pairs"></div>
@@ -76,11 +77,11 @@ table.designs td, table.designs th { border-bottom:1px solid var(--line); paddin
   <div id="stage">
     <canvas id="view"></canvas>
     <div id="hud"></div>
-    <svg id="dragSvg" hidden style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2"><line id="dragArrow" x1="0" y1="0" x2="0" y2="0" stroke="#b3261e" stroke-width="3" stroke-linecap="round"/></svg>
+    <svg id="dragSvg" hidden style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2"><defs><marker id="arrowHead" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L4,2 L0,4 z" fill="#b3261e"/></marker></defs><line id="dragArrow" x1="0" y1="0" x2="0" y2="0" stroke="#b3261e" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowHead)"/></svg>
     <div id="toast"></div>
     <div id="err"></div>
     <div id="toolbar">
-      <div class="grp"><button id="sketchToggle" type="button">Sketch</button><button id="reset">Reset</button></div>
+      <div class="grp"><button id="sketchToggle" type="button">Sketch</button><button id="reset">Reset</button><button id="viewToggle" title="camera: side-on or three-quarter">Side view</button></div>
       <div class="grp"><span class="lbl">policy</span><span id="policyName">none</span><button id="useDummy">Dummy</button><button id="noPolicy">Stand</button><input type="file" id="policyFile" accept=".json" hidden><button id="pickPolicy" type="button">Load</button></div>
       <div class="grp"><span class="lbl">speed</span><input type="range" id="command" min="0" max="1" step="0.05" value="0.5" style="width:70px"><output id="commandOut">0.50</output></div>
       <div class="grp"><span class="lbl">kick</span><button data-kick="0,1" title="push left">&#9664;</button><button data-kick="1,0" title="push forward">&#9650;</button><button data-kick="-1,0" title="push back">&#9660;</button><button data-kick="0,-1" title="push right">&#9654;</button><input type="number" id="kickN" value="60" min="5" max="300" style="width:48px" title="newtons"></div>

@@ -38,7 +38,7 @@ export class View {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
-  private readonly controls: OrbitControls;
+  readonly controls: OrbitControls;
   private meshes: THREE.Mesh[] = [];
   private sim: Sim | null = null;
   private readonly grid: THREE.GridHelper;
@@ -125,6 +125,14 @@ export class View {
     const x = right.x * dx + f.x * -dy, y = right.y * dx + f.y * -dy;
     const n = Math.hypot(x, y) || 1;
     return [x / n, y / n];
+  }
+
+  /** Camera presets, as an offset from the creature: three-quarter (default) or side-on at body height (a gait reads best here). */
+  setPreset(name: 'three-quarter' | 'side'): void {
+    const t = this.controls.target;
+    if (name === 'side') { t.z = 0.2; this.camera.position.set(t.x, t.y - 1.9, 0.3); }
+    else { t.z = 0.2; this.camera.position.set(t.x + 1.1, t.y - 1.3, 0.8); }
+    this.controls.update();
   }
 
   setOrbitEnabled(on: boolean): void { this.controls.enabled = on; }
