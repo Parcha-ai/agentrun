@@ -850,6 +850,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   /**
    * `POST /api/runs/<id>/judge`: body `{prompt, answer}`; answers the judge's verdict (`show` or `refuse`). A judge that
    * times out or fails is a `refuse` too, so the page never shows an answer nobody judged. The text is never logged.
+   * The route only answers; holding an answer back until its verdict is `show` is the page's part.
    */
   async function judgeRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
     const state = runs.get(runId);
@@ -867,7 +868,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     } catch {
       return json(res, 400, { error: "the body is not JSON" });
     }
-    if (typeof body.prompt !== "string" || typeof body.answer !== "string") return json(res, 400, { error: "the body needs prompt and answer strings" });
+    if (body === null || typeof body !== "object" || typeof body.prompt !== "string" || typeof body.answer !== "string") {
+      return json(res, 400, { error: "the body needs prompt and answer strings" });
+    }
     if (body.answer.length > JUDGE_ANSWER_MAX) return json(res, 413, { error: `the answer is longer than ${JUDGE_ANSWER_MAX} characters` });
     const verdict = await judgeAnswer({ prompt: body.prompt, answer: body.answer }, options.judge);
     log("judge", { run: runId, verdict: verdict.verdict, dark: verdict.dark, ms: verdict.ms, ...(verdict.error ? { error: verdict.error } : {}) });

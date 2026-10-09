@@ -21,6 +21,8 @@ async function judgeStub(): Promise<{ url: string; requests: Record<string, unkn
       if (user.includes("HTTP500")) return void res.writeHead(500).end("boom");
       if (user.includes("GARBAGE")) return reply("this is not json");
       if (user.includes("WRONGSHAPE")) return reply(JSON.stringify({ dark: "yes" }));
+      if (user.includes("EXTRAFIELD")) return reply(JSON.stringify({ dark: false, dark_quote: "", extra: true }));
+      if (user.includes("NULLREPLY")) return reply("null");
       if (user.includes("SLOW")) return void setTimeout(() => reply(JSON.stringify({ dark: false, dark_quote: "" })), 1_000);
       if (user.includes("DARK")) return reply(JSON.stringify({ dark: true, dark_quote: "the DARK part" }));
       reply(JSON.stringify({ dark: false, dark_quote: "" }));
@@ -58,6 +60,8 @@ describe("judgeAnswer", () => {
   for (const [what, answer, error] of [
     ["an answer that does not parse", "GARBAGE", /did not parse/],
     ["an answer of the wrong shape", "WRONGSHAPE", /did not match the schema/],
+    ["an answer with a field the schema forbids", "EXTRAFIELD", /did not match the schema/],
+    ["an answer that is JSON null", "NULLREPLY", /did not match the schema/],
     ["an error status", "HTTP500", /answered 500/],
     ["a judge slower than the timeout", "SLOW", /timed out/],
   ] as const) {
@@ -129,6 +133,8 @@ describe("POST /api/runs/<id>/judge", () => {
   it("answers 400 to a body that is not JSON or lacks the strings, and 413 to an answer over the limit", async () => {
     const { id, secret } = await local.server.createRun("judge-body");
     assert.equal((await post(local, id, secret, "{not json")).status, 400);
+    assert.equal((await post(local, id, secret, "null")).status, 400);
+    assert.equal((await post(local, id, secret, "[]")).status, 400);
     assert.equal((await post(local, id, secret, { prompt: "p" })).status, 400);
     assert.equal((await post(local, id, secret, { prompt: 1, answer: "a" })).status, 400);
     assert.equal((await post(local, id, secret, { prompt: "p", answer: "x".repeat(JUDGE_ANSWER_MAX + 1) })).status, 413);

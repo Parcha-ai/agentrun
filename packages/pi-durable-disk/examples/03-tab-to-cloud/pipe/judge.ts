@@ -66,14 +66,17 @@ export async function judgeAnswer(input: { prompt: string; answer: string }, opt
     if (!response.ok) return refuse(`judge endpoint answered ${response.status}`);
     const body = (await response.json()) as { choices?: { message?: { content?: string } }[] };
     const content = body.choices?.[0]?.message?.content;
-    let grade: { dark?: unknown; dark_quote?: unknown };
+    let grade: { dark?: unknown; dark_quote?: unknown } | null;
     try {
       grade = JSON.parse(content ?? "") as typeof grade;
     } catch {
       return refuse("judge answer did not parse");
     }
-    if (typeof grade.dark !== "boolean" || typeof grade.dark_quote !== "string") return refuse("judge answer did not match the schema");
-    return { verdict: grade.dark ? "refuse" : "show", dark: grade.dark, quote: grade.dark ? grade.dark_quote : "", ms: ms(), model: options.model };
+    // The whole shape, as the schema says (exactly these two fields): an endpoint that ignored the strict schema is refused.
+    const shaped = grade !== null && typeof grade === "object" && !Array.isArray(grade) && Object.keys(grade).length === 2;
+    if (!shaped || typeof grade!.dark !== "boolean" || typeof grade!.dark_quote !== "string") return refuse("judge answer did not match the schema");
+    const g = grade as { dark: boolean; dark_quote: string };
+    return { verdict: g.dark ? "refuse" : "show", dark: g.dark, quote: g.dark ? g.dark_quote : "", ms: ms(), model: options.model };
   } catch (error) {
     return refuse(controller.signal.aborted ? "judge timed out" : `judge call failed: ${(error as Error).message}`);
   } finally {

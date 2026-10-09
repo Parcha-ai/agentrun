@@ -71,8 +71,10 @@ if (!values.model || !values["model-url"]) {
   process.exit(2);
 }
 const modelKey = values["model-key-env"] ? process.env[values["model-key-env"]] : undefined;
-// The dark-content judge the page asks before showing an answer (POST /api/runs/<id>/judge): its model, endpoint
-// (default the model's) and the variable holding that endpoint's key. No --judge-model: no judge route.
+// The dark-content judge a page asks before showing an answer (POST /api/runs/<id>/judge): its model, endpoint
+// (default the model's) and the variable holding that endpoint's key. No --judge-model: no judge route. The flag only
+// turns the route on: this example's page shows the agent's own model and does not call it; the Golden Gate episode's
+// tab gates every answer of its trained model through it.
 const judgeKey = values["judge-key-env"] ? process.env[values["judge-key-env"]] : undefined;
 if (values["judge-key-env"] && !judgeKey) {
   console.error(`--judge-key-env ${values["judge-key-env"]}: that variable is not set`);
