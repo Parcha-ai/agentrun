@@ -163,7 +163,8 @@ body.v2 #badge { display: flex; flex-direction: column; align-items: center; gap
 #badge[data-tone="moving"] .dot { animation: pulse .45s infinite alternate; }
 #badge.swap .main { animation: badgeSwap 1s cubic-bezier(.2, .9, .2, 1); }
 @keyframes badgeSwap { 0% { transform: translateY(-16px) scale(.9); opacity: .15; box-shadow: 0 0 0 0 color-mix(in srgb, var(--c) 65%, transparent); } 45% { transform: translateY(0) scale(1.05); opacity: 1; } 100% { transform: none; box-shadow: 0 0 0 30px transparent; } }
-#badge .memory { font: 500 22px/1.3 var(--sans); color: var(--ink); max-width: min(1100px, 88vw); text-align: center; padding: 6px 18px; border-radius: 12px; background: color-mix(in srgb, var(--gpu) 12%, transparent); animation: capin .4s ease-out; }
+/* the product's point, so it reads like the header, not like small print (cold view 5) */
+#badge .memory { font: 650 34px/1.25 var(--sans); color: var(--ink); max-width: min(1240px, 92vw); text-align: center; padding: 8px 24px; border-radius: 14px; background: color-mix(in srgb, var(--gpu) 16%, transparent); border: 1px solid color-mix(in srgb, var(--gpu) 45%, transparent); animation: capin .4s ease-out; }
 #badge .track { display: flex; align-items: center; gap: 16px; width: min(760px, 70vw); font: 650 20px var(--sans); }
 #badge .node { color: var(--muted); transition: color .5s; white-space: nowrap; }
 #badge[data-at="left"] .node.a, #badge[data-at="right"] .node.b { color: var(--c); }

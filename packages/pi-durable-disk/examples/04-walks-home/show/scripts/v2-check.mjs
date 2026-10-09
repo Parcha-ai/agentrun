@@ -126,6 +126,10 @@ try {
   const memoryText = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
   const line = await read(`(() => { const m = document.querySelector("#badge .memory"); return { hidden: m.hidden, text: m.textContent, shown: getComputedStyle(m).display !== "none" }; })()`);
   expect("while the agent is away the cloud-disk sentence is on screen as part of the header, not a caption that passes", line.hidden === false && line.shown && line.text === memoryText, line);
+  // Cold view 5: "the cloud-disk line is the product, and the viewer called it buried in small print". It is as readable as the header while away.
+  const size = await read(`(() => { const m = getComputedStyle(document.querySelector("#badge .memory")); const h = getComputedStyle(document.querySelector("#badge .txt")); return { memoryPx: parseFloat(m.fontSize), headerPx: parseFloat(h.fontSize), weight: Number(m.fontWeight), memoryColor: m.color, inkColor: getComputedStyle(document.body).color }; })()`);
+  expect("the cloud-disk sentence is close to the header's size (at least three quarters of it), not small print", size.memoryPx >= size.headerPx * 0.75, size);
+  expect("and bold enough, in the full text colour rather than muted", size.weight >= 600 && size.memoryColor === size.inkColor, size);
   const first = await watchCaptions(14_000);
   expect("and it is still there after the captions have come and gone", (await read(`document.querySelector("#badge .memory").hidden`)) === false);
   expect("the measured-looking switch time is there too, tagged scripted because the feed is", [...first].some(([t, tags]) => /Moved to the H100 GPU/.test(t) && tags.includes("scripted")), [...first]);
