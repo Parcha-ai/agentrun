@@ -108,7 +108,19 @@ def main() -> None:
   ap.add_argument("--after-checkpoint", default=None,
                   help="shell command run (not awaited) after each checkpoint, e.g. the host's write-through of WORK; "
                        "skipped while the previous one still runs. Gets TRAIN_WORK, TRAIN_STEPS, TRAIN_GENERATION.")
+  ap.add_argument("--checkpoint-steps", type=int, default=4_000_000,
+                  help="environment steps between checkpoints. It sets the training step's scan length, which is "
+                       "compiled into the program, so it (not --steps or how far a resumed run got) decides whether a "
+                       "compile cache fits")
+  ap.add_argument("--compile-only", action="store_true",
+                  help="compile this command's training program, write it to --compile-cache, and exit: run on a "
+                       "spare at warm time so a takeover starts in seconds. WORK is not touched")
   args = ap.parse_args()
+  if args.compile_only and (not args.compile_cache or args.no_compile_cache):
+    ap.error("--compile-only needs --compile-cache PATH")
+  if args.compile_only:
+    import tempfile
+    args.work = tempfile.mkdtemp(prefix="pda-compile-only-")
 
   t_start = time.time()
   # The machine as the stage names it (the agent's env.switch notice), else the hostname.
@@ -188,6 +200,7 @@ def main() -> None:
     ppo_cfg.update(num_timesteps=40_000, num_evals=3, num_envs=64, batch_size=32, num_minibatches=4, unroll_length=10,
                    episode_length=200, num_updates_per_batch=1)
     net_cfg.update(policy_hidden_layer_sizes=(32, 32), value_hidden_layer_sizes=(32, 32))
+    args.checkpoint_steps = min(args.checkpoint_steps, 20_480)
 
   env = creature_env.CreatureWalk(train_xml, body, cfg, num_envs=ppo_cfg["num_envs"], config_overrides=overrides,
                                   spawns=world["spawns"] if world else None)
@@ -210,6 +223,16 @@ def main() -> None:
   if remaining == 0:
     print(json.dumps({"event": "train.already-done", "steps_done": done_steps}))
     return
+  # Brax compiles the number of training steps per epoch (a scan length) into the training program and derives it from
+  # num_timesteps / num_evals. Fixing it from --checkpoint-steps instead makes a fresh run, a resumed one, a
+  # compile-only one and the image's prewarm compile the identical program; the run may overshoot by under one epoch.
+  env_steps_per_update = (ppo_cfg["batch_size"] * ppo_cfg["unroll_length"] * ppo_cfg["num_minibatches"]
+                          * ppo_cfg["action_repeat"])
+  updates_per_epoch = max(1, -(-args.checkpoint_steps // env_steps_per_update))
+  epoch_steps = updates_per_epoch * env_steps_per_update
+  epochs = 1 if args.compile_only else max(1, -(-remaining // epoch_steps))
+  remaining = epochs * epoch_steps
+  ppo_cfg["num_evals"] = epochs + 1
   seg_ckpt = os.path.join(ckpt_dir, f"seg{generation:03d}")
   segments.append({"generation": generation, "base": done_steps, "dir": os.path.relpath(seg_ckpt, work),
                    "restored_from": os.path.relpath(restore, work) if restore else None, "host": host})
@@ -251,7 +274,7 @@ def main() -> None:
       after_prune = complete_checkpoints(seg_ckpt)
       for old in after_prune[args.keep:]:
         shutil.rmtree(old, ignore_errors=True)
-      if not args.no_compile_cache and not cache_was_warm and not times.get("cache_saved"):
+      if not args.no_compile_cache and (args.compile_only or not cache_was_warm) and not times.get("cache_saved"):
         # Everything the training step needed is compiled by the first checkpoint. A cache that cannot be written only
         # costs the next start its compile time; it must never cost this checkpoint.
         tmp = f"{cache_tar}.tmp-{os.getpid()}"
@@ -278,7 +301,7 @@ def main() -> None:
       hook["proc"] = subprocess.Popen(args.after_checkpoint, shell=True, env=env_vars)
     print(json.dumps({k: line[k] for k in ("elapsed_s", "steps", "sps", "score")}), flush=True)
     # Stop only on a call that follows a checkpoint (Brax saves before it reports), so a paused run loses nothing.
-    if deadline and now > deadline and checkpointed:
+    if checkpointed and (args.compile_only or (deadline and now > deadline)):
       raise Deadline()
 
   def on_params(step: int, make_policy, params) -> None:
@@ -320,6 +343,12 @@ def main() -> None:
               log_training_metrics=False, **train_kwargs)
   except Deadline:
     status = "paused"
+  if args.compile_only:
+    shutil.rmtree(work, ignore_errors=True)
+    print(json.dumps({"event": "train.compiled", "compile_cache": cache_tar, "bytes": times.get("cache_saved"),
+                      "seconds": time.time() - t_start, "jit_s": (times["jit_done"] or time.time()) - t_start}),
+          flush=True)
+    return
   state.update(status=status, wall_s=base_wall + time.time() - t_start)
   write_json(state_path, state)
   print(json.dumps({"event": f"train.{status}", "steps_done": state["steps_done"], "steps_total": total,

@@ -135,7 +135,12 @@ class CreatureWalk(mjx_env.MjxEnv):
     self._sim_dt = float(self._mj_model.opt.timestep)
     if abs(self.n_substeps * self._sim_dt - self._config.ctrl_dt) > 1e-9:
       raise ValueError("ctrl_dt must be a whole number of physics steps")
-    self._naconmax = int(self._config.naconmax_per_env) * max(int(num_envs), 1)
+    # Contact and constraint room per env grows with the legs (more feet on a heightfield at once); a four-legged body
+    # keeps the configured values, so its compiled program (and any compile cache for it) is unchanged.
+    extra_legs = max(len(body["legs"]) - 4, 0)
+    per_env = int(self._config.naconmax_per_env) + 6 * extra_legs
+    self._njmax = int(self._config.njmax) + 4 * 6 * extra_legs + 3 * extra_legs
+    self._naconmax = per_env * max(int(num_envs), 1)
     self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
     # Spawn points (x, y, ground z) on a terrain; the origin on flat ground.
     self._spawns = jp.array(spawns if spawns else [[0.0, 0.0, 0.0]], dtype=jp.float32)
@@ -313,7 +318,7 @@ class CreatureWalk(mjx_env.MjxEnv):
     fallen = fallen.at[7:].set(jax.random.uniform(kj, (self._nj,), minval=self._soft_lowers, maxval=self._soft_uppers))
     qpos = jp.where(jax.random.uniform(kf) < self._config.fall_start_prob, fallen, qpos)
     data = mjx_env.make_data(self._mj_model, qpos=qpos, qvel=qvel, ctrl=jp.clip(qpos[7:], self._ctrl_lo, self._ctrl_hi),
-                             impl=self._mjx_model.impl.value, naconmax=self._naconmax, njmax=self._config.njmax)
+                             impl=self._mjx_model.impl.value, naconmax=self._naconmax, njmax=self._njmax)
     data = mjx.forward(self._mjx_model, data)
 
     rng, kc, kn, kp1, kp2 = jax.random.split(rng, 5)
