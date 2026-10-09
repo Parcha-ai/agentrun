@@ -1,7 +1,7 @@
 // The v2 stage in real Chrome, on the scripted v2 rehearsal (SHOW_SCENARIO=v2): what is on screen by default (the creature, one badge, the
 // chat, one caption) and what is not (timeline, log, HUD numbers, cost meter, multiverse, VM desktop, buttons), that ?debug=1 brings the old
-// panels back, the badge and the chat follow the story, a line typed in the chat reaches the feed, and cutting the Wi-Fi (CDP offline
-// emulation) shows an "offline" badge and one caption without the stage reporting its own failed fetches as an error.
+// panels back, the badge and the chat follow the story, a line typed in the chat reaches the feed, and nothing in the clean view
+// mentions Wi-Fi or being offline.
 //   CDP_URL=http://127.0.0.1:9444 [TAB_DIR=<tab dist>] node scripts/v2-check.mjs [shots-dir]
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -32,7 +32,7 @@ try {
   await waitForStage(port, stage);
   // The take starts at its start: the rehearsal is held at 0 until the page is open (a slow Chrome would otherwise let it run on).
   await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
-  tab = await openTab(base, { width: 1600, height: 900, init: `window.__meters = 0; addEventListener("message", (e) => { if (e.data && e.data.ns === "walks-home" && e.data.type === "walk-meter") window.__meters++; });` });
+  tab = await openTab(base, { width: 1600, height: 900 });
   await sleep(2500);
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
   /** Every caption that shows during `ms`, with the tags it wore. */
@@ -60,6 +60,19 @@ try {
     return text;
   };
   const shot = async (name) => shots && (await tab.screenshot(join(shots, `${name}.png`)));
+  // Miguel's scope: tab to GPU cluster and back to the tab, nothing else. The clean view says nothing about Wi-Fi or being offline: no control, no
+  // banner, no proof line, no caption, in the stage or in the creature's frame, at the start or after the story. (A wire-level check: the elements
+  // are not in the page at all, and no visible text mentions it.)
+  const noWifi = async (when) => {
+    const traces = await read(`(() => {
+      const frame = document.getElementById("tab");
+      const inner = frame.contentDocument ? frame.contentDocument.body.innerText : "";
+      const here = document.body.innerText;
+      return { elements: ["wifi", "proof"].filter((id) => document.getElementById(id) !== null), stage: here.match(/wi-?fi|offline|network off/gi) ?? [], tab: inner.match(/wi-?fi|offline|network off/gi) ?? [] };
+    })()`);
+    expect(`${when}: no Wi-Fi control or proof line is in the page`, traces.elements.length === 0, traces.elements);
+    expect(`${when}: nothing on the stage or in the creature's frame mentions Wi-Fi or being offline`, traces.stage.length === 0 && traces.tab.length === 0, traces);
+  };
 
   // The first caption of the take says what the creature is: a physics simulation in the browser, once, in words.
   const sim = await captionLike(/physics simulation running in your browser/, 15_000);
@@ -83,6 +96,7 @@ try {
   expect("the creature has most of the width (the chat about a third)", layout.creatureShare > 0.6 && layout.creatureShare < 0.72, layout.creatureShare);
   expect("there is no permanent line about the home: it is said once, at the first move", (await read(`document.querySelector("#badge .home") === null`)) === true);
   expect("the tab is the clean one", /clean=1/.test(layout.tabSrc ?? ""), layout.tabSrc);
+  await noWifi("at the start");
   const hint = await read(`getComputedStyle(document.getElementById("chathint")).display`);
   expect("before anyone speaks the chat says what to do", hint !== "none", hint);
   // A real stroke on the tab's own sketcher (mouse events through Chrome, on the real bundle): the tab itself says "draw-started", the check does not.
@@ -195,77 +209,10 @@ try {
   const afterKick = await watchCaptions(9000);
   expect("after a kick the getup caption is told", [...afterKick.keys()].some((t) => /Knocked over\. It learned to get back up\./.test(t)) || /Knocked over/.test(knocked), [...afterKick.keys()]);
 
-  // The take cuts the network once the story has settled: let the captions run out first.
-  for (let t = 0; t < 40_000 && !(await read(`document.getElementById("vcaption").hidden`)); t += 500) await sleep(500);
-  const tabReportsWalk = (await read(`window.__meters`)) > 0;
-  const wifi = await read(`(() => { const r = document.getElementById("wifi").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: document.getElementById("wifi").textContent }; })()`);
-  expect("a Wi-Fi control is on screen and reads on", wifi.label === "Wi-Fi: on" && wifi.x > 0, wifi);
-  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await tab.send("Input.dispatchMouseEvent", { type, x: wifi.x, y: wifi.y, button: "left", clickCount: 1 });
-  await sleep(600);
-  expect("clicking it reads off at once, as the user's act, but is no banner yet", (await read(`({ t: document.getElementById("wifi").textContent, m: document.getElementById("wifi").dataset.mode })`)).t === "Wi-Fi: off");
-  // D4's recorder cuts the network exactly so: on the stage page's own target, which takes the creature's frame with it.
-  await tab.send("Network.enable");
-  await tab.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
-  let banner = null;
-  for (let t = 0; t < 10_000 && !banner; t += 300) {
-    const b = await read(`({ mode: document.getElementById("wifi").dataset.mode, text: document.getElementById("wifi").textContent, proof: document.getElementById("proof").hidden ? "" : document.getElementById("proof").textContent })`);
-    if (b.mode === "banner") banner = b;
-    else await sleep(300);
-  }
-  const off = await read(`({ lost: !document.getElementById("lost").hidden, online: navigator.onLine, pill: document.querySelector("#badge .offline") !== null })`);
-  expect("the browser reports it is offline", off.online === false, off);
-  expect("ONE banner says it: Wi-Fi off, running entirely in the browser", banner?.text === "Wi-Fi off - running entirely in your browser", banner);
-  expect("with the page's own attempt to reach the cloud disk, counted, and failed (no milliseconds)", /^Cloud: unreachable \(tried (once|\d+ times)\)$/.test(banner?.proof ?? ""), banner);
-  expect("the separate 'Network off' pill is gone", off.pill === false, off);
-  expect("the stage does not show its own failed feed as an error", off.lost === false, off);
-  await shot("4-offline");
-  // The cut is the news: what the viewer reads at once is about the cut, never a switch time from before it.
-  const afterCut = await captionLike(/keeps walking/, 6000);
-  expect("right after the cut the caption says it keeps walking", /It keeps walking: the brain it learned runs right here\./.test(afterCut), afterCut);
-  if (tabReportsWalk) {
-    // The tab reports its own walk (walk-meter): the number is measured after the cut, from its real simulation.
-    const real = await captionLike(/Still walking offline: \d+\.\d m in 10 s/, 40_000);
-    expect("the tab's own walk-meter, taken after the cut, says how far it walked offline in 10 s", /^Still walking offline: \d+\.\d m in 10 s$/.test(real), real);
-  } else {
-    const offCap = await captionLike(/keeps walking/);
-    expect("a tab that does not report its walk is told only what the design guarantees", /It keeps walking: the brain it learned runs right here\./.test(offCap), offCap);
-    // 13 readings (one a second of simulated time) after the cut give how far it walked in the last 10 s.
-    for (let i = 0; i <= 12; i++) {
-      await fromTab({ type: "walk-meter", t: i, metres: Math.round(i * 46) / 100, version: 11, state: "trained" });
-      await sleep(120);
-    }
-    const walked = await captionLike(/Still walking offline/, 25_000);
-    expect("measured after the cut, it says how far it walked offline in 10 s", walked === "Still walking offline: 4.6 m in 10 s", walked);
-  }
-  await tab.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-  const onCap = await captionLike(/Wi-Fi back on/);
-  expect("back online the banner is gone and the control reads on again", await (async () => { for (let t = 0; t < 8000; t += 300) { const x = await read(`({ m: document.getElementById("wifi").dataset.mode, l: document.getElementById("wifi").textContent, p: document.getElementById("proof").hidden })`); if (x.m === "on" && x.l === "Wi-Fi: on" && x.p) return true; await sleep(300); } return false; })());
-  expect("and the caption says so", /Wi-Fi back on/.test(onCap), onCap);
-  // The browser claims offline but the cloud answers: the page must not claim to be offline.
-  await tab.eval(`window.dispatchEvent(new Event("offline")); 0`);
-  let contradiction = null;
-  for (let t = 0; t < 6000 && !contradiction; t += 300) {
-    const x = await read(`({ m: document.getElementById("wifi").dataset.mode, l: document.getElementById("wifi").textContent, p: document.getElementById("proof").hidden ? "" : document.getElementById("proof").textContent })`);
-    if (x.m === "contradiction") contradiction = x;
-    else await sleep(300);
-  }
-  expect("if the attempt gets an answer the page does not say it is offline: it says the cloud answered", contradiction !== null && contradiction.l === "Wi-Fi: on" && /^Cloud: answered in \d+ ms$/.test(contradiction.p), contradiction);
-  await tab.eval(`window.dispatchEvent(new Event("online")); 0`);
+  await noWifi("after the story");
+  await shot("4-home-end");
 
-  // Cold view 6: a switch caption still waiting when the network is cut is dropped, not shown beside "offline". Home is reached (95.9 s) and the
-  // network cut half a second later, while the captions of the way home are still queued.
-  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 94, paused: true }) });
-  await sleep(2500);
-  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 96, paused: true }) });
-  await sleep(500);
-  await tab.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
-  const cutCaps = await watchCaptions(6000);
-  expect("after a cut no caption is a switch time from before it", [...cutCaps.keys()].every((t) => !/Came home|Switched to|Moved to/.test(t)), [...cutCaps.keys()]);
-  expect("the caption after the cut is about the cut", [...cutCaps.keys()].some((t) => /keeps walking|Still walking offline/.test(t)), [...cutCaps.keys()]);
-  await tab.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-  await sleep(1500);
-
-  const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|ERR_INTERNET_DISCONNECTED|net::/.test(l));
+  const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|net::/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
 
   // The rehearsal shows its own chart: its scripted versions reach it through the feed, with no tab message injected.

@@ -21,7 +21,7 @@ try {
   await waitForStage(port, stage);
   const out = join(dir, "take.webm");
   const started = Date.now();
-  const run = spawnSync(process.execPath, [join(show, "scripts/record.mjs"), "--v2", "--url", `http://127.0.0.1:${port}/`, "--out", out, "--until", "even offline", "--tail", "2", "--max", "75", "--fps", "8"], { cwd: show, encoding: "utf8", timeout: 120_000 });
+  const run = spawnSync(process.execPath, [join(show, "scripts/record.mjs"), "--v2", "--url", `http://127.0.0.1:${port}/`, "--out", out, "--until", "now runs in your browser", "--tail", "2", "--max", "75", "--fps", "8"], { cwd: show, encoding: "utf8", timeout: 120_000 });
   const seconds = (Date.now() - started) / 1000;
   expect("the recorder exits cleanly", run.status === 0, (run.stdout + run.stderr).split("\n").slice(-6));
   expect("--until stopped the take at the closing line, well before --max", seconds < 60, seconds);

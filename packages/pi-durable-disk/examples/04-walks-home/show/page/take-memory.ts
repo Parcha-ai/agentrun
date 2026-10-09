@@ -3,7 +3,6 @@
 // (it used to be spread over module variables, and only some of them reset). Notes are added through the memory, which syncs first, so a note for
 // the new take is never wiped by a reset that was already due. Pure.
 import type { Note } from "../types.ts";
-import type { Meter } from "./offline.ts";
 import { emptyStory } from "./story-notes.ts";
 
 const MAX_NOTES = 60;
@@ -25,11 +24,6 @@ export class TakeMemory {
   versions: { n: number; metres: number }[] = [];
   /** When the tab last said the creature was kicked (the page clock), so the getup lines are told only after one. */
   lastKickAt: number | null = null;
-  /** Whether the tab reports a walk-meter at all (an older tab does not, and then no offline distance is claimed). */
-  meterSeen = false;
-  /** The walk-meter readings taken since the network went off, and whether the offline walk has been said. */
-  meterOffline: Meter[] = [];
-  offlineSaid = false;
   /** The tab reported the first stroke of a drawing: the chat's "draw a creature" prompt has done its job. */
   drawStarted = false;
   private generation = -1;
@@ -49,9 +43,6 @@ export class TakeMemory {
     this.lastInstallKind = undefined;
     this.versions = [];
     this.lastKickAt = null;
-    this.meterSeen = false;
-    this.meterOffline = [];
-    this.offlineSaid = false;
     this.drawStarted = false;
     return true;
   }
