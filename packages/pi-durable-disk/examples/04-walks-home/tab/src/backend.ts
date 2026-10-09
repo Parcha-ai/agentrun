@@ -6,11 +6,13 @@
 // parent does not answer rejects, and the store reports it instead of showing rows the disk lacks.
 //
 // Messages (ns "walks-home"):
-//   tab -> parent: storage-read {id, path} | storage-write {id, path, bytes}
-//   parent -> tab: storage-result {id, bytes: Uint8Array | null, error?} | storage-written {id, error?}
+//   tab -> parent: storage-read {id, path, ifNoneMatch?} | storage-write {id, path, bytes}
+//   parent -> tab: storage-result {id, bytes: Uint8Array | null, etag?, notModified?, error?} | storage-written {id, error?}
+// `ifNoneMatch`/`etag`/`notModified` are optional: a parent that ignores them just sends the bytes again.
 // A write is refused with error "not-holder" (HTTP 409 at the server) while another machine holds the run: this tab is
 // then a viewer, `NotHolder` is thrown, and the app turns the edit into a `design-request` for the running agent.
 
+import type { PolicySource } from './arrival.ts';
 import type { Backend } from './store.ts';
 
 export const DESIGNS_PATH = 'creature/designs.sqlite'; // written by the tab
@@ -72,6 +74,14 @@ export class ParentBackend implements Backend {
     return (m.bytes as Uint8Array | null) ?? null;
   }
 
+  /** Like read(), for polling: pass the last etag; a parent that supports it answers `unchanged` instead of the bytes. */
+  async readIfChanged(etag?: string): Promise<{ bytes: Uint8Array; etag?: string } | 'unchanged' | null> {
+    const m = await this.request('storage-read', etag ? { ifNoneMatch: etag } : {}, 'storage-result');
+    if (m.notModified === true) return 'unchanged';
+    const bytes = (m.bytes as Uint8Array | null) ?? null;
+    return bytes ? { bytes, etag: typeof m.etag === 'string' ? m.etag : undefined } : null;
+  }
+
   async write(bytes: Uint8Array): Promise<void> {
     await this.request('storage-write', { bytes }, 'storage-written');
   }
@@ -88,6 +98,17 @@ export function windowBus(win: Window = window): Bus {
       };
       win.addEventListener('message', h);
       return () => win.removeEventListener('message', h);
+    },
+  };
+}
+
+/** The trained policy as the embedding page's storage holds it (work/home/policy.json), as a PolicySource. */
+export function parentPolicySource(backend: ParentBackend): PolicySource {
+  return {
+    async read(etag) {
+      const got = await backend.readIfChanged(etag);
+      if (got === null || got === 'unchanged') return got;
+      return { text: new TextDecoder().decode(got.bytes), etag: got.etag };
     },
   };
 }

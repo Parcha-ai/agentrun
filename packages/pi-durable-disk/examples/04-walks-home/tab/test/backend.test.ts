@@ -72,3 +72,40 @@ test('a write refused with not-holder surfaces as NotHolder, and the store keeps
   assert.equal(s.designs().length, 0, 'a refused write leaves no row in the open store');
   await assert.rejects(s.saveDesign(defaultDesign()), NotHolder, 'a retry writes again instead of finding a phantom row');
 });
+
+test('readIfChanged: bytes with an etag, "unchanged" when the parent supports etags, bytes again when it does not, null when missing', async () => {
+  const subs = new Set<(m: Record<string, unknown>) => void>();
+  let file: Uint8Array | null = null;
+  let supportsEtag = true;
+  const sent: Record<string, unknown>[] = [];
+  const bus: Bus = {
+    listen: (fn) => { subs.add(fn); return () => subs.delete(fn); },
+    send: (m) => queueMicrotask(() => {
+      sent.push(m);
+      const reply: Record<string, unknown> = { ns: 'walks-home', type: 'storage-result', id: m.id, bytes: file };
+      if (file && supportsEtag) { reply.etag = 'v1'; if (m.ifNoneMatch === 'v1') { reply.bytes = null; reply.notModified = true; } }
+      for (const s of subs) s(reply);
+    }),
+  };
+  const be = new ParentBackend(bus, 'home/policy.json', 200);
+  assert.equal(await be.readIfChanged(), null, 'missing file');
+  file = new Uint8Array([1, 2, 3]);
+  const first = await be.readIfChanged();
+  assert.deepEqual(first && first !== 'unchanged' ? [Array.from(first.bytes), first.etag] : first, [[1, 2, 3], 'v1']);
+  assert.equal(await be.readIfChanged('v1'), 'unchanged');
+  assert.equal(sent.at(-1)!.ifNoneMatch, 'v1', 'the last etag goes to the parent');
+  supportsEtag = false;
+  const again = await be.readIfChanged('v1');
+  assert.ok(again && again !== 'unchanged' && again.etag === undefined, 'a parent without etag support just sends the bytes');
+});
+
+test('parentPolicySource decodes the file text and passes unchanged/missing through', async () => {
+  const { parentPolicySource } = await import('../src/backend.ts');
+  const script: (Awaited<ReturnType<ParentBackend['readIfChanged']>>)[] = [null, { bytes: new TextEncoder().encode('{"a":1}'), etag: 'e' }, 'unchanged'];
+  let i = 0;
+  const fake = { readIfChanged: async () => script[i++] } as unknown as ParentBackend;
+  const src = parentPolicySource(fake);
+  assert.equal(await src.read(), null);
+  assert.deepEqual(await src.read(), { text: '{"a":1}', etag: 'e' });
+  assert.equal(await src.read('e'), 'unchanged');
+});

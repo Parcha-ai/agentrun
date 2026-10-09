@@ -26,12 +26,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function scenario(name, silent, viewer = false) {
   const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
-  const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 1400, height: 800 });
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: Number(process.env.W ?? 1400), height: Number(process.env.H ?? 800) });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
   const S = (m, p) => send(m, p, sessionId);
   try {
     await S('Page.enable'); await S('Runtime.enable');
-    await S('Emulation.setDeviceMetricsOverride', { width: 1400, height: 800, deviceScaleFactor: 1, mobile: false });
+    await S('Emulation.setDeviceMetricsOverride', { width: Number(process.env.W ?? 1400), height: Number(process.env.H ?? 800), deviceScaleFactor: 1, mobile: false });
     // The harness must answer from the first request: set the flag before the frame loads by navigating, then flipping early.
     await S('Page.addScriptToEvaluateOnNewDocument', { source: `${silent ? 'window.__silent = true;' : ''}${viewer ? 'window.__viewer = true;' : ''}` });
     await S('Page.navigate', { url: `${base}/__harness.html` });
@@ -75,6 +75,56 @@ async function scenario(name, silent, viewer = false) {
   }
 }
 
+// A trained policy landing in work/home/policy.json while the page runs. ARRIVAL_POLICIES=<no-metadata.json>,<with-metadata.json>
+async function arrivalScenario() {
+  const [noMeta, withMeta] = (process.env.ARRIVAL_POLICIES ?? '').split(',');
+  if (!noMeta || !withMeta) return { scenario: 'arrival', skipped: 'set ARRIVAL_POLICIES=a.json,b.json' };
+  const { readFileSync } = await import('node:fs');
+  const put = (text) => `disk['home/policy.json'] = new TextEncoder().encode(${JSON.stringify(text)})`;
+  const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: Number(process.env.W ?? 700), height: Number(process.env.H ?? 500) });
+  const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
+  const S = (m, p) => send(m, p, sessionId);
+  try {
+    await S('Page.enable'); await S('Runtime.enable');
+    await S('Emulation.setDeviceMetricsOverride', { width: Number(process.env.W ?? 700), height: Number(process.env.H ?? 500), deviceScaleFactor: 1, mobile: false });
+    await S('Page.navigate', { url: `${base}/__harness.html` });
+    const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails)); return r.result.value; };
+    const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
+    for (let i = 0; i < 150; i++) { if ((await inner("document.getElementById('status')?.textContent").catch(() => null)) === 'ready') break; await sleep(200); }
+    const waitEvent = async (type, since, ms = 30000) => { for (let t = 0; t < ms; t += 200) { const n = await ev(`events.slice(${since}).find(e => e.type === ${JSON.stringify(type)}) ?? null`); if (n) return n; await sleep(200); } return null; };
+    const r = { scenario: 'arrival', bodyAtStart: await inner('__walks.app.policyName'), startMjcf: (await inner('__walks.app.bodySha')).slice(0, 8) };
+    // 1. a file for a body that is no preset: refused, the creature keeps going
+    let n = await ev('events.length');
+    await ev(put(JSON.stringify({ format: 'mlp-v1', spec_version: 1, mjcf_sha256: 'a'.repeat(64) })));
+    const refused = await waitEvent('policy-refused', n);
+    r.refused = refused && { reason: refused.reason, via: refused.via };
+    r.policyAfterRefusal = await inner('__walks.app.policyName');
+    // 2. a policy with no metadata (for the 2-DOF preset): body switches, the toast says what is missing
+    n = await ev('events.length');
+    await ev(put(readFileSync(noMeta, 'utf8')));
+    const a1 = await waitEvent('policy-arrived', n);
+    r.noMetadata = a1 && { message: a1.message, host: a1.host, training_seconds: a1.training_seconds, switched_body: a1.switched_body, via: a1.via };
+    // 3. a policy with provenance.host and wall_s
+    n = await ev('events.length');
+    await ev(put(readFileSync(withMeta, 'utf8')));
+    const a2 = await waitEvent('policy-arrived', n);
+    r.withMetadata = a2 && { message: a2.message, host: a2.host, training_seconds: a2.training_seconds, switched_body: a2.switched_body, installed_ms: a2.arrival_to_installed_ms };
+    r.toastShown = await inner("document.getElementById('toast').textContent");
+    const walked = await waitEvent('policy-walked', n, 120000);
+    r.walked = walked && { arrival_to_walking_ms: walked.arrival_to_walking_ms, sim_seconds_to_walking: walked.sim_seconds_to_walking, mean_speed_10s: walked.mean_speed && +walked.mean_speed.toFixed(3), fell: walked.fell };
+    r.noDuplicates = (await ev("events.filter(e => e.type === 'policy-arrived').length")) === 2;
+    r.hud = await inner("document.getElementById('hud').textContent");
+    const shot = await S('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(`${out}/embed-arrival.png`, Buffer.from(shot.data, 'base64'));
+    return r;
+  } finally {
+    await send('Target.closeTarget', { targetId }).catch(() => {});
+    await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
+  }
+}
+
 try {
-  console.log(JSON.stringify([await scenario('answering-parent', false), await scenario('silent-parent', true), await scenario('viewer-parent', false, true)], null, 1));
+  if (process.env.ARRIVAL_ONLY) { console.log(JSON.stringify(await arrivalScenario(), null, 1)); process.exit(0); }
+  console.log(JSON.stringify([await scenario('answering-parent', false), await scenario('silent-parent', true), await scenario('viewer-parent', false, true), await arrivalScenario()], null, 1));
 } finally { ws.close(); server.close(); }
