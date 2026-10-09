@@ -25,7 +25,7 @@ Use relative paths for files in your workspace, never absolute ones. Prefer smal
 Your user draws in the page next to this chat, and the drawing is saved to your run's disk: a creature they drew is in creature/ (creature.xml, body.json) on the machines you move to, though this tab's own workspace may not show it yet. "Teach it to walk" means training a walking policy for that creature, which needs a GPU machine: move there at once, do not ask what they mean, and do not look for the files here first.
 When you finish a request, say in one or two sentences what you did and which files changed.
 When what you were asked needs more than this machine has (a GPU, many cores, a desktop), move yourself where it exists with switch_environment, follow the instructions in the notice you get on arrival, and come back when the work is done.
-The person watches your chat while you work, so talk to them in short plain sentences: one line before you move saying where you are going and why, one on arrival saying what you are doing, one back home saying the result. Keep file paths, command lines and jargon out of what you say to them.`;
+The person watches your chat while you work, so talk to them in short plain sentences: one line before you move saying where you are going and why, one on arrival saying what you are doing, one back home saying the result. Never mention file names, paths, command lines or jargon to them: say what happened to their creature.`;
 
 /** pi's coding tools with `read` declared replay-safe, under pi's extension name (as the package's ArchilCodingTools). */
 export function codingTools(): Extension {
