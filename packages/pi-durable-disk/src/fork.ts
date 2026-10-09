@@ -103,7 +103,7 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
 }
 
 export interface ForkManyOptions extends ForkOptions {
-  /** How many new runs are copied at once, each under its own mount. Default: all of them. */
+  /** How many new runs are copied at once, each under its own mount: a whole number of at least 1. Default: all of them. */
   readonly concurrency?: number;
 }
 
@@ -125,8 +125,11 @@ export type ForkManyResult = {
  * run follows `fork`'s rules on its own: it is opened by no one before its copy and its run.json are complete and
  * durable (its mount holds it until then, and its release runs the barrier first), a failure after its mount empties
  * and removes only its own directory, and one another fork or start mounted first is left alone. A new run that exists
- * already, or fails, is an outcome with `ok: false`; the others are made. A source that is not released and sealed, is
- * held, or is mounted while forking throws (no new run is made), as does an empty, repeated or source id.
+ * already, whose check fails, or whose copy fails, is an outcome with `ok: false`; the others are made. A source that is
+ * not released and sealed, is held, or is mounted while forking throws (no new run is made), as does an empty, repeated
+ * or source id or a bad `concurrency`. The source is released before the result is returned, after every copy ended: a
+ * release that fails is thrown (the release is tried once more first), since a source still mounted here cannot start;
+ * the new runs made by then are complete.
  */
 export async function forkMany(ref: RunRef, newIds: readonly string[], options: ForkManyOptions): Promise<ForkManyResult> {
   const t0 = performance.now();
@@ -137,21 +140,29 @@ export async function forkMany(ref: RunRef, newIds: readonly string[], options: 
     if (id === ref.id) throw new ForkError("INVALID_ARGUMENT", "a fork needs a new run id");
   }
   if (new Set(newIds).size !== newIds.length) throw new ForkError("INVALID_ARGUMENT", "the new run ids repeat");
-  const concurrency = Math.max(1, Math.floor(options.concurrency ?? newIds.length));
+  // NaN would start no copier and leave every new run without an outcome.
+  if (options.concurrency !== undefined && !(Number.isInteger(options.concurrency) && options.concurrency >= 1)) {
+    throw new ForkError("INVALID_ARGUMENT", `concurrency is a whole number of at least 1, not ${options.concurrency}`);
+  }
+  const concurrency = options.concurrency ?? newIds.length;
   const before = await readRunStatus(control, ref.id);
   if (!isReleased(before)) throw new ForkError("SOURCE_NOT_RELEASED", `run ${ref.id} is not released and sealed (${before ? `${before.status}, sealedSeq ${before.sealedSeq}` : "no run.json"})`);
   if ((await findDelegations(control, ref.id)).length > 0) throw new ForkError("SOURCE_HELD", `run ${ref.id} is mounted somewhere`);
 
   const outcomes = new Map<string, ForkOutcome>();
-  const exists = await Promise.all(
+  // Each new run is checked on its own: a check that fails (a timeout) is that run's outcome, and the others go on.
+  await Promise.all(
     newIds.map(async (id) => {
       const target = `${runPath(id)}/`;
-      return Boolean((await control.headObject(target)) || (await control.listObjects(target, { recursive: true })).objects.length > 0);
+      try {
+        if ((await control.headObject(target)) || (await control.listObjects(target, { recursive: true })).objects.length > 0) {
+          outcomes.set(id, { run: id, ok: false, error: new ForkError("TARGET_EXISTS", `${target} already exists`) });
+        }
+      } catch (error) {
+        outcomes.set(id, { run: id, ok: false, error: error as Error });
+      }
     }),
   );
-  newIds.forEach((id, i) => {
-    if (exists[i]) outcomes.set(id, { run: id, ok: false, error: new ForkError("TARGET_EXISTS", `${runPath(id)}/ already exists`) });
-  });
   const fresh = newIds.filter((id) => !outcomes.has(id));
   const done = (record: RunRecord & { sealedSeq: number }): ForkManyResult => ({
     from: ref.id,
@@ -165,15 +176,17 @@ export async function forkMany(ref: RunRef, newIds: readonly string[], options: 
   const note = options.onResource ?? (() => {});
   const base = join(options.mountRoot, `.fork-${Date.now().toString(36)}`);
   const tokens: string[] = [];
-  /** Mint a token for `run` and mount it exclusively under `<base>/<side>`. */
+  /**
+   * Mint a token for `run` and mount it exclusively under `<base>/<side>`. The caller keeps the claim before it calls
+   * `mounted`, so a callback that throws never leaves a mount nobody releases.
+   */
   const mount = async (run: RunRef, side: "source" | "target"): Promise<Claim> => {
     const t = await mintMountToken(control, { nickname: `${options.tokenPrefix ?? "pda-"}fork-${side}-${run.id}`.slice(0, 200), ttl: "1h" });
     tokens.push(t.identifier);
     note("token", t.identifier, side);
-    const claim = await (options.acquire ?? acquire)({ ref: run, token: t.token, mountRoot: join(base, side), host: options.host });
-    note("mount", claim.root, `${run.disk}:/${runPath(run.id)}`);
-    return claim;
+    return (options.acquire ?? acquire)({ ref: run, token: t.token, mountRoot: join(base, side), host: options.host });
   };
+  const mounted = (claim: Claim, run: RunRef): void => note("mount", claim.root, `${run.disk}:/${runPath(run.id)}`);
   const release = async (c: Claim): Promise<void> => {
     await c.release().then(
       (r) => note("unmount", c.root, r.via),
@@ -189,6 +202,7 @@ export async function forkMany(ref: RunRef, newIds: readonly string[], options: 
     source = await mount(ref, "source").catch((error: unknown) => {
       throw error instanceof HeldError ? new ForkError("SOURCE_HELD", `run ${ref.id} was mounted while forking`, { cause: error }) : error;
     });
+    mounted(source, ref);
     // The mounted record is authoritative: the source cannot change while this claim holds it.
     const record = await readRunRecord(source.root);
     if (!isReleased(record)) throw new ForkError("SOURCE_NOT_RELEASED", `run ${ref.id} changed before it was mounted (${record?.status})`);
@@ -207,10 +221,12 @@ export async function forkMany(ref: RunRef, newIds: readonly string[], options: 
       try {
         await createRunDir(control, newId, { uid: owner.uid, gid: owner.gid, mode: owner.mode & 0o7777 });
         note("subdir", target);
-        copy = await mount({ ...ref, id: newId }, "target").catch((error: unknown) => {
+        const to = { ...ref, id: newId };
+        copy = await mount(to, "target").catch((error: unknown) => {
           throw error instanceof HeldError ? new ForkError("TARGET_EXISTS", `${target} was mounted by another fork or start`, { cause: error }) : error;
         });
         held = true;
+        mounted(copy, to);
         const count = { files: 0, bytes: 0 };
         try {
           await copyTree(from.root, copy.root, true, asRoot, count);
@@ -255,13 +271,19 @@ export async function forkMany(ref: RunRef, newIds: readonly string[], options: 
     };
 
     let next = 0;
-    await Promise.all(
+    // Every copier ends before the source is released, even when one throws (only a throwing callback can).
+    const copiers = await Promise.allSettled(
       Array.from({ length: Math.min(concurrency, fresh.length) }, async () => {
         while (next < fresh.length) await copyOne(fresh[next++]!);
       }),
     );
+    for (const c of copiers) if (c.status === "rejected") throw c.reason;
+    // A source still mounted here cannot start: its release is part of success, and one that fails is thrown.
+    await release(source);
+    source = undefined;
     return done(record);
   } finally {
+    // After a failure the source's release is tried (again); the first error stands.
     if (source) await release(source).catch(() => undefined);
     for (const t of tokens) {
       await removeMountToken(control, t).then(() => note("token-removed", t), () => {});

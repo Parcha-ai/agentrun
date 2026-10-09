@@ -9,10 +9,15 @@
   Archil disk in-region); N new runs now cost one source mount plus the slowest copy.
 - Each new run keeps `fork`'s rules: its directory is held by its own mount until its copy and `run.json` are written and the
   release's barrier has run, so nothing opens it or reads it as a run before it is complete; a failure after its mount empties
-  and removes only its own directory, and one another fork or start mounted first is left alone. A new run that exists or
-  fails is an outcome with `ok: false` (a `ForkError` such as `TARGET_EXISTS` or `COPY_FAILED`, or the failing step's error)
-  and the others are made. An empty, repeated or source id throws `INVALID_ARGUMENT`; a source that is not released and
+  and removes only its own directory, and one another fork or start mounted first is left alone. A new run that exists, whose
+  existence check fails (a timeout), or whose copy or release fails is an outcome with `ok: false` (a `ForkError` such as
+  `TARGET_EXISTS` or `COPY_FAILED`, or the failing step's error) and the others are made. An empty, repeated or source id,
+  or a `concurrency` that is not a whole number of at least 1, throws `INVALID_ARGUMENT`; a source that is not released and
   sealed, or is held, throws as `fork` does, and makes no new run.
+- The source is released after every copy has ended and before the result is returned. A release that fails is tried once
+  more and its error is thrown, as `fork` threw it: a source still mounted on this host cannot start. The new runs made by
+  then are complete. A mount is kept by the fork before `onResource` hears of it, so a callback that throws leaves no mount
+  behind.
 - `fork(ref, newId)` is `forkMany` with one id and throws that outcome's error: same results, errors and cleanup as before.
 - New exports: `forkMany`, `ForkManyOptions`, `ForkManyResult`, `ForkOutcome`.
 
