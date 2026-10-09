@@ -5,8 +5,9 @@
 import WebSocket from 'ws';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { serve } from './serve.mjs';
+import { outDir } from './outdir.mjs';
 
-const out = process.argv[2] ?? '.';
+const out = outDir(process.argv[2]);
 mkdirSync(out, { recursive: true });
 const { CP1, CP2 } = process.env;
 if (!CP1 || !CP2) throw new Error('set CP1 and CP2');
