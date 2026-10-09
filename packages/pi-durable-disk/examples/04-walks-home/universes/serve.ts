@@ -16,6 +16,7 @@ import { parseArgs } from "node:util";
 import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type RunRef } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "../../03-tab-to-cloud/pipe/control.ts";
 import { daytonaFleet } from "./daytona-fleet.ts";
+import { modalUniverses } from "./modal.ts";
 import { Feed, serveFeed, type CommandResult, type FeedCommand } from "./feed.ts";
 import { ModelProxy } from "../../03-tab-to-cloud/pipe/model-proxy.ts";
 import { directPlacement, type DirectPlacement } from "./direct.ts";
@@ -57,6 +58,14 @@ const { values } = parseArgs({
     keep: { type: "boolean", default: false },
     /** How runs reach the boxes: the box mounts the run (direct), or this process holds it and pipes it over (pipe). */
     transport: { type: "string", default: "direct" },
+    /** Where the boxes are: Daytona sandboxes from --snapshot, or Modal sandboxes from --modal-image. */
+    provider: { type: "string", default: "daytona" },
+    "modal-image": { type: "string" },
+    "modal-app": { type: "string", default: "pda-demo-d1" },
+    /** gvisor (Modal's default, and every GPU sandbox: the pipe) or vm (a durable mount: direct). */
+    "modal-runtime": { type: "string", default: "gvisor" },
+    "modal-gpu": { type: "string" },
+    "modal-region": { type: "string", default: "us-east" },
     /** What a score means on the stage; with --workload train it is D2's ("m walked in 10 s"), the stand-in's has none. */
     "score-unit": { type: "string" },
     /** What each universe runs: the stand-in trainer, or D2's train.py (in the box's image). */
@@ -74,8 +83,10 @@ const { values } = parseArgs({
 const disk = process.env.PDA_LIVE_DISK ?? process.env.ARCHIL_DISK;
 const region = process.env.PDA_LIVE_REGION ?? process.env.ARCHIL_REGION ?? "aws-us-east-1";
 if (!disk || !process.env.ARCHIL_API_KEY) throw new Error("ARCHIL_API_KEY and PDA_LIVE_DISK (with-archil) name the disk");
-if (!process.env.DAYTONA_API_KEY) throw new Error("DAYTONA_API_KEY (with-daytona) is needed");
-if (!values.snapshot) throw new Error("--snapshot (or DAYTONA_SNAPSHOT) names the demo's runtime snapshot (03-tab-to-cloud/scripts/daytona-snapshot.ts)");
+const onModal = values.provider === "modal";
+if (!onModal && !process.env.DAYTONA_API_KEY) throw new Error("DAYTONA_API_KEY (with-daytona) is needed");
+if (!onModal && !values.snapshot) throw new Error("--snapshot (or DAYTONA_SNAPSHOT) names the demo's runtime snapshot (03-tab-to-cloud/scripts/daytona-snapshot.ts)");
+if (onModal && !values["modal-image"]) throw new Error("--modal-image names the Modal image (D4's layer; D2's GPU image on top)");
 
 const n = Number(values.universes);
 const training = values.workload === "train";
@@ -111,18 +122,29 @@ let direct: DirectPlacement | undefined;
 let pipes: PipePlacement | undefined;
 const bundle = readFileSync(join(here, "dist/universe-app.mjs"));
 const probe = readFileSync(join(here, "dist/probe.mjs"));
+const modal = onModal
+  ? await modalUniverses({
+      appName: values["modal-app"]!,
+      image: values["modal-image"]!,
+      runtime: values["modal-runtime"] === "vm" ? "vm" : "gvisor",
+      ...(values["modal-gpu"] ? { gpu: values["modal-gpu"] } : {}),
+      regions: [values["modal-region"]!],
+      ports: [8080],
+    })
+  : undefined;
 const fleet = daytonaFleet({
-  client: daytonaRest({ apiKey: process.env.DAYTONA_API_KEY, ...(process.env.DAYTONA_API_URL ? { apiUrl: process.env.DAYTONA_API_URL } : {}) }),
-  snapshot: values.snapshot!,
+  client: modal?.client ?? daytonaRest({ apiKey: process.env.DAYTONA_API_KEY!, ...(process.env.DAYTONA_API_URL ? { apiUrl: process.env.DAYTONA_API_URL } : {}) }),
+  ...(modal ? { kind: modal.kind, ratePerHour: modal.ratePerHour, label: modal.label, ledgerKind: "modal-sandbox" } : {}),
+  snapshot: values["modal-image"] ?? values.snapshot!,
   target: process.env.DAYTONA_TARGET || "us",
   fleet: "demo-d1",
   namePrefix: "pda-demo-d1-",
-  app: bundle,
+  ...(transport === "direct" ? { app: bundle } : {}),
   probe,
   runArgs: ["--heartbeat-ms", "2000", "--lease-expiry-ms", "10000", "--lease-margin-ms", "3000", "--on-sigterm", "pause"],
   ledger,
   log,
-  ...(transport === "pipe" ? { runner: { bundle: readFileSync(join(here, "dist/universe-remote.mjs")), port: 8080, previewUrl } } : {}),
+  ...(transport === "pipe" ? { runner: { bundle: readFileSync(join(here, "dist/universe-remote.mjs")), port: 8080, previewUrl: modal?.previewUrl ?? previewUrl } } : {}),
   placement: (access) =>
     transport === "pipe"
       ? (pipes = pipePlacement({

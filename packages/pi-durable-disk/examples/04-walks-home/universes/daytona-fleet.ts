@@ -20,14 +20,16 @@ export const BOX_PACKAGE = `${BOX_APP_DIR}/node_modules/@parcha/pi-durable-disk`
 export const BOX_NODE = "/opt/node24/bin/node";
 export const BOX_MOUNT_ROOT = "/mnt/archil";
 export const BOX_UNIVERSE_APP = `${BOX_APP_DIR}/universe-app.mjs`;
-export const BOX_PROBE = `${BOX_APP_DIR}/universe-probe.mjs`;
+/** The self-contained bundles (probe, pipe runner): they need only Node and the run user. */
+export const BOX_UNIVERSE_DIR = "/usr/local/lib/pda-universe";
+export const BOX_PROBE = `${BOX_UNIVERSE_DIR}/universe-probe.mjs`;
 /**
  * The probe the box took when it was warmed, with the box's id: root-owned, readable by the run user (the instance runs
  * as it), on the box's tmpfs so it goes with the box. The notice uses it only when the id is this box's.
  */
 export const BOX_FACTS = "/run/pda-universe/probe.json";
 /** The pipe transport's runner, its bearer token (the run user's own) and its output. */
-export const BOX_RUNNER = `${BOX_APP_DIR}/universe-remote.mjs`;
+export const BOX_RUNNER = `${BOX_UNIVERSE_DIR}/universe-remote.mjs`;
 export const BOX_RUNNER_TOKEN = "/run/pda-universe/runner.token";
 export const BOX_RUNNER_LOG = "/var/tmp/pda-universe-remote.log";
 /** daytonaHost's launcher directory, where each instance's output goes (`<name>.log`). */
@@ -49,8 +51,8 @@ export interface DaytonaFleetOptions {
   readonly fleet: string;
   /** Every box's name starts with it ("pda-demo-d1-"). */
   readonly namePrefix: string;
-  /** The universe app, bundled (build.mjs): installed into each box at `BOX_UNIVERSE_APP`. */
-  readonly app: Uint8Array;
+  /** The universe app for the direct transport, bundled (build.mjs): installed at `BOX_UNIVERSE_APP`; it needs the snapshot's app. */
+  readonly app?: Uint8Array;
   /** The machine probe, bundled: run once at warm time, its facts left at `BOX_FACTS` for the notice. */
   readonly probe?: Uint8Array;
   /** `run` flags after `--app` (lease periods). */
@@ -63,6 +65,8 @@ export interface DaytonaFleetOptions {
   readonly ratePerHour?: (box: SandboxInfo) => number;
   readonly ttlMinutes?: number;
   readonly ledger?: LedgerLike;
+  /** The ledger's kind for a box. Default "daytona-box". */
+  readonly ledgerKind?: string;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /**
    * The box-side runner for the pipe transport (universe-remote.ts, bundled): started as the run user when a box is
@@ -92,6 +96,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
   const removed = new Set<string>();
   const byMachine = new Map<string, SandboxInfo>();
   const ttlMinutes = o.ttlMinutes ?? 120;
+  const kindOf = o.ledgerKind ?? "daytona-box";
 
   const check = (box: SandboxInfo | null): SandboxInfo | null => {
     if (box && (box.labels?.[LABEL_FLEET] !== o.fleet || !box.name.startsWith(o.namePrefix) || !ours.has(box.id))) throw new Error(`refusing to touch sandbox ${box.id}: not this fleet's`);
@@ -102,7 +107,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
   const client: DaytonaClient = {
     async create(body: CreateSandboxBody) {
       if (body.labels[LABEL_FLEET] !== o.fleet || !body.name.startsWith(o.namePrefix)) throw new Error("a fleet box carries the fleet's label and name prefix");
-      o.ledger?.open("daytona-box", body.name, body.labels[LABEL_RUN]);
+      o.ledger?.open(kindOf, body.name, body.labels[LABEL_RUN]);
       const box = await o.client.create(body);
       ours.set(box.id, box);
       return box;
@@ -119,7 +124,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
       await o.client.remove(id);
       removed.add(id);
       const name = box?.name ?? ours.get(id)?.name;
-      if (name) o.ledger?.close("daytona-box", name, "deleted");
+      if (name) o.ledger?.close(kindOf, name, "deleted");
     },
     exec: async (box, command, timeoutSec) => o.client.exec(check(box)!, command, timeoutSec),
     upload: async (box, path, content) => o.client.upload(check(box)!, path, content),
@@ -200,47 +205,48 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
         }
         const started = Date.now();
         const stage = "/tmp/pda-universe-stage";
-        const mk = await client.exec(box, `umask 077 && mkdir -p ${stage} && test -f ${BOX_APP_DIR}/.prepared`, 30);
+        const mk = await client.exec(box, `umask 077 && mkdir -p ${stage}${o.app ? ` && test -f ${BOX_APP_DIR}/.prepared` : ""}`, 30);
         if (mk.exitCode !== 0) throw new Error(`${full} lacks the runtime snapshot's app (${mk.result.trim().slice(0, 200)})`);
-        await client.upload(box, `${stage}/universe-app.mjs`, o.app);
+        // The direct transport's app runs from the snapshot's app directory (its node_modules); the probe and the pipe's
+        // runner are self-contained and need only Node and the run user.
+        const p0 = Date.now();
+        if (o.app) await client.upload(box, `${stage}/universe-app.mjs`, o.app);
         if (o.probe) await client.upload(box, `${stage}/universe-probe.mjs`, o.probe);
         const install = [
-          `sudo -n install -o root -g root -m 0644 ${stage}/universe-app.mjs ${BOX_UNIVERSE_APP}`,
+          ...(o.app ? [`sudo -n install -o root -g root -m 0644 ${stage}/universe-app.mjs ${BOX_UNIVERSE_APP}`] : []),
           ...(o.probe
             ? [
-                `sudo -n install -o root -g root -m 0644 ${stage}/universe-probe.mjs ${BOX_PROBE}`,
+                `sudo -n install -D -o root -g root -m 0644 ${stage}/universe-probe.mjs ${BOX_PROBE}`,
                 `printf '{"box":"%s","facts":%s}\\n' '${box.id}' "$(${BOX_NODE} ${BOX_PROBE})" > ${stage}/facts.json`,
                 `sudo -n install -D -o root -g root -m 0644 ${stage}/facts.json ${BOX_FACTS}`,
               ]
             : []),
           `rm -f ${stage}/*`,
         ].join(" && ");
-        const p0 = Date.now();
         const r = await client.exec(box, install, 60);
         if (r.exitCode !== 0) throw new Error(`installing the universe app in ${full} failed: ${r.result.trim().slice(0, 200)}`);
-        log("daytona.installed", { box: full, ms: Date.now() - p0, probe: Boolean(o.probe) });
+        log("fleet.installed", { box: full, ms: Date.now() - p0, app: Boolean(o.app), probe: Boolean(o.probe) });
         if (o.runner) {
           const r0 = Date.now();
           const bearer = randomBytes(24).toString("base64url");
-          await client.exec(box, `umask 077 && mkdir -p ${stage}`, 30);
           await client.upload(box, `${stage}/universe-remote.mjs`, o.runner.bundle);
           await client.upload(box, `${stage}/runner.token`, new TextEncoder().encode(`${bearer}\n`));
           const start = [
-            `sudo -n install -o root -g root -m 0644 ${stage}/universe-remote.mjs ${BOX_RUNNER}`,
+            `sudo -n install -D -o root -g root -m 0644 ${stage}/universe-remote.mjs ${BOX_RUNNER}`,
             `sudo -n install -D -o pda -g pda -m 0600 ${stage}/runner.token ${BOX_RUNNER_TOKEN}`,
             `rm -f ${stage}/*`,
             `sudo -n -u pda -H sh -c 'mkdir -p "$HOME/work" && cd "$HOME" && nohup ${BOX_NODE} ${BOX_RUNNER} --port ${o.runner.port} --token-file ${BOX_RUNNER_TOKEN} --work "$HOME/work" > ${BOX_RUNNER_LOG} 2>&1 &'`,
-            `for i in $(seq 100); do grep -q '"listening"' ${BOX_RUNNER_LOG} 2>/dev/null && exit 0; sleep 0.1; done; tail -5 ${BOX_RUNNER_LOG}; exit 1`,
+            `for i in $(seq 150); do grep -q '"listening"' ${BOX_RUNNER_LOG} 2>/dev/null && exit 0; sleep 0.1; done; tail -5 ${BOX_RUNNER_LOG}; exit 1`,
           ].join(" && ");
-          const [started, url] = await Promise.all([client.exec(box, start, 60), o.runner.previewUrl(box.id, o.runner.port)]);
-          if (started.exitCode !== 0) throw new Error(`the runner in ${full} did not start: ${started.result.trim().slice(-300)}`);
+          const [ran, url] = await Promise.all([client.exec(box, start, 60), o.runner.previewUrl(box.id, o.runner.port)]);
+          if (ran.exitCode !== 0) throw new Error(`the runner in ${full} did not start: ${ran.result.trim().slice(-300)}`);
           runners.set(full, { url: url.replace(/^http/, "ws"), bearer });
-          log("daytona.runner", { box: full, ms: Date.now() - r0 });
+          log("fleet.runner", { box: full, ms: Date.now() - r0 });
         }
         const short = full.slice(o.namePrefix.length);
         const machine: Machine = { id: full, label: o.label?.(box, short) ?? `Daytona sandbox ${short}`, kind: o.kind ?? "sandbox", ratePerHour: (o.ratePerHour ?? rateOf)(box), since: created };
         byMachine.set(full, box);
-        log("daytona.warm", { box: full, createMs: created - t0, startedMs: started - t0, readyMs: Date.now() - t0, state: box.state });
+        log("fleet.warm", { box: full, createMs: created - t0, startedMs: started - t0, readyMs: Date.now() - t0, state: box.state });
         return machine;
       } catch (error) {
         await client.remove(box.id).catch(() => {});
@@ -256,14 +262,23 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
       await client.stop(box.id, true);
       void (async () => {
         for (let i = 0; i < 60; i++) {
-          if ((await o.client.get(box.id).catch(() => undefined)) === null) {
+          const now = await o.client.get(box.id).catch(() => undefined);
+          if (now === null) {
             removed.add(box.id);
-            o.ledger?.close("daytona-box", machine.id, "deleted itself after the kill");
+            o.ledger?.close(kindOf, machine.id, "deleted itself after the kill");
             return;
           }
+          if (now && (now.state === "stopped" || sandboxStatus(now.state) === "gone")) break;
           await sleep(1_000);
         }
-        await client.remove(box.id).catch((error: unknown) => log("daytona.remove-failed", { box: machine.id, error: (error as Error).message }));
+        // Stopped but still there (a provider that keeps stopped boxes): delete it. The id is this fleet's own.
+        await o.client.remove(box.id).then(
+          () => {
+            removed.add(box.id);
+            o.ledger?.close(kindOf, machine.id, "deleted after the kill");
+          },
+          (error: unknown) => log("fleet.remove-failed", { box: machine.id, error: (error as Error).message }),
+        );
       })();
     },
 
@@ -290,7 +305,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
         await o.client.remove(b.id).then(
           () => {
             deleted.push(b.name);
-            o.ledger?.close("daytona-box", b.name, "swept");
+            o.ledger?.close(kindOf, b.name, "swept");
           },
           () => {},
         );

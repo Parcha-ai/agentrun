@@ -17,7 +17,8 @@ import type { Control, Machine, Progress } from "../multiverse.ts";
 import { pipePlacement } from "../pipe.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const RUNNER = join(here, "..", "universe-remote.ts");
+/** The runner under test: the source, or a bundle (UNIVERSE_TEST_RUNNER) to check what a box runs. */
+const RUNNER = process.env.UNIVERSE_TEST_RUNNER ?? join(here, "..", "universe-remote.ts");
 
 const freePort = () =>
   new Promise<number>((resolve) => {
