@@ -3,7 +3,9 @@
 
 import { defaultDesign, PRESETS, validateDesign, type Design } from './design.ts';
 import { buildMjcf, type Built, type World } from './mjcf.ts';
-import { dummyPolicy, Policy, PolicyRefused, sha256Hex } from './policy.ts';
+import { Policy, PolicyRefused, sha256Hex } from './policy.ts';
+import { dummyPolicy } from './dummy.ts';
+import { presetForSha } from './bodies.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
 import { Sketcher } from './sketch.ts';
@@ -94,10 +96,10 @@ async function loadVendor() {
  *  Written next to the SQLite files, only when there is a disk behind the page and this tab may write. */
 async function publishBody() {
   if (app.storageMode !== 'disk') return;
-  const { xml, legs, jointNames, standPose, standHeight } = app.world ? { ...buildMjcf(app.sketcher.get()) } : app.built;
+  const { xml, legs, jointsPerLeg, jointNames, standPose, standHeight } = app.world ? { ...buildMjcf(app.sketcher.get()) } : app.built;
   const enc = new TextEncoder();
   await new ParentBackend(windowBus(), 'creature/creature.xml').write(enc.encode(xml));
-  await new ParentBackend(windowBus(), 'creature/body.json').write(enc.encode(JSON.stringify({ legs, jointNames, standPose, standHeight, mjcf_sha256: app.bodySha }, null, 1) + '\n'));
+  await new ParentBackend(windowBus(), 'creature/body.json').write(enc.encode(JSON.stringify({ legs, jointsPerLeg, jointNames, standPose, standHeight, mjcf_sha256: app.bodySha }, null, 1) + '\n'));
 }
 
 /** Save the body to designs.sqlite; when another machine holds the run, ask the agent to save it instead. */
@@ -158,13 +160,24 @@ function setPolicy(p: Policy | null, name: string) {
 }
 
 async function useDummy() {
-  const file = dummyPolicy({ mjcfSha256: app.bodySha, mujocoVersion: app.mujocoVersion, nj: app.built.jointNames.length });
+  const file = dummyPolicy({ mjcfSha256: app.bodySha, mujocoVersion: app.mujocoVersion, nj: app.built.jointNames.length, jointsPerLeg: app.built.jointsPerLeg });
   setPolicy(await Policy.load(file, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion }), 'dummy trot');
   post('policy-loaded', { name: 'dummy trot', mjcf_sha256: app.bodySha, bytes: JSON.stringify(file).length });
 }
 
 async function loadPolicyText(text: string, name: string) {
   try {
+    // A policy names its body. If that is another preset (say the first 2-DOF body), switch to it rather than refuse.
+    let wanted: string | undefined;
+    try { wanted = JSON.parse(text).mjcf_sha256; } catch { /* not JSON: Policy.load reports it */ }
+    if (wanted && wanted !== app.bodySha) {
+      const preset = await presetForSha(wanted);
+      if (preset) {
+        app.sketcher.set(preset.design);
+        await buildCreature(structuredClone(preset.design), false);
+        toast(`body switched to "${preset.name}" to match the policy`);
+      }
+    }
     const p = await Policy.load(text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
     setPolicy(p, name);
     app.sim.reset();
@@ -220,6 +233,7 @@ function renderPairs() {
   const el = $('pairs');
   const d = app.sketcher.get();
   $('count').textContent = `${d.legs.length * 2} legs`;
+  ($('legDof') as HTMLInputElement).checked = d.legDof === 3;
   el.replaceChildren(...d.legs.map((l, i) => {
     const div = document.createElement('div');
     div.className = 'pair';
@@ -341,6 +355,7 @@ async function main() {
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
     $('reset').onclick = () => { app.sim.reset(); app.fallen = false; app.recovering = null; };
+    $('legDof').onchange = (e) => app.sketcher.setLegDof((e.target as HTMLInputElement).checked ? 3 : 2);
     $('addPair').onclick = () => app.sketcher.addPair();
     $('removePair').onclick = () => app.sketcher.removePair();
     $('useDummy').onclick = () => useDummy();

@@ -7,16 +7,21 @@ import { readFileSync } from 'node:fs';
 import load from '@mujoco/mujoco';
 import { defaultDesign } from '../src/design.ts';
 import { buildMjcf } from '../src/mjcf.ts';
+import { presetForSha } from '../src/bodies.ts';
 import { Policy, sha256Hex } from '../src/policy.ts';
 import { Sim } from '../src/sim.ts';
 
 const [policyPath, tracePath, xmlPath] = process.argv.slice(2);
 if (!policyPath || !tracePath) throw new Error('usage: parity.ts <policy.json> <trace.json> [creature.xml]');
-const built = buildMjcf(defaultDesign());
+const policyText = readFileSync(policyPath, 'utf8');
+// the body the policy names (3-DOF show body, 2-DOF first body, or another preset)
+const known = await presetForSha(JSON.parse(policyText).mjcf_sha256);
+const built = buildMjcf(known?.design ?? defaultDesign());
+console.log(`body: ${known?.name ?? 'default (no preset matches this policy)'}, ${built.jointNames.length} joints`);
 const sha = await sha256Hex(built.xml);
 if (xmlPath) console.log('xml byte-identical to the trainer file:', readFileSync(xmlPath, 'utf8') === built.xml);
 const mj = await load();
-const policy = await Policy.load(readFileSync(policyPath, 'utf8'), { mjcfSha256: sha, nj: built.jointNames.length });
+const policy = await Policy.load(policyText, { mjcfSha256: sha, nj: built.jointNames.length });
 const trace = JSON.parse(readFileSync(tracePath, 'utf8'));
 const max = (a: ArrayLike<number>, b: ArrayLike<number>) => Math.max(...Array.from(a, (v, i) => Math.abs(v - b[i])));
 
