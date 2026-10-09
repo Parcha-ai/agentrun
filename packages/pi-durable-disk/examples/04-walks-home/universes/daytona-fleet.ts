@@ -256,7 +256,7 @@ export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): Sandbox
           const w0 = Date.now();
           const names = Object.keys(o.warmup.files);
           for (const [i, name] of names.entries()) await client.upload(box, `${stage}/warmup-${i}`, o.warmup.files[name]!);
-          const place = names.map((name, i) => `sudo -n install -D -o pda -g pda -m 0644 ${stage}/warmup-${i} /home/pda/warmup/${name}`);
+          const place = names.map((name, i) => `sudo -n install -D -o pda -g pda -m 0644 ${stage}/warmup-${i} ~pda/warmup/${name}`);
           const run = `sudo -n -u pda -H sh -c 'cd "$HOME/warmup" && ${o.warmup.command.replace(/'/g, "'\\''")}' > /var/tmp/pda-universe-warmup.log 2>&1; echo "warmup=$?"`;
           const r = await client.exec(box, [...place, `rm -f ${stage}/*`, run].join(" && "), o.warmup.timeoutSec ?? 600).catch((e: Error) => ({ exitCode: -1, result: e.message }));
           log("fleet.warmup", { box: full, ms: Date.now() - w0, result: r.result.trim().split("\n").at(-1)?.slice(0, 120) });

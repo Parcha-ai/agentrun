@@ -71,15 +71,17 @@ export function startWorkload(o: WorkloadOptions): Workload {
 export async function homePolicy(o: Pick<WorkloadOptions, "work" | "env" | "log">): Promise<string | null> {
   if ((o.env.UNIVERSE_WORKLOAD ?? "stand-in") !== "train" || !o.env.UNIVERSE_EXPORT_PY) return null;
   const universe = o.env.UNIVERSE_ID ?? "u1";
-  const own = join(o.work, "train", "getup", "policy.json");
-  const getup = existsSync(own) ? own : o.env.UNIVERSE_GETUP;
+  // The run's own getup policy (trained in the run, or carried from its source), else the image's for the default body:
+  // the orchestrator checks the combined file against the run's, so the run's is preferred.
+  const own = [join(o.work, "train", "getup", "policy.json"), join(o.work, "getup", "policy.json")].find((p) => existsSync(p));
+  const getup = own ?? o.env.UNIVERSE_GETUP;
   if (!getup) return null;
   const out = join(o.work, "home", "policy.json");
   await mkdir(dirname(out), { recursive: true });
   const t0 = performance.now();
   const child = spawn(o.env.UNIVERSE_PYTHON ?? "python3", [o.env.UNIVERSE_EXPORT_PY, "combine", join(o.work, trainDir(universe), "policy.json"), getup, "--out", out], { stdio: ["ignore", "inherit", "inherit"] });
   const code = await new Promise<number | null>((resolve) => child.once("exit", (c) => resolve(c)));
-  o.log("home.policy", { code, ms: Math.round(performance.now() - t0), getup: getup === own ? "the run's" : "the image's" });
+  o.log("home.policy", { code, ms: Math.round(performance.now() - t0), getup: own ? "the run's" : "the image's" });
   return code === 0 ? "home/policy.json" : null;
 }
 

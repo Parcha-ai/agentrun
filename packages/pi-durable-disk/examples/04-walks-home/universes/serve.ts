@@ -23,6 +23,7 @@ import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
+import { chooseHomePolicy } from "./home-policy.ts";
 import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -333,8 +334,29 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
   }
 }
 
+/**
+ * The policy the tab loads: the combined walk + getup file when the winner's machine made one the tab accepts (strict
+ * JSON, the run's body), else the winner's own walking policy, and the stage is told why getup is missing.
+ */
+async function homePolicyPath(run: RunRef, universe: string): Promise<string | null> {
+  const read = (path: string) => control.getObject(`runs/${run.id}/work/${path}`).then((b) => ({ text: new TextDecoder().decode(b) }), () => null);
+  const xml = await read("creature/creature.xml");
+  const bodyFile = await read("creature/body.json");
+  const nj = bodyFile ? ((JSON.parse(bodyFile.text) as { jointNames?: unknown[] }).jointNames?.length ?? 0) : 0;
+  if (!xml || !nj) {
+    log("home.policy-unchecked", { run: run.id, why: "the run has no creature" });
+    return `train/${universe}/policy.json`;
+  }
+  const choice = await chooseHomePolicy({ read, universe, creatureXml: xml.text, nj });
+  if (choice.reason) {
+    feed.emit({ t: "note", at: Date.now() - origin, kind: "home", text: choice.path ? `${choice.reason[0]!.toUpperCase()}${choice.reason.slice(1)}; the walking policy goes home alone.` : `No policy goes home: ${choice.reason}.` });
+    log("home.policy", { run: run.id, path: choice.path, reason: choice.reason });
+  }
+  return choice.path;
+}
+
 /** Where the tab finds the winner once it is sealed: the tab server's link for it, and its policy under work/. */
-let home: { run: string; url: string; policy: string } | undefined;
+let home: { run: string; url: string; policy: string | null } | undefined;
 /**
  * The winner is sealed: ask the tab's server (03-tab-to-cloud serve.ts, --admin-token-file) to adopt it by id. Its
  * answer is the run's link (with the run's secret: it goes to the loopback route, never to a note or a log).
@@ -345,9 +367,7 @@ async function adoptHome(run: RunRef, universe: string): Promise<void> {
   const res = await fetch(`${values["home-server"]}/api/runs/${encodeURIComponent(run.id)}/attach`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
   const body = (await res.json().catch(() => ({}))) as { link?: string; error?: string };
   if (!res.ok || !body.link) throw new Error(`the tab's server did not adopt ${run.id}: ${res.status} ${body.error ?? ""}`);
-  // The combined walk + getup policy when the winner's machine made it, else the walking policy alone.
-  const combined = await control.headObject(`runs/${run.id}/work/home/policy.json`).catch(() => null);
-  home = { run: run.id, url: `${values["home-server"]}${body.link}`, policy: combined ? "home/policy.json" : `train/${universe}/policy.json` };
+  home = { run: run.id, url: `${values["home-server"]}${body.link}`, policy: await homePolicyPath(run, universe) };
   log("home.adopted", { run: run.id, status: res.status });
 }
 
