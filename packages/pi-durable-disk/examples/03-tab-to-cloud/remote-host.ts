@@ -61,8 +61,13 @@ wss.on("connection", (socket: WebSocket) => {
 async function serve(socket: WebSocket, invite: Invite): Promise<void> {
   let runtime: TabRuntime | undefined;
   let stopView: (() => Promise<void>) | undefined;
+  const unview = async () => {
+    const stop = stopView;
+    stopView = undefined;
+    await stop?.().catch(() => undefined);
+  };
   const leave = async (code: number) => {
-    await stopView?.().catch(() => undefined);
+    await unview();
     await runtime?.close().catch(() => undefined);
     runtime = undefined;
     log("left", { code });
@@ -83,7 +88,7 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
       void (async () => {
         const how = runtime ? await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const) : "idle";
         log("drained", { switchId: frame.switchId, step: how });
-        await stopView?.().catch(() => undefined);
+        await unview();
         await runtime?.close().catch(() => undefined);
         runtime = undefined;
         client.send({ t: "drained", switchId: frame.switchId });
