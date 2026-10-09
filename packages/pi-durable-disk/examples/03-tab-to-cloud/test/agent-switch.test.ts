@@ -46,7 +46,7 @@ describe("an agent that moves itself", () => {
     return { client, frames };
   };
 
-  it("is refused with its request id when the environment does not exist, naming the ones that do; or is the browser tab", async () => {
+  it("is refused with its request id when the environment does not exist, naming the ones that do, or when it is the browser tab and none is open", async () => {
     const { id, secret } = await local.server.createRun("refused");
     const { client, frames } = await writer(id, secret, "a");
     client.send({ t: "switch", to: "nowhere", by: "agent", reason: "why not", ask: "ask-1" });
@@ -55,7 +55,7 @@ describe("an agent that moves itself", () => {
     const refused = frames.filter((f): f is Extract<PipeFrame, { t: "switch-refused" }> => f.t === "switch-refused");
     assert.deepEqual(refused.map((f) => f.ask).sort(), ["ask-1", "ask-2"]);
     assert.match(refused.find((f) => f.ask === "ask-1")!.message, /no environment nowhere; the environments are .*big-vm/);
-    assert.match(refused.find((f) => f.ask === "ask-2")!.message, /cannot move itself into a browser tab/);
+    assert.match(refused.find((f) => f.ask === "ask-2")!.message, /no browser tab is open on this run to come home to/);
     assert.ok(!events.some((e) => e.event === "switch.start" && e.data.run === id), "nothing began");
     client.close();
   });
@@ -83,6 +83,24 @@ describe("an agent that moves itself", () => {
     await until(() => started.length === before + 1);
     assert.equal(started.at(-1)!.move.by, undefined);
     assert.ok(!frames.some((f) => f.t === "switch-accepted"));
+    client.close();
+  });
+
+  it("an agent in the cloud comes home: the tab that watches the run is told to take it, and with none watching it is refused", async () => {
+    const { id, secret } = await local.server.createRun("home");
+    const { client } = await writer(id, secret, "a");
+    client.send({ t: "switch", to: "big-vm" });
+    await until(() => local.server.runs.get(id)!.placement.where === "cloud");
+    const ref = local.server.runs.get(id)!.ref;
+    await assert.rejects(api!.requestSwitch(ref, "tab", "done"), /no browser tab is open on this run to come home to/);
+    const seen: PipeFrame[] = [];
+    const viewer = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "view", onFrame: (f) => seen.push(f) });
+    await viewer.ready;
+    const { switchId } = await api!.requestSwitch(ref, "tab", "training is done, the policy is in work/");
+    await until(() => seen.some((f) => f.t === "run-here"));
+    const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+    assert.equal(runHere.switchId, switchId, "the watching tab is handed the agent's own handover");
+    viewer.close();
     client.close();
   });
 

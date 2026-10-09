@@ -50,6 +50,24 @@ try {
   const computerCalls = await page.evaluate<number>(`demo.items().filter(i => i.kind === "tool" && /computer/.test(i.name ?? i.args ?? "")).length`);
   step("answered", { answer, computerCalls, ms: Date.now() - tCall, placement: await page.evaluate("demo.state.placement") });
   await snap(page, "answer");
+  // The live view as a page gets it: a ticket for the run's secret, then the picture's stream, with no password in sight.
+  const url = new URL(link);
+  const run = url.pathname.split("/").pop()!;
+  const secret = url.hash.slice(1);
+  const ticket = (await (await fetch(`${url.origin}/run/${run}/desktop-ticket`, { method: "POST", headers: { authorization: `Bearer ${secret}` } })).json()) as { url: string };
+  const stream = await fetch(`${url.origin}${ticket.url}`);
+  const reader = stream.body!.getReader();
+  const started = Date.now();
+  let received = Buffer.alloc(0);
+  let frames = 0;
+  while (Date.now() - started < 6_000) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    received = Buffer.concat([received, Buffer.from(value)]);
+    frames = (received.toString("latin1").match(/--frame/g) ?? []).length;
+  }
+  await reader.cancel();
+  step("live view", { frames, seconds: Number(((Date.now() - started) / 1000).toFixed(1)), fps: Number((frames / ((Date.now() - started) / 1000)).toFixed(2)), bytes: received.length, leaksSecret: received.includes(Buffer.from(secret)) });
   // Independent evidence from outside the agent: the VM's own desktop, and noVNC through its tunnel.
   const modal = new ModalClient();
   const app = await modal.apps.fromName(process.env.MODAL_APP ?? "pda-demo-d4", { createIfMissing: false });

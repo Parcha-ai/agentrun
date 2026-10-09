@@ -100,7 +100,9 @@ const APP_DEPENDENCIES = { "@earendil-works/pi-durable": "1.0.4", "@earendil-wor
  * Install the pinned runtime (Node, archil, both sha256-checked), the app, the run user and its sudoers line. Each part
  * an image already has (gpuDockerfile's: the runtime and the app's dependencies) is skipped.
  */
-export function prepareScript(uid: number, gid: number): string {
+export function prepareScript(uid: number, gid: number, options: { archil?: boolean } = {}): string {
+  // A host that never mounts the disk (it runs the agent through the pipe) needs no archil client: its image may not have one.
+  const needArchil = options.archil === false ? "false" : "! command -v archil >/dev/null";
   // The run user's ids are this server's, so files the agent writes on the disk belong to the same user everywhere.
   return String.raw`
 set -euo pipefail
@@ -116,7 +118,7 @@ if [ ! -x /opt/node24/bin/node ]; then
   rm -f node.tar.xz
 fi
 step node
-if ! command -v archil >/dev/null; then
+if ${needArchil}; then
   curl -fsSLo archil.deb ${ARCHIL_URL}
   echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null

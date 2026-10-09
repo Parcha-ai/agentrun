@@ -53,6 +53,8 @@ export interface CloudHost {
   startRemote?(ref: RunRef, env: string, invite: Invite): Promise<{ socket: WebSocket; host: string }>;
   /** Stop and remove the run's remote host (it left the run, or was taken from). */
   stopRemote?(ref: RunRef): Promise<void>;
+  /** The picture of the run's desktop right now (a JPEG), or undefined when the run's host has none. The page's live view of it. */
+  desktopFrame?(ref: RunRef): Promise<Uint8Array | undefined>;
   /** Called once by the server: what a cloud host may ask of it for the agent that runs there (a move the agent chose). */
   bind?(api: ServerApi): void;
 }
@@ -318,7 +320,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const from = currentEnv(p);
     const refuse = reply.refuse;
     if (!target) return refuse(`no environment ${to}; the environments are ${environments.map((e) => e.id).join(", ")}`);
-    if (who.by === "agent" && target.kind === "tab") return refuse("an agent cannot move itself into a browser tab: only your user can open one");
+    if (who.by === "agent" && target.kind === "tab") {
+      // Home: an agent cannot open a tab, but a tab already open and watching the run can be told to take it.
+      const viewer = [...state.viewers][0];
+      if (!viewer) return refuse("no browser tab is open on this run to come home to: only your user can open one");
+      reply = { ...reply, runHere: (switchId) => viewer.send({ t: "run-here", switchId }) };
+    }
     if (state.switching || state.opening) return refuse("a move is already in progress");
     if (from === undefined) return refuse(`the run is ${p.where}`);
     if (from === to) return refuse("the run is already there");
@@ -651,8 +658,56 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     res.writeHead(409).end();
   }
 
+  // ---- the live view of a host's desktop: screenshots as MJPEG, behind a short-lived ticket --------------------------------
+  // The page holds the run's secret and asks for a ticket (POST /run/<id>/desktop-ticket with it as a bearer token); the ticket
+  // is the only thing in the picture's URL. Nothing of the host's own access (a VNC password, a tunnel address) reaches a page.
+  const tickets = new Map<string, { run: string; until: number }>();
+  const TICKET_MS = 10 * 60_000;
+  const FRAME_MS = 250;
+
+  async function desktopTicket(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    const auth = String(req.headers.authorization ?? "");
+    if (!state || !auth.startsWith("Bearer ") || !sameSecret(auth.slice(7), state.secret) || !options.cloud?.desktopFrame || !(await options.cloud.desktopFrame(state.ref).catch(() => undefined))) {
+      res.writeHead(404).end();
+      return;
+    }
+    const ticket = randomBytes(18).toString("base64url");
+    for (const [t, v] of tickets) if (v.until < Date.now()) tickets.delete(t);
+    tickets.set(ticket, { run: runId, until: Date.now() + TICKET_MS });
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ url: `/desktop/${ticket}.mjpeg`, ttlMs: TICKET_MS }));
+  }
+
+  function desktopStream(req: IncomingMessage, res: ServerResponse, ticket: string): void {
+    const entry = tickets.get(ticket);
+    const state = entry && entry.until > Date.now() ? runs.get(entry.run) : undefined;
+    if (!state || !options.cloud?.desktopFrame) {
+      res.writeHead(404).end();
+      return;
+    }
+    const frameOf = options.cloud.desktopFrame.bind(options.cloud);
+    let open = true;
+    req.on("close", () => (open = false));
+    res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame", "cache-control": "no-store", "cross-origin-resource-policy": "same-origin" });
+    void (async () => {
+      while (open && (tickets.get(ticket)?.until ?? 0) > Date.now()) {
+        const started = Date.now();
+        const frame = await frameOf(state.ref).catch(() => undefined);
+        if (!open) break;
+        if (frame) res.write(Buffer.concat([Buffer.from(`--frame\r\ncontent-type: image/jpeg\r\ncontent-length: ${frame.length}\r\n\r\n`), Buffer.from(frame), Buffer.from("\r\n")]));
+        await new Promise((r) => setTimeout(r, Math.max(0, FRAME_MS - (Date.now() - started))));
+      }
+      res.end();
+    })();
+  }
+
   const http = createHttpServer((req, res) => {
-    if (req.method === "GET") serveStatic(req, res);
+    const path = (req.url ?? "").split("?")[0]!;
+    const stream = /^\/desktop\/([A-Za-z0-9_-]+)\.mjpeg$/.exec(path);
+    const ticketFor = /^\/run\/([^/]+)\/desktop-ticket$/.exec(path);
+    if (req.method === "GET" && stream) desktopStream(req, res, stream[1]!);
+    else if (req.method === "POST" && ticketFor) void desktopTicket(req, res, decodeURIComponent(ticketFor[1]!)).catch(() => res.writeHead(500).end());
+    else if (req.method === "GET") serveStatic(req, res);
     else if (req.method === "POST" && (req.url ?? "").startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();
   });

@@ -68,6 +68,12 @@ export interface ModalCloudOptions {
   readonly regions?: string[];
   /** Start a desktop in the VM (a virtual display, a window manager, noVNC to watch it) and give the agent the computer tool. Mount transport only. */
   readonly desktop?: boolean;
+  /**
+   * A second environment, "modal-gpu": one gVisor sandbox with a GPU, running the agent through the pipe (gVisor does not give
+   * a durable fsync, so the disk is never mounted there). `image` is a prebuilt Modal image (your training image with
+   * image.ts's layer, without archil); `note` goes into the agent's notice there (what to run, where the output goes).
+   */
+  readonly gpu?: { readonly image: string; readonly type?: string; readonly cpu?: number; readonly memoryMiB?: number; readonly note?: string; readonly placementTimeoutMs?: number; readonly ttlMinutes?: number };
   /** Keep one VM ready for a run while a tab runs it (it costs while it waits). Pipe transport only. Default off. */
   readonly warm?: boolean;
   /** Where each stopped host's log lines are appended (the demo's evidence file). */
@@ -82,6 +88,14 @@ export const modalVmEnvironment = (transport: "mount" | "pipe"): Environment => 
   phrase: "a Modal VM",
   kind: transport === "mount" ? "cloud" : "remote",
   detail: "2 vCPU, 4 GiB, its own Linux kernel",
+});
+
+export const modalGpuEnvironment = (type: string): Environment => ({
+  id: "modal-gpu",
+  label: "Modal GPU",
+  phrase: "a Modal GPU machine",
+  kind: "remote",
+  detail: `1x ${type}, a Linux sandbox that runs the agent through your server`,
 });
 
 interface Placed {
@@ -132,6 +146,16 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const ports = [BOX_SERVE_PORT, BOX_LINK_PORT, ...(options.desktop ? [DESKTOP_PORT] : [])];
   const vncPasswords = new Map<string, string>();
   const client: DaytonaClient = modalSandboxes(sdk, { appName, image, runtime, cpu: options.cpu ?? 2, memoryMiB: options.memoryMiB ?? 4096, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: ports });
+  const gpuType = options.gpu?.type ?? "H100";
+  const gpuEnv = options.gpu ? modalGpuEnvironment(gpuType) : undefined;
+  const gpuClient: DaytonaClient | undefined = options.gpu
+    ? modalSandboxes(sdk, { appName, image: options.gpu.image, runtime: "gvisor", gpu: gpuType, cpu: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: [BOX_SERVE_PORT] })
+    : undefined;
+  /** What a pipe host of each environment is made of. */
+  const classOf = (envId: string) =>
+    envId === gpuEnv?.id && gpuClient && options.gpu
+      ? { env: gpuEnv, client: gpuClient, archil: false, ttlMinutes: options.gpu.ttlMinutes ?? 45, className: "modal-gpu", note: `The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server. ${options.gpu.note ?? ""}`.trim() }
+      : { env, client, archil: true, ttlMinutes: 120, className: "modal-vm", note: "The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server." };
   let bundle: Uint8Array | undefined;
   const remotes = new Map<string, SandboxInfo>();
   const warm = new Map<string, Promise<SandboxInfo>>();
@@ -152,12 +176,12 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   }
 
   /** The app bundle and this box's serve token: once per box (the image holds the runtime and the app's dependencies). */
-  async function prepare(box: SandboxInfo, c: DaytonaClient = client): Promise<void> {
+  async function prepare(box: SandboxInfo, c: DaytonaClient = client, archil = true): Promise<void> {
     const started = Date.now();
     live.add(box.id);
     bundle ??= appBundle();
     await c.upload(box, "/tmp/pda-demo-app.tar.gz", bundle);
-    const r = await c.exec(box, prepareScript(uid, gid), 900);
+    const r = await c.exec(box, prepareScript(uid, gid, { archil }), 900);
     if (r.exitCode !== 0) throw new Error(`preparing ${box.name} failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
     const mk = await c.exec(box, `umask 077 && mkdir -p ${STAGE} && chmod 700 ${STAGE}`, 30);
     if (mk.exitCode !== 0) throw new Error(`staging in ${box.name} failed: ${mk.result.trim().slice(0, 200)}`);
@@ -193,29 +217,64 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
   // ---- pipe transport: a VM sandbox that runs the agent through the pipe ----------------------------------------------------
 
-  /** A VM sandbox for `ref`, set up, with remote-host.ts listening as the run user. */
-  async function remoteBox(ref: RunRef): Promise<SandboxInfo> {
+  /** A create that outlived its caller: when it places the sandbox after all, terminate it (looked up by name, up to 20 minutes). */
+  async function reclaimLate(name: string, creating: Promise<SandboxInfo>): Promise<void> {
+    const landed = await creating.then((b) => b, () => undefined);
+    if (landed) {
+      await drop(landed);
+      return;
+    }
+    for (let i = 0; i < 80; i++) {
+      await new Promise((r) => setTimeout(r, 15_000));
+      const found = await sdk.sandboxes.fromName(appName, name).catch(() => undefined);
+      if (found) {
+        await found.terminate().catch(() => undefined);
+        options.ledger?.close("modal-sandbox", found.sandboxId, "terminated: placed after its start gave up");
+        return;
+      }
+    }
+  }
+
+  /**
+   * A sandbox of environment `envId` for `ref`, set up, with remote-host.ts listening as the run user. A GPU is not always
+   * there to place: a create that has not returned in `placementTimeoutMs` fails the start, and the sandbox it may still place
+   * later (untagged, since the tags are set after create) is found by its name and terminated.
+   */
+  async function remoteBox(ref: RunRef, envId: string): Promise<SandboxInfo> {
     const t0 = Date.now();
+    const cls = classOf(envId);
     const name = sandboxName(prefix, ref.id, t0);
-    const box = await client.create({ name, snapshot: "image", labels: { [LABEL_FLEET]: fleet, [LABEL_RUN]: ref.id }, autoStopInterval: 0, autoDeleteInterval: 0, ttlMinutes: 120 });
+    const body = { name, snapshot: "image", labels: { [LABEL_FLEET]: fleet, [LABEL_RUN]: ref.id }, autoStopInterval: 0, autoDeleteInterval: 0, ttlMinutes: cls.ttlMinutes };
+    const timeoutMs = cls.env.id === gpuEnv?.id ? (options.gpu?.placementTimeoutMs ?? 180_000) : 0;
+    const creating = cls.client.create(body);
+    let box: SandboxInfo;
+    if (timeoutMs > 0) {
+      const outcome = await Promise.race([creating.then((b) => ({ b })), new Promise<{ timedOut: true }>((r) => setTimeout(() => r({ timedOut: true }), timeoutMs))]);
+      if ("timedOut" in outcome) {
+        options.log("remote.placement-timeout", { run: ref.id, name, env: cls.env.id, timeoutMs });
+        void reclaimLate(name, creating);
+        throw new Error(`${cls.env.label} did not place in ${Math.round(timeoutMs / 1000)} s: no capacity right now`);
+      }
+      box = outcome.b;
+    } else box = await creating;
     live.add(box.id);
     try {
       const startedMs = Date.now() - t0;
-      await prepare(box);
+      await prepare(box, cls.client, cls.archil);
       const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
       // Its own session (setsid -f), so the end of the exec does not end it.
       const launch = [
         "setsid -f sudo -n -u pda -H env",
         `PATH=${q(`${dirname(BOX_NODE)}:/usr/local/bin:/usr/bin:/bin`)}`,
-        `DEMO_ENV_LABEL=${q(env.phrase)}`,
-        `DEMO_ENV_CLASS=${q("modal-vm")}`,
-        `DEMO_ENV_NOTE=${q("The run's disk is not mounted here: your conversation and workspace reach this machine through your user's server.")}`,
+        `DEMO_ENV_LABEL=${q(cls.env.phrase)}`,
+        `DEMO_ENV_CLASS=${q(cls.className)}`,
+        `DEMO_ENV_NOTE=${q(cls.note)}`,
         `${BOX_NODE} ${BOX_APP_DIR}/remote-host.ts --port ${BOX_SERVE_PORT} --token-file ${BOX_ETC}/serve.token --work ${BOX_WORK}`,
         `>> ${BOX_REMOTE_LOG} 2>&1 < /dev/null`,
       ].join(" ");
-      const r = await client.exec(box, `install -d -o pda -g pda -m 0755 ${BOX_WORK} && install -o pda -g pda -m 0644 /dev/null ${BOX_REMOTE_LOG} && ${launch}`, 30);
+      const r = await cls.client.exec(box, `install -d -o pda -g pda -m 0755 ${BOX_WORK} && install -o pda -g pda -m 0644 /dev/null ${BOX_REMOTE_LOG} && ${launch}`, 30);
       if (r.exitCode !== 0) throw new Error(`launching the remote host in ${name} failed (${r.exitCode}): ${r.result.trim().slice(0, 300)}`);
-      options.log("remote.ready", { run: ref.id, box: name, startedMs, ms: Date.now() - t0 });
+      options.log("remote.ready", { run: ref.id, box: name, env: cls.env.id, startedMs, ms: Date.now() - t0 });
       return box;
     } catch (error) {
       await drop(box);
@@ -321,10 +380,15 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
   const host: ModalCloud = {
     hostLabel: "a Modal VM",
-    environments: [env] as readonly Environment[],
+    environments: [env, ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
 
     bind(api) {
       server = api;
+    },
+
+    /** The picture of the run's desktop now, for the server's live view (undefined without a desktop). */
+    async desktopFrame(ref) {
+      return host.desktop(ref)?.screenshot();
     },
 
     /** The run's desktop while a VM with one runs it: the noVNC address (it carries the VNC password) and a screenshot of it. */
@@ -389,7 +453,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     /** While a tab runs the run, with `warm` set (pipe transport): get a VM ready, so a switch only dials it. */
     prewarm(ref) {
       if (transport !== "pipe" || !options.warm || warm.has(ref.id) || remotes.has(ref.id)) return;
-      const ready = remoteBox(ref);
+      const ready = remoteBox(ref, env.id);
       ready.catch((error: Error) => {
         warm.delete(ref.id);
         options.log("remote.warm-failed", { run: ref.id, error: error.message });
@@ -398,11 +462,12 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     },
 
     /** Take the warm sandbox (or make one), dial its host through the tunnel with its bearer token, and send it `invite`. */
-    async startRemote(ref, _env, invite) {
+    async startRemote(ref, envId, invite) {
       const t0 = Date.now();
-      const warmBox = warm.get(ref.id);
-      warm.delete(ref.id);
-      const box = (warmBox && (await warmBox.catch(() => undefined))) || (await remoteBox(ref));
+      // A warm VM is only for the VM environment; a GPU one is never kept waiting.
+      const warmBox = envId === env.id ? warm.get(ref.id) : undefined;
+      if (envId === env.id) warm.delete(ref.id);
+      const box = (warmBox && (await warmBox.catch(() => undefined))) || (await remoteBox(ref, envId));
       remotes.set(ref.id, box);
       const tunnel = (await tunnelsOf(box.id))[BOX_SERVE_PORT];
       if (!tunnel) throw new Error(`${box.name} has no tunnel for port ${BOX_SERVE_PORT}`);
@@ -422,7 +487,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       }
       socket.send(JSON.stringify(invite));
       options.log("remote.dialed", { run: ref.id, box: box.name, warm: Boolean(warmBox), ms: Date.now() - t0 });
-      return { socket, host: "a Modal VM" };
+      return { socket, host: classOf(envId).env.phrase };
     },
 
     /** Delete the run's pipe sandbox, keeping its host's log lines. */

@@ -45,6 +45,9 @@ const { values } = parseArgs({
     "modal-image": { type: "string" },
     "modal-warm": { type: "boolean", default: false },
     "modal-desktop": { type: "boolean", default: false },
+    "modal-gpu-image": { type: "string" },
+    "modal-gpu-type": { type: "string" },
+    "modal-gpu-note": { type: "string" },
     "modal-transport": { type: "string" },
     "modal-regions": { type: "string" },
     "daytona-gpu-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_GPU_SNAPSHOT },
@@ -117,6 +120,7 @@ if (values.cloud === "modal") {
     ...(values["modal-image"] ? { image: values["modal-image"] } : {}),
     ...(values["modal-warm"] ? { warm: true } : {}),
     ...(values["modal-desktop"] ? { desktop: true } : {}),
+    ...(values["modal-gpu-image"] ? { gpu: { image: values["modal-gpu-image"], ...(values["modal-gpu-type"] ? { type: values["modal-gpu-type"] } : {}), ...(values["modal-gpu-note"] ? { note: values["modal-gpu-note"] } : {}) } } : {}),
     ...(values["modal-regions"] ? { regions: values["modal-regions"].split(",") } : {}),
     ...(values["modal-transport"] ? { transport: values["modal-transport"] as "mount" | "pipe" } : {}),
   });
