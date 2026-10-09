@@ -13,6 +13,8 @@ import {
   findDelegations,
   matchDelegations,
   pathlessResolver,
+  revokeBestEffort,
+  revokeCompanions,
   mintMountToken,
   MOUNT_TOKEN_TTL,
   parseTokenNickname,
@@ -256,7 +258,7 @@ export async function ensureRunning(ref: RunRef, host: HostDriver, options: Ensu
   }
   // A due wake still goes through the delegation check: an instance that wrote `sleeping` and died before releasing
   // left a held or orphaned delegation, which a plain start would hit (76) on every tick.
-  const held = await listHeld(opts.control, ref.id, opts.pathless);
+  const { held, all } = await listHeld(opts.control, ref.id, opts.pathless);
   // A start in flight: the instance has not written run.json at its generation yet (it may not even have mounted).
   // Revoking it or starting a second one would fence what was just started.
   const baseGraceMs = opts.startGraceMs ?? leaseExpiryMs;
@@ -290,7 +292,7 @@ export async function ensureRunning(ref: RunRef, host: HostDriver, options: Ensu
   if (held.every((d) => d.isOrphaned)) {
     const inFlight = await starting();
     if (inFlight) return inFlight;
-    await revokeListed(opts.control, ref.id, held);
+    await revokeListed(opts.control, ref.id, held, all);
     return start("orphaned", held);
   }
   if (held.some((d) => d.isPending && !d.isOrphaned)) return { action: "pending", delegations: held.length };
@@ -300,7 +302,7 @@ export async function ensureRunning(ref: RunRef, host: HostDriver, options: Ensu
   const inFlight = await starting();
   if (inFlight) return inFlight;
   const stonith = status?.holder ? await stopHolder(host, status.holder, opts.stonithTimeoutMs ?? STONITH_TIMEOUT_MS) : ({ outcome: "no-holder" } as const);
-  await revokeListed(opts.control, ref.id, held);
+  await revokeListed(opts.control, ref.id, held, all);
   return start("lease-expired", held, stonith);
 }
 
@@ -362,9 +364,11 @@ async function ensureRunDir(control: SupervisorControl, id: string, owner: { uid
   return true;
 }
 
-async function listHeld(control: ControlApi, id: string, resolve?: PathlessResolver): Promise<Delegation[]> {
+/** The run's delegations (`matchDelegations`), and the listing they came from. */
+async function listHeld(control: ControlApi, id: string, resolve?: PathlessResolver): Promise<{ held: Delegation[]; all: Delegation[] }> {
   try {
-    return await findDelegations(control, id, resolve);
+    const all = await control.listDelegations();
+    return { held: await matchDelegations(all, id, resolve ?? pathlessResolver(control)), all };
   } catch (err) {
     throw new SuperviseError("CONTROL_API_FAILED", `listing delegations on ${runPath(id)} failed`, { cause: err });
   }
@@ -376,16 +380,18 @@ const sameDelegation = (a: Pick<Delegation, "clientId" | "inodeId">, b: Pick<Del
 /**
  * Revoke exactly the delegations the decision was made on, never a fresh listing: a racing supervisor may have started
  * a new holder since, and that one is not ours to judge. A revoke that fails is fine only if the delegation is gone.
+ * Then the same clients' private directories (`revokeCompanions`): those clients are gone or fenced.
  */
-async function revokeListed(control: ControlApi, id: string, held: Delegation[]): Promise<void> {
+async function revokeListed(control: ControlApi, id: string, held: Delegation[], all: Delegation[]): Promise<void> {
   for (const d of held) {
     try {
       await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId });
     } catch (err) {
-      const still = await listHeld(control, id).then((now) => now.some((n) => sameDelegation(n, d)));
+      const still = await listHeld(control, id).then((now) => now.held.some((n) => sameDelegation(n, d)));
       if (still) throw new SuperviseError("CONTROL_API_FAILED", `revoking ${runPath(id)} (client ${d.clientId}) failed`, { cause: err });
     }
   }
+  await revokeCompanions(control, held, all);
 }
 
 function settleWithin<T>(promise: Promise<T>, ms: number): Promise<{ value: T } | { error: unknown } | "timeout"> {
@@ -711,14 +717,13 @@ export async function checkHost(options: CheckOptions): Promise<CheckReport> {
 /**
  * Delete a run's directory tree over S3. A tree with a delegation on it, even an orphaned one, is not deleted: S3
  * DeleteObjects leaves its objects in place and reports no error, and the run id would later reopen with its old
- * store. So: revoke every delegation on the subtree, delete the files, then the directory markers deepest first (a
- * directory with children refuses), then list the prefix. Anything left is RUN_TREE_NOT_DELETED; a non-empty prefix is
- * never reported as deleted.
+ * store. So: revoke every delegation on the subtree and its holders' private directories, delete the files, then the
+ * directory markers deepest first (a directory with children refuses), then list the prefix. Anything left is
+ * RUN_TREE_NOT_DELETED; a non-empty prefix is never reported as deleted.
  */
 export async function deleteRunTree(control: CheckControl, id: string): Promise<{ objects: number; revoked: number }> {
   const prefix = `${runPath(id)}/`;
-  const held = await findDelegations(control, id);
-  for (const d of held) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId }).catch(() => {});
+  const held = await revokeBestEffort(control, id);
   const keys = (await control.listObjects(prefix, { recursive: true })).objects.map((o) => o.key);
   const dirs = [...new Set([...keys.filter((k) => k.endsWith("/")), prefix])];
   const depth = (k: string) => k.split("/").length;

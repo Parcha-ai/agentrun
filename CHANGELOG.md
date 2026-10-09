@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `@parcha/pi-durable-disk` revokes, with a fenced or deleted run's delegations, the ones its holders keep on their own private directories (`.archil/client-<id>`, listed with no path), when those holders hold nothing else. They block no run; before, every killed client left them orphaned, and they piled up and resurfaced in listings. Its CHANGELOG has the details.
+
+## 0.1.0-beta.12, 2026-10-09
+
 - `@parcha/pi-durable-archil` is renamed `@parcha/pi-durable-disk` (directory `packages/pi-durable-disk`, command `pi-durable-disk`, image `pi-durable-disk`), for branding: other disks may follow. Renamed from `@parcha/pi-durable-archil`; the `0.1.0-beta.10` and `0.1.0-beta.11` entries below name it as it was published. It supports Archil only. Archil-specific names stay: `bin/archil-scoped`, `ARCHIL_API_KEY`, `archilEnv`, `ArchilCodingTools`, the `archil` client.
   - Install paths named after the package move too: `/usr/local/lib/pi-durable-disk/archil-scoped`, `/run/pi-durable-disk` (the token directory), `/etc/sudoers.d/pi-durable-disk`; an existing host's sudoers drop-in and wrapper copy need the new paths.
 - The release workflow waits up to 20 minutes, not 5, for npm to show a version it has just published, and backs off (5 s rising by half to 30 s) instead of polling every 5 s. npm showed `@parcha/agentrun-dsl@0.1.0-beta.11` 16 minutes after accepting it (published 16:35:56Z, visible 16:52:12Z), so run 37809477150 failed after about 5 minutes with `Registry rejected @parcha/agentrun-dsl: HTTP 404`; the rerun, 37812713360, resumed and passed. Beta.10 took about 5 minutes.
