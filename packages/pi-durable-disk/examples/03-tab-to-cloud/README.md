@@ -38,7 +38,11 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
 - **Restore**: when a tab attaches, it gets `work/` from the disk, so a tab can resume what a cloud host did: a manifest
   (each file's size and SHA-256), the files in 1 MiB chunks, then the end. The tab hands the workspace over only when
   every file matches its manifest, and refuses (RESTORE_FAILED) a workspace over its limit before receiving any of it:
-  256 MiB in the page, 1 GiB on a host (`restoreLimitBytes`).
+  256 MiB in the page, 1 GiB on a host (`restoreLimitBytes`). The pipe keeps each file's SHA-256 under its identity
+  (device, inode, size, mtime and ctime in ns), from the write-through that wrote it or from one read, so an attach reads
+  `work/` once, to send it; the release's digest of `work/` (the `pipe.released` line) comes from what the pipe knows,
+  after the release. What the restore sends is hashed again: a file that changed during the attach fails it, and the
+  next attach sends the file as the disk has it.
 - **Who may do what** is the hello's `mode`: `write` asks to run the agent here, `operator` watches and may switch the run
   or send it messages, `view` only watches (a switch or a message from it gets `switch-refused` / `submit-refused`). A
   page says `canRun: true`: a switch into a tab tells the asking page to run it when it can, else the most recent page
