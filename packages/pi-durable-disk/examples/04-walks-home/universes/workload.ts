@@ -118,6 +118,9 @@ function startTrain(o: WorkloadOptions): Workload {
     // that holds it starts warm.
     const world = join(o.work, o.env.UNIVERSE_WORLD ?? "terrain/terrain.json");
     const course = join(o.work, o.env.UNIVERSE_COURSE ?? "terrain/course.json");
+    const cache = isAbsolute(o.env.UNIVERSE_COMPILE_CACHE ?? "") ? o.env.UNIVERSE_COMPILE_CACHE! : join(o.work, o.env.UNIVERSE_COMPILE_CACHE ?? "train/compile-cache.tar.gz");
+    // train.py writes the cache beside its path (a temp name, then a rename): the directory must exist.
+    await mkdir(dirname(cache), { recursive: true });
     const args = [
       trainPy,
       "--mjcf", join(o.work, o.env.UNIVERSE_MJCF ?? "creature/creature.xml"),
@@ -128,7 +131,7 @@ function startTrain(o: WorkloadOptions): Workload {
       ...(existsSync(course) ? ["--course", course] : []),
       // Relative: in the run's work/, carried to every fork and every takeover (warm starts, but the takeover's restore
       // carries it too). Absolute: the box's own, when its image holds a warm cache already.
-      "--compile-cache", isAbsolute(o.env.UNIVERSE_COMPILE_CACHE ?? "") ? o.env.UNIVERSE_COMPILE_CACHE! : join(o.work, o.env.UNIVERSE_COMPILE_CACHE ?? "train/compile-cache.tar.gz"),
+      "--compile-cache", cache,
       ...(o.env.UNIVERSE_MINUTES ? ["--minutes", o.env.UNIVERSE_MINUTES] : []),
       ...(o.env.UNIVERSE_TRAIN_ARGS ? (JSON.parse(o.env.UNIVERSE_TRAIN_ARGS) as string[]) : []),
     ];

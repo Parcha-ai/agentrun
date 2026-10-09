@@ -3,7 +3,7 @@
 // score; a stop is a SIGTERM that leaves state.json paused; the same command on the same work directory resumes at the
 // next generation, from where the last one was.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -28,7 +28,7 @@ test("train.py as the workload: a barrier per checkpoint, progress by machine, s
       getObject: async (key: string) => new Uint8Array(readFileSync(join(root, key))),
     } as unknown as Control;
     // The stub is JavaScript: node stands in for python, the file contract is train.py's.
-    const env = { UNIVERSE_WORKLOAD: "train", UNIVERSE_PYTHON: process.execPath, UNIVERSE_TRAIN_PY: join(here, "fixtures", "fake-train.mjs"), UNIVERSE_ID: "u3", UNIVERSE_SCALES: '{"feet_air_time":1}' };
+    const env = { UNIVERSE_WORKLOAD: "train", UNIVERSE_PYTHON: process.execPath, UNIVERSE_TRAIN_PY: join(here, "fixtures", "fake-train.mjs"), UNIVERSE_ID: "u3", UNIVERSE_SCALES: '{"feet_air_time":1}', UNIVERSE_COMPILE_CACHE: join(root, "box-cache", "deep", "compile-cache.tar.gz") };
     const logs: string[] = [];
     let barriers = 0;
     const start = (host: string) =>
@@ -44,6 +44,7 @@ test("train.py as the workload: a barrier per checkpoint, progress by machine, s
     assert.equal(onA.host, "machine A");
     assert.equal(onA.generation, 1);
     assert.ok(onA.score > 0, "the score is the last progress line's");
+    assert.ok(existsSync(join(root, "box-cache", "deep")), "the box's compile cache directory exists before train.py writes beside it");
     assert.ok(barriers >= 2, `a barrier per checkpoint (${barriers})`);
     assert.deepEqual(JSON.parse(readFileSync(join(work, "train", "u3", "universe.json"), "utf8")).reward_scales, { feet_air_time: 1 });
 
