@@ -90,6 +90,8 @@ const serveArgs = [
   "--admin-token-file", tokenFile,
   "--tab-writable", TAB_WRITABLE,
   "--log", logFile,
+  // How long the writer's silence is tolerated before the run is declared tab-less (a busy software-GL Chrome can starve a page's pings).
+  "--grace-ms", arg("grace-ms", "5000"),
   "--cloud", cloud,
   ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
   ...(evidenceReadback ? ["--evidence-readback"] : []),

@@ -45,6 +45,16 @@ const PROMPT =
   `I just sketched a creature: its files are in your workspace under creature/. This tab cannot show me a real browser or train anything, so do all of this yourself, in one go, without waiting for me between steps. Step 1: move yourself with your switch_environment tool to modal-vm (one-sentence reason). As soon as you arrive, with your computer tool: write creature.html in your workspace, a page that reads creature/body.json and draws on a canvas, in very large type, the number of legs, the joints per leg and the stand height; serve the workspace on port 8099 with python3 -m http.server, detached; open http://localhost:8099/creature.html in Chromium on the desktop and take a screenshot. No scrolling. Step 2: move yourself with switch_environment to modal-gpu (one-sentence reason); as soon as you arrive, run the training command that your notice there gives you. Step 3: when home/policy.json exists, move home with switch_environment (target "tab", a one-sentence reason). Do not write any closing words until you are home and have read the notice there; then tell me in two short lines where you went and what you trained.`;
 
 const kids = [];
+const WITH_ARCHIL = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-archil");
+/** Delete the run's tree from the disk: a run id that already has a history would resume that conversation, and one left behind is a leak. */
+const cleanRun = (run) =>
+  new Promise((resolve) => {
+    const k = spawn(WITH_ARCHIL, ["--", process.execPath, join(here, "clean-run.ts"), run], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
+    let text = "";
+    k.stdout.on("data", (d) => (text += d));
+    k.stderr.on("data", (d) => (text += d));
+    k.on("close", () => resolve(text.trim().split("\n").at(-1) ?? ""));
+  });
 const spawnLogged = (cmd, args, env, name, cwd) => {
   const k = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const lines = [];
@@ -78,6 +88,8 @@ let rec;
 let captionLog = [];
 let failed = false;
 try {
+  step("the run's tree before the take", { cleaned: await cleanRun("walks-home") });
+  await sleep(10_000); // the object store settles its deletes before the same run id is created again
   // 1. the take's 03 server on the real disk, with the Modal cloud module
   const take = spawnLogged(
     process.execPath,
@@ -87,6 +99,8 @@ try {
       "--dir", join(work, "take"),
       "--run", "walks-home",
       "--budget", "3000000",
+      "--evidence-readback",
+      "--grace-ms", "30000",
       "--modal",
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--cloud-arg", `image=${vmImage}`,
@@ -110,13 +124,6 @@ try {
   const link = readFileSync(linkFile, "utf8").trim();
   step("the take's 03 server is up", { origin: status.origin, mode: status.mode });
 
-  // the run's creature: the sketch step is not part of this take; the recorder puts the files where the tab writes them
-  if (flag("seed-creature")) {
-    const seed = spawnLogged("/home/ubuntu/evals/agentrun-archil-tl/bin/with-archil", ["--", process.execPath, join(here, "seed-creature.ts"), link, "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/body-3dof-wide.json", "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/creature-3dof-wide.xml"], {}, "seed", join(here, ".."));
-    await new Promise((r) => seed.on("close", r));
-    step("the creature's files are on the run's disk", { seeded: /seeded/.test(seed.log()) });
-  }
-
   // 2. the stage, following the run's link
   const stagePort = await freePort();
   const stageProc = spawnLogged(process.execPath, [join(show, "serve.ts")], { SHOW_PORT: String(stagePort), SHOW_PIPE_LINK_FILE: linkFile, SHOW_ASK_AFTER_SWITCH: "0", SHOW_AUTOKILL: "off", TAB_DIR: tabDir, POLICY_DIR: policyDir }, "stage", show);
@@ -133,6 +140,22 @@ try {
   rec = await startScreencast(stage, { out, fps });
   t0 = Date.now();
   results.recordingStartedAt = new Date().toISOString();
+
+  // The creature's files: the tab writes them itself when it saves its design (a second or two after it loads). If they are not on
+  // the disk after a few seconds, or with --seed-creature, the recorder puts D2's default files (byte-identical) there.
+  const onDisk = async () => (await Promise.all(["creature/body.json", "creature/creature.xml"].map((f) => fetch(`http://127.0.0.1:${stagePort}/api/disk/${f}`).then((r) => r.status === 200, () => false)))).every(Boolean);
+  let haveCreature = false;
+  for (let t = 0; t < 8_000 && !haveCreature && !flag("seed-creature"); t += 500) {
+    haveCreature = await onDisk();
+    if (!haveCreature) await sleep(500);
+  }
+  if (haveCreature) step("the tab wrote the creature's files itself");
+  else {
+    const seed = spawnLogged(WITH_ARCHIL, ["--", process.execPath, join(here, "seed-creature.ts"), link, "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/body-3dof-wide.json", "/home/ubuntu/evals/agentrun-archil-tl/demo/d4-take/creature-3dof-wide.xml"], {}, "seed", join(here, ".."));
+    await new Promise((r) => seed.on("close", r));
+    step("the recorder put the creature's files on the disk", { seeded: /seeded/.test(seed.log()) });
+  }
+  results.creatureFrom = haveCreature ? "the tab's own design save" : "the recorder (D2's default files)";
 
   // 4. the user says it once
   const before = await writer.eval(`demo.items().length`);
@@ -208,6 +231,7 @@ try {
   await stage?.close().catch(() => {});
   await writer?.close().catch(() => {});
   for (const k of kids.slice().reverse()) k.kill("SIGTERM");
-  await sleep(4000);
+  await sleep(8000);
+  console.log(JSON.stringify({ name: "the run's tree after the take", cleaned: await cleanRun("walks-home") }));
 }
 process.exit(failed ? 1 : 0);

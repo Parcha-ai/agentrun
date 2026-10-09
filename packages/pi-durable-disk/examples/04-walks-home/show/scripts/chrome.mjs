@@ -39,6 +39,11 @@ if (!up) {
       "--use-angle=swiftshader",
       "--enable-unsafe-swiftshader",
       "--ignore-gpu-blocklist",
+      // A recording keeps two pages busy in one Chrome (the stage and the 03 page that runs the agent): neither may be slowed because
+      // the other is in front, or the agent's host stops pinging and the server declares it gone.
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
       "--window-size=1600,900",
       "about:blank",
     ],
