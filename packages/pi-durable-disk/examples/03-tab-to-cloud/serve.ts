@@ -4,11 +4,13 @@
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
-//                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH]
+//                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH] [--evidence-readback]
 //
 // --also-host listens on a second address too (a reverse proxy's side of a bridge); --public-url is the address the
 // printed link uses (the proxy's). The admin routes (and POST /api/runs/<id>/attach) answer on loopback only, with the
 // admin token. --tab-writable lists the work/ paths the page of the tab that holds a run may PUT (pipe/server.ts).
+// --evidence-readback reads work/ back from the disk's object store after each release of the pipe's claim, with the
+// server's own disk credential, and logs pipe.readback (pipe/readback.ts); never on the handover path.
 //
 // --model-key-env names the variable holding the model endpoint's key (sent by the pipe as a bearer token). A Daytona
 // sandbox calls the model itself: its key is the Daytona secret --daytona-secret (Daytona puts a placeholder in the box
@@ -54,6 +56,7 @@ const { values } = parseArgs({
     "admin-token-file": { type: "string" },
     "also-host": { type: "string" },
     "tab-writable": { type: "string" },
+    "evidence-readback": { type: "boolean", default: false },
     "public-url": { type: "string" },
   },
 });
@@ -109,6 +112,14 @@ const server = createDemoServer({
   control: diskControl,
   ...(diskControl ? { readObject: (key: string) => diskControl.getObject(key) } : {}),
   ...(values["tab-writable"] ? { tabWritable: values["tab-writable"].split(",").filter(Boolean) } : {}),
+  ...(values["evidence-readback"] && diskControl
+    ? {
+        evidenceReadback: {
+          list: (prefix: string) => diskControl.listAll(prefix),
+          get: (key: string) => diskControl.getObject(key),
+        },
+      }
+    : {}),
   mountRoot: values.local ?? values["mount-root"]!,
   model,
   pageDir: join(here, "tab", "dist"),

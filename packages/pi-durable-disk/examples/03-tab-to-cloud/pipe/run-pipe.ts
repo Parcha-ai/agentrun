@@ -149,6 +149,8 @@ export class RunPipe {
   #openUpload: Upload | undefined;
   #scratch = 0;
   #drained: { switchId: string; done: () => void } | undefined;
+  /** What the leaving writer said it had acknowledged last (its drained frame), for the release's evidence. */
+  #acked: string | undefined;
 
   private constructor(ref: RunRef, lease: RunLease, options: RunPipeOptions) {
     this.ref = ref;
@@ -364,8 +366,10 @@ export class RunPipe {
   }
 
   /** The writer finished draining for `switchId`. */
-  drained(socket: PipeSocket, switchId: string): void {
-    if (this.#writer?.socket === socket && this.#drained?.switchId === switchId) this.#drained.done();
+  drained(socket: PipeSocket, switchId: string, acked?: string): void {
+    if (this.#writer?.socket !== socket || this.#drained?.switchId !== switchId) return;
+    if (typeof acked === "string") this.#acked = acked;
+    this.#drained.done();
   }
 
   /** Whether `socket` is the attached writer's. */
@@ -980,6 +984,16 @@ export class RunPipe {
    * Release the run cleanly: retire the writer, close the store, then the lease (barrier, seal run.json with the
    * store's last sequence, owner lock, unmount). Viewers stay connected to the server.
    */
+  /**
+   * The release's evidence: the generation released, what the pipe knows work/ held (its entries and digest, hashed
+   * after the release), and the leaving writer's acknowledged digest when it drained.
+   */
+  #releaseEvidence: { generation: number; entries: ManifestEntry[] | null; digest: Promise<string>; acked?: string } | undefined;
+
+  get releaseEvidence() {
+    return this.#releaseEvidence;
+  }
+
   async release(): Promise<void> {
     if (this.#released) return;
     if (this.#lost) throw this.#lost;
@@ -1001,7 +1015,9 @@ export class RunPipe {
     const ms = Math.round(performance.now() - started);
     const generation = this.lease.generation;
     // Hashed and logged after the release: the next host does not wait for it.
-    void (entries ? (this.#options.digest ?? manifestDigest)(entries) : Promise.reject(new Error("work/ could not be read"))).then(
+    const digest = entries ? (this.#options.digest ?? manifestDigest)(entries) : Promise.reject(new Error("work/ could not be read"));
+    this.#releaseEvidence = { generation, entries, digest, ...(this.#acked ? { acked: this.#acked } : {}) };
+    void digest.then(
       (workDigest) => this.#log("pipe.released", { ms, workDigest, workSource, generation }),
       (error: Error) => this.#log("pipe.released", { ms, workDigest: `unreadable: ${error.message}`, workSource, generation }),
     );
