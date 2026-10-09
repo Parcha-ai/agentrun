@@ -7,6 +7,7 @@
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
 //   SHOW_ASK_AFTER_SWITCH (0)  1: ask the agent where it is after each completed switch (the v1 switch beat; off, so the v2 chat shows only real turns)
+//   SHOW_MODEL_DISK (with SHOW_SCENARIO=ep2)  a directory laid out by the tab's make-model-disk script: the rehearsal serves that model to the tab once its recorded training is over
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
@@ -172,7 +173,7 @@ if (pipeLink) {
 function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 {
   // SHOW_SCENARIO=v2: the rehearsal of the v2 take (a creature drawn in the browser, the agent, a GPU, checkpoints, home).
   // SHOW_SCENARIO=ep2: the rehearsal of episode 2 (served at /ep2/), whose scripted training progress file is read through the disk route below.
-  const p = process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2() : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
+  const p = process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();

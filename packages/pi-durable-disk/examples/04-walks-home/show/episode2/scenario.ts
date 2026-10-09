@@ -2,7 +2,8 @@
 // file filling in, the way home. For layout, stills and tests only. EVERY number and sample answer in it is SCRIPTED: the training progress is a replay
 // of a recorded run, not produced now, and the page tags it scripted through the feed's source. It takes no commands except a
 // user's line for the chat. Same shape as the Walks Home v2 rehearsal (time the caller advances, `begin`, `advance`, `start`, `stop`).
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { emptyState, reduce } from "../reduce.ts";
 import type { ChatTurn, ShowCommand, ShowEvent, ShowState } from "../types.ts";
@@ -45,8 +46,15 @@ export class ScenarioEp2 {
   private stays = 0;
   private lines = progressSchedule();
 
-  constructor(options: { origin?: number } = {}) {
+  private modelDisk: string | undefined;
+
+  /**
+   * `modelDisk`: a directory laid out like the run's disk by the tab's make-model-disk script (home/model/manifest.json and its chunks). With it, the
+   * rehearsal serves a real model to a real tab once the recorded run's GGUF line has passed, so the whole way home can be tried end to end.
+   */
+  constructor(options: { origin?: number; modelDisk?: string } = {}) {
     this.origin = options.origin ?? Date.now();
+    this.modelDisk = options.modelDisk;
   }
 
   get state(): ShowState {
@@ -58,6 +66,13 @@ export class ScenarioEp2 {
 
   /** The rehearsal's version of a file on the run's disk: only the progress file exists, and only as far as the script has got. */
   file(key: string): Uint8Array | undefined {
+    if (this.modelDisk && key.startsWith("home/model/") && this.clock >= (TRAIN_AT + RECORDED_END) * 1000) {
+      // The manifest is written last in a real run; here the whole model appears at once, when the recorded run's own last line does.
+      const root = normalize(this.modelDisk);
+      const file = normalize(join(root, key));
+      if (file.startsWith(root + sep) && existsSync(file) && statSync(file).isFile()) return readFileSync(file);
+      return undefined;
+    }
     if (key !== "train/progress.jsonl") return undefined;
     const shown = this.lines.filter((l) => l.at * 1000 <= this.clock);
     return shown.length ? new TextEncoder().encode(shown.map((l) => JSON.stringify(l.json)).join("\n") + "\n") : undefined;
