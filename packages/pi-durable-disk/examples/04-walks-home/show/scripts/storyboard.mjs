@@ -3,9 +3,10 @@
 // For each beat it seeks the scripted server (POST /api/dev/seek), screenshots our own tab, and inlines the stills as
 // data URIs: the output is one self-contained HTML file (the script is frozen at each beat). Needs the stage server running with the scripted feed
 // (SHOW_PORT=8752 TAB_DIR=... node serve.ts) and Chrome (CDP_URL, default the shared :9222; WebGL needs scripts/chrome.mjs).
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fold } from "../reduce.ts";
+import { renderReference } from "../reference.ts";
 import { ScenarioPlayer } from "../scenario.ts";
 import { openTab, sleep } from "./cdp.mjs";
 
@@ -123,6 +124,13 @@ const rows = BEATS.map(
 </article>`,
 ).join("\n");
 
+// Real switch times: Daytona's, read from the published page (reference-timings.json), and this stage's own local ones
+// from the last switch-beat run, each tagged for what it is.
+const reference = JSON.parse(readFileSync(new URL("../reference-timings.json", import.meta.url), "utf8"));
+const localFile = new URL("../recordings/switch-beat.json", import.meta.url);
+const local = existsSync(localFile) ? JSON.parse(readFileSync(localFile, "utf8")) : undefined;
+const referenceHtml = renderReference(reference, local && local.failed === 0 ? { startedAt: local.startedAt, switches: local.switches.map((s) => ({ target: s.target, serverMs: s.serverMs })) } : undefined);
+
 const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>It Walks Home Storyboard</title>
@@ -140,12 +148,16 @@ article{margin:0 0 44px}.meta{display:flex;gap:12px;align-items:center;font:12px
 h2{margin:6px 0 10px;font-size:22px}img{width:100%;height:auto;border:1px solid var(--line);border-radius:10px;display:block}
 dl{display:grid;grid-template-columns:110px 1fr;gap:8px 16px;margin:14px 0 0}dt{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);padding-top:3px}dd{margin:0}
 .say{color:var(--gold);font-style:italic}
+#reference{margin:10px 0 44px;border-top:1px solid var(--line);padding-top:26px}#reference h2{margin-top:0}#reference h3{margin:22px 0 6px;font-size:16px}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}td.n{font:600 15px ui-monospace,Menlo,monospace;white-space:nowrap}td.q{color:var(--muted)}
+.note{color:var(--muted);margin:6px 0}.note a{color:var(--accent)}.tag{font:700 10px ui-monospace,Menlo,monospace;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid currentColor;margin-right:6px}.tag.measured{color:var(--accent)}.tag.local{color:var(--gold)}
 @media (max-width:640px){dl{grid-template-columns:1fr}dt{padding-top:8px}}
 </style></head><body><main>
 <h1>It Walks Home</h1>
 <p class="lede">A creature you draw in a browser tab leaves its home, trains in the cloud across eight machines, survives one being killed, and walks back into the tab on its own. One agent, one disk, and every move is a claim and a fence.</p>
 <div class="facts"><div><b>${fmt(endAt)}</b><span>scripted run</span></div><div><b>${fmt(killedAt)}</b><span>kill</span></div><div><b>2.0 s</b><span>takeover</span></div><div><b>$${finalCost.toFixed(2)}</b><span>fleet spend (fake rates)</span></div><div><b>${BEATS.length}</b><span>beats</span></div></div>
 ${rows}
+${referenceHtml}
 <p class="lede">Stills are the stage playing its scripted feed: timecodes, costs and scores are rehearsal numbers, not measurements. Regenerate with <code>node scripts/storyboard.mjs</code>.</p>
 </main></body></html>`;
 mkdirSync(dirname(out), { recursive: true });

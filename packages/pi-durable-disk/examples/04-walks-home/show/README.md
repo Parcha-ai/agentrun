@@ -49,6 +49,11 @@ milliseconds the SERVER timed (from receiving the switch to the new host's notic
 same number, the agent's notice, and the agent's answer through the model broker (a few short answers). Typical numbers on
 this box: tab to second host 0.7 to 0.9 s, back to the tab 0.06 s.
 
+`--record recordings/switch-beat.webm` also records the stage tab (VP8/WebM, 15 fps, each caption stack held 5 s so it can be read).
+The storyboard (`scripts/storyboard.mjs`) carries a reference block: the real switch times measured on Daytona and published
+on `docs.g.parcha.dev` (`reference-timings.json`, with its source), tagged MEASURED on Daytona, beside this stage's own local
+numbers from the last `switch-beat` run, tagged MEASURED locally. The two are never mixed.
+
 By hand: `node second-host.ts` (writes the run link to a 0600 file), open the link in a browser as the tab, then
 `SHOW_PIPE_LINK_FILE=<that file> SHOW_TAB_CDP=<chrome cdp url> node serve.ts`. Env: `SHOW_PIPE_ROLE` (hello mode, default
 `view`), `SHOW_ASK_AFTER_SWITCH=0` (no question to the agent), `SHOW_PIPE_TRACE=1` (log each frame's type).

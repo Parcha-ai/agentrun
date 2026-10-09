@@ -3,6 +3,8 @@
 // tab -> second host -> tab in the stage's switcher and checks, each time: the run moved, the caption carries the number
 // the SERVER timed and says MEASURED, the agent was told its notice, and the agent answered where it is.
 //   CDP_URL=http://127.0.0.1:9444 node scripts/switch-beat.mjs [--out recordings/switch-beat.json] [--shots recordings/switch]
+//                                                                [--record recordings/switch-beat.webm] [--hold 5]
+// With --record the stage tab is recorded as a WebM and each caption stack is held --hold seconds so it can be read.
 // Needs Chrome from scripts/chrome.mjs, the 03 example built (tab/dist), and the model broker (the agent's answers).
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -10,12 +12,15 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openTab, sleep } from "./cdp.mjs";
+import { startScreencast } from "./screencast.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..");
 const arg = (n, d) => (process.argv.includes(`--${n}`) ? process.argv[process.argv.indexOf(`--${n}`) + 1] : d);
 const out = arg("out", join(show, "recordings", "switch-beat.json"));
 const shots = arg("shots", join(show, "recordings", "switch"));
+const recordTo = arg("record", "");
+const hold = Number(arg("hold", recordTo ? 5 : 0)) * 1000;
 mkdirSync(dirname(out), { recursive: true });
 const root = join(homedir(), "tmp-d5", `beat-${Date.now().toString(36)}`);
 mkdirSync(root, { recursive: true, mode: 0o755 });
@@ -51,6 +56,7 @@ const expect = (name, ok, got) => {
 };
 let writer;
 let stage;
+let recorder;
 let hostLinesTail = () => "";
 let stageLog = () => "";
 let hostLinesAll = () => "";
@@ -75,6 +81,7 @@ try {
   console.log("writer attached");
 
   stage = await openTab(`http://127.0.0.1:${stagePort}/`, { width: 1600, height: 900 });
+  if (recordTo) recorder = await startScreencast(stage, { out: recordTo, fps: 15 });
   // The captions on screen right now, oldest first (they stack).
   const cap = () => stage.eval(`JSON.stringify([...document.querySelectorAll("#caption .row")].map((r) => ({ tag: r.querySelector(".tag")?.textContent ?? null, text: r.querySelector(".txt").textContent })))`).then(JSON.parse);
   const state = () => fetch(`http://127.0.0.1:${stagePort}/api/state`).then((r) => r.json());
@@ -83,7 +90,7 @@ try {
   console.log("switcher:", JSON.stringify(labels));
   expect("the switcher names tab, a sandbox, a VM and a GPU, the unwired ones greyed", labels.some((l) => /VM \(unwired\)/.test(l)) && labels.some((l) => /GPU \(unwired\)/.test(l)) && labels.some((l) => /Second host$/.test(l)) && labels.some((l) => /tab$/i.test(l.replace(/ \(unwired\)/, ""))), labels);
   expect("the page shows no scripted badge for a live pipe", (await stage.eval(`document.getElementById("source").hidden`)) === true);
-  await sleep(1500);
+  await sleep(recordTo ? 4000 : 1500);
   await stage.screenshot(`${shots}-0-tab.png`);
 
   async function clickSwitch(envId, label) {
@@ -102,6 +109,8 @@ try {
     await until(async () => (await record(), seen.some((s) => /^The agent was told/.test(s.text))), 30_000, "the notice caption");
     await until(async () => (await record(), seen.some((s) => /^The agent says/.test(s.text))), 180_000, "the agent's answer caption");
     await stage.screenshot(`${shots}-${envId}-2-answer.png`);
+    // Let a viewer read the stack before the next move.
+    await sleep(hold);
     const s = await state();
     const timed = s.notes.slice(before).find((n) => n.measured === true && /^Switched to/.test(n.text));
     const ms = Number(/in (\d+) ms/.exec(timed?.text ?? "")?.[1]);
@@ -140,6 +149,12 @@ try {
 } finally {
   results.failed = failed;
   writeFileSync(out, JSON.stringify(results, null, 2));
+  if (recorder) {
+    const done = await recorder.stop();
+    results.recording = { file: done.out, seconds: Number(done.seconds.toFixed(1)), frames: done.frames };
+    console.log(`recorded ${done.seconds.toFixed(1)} s to ${done.out}`);
+    writeFileSync(out, JSON.stringify(results, null, 2));
+  }
   await stage?.close().catch(() => {});
   await writer?.close().catch(() => {});
   // The whole logs, for reading what happened between the frames.
