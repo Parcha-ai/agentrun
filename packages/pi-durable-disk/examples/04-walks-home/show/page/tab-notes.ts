@@ -10,6 +10,8 @@ export type TabNoteOptions = {
   plain?: boolean;
   /** Whether the install a `policy-walked` is about was a checkpoint from the live training path or the final home policy (the page remembers it from the arrival). */
   kind?: "checkpoint" | "final";
+  /** Someone kicked the creature a moment ago (the tab said so): only then are the getup lines told. */
+  afterKick?: boolean;
 };
 
 /** Seconds as people say them: whole, or to a tenth. A simulated clock gives 1.999999999999602; the page says 2. */
@@ -86,7 +88,8 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
     case "stood-up":
       return [note("A new version of its brain arrived while it was lying down, and it stood back up.")];
     case "mode-changed": {
-      if (plain) return [note(m.mode === "getup" ? "It was down. It learned to get back up." : "Back on its feet and walking again.")];
+      // Only after a kick: at home the untrained creature is simply lying down when the brain lands and gets stood up, which is not "it learned to get back up".
+      if (plain) return opts.afterKick ? [note(m.mode === "getup" ? "It was down. It learned to get back up." : "Back on its feet and walking again.")] : [];
       // The getup network driving or handing back: simulated time and uprightness, the tab's own arithmetic, never wall time.
       const when = `${m.t.toFixed(1)} s of simulated time`;
       return [

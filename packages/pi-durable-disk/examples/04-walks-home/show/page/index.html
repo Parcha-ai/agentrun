@@ -171,8 +171,11 @@ body.v2 #badge { display: flex; flex-direction: column; align-items: center; gap
 #badge .agent { position: absolute; top: 50%; left: 0; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: var(--c); box-shadow: 0 0 18px var(--c); transition: left .9s cubic-bezier(.45, 0, .2, 1), background .4s; }
 #badge[data-at="left"] .agent { left: 0; } #badge[data-at="right"] .agent { left: 100%; } #badge[data-at="between"] .agent { left: 50%; animation: pulse .45s infinite alternate; } #badge[data-at="none"] .agent { opacity: .3; }
 #wifi { font: 600 18px var(--sans); padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); cursor: pointer; }
-#wifi.off { color: var(--bad); border-color: var(--bad); }
-#badge .offline { font: 700 20px/1 var(--sans); padding: 10px 18px; border-radius: 999px; border: 2px solid var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--panel)); animation: capin .3s ease-out; }
+#wifi[data-mode="clicked"] { color: var(--bad); border-color: var(--bad); }
+#badge .top { flex-wrap: wrap; justify-content: center; }
+/* The one home banner: it replaces the pill, the small control, the tab's own offline badge and its "trained" label. */
+#wifi[data-mode="banner"] { flex-basis: 100%; font: 800 32px/1.15 var(--sans); padding: 14px 32px; border-radius: 18px; border: 3px solid var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--panel)); cursor: default; animation: capin .3s ease-out; }
+#proof { font: 600 20px var(--mono); color: var(--ink); }
 body.v2 #chat { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--line); background: var(--panel); padding: 22px 24px 18px; }
 #chatlog { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 20px; -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 60px); mask-image: linear-gradient(to bottom, transparent 0, #000 60px); }
 .turn { animation: turnin .4s ease-out; transition: opacity .5s; }
@@ -185,7 +188,7 @@ body.v2 #chat { display: flex; flex-direction: column; min-height: 0; min-width:
 .turn .caret { display: inline-block; width: 11px; height: 24px; margin-left: 3px; vertical-align: -4px; background: var(--vm); animation: pulse .6s infinite alternate; }
 #chat { position: relative; }
 #chathint { position: absolute; left: 24px; right: 24px; top: 28%; text-align: center; font: 500 28px/1.35 var(--sans); color: var(--muted); text-wrap: balance; pointer-events: none; }
-#chat.talked #chathint { display: none; }
+#chat.talked #chathint, #chat.drawing #chathint { display: none; }
 #chatform { margin-top: 16px; }
 #chatin { width: 100%; font: 500 20px var(--sans); padding: 13px 16px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); outline: none; }
 #chatin:focus { border-color: var(--muted); }
@@ -247,7 +250,7 @@ body:not(.v2) #decisionwrap { right: 28px; }
   <span id="place"></span>
   <div id="cost"><div><div class="lbl">spent</div><div class="usd" id="usd">$0.00</div></div><div><div class="lbl">burn</div><div class="rate" id="rate">$0.00/min</div></div></div>
 </header>
-<div id="badge" data-tone="tab" data-at="left"><div class="top"><div class="main"><span class="dot"></span><span class="txt">Your agent is in your browser</span></div><span class="offline" hidden>Network off</span><button id="wifi" type="button" title="Turn the network off for the creature's tab">Wi-Fi: on</button></div><div class="track" aria-hidden="true"><span class="node a">your browser</span><span class="line"><i class="agent"></i></span><span class="node b" hidden></span></div><div class="memory" hidden></div></div>
+<div id="badge" data-tone="tab" data-at="left"><div class="top"><div class="main"><span class="dot"></span><span class="txt">Your agent is in your browser</span></div><button id="wifi" type="button" title="Turn the network off for the creature's tab">Wi-Fi: on</button></div><div class="track" aria-hidden="true"><span class="node a">your browser</span><span class="line"><i class="agent"></i></span><span class="node b" hidden></span></div><div class="memory" hidden></div><div id="proof" hidden></div></div>
 <main>
   <section id="tabpane">
     <div class="pane-h"><span>The tab</span><span id="tabwhere"></span></div>
