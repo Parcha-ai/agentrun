@@ -210,3 +210,14 @@ Kill leader `k`, Collapse `c`, Home `h`, Reset take `r`. Each is a command to th
 
 `record.mjs` resets the scripted feed to 0:00, clicks KILL THE LEADER itself, and stops after the last narration line; the
 video is VP8/WebM from Playwright's bundled ffmpeg (set FFMPEG for another). `recordings/` is git-ignored.
+
+## Episode 2: "It Comes Home Obsessed" (`episode2/`, served at `/ep2/`)
+
+The same shape as Walks Home (tab, then a GPU, then back to the tab) with a different story: the agent trains itself a small model and brings it home. It lives in its own directory and page and reuses Walks Home's pure modules (feed, chat, badge, caption desk) without changing them.
+
+- **Header and cloud-disk line**: the same as Walks Home.
+- **Training panel** (the centre while the agent is away): the step counter, time in and left, a loss curve, the line about where the practice answers came from, and the same questions answered before it learned and now (`episode2/panel.ts`). It reads `train/progress.jsonl` from the run's disk (`/api/disk/train/progress.jsonl`), one JSON object per line; the format is in `episode2/progress.ts`. A line that does not parse is counted and skipped. The stage computes no number of its own. A live batch of new practice answers (`teacher` lines) is shown as it is written, and only an answer the checker kept has text.
+- **The chat switches to the model**: the tab says so (`model-loading`, `model-download`, `model-loaded`, `model-switched`, `model-answer`, `model-refused`, `model-failed`; `episode2/notes.ts`). The banner over the agent's chat follows those messages and never claims the switch before the tab does. The answers themselves never leave the tab.
+- **Captions**: plain words, one at a time, each said once (`EpisodeNotes`). A number from the trainer is MEASURED on a live feed and SCRIPTED in a rehearsal; the practice-answer count is REPORTED; the tab's load time is the tab's own clock. No tag pill is drawn in the clean view; the tag is the caption's `data-tag`.
+- **Rehearsal**: `SHOW_SCENARIO=ep2 node serve.ts`, then open `/ep2/`. Every number and sample answer in it is scripted; the sample answers are placeholders, not model output. With no tab that loads a model, the page plays the tab's model messages from the moment the run is home (`episode2/rehearsal.ts`), scripted.
+- **Check**: `CDP_URL=... node scripts/ep2-check.mjs [shots-dir]` (real Chrome).
