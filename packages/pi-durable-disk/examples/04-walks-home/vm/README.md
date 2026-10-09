@@ -42,3 +42,12 @@ The GPU environment's notice carries what to run (`--cloud-arg gpu-note=TEXT`): 
 command (`python /opt/pda/train/train.py ... --work train/gpu --minutes 1.0`, then `export.py combine ... --out home/policy.json`).
 Measured on an H100 (us-east, gVisor, pipe): first tool call to the notice there 6.8 s, notice to the notice at home 82 s, policy
 (442,799 bytes) in the tab's workspace.
+
+## Recording takes (the stage, D5's tooling; local scripts)
+
+- `scripts/take-record.mjs`: the agent-driven take. Starts the take's 03 server (`show/scripts/take-server.mjs --modal --cloud-module ...`),
+  the stage following its link file, and, in the given Chrome (`show/scripts/chrome.mjs`, port of your own), the 03 page as the can-run
+  writer and the stage tab, which it records; types the prompt above into the chat; writes `<video>.captions.json`, `.results.json`
+  and the policy the agent brought home. It deletes the run's tree before and after (`scripts/clean-run.ts`).
+- `scripts/take-universes.mjs`: the universes take with D1's driver (`--api`, `--link-file`): prewarm, fanout, kill, collapse, home, in D1's order.
+- `scripts/take-page-agent.mjs`: the docs page of a take (runs `show/publishable.ts` first).
