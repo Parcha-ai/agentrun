@@ -1,7 +1,7 @@
 // The tab app: sketch -> MJCF -> MuJoCo (WASM) -> render, a policy that runs offline, kicks, and the memory view.
 // Embedded by the show page as a same-origin iframe; see POLICY-FORMAT.md and the "walks-home" message protocol below.
 
-import { defaultDesign, PRESETS, validateDesign, type Design } from './design.ts';
+import { bareTorso, defaultDesign, PRESETS, validateDesign, type Design } from './design.ts';
 import { buildMjcf, type Built, type World } from './mjcf.ts';
 import { Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { dummyPolicy } from './dummy.ts';
@@ -143,6 +143,7 @@ function updateLabel() {
   const el = $('stateLabel');
   el.dataset.state = app.training.state;
   el.textContent = app.training.label(app.policyName);
+  document.body.dataset.brain = app.training.state; // the page's CSS keys what is shown on it (the big distance only once trained, the learning line)
 }
 
 /** With no policy and no demo stand-in the creature has a brain that has learned nothing: random actions, from the seed each time one is attached. */
@@ -589,8 +590,8 @@ async function main() {
     document.body.classList.toggle('clean', clean);
     document.body.classList.toggle('banner', params.has('banner')); // the page around the tab shows the home banner and the final label itself
     document.body.classList.add(`phase-${phase}`);
-    // The take starts from the default body (clean mode ignores earlier designs kept in this browser): the user draws from there.
-    const design = (clean ? undefined : store.designs()[0]?.design) ?? defaultDesign();
+    // The take starts from a bare torso on stub legs, so a still taken part way through the drawing is plainly unfinished (?start=default: the default body, for the older checks).
+    const design = clean ? (params.get('start') === 'default' ? defaultDesign() : bareTorso()) : store.designs()[0]?.design ?? defaultDesign();
     const built = buildMjcf(design);
     const sketcher = new Sketcher($('sketch') as HTMLCanvasElement, design, (d) => { renderPairs(); pendingDesign = d; announceDrawing(); if (app?.clean && app.phase === 'draw') app.draft.edit(); });
     let pendingDesign: Design | null = null;

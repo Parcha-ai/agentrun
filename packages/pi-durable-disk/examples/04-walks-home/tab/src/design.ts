@@ -32,6 +32,23 @@ export const LIMITS = {
   radius: [0.012, 0.04],
 } as const;
 
+/**
+ * The take's first sketch: a small torso on stub legs (the shortest the limits allow), two pairs because one pair cannot be built. The
+ * drawing then has to grow the torso, move the hips apart and lengthen the legs, so a still taken part way through is plainly unfinished.
+ */
+export function bareTorso(): Design {
+  return {
+    version: 1,
+    name: 'quadruped',
+    legDof: 3,
+    torso: { length: 0.3, width: 0.14, height: 0.1 },
+    legs: [
+      { x: 0.5, thigh: LIMITS.thigh[0], shin: LIMITS.shin[0], radius: 0.02 },
+      { x: -0.5, thigh: LIMITS.thigh[0], shin: LIMITS.shin[0], radius: 0.02 },
+    ],
+  };
+}
+
 /** The default creature. `legDof` 3 (hip abduction, the show's body) unless 2 is asked for (the first policies' body). */
 export function defaultDesign(legDof: 2 | 3 = 3): Design {
   return {

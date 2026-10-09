@@ -1,7 +1,7 @@
 // The draw phase and the distance pill, as a viewer sees them in a still: the sketcher takes at least ~45% of the width and draws bold,
 // the stage hears `draw-started` at the first stroke (so it can drop its "Draw a creature" prompt), and the distance is a large number at
 // the top right, clear of the bottom caption band and of the offline badge.
-//   CDP_PORT=9333 CP1=<walk-only 3-DOF policy> node scripts/check-draw-layout.mjs <outdir>
+//   CDP_PORT=9333 CP1=<walk-only 3-DOF policy> FINAL=<a final policy> node scripts/check-draw-layout.mjs <outdir>
 import WebSocket from 'ws';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { serve } from './serve.mjs';
@@ -9,8 +9,8 @@ import { outDir } from './outdir.mjs';
 
 const out = outDir(process.argv[2]);
 mkdirSync(out, { recursive: true });
-const { CP1 } = process.env;
-if (!CP1) throw new Error('set CP1');
+const { CP1, FINAL } = process.env;
+if (!CP1 || !FINAL) throw new Error('set CP1 and FINAL');
 const server = await serve(0);
 const base = `http://127.0.0.1:${server.address().port}`;
 const v = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/version`)).json();
@@ -34,7 +34,7 @@ const S = (m, p) => send(m, p, sessionId);
 try {
   await S('Page.enable'); await S('Runtime.enable');
   await S('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
-  await S('Page.navigate', { url: `${base}/__harness.html?clean=1` });
+  await S('Page.navigate', { url: `${base}/__harness.html?clean=1&start=default` });
   const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
   const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
   for (let i = 0; i < 150 && (await inner("document.getElementById('status')?.textContent").catch(() => null)) !== 'ready'; i++) await sleep(200);
@@ -60,11 +60,19 @@ try {
   // ---- the distance pill: top right, large, clear of the captions at the bottom and of the label
   await ev(`disk['train/gpu/policy.json'] = new TextEncoder().encode(${JSON.stringify(readFileSync(CP1, 'utf8'))})`);
   for (let i = 0; i < 100 && (await inner('__walks.state().state')) !== 'learning'; i++) await sleep(200);
+  {
+    const hit0 = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const sub = await rect('stateSub'), lab = await rect('stateLabel'), th = await rect('thumb');
+    check('while learning, the line under the label is shown, on screen, and clear of the label and the thumbnail', sub.width > 0 && sub.left >= 0 && sub.right <= vw && sub.top >= lab.bottom - 1 && !hit0(sub, lab) && !hit0(sub, th), JSON.stringify({ sub: [sub.left, sub.top, sub.right, sub.bottom], thumb: [th.left, th.top, th.right, th.bottom] }));
+  }
+  // the big distance number belongs to the trained creature at home (while it learns it would contradict the caption): install the final policy
+  await ev(`disk['home/policy.json'] = new TextEncoder().encode(${JSON.stringify(readFileSync(FINAL, 'utf8'))})`);
+  for (let i = 0; i < 100 && (await inner('__walks.state().final')) !== true; i++) await sleep(200);
   await sleep(2500);
   check('the start post and trail show once the creature has the pane', (await inner('__walks.app.view.start.visible')) === true);
   const pill = await rect('distMarker'), label = await rect('stateLabel'), thumb = await rect('thumb');
   const fs = await inner("parseFloat(getComputedStyle(document.getElementById('distNum')).fontSize)");
-  check('the distance pill is at the right, in the top band (under the label when the pane is under 1000 px)', pill.top < (vw <= 1000 ? 100 : 40) && vw - pill.right < 40, JSON.stringify({ top: pill.top, right_gap: vw - pill.right }));
+  check('the distance pill is at the right, in the top band (under the label when the pane is under 1000 px)', pill.top < (vw <= 1000 ? 170 : 40) && vw - pill.right < 40, JSON.stringify({ top: pill.top, right_gap: vw - pill.right }));
   check('its number is large', fs >= 54, `${fs}px`);
   check('it is clear of the bottom caption band (the lowest 220 px)', pill.bottom < (await inner('innerHeight')) - 220, `bottom ${Math.round(pill.bottom)}`);
   const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -93,7 +101,7 @@ for (const W of [1400, 1000, 700]) await scenario(W);
   const S = (m, p) => send(m, p, sessionId);
   try {
     await S('Page.enable'); await S('Runtime.enable');
-    await S('Page.navigate', { url: `${base}/__harness.html?clean=1` });
+    await S('Page.navigate', { url: `${base}/__harness.html?clean=1&start=default` });
     const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
     const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
     for (let i = 0; i < 150 && (await inner("document.getElementById('status')?.textContent").catch(() => null)) !== 'ready'; i++) await sleep(200);

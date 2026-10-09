@@ -7,7 +7,7 @@
 //   const r = await sketchTake(tab, { log });   // tab: { send(method, params), eval(expression) } of the page that holds the iframe
 //   // r = { design, mjcf_sha256, strokes: ["length", "leg0", ...], undrawable: [] }
 //
-// Options: target (a Design, default TAKE_DESIGN), style ("human" | "direct"), stepMs (between pointer moves), restMs (between strokes),
+// Options: onStroke ({handle, index, design}, awaited after each stroke has settled: frame a mid-draw still here), target (a Design, default TAKE_DESIGN), style ("human" | "direct"), stepMs (between pointer moves), restMs (between strokes),
 // frame (CSS selector of the iframe, default "iframe"), settleMs (wait before the first stroke).
 import { nextStroke, pathPoints, TAKE_DESIGN, undrawable } from '../src/strokes.ts';
 
@@ -15,7 +15,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export { TAKE_DESIGN };
 
-export async function sketchTake(tab, { log = () => {}, target = TAKE_DESIGN, style = 'human', stepMs = 22, restMs = 450, settleMs = 0, frame = 'iframe', maxStrokes = 14 } = {}) {
+export async function sketchTake(tab, { log = () => {}, target = TAKE_DESIGN, style = 'human', stepMs = 22, restMs = 450, settleMs = 0, frame = 'iframe', maxStrokes = 14, onStroke } = {}) {
   const inFrame = (expr) => `(() => { const f = document.querySelector(${JSON.stringify(frame)}); if (!f) throw new Error('no ${frame} in the stage page'); const w = f.contentWindow; ${expr} })()`;
   const geometry = async () => JSON.parse(await tab.eval(`JSON.stringify(${inFrame(`
     const fr = f.getBoundingClientRect(); const g = w.__walks.sketchGeometry();
@@ -41,6 +41,7 @@ export async function sketchTake(tab, { log = () => {}, target = TAKE_DESIGN, st
     await sleep(restMs);
     // a stroke that did not move the design must not be replayed forever: say which handle did nothing
     const after = await geometry();
+    if (JSON.stringify(after.design) !== JSON.stringify(g.design) && onStroke) await onStroke({ handle: stroke.handle, index: strokes.length - 1, design: after.design });
     if (JSON.stringify(after.design) === JSON.stringify(g.design)) throw new Error(`the ${stroke.handle} stroke did not change the design (handle at ${Math.round(stroke.from.x)},${Math.round(stroke.from.y)} in the canvas): is the sketcher visible and the iframe selector right?`);
   }
   // Out of strokes with work left is a failure, never a result: nothing is committed and the caller is told which handle was still to draw.
