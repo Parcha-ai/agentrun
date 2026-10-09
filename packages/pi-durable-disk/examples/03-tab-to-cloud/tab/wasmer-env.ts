@@ -194,20 +194,25 @@ export class WasmerEnv implements ExecutionEnv {
     const bytes = await this.readBinaryFile(path, context);
     if (!bytes.ok) return bytes;
     const abs = this.#path(path)!;
+    // The file as it was when opened: every call sees the same bytes, whatever later happens at its path.
     const data = bytes.value;
     const info: FileInfo = { name: abs.split("/").pop()!, path: abs, kind: "file", size: data.length, mtimeMs: this.mtime(abs) };
     let closed = false;
-    const closedErr = () => err<never, FileError>(new FileError("invalid", "Binary reader is closed", abs));
+    const refuse = (context: Context) =>
+      closed ? err<never, FileError>(new FileError("invalid", "Binary reader is closed", abs)) : isAbort(context) ? aborted<never>(abs) : undefined;
     return ok({
-      async info() {
-        return closed ? closedErr() : ok(info);
+      async info(context) {
+        return refuse(context) ?? ok(info);
       },
-      async read(offset, length) {
-        if (closed) return closedErr();
+      async read(offset, length, context) {
+        const refused = refuse(context);
+        if (refused) return refused;
+        if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0) return err(new FileError("invalid", "Invalid byte range", abs));
         return ok(data.slice(offset, offset + length));
       },
-      async scanLines(options) {
-        if (closed) return closedErr();
+      async scanLines(options, context) {
+        const refused = refuse(context);
+        if (refused) return refused;
         let scanner: LineScanner;
         try {
           scanner = new LineScanner(options.startLine, options.endLine);
@@ -310,13 +315,25 @@ export class WasmerEnv implements ExecutionEnv {
     if (!listed.ok) return listed;
     const entries = listed.value;
     let at = 0;
+    let closed = false;
+    const fs = this.sandbox.fs;
     return ok({
-      async next(maxEntries) {
-        const page = entries.slice(at, at + maxEntries);
-        at += page.length;
+      async next(maxEntries, context) {
+        if (closed) return err(new FileError("invalid", "Directory reader is closed", path));
+        if (isAbort(context)) return aborted(path);
+        if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) return err(new FileError("invalid", "maxEntries must be a positive integer", path));
+        const page: FileInfo[] = [];
+        while (page.length < maxEntries && at < entries.length) {
+          const entry = entries[at++]!;
+          // An entry removed since the listing is skipped, as a live enumeration would not see it.
+          const stat = await fs.stat(entry.path).catch(() => null);
+          if (stat) page.push({ ...entry, kind: stat.kind, size: stat.size });
+        }
         return ok({ entries: page, done: at >= entries.length });
       },
-      async close() {},
+      async close() {
+        closed = true;
+      },
     });
   }
 
@@ -355,6 +372,12 @@ export class WasmerEnv implements ExecutionEnv {
       const changed = new Set<string>();
       for (const [k, v] of next) if (last.get(k) !== v) changed.add(k);
       for (const k of last.keys()) if (!next.has(k)) changed.add(k);
+      // The listing has no directory identities, so a directory replaced at its path shows only through its entries:
+      // report each changed entry's directory too (a directory path covers its subtree; a spurious call is allowed).
+      for (const k of [...changed]) {
+        const parent = k.slice(0, k.lastIndexOf("/"));
+        if (parent.startsWith(WORKSPACE)) changed.add(parent);
+      }
       last = next;
       if (changed.size > 0 && !stopped) onChange({ paths: [...changed] });
     }, 1_000);
