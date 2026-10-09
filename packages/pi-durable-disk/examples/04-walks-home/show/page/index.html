@@ -121,10 +121,32 @@ button.btn:disabled { opacity: .4; cursor: default; }
 .note[data-kind="switch"] { border-color: var(--sandbox); } .note[data-kind="winner"] { border-color: var(--win); }
 .note[data-kind="home"] { border-color: var(--tab); } .note[data-kind="story"] { border-color: var(--muted); }
 .note time { font: 11px var(--mono); margin-right: 6px; opacity: .7; }
+/* the operator panel: hidden on camera, `o` toggles it */
+#operator { position: fixed; right: 360px; bottom: 10px; z-index: 20; width: 270px; background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--muted); border-radius: 12px; padding: 10px 12px 12px; box-shadow: 0 10px 40px #0009; }
+#operator h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); display: flex; justify-content: space-between; }
+#operator .grp { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+#operator button { font: inherit; font-size: 12px; cursor: pointer; border-radius: 7px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); padding: 5px 9px; }
+#operator button:hover { border-color: var(--muted); }
+#operator button kbd { font: 10px var(--mono); color: var(--muted); margin-left: 5px; }
+#operator button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+#operator #opresult { font: 11px var(--mono); color: var(--muted); min-height: 16px; }
+#operator #opresult.bad { color: var(--bad); }
 #lost { position: fixed; top: 0; left: 0; right: 0; background: var(--bad); color: #160504; text-align: center; font-weight: 700; padding: 4px; z-index: 10; }
 </style>
 </head>
 <body>
+<aside id="operator" hidden aria-label="Operator panel">
+  <h3><span>Operator</span><span>o hides</span></h3>
+  <div class="grp" id="openvs"></div>
+  <div class="grp">
+    <button data-op="fanout">Fan out<kbd>f</kbd></button>
+    <button data-op="kill" class="danger">Kill leader<kbd>k</kbd></button>
+    <button data-op="collapse">Collapse<kbd>c</kbd></button>
+    <button data-op="home">Home<kbd>h</kbd></button>
+    <button data-op="reset">Reset take<kbd>r</kbd></button>
+  </div>
+  <div id="opresult"></div>
+</aside>
 <div id="lost" hidden>feed lost, reconnecting</div>
 <header>
   <h1>It Walks Home</h1>

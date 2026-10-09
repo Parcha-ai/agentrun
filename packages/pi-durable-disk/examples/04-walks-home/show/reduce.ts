@@ -11,6 +11,7 @@ export function emptyState(): ShowState {
     stays: [],
     cost: { usd: 0, ratePerMin: 0 },
     notes: [],
+    scoreUnit: "",
     environments: [],
     currentEnv: null,
   };
@@ -38,7 +39,7 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
   const now = Math.max(state.now, event.at);
   switch (event.t) {
     case "run":
-      return { ...state, now, run: event.run, origin: event.origin, environments: event.environments };
+      return { ...state, now, run: event.run, origin: event.origin, environments: event.environments, scoreUnit: event.scoreUnit ?? "" };
     case "place":
       return { ...state, now, place: event.place, currentEnv: event.env };
     case "stay.begin": {

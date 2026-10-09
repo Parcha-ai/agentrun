@@ -97,7 +97,7 @@ export class Grid {
     const prior = u.replaces ? state.universes[u.replaces] : undefined;
     const score = u.score ?? prior?.score ?? null;
     const progress = u.status === "takeover" ? Math.max(u.progress, prior?.progress ?? 0) : u.progress;
-    p.score.textContent = score === null ? "-" : score.toFixed(1);
+    p.score.textContent = score === null ? "-" : score < 10 ? score.toFixed(2) : score.toFixed(1);
     p.sub.textContent = `${usd(u.cost, 4)}  ${Math.round(progress * 100)}%`;
     p.bar.style.width = `${Math.round(progress * 100)}%`;
     p.kill.hidden = !(u.status === "training" || u.status === "starting");

@@ -1,4 +1,4 @@
-import type { ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
+import type { ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
@@ -128,7 +128,7 @@ function renderChrome(state: ShowState): void {
   $("rate").textContent = `${usd(state.cost.ratePerMin, 3)}/min`;
   const us = Object.values(state.universes);
   const live = us.filter((u) => u.status === "training" || u.status === "takeover" || u.status === "starting").length;
-  $("mvsum").textContent = us.length ? `${live} live` : "";
+  $("mvsum").textContent = us.length ? `${live} live${state.scoreUnit ? `  |  score: ${state.scoreUnit}` : ""}` : "";
   $("mv").classList.toggle("dormant", us.length === 0);
   ($("killone") as HTMLButtonElement).disabled = !leader(state);
   $("lost").hidden = !feed.lost;
@@ -144,10 +144,57 @@ function renderNotes(state: ShowState, now: number): void {
   }
 }
 
+// The operator panel: one person runs the show from the page. It is hidden on camera; `o` toggles it, and while it is
+// open f / k / c / h / r are shortcuts. Every button is a command to the feed; a refusal is printed, never hidden.
+const operator = $("operator");
+async function run(label: string, cmd: ShowCommand): Promise<void> {
+  const out = $("opresult");
+  out.className = "";
+  out.textContent = `${label}...`;
+  const r = await feed.command(cmd).catch((e) => ({ ok: false, message: e instanceof Error ? e.message : String(e) }));
+  out.textContent = r.ok ? `${label}: ok` : `${label}: ${r.message ?? "refused"}`;
+  out.className = r.ok ? "" : "bad";
+}
+function homeEnv(state: ShowState): string {
+  return state.environments.find((e) => e.id === "home")?.id ?? [...state.environments].reverse().find((e) => e.kind === "tab")?.id ?? "tab";
+}
+function renderOperator(state: ShowState): void {
+  const box = $("openvs");
+  const envs = state.environments.filter((e) => e.kind !== "gpu" && e.id !== "home" && e.id !== "universes");
+  const sig = envs.map((e) => e.id).join();
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = envs.map((e) => `<button data-env="${esc(e.id)}">${esc(e.label)}</button>`).join("");
+  box.querySelectorAll<HTMLButtonElement>("button").forEach((b) => b.addEventListener("click", () => void run(`switch ${b.dataset.env}`, { t: "switch", to: b.dataset.env! })));
+}
+const OPS: Record<string, () => void> = {
+  fanout: () => void run("fan out", { t: "fanout" }),
+  kill: () => {
+    const l = leader(feed.state);
+    if (l) void run(`kill ${l.id}`, { t: "kill", universe: l.id });
+    else void run("kill", { t: "kill", universe: "" });
+  },
+  collapse: () => void run("collapse", { t: "collapse" }),
+  home: () => void run("home", { t: "switch", to: homeEnv(feed.state) }),
+  reset: () => void run("reset", { t: "reset" }),
+};
+operator.querySelectorAll<HTMLButtonElement>("button[data-op]").forEach((b) => b.addEventListener("click", () => OPS[b.dataset.op!]()));
+addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.matches?.("input, textarea")) return;
+  if (e.key === "o") operator.hidden = !operator.hidden;
+  else if (!operator.hidden) {
+    const key = { f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset" }[e.key];
+    if (key) OPS[key]();
+    else if (e.key === "Escape") operator.hidden = true;
+  }
+});
+if (params.get("operator") === "1") operator.hidden = false;
+
 function frame(): void {
   const state = feed.state;
   const now = feed.liveNow();
   renderChrome(state);
+  renderOperator(state);
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);

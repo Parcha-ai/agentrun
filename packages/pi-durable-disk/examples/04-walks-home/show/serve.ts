@@ -2,6 +2,7 @@
 // feed at /api/*. The feed is the scripted player unless SHOW_API names a live one, which is proxied untouched.
 // Every response carries COOP/COEP/CORP: Wasmer and MuJoCo WASM need cross-origin isolation, and an iframe document must
 // itself satisfy the parent's COEP, so the headers are set on the tab app's files too.
+//   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
 import { createReadStream, existsSync, statSync } from "node:fs";
@@ -90,7 +91,7 @@ async function bytesBody(req: IncomingMessage, limit: number): Promise<Buffer> {
 let player = newPlayer();
 
 function newPlayer(start = START, paused = false): ScenarioPlayer {
-  const p = new ScenarioPlayer({ autoKillAfter: autoKill });
+  const p = new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   p.subscribe((event) => {
     const id = p.events.length - 1;
     for (const c of clients) c.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);

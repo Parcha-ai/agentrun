@@ -34,6 +34,15 @@ Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` pro
     TAB_DIR=<tab dist> node serve.ts                    # with D3's tab app instead of the stub
     npm test && npm run typecheck
 
+## Run the show from the page (operator mode)
+
+    SHOW_MODE=operator TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> node serve.ts
+    node scripts/operator-check.mjs        # drives the whole show through the panel in real Chrome; 14 checks
+
+The panel is hidden on camera: press `o` (or open `/?operator=1`). Buttons and keys: environment switches, Fan out `f`,
+Kill leader `k`, Collapse `c`, Home `h`, Reset take `r`. Each is a command to the feed (`switch`, `fanout`, `kill`,
+`collapse`); a refusal prints its reason in the panel. With `SHOW_API` set the same commands go to D1's driver.
+
 ## Record and storyboard (own Chrome with software WebGL; the shared one has none)
 
     node scripts/chrome.mjs                             # headless Chrome on 127.0.0.1:9444 (--stop to end it)

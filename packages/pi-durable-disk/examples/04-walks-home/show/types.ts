@@ -41,7 +41,7 @@ export type Universe = {
   reward: string;
   /** 0..1 progress of the universe's time budget. */
   progress: number;
-  /** Latest evaluation score (higher is better); null before the first checkpoint. */
+  /** Latest evaluation score (higher is better, in ShowState.scoreUnit); null before the first checkpoint. */
   score: number | null;
   /** Score history, oldest first, one point per checkpoint. */
   samples: { at: number; score: number }[];
@@ -93,6 +93,8 @@ export type ShowState = {
   cost: Cost;
   /** Narration lines, newest last; the stage shows the tail. */
   notes: Note[];
+  /** What a score means, shown once above the grid ("m walked in 10 s"); empty when the feed does not say. */
+  scoreUnit: string;
   /** The environments the switcher offers, in order. */
   environments: { id: string; label: string; kind: HostKind }[];
   /** Which environment the run is in now; null while moving. */
@@ -101,7 +103,7 @@ export type ShowState = {
 
 /** Everything that can change a ShowState. `at` is ms since origin. */
 export type ShowEvent =
-  | { t: "run"; at: number; run: string; origin: number; environments: ShowState["environments"] }
+  | { t: "run"; at: number; run: string; origin: number; environments: ShowState["environments"]; scoreUnit?: string }
   | { t: "place"; at: number; place: Place; env: string | null }
   | { t: "stay.begin"; at: number; stay: Omit<Stay, "to" | "endedBy"> }
   | { t: "stay.end"; at: number; id: string; endedBy: NonNullable<Stay["endedBy"]> }
