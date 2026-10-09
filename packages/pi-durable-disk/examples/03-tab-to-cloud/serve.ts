@@ -165,16 +165,32 @@ const base = values["public-url"]?.replace(/\/+$/, "") ?? `http://${values.host 
 log("ready", { url: `${base}/run/${id}#${secret}`, local: `http://127.0.0.1:${port}/run/${id}#${secret}`, run: id });
 
 let closing = false;
-const stop = async () => {
+const stop = async (code = 0) => {
   if (closing) return;
   closing = true;
   log("stopping");
   also?.closeAllConnections();
   also?.close();
-  await server.close();
-  await cloud?.close?.();
+  // The cloud host's machines cost while they exist: they are removed even when closing the server throws.
+  try {
+    await server.close();
+  } catch (error) {
+    log("close.failed", { error: (error as Error).message });
+    code = 1;
+  } finally {
+    await cloud?.close?.().catch((error: Error) => log("cloud.close-failed", { error: error.message }));
+  }
   log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
-  process.exit(0);
+  process.exit(code);
 };
 process.on("SIGINT", () => void stop());
 process.on("SIGTERM", () => void stop());
+// A crash is not a reason to leave a warm GPU box running: clean up first. (SIGKILL cannot; the sandbox's own timeout is then the backstop.)
+process.on("uncaughtException", (error) => {
+  log("uncaught", { error: error.message });
+  void stop(1);
+});
+process.on("unhandledRejection", (reason) => {
+  log("unhandled-rejection", { error: reason instanceof Error ? reason.message : String(reason) });
+  void stop(1);
+});

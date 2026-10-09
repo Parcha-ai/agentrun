@@ -85,7 +85,7 @@ try {
       "--cloud-arg", `gpu-image=${gpuImage}`,
       "--cloud-arg", `gpu-note=${GPU_NOTE}`,
       "--cloud-arg", `gpu-type=${gpuType}`,
-      "--cloud-arg", "gpu-ttl-minutes=45",
+      "--cloud-arg", "gpu-ttl-minutes=20",
       "--cloud-arg", "regions=us-east",
       "--cloud-arg", "prefix=pda-demo-d4-",
       "--cloud-arg", "app=pda-demo-d4",

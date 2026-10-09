@@ -117,8 +117,9 @@ try {
       ...(warmCommandsFile ? ["--cloud-arg", `warm-commands-file=${warmCommandsFile}`, "--cloud-arg", "warm-env=XLA_PYTHON_CLIENT_PREALLOCATE=false"] : []),
       "--cloud-arg", `gpu-image=${gpuImage}`,
       "--cloud-arg", "gpu-type=H100",
+      // The box's own lifetime is the backstop when this script or the server is killed: the prewarm, the take and margin, not the default 45 minutes.
+      "--cloud-arg", `gpu-ttl-minutes=${arg("gpu-ttl-minutes", 20)}`,
       "--cloud-arg", `gpu-note=${GPU_NOTE}`,
-      "--cloud-arg", "gpu-ttl-minutes=45",
       "--cloud-arg", "regions=us-east",
       "--cloud-arg", "prefix=pda-demo-d4-",
       "--cloud-arg", "app=pda-demo-d4",

@@ -566,11 +566,24 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
     /** Stop what runs and delete every sandbox this cloud made and still holds (warm ones, a crashed start's). */
     async close() {
-      for (const id of [...running]) await host.stop({ disk: options.disk, region: options.region, id }, "now");
-      for (const id of [...placed.keys()]) await host.stop({ disk: options.disk, region: options.region, id }, "now");
-      for (const id of [...live]) await drop({ id, name: id });
+      for (const w of warmers.values()) w.close();
+      warmers.clear();
+      trainers.clear();
+      // Every step runs although an earlier one failed: a sandbox left behind costs by the minute.
+      const failures: string[] = [];
+      const attempt = async (what: string, fn: () => Promise<unknown>) => {
+        try {
+          await fn();
+        } catch (error) {
+          failures.push(`${what}: ${(error as Error).message}`);
+        }
+      };
+      for (const id of [...running]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
+      for (const id of [...placed.keys()]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
+      for (const id of [...live]) await attempt(`drop ${id}`, () => drop({ id, name: id }));
       remotes.clear();
       warm.clear();
+      if (failures.length > 0) options.log("close.failures", { failures });
     },
   };
   return host;
