@@ -38,10 +38,13 @@ export class Feed {
     const res = await fetch("/api/state", { cache: "no-store" });
     if (!res.ok) throw new Error(`state: HTTP ${res.status}`);
     this.state = (await res.json()) as ShowState;
-    this.lastId = Number(res.headers.get("x-last-event-id") ?? -1);
+    // The snapshot says which event it ends at. A feed that does not say gets the stream's live tail, never a replay from the
+    // start: replaying events the snapshot already holds would apply every narration line twice.
+    const header = res.headers.get("x-last-event-id");
+    this.lastId = header === null ? -1 : Number(header);
     this.receivedAt = performance.now();
     this.notify(null);
-    const es = new EventSource(`/api/events?after=${this.lastId}`);
+    const es = new EventSource(header === null ? "/api/events" : `/api/events?after=${this.lastId}`);
     this.es = es;
     es.onopen = () => {
       this.lost = false;

@@ -5,6 +5,8 @@
 //   SHOW_PIPE_LINK_FILE  a file holding a 03 run link (http://host:port/run/ID#SECRET): the feed is that pipe, watched live
 //   SHOW_PIPE_ROLE (view)  the hello mode the stage connects as; TODO(browser-demo): "operator" once the pipe checks roles
 //   SHOW_TAB_CDP  rehearsal only: a Chrome (CDP url) holding the real 03 tab page, which asks for the switch back to the tab
+//   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
+//                       secret for a ticket and proxies the picture, so the secret never reaches the page
 //   SHOW_ASK_AFTER_SWITCH (1)  ask the agent where it is after each completed switch (0 to turn off)
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
@@ -13,6 +15,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { desktopTargetFromLink, proxyStream, requestTicket } from "./desktop.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { cdpTabControl } from "./tab-control.ts";
 import { ScenarioPlayer } from "./scenario.ts";
@@ -103,6 +106,8 @@ function relay(source: FeedSource): void {
 }
 
 const PIPE_LINK_FILE = process.env.SHOW_PIPE_LINK_FILE;
+const DESKTOP_LINK_FILE = process.env.SHOW_DESKTOP_LINK_FILE ?? PIPE_LINK_FILE;
+const DESKTOP = DESKTOP_LINK_FILE ? desktopTargetFromLink(readFileSync(DESKTOP_LINK_FILE, "utf8")) : undefined;
 let player: FeedSource;
 if (PIPE_LINK_FILE) {
   // The feed is a 03 pipe: the run's link names where it listens, which run, and its secret (never printed or logged).
@@ -147,6 +152,9 @@ async function proxy(req: IncomingMessage, res: ServerResponse, path: string): P
   const upstream = await fetch(`${UPSTREAM}${path}`, init);
   res.statusCode = upstream.status;
   res.setHeader("content-type", upstream.headers.get("content-type") ?? "application/json");
+  // The snapshot's event index: the page resumes the stream after it. Dropped, the page replays events it already holds.
+  const lastEventId = upstream.headers.get("x-last-event-id");
+  if (lastEventId !== null) res.setHeader("x-last-event-id", lastEventId);
   if (!upstream.body) return void res.end();
   const reader = upstream.body.getReader();
   req.on("close", () => void reader.cancel());
@@ -164,6 +172,12 @@ const server = createServer(async (req, res) => {
   const path = url.pathname;
   try {
     if (path.startsWith("/api/")) {
+      // The host's desktop, if it has one: the secret stays here, the page gets a same-origin picture path.
+      if (path === "/api/desktop" && req.method === "GET") {
+        if (!DESKTOP) return sendJson(res, 404, { ok: false, reason: "not configured" });
+        const t = await requestTicket(DESKTOP).catch(() => ({ ok: false as const, status: 502 }));
+        return t.ok ? sendJson(res, 200, { url: t.url, ttlMs: t.ttlMs }) : sendJson(res, 404, { ok: false, reason: "no desktop yet" });
+      }
       if (path.startsWith("/api/disk/")) {
         const key = decodeURIComponent(path.slice("/api/disk/".length));
         if (!DISK_PATH.test(key) || key.split("/").includes("..")) return sendJson(res, 400, { error: "bad path" });
@@ -223,6 +237,10 @@ const server = createServer(async (req, res) => {
         return sendJson(res, r.ok ? 200 : 409, r);
       }
       return sendJson(res, 404, { error: "no such route", path });
+    }
+    if (path.startsWith("/desktop/") && req.method === "GET") {
+      if (!DESKTOP) return sendJson(res, 404, { error: "no desktop configured" });
+      return await proxyStream(DESKTOP, path, req, res);
     }
     if (path === "/tab") {
       res.statusCode = 301;

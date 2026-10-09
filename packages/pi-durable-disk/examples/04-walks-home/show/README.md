@@ -43,7 +43,7 @@ The stage can watch a real 03 run through its pipe and drive its switcher. No cl
     CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> node scripts/switch-beat.mjs
 
 `switch-beat.mjs` starts the second-host server and the stage (`SHOW_PIPE_LINK_FILE`), attaches the real 03 tab page as the
-run's writer, then clicks tab, second host, tab in the stage's switcher and checks 14 things: the four named targets (tab,
+run's writer, then clicks tab, second host, tab in the stage's switcher and checks 11 things: the four named targets (tab,
 sandbox, VM, GPU; the ones the feed does not list are greyed, "wired by name"), the caption tagged MEASURED with the
 milliseconds the SERVER timed (from receiving the switch to the new host's notice committed), the timeline stay carrying the
 same number, the agent's notice, and the agent's answer through the model broker (a few short answers). Typical numbers on
@@ -74,6 +74,17 @@ untimed takeover), a missing or wrong-version policy (the home beat shows a refu
 answers after a switch), a feed that is not answering. For a recorded take use `SHOW_AUTOKILL=off` on the scripted feed so the
 only kill is the one the script clicks; against a live feed the stage sends no command until the operator presses a button.
 
+## The live desktop of a VM
+
+When the run is on a VM (an environment of kind `vm`), the stage shows that machine's desktop over the multiverse area, view
+only (the agent drives it with its `computer` tool). It uses D4's route on the 03 server: the stage's SERVER trades the run's
+secret for a ticket (`POST /run/<id>/desktop-ticket`, bearer secret) and proxies `/desktop/<ticket>.mjpeg` to the page, so the
+secret never reaches the page and the picture loads from the stage's own origin, under its COEP. Until the host has a desktop
+the panel says "The desktop is not up yet" and asks again every 3 s; it asks again before the 10 minute ticket ends, and when the
+run leaves the VM the picture closes, which closes the host's stream. `SHOW_DESKTOP_LINK_FILE` names the 03 run link (default:
+the pipe's `SHOW_PIPE_LINK_FILE`); with neither the stage never asks. `node scripts/desktop-check.mjs` checks the whole path in
+real Chrome against a stand-in host (10 checks, no Modal machines).
+
 ## Honest numbers
 
 A feed says where it comes from: `run.source` is `live` (the default) or `scripted`. A scripted feed gets a permanent
@@ -84,7 +95,7 @@ a number it did not flag is tagged UNMEASURED. Lines with no quantity carry no t
 ## Run the show from the page (operator mode)
 
     SHOW_MODE=operator TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> node serve.ts
-    node scripts/operator-check.mjs        # drives the whole show through the panel in real Chrome; 14 checks
+    node scripts/operator-check.mjs        # drives the whole show through the panel in real Chrome; 16 checks
 
 The panel is hidden on camera: press `o` (or open `/?operator=1`). Buttons and keys: environment switches, Fan out `f`,
 Kill leader `k`, Collapse `c`, Home `h`, Reset take `r`. Each is a command to the feed (`switch`, `fanout`, `kill`,

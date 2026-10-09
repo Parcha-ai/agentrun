@@ -1,6 +1,7 @@
 import type { HostKind, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
 import { captionsFor } from "./caption.ts";
+import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
@@ -11,6 +12,7 @@ if (params.get("theme") === "light") document.documentElement.dataset.theme = "l
 
 const feed = new Feed();
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
+const desktop = new DesktopView($("desktop"));
 const grid = new Grid($("grid"), $("strip"), (id) => void kill(id));
 const visited = new Set<string>();
 let lastPlacement = "";
@@ -194,6 +196,7 @@ function renderOperator(state: ShowState): void {
   box.querySelectorAll<HTMLButtonElement>("button").forEach((b) => b.addEventListener("click", () => void run(`switch ${b.dataset.env}`, { t: "switch", to: b.dataset.env! })));
 }
 const OPS: Record<string, () => void> = {
+  prewarm: () => void run("prewarm", { t: "prewarm" }),
   fanout: () => void run("fan out", { t: "fanout" }),
   kill: () => {
     const l = leader(feed.state);
@@ -210,7 +213,7 @@ addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.matches?.("input, textarea")) return;
   if (e.key === "o") operator.hidden = !operator.hidden;
   else if (!operator.hidden) {
-    const key = { f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask" }[e.key];
+    const key = { p: "prewarm", f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask" }[e.key];
     if (key) OPS[key]();
     else if (e.key === "Escape") operator.hidden = true;
   }
@@ -234,6 +237,7 @@ function frame(): void {
   renderChrome(state);
   renderOperator(state);
   renderCaption(state);
+  desktop.update(state);
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);

@@ -126,6 +126,8 @@ export type ShowCommand =
   | { t: "reset" }
   /** Operator commands: the page never sends them. `fanout` starts the fork fan-out; `collapse` keeps one universe and seals the rest. */
   | { t: "fanout" }
+  /** Optional, before fanout: make every machine first, so the fan-out only waits on the forks. */
+  | { t: "prewarm" }
   | { t: "collapse"; winner?: string }
   /** Ask the agent a question where it runs now (default: which machine are you on). Feeds with no agent refuse it. */
   | { t: "ask"; text?: string };

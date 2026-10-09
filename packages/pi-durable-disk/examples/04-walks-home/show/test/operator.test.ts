@@ -74,3 +74,11 @@ test("scores are metres walked and the run says so", () => {
   T(p, 60);
   for (const u of Object.values(p.state.universes)) if (u.score !== null) assert.ok(u.score >= 0 && u.score < 6, `${u.id} ${u.score}`);
 });
+
+test("prewarm is refused by the scripted feed with a reason, in both modes", () => {
+  for (const operator of [false, true]) {
+    const r = new ScenarioPlayer({ origin: 0, operator }).command({ t: "prewarm" });
+    assert.equal(r.ok, false);
+    assert.match(r.message!, /no machines to warm/);
+  }
+});
