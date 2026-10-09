@@ -1,0 +1,23 @@
+{
+  "name": "pi-durable-disk-example-tab-to-cloud",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A pi agent whose whole computer runs in a browser tab, and moves to a cloud VM with its memory and files when the tab goes away.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node tab/build.mjs",
+    "test": "node --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@wasmer/sdk": "0.19.1",
+    "esbuild": "0.28.2",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  }
+}
