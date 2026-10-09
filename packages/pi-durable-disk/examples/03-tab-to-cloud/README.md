@@ -66,7 +66,9 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
   says the move was not planned.
 
 The cloud host can be a second FUSE client on the server's own machine (`--cloud local`, a systemd unit through the
-package's `localHost` driver) or Daytona (`--cloud daytona`, `pipe/daytona.ts`):
+package's `localHost` driver), a second process with no disk client that runs the agent through the pipe
+(`--cloud remote-local`, `pipe/remote-local.ts`: `remote-host.ts` as a child process, no unit, no mount), or Daytona
+(`--cloud daytona`, `pipe/daytona.ts`):
 
 - **Daytona basic**: a sandbox from the demo's runtime snapshot (`scripts/daytona-snapshot.ts` builds
   `pda-demo-runtime-<digest>`), started by the package's `daytonaHost` driver; it mounts the disk itself. Its live events
