@@ -82,6 +82,13 @@ def score_of(walk: dict[str, Any] | None) -> float | None:
   return round(float(walk["distance_m"]), 3) if "distance_m" in walk else None
 
 
+def parse_steps(text: str) -> int:
+  """'0.5M' -> 500000, '200K' -> 200000, '4000000' -> 4000000."""
+  t = text.strip().upper()
+  mult = {"K": 1_000, "M": 1_000_000}.get(t[-1:], 1)
+  return int(round(float(t[:-1] if mult > 1 else t) * mult))
+
+
 class Deadline(Exception):
   pass
 
@@ -119,6 +126,14 @@ def main() -> None:
                   help="environment steps between checkpoints. It sets the training step's scan length, which is "
                        "compiled into the program, so it (not --steps or how far a resumed run got) decides whether a "
                        "compile cache fits")
+  ap.add_argument("--schedule", default=None,
+                  help="checkpoint at these environment steps, e.g. 0.5M,1M,2M,4M,8M (the on-camera learning curve), then "
+                       "every --checkpoint-every. The epoch is sized to the first point, which shapes the compiled "
+                       "program: a --compile-only warm-up must pass the same --schedule")
+  ap.add_argument("--checkpoint-every", default="8M", help="with --schedule: the cadence after its last point")
+  ap.add_argument("--publish", default=None,
+                  help="also write each checkpoint's policy.json here, by rename (the file the tab installs live)")
+  ap.add_argument("--keep-published", default=None, help="directory: keep a copy of every checkpoint as ckpt-<n>.json")
   ap.add_argument("--compile-only", action="store_true",
                   help="compile this command's training program, write it to --compile-cache, and exit: run on a "
                        "spare at warm time so a takeover starts in seconds. WORK is not touched")
@@ -161,6 +176,7 @@ def main() -> None:
   import jax_compat  # noqa: F401 - before Brax
   import mujoco
   from brax.training.agents.ppo import networks as ppo_networks
+  from brax.training.agents.ppo import checkpoint as ppo_checkpoint
   from brax.training.agents.ppo import train as ppo
   from flax import linen
   from mujoco_playground import wrapper
@@ -235,8 +251,29 @@ def main() -> None:
   # compile-only one and the image's prewarm compile the identical program; the run may overshoot by under one epoch.
   env_steps_per_update = (ppo_cfg["batch_size"] * ppo_cfg["unroll_length"] * ppo_cfg["num_minibatches"]
                           * ppo_cfg["action_repeat"])
-  updates_per_epoch = max(1, -(-args.checkpoint_steps // env_steps_per_update))
+  schedule = [parse_steps(x) for x in args.schedule.split(",")] if args.schedule else []
+  if schedule:
+    # Small epochs so the first point lands on time; a checkpoint is exported only at scheduled steps.
+    updates_per_epoch = max(1, round(min(schedule) / env_steps_per_update))
+  else:
+    updates_per_epoch = max(1, -(-args.checkpoint_steps // env_steps_per_update))
   epoch_steps = updates_per_epoch * env_steps_per_update
+  every = parse_steps(args.checkpoint_every)
+  due_points = sorted(schedule)
+
+  def is_due(total_steps: int) -> bool:
+    """With a schedule: the epoch ending nearest a scheduled point (or a cadence point after the last) checkpoints."""
+    if not schedule:
+      return True
+    while due_points and due_points[0] < total_steps - epoch_steps / 2:
+      due_points.pop(0)
+    nxt = due_points[0] if due_points else ((total_steps - max(schedule)) // every + 1) * every + max(schedule)
+    if total_steps + epoch_steps / 2 >= nxt:
+      if due_points:
+        due_points.pop(0)
+      return True
+    return False
+
   epochs = 1 if args.compile_only else max(1, -(-remaining // epoch_steps))
   remaining = epochs * epoch_steps
   ppo_cfg["num_evals"] = epochs + 1
@@ -250,6 +287,7 @@ def main() -> None:
       "device": str(jax.devices()[0]), "started_at": prior.get("started_at", t_start), "segment_started_at": t_start,
       "wall_s": prior.get("wall_s", 0.0), "mujoco": mujoco.__version__, "mjcf_sha256": None, "last": None,
       "score_unit": score_unit, "course_sha256": course["sha256"] if course else None,
+      "published": int(prior.get("published", 0)), "schedule": args.schedule,
   }
   write_json(state_path, state)
   print(json.dumps({"event": "train.start", "universe": state["universe"], "generation": generation, "impl": impl,
@@ -268,6 +306,8 @@ def main() -> None:
     now = time.time()
     if times["jit_done"] is None:
       times["jit_done"] = now
+    if schedule and not (step > 0 and step == times.get("checkpointed")):
+      return  # between scheduled checkpoints: nothing to report or flush
     sps = (step - times["last_steps"]) / max(now - times["last"], 1e-6)
     times["last"], times["last_steps"] = now, step
     steps_done = done_steps + step
@@ -314,6 +354,8 @@ def main() -> None:
   def on_params(step: int, make_policy, params) -> None:
     if step == 0 and restore is None:
       return
+    if schedule and not args.compile_only and not is_due(done_steps + step):
+      return
     try:
       pol = export_policy(params, obs_spec=obs_spec, nu=env.action_size, mjcf=xml, mujoco_version=mujoco.__version__,
                           gait_hz=float(cfg.gait_hz), action_scale=float(cfg.action_scale),
@@ -339,7 +381,22 @@ def main() -> None:
       pol["provenance"]["walk_10s"] = finite_or_none(times["walk"])
     except Exception as e:  # a score failure must not stop training
       times["walk"] = {"error": str(e)[:200]}
+    published = int(state.get("published", 0)) + 1
+    pol["provenance"]["checkpoint"] = published
     write_json(os.path.join(work, "policy.json"), pol, strict=True)
+    if schedule:
+      # Brax saves no checkpoints in schedule mode (save_checkpoint_path is None); this run saves its own, only here.
+      ppo_checkpoint.save(seg_ckpt, step, params, ckpt_config)
+    if args.publish:
+      os.makedirs(os.path.dirname(os.path.abspath(args.publish)), exist_ok=True)
+      write_json(os.path.abspath(args.publish), pol, strict=True)
+    if args.keep_published:
+      os.makedirs(args.keep_published, exist_ok=True)
+      write_json(os.path.join(args.keep_published, f"ckpt-{published}.json"), pol, strict=True)
+    state["published"] = published
+    print(json.dumps({"event": "train.checkpoint", "checkpoint": published, "steps": done_steps + step,
+                      "wall_s": round(time.time() - t_start, 1), "walk_10s_m": (times.get("walk") or {}).get("distance_m"),
+                      "fell_at": (times.get("walk") or {}).get("fell_at")}), flush=True)
     times["checkpointed"] = step
 
   network_factory = functools.partial(
@@ -347,11 +404,14 @@ def main() -> None:
       value_hidden_layer_sizes=net_cfg["value_hidden_layer_sizes"], activation=linen.swish,
       policy_obs_key="state", value_obs_key="privileged_state")
   train_kwargs = {k: v for k, v in ppo_cfg.items() if k != "num_timesteps"}
+  ckpt_config = ppo_checkpoint.network_config(observation_size=env.observation_size, action_size=env.action_size,
+                                              normalize_observations=ppo_cfg["normalize_observations"],
+                                              network_factory=network_factory)
   status = "done"
   try:
     ppo.train(environment=env, num_timesteps=remaining, wrap_env_fn=wrapper.wrap_for_brax_training,
               network_factory=network_factory, progress_fn=progress, policy_params_fn=on_params,
-              save_checkpoint_path=seg_ckpt, restore_checkpoint_path=restore, run_evals=False,
+              save_checkpoint_path=None if schedule else seg_ckpt, restore_checkpoint_path=restore, run_evals=False,
               log_training_metrics=False, **train_kwargs)
   except Deadline:
     status = "paused"

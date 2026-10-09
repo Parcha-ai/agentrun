@@ -39,6 +39,9 @@ def training_image(copy_code: bool = False) -> modal.Image:
 
 
 SEED_CACHE = "/opt/pda/cache/compile-cache.tar.gz"
+# The program-shaping flags of the on-camera learning curve (DEMO-V2). A warm-up --compile-only must pass the same.
+TAKE_WALK = "--num-envs 512 --schedule 0.5M,1M,2M,3M,4M,5M,6M,8M --checkpoint-every 4M"
+TAKE_GETUP = "--schedule 5M,10M --checkpoint-every 5M"
 
 
 def fleet_image(runtime_commands: list[str], prewarm: bool = True) -> modal.Image:
@@ -62,8 +65,12 @@ def fleet_image(runtime_commands: list[str], prewarm: bool = True) -> modal.Imag
         f" && {base} --universe {t}/universes/u1.json --compile-cache {c}/a.tar.gz --no-seed-compile-cache"
         f" && {base} --universe {t}/universes/u1.json --world /tmp/pw/terrain.json --course /tmp/pw/course.json"
         f"    --seed-compile-cache {c}/a.tar.gz --compile-cache {c}/b.tar.gz"
-        f" && {base} --universe {t}/universes/getup.json --seed-compile-cache {c}/b.tar.gz --compile-cache {SEED_CACHE}"
-        f" && rm -f {c}/a.tar.gz {c}/b.tar.gz && chmod a+r {SEED_CACHE} && rm -rf /tmp/pw /root/.cache/pda-train",
+        f" && {base} --universe {t}/universes/getup.json --seed-compile-cache {c}/b.tar.gz --compile-cache {c}/c.tar.gz"
+        # The on-camera learning curve (DEMO-V2): the walker at 512 envs with the early schedule, and its getup partner.
+        f" && {base} --universe {t}/universes/u1.json {TAKE_WALK} --seed-compile-cache {c}/c.tar.gz --compile-cache {c}/d.tar.gz"
+        f" && {base} --universe {t}/universes/getup.json {TAKE_GETUP} --seed-compile-cache {c}/d.tar.gz --compile-cache {SEED_CACHE}"
+        f" && rm -f {c}/a.tar.gz {c}/b.tar.gz {c}/c.tar.gz {c}/d.tar.gz && chmod a+r {SEED_CACHE}"
+        f" && rm -rf /tmp/pw /root/.cache/pda-train",
         gpu="H100")
   return image
 

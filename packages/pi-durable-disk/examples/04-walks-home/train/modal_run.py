@@ -15,6 +15,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import shlex
 import sys
 import threading
 import time
@@ -178,6 +179,7 @@ def main() -> None:
   ap.add_argument("--ledger", default=None)
   ap.add_argument("--kill-after", type=float, default=0.0, help="seconds after training starts; then resume elsewhere")
   ap.add_argument("--timeout", type=int, default=3600)
+  ap.add_argument("--train-args", default="", help="extra train.py arguments, e.g. '--schedule 0.5M,1M,2M'")
   ap.add_argument("--image-id", default=None, help="a built image (e.g. the fleet image) instead of the dev image")
   ap.add_argument("--compile-cache", default=None, help="local tarball to upload as the box's compile cache")
   args = ap.parse_args()
@@ -225,6 +227,8 @@ def main() -> None:
         cmd += ["--world", f"{REMOTE_IN}/terrain.json"]
       if args.course:
         cmd += ["--course", f"{REMOTE_IN}/course.json"]
+      if args.train_args:
+        cmd += shlex.split(args.train_args.replace("{work}", REMOTE_WORK))
       if args.compile_cache:
         with open(args.compile_cache, "rb") as f:
           sb.filesystem.write_bytes(f.read(), f"{REMOTE_IN}/compile-cache.tar.gz")
@@ -266,6 +270,7 @@ def main() -> None:
         log("train.failed", rc=rc, stderr_tail=err[-3000:])
       got = pull(sb, out)
       n = pull_tree(sb, f"{REMOTE_WORK}/ckpt", os.path.join(out, "ckpt"))
+      n += pull_tree(sb, f"{REMOTE_WORK}/kept", os.path.join(out, "kept"))
       log("train.exit", rc=rc, files=got, ckpt_files=n, train_s=round(time.time() - t_train, 1),
           total_s=round(time.time() - t0, 1), stderr_tail=err[-1500:] if rc else "")
       finished = True

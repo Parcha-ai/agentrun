@@ -18,7 +18,7 @@ import numpy as np
 import creature_env
 import rollout
 import terrain
-from train import SCORE_UNITS, complete_checkpoints, score_of
+from train import SCORE_UNITS, complete_checkpoints, parse_steps, score_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "..", "policy", "test", "fixtures")  # the policy runtime's parity fixture (policy.json)
@@ -118,6 +118,12 @@ class ObservationTest(unittest.TestCase):
     raw = env._raw_obs(D, {"t": jp.float32(0.61), "last_act": jp.array(prev), "command": jp.float32(0.37)})
     got = np.concatenate([np.asarray(raw[n]) for n, _ in creature_env.obs_sizes(m.nu)])
     np.testing.assert_allclose(got, want, atol=2e-6)  # float32 in the env, float64 in the tab
+
+
+class ScheduleTest(unittest.TestCase):
+  def test_parse_steps(self):
+    self.assertEqual([parse_steps(x) for x in ("0.5M", "1M", "200K", "4000000", " 8m ")],
+                     [500_000, 1_000_000, 200_000, 4_000_000, 8_000_000])
 
 
 class ResumeTest(unittest.TestCase):
