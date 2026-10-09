@@ -56,6 +56,8 @@ export interface CloudOptions {
   readonly modelSecret?: string;
   /** Daytona: the runtime snapshot of the GPU class; without it there is no GPU environment. */
   readonly gpuSnapshot?: string;
+  /** Daytona: keep a GPU sandbox ready while a tab runs the run, so a switch there takes seconds (it costs while it waits). */
+  readonly warmGpu?: boolean;
 }
 
 interface Placed {
@@ -209,6 +211,8 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
         return { host: d.label(env) };
       },
       kill: (ref) => d.kill(ref),
+      startRemote: (ref, env, invite) => d.startRemote(ref, env, invite),
+      stopRemote: (ref) => d.stopRemote(ref),
       attachViewer: (ref, send) => {
         const env = () => d.placed(ref.id)?.env ?? d.environments[0]!.id;
         return relayViewer({ control, ref, send, log: options.log, label: () => d.label(env()), env, dialer: () => undefined, serve: () => d.placed(ref.id)?.serve });
@@ -223,7 +227,10 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
         running.delete(ref.id);
         await d.stop(ref, how);
       },
-      prewarm: (ref) => d.prewarm(ref),
+      prewarm(ref) {
+        d.prewarm(ref);
+        if (options.warmGpu) d.prewarmRemote(ref);
+      },
       async close() {
         for (const id of [...running]) await daytona.stop({ disk: options.disk, region: options.region, id }, "now");
         const swept = await d.sweep();

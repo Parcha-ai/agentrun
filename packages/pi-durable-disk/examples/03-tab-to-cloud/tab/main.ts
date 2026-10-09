@@ -9,6 +9,8 @@ import type { AgentEvent } from "@earendil-works/pi-durable";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
+import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
+import { Workspace } from "./workspace.ts";
 import { fromBase64, untag, type Environment, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 const WASMER_SDK = "/wasmer/dist/index.js";
@@ -28,7 +30,7 @@ const state = {
   mode: "connecting" as "connecting" | "booting" | "writer" | "viewer" | "lost",
   placement: undefined as Placement | undefined,
   client: undefined as PipeClient | undefined,
-  runtime: undefined as TabRuntime | undefined,
+  runtime: undefined as TabRuntime<WasmerEnv> | undefined,
   chat: new ChatView(),
   files: [] as FileRow[],
   selected: undefined as string | undefined,
@@ -48,6 +50,8 @@ const state = {
   leaving: undefined as string | undefined,
   /** Every switch this page asked for and saw complete. */
   handovers: [] as { switchId: string; to: string; ms: number }[],
+  /** What the pipe acknowledged last when this tab left the run (`workspaceDigest`), and how its step ended. */
+  left: undefined as { switchId: string; digest: string; step: string } | undefined,
 };
 
 const envLabel = (id: string | undefined) => state.environments.find((e) => e.id === id)?.label ?? id ?? "";
@@ -61,6 +65,7 @@ function badge(): { text: string; tone: string; sub: string } {
   if (state.mode === "writer") return { text: "Running in this tab", tone: "tab", sub: `brain + hands in this tab · disk claimed by the pipe, generation ${state.generation}` };
   if (state.mode === "connecting") return { text: "Connecting", tone: "moving", sub: "" };
   if (p?.where === "cloud") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `${p.host}${p.generation ? `, generation ${p.generation}` : ""}` };
+  if (p?.where === "tab" && p.env !== "tab") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `through the pipe, generation ${p.generation}` };
   if (p?.where === "tab") return { text: "Running in another tab", tone: "other", sub: `generation ${p.generation} · read-only here` };
   if (p?.where === "moving") return { text: `Moving to ${p.to}`, tone: "moving", sub: p.detail ?? "" };
   return { text: "Parked on the disk", tone: "parked", sub: p?.detail ?? "" };
@@ -72,6 +77,7 @@ function currentEnv(): { id: string | undefined; moving: boolean } {
   if (state.mode === "writer" && !state.leaving) return { id: "tab", moving: false };
   if (p?.where === "moving") return { id: p.env, moving: true };
   if (p?.where === "cloud") return { id: p.env, moving: false };
+  if (p?.where === "tab" && p.env !== "tab") return { id: p.env, moving: false };
   return { id: undefined, moving: false };
 }
 
@@ -95,7 +101,8 @@ function renderSwitcher(): void {
 function switchTo(id: string): void {
   if (!state.client || state.switching) return;
   const p = state.placement;
-  if (id === "tab" && (p?.where === "tab" || p?.where === "parked" || state.mode === "lost")) {
+  // Another browser tab runs it: take it over. A remote host gets a planned switch, as the cloud does.
+  if (id === "tab" && ((p?.where === "tab" && p.env === "tab") || p?.where === "parked" || state.mode === "lost")) {
     void connect("write", p?.where === "tab");
     return;
   }
@@ -201,8 +208,8 @@ function render(): void {
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
   const writer = state.mode === "writer" && !state.leaving;
-  // In the cloud, a message goes to the cloud's conversation through the server.
-  const canSend = writer || (state.mode === "viewer" && state.placement?.where === "cloud");
+  // Elsewhere, a message goes to whoever runs the run, through the server.
+  const canSend = writer || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
   ($("input") as HTMLTextAreaElement).disabled = !canSend;
   ($("send") as HTMLButtonElement).disabled = !canSend;
   $("composer").hidden = !canSend;
@@ -287,7 +294,8 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const sandbox = await wasmer!.sandboxes.create({ packages: [pkg], shell: pkg.command("bash"), env: { LANG: "C.UTF-8" } });
   state.environments = attached.environments;
   const facts = tabFacts(pkg.commands, { cpus: navigator.hardwareConcurrency, ...((navigator as { deviceMemory?: number }).deviceMemory ? { memoryGb: (navigator as { deviceMemory?: number }).deviceMemory! } : {}) });
-  const runtime = await startTab({ client, attached, sandbox: sandbox as never, run, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  const env = new WasmerEnv(sandbox as never, { id: `wasmer:${run}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
+  const runtime = await startTab({ client, attached, env, workspace: new Workspace(wasmerWorkspaceFs(env)), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   state.bootMs = performance.now() - started;
@@ -357,6 +365,10 @@ function onFrame(frame: PipeFrame): void {
     case "want-snapshot":
       void sendSnapshot();
       return;
+    case "submit":
+      // A message a viewer typed: this tab runs the run.
+      if (state.runtime && state.mode === "writer") void state.runtime.root.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+      return;
     default:
       return;
   }
@@ -371,6 +383,8 @@ async function drain(switchId: string): Promise<void> {
   const runtime = state.runtime;
   if (runtime) {
     const how = await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const);
+    // Every write-through is acknowledged before its tool result commits: what the disk has from this tab.
+    state.left = { switchId, digest: await runtime.workspace.baselineDigest(), step: how };
     state.progress = how === "idle" ? "the agent was idle; handing over" : how === "step" ? "step finished; handing over" : "step still running; handing over (the next host resumes it)";
     render();
     state.runtime = undefined;
@@ -480,7 +494,7 @@ function send(): void {
   const text = input.value.trim();
   if (!text) return;
   if (!state.runtime) {
-    if (state.mode !== "viewer" || state.placement?.where !== "cloud") return;
+    if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
     input.value = "";
     state.client?.send({ t: "submit", text, requestId: `ui-${crypto.randomUUID()}` });
     return;
@@ -526,6 +540,7 @@ if (!run || !secret) {
     });
   },
   handovers: () => state.handovers,
+  left: () => state.left,
   switchTo,
   timings: () => state.client && { commit: state.client.timings.commit, files: state.client.timings.files, rtts: state.client.rtts, computerMs: state.computerMs, bootMs: state.bootMs, syncs: state.runtime?.syncs },
 };

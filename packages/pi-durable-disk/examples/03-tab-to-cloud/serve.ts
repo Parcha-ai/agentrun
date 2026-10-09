@@ -3,7 +3,7 @@
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona]
-//                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME] [--daytona-secret NAME | --cloud-link]
+//                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST]
 //
 // --also-host listens on a second address too (a reverse proxy's side of a bridge); --public-url is the address the
@@ -41,6 +41,7 @@ const { values } = parseArgs({
     "daytona-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_SNAPSHOT },
     "daytona-secret": { type: "string" },
     "daytona-gpu-snapshot": { type: "string", default: process.env.DEMO_DAYTONA_GPU_SNAPSHOT },
+    "warm-gpu": { type: "boolean", default: false },
     budget: { type: "string", default: "400000" },
     "mount-root": { type: "string", default: "/mnt/pda/demo/pipe" },
     ledger: { type: "string" },
@@ -90,6 +91,7 @@ if (values.cloud === "local" || values.cloud === "daytona") {
     ...(values["daytona-snapshot"] ? { snapshot: values["daytona-snapshot"] } : {}),
     ...(values["daytona-secret"] ? { modelSecret: values["daytona-secret"] } : {}),
     ...(values["daytona-gpu-snapshot"] ? { gpuSnapshot: values["daytona-gpu-snapshot"] } : {}),
+    ...(values["warm-gpu"] ? { warmGpu: true } : {}),
   });
 }
 

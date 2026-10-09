@@ -8,6 +8,8 @@ import { Wasmer } from "@wasmer/sdk/node";
 import { localServer } from "../test/_local.ts";
 import { PipeClient, type Attached } from "../tab/pipe-client.ts";
 import { startTab } from "../tab/runtime.ts";
+import { WasmerEnv, wasmerWorkspaceFs } from "../tab/wasmer-env.ts";
+import { Workspace } from "../tab/workspace.ts";
 
 const t0 = performance.now();
 const ms = () => Math.round(performance.now() - t0);
@@ -22,7 +24,8 @@ const sandbox = await wasmer.sandboxes.create({ packages: [edge!], shell: edge!.
 console.log(JSON.stringify({ at: ms(), event: "sandbox" }));
 const client = new PipeClient({ url: local.url, run: id, token: secret, tab: "node", mode: "write" });
 const attached = (await client.ready) as Attached;
-const tab = await startTab({ client, attached, sandbox: sandbox as never, run: id });
+const env = new WasmerEnv(sandbox as never, { id: `wasmer:${id}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
+const tab = await startTab({ client, attached, env, workspace: new Workspace(wasmerWorkspaceFs(env)) });
 console.log(JSON.stringify({ at: ms(), event: "harness", restored: tab.restored }));
 const prompt = process.argv[2] ?? "Create a file hello.js that prints the sum of the numbers 1 to 100, run it with node, and save its output to result.txt.";
 const submission = await tab.root.submit({ type: "input", content: prompt, requestId: "q1" }, ctx);

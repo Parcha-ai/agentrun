@@ -46,7 +46,17 @@ export interface CloudHost {
   supervise?(ref: RunRef): Promise<{ host: string } | undefined>;
   /** Power off the host that runs the run (a fault for the demo). */
   kill?(ref: RunRef): Promise<void>;
+  /**
+   * For an environment of kind "remote": start a host there that runs the run through the pipe, dial it and send it
+   * `invite` (its hello answers it). Resolves with the open socket, which the server then serves as a tab's.
+   */
+  startRemote?(ref: RunRef, env: string, invite: Invite): Promise<{ socket: WebSocket; host: string }>;
+  /** Stop and remove the run's remote host (it left the run, or was taken from). */
+  stopRemote?(ref: RunRef): Promise<void>;
 }
+
+/** The server's first frame to a remote host (remote-host.ts). */
+export type Invite = { t: "invite"; run: string; token: string; tab: string; switchId?: string };
 
 export interface DemoServerOptions {
   readonly disk: string;
@@ -97,6 +107,8 @@ interface RunState {
   createdAt: number;
   /** The switch in progress: one at a time. */
   switching: { move: Move; to: string; started: number } | undefined;
+  /** The remote host that runs the run through the pipe, by its tab id. */
+  remote: { tab: string; env: string } | undefined;
 }
 
 const TYPES: Record<string, string> = {
@@ -132,7 +144,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   const environments: Environment[] = [TAB_ENVIRONMENT, ...(options.cloud?.environments ?? [])];
   const environment = (id: string) => environments.find((e) => e.id === id);
   /** Where the run is, as an environment id; undefined while it moves or is parked. */
-  const currentEnv = (p: Placement) => (p.where === "tab" ? "tab" : p.where === "cloud" ? p.env : undefined);
+  const currentEnv = (p: Placement) => (p.where === "tab" || p.where === "cloud" ? p.env : undefined);
   const phraseOf = (p: Placement) => environment(currentEnv(p) ?? "")?.phrase ?? (p.where === "cloud" ? p.host : "the disk");
   const newMove = (from: string, planned: boolean): Move => ({ id: `sw-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`, from, planned });
 
@@ -219,12 +231,19 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
   }
 
-  /** The tab stopped pinging: the run goes to the cloud's first environment, unplanned. */
+  /** The remote host the run left: stopped and removed, out of the run's way. */
+  async function dropRemote(state: RunState): Promise<void> {
+    if (!state.remote) return;
+    state.remote = undefined;
+    await options.cloud?.stopRemote?.(state.ref).catch((error) => log("remote.stop-failed", { run: state.ref.id, error: (error as Error).message }));
+  }
+
+  /** The writer stopped pinging (a tab closed, a remote host died): the run goes to the cloud's first environment, unplanned. */
   async function writerGone(state: RunState, pipe: RunPipe): Promise<void> {
     if (state.pipe !== pipe || state.switching) return;
-    const target = options.cloud?.environments[0];
+    const target = options.cloud?.environments.find((e) => e.kind === "cloud");
     const started = Date.now();
-    const move = newMove(TAB_ENVIRONMENT.phrase, false);
+    const move = newMove(phraseOf(state.placement), false);
     setPlacement(state, target ? { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the tab is gone" } : { where: "parked", detail: "the tab is gone" });
     try {
       await releasePipe(state);
@@ -234,6 +253,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return;
     }
     log("released", { run: state.ref.id, ms: Date.now() - started });
+    void dropRemote(state);
     if (!target) setPlacement(state, { where: "parked", detail: "the tab is gone" });
     else await startCloud(state, target, move, "the tab is gone", started);
   }
@@ -270,7 +290,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (state.switching || state.opening) return refuse("a move is already in progress");
     if (from === undefined) return refuse(`the run is ${p.where}`);
     if (from === to) return refuse("the run is already there");
-    if (target.kind === "cloud" && !options.cloud) return refuse("no cloud host");
+    if (target.kind !== "tab" && !options.cloud) return refuse("no cloud host");
     const started = Date.now();
     const move = newMove(phraseOf(p), true);
     state.switching = { move, to, started };
@@ -281,20 +301,32 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         const drained = await state.pipe!.drainWriter(move.id, options.drainMs ?? 10_000);
         log("switch.drained", { run: state.ref.id, switchId: move.id, drained, ms: Date.now() - started });
         await releasePipe(state);
+        void dropRemote(state);
       } else {
         unsupervise(state);
         await options.cloud!.stop(state.ref, "now");
       }
       log("switch.released", { run: state.ref.id, switchId: move.id, ms: Date.now() - started });
-      if (target.kind === "tab") {
+      if (target.kind === "remote") {
+        // The host is started for this switch and answers it as a tab would; the timer below also covers its start.
+        setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "starting the host" });
+        const remoteTab = `remote-${target.id}-${move.id}`;
+        state.remote = { tab: remoteTab, env: target.id };
+        const { socket: remote, host } = await options.cloud!.startRemote!(state.ref, target.id, { t: "invite", run: state.ref.id, token: state.secret, tab: remoteTab, switchId: move.id });
+        log("remote.started", { run: state.ref.id, env: target.id, host, switchId: move.id, ms: Date.now() - started });
+        setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the host is attaching" });
+        accept(remote);
+      } else if (target.kind === "tab") {
         setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: "the tab is attaching" });
         socket.send({ t: "run-here", switchId: move.id });
+      }
+      if (target.kind !== "cloud") {
         // A page that never attaches leaves the run parked, sealed, for whoever opens it next.
         setTimeout(() => {
           if (state.switching?.move.id !== move.id) return;
           state.switching = undefined;
-          if (!state.pipe && !state.opening) setPlacement(state, { where: "parked", detail: "the tab did not attach" });
-        }, 30_000).unref();
+          if (!state.pipe && !state.opening) setPlacement(state, { where: "parked", detail: `${target.label} did not attach` });
+        }, target.kind === "remote" ? 120_000 : 30_000).unref();
         return;
       }
       state.switching = undefined;
@@ -302,6 +334,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     } catch (error) {
       state.switching = undefined;
       log("switch.failed", { run: state.ref.id, switchId: move.id, error: (error as Error).message });
+      void dropRemote(state);
       setPlacement(state, { where: "parked", detail: `switch failed: ${(error as Error).message}` });
     }
   }
@@ -382,7 +415,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const placement = state.placement;
       const fromCloud = placement.where === "cloud";
       const switching = state.switching;
-      const ours = switching !== undefined && switching.to === "tab" && frame.switchId === switching.move.id && state.pipe === undefined;
+      const ours = switching !== undefined && environment(switching.to)?.kind !== "cloud" && frame.switchId === switching.move.id && state.pipe === undefined;
+      const writerEnv = ours ? switching.to : "tab";
       if ((fromCloud && !frame.takeover) || (switching && !ours)) {
         await addViewer(state, socket);
         return state;
@@ -395,7 +429,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       }
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
-      const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, ...(move ? { move } : {}) });
+      const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, env: writerEnv, ...(move ? { move } : {}) });
       if (role === "viewer") socket.send(await viewingFrame(state));
       else {
         for (const [viewer, detach] of state.cloudViewers) {
@@ -403,7 +437,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           pipe.addViewer(viewer);
         }
         state.cloudViewers.clear();
-        state.placement = { where: "tab", tab: frame.tab, epoch: pipe.epoch, generation: pipe.generation, env: "tab" };
+        state.placement = { where: "tab", tab: frame.tab, epoch: pipe.epoch, generation: pipe.generation, env: writerEnv };
+        // A writer that took the run from a remote host: that host is done.
+        if (state.remote && state.remote.tab !== frame.tab) void dropRemote(state);
         for (const listener of listeners) listener(state.ref.id, state.placement);
         if (!state.prewarmed) {
           state.prewarmed = true;
@@ -485,7 +521,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
-  wss.on("connection", (ws) => {
+  /** Serve a socket as a tab's: one that connected, or one the server dialed into a remote host. */
+  const accept = (ws: WebSocket) => wss.emit("connection", ws);
+  wss.on("connection", (ws: WebSocket) => {
     const socket = adapt(ws, randomBytes(6).toString("hex"));
     let state: RunState | undefined;
     // Set synchronously on the first frame: every later frame waits behind the hello, never races it.
@@ -613,6 +651,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         cloudViewers: new Map(),
         createdAt: Date.now(),
         switching: undefined,
+        remote: undefined,
       });
       log("run.created", { run: runId });
       return { id: runId, secret };
@@ -623,6 +662,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         if (state.opening) await state.opening.catch(() => undefined);
         if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((error) => log("release.failed", { run: state.ref.id, error: (error as Error).message }));
         else await dropToken(state);
+        await dropRemote(state);
       }
       wss.close();
       await new Promise<void>((r) => http.close(() => r()));
