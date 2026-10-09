@@ -208,7 +208,7 @@ try {
   let homeAt = 0;
   while (rec.seconds() < maxSeconds) {
     const elapsed = rec.seconds();
-    for (const r of await stage.eval(`JSON.stringify([...document.querySelectorAll("#caption .row, #caption .txt")].map((r) => ({ tag: r.querySelector?.(".tag")?.textContent ?? null, text: (r.querySelector?.(".txt") ?? r).textContent })))`).then(JSON.parse).catch(() => [])) {
+    for (const r of await stage.eval(`JSON.stringify([...document.querySelectorAll("#vcaption:not([hidden]), #caption .row")].map((r) => ({ tag: r.querySelector?.(".tag")?.textContent ?? null, text: (r.querySelector?.(".txt") ?? r).textContent })))`).then(JSON.parse).catch(() => [])) {
       if (r.text && !captions.has(r.text)) {
         captions.set(r.text, r.tag);
         captionLog.push({ second: Number(elapsed.toFixed(1)), tag: r.tag, text: r.text });
