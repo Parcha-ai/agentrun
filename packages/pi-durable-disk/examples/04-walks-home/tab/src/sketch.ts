@@ -35,6 +35,12 @@ export class Sketcher {
 
   set(d: Design): void { this.design = structuredClone(d); this.draw(); }
 
+  /** Joints per leg: 3 adds the hip abduction joint. Applied to the next build. */
+  setLegDof(dof: 2 | 3): void {
+    if (dof === 3) this.design.legDof = 3; else delete this.design.legDof;
+    this.changed();
+  }
+
   addPair(): void {
     if (this.design.legs.length >= LIMITS.pairs[1]) return;
     const l = this.design.legs;

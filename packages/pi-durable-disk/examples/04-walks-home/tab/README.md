@@ -19,7 +19,8 @@ WebGL: the page needs it. A headless Chrome without a GPU needs `--use-gl=angle 
 ## Pieces
 | file | what |
 | --- | --- |
-| `src/design.ts` | the design document, its limits and validation (2 or 3 leg pairs, mirrored) |
+| `src/design.ts` | the design document, its limits and validation (2 or 3 leg pairs, mirrored; `legDof` 2 or 3), presets |
+| `src/dummy.ts`, `src/bodies.ts` | the stand-in trot policy; which preset body a policy's `mjcf_sha256` names (the page switches to it) |
 | `src/mjcf.ts` | design to MJCF; the only MJCF generator, node-runnable; joint order, gains, stand pose, keyframe `home` |
 | `src/sim.ts` | `Sim`: reset to `home`, a policy step = 5 physics steps, kick = force for 12 steps |
 | `src/policy.ts`, `src/obs.ts` | `mlp-v1` policy runner (owned by the trainer lane; see `POLICY-FORMAT.md`) |

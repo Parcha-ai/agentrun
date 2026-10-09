@@ -18,9 +18,10 @@ test('the default quadruped stands on its own for 5 s with the standing targets'
 test('the dummy trot keeps the body up for 10 s and moves the legs', async () => {
   const { sim, policy } = await dummy();
   let moved = 0;
+  const hip = sim.built.jointNames.indexOf('l0_hip');
   for (let i = 0; i < 500; i++) {
     sim.step(policy);
-    moved = Math.max(moved, Math.abs(sim.data.qpos[7] - sim.built.standPose[0]));
+    moved = Math.max(moved, Math.abs(sim.data.qpos[7 + hip] - sim.built.standPose[hip]));
   }
   assert.ok(moved > 0.2, `hip swing ${moved}`);
   assert.ok(sim.torsoPos()[2] > 0.1, `torso height ${sim.torsoPos()[2]}`);
@@ -46,7 +47,7 @@ test('a kick holds the force for exactly KICK_STEPS physics steps, then clears i
 
 test('every design in range builds and stands', async () => {
   for (const pairs of [2, 3]) {
-    const d = defaultDesign();
+    const d = defaultDesign(2);
     d.legs = Array.from({ length: pairs }, (_, i) => ({ x: 0.8 - (1.6 * i) / (pairs - 1), thigh: 0.18, shin: 0.22, radius: 0.02 }));
     const { built } = await fixture(d);
     const sim = new Sim(mj, built);
@@ -109,5 +110,45 @@ test('every preset is valid and stands unaided for 4 s', async () => {
     const sim = new Sim(mj, built);
     for (let i = 0; i < 200; i++) sim.step(null);
     assert.ok(sim.uprightness() > 0.9, `${name}: uprightness ${sim.uprightness()}`);
+  }
+});
+
+test('the 3-DOF body: joint order abd, hip, knee per leg, actuators in the same order, abd about x within +-0.5 rad', async () => {
+  const { built } = await fixture(defaultDesign(3));
+  assert.equal(built.jointsPerLeg, 3);
+  assert.deepEqual(built.jointNames.slice(0, 6), ['l0_abd', 'l0_hip', 'l0_knee', 'r0_abd', 'r0_hip', 'r0_knee']);
+  assert.equal(built.jointNames.length, 12);
+  assert.deepEqual(built.standPose.slice(0, 6), [0.3, -0.45, 0.9, -0.3, -0.45, 0.9], 'feet splayed outward: + on the left, - on the right');
+  const sim = new Sim(mj, built);
+  const m = sim.model;
+  assert.equal(m.nu, 12);
+  for (let i = 0; i < 12; i++) {
+    const j = m.jnt_qposadr; // joint i (after the free joint) sits at qpos 7 + i
+    assert.equal(j[i + 1], 7 + i, `joint ${i} qpos address`);
+    assert.equal(m.actuator_trnid[2 * i], i + 1, `actuator ${i} drives joint ${i}`);
+  }
+  const abd = 1; // joint 0 is the free joint, so l0_abd is joint 1 in the model
+  assert.deepEqual(Array.from(m.jnt_axis.slice(3 * abd, 3 * abd + 3)), [1, 0, 0]);
+  assert.ok(Math.abs(m.jnt_range[2 * abd] + 0.5) < 1e-9 && Math.abs(m.jnt_range[2 * abd + 1] - 0.5) < 1e-9);
+  assert.ok(built.xml.indexOf('l0_abd') < built.xml.indexOf('name="l0_hip"'), 'abd comes before hip in the same body');
+});
+
+test('the 2-DOF body is byte-for-byte what the first policies were trained on', async () => {
+  const { sha } = await fixture(defaultDesign(2));
+  assert.equal(sha, 'cfd560f11995db93248fcf61e2d563fb88bde33971eceeda92aa2f4b4d6e14d0');
+  assert.equal(defaultDesign(2).legDof, undefined);
+  assert.equal(defaultDesign(3).legDof, 3);
+  const a = await fixture(defaultDesign(3));
+  assert.notEqual(a.sha, sha);
+});
+
+test('a 3-DOF standing creature recovers from a 60 N shove from every side, and the dummy trot keeps it up', async () => {
+  for (const dir of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+    const { built } = await fixture(defaultDesign(3));
+    const sim = new Sim(mj, built);
+    for (let i = 0; i < 50; i++) sim.step(null);
+    sim.kick([dir[0] * 60, dir[1] * 60, 0]);
+    for (let i = 0; i < 150; i++) sim.step(null);
+    assert.ok(sim.uprightness() > 0.9, `shoved ${dir}: ${sim.uprightness()}`);
   }
 });

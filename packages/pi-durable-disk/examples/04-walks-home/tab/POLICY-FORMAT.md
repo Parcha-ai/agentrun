@@ -20,8 +20,17 @@ identity (`mjcf_sha256`) is the hash of `buildMjcf(design)` without a world, so 
 MuJoCo versions: the tab's `@mujoco/mujoco` and the trainer's `mujoco` must be the same version (set by D2).
 
 Joint order (qpos[7:], qvel[6:], actuators): for each leg pair `i` in the design, left then right (`l0`, `r0`, `l1`,
-`r1`, ...), and per leg `hip` then `knee`. Actuators are position servos on those joints, in the same order. Hip range
--1..1 rad, knee 0..2.3 rad. `standPose` (hip -0.45, knee 0.9) is the pose the action offsets are relative to.
+`r1`, ...); per leg the joints are `<leg>_abd` (only with `legDof: 3`), `<leg>_hip`, `<leg>_knee`. Actuator `i` is a
+position servo (kp 40, kv 1.2, forcerange 12) on joint `i`; names `<leg>_abd_a`, `<leg>_hip_a`, `<leg>_knee_a`.
+- `abd`: hinge about x at the thigh body's origin, before the hip joint (same body), range -0.5..0.5 rad. Positive abd
+  swings the foot toward +y (outward on the left legs, inward on the right); the policy learns the sign.
+- `hip`: hinge about y, range -1..1 rad. `knee`: hinge about y, range 0..2.3 rad.
+- `standPose` per leg: abd 0.3 (left) / -0.3 (right) when `legDof` is 3 (feet splayed outward; a still creature then
+  takes about 120 N sideways, against 60 N with 0), hip -0.45, knee 0.9. Policies output offsets from it.
+- `legDof` 2 (no abd joint, the first policies' body) stays buildable: omit the field. `legDof` is part of the design's
+  canonical JSON only when it is 3, so a 2-DOF design keeps its hash. Which body is the default: `defaultDesign(3)` (the show).
+- `spec_version` stays 1: no observation slice changed meaning; slice sizes follow the joint count.
+`body.json` (written beside `creature.xml`) lists `legs`, `jointsPerLeg`, `jointNames`, `standPose`, `standHeight`, `mjcf_sha256`.
 
 ## Policy: `policy.json` (format `mlp-v1`)
 

@@ -20,6 +20,8 @@ export interface Design {
   name: string;
   torso: Torso;
   legs: LegPair[]; // each entry is mirrored left and right: 2 entries = quadruped
+  /** Joints per leg: 2 = hip pitch + knee (the first policies' body); 3 adds a hip abduction joint (roll about x) between torso and thigh. */
+  legDof?: 2 | 3;
 }
 
 export const LIMITS = {
@@ -30,10 +32,12 @@ export const LIMITS = {
   radius: [0.012, 0.04],
 } as const;
 
-export function defaultDesign(): Design {
+/** The default creature. `legDof` 3 (hip abduction, the show's body) unless 2 is asked for (the first policies' body). */
+export function defaultDesign(legDof: 2 | 3 = 3): Design {
   return {
     version: 1,
     name: 'quadruped',
+    ...(legDof === 3 ? { legDof: 3 as const } : {}),
     torso: { length: 0.5, width: 0.22, height: 0.1 },
     legs: [
       { x: 0.8, thigh: 0.2, shin: 0.2, radius: 0.02 },
@@ -45,9 +49,11 @@ export function defaultDesign(): Design {
 /** Starting points for the sketcher. Each is valid and stands unaided (tested). */
 export const PRESETS: Record<string, Design> = {
   quadruped: defaultDesign(),
-  'long legs': { version: 1, name: 'long-legs', torso: { length: 0.42, width: 0.2, height: 0.09 }, legs: [{ x: 0.75, thigh: 0.3, shin: 0.3, radius: 0.018 }, { x: -0.75, thigh: 0.3, shin: 0.3, radius: 0.018 }] },
-  stubby: { version: 1, name: 'stubby', torso: { length: 0.6, width: 0.3, height: 0.14 }, legs: [{ x: 0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }, { x: -0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }] },
-  hexapod: { version: 1, name: 'hexapod', torso: { length: 0.75, width: 0.2, height: 0.09 }, legs: [{ x: 0.8, thigh: 0.18, shin: 0.2, radius: 0.018 }, { x: 0, thigh: 0.18, shin: 0.2, radius: 0.018 }, { x: -0.8, thigh: 0.18, shin: 0.2, radius: 0.018 }] },
+  'long legs': { version: 1, name: 'long-legs', legDof: 3, torso: { length: 0.42, width: 0.2, height: 0.09 }, legs: [{ x: 0.75, thigh: 0.3, shin: 0.3, radius: 0.018 }, { x: -0.75, thigh: 0.3, shin: 0.3, radius: 0.018 }] },
+  stubby: { version: 1, name: 'stubby', legDof: 3, torso: { length: 0.6, width: 0.3, height: 0.14 }, legs: [{ x: 0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }, { x: -0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }] },
+  hexapod: { version: 1, name: 'hexapod', legDof: 3, torso: { length: 0.75, width: 0.2, height: 0.09 }, legs: [{ x: 0.8, thigh: 0.18, shin: 0.2, radius: 0.018 }, { x: 0, thigh: 0.18, shin: 0.2, radius: 0.018 }, { x: -0.8, thigh: 0.18, shin: 0.2, radius: 0.018 }] },
+  // The first trained policies' body (no abduction joint). Kept so those policies stay loadable.
+  'quadruped 2-DOF': defaultDesign(2),
 };
 
 const inRange = (v: number, [lo, hi]: readonly [number, number] | readonly number[]) =>
@@ -57,6 +63,7 @@ const inRange = (v: number, [lo, hi]: readonly [number, number] | readonly numbe
 export function validateDesign(d: Design): string[] {
   const errs: string[] = [];
   if (d.version !== 1) errs.push(`version must be 1, got ${d.version}`);
+  if (d.legDof !== undefined && d.legDof !== 2 && d.legDof !== 3) errs.push(`legDof must be 2 or 3, got ${d.legDof}`);
   for (const k of ['length', 'width', 'height'] as const) {
     if (!inRange(d.torso[k], LIMITS.torso[k])) errs.push(`torso.${k} ${d.torso[k]} outside ${LIMITS.torso[k]}`);
   }
@@ -81,9 +88,11 @@ export function assertDesign(d: Design): Design {
 
 /** Stable text for hashing: keys in a fixed order, numbers as written by JSON. */
 export function canonicalDesign(d: Design): string {
+  // legDof is written only when it is 3, so every 2-DOF design keeps the hash it had before the field existed.
   return JSON.stringify({
     version: d.version,
     name: d.name,
+    ...(d.legDof === 3 ? { legDof: 3 } : {}),
     torso: { length: d.torso.length, width: d.torso.width, height: d.torso.height },
     legs: d.legs.map((l) => ({ x: l.x, thigh: l.thigh, shin: l.shin, radius: l.radius })),
   });
