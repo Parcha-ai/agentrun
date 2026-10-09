@@ -140,7 +140,8 @@ export class ScenarioV2 {
       this.emit({ t: "stay.end", at: this.clock, id: "s2", endedBy: "switch" });
       this.stayBegin("your browser", "tab", { fromHost: "H100 GPU, Virginia", ms: 900 });
       this.emit({ t: "place", at: this.clock, place: { where: "home", host: "your browser" }, env: "tab" });
-      this.note("home", "Back in your browser in 0.9 s.");
+      // The pipe's own line for a switch, word for word (the clean view says it as "Came home to your browser in 0.9 s").
+      this.note("switch", "Switched to This tab in 900 ms (timed by the server).");
     });
     this.at(99, () => this.agent("Done. The brain it learned now runs in your browser, even offline."));
   }

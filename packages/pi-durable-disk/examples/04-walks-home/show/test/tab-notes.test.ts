@@ -114,7 +114,7 @@ test("a creature put back on its feet by a checkpoint, a getup and a recovery ar
   assert.deepEqual(stood.map((n) => [n.text, n.basis ?? null]), [["A new version of its brain arrived while it was lying down, and it stood back up.", null]]);
   const down = notesFromTabEvent({ ...base, type: "mode-changed", mode: "getup", t: 3.2, up: 0.12 }, 1, { plain: true, afterKick: true });
   const up = notesFromTabEvent({ ...base, type: "mode-changed", mode: "walk", t: 4.5, up: 0.95 }, 1, { plain: true, afterKick: true });
-  assert.equal(down[0]!.text, "It was down. It learned to get back up.");
+  assert.equal(down[0]!.text, "Knocked over. It learned to get back up.");
   assert.equal(up[0]!.text, "Back on its feet and walking again.");
   assert.ok([...down, ...up].every((n) => !/\d/.test(n.text)));
   assert.match(notesFromTabEvent({ ...base, type: "mode-changed", mode: "getup", t: 3.2, up: 0.12 }, 1)[0]!.text, /torso upright 0\.12/, "the debug wording is unchanged");
@@ -254,7 +254,15 @@ test("the getup and recovery captions are told only after a kick, and the debug 
   const up = { ...base, type: "mode-changed", mode: "walk", t: 4, up: 0.9 } as TabToShell;
   assert.deepEqual(notesFromTabEvent(down, 1, { plain: true }), [], "nobody kicked it");
   assert.deepEqual(notesFromTabEvent(up, 1, { plain: true }), []);
-  assert.equal(notesFromTabEvent(down, 1, { plain: true, afterKick: true })[0]!.text, "It was down. It learned to get back up.");
+  assert.equal(notesFromTabEvent(down, 1, { plain: true, afterKick: true })[0]!.text, "Knocked over. It learned to get back up.");
   assert.equal(notesFromTabEvent(up, 1, { plain: true, afterKick: true })[0]!.text, "Back on its feet and walking again.");
   assert.match(notesFromTabEvent(down, 1)[0]!.text, /torso upright/, "the debug log is unchanged");
+});
+
+// Cold view 6: the tip-over frame had no explanation, because the line waited its turn behind the caption holding the slot. It is told at once.
+test("the getup line is urgent: it takes the slot as soon as the creature goes down", () => {
+  const down = { ...base, type: "mode-changed", mode: "getup", t: 3, up: 0.1 } as TabToShell;
+  assert.equal(notesFromTabEvent(down, 1, { plain: true, afterKick: true })[0]!.urgent, true);
+  const up = { ...base, type: "mode-changed", mode: "walk", t: 4, up: 0.9 } as TabToShell;
+  assert.notEqual(notesFromTabEvent(up, 1, { plain: true, afterKick: true })[0]!.urgent, true, "getting back up waits its turn");
 });

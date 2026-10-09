@@ -85,9 +85,28 @@ try {
   expect("the tab is the clean one", /clean=1/.test(layout.tabSrc ?? ""), layout.tabSrc);
   const hint = await read(`getComputedStyle(document.getElementById("chathint")).display`);
   expect("before anyone speaks the chat says what to do", hint !== "none", hint);
-  await fromTab({ type: "draw-started" });
+  // A real stroke on the tab's own sketcher (mouse events through Chrome, on the real bundle): the tab itself says "draw-started", the check does not.
+  // The sketcher is a handle editor: the stroke presses the nose handle, where the tab's own geometry puts it, and drags it in.
+  const grab = await read(`(() => {
+    const frame = document.getElementById("tab");
+    const g = frame.contentWindow.__walks && frame.contentWindow.__walks.sketchGeometry && frame.contentWindow.__walks.sketchGeometry();
+    if (!g) return null;
+    const f = frame.getBoundingClientRect();
+    const nose = g.handles.find((h) => h.kind === "length");
+    return nose ? { x: f.x + g.rect.left + nose.x, y: f.y + g.rect.top + nose.y, canvas: g.rect.width } : null;
+  })()`);
+  expect("the tab shows its sketcher with a handle to draw with", grab !== null && grab.canvas > 50, grab);
+  if (grab) {
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: grab.x, y: grab.y });
+    await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", x: grab.x, y: grab.y, button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 6; i++) {
+      await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: grab.x - 8 * i, y: grab.y, button: "left", buttons: 1 });
+      await sleep(60);
+    }
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: grab.x - 48, y: grab.y, button: "left", buttons: 0, clickCount: 1 });
+  }
   await sleep(500);
-  expect("once the tab says a stroke was drawn the prompt to draw goes away", (await read(`getComputedStyle(document.getElementById("chathint")).display`)) === "none");
+  expect("once the tab itself says a stroke was drawn the prompt to draw goes away", (await read(`getComputedStyle(document.getElementById("chathint")).display`)) === "none");
   expect("the badge says the agent is in the browser", (await read(`document.querySelector("#badge .txt").textContent`)) === "Your agent is in your browser");
   await shot("1-draw");
 
@@ -139,6 +158,14 @@ try {
   expect("the badge came home", home.text === "Your agent is back in your browser" && home.tone === "tab", home);
   const homeCaps = await watchCaptions(22_000);
   expect("on the way back one caption says why it came home", homeCaps.has("Done training. The agent came back to your browser, and so did what it learned."), [...homeCaps.keys()]);
+  // Cold view 6: the pipe's "Switched to This tab in 900 ms (timed by the server)" is said as what happened, in seconds, in the clean view.
+  await seek(94);
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 96, paused: true }) });
+  const wayHome = await watchCaptions(16_000);
+  // (Whether this line is on screen at all depends on what else is queued at that moment: it is the lowest-ranked of the way home, and "Done training" says the
+  // same thing first. What the check holds is that when the pipe's line is shown it is never in the server's words; the wording itself is unit-tested.)
+  expect("a switch time, if shown, is in plain seconds", [...wayHome.keys()].every((t) => !/Came home/.test(t) || /^Came home to your browser in 0\.9 s$/.test(t)), [...wayHome.keys()]);
+  expect("and the server-timed wording (\"Switched to This tab in 900 ms\") is not shown in the clean view", [...homeCaps.keys(), ...wayHome.keys()].every((t) => !/Switched to|This tab/.test(t)), [...wayHome.keys()]);
   expect("no caption in the clean view draws a tag pill (the viewer read MEASURED as a staged label)", pillsSeen.length === 0, pillsSeen);
   expect("the cloud-disk sentence is gone once the agent is home", (await read(`document.querySelector("#badge .memory").hidden`)) === true);
   expect("no caption uses the words a viewer could not follow", [...homeCaps.keys(), ...first.keys()].every((t) => !/checkpoint|policy|getup|combined/i.test(t)), [...homeCaps.keys()]);
@@ -155,10 +182,18 @@ try {
   await fromTab({ type: "mode-changed", mode: "getup", t: 3, up: 0.1 });
   const noKick = await watchCaptions(7000);
   expect("with nobody having kicked it, no getup caption", ![...noKick.keys()].some((t) => /learned to get back up/.test(t)), [...noKick.keys()]);
+  // Cold view 6: the tip-over frame had no explanation, because the getup line waited behind the caption holding the slot. A version caption is on
+  // screen (inside its 4 s hold) when the kick lands; the getup line takes the slot within a second and a half.
+  await fromTab({ type: "policy-arrived", name: "train/gpu/policy.json", via: "watch", message: "", host: null, training_seconds: null, mjcf_sha256: "x", switched_body: null, arrival_to_installed_ms: 12, bytes: 1, kind: "checkpoint", checkpoint_n: 20, steps: null, wall_s: 300, reported_walk_10s_m: 2.1 });
+  await sleep(600);
+  const holding = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+  expect("a caption is holding the slot when the kick lands", holding !== "" && !/Knocked over/.test(holding), holding);
   await fromTab({ type: "kicked", force_n: 400, t: 5 });
   await fromTab({ type: "mode-changed", mode: "getup", t: 5.4, up: 0.1 });
+  const knocked = await captionLike(/Knocked over/, 1500);
+  expect("at the kick the getup line is on screen within 1.5 s, though another caption was holding the slot", /^Knocked over\. It learned to get back up\.$/.test(knocked), knocked);
   const afterKick = await watchCaptions(9000);
-  expect("after a kick the getup caption is told", [...afterKick.keys()].some((t) => /It was down\. It learned to get back up\./.test(t)), [...afterKick.keys()]);
+  expect("after a kick the getup caption is told", [...afterKick.keys()].some((t) => /Knocked over\. It learned to get back up\./.test(t)) || /Knocked over/.test(knocked), [...afterKick.keys()]);
 
   // The take cuts the network once the story has settled: let the captions run out first.
   for (let t = 0; t < 40_000 && !(await read(`document.getElementById("vcaption").hidden`)); t += 500) await sleep(500);
@@ -180,10 +215,13 @@ try {
   const off = await read(`({ lost: !document.getElementById("lost").hidden, online: navigator.onLine, pill: document.querySelector("#badge .offline") !== null })`);
   expect("the browser reports it is offline", off.online === false, off);
   expect("ONE banner says it: Wi-Fi off, running entirely in the browser", banner?.text === "Wi-Fi off - running entirely in your browser", banner);
-  expect("with the page's own attempt to reach the cloud disk, timed, and failed", /^Cloud disk: no answer \((failed in|tried \d+ times, last failed in) \d+ ms\)$/.test(banner?.proof ?? ""), banner);
+  expect("with the page's own attempt to reach the cloud disk, counted, and failed (no milliseconds)", /^Cloud: unreachable \(tried (once|\d+ times)\)$/.test(banner?.proof ?? ""), banner);
   expect("the separate 'Network off' pill is gone", off.pill === false, off);
   expect("the stage does not show its own failed feed as an error", off.lost === false, off);
   await shot("4-offline");
+  // The cut is the news: what the viewer reads at once is about the cut, never a switch time from before it.
+  const afterCut = await captionLike(/keeps walking/, 6000);
+  expect("right after the cut the caption says it keeps walking", /It keeps walking: the brain it learned runs right here\./.test(afterCut), afterCut);
   if (tabReportsWalk) {
     // The tab reports its own walk (walk-meter): the number is measured after the cut, from its real simulation.
     const real = await captionLike(/Still walking offline: \d+\.\d m in 10 s/, 40_000);
@@ -211,8 +249,21 @@ try {
     if (x.m === "contradiction") contradiction = x;
     else await sleep(300);
   }
-  expect("if the attempt gets an answer the page does not say it is offline: it says the cloud answered", contradiction !== null && contradiction.l === "Wi-Fi: on" && /^Cloud disk: answered in \d+ ms$/.test(contradiction.p), contradiction);
+  expect("if the attempt gets an answer the page does not say it is offline: it says the cloud answered", contradiction !== null && contradiction.l === "Wi-Fi: on" && /^Cloud: answered in \d+ ms$/.test(contradiction.p), contradiction);
   await tab.eval(`window.dispatchEvent(new Event("online")); 0`);
+
+  // Cold view 6: a switch caption still waiting when the network is cut is dropped, not shown beside "offline". Home is reached (95.9 s) and the
+  // network cut half a second later, while the captions of the way home are still queued.
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 94, paused: true }) });
+  await sleep(2500);
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 96, paused: true }) });
+  await sleep(500);
+  await tab.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  const cutCaps = await watchCaptions(6000);
+  expect("after a cut no caption is a switch time from before it", [...cutCaps.keys()].every((t) => !/Came home|Switched to|Moved to/.test(t)), [...cutCaps.keys()]);
+  expect("the caption after the cut is about the cut", [...cutCaps.keys()].some((t) => /keeps walking|Still walking offline/.test(t)), [...cutCaps.keys()]);
+  await tab.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await sleep(1500);
 
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|ERR_INTERNET_DISCONNECTED|net::/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);

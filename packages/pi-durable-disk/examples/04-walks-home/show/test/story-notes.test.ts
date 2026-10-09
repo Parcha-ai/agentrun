@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { emptyStory, simulationNote, storyNotes, visibleTag } from "../page/story-notes.ts";
+import { emptyStory, plainSwitch, simulationNote, storyNotes, visibleTag } from "../page/story-notes.ts";
 import { emptyState } from "../reduce.ts";
 import type { Place } from "../types.ts";
 
@@ -92,4 +92,17 @@ test("whether the agent went away is read from where it is and from the run's ow
   assert.equal(wentAway({ ...at(home), stays: [stay("your browser", "tab"), stay("H100 GPU", "gpu"), stay("your browser", "tab")] }), true, "home again, and the record shows a machine");
   assert.equal(wentAway({ ...at(home), stays: [stay("your browser", "tab")] }), false, "it never left");
   assert.equal(wentAway(at(home)), false);
+});
+
+// Cold view 6: "Switched to This tab in 1138 ms (timed by the server)" read as a contradiction beside "offline". In the clean view it is said as what happened.
+test("the pipe's switch line is said in plain words in the clean view: seconds, and home is your browser", () => {
+  const n = (text: string) => ({ at: 1, kind: "switch" as const, text, measured: true });
+  assert.equal(plainSwitch(n("Switched to This tab in 1138 ms (timed by the server).")).text, "Came home to your browser in 1.1 s");
+  assert.equal(plainSwitch(n("Switched to your browser in 900 ms (timed by the server).")).text, "Came home to your browser in 0.9 s");
+  assert.equal(plainSwitch(n("Switched to H100 GPU in 822 ms (timed by the server).")).text, "Moved to the H100 GPU in 0.8 s");
+  assert.equal(plainSwitch(n("Switched to This tab in 1138 ms (timed by the server).")).measured, true, "it is still the server's measurement");
+  const other = { at: 1, kind: "home" as const, text: "Back in your browser in 0.9 s." };
+  assert.equal(plainSwitch(other), other, "any other note is left alone");
+  const refused = n("Switch to H100 GPU refused: no.");
+  assert.equal(plainSwitch(refused), refused);
 });

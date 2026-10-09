@@ -89,7 +89,7 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
       return [note("A new version of its brain arrived while it was lying down, and it stood back up.")];
     case "mode-changed": {
       // Only after a kick: at home the untrained creature is simply lying down when the brain lands and gets stood up, which is not "it learned to get back up".
-      if (plain) return opts.afterKick ? [note(m.mode === "getup" ? "It was down. It learned to get back up." : "Back on its feet and walking again.")] : [];
+      if (plain) return opts.afterKick ? [m.mode === "getup" ? note("Knocked over. It learned to get back up.", { urgent: true, rank: 3 }) : note("Back on its feet and walking again.")] : [];
       // The getup network driving or handing back: simulated time and uprightness, the tab's own arithmetic, never wall time.
       const when = `${m.t.toFixed(1)} s of simulated time`;
       return [
