@@ -3,6 +3,10 @@ import { $, clock, esc, usd } from "./dom.ts";
 import { badgeFor, trackFor } from "./badge.ts";
 import { CaptionDesk, captionsFor } from "./caption.ts";
 import { syncChat } from "./chat.ts";
+import { wifiLabel } from "./wifi.ts";
+import { learningStartedNote, setupCaption } from "./setup.ts";
+import { simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
+import { TakeMemory } from "./take-memory.ts";
 import { cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { bandOf, type Band } from "./lessons.ts";
 import { DesktopView } from "./desktop.ts";
@@ -26,7 +30,8 @@ const desktop = new DesktopView($("desktop"));
 const grid = new Grid($("grid"), $("strip"), (id) => void kill(id));
 const visited = new Set<string>();
 let lastPlacement = "";
-let policySentFor = "";
+/** What the page remembers about the take on screen, all of it resetting together when the feed starts over (page/take-memory.ts). */
+const memory = new TakeMemory();
 
 // The tab app names its placements tab | daytona | gpu | vm; a feed's environments are told apart by their kind, not their id.
 const TAB_KIND: Record<HostKind, TabKind> = { tab: "tab", sandbox: "daytona", vm: "vm", gpu: "gpu", pipe: "tab" };
@@ -86,32 +91,62 @@ async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "st
 
 // What the tab reports about a policy coming home, as narration on the page's own clock, next to the feed's notes. These are
 // real even when the feed is the scripted one, so they carry their own origin and basis (see tab-notes.ts).
-const tabNotes: Note[] = [];
 /** The feed's notes and the tab's, in time order, as one state for captions and the narration column. */
 function withTabNotes(state: ShowState): ShowState {
-  return tabNotes.length === 0 ? state : { ...state, notes: [...state.notes, ...tabNotes].sort((a, b) => a.at - b.at) };
+  return memory.notes.length === 0 ? state : { ...state, notes: [...state.notes, ...memory.notes].sort((a, b) => a.at - b.at) };
 }
 
 // What kind of install each checkpoint was, from its arrival, so the walk reported for it is worded for what it was.
-const installKind = new Map<number, "checkpoint" | "final">();
-let lastInstallKind: "checkpoint" | "final" | undefined;
 /** The band each checkpoint was in, from the distance its file reported, so its walk is captioned only when it is walking. */
-const bandOfInstall = new Map<number, Band | null>();
+
+// The stage's own captions (page/story-notes.ts): said once each, so a retake starts them over.
+let simulationSaid = false;
+/** The setups whose end has been said (by their start time): the counter stops and one line says how long it took. */
+const setupNoted = memory.setupNoted;
+/** A setup is told apart by its start time within one generation of the feed: a timeline that starts over reuses start times. */
+const setupKey = (startedAt: number) => `${feed.generation}|${startedAt}`;
+function endSetup(endedAt: number): void {
+  const s = feed.state.setup;
+  if (!s || setupNoted.has(setupKey(s.startedAt))) return;
+  setupNoted.add(setupKey(s.startedAt));
+  addNotes(learningStartedNote(s, endedAt, feed.state.source, endedAt));
+}
+
+/**
+ * Notes for the take on screen, added through the take's memory. The memory syncs to the feed's generation first, so a note for a take that has just
+ * started over (a setup that ended the moment after a reconnect, a trained brain landing between two frames) is kept, and what the old take left
+ * behind is cleared. A take that starts over says its opening caption again.
+ */
+function addNotes(...notes: Note[]): void {
+  const restarted = memory.add(feed.generation, ...notes);
+  if (restarted && !debug && bridge.ready && simulationSaid) memory.add(feed.generation, simulationNote(feed.captionNow()));
+}
+/** Brings the take's memory up to the feed's generation (no notes to add). Called at the start of every feed and tab callback and each frame. */
+const syncTake = (): void => addNotes();
 
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
-  if (m.type === "policy-arrived" && m.kind) {
-    lastInstallKind = m.kind;
-    if (m.checkpoint_n !== undefined) installKind.set(m.checkpoint_n, m.kind);
+  syncTake();
+  // Everything the creature does is a physics simulation: said once, in words, instead of a SIMULATED pill on every number.
+  if (m.type === "ready" && !debug && !simulationSaid) {
+    simulationSaid = true;
+    addNotes(simulationNote(feed.captionNow()));
   }
-  const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? installKind.get(m.checkpoint_n) : lastInstallKind) : undefined;
+  if (m.type === "policy-arrived" && m.kind) {
+    memory.lastInstallKind = m.kind;
+    if (m.checkpoint_n !== undefined) memory.installKind.set(m.checkpoint_n, m.kind);
+  }
+  // A trained brain installed in the tab is the evidence "Done training" rests on.
+  if (m.type === "policy-arrived" && m.kind === "final") memory.story.trained = true;
+  // The first checkpoint to reach the tab is where learning starts: the setup counter stops there.
+  if (!debug && (m.type === "checkpoint-installed" || (m.type === "policy-arrived" && m.kind === "checkpoint"))) endSetup(feed.captionNow());
+  const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? memory.installKind.get(m.checkpoint_n) : memory.lastInstallKind) : undefined;
   if (m.type === "policy-arrived" && m.kind === "checkpoint") {
     const band = bandOf(m.reported_walk_10s_m);
-    if (m.checkpoint_n !== undefined) bandOfInstall.set(m.checkpoint_n, band);
+    if (m.checkpoint_n !== undefined) memory.bandOfInstall.set(m.checkpoint_n, band);
   }
-  const band = m.type === "policy-walked" && m.checkpoint_n !== undefined ? bandOfInstall.get(m.checkpoint_n) : undefined;
-  tabNotes.push(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), ...(band !== undefined ? { band } : {}) }));
-  if (tabNotes.length > 60) tabNotes.splice(0, tabNotes.length - 60);
+  const band = m.type === "policy-walked" && m.checkpoint_n !== undefined ? memory.bandOfInstall.get(m.checkpoint_n) : undefined;
+  addNotes(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), ...(band !== undefined ? { band } : {}) }));
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
     .map(([k, v]) => `${k}=${typeof v === "number" ? Math.round(v as number) : String(v).slice(0, 14)}`)
@@ -138,20 +173,20 @@ bridge.onReady(() => {
 });
 
 /** The winner's policy goes to the tab once, when the run is home. D2 writes it as work/home/policy.json (mlp-v1 JSON); the stage serves it at /policy/home.json from POLICY_DIR. */
-let wasAway = false;
 function maybeSendPolicy(state: ShowState): void {
-  if (state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes") wasAway = true;
+  // The run's own record counts too: a page that connects when the run is already home has seen nothing of the trip.
+  if (wentAway(state)) memory.wasAway = true;
   // The v2 rehearsal has no pipe and no disk to carry a trained policy home, so the stage hands the tab its own file once the run is back.
   // A live take never does this: its policy arrives on the disk, and the tab's own watcher installs it.
-  if (!debug && state.source === "scripted" && state.place.where === "home" && wasAway && bridge.ready && policySentFor !== "rehearsal") {
-    policySentFor = "rehearsal";
+  if (!debug && state.source === "scripted" && state.place.where === "home" && memory.wasAway && bridge.ready && memory.policyRequested !== "rehearsal") {
+    memory.policyRequested = "rehearsal";
     bridge.send({ type: "load-policy", url: "/policy/home.json" });
     return;
   }
   if (state.place.where !== "home" || !bridge.ready) return;
   const winner = Object.values(state.universes).find((u) => u.status === "winner");
-  if (!winner || policySentFor === winner.id) return;
-  policySentFor = winner.id;
+  if (!winner || memory.policyRequested === winner.id) return;
+  memory.policyRequested = winner.id;
   bridge.send({ type: "load-policy", url: "/policy/home.json" });
 }
 
@@ -281,27 +316,46 @@ if (params.get("operator") === "1") operator.hidden = false;
 // in the badge and one caption, and does not show its own failed fetches as errors.
 let offline = !navigator.onLine;
 function pageNote(text: string): void {
-  tabNotes.push({ at: feed.captionNow(), kind: "home", text, origin: "tab" });
+  addNotes({ at: feed.captionNow(), kind: "home", text, origin: "tab", rank: 2 });
+}
+// The Wi-Fi control: a click is the user's act and reads off at once; the browser's own offline event is the truth it then follows.
+let wifiClickedAt: number | null = null;
+$("wifi").addEventListener("click", () => {
+  wifiClickedAt = performance.now();
+  renderWifi();
+});
+function renderWifi(): void {
+  const label = wifiLabel(!offline, wifiClickedAt, performance.now());
+  const el = $("wifi");
+  if (el.textContent !== label) el.textContent = label;
+  el.classList.toggle("off", label === "Wi-Fi: off");
 }
 addEventListener("offline", () => {
   offline = true;
-  pageNote("Network off. The walking brain it learned runs in your tab, even offline.");
+  pageNote("Network off. It keeps walking: the brain it learned runs right here.");
 });
 addEventListener("online", () => {
   offline = false;
+  wifiClickedAt = null;
   pageNote("Network back on.");
 });
 
 const desk = new CaptionDesk();
 let shownV2 = "";
 function renderCaptionV2(state: ShowState): void {
-  const c = desk.update(withTabNotes(state), feed.captionNow());
+  const now = feed.captionNow();
+  const counting = !!state.setup && state.setup.endedAt === null && !setupNoted.has(setupKey(state.setup.startedAt));
+  const spoken = desk.update(withTabNotes(state), now, { yieldSlot: counting });
+  // While the agent sets up the training program and nothing else is being said, the slot counts the seconds (measured on a live feed).
+  const counter = !spoken && counting ? setupCaption(state, now) : null;
+  const c = spoken ?? (counter ? { text: counter.text, tag: counter.tag, at: state.setup!.startedAt + Math.floor((now - state.setup!.startedAt) / 1000) * 1000 } : null);
   const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
   if (key === shownV2) return;
   shownV2 = key;
   const el = $("vcaption");
   el.hidden = c === null;
-  el.innerHTML = c ? `${c.tag ? `<span class="tag ${c.tag}">${c.tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
+  const tag = c ? visibleTag(c.tag, debug) : null;
+  el.innerHTML = c ? `${tag ? `<span class="tag ${tag}">${tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
 }
 
 let shownDecision = "";
@@ -392,8 +446,10 @@ function frame(): void {
   renderOperator(state);
   renderDecision(state);
   if (!debug) {
+    addNotes(...storyNotes(state, memory.story, feed.captionNow()));
     // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
     renderBadge(state);
+    renderWifi();
     syncChat(chatLog, state.chat);
     $("chat").classList.toggle("talked", state.chat.length > 0);
     renderCaptionV2(state);
@@ -409,11 +465,14 @@ function frame(): void {
 }
 
 feed.onChange((event: ShowEvent | null) => {
+  syncTake();
   if (event?.t === "place" || event === null) {
     sendPlacement(feed.state);
     maybeSendPolicy(feed.state);
   }
   if (event?.t === "universe" && event.patch.status === "winner") maybeSendPolicy(feed.state);
+  // A feed that says when learning began (the rehearsal) ends the setup itself.
+  if (!debug && event?.t === "setup" && event.phase === "end") endSetup(event.at);
 });
 
 await feed.connect().catch((e) => {

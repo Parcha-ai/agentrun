@@ -25,3 +25,12 @@ test("a reset starts the clock over: a new run's time is its own", () => {
   at(feed, 2_000);
   assert.ok(feed.captionNow() < 3_000);
 });
+
+test("each time the feed starts over it is a new generation, so what the page remembered about the old timeline is not mistaken for the new one", () => {
+  const feed = new Feed();
+  const first = feed.generation;
+  feed.resetClock();
+  assert.equal(feed.generation, first + 1);
+  feed.resetClock();
+  assert.equal(feed.generation, first + 2);
+});

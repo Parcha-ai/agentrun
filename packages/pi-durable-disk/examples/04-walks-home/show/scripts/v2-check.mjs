@@ -27,11 +27,24 @@ const seek = async (seconds) => {
 };
 let tab;
 let debugTab;
+let lateTab;
 try {
   await waitForStage(port, stage);
+  // The take starts at its start: the rehearsal is held at 0 until the page is open (a slow Chrome would otherwise let it run on).
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
   tab = await openTab(base, { width: 1600, height: 900 });
   await sleep(2500);
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
+  /** Every caption that shows during `ms`, with the tags it wore. */
+  const watchCaptions = async (ms) => {
+    const seen = new Map();
+    for (let t = 0; t < ms; t += 300) {
+      const c = await read(`document.getElementById("vcaption").hidden ? null : { text: document.querySelector("#vcaption .txt").textContent, tags: [...document.querySelectorAll("#vcaption .tag")].map((e) => e.textContent) }`);
+      if (c && !seen.has(c.text)) seen.set(c.text, c.tags);
+      await sleep(300);
+    }
+    return seen;
+  };
   /** The captions come one at a time, each held at least 4 s, so one that is due may wait behind another: poll for it. */
   const captionLike = async (re, ms = 20_000) => {
     let text = "";
@@ -44,6 +57,9 @@ try {
   };
   const shot = async (name) => shots && (await tab.screenshot(join(shots, `${name}.png`)));
 
+  // The first caption of the take says what the creature is: a physics simulation in the browser, once, in words.
+  const sim = await captionLike(/physics simulation running in your browser/, 15_000);
+  expect("the take opens by saying the creature is a physics simulation running in the browser", /physics simulation running in your browser/.test(sim), sim);
   // What is on screen by default, and what is not.
   await seek(1);
   const layout = await read(`(() => {
@@ -61,6 +77,7 @@ try {
   expect("the badge, the chat, the chat input and the creature are on screen", ["#badge", "#chat", "#tab", "#chatin"].every((s) => layout.visible.includes(s)), layout.visible);
   expect("the timeline, log, cost meter, multiverse, desktop, buttons and operator panel are not", layout.hidden.length === 11, layout.hidden);
   expect("the creature has most of the width (the chat about a third)", layout.creatureShare > 0.6 && layout.creatureShare < 0.72, layout.creatureShare);
+  expect("there is no permanent line about the home: it is said once, at the first move", (await read(`document.querySelector("#badge .home") === null`)) === true);
   expect("the tab is the clean one", /clean=1/.test(layout.tabSrc ?? ""), layout.tabSrc);
   const hint = await read(`getComputedStyle(document.getElementById("chathint")).display`);
   expect("before anyone speaks the chat says what to do", hint !== "none", hint);
@@ -72,6 +89,15 @@ try {
   const spoken = await read(`[...document.querySelectorAll("#chatlog .turn")].map((t) => [t.classList.contains("user") ? "user" : "agent", t.querySelector(".said").textContent])`);
   expect("the user's line is in the chat", JSON.stringify(spoken) === JSON.stringify([["user", "teach it to walk"]]), spoken);
   expect("the hint is gone once someone speaks", (await read(`getComputedStyle(document.getElementById("chathint")).display`)) === "none");
+  // (Typed right after a seek: the rehearsal is paused, so its script clock stands still while the page's runs on, and a turn stamped with the
+  // script's clock a long time after a seek would hold the page's caption clock back until wall time caught up. A live feed is stamped on a wall clock.)
+  // A line typed in the chat goes to the feed as the user's turn.
+  await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "hello agent"; document.getElementById("chatform").requestSubmit(); })()`);
+  await sleep(1200);
+  const typed = await read(`[...document.querySelectorAll("#chatlog .turn.user .said")].map((e) => e.textContent)`);
+  expect("a line typed in the chat becomes the user's turn", typed.includes("hello agent"), typed);
+  expect("the input is cleared after it is taken", (await read(`document.getElementById("chatin").value`)) === "");
+
   await seek(14);
   const card = await read(`(() => { const d = document.getElementById("decision"); return { hidden: d.hidden, title: d.querySelector("h3")?.textContent, rows: [...d.querySelectorAll(".opt")].map((r) => [r.querySelector(".name").textContent, r.querySelector(".pct").textContent, r.classList.contains("chosen")]), foot: d.querySelector(".foot")?.textContent, tag: d.querySelector(".foot .tag")?.textContent, badge: document.querySelector("#badge .txt").textContent, barPx: [...d.querySelectorAll(".bar i")].map((i) => Math.round(i.getBoundingClientRect().width)) }; })()`);
   expect("a decision card asks where this should run, before the badge moves", card.hidden === false && card.title === "Where should this run?" && card.badge === "Agent: running in your browser", card);
@@ -81,27 +107,47 @@ try {
   await shot("1b-decision");
   await seek(30);
   expect("the card is gone a few seconds after", (await read(`document.getElementById("decision").hidden`)) === true);
+  await seek(22);
+  const counting = await captionLike(/Setting up the training program on the GPU\.\.\. \d+ s/, 25_000);
+  expect("while the agent sets up the training program the caption counts seconds, tagged scripted in a rehearsal", /Setting up the training program on the GPU\.\.\. \d+ s/.test(counting), counting);
+  expect("the counter's tag is scripted", (await read(`document.querySelector("#vcaption .tag")?.textContent`)) === "scripted");
+  await seek(30);
+  await sleep(6000);
+  expect("once learning has begun the counter is gone", !/Setting up/.test(await read(`document.getElementById("vcaption").textContent`)));
   await seek(18);
-  const away = await read(`({ text: document.querySelector("#badge .txt").textContent, tone: document.getElementById("badge").dataset.tone, turns: document.querySelectorAll("#chatlog .turn").length, cap: document.getElementById("vcaption").textContent, hidden: document.getElementById("vcaption").hidden })`);
+  const away = await read(`({ text: document.querySelector("#badge .txt").textContent, tone: document.getElementById("badge").dataset.tone, turns: document.querySelectorAll("#chatlog .turn").length })`);
   expect("the badge moved to the GPU", away.text === "Agent: running on H100 GPU, Virginia" && away.tone === "cloud", away);
   expect("the agent's line is in the chat after the user's", away.turns === 2, away.turns);
-  expect("one caption is up, tagged scripted because the feed is", !away.hidden && /^scripted/.test(away.cap), away.cap);
+  const first = await watchCaptions(14_000);
+  const memory = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
+  expect("at the first move one caption says why it can change machines: its memory is on a cloud disk", first.has(memory), [...first.keys()]);
+  expect("and that caption wears no tag, since it says nothing countable", (first.get(memory) ?? ["x"]).length === 0, first.get(memory));
+  expect("the measured-looking switch time is there too, tagged scripted because the feed is", [...first].some(([t, tags]) => /Moved to the H100 GPU/.test(t) && tags.includes("scripted")), [...first]);
   await shot("2-away");
   await seek(100);
   const home = await read(`({ text: document.querySelector("#badge .txt").textContent, tone: document.getElementById("badge").dataset.tone })`);
   expect("the badge came home", home.text === "Agent: running in your browser" && home.tone === "tab", home);
+  const homeCaps = await watchCaptions(22_000);
+  expect("on the way back one caption says why it came home", homeCaps.has("Done training. The agent came back to your browser, and so did what it learned."), [...homeCaps.keys()]);
+  expect("no caption in the v2 view wears a SIMULATED pill", [...homeCaps.values()].every((tags) => !tags.includes("simulated")), [...homeCaps]);
+  expect("no caption uses the words a viewer could not follow", [...homeCaps.keys(), ...first.keys()].every((t) => !/checkpoint|policy|getup|combined/i.test(t)), [...homeCaps.keys()]);
+  // D4 rehearses and then records: the second take in the same page must end the same way as the first. The stage's memory of the first
+  // (the brain it asked the tab to load, whether the agent went away) must not leak into the second, or its ending never shows.
+  await seek(18);
+  await sleep(3000);
+  await seek(100);
+  const secondTake = await watchCaptions(25_000);
+  expect("a second take in the same page ends the same way: why it came home, once a trained brain arrives", secondTake.has("Done training. The agent came back to your browser, and so did what it learned."), [...secondTake.keys()]);
   await shot("3-home");
-
-  // A line typed in the chat goes to the feed as the user's turn.
-  await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "hello agent"; document.getElementById("chatform").requestSubmit(); })()`);
-  await sleep(1200);
-  const typed = await read(`[...document.querySelectorAll("#chatlog .turn.user .said")].map((e) => e.textContent)`);
-  expect("a line typed in the chat becomes the user's turn", typed.includes("hello agent"), typed);
-  expect("the input is cleared after it is taken", (await read(`document.getElementById("chatin").value`)) === "");
 
   // The take cuts the Wi-Fi once the story has settled: let the captions from the policy coming home run out first.
   for (let t = 0; t < 40_000 && !(await read(`document.getElementById("vcaption").hidden`)); t += 500) await sleep(500);
   // Wi-Fi off: the badge says so, one caption, and no "feed lost" banner (the stage's own fetches fail by design).
+  const wifi = await read(`(() => { const r = document.getElementById("wifi").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: document.getElementById("wifi").textContent }; })()`);
+  expect("a Wi-Fi control is on screen and reads on", wifi.label === "Wi-Fi: on" && wifi.x > 0, wifi);
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await tab.send("Input.dispatchMouseEvent", { type, x: wifi.x, y: wifi.y, button: "left", clickCount: 1 });
+  await sleep(600);
+  expect("clicking it reads off at once, as the user's act", (await read(`document.getElementById("wifi").textContent`)) === "Wi-Fi: off");
   await tab.send("Network.enable");
   await tab.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await sleep(2500);
@@ -111,17 +157,36 @@ try {
   expect("the browser reports it is offline", off.online === false, off);
   expect("the badge says the network is off", off.pill === true, off);
   expect("the stage does not show its own failed feed as an error", off.lost === false, off);
-  expect("the caption says the learned brain runs in the browser even offline", /Network off.*learned runs in your tab, even offline/.test(off.cap), off.cap);
+  expect("the offline caption says it keeps walking, on the brain it learned", /Network off\. It keeps walking: the brain it learned runs right here\./.test(off.cap), off.cap);
   await shot("4-offline");
   await tab.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   const onCap = await captionLike(/Network back on/);
   const on = await read(`({ pill: !document.querySelector("#badge .offline").hidden })`);
   on.cap = onCap;
+  expect("back online the control reads on again", (await read(`document.getElementById("wifi").textContent`)) === "Wi-Fi: on");
   expect("back online: the pill is gone and the caption says so", on.pill === false && /back on/.test(on.cap), on);
 
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l) && !/Failed to load resource|ERR_INTERNET_DISCONNECTED|net::/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
 
+  // A page that connects when the run is ALREADY home (a reload after the agent came back, or a seek the page never watched): its own history says
+  // nothing about the trip, so the run's record of where it stayed is the evidence the agent went, and it must still ask the tab for the trained brain.
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 100, paused: true }) });
+  // The listener is registered before the first navigation, so it is in the page that stays; and nothing is read until the stage has drawn.
+  const collect = `window.__arr = []; addEventListener("message", (e) => { const d = e.data; if (d && d.ns === "walks-home" && d.type === "policy-arrived") window.__arr.push({ via: d.via, kind: d.kind }); });`;
+  lateTab = await openTab(base, { width: 1600, height: 900, init: collect });
+  for (let t = 0; t < 30_000 && !(await lateTab.eval(`!!document.getElementById("vcaption")`).catch(() => false)); t += 250) await sleep(250);
+  let lateCap = "";
+  for (let t = 0; t < 30_000; t += 500) {
+    lateCap = await lateTab.eval(`document.getElementById("vcaption")?.hidden === false ? document.getElementById("vcaption").textContent : ""`).catch(() => "");
+    if (/Done training/.test(lateCap)) break;
+    await sleep(500);
+  }
+  const lateArrivals = JSON.parse(await lateTab.eval(`JSON.stringify(__arr)`));
+  expect("a page opened on a run that is already home asks the tab for the trained brain", lateArrivals.some((a) => a.via === "message" && a.kind === "final"), lateArrivals);
+  expect("and says why the agent came home, once that brain is in", /Done training\. The agent came back to your browser, and so did what it learned\./.test(lateCap), lateCap);
+  await lateTab.close();
+  lateTab = undefined;
   // ?debug=1 is the old stage.
   debugTab = await openTab(withDebug(base), { width: 1600, height: 900 });
   await sleep(2500);
@@ -131,6 +196,7 @@ try {
 } finally {
   await tab?.close();
   await debugTab?.close();
+  await lateTab?.close();
   stage.kill("SIGTERM");
 }
 console.log(failed === 0 ? "\nall v2 checks passed" : `\n${failed} v2 check(s) FAILED`);
