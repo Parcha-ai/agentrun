@@ -13,6 +13,8 @@ import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { fromBase64, untag, type Environment, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
+/** The largest workspace this page restores (a host's default is 1 GiB). */
+const TAB_RESTORE_LIMIT_BYTES = 256 * 1024 * 1024;
 const WASMER_SDK = "/wasmer/dist/index.js";
 const COMPUTER = "/pkgs/edgejs.webc";
 
@@ -456,6 +458,8 @@ async function connect(mode: "write" | "view", takeover = false, switchId?: stri
     ...(switchId ? { switchId } : {}),
     onFrame,
     onLost: (code, message) => void lost(client, code, message),
+    // The page holds the whole restored workspace in memory, then in the sandbox: a smaller bound than a host's.
+    restoreLimitBytes: TAB_RESTORE_LIMIT_BYTES,
   });
   state.client = client;
   try {

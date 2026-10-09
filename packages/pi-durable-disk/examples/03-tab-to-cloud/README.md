@@ -29,10 +29,16 @@ remote host (no disk client: the tab's runtime in Node, `remote-host.ts`, throug
 - **Workspace write-through**: after every writing tool (`write`, `edit`, `bash`), the tab diffs its Wasmer workspace and
   sends the changed files; the pipe writes them under `work/`, runs the claim's barrier (`archil sync`), and only then
   answers. The tool's result commits after that answer (`agent.ts`, `writeThrough`), so `work/` never lags what the agent
-  believes it wrote. On a host with the mount, the same extension runs the claim's barrier.
+  believes it wrote. On a host with the mount, the same extension runs the claim's barrier. No frame carries more than
+  1 MiB of file content (`CHUNK_BYTES`): a larger file goes ahead as an upload in ordered chunks into `tmp/pipe-uploads/`
+  (inside the claim, outside `work/`), and the pipe renames it over the old file only when its size and SHA-256 match
+  and its writer is still the writer. An upload cut off, refused or not matching leaves the old file and nothing else.
 - **Model calls** go through the server (`pipe/model-proxy.ts`): the key stays on the server, the request names only
   the model the server allows, and a run has a token budget across every place it runs.
-- **Restore**: when a tab attaches, it gets `work/` from the disk, so a tab can resume what a cloud host did.
+- **Restore**: when a tab attaches, it gets `work/` from the disk, so a tab can resume what a cloud host did: a manifest
+  (each file's size and SHA-256), the files in 1 MiB chunks, then the end. The tab hands the workspace over only when
+  every file matches its manifest, and refuses (RESTORE_FAILED) a workspace over its limit before receiving any of it:
+  256 MiB in the page, 1 GiB on a host (`restoreLimitBytes`).
 - **Who may do what** is the hello's `mode`: `write` asks to run the agent here, `operator` watches and may switch the run
   or send it messages, `view` only watches (a switch or a message from it gets `switch-refused` / `submit-refused`). A
   page says `canRun: true`: a switch into a tab tells the asking page to run it when it can, else the most recent page
@@ -103,7 +109,8 @@ working on the page.
 
 - `npm test`: the pipe's protocol on a local directory: storage conformance through a real WebSocket, write-through,
   restore, takeover and the refused old tab, the model proxy and its budget, a tab that stops pinging, switches both
-  ways with their drain, and a remote host (a child process) through the pipe.
+  ways with their drain, and a remote host (a child process) through the pipe; and a 200 MiB file and a 100 MiB
+  workspace through 64 MiB frames, an upload cut off mid-transfer or retired before its rename.
 - `node scripts/live-pipe.ts` (with the disk's variables): the same on the real mount, plus 200 commits and their latency
   against the ping round trip, and a re-read after a release.
 - `node scripts/story.ts <link>` against a running `serve.ts --cloud ...`: the whole story in headless Chrome (device A
