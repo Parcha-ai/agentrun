@@ -354,3 +354,13 @@ test("a lost connection to the same run reconnects to it without resetting anyth
   assert.equal(resets, 0);
   feed.stop();
 });
+
+test("the server's own wake-up message to the agent is not a turn the user took: it is hidden, the agent's reply is not", () => {
+  const { tr } = translator();
+  const wake = entry("u9", "pi.user", [{ role: "user", content: "[from the server] You are back in the browser; say one short line about where you are." }]);
+  const typed = entry("u1", "pi.user", [{ role: "user", content: "teach it to walk" }]);
+  const reply = entry("a9", "pi.assistant", [{ role: "assistant", content: [{ type: "text", text: "I'm back in your browser, and so is the brain I trained." }], stopReason: "stop" }]);
+  const events: ShowEvent[] = [...tr.frame(viewing(inTab))];
+  events.push(...tr.frame(batch({ type: "run_start" }, appended(typed), appended(wake), appended(reply), { type: "run_end" })));
+  assert.deepEqual(fold(events).chat.map((t) => [t.role, t.text]), [["user", "teach it to walk"], ["agent", "I'm back in your browser, and so is the brain I trained."]]);
+});

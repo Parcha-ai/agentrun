@@ -77,7 +77,8 @@ export class CaptionDesk {
     this.opts = { minHoldMs: options.minHoldMs ?? 4000, maxHoldMs: options.maxHoldMs ?? 10_000, staleMs: options.staleMs ?? 15_000, lagMs: options.lagMs ?? 8000 };
   }
 
-  update(state: ShowState, now: number): Caption | null {
+  /** `yieldSlot`: something open-ended (the setup counter) wants the slot, so a caption that has had its time and has nothing behind it gives way. */
+  update(state: ShowState, now: number, options: { yieldSlot?: boolean } = {}): Caption | null {
     // A clock that went backwards is a new timeline (a reset, a retake): nothing of the old one is still on screen or already seen.
     if (now < this.lastNow) {
       this.current = undefined;
@@ -98,13 +99,14 @@ export class CaptionDesk {
     const fresh = waiting.filter((w) => now - w.n.at <= this.opts.lagMs);
     const take = waiting.length > 1 ? (fresh.length > 0 ? fresh : waiting.slice(-1)) : waiting;
     for (const w of waiting) if (!take.includes(w)) this.shown.add(w.key);
-    const next = take[0];
+    // Of what is still news, the one a viewer needs most first (a note's `rank`), then the oldest.
+    const next = take.reduce<{ n: Note; key: string } | undefined>((best, w) => (best === undefined || (w.n.rank ?? 0) > (best.n.rank ?? 0) ? w : best), undefined);
     if (next) {
       this.shown.add(next.key);
       this.current = { caption: caption(next.n, state.source), shownAt: now };
       return this.current.caption;
     }
-    if (this.current && now - this.current.shownAt >= this.opts.maxHoldMs) this.current = undefined;
+    if (this.current && now - this.current.shownAt >= (options.yieldSlot ? this.opts.minHoldMs : this.opts.maxHoldMs)) this.current = undefined;
     return this.current?.caption ?? null;
   }
 }

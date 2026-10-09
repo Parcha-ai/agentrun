@@ -115,10 +115,13 @@ export class ScenarioV2 {
       this.emit({ t: "place", at: this.clock, place: { where: "cloud", host: "H100 GPU, Virginia" }, env: "gpu" });
       this.note("switch", "Moved to the H100 GPU in 0.8 s.");
     });
-    this.at(20, () => this.agent("Training started. Each checkpoint comes home as soon as it is written."));
+    this.at(20, () => this.agent("Training started. Each new version of its brain comes home as soon as it is written."));
+    // The agent's first command on the GPU begins the setup; the first checkpoint ends it (scripted here, so the counter says scripted).
+    this.at(20.5, () => this.emit({ t: "setup", at: this.clock, phase: "start" }));
+    this.at(CHECKPOINTS[0]!.at, () => this.emit({ t: "setup", at: this.clock, phase: "end" }));
     for (const c of CHECKPOINTS) {
-      this.at(c.at, () => this.note("home", `Checkpoint ${c.n} arrived from the GPU.`));
-      this.at(c.at + 10, () => this.note("home", c.metres === 0 ? `Checkpoint ${c.n} fell over within 10 s.` : `Learning on the GPU: walked ${c.metres.toFixed(1)} m in 10 s (checkpoint ${c.n}).`));
+      this.at(c.at, () => this.note("home", `Version ${c.n} of its brain arrived from the GPU.`));
+      this.at(c.at + 10, () => this.note("home", c.metres === 0 ? `Version ${c.n} fell over within 10 s.` : `Learning on the GPU: walked ${c.metres.toFixed(1)} m in 10 s (version ${c.n}).`));
     }
     this.at(92, () => this.agent("It walks. Coming home."));
     this.at(91.5, () => this.decide({ id: "rehearsal-2", phase: "done", question: "The task is done; where should the agent run now?", options: [{ id: "tab", label: "Browser", probability: 0.91 }, { id: "modal-vm", label: "Modal VM", probability: 0.03 }, { id: "modal-gpu", label: "H100 GPU", probability: 0.06 }], choice: "tab", latency_ms: 41, model: "scripted" }));

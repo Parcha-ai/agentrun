@@ -28,10 +28,10 @@ test("every number in the rehearsal is scripted, never measured, and each learni
   assert.equal(p.state.source, "scripted");
   const learning = p.state.notes.filter((n) => /^Learning on the GPU/.test(n.text)).map((n) => n.text);
   assert.deepEqual(learning, [
-    "Learning on the GPU: walked 0.4 m in 10 s (checkpoint 2).",
-    "Learning on the GPU: walked 1.1 m in 10 s (checkpoint 3).",
-    "Learning on the GPU: walked 2.1 m in 10 s (checkpoint 4).",
-    "Learning on the GPU: walked 3.4 m in 10 s (checkpoint 5).",
+    "Learning on the GPU: walked 0.4 m in 10 s (version 2).",
+    "Learning on the GPU: walked 1.1 m in 10 s (version 3).",
+    "Learning on the GPU: walked 2.1 m in 10 s (version 4).",
+    "Learning on the GPU: walked 3.4 m in 10 s (version 5).",
   ]);
   assert.equal(p.state.notes.filter((n) => n.text.includes("fell over")).length, 1, "the first checkpoint falls");
   assert.ok(p.state.notes.every((n) => n.measured === undefined), "a rehearsal measures nothing");

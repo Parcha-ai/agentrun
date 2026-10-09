@@ -159,3 +159,37 @@ test("when moments pile up the desk catches up: the ones already old are skipped
   const lone = new CaptionDesk();
   assert.equal(lone.update(desk([note(1000, "home", "only news")]), 12_000)?.text, "only news", "a single late moment is still shown");
 });
+
+test("a caption a viewer needs outranks tab chatter that arrived in the same burst", () => {
+  const d = new CaptionDesk();
+  const burst = fold([
+    run("live"),
+    note(9_000, "home", "The trained brain was installed in your browser in 15 ms (timed in the tab)."),
+    note(9_010, "home", "It trained for 668 s before coming home."),
+    { t: "note", at: 9_050, kind: "home", text: "Done training. The agent came back to your browser, and so did what it learned.", rank: 2 } as ShowEvent,
+    note(9_100, "home", "It was down. It learned to get back up."),
+  ]);
+  assert.equal(d.update(burst, 9_200)?.text, "Done training. The agent came back to your browser, and so did what it learned.");
+  assert.equal(d.update(burst, 13_300)?.text, "The trained brain was installed in your browser in 15 ms (timed in the tab).", "then the rest in order, while they are still news");
+});
+
+test("rank only orders what is waiting: a lower one is not shown ahead of a higher one, and equal ranks keep their order", () => {
+  const d = new CaptionDesk();
+  const s = fold([run("live"), note(1000, "home", "first"), note(1100, "home", "second"), { t: "note", at: 1200, kind: "home", text: "urgent", rank: 1 } as ShowEvent, { t: "note", at: 1300, kind: "home", text: "also urgent", rank: 1 } as ShowEvent]);
+  assert.equal(d.update(s, 1400)?.text, "urgent");
+  assert.equal(d.update(s, 5500)?.text, "also urgent");
+  assert.equal(d.update(s, 9600)?.text, "second", "by now both plain ones are old: the desk catches up to the newest of them, not the oldest");
+});
+
+test("a running counter takes the slot once the last caption has had its time and nothing else is waiting; not before", () => {
+  const d = new CaptionDesk();
+  const s = desk([note(1000, "home", "Moved on.")]);
+  assert.equal(d.update(s, 1000, { yieldSlot: true })?.text, "Moved on.");
+  assert.equal(d.update(s, 4900, { yieldSlot: true })?.text, "Moved on.", "inside its 4 s");
+  assert.equal(d.update(s, 5000, { yieldSlot: true }), null, "its time is up and nothing else is waiting: the slot is free for the counter");
+  assert.equal(d.update(s, 5200), null, "and it does not come back");
+  const waiting = new CaptionDesk();
+  const two = desk([note(1000, "home", "Moved on."), note(1200, "home", "Next.")]);
+  waiting.update(two, 1300, { yieldSlot: true });
+  assert.equal(waiting.update(two, 5400, { yieldSlot: true })?.text, "Next.", "something is waiting: it goes first");
+});
