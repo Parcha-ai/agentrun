@@ -13,6 +13,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver, unmountClaim, acquire as plainAcquire } from "@parcha/pi-durable-disk";
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
+import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
 import { RunPipe, type PipeSocket } from "./run-pipe.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { CHUNK_BYTES, toBase64, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
@@ -77,6 +78,11 @@ export interface DemoServerOptions {
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** Records every disk resource the server creates (run directories, token users, mounts) and its removal. */
   readonly ledger?: { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
+  /**
+   * The dark-content judge (`POST /api/runs/<id>/judge`, the run's secret as a bearer token): the page asks it about
+   * every answer before showing it, and shows a refusal instead when the verdict is "refuse". Absent: no route.
+   */
+  readonly judge?: JudgeOptions;
   /** Bearer token of the loopback admin route (`POST /admin/kill-cloud?run=ID`, a fault for the demo); absent, no route. */
   readonly adminToken?: string;
   /** How often a run in the cloud is supervised. Default 2 s. */
@@ -841,6 +847,33 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
   }
 
+  /**
+   * `POST /api/runs/<id>/judge`: body `{prompt, answer}`; answers the judge's verdict (`show` or `refuse`). A judge that
+   * times out or fails is a `refuse` too, so the page never shows an answer nobody judged. The text is never logged.
+   */
+  async function judgeRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!options.judge || !state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > 4 * JUDGE_ANSWER_MAX) return json(res, 413, { error: `more than ${4 * JUDGE_ANSWER_MAX} bytes` });
+      chunks.push(chunk);
+    }
+    let body: { prompt?: unknown; answer?: unknown };
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
+    } catch {
+      return json(res, 400, { error: "the body is not JSON" });
+    }
+    if (typeof body.prompt !== "string" || typeof body.answer !== "string") return json(res, 400, { error: "the body needs prompt and answer strings" });
+    if (body.answer.length > JUDGE_ANSWER_MAX) return json(res, 413, { error: `the answer is longer than ${JUDGE_ANSWER_MAX} characters` });
+    const verdict = await judgeAnswer({ prompt: body.prompt, answer: body.answer }, options.judge);
+    log("judge", { run: runId, verdict: verdict.verdict, dark: verdict.dark, ms: verdict.ms, ...(verdict.error ? { error: verdict.error } : {}) });
+    json(res, 200, { ...verdict });
+  }
+
   /** `POST /api/runs/<id>/attach` (loopback, the admin token): adopt a run on the disk; answers its link. */
   async function attachRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
     const auth = String(req.headers.authorization ?? "");
@@ -860,12 +893,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const path = new URL(req.url ?? "/", "http://x").pathname;
     const work = /^\/api\/runs\/([^/]+)\/work\/(.+)$/.exec(path);
     const attach = /^\/api\/runs\/([^/]+)\/attach$/.exec(path);
+    const judge = /^\/api\/runs\/([^/]+)\/judge$/.exec(path);
     const failed = (error: unknown) => {
       log("http.failed", { path: path.split("/").slice(0, 4).join("/"), error: (error as Error).message });
       if (!res.headersSent) res.writeHead(500).end();
     };
     if (work && (req.method === "GET" || req.method === "PUT")) void workRoute(req, res, decodeURIComponent(work[1]!), decodeURIComponent(work[2]!)).catch(failed);
     else if (attach && req.method === "POST") void attachRoute(req, res, decodeURIComponent(attach[1]!)).catch(failed);
+    else if (judge && req.method === "POST") void judgeRoute(req, res, decodeURIComponent(judge[1]!)).catch(failed);
     else if (req.method === "GET") serveStatic(req, res);
     else if (req.method === "POST" && path.startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();
