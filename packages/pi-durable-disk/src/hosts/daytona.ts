@@ -349,7 +349,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
 
   async function run(box: SandboxInfo, command: string, timeoutSec: number, what: string): Promise<ExecResult> {
     const r = await client.exec(box, command, timeoutSec);
-    if (r.exitCode !== 0) throw new DaytonaHostError("START_FAILED", `${what} in ${box.name} exited ${r.exitCode}: ${r.result.trim().split("\n").at(-1)?.slice(0, 300) ?? ""}`);
+    if (r.exitCode !== 0) throw new DaytonaHostError("START_FAILED", `${what} in ${box.name} exited ${r.exitCode}: ${r.result.trim().split("\n").filter((l) => l.trim() !== "").slice(-4).join(" | ").slice(0, 600)}`);
     return r;
   }
 

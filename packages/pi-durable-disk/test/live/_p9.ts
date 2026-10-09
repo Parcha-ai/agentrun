@@ -226,7 +226,9 @@ id pda >/dev/null 2>&1 || { sudo -n groupadd --gid ${PDA_ID} pda && sudo -n user
 sudo -n install -d -m 0755 ${PACKAGE_DIR}
 sudo -n tar -xzf /tmp/pda-pkg.tar.gz -C ${PACKAGE_DIR} --no-same-owner
 rm -f /tmp/pda-pkg.tar.gz
-sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root npm ci --prefix ${PACKAGE_DIR} --no-audit --no-fund --loglevel=error >/dev/null
+# A checkout in the workspace has its lockfile at the repository root, not in the package: install what the package needs then.
+if [ -f ${PACKAGE_DIR}/package-lock.json ]; then npm_cmd="npm ci"; else npm_cmd="npm install --no-package-lock"; fi
+sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root $npm_cmd --prefix ${PACKAGE_DIR} --no-audit --no-fund --loglevel=error >/dev/null
 sudo -n chown -R root:root ${PACKAGE_DIR}
 sudo -n chmod -R a+rX,go-w ${PACKAGE_DIR}
 step package
