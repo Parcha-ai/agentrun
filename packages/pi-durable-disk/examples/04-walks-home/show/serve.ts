@@ -150,7 +150,11 @@ if (pipeLink) {
         }
       },
       run: () => feed.run,
-      epoch: () => feed.epoch,
+      key: () => {
+        const t = pipeLink.tryCurrent();
+        return t ? linkKey(t) : undefined;
+      },
+      feedKey: () => feed.linkKey,
       onNote: (note) => feed.addNote(note),
     }).start();
   }

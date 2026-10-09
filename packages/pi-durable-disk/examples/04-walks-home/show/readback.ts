@@ -97,13 +97,15 @@ export type WatcherOptions = {
   file: () => string | undefined;
   /** The run the stage is showing: lines about any other run are ignored. */
   run: () => string | undefined;
-  /** Counts each time the stage's feed adopts a link (a first connection, a retake). A new server's results wait for it to advance. */
-  epoch: () => number;
+  /**
+   * The key of the run link in the link file now (origin, run and a hash of the secret: a restarted server has a new one, even on the same
+   * port with the same run name). A result is tagged with it when it is read, so it belongs to the server that wrote it.
+   */
+  key: () => string | undefined;
+  /** The key of the link the stage's feed is connected to. A result is shown only when this is the key it was tagged with. */
+  feedKey: () => string | undefined;
   onNote: (note: ReadbackNote) => void;
   intervalMs?: number;
-  now?: () => number;
-  /** How long a new server's results wait for the feed to follow its link before the run's name alone decides. Default 30 s. */
-  holdMs?: number;
 };
 
 /**
@@ -118,9 +120,8 @@ export class ReadbackWatcher {
   private offset = 0;
   private partial = "";
   private seen = false;
-  /** A log that replaced the one before it is a new server's: its results wait until the feed has followed the new link. */
-  private hold: { epoch: number; since: number } | undefined;
-  private held: ReadbackResult[] = [];
+  /** Results read but not yet shown: the feed has not followed their server's link. Each carries the key it was read under. */
+  private held: { key: string; result: ReadbackResult }[] = [];
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: WatcherOptions) {
@@ -139,22 +140,25 @@ export class ReadbackWatcher {
     this.timer = undefined;
   }
 
-  private now(): number {
-    return (this.opts.now ?? Date.now)();
-  }
-
-  /** The hold ends when the feed has followed the new link, or after `holdMs`; what waited is shown if it is about the run on the stage. */
-  private release(): void {
-    if (!this.hold) return;
-    if (this.opts.epoch() < this.hold.epoch && this.now() - this.hold.since < (this.opts.holdMs ?? 30_000)) return;
-    const held = this.held;
-    this.held = [];
-    this.hold = undefined;
-    for (const result of held) this.deliver(result);
+  /**
+   * Shows what belongs to the take on stage, drops what a newer server has made obsolete, and keeps the rest waiting. A result is shown
+   * only when the feed is connected to the link it was read under, so a retake that keeps the run's name cannot borrow an old result, and a
+   * second retake before the feed follows the first never shows the first's.
+   */
+  private flush(): void {
+    const current = this.opts.key();
+    const feed = this.opts.feedKey();
+    this.held = this.held.filter(({ key, result }) => {
+      if (key !== current) return false;
+      if (key !== feed) return true;
+      this.deliver(result);
+      return false;
+    });
   }
 
   poll(): void {
-    this.release();
+    this.flush();
+    const key = this.opts.key();
     const path = this.opts.file();
     if (path === undefined) return;
     let fd: number;
@@ -169,7 +173,6 @@ export class ReadbackWatcher {
       if (replaced) {
         // The first file ever seen is tailed from its end; one that replaced it is a new server's, read from its start.
         this.offset = this.seen ? 0 : st.size;
-        if (this.seen && !this.hold) this.hold = { epoch: this.opts.epoch() + 1, since: this.now() };
         this.partial = "";
         this.path = path;
         this.ino = st.ino;
@@ -184,22 +187,20 @@ export class ReadbackWatcher {
         const lines = this.partial.split("\n");
         this.partial = lines.pop() ?? "";
         // A line that is not a read-back event is dropped here, unread by anything else: the log holds the run's secret.
-        for (const line of lines) this.take(line);
+        for (const line of lines) this.take(line, key);
         if (this.partial.length > 1024 * 1024) this.partial = "";
       }
     } finally {
       closeSync(fd);
     }
+    this.flush();
   }
 
-  private take(line: string): void {
+  private take(line: string, key: string | undefined): void {
     const result = parseReadbackLine(line);
-    if (!result) return;
-    if (this.hold) {
-      if (this.held.length < 50) this.held.push(result);
-      return;
-    }
-    this.deliver(result);
+    // With no link there is no take for it to belong to.
+    if (!result || !key) return;
+    if (this.held.length < 50) this.held.push({ key, result });
   }
 
   private deliver(result: ReadbackResult): void {

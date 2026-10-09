@@ -90,7 +90,7 @@ function watch(run = "r1") {
   const dir = mkdtempSync(join(tmpdir(), "d5-readback-"));
   const file = join(dir, "server.log");
   const got: ReadbackNote[] = [];
-  const w = new ReadbackWatcher({ file: () => file, run: () => run, epoch: () => 0, onNote: (n) => got.push(n) });
+  const w = new ReadbackWatcher({ file: () => file, run: () => run, key: () => "K", feedKey: () => "K", onNote: (n) => got.push(n) });
   return { dir, file, got, w, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -115,12 +115,11 @@ test("the watcher starts at the end of the file it first sees, reads what is app
   }
 });
 
-test("a line about another run is ignored, and a file that replaced the log (a restarted server) is read from its start once the feed has followed the new link", () => {
+test("a line about another run is ignored, and a file that replaced the log (a restarted server) is read from its start", () => {
   const dir = mkdtempSync(join(tmpdir(), "d5-readback-"));
   const file = join(dir, "server.log");
   const got: ReadbackNote[] = [];
-  const feed = { epoch: 1 };
-  const w = new ReadbackWatcher({ file: () => file, run: () => "r2", epoch: () => feed.epoch, onNote: (n) => got.push(n) });
+  const w = new ReadbackWatcher({ file: () => file, run: () => "r2", key: () => "K", feedKey: () => "K", onNote: (n) => got.push(n) });
   try {
     writeFileSync(file, "");
     w.poll();
@@ -131,9 +130,6 @@ test("a line about another run is ignored, and a file that replaced the log (a r
     writeFileSync(next, `${readback({ run: "r2", files: 9 })}\n`);
     renameSync(next, file);
     w.poll();
-    assert.equal(got.length, 1, "the new server's result waits for the feed to follow its link (see the retake tests)");
-    feed.epoch = 2;
-    w.poll();
     assert.deepEqual(got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["3", "9"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -142,81 +138,93 @@ test("a line about another run is ignored, and a file that replaced the log (a r
 
 test("a missing log, or none named yet, is not an error", () => {
   const got: ReadbackNote[] = [];
-  new ReadbackWatcher({ file: () => undefined, run: () => "r1", epoch: () => 0, onNote: (n) => got.push(n) }).poll();
-  new ReadbackWatcher({ file: () => join(tmpdir(), "d5-no-such-log-file"), run: () => "r1", epoch: () => 0, onNote: (n) => got.push(n) }).poll();
+  new ReadbackWatcher({ file: () => undefined, run: () => "r1", key: () => "K", feedKey: () => "K", onNote: (n) => got.push(n) }).poll();
+  new ReadbackWatcher({ file: () => join(tmpdir(), "d5-no-such-log-file"), run: () => "r1", key: () => "K", feedKey: () => "K", onNote: (n) => got.push(n) }).poll();
   assert.equal(got.length, 0);
 });
 
-// A retake: the new server's log appears (and may get its first read-back) before the stage's feed has noticed the new link and reset.
-function retake(opts: { feedRun: string; newRun: string; holdMs?: number }) {
+// A retake: a new server writes a new log and a new link (a new key: its secret differs, even with the same port and run name). The stage's
+// feed follows the link a moment later. A read-back is shown only on the take it belongs to: the one whose link key it was read under.
+function retake(feedRun: string) {
   const dir = mkdtempSync(join(tmpdir(), "d5-readback-retake-"));
   const file = join(dir, "server.log");
   const got: ReadbackNote[] = [];
-  const feed = { run: opts.feedRun, epoch: 1 };
-  let now = 1_000;
-  const w = new ReadbackWatcher({ file: () => file, run: () => feed.run, epoch: () => feed.epoch, now: () => now, ...(opts.holdMs ? { holdMs: opts.holdMs } : {}), onNote: (n) => got.push(n) });
-  writeFileSync(file, `${readback({ run: opts.feedRun, files: 1 })}\n`);
+  const at = { link: "K1", feed: "K1", run: feedRun };
+  const w = new ReadbackWatcher({ file: () => file, run: () => at.run, key: () => at.link, feedKey: () => at.feed, onNote: (n) => got.push(n) });
+  writeFileSync(file, `${readback({ run: feedRun, files: 1 })}\n`);
   w.poll();
-  const replace = (text: string) => {
+  const server = (link: string, run: string, files: number) => {
     const next = join(dir, "next.log");
-    writeFileSync(next, text);
+    writeFileSync(next, `${readback({ run, files })}\n`);
     renameSync(next, file);
+    at.link = link;
   };
-  return { dir, file, got, feed, w, replace, tick: (ms: number) => (now += ms), done: () => rmSync(dir, { recursive: true, force: true }) };
+  const files = () => got.map((n) => /(\d+) files/.exec(n.text)?.[1]);
+  return { got, at, w, server, files, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-test("a new server's read-back that lands before the feed has followed the new link is held, then shown on the new run", () => {
-  const t = retake({ feedRun: "old", newRun: "new" });
+test("a new server's read-back that lands before the feed has followed the new link is held, then shown on the new take", () => {
+  const t = retake("old");
   try {
-    t.replace(`${readback({ run: "new", files: 4 })}\n`);
+    t.server("K2", "new", 4);
     t.w.poll();
-    assert.equal(t.got.length, 0, "the feed is still on the old run: not shown, and not lost");
-    t.feed.run = "new";
-    t.feed.epoch = 2;
+    assert.deepEqual(t.files(), [], "the feed is still on the old take: not shown, and not lost");
+    t.at.feed = "K2";
+    t.at.run = "new";
     t.w.poll();
-    assert.deepEqual(t.got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["4"]);
+    assert.deepEqual(t.files(), ["4"]);
     t.w.poll();
-    assert.equal(t.got.length, 1, "once");
+    assert.deepEqual(t.files(), ["4"], "once");
   } finally {
     t.done();
   }
 });
 
-test("a retake that keeps the run's name does not hand the note to the old feed, where its reset would erase it", () => {
-  const t = retake({ feedRun: "take", newRun: "take" });
+test("a retake that keeps the run's name does not hand its read-back to the old take", () => {
+  const t = retake("take");
   try {
-    t.replace(`${readback({ run: "take", files: 6 })}\n`);
+    t.server("K2", "take", 6);
     t.w.poll();
-    assert.equal(t.got.length, 0, "the name matches but the feed has not reset yet");
-    t.feed.epoch = 2;
+    assert.deepEqual(t.files(), [], "the name matches, the link key does not: the feed is on the old take");
+    t.at.feed = "K2";
     t.w.poll();
-    assert.deepEqual(t.got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["6"]);
+    assert.deepEqual(t.files(), ["6"]);
   } finally {
     t.done();
   }
 });
 
-test("a held result for a run the feed never shows is dropped, and a feed that never resets does not hold results forever", () => {
-  const dropped = retake({ feedRun: "old", newRun: "other" });
+test("a second retake before the feed follows the first: the first's held results are dropped, never shown on the second", () => {
+  const t = retake("take");
   try {
-    dropped.replace(`${readback({ run: "other", files: 2 })}\n`);
-    dropped.w.poll();
-    dropped.feed.epoch = 2;
-    dropped.w.poll();
-    assert.equal(dropped.got.length, 0, "the feed moved on to a different run");
+    t.server("K2", "take", 7);
+    t.w.poll();
+    t.server("K3", "take", 8);
+    t.w.poll();
+    t.at.feed = "K3";
+    t.w.poll();
+    assert.deepEqual(t.files(), ["8"], "only the take the feed shows");
+    t.at.feed = "K2";
+    t.w.poll();
+    assert.deepEqual(t.files(), ["8"], "and the dropped result does not come back");
   } finally {
-    dropped.done();
+    t.done();
   }
-  const stuck = retake({ feedRun: "same", newRun: "same", holdMs: 30_000 });
+});
+
+test("a result is never shown on a feed that is on another take, and one for a run the feed does not show is dropped", () => {
+  const t = retake("old");
   try {
-    stuck.replace(`${readback({ run: "same", files: 8 })}\n`);
-    stuck.w.poll();
-    assert.equal(stuck.got.length, 0);
-    stuck.tick(30_001);
-    stuck.w.poll();
-    assert.deepEqual(stuck.got.map((n) => /(\d+) files/.exec(n.text)?.[1]), ["8"], "after the hold, a result for the run on the stage is shown");
+    t.server("K2", "other", 2);
+    t.at.feed = "K2";
+    t.w.poll();
+    assert.deepEqual(t.files(), [], "the feed adopted the link but shows another run's name");
+    const none = retake("old");
+    none.at.link = "";
+    none.w.poll();
+    none.done();
   } finally {
-    stuck.done();
+    t.done();
   }
 });
 

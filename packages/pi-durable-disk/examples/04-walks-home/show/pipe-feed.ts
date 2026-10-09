@@ -316,8 +316,6 @@ export class PipeFeed implements FeedSource {
   private askRefusal: ((message: string) => void) | undefined;
   private asked = 0;
   private opts: PipeFeedOptions;
-  /** Counts each time the feed adopts a link (the first, and every retake): a note meant for the new run waits for it. */
-  private linkEpoch = 0;
   /** The key of the run this feed is connected (or connecting) to. */
   private connectedKey: string | undefined;
   private retry: ReturnType<typeof setTimeout> | undefined;
@@ -345,8 +343,9 @@ export class PipeFeed implements FeedSource {
     return this.st;
   }
 
-  get epoch(): number {
-    return this.linkEpoch;
+  /** The key of the link this feed is connected to (undefined before it has one): what a note about the take on stage is checked against. */
+  get linkKey(): string | undefined {
+    return this.connectedKey;
   }
 
   /** The run this feed is showing ("" until it has connected to one). */
@@ -393,7 +392,6 @@ export class PipeFeed implements FeedSource {
     // names a different run drops everything of the old one.
     if (this.connectedKey === undefined) this.tr = new PipeTranslator({ run: t.run, ...(this.opts.clock ? { clock: this.opts.clock } : {}) });
     else if (key !== this.connectedKey) this.resetFor(t.run);
-    if (key !== this.connectedKey) this.linkEpoch++;
     this.connectedKey = key;
     const socket = connect(t.url);
     this.socket = socket;
