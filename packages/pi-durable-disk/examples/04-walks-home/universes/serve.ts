@@ -97,6 +97,8 @@ const { values } = parseArgs({
     /** The tab's server (03-tab-to-cloud serve.ts) that adopts the winner by id when it is called home, and its admin token file. */
     "home-server": { type: "string" },
     "home-token-file": { type: "string" },
+    /** Delete the run that went home at exit too (a rehearsal); by default the tab's server keeps it. */
+    "delete-home": { type: "boolean", default: false },
   },
 });
 
@@ -371,6 +373,12 @@ async function cleanup(): Promise<void> {
       await removeMountToken(control, row.id).then(() => ledger.close("token", row.id, "cleanup"), (e: unknown) => log("token.remove-failed", { id: row.id, error: (e as Error).message }));
     }
     for (const id of createdRuns) {
+      // The run that went home belongs to the tab's server from its adoption on: it stays, unless asked.
+      if (home && id === home.run && !values["delete-home"]) {
+        ledger.close("run", id, `handed to the tab's server at ${values["home-server"]}`);
+        ledger.close("subdir", `runs/${id}/`, "handed to the tab's server");
+        continue;
+      }
       await deleteRunTree(control, id).then(
         (r) => {
           ledger.close("run", id, `deleted ${r.objects} objects`);
