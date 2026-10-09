@@ -20,6 +20,7 @@
   only. The run suite's daemon-kill and host-loss tests check that no delegation of a killed client is left.
 - New exports: `revokeBestEffort`, `revokeCompanions`, `companionsOf`.
 
+**A host driver for Modal sandboxes**
 - **A planned stop of a `modalHost` instance now kills anything the agent left running under the run's mount.** A program the agent
   started detached (a server, a browser) is outside the instance's process tree, so the instance cannot end it when it drains; it
   keeps the mount busy, `archil unmount` fails and the run's delegation stays held after the box is gone (found live: 1 held). The
