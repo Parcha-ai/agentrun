@@ -12,6 +12,8 @@ export interface ModelOptions {
   readonly budgetTokens: number;
   /** Fields merged into every request body. */
   readonly extra?: Readonly<Record<string, unknown>>;
+  /** The endpoint's credential, sent as a bearer token; none for an endpoint that takes none (a local broker). */
+  readonly apiKey?: string;
 }
 
 export interface ModelSink {
@@ -49,7 +51,7 @@ export class ModelProxy {
     try {
       const response = await fetch(`${this.options.baseUrl.replace(/\/$/, "")}/${path}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}) },
         body: JSON.stringify(request),
         signal,
       });
