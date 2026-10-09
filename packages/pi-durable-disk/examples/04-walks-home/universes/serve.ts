@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { daytonaRest, deleteRunTree, readRunStatus, removeMountToken, type ForkOptions, type RunRef } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "../../03-tab-to-cloud/pipe/control.ts";
-import { daytonaFleet } from "./daytona-fleet.ts";
+import { daytonaFleet, machineLifetime } from "./daytona-fleet.ts";
+import { cleanupOnExit } from "./exit-cleanup.ts";
 import { modalUniverses } from "./modal.ts";
 import { Feed, serveFeed, type CommandResult, type FeedCommand } from "./feed.ts";
 import { ModelProxy } from "../../03-tab-to-cloud/pipe/model-proxy.ts";
@@ -82,6 +83,8 @@ const { values } = parseArgs({
     getup: { type: "string", default: "/opt/pda/train/default/getup.json" },
     python: { type: "string", default: "/usr/local/bin/python" },
     minutes: { type: "string", default: "6" },
+    /** Every machine's hard lifetime in minutes (the provider destroys it at this age): default 30, or the training plus 10. */
+    "ttl-minutes": { type: "string" },
     /** A directory whose files go into the source run's work/ before it is sealed (the creature: creature/creature.xml, creature/body.json). */
     "source-files": { type: "string" },
     /** train.py's compile cache: in the run's work/ (default), or an absolute path of each box's own. */
@@ -174,7 +177,9 @@ const warmup = (() => {
   return { files, command, timeoutSec: 900 };
 })();
 
+const ttlMinutes = machineLifetime(values["ttl-minutes"] === undefined ? undefined : Number(values["ttl-minutes"]), Number(values.minutes));
 const fleet = daytonaFleet({
+  ttlMinutes,
   client: modal?.client ?? daytonaRest({ apiKey: process.env.DAYTONA_API_KEY!, ...(process.env.DAYTONA_API_URL ? { apiUrl: process.env.DAYTONA_API_URL } : {}) }),
   ...(modal ? { kind: modal.kind, ratePerHour: modal.ratePerHour, label: modal.label, ledgerKind: "modal-sandbox" } : {}),
   snapshot: values["modal-image"] ?? values.snapshot!,
@@ -374,7 +379,7 @@ const server = await serveFeed({
   // Where the tab finds the run to attach when it is called home: the winner's run, once there is one.
   routes: { winner: () => mv.winner()?.placed.run, home: () => homes.home },
 });
-log("feed", { url: server.url, source: source.id, universes: n, transport });
+log("feed", { url: server.url, source: source.id, universes: n, transport, ttlMinutes });
 
 let cleaning: Promise<void> | undefined;
 async function cleanup(): Promise<void> {
@@ -413,9 +418,8 @@ async function cleanup(): Promise<void> {
   })();
   return cleaning;
 }
-// A wrapper (timeout, a terminal) can deliver the signal more than once: every one waits for the same cleanup, so a
-// second signal never ends the process before the machines, mounts and runs are gone.
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => void cleanup().then(() => process.exit(130)));
+// Every way out short of SIGKILL runs the one cleanup (exit-cleanup.ts); past that, each machine's hard lifetime holds.
+cleanupOnExit(cleanup, process, log);
 
 if (values.auto) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

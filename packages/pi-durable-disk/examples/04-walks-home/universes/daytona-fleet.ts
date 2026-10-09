@@ -63,6 +63,10 @@ export interface DaytonaFleetOptions {
   readonly kind?: Machine["kind"];
   /** List price per hour of one box. Default: Daytona's rates for the box's resources. */
   readonly ratePerHour?: (box: SandboxInfo) => number;
+  /**
+   * Every box's hard lifetime: the provider (Daytona or Modal, its sandbox timeout) destroys it at this age whatever its
+   * state, so a serve that dies without its cleanup (a crash, SIGKILL) leaks nothing past it. Default DEFAULT_TTL_MINUTES.
+   */
   readonly ttlMinutes?: number;
   readonly ledger?: LedgerLike;
   /** The ledger's kind for a box. Default "daytona-box". */
@@ -96,13 +100,29 @@ export interface MachineAccess {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** A box's hard lifetime when none is given: a take from prewarm to cleanup fits with room to spare. */
+export const DEFAULT_TTL_MINUTES = 30;
+/** Room a box's lifetime leaves past the training budget: warm-up, fan-out, collapse, home and cleanup. */
+export const TTL_MARGIN_MINUTES = 10;
+
+/**
+ * The fleet's hard lifetime for a take whose trainers run `trainMinutes`: `ttl` when given, else the default, raised to
+ * cover the training. A lifetime that would end the boxes before the training and its margin is refused.
+ */
+export function machineLifetime(ttl: number | undefined, trainMinutes: number): number {
+  const needed = trainMinutes + TTL_MARGIN_MINUTES;
+  if (ttl === undefined) return Math.max(DEFAULT_TTL_MINUTES, Math.ceil(needed));
+  if (!Number.isFinite(ttl) || ttl < needed) throw new Error(`a machine lifetime of ${ttl} min ends before the training (${trainMinutes} min) and its ${TTL_MARGIN_MINUTES} min margin`);
+  return ttl;
+}
+
 export function daytonaFleet(o: DaytonaFleetOptions): Fleet & { boxes(): SandboxInfo[]; sweep(): Promise<string[]>; logs(machine: Machine): Promise<string>; box(machine: Machine): SandboxInfo | undefined } {
   const log = o.log ?? (() => {});
   const ours = new Map<string, SandboxInfo>();
   const removed = new Set<string>();
   const ledgerName = new Map<string, string>();
   const byMachine = new Map<string, SandboxInfo>();
-  const ttlMinutes = o.ttlMinutes ?? 120;
+  const ttlMinutes = o.ttlMinutes ?? DEFAULT_TTL_MINUTES;
   const kindOf = o.ledgerKind ?? "daytona-box";
 
   const check = (box: SandboxInfo | null): SandboxInfo | null => {
