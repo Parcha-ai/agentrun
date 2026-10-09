@@ -38,6 +38,9 @@ export interface PipeOptions {
   readonly attachTimeoutMs?: number;
   readonly onResource?: (kind: string, id: string, note?: string) => void;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
+  /** Test seams, passed to the pipe's lease (a claim on a local directory). */
+  readonly acquire?: OpenRunLeaseOptions["acquire"];
+  readonly claimDir?: OpenRunLeaseOptions["claimDir"];
 }
 
 type Held = { pipe: RunPipe; secret: string; token: string };
@@ -83,6 +86,8 @@ export function pipePlacement(o: PipeOptions): PipePlacement {
             ...(o.host ? { host: o.host } : {}),
             ...(o.lease ? { lease: o.lease } : {}),
             model: o.model,
+            ...(o.acquire ? { acquire: o.acquire } : {}),
+            ...(o.claimDir ? { claimDir: o.claimDir } : {}),
             onLost: (_p, error) => log("pipe.lost", { run: run.id, error: error.message }),
             log,
           });
