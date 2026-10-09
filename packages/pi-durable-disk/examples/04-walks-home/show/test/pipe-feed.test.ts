@@ -139,7 +139,7 @@ function fakeSocket() {
     close: () => undefined,
     on: (event: string, fn: (d?: unknown) => void) => void (handlers[event] ??= []).push(fn),
   };
-  return { socket, sent, push: (frame: unknown) => handlers.message?.forEach((h) => h(JSON.stringify(frame))), open: () => handlers.open?.forEach((h) => h()) };
+  return { socket, sent, push: (frame: unknown) => handlers.message?.forEach((h) => h(JSON.stringify(frame))), open: () => handlers.open?.forEach((h) => h()), close: () => handlers.close?.forEach((h) => h()) };
 }
 
 test("the feed says hello as the configured role, sends a switch, and reports the pipe's refusal as the command's reason", async () => {
@@ -219,5 +219,87 @@ test("a switch into the tab is a plain switch frame from the operator: no tab co
   assert.deepEqual(f.sent.at(-1), { t: "switch", to: "tab" });
   f.push({ t: "switch-refused", to: "tab", message: "no browser tab that can run the agent is open on this run" });
   assert.deepEqual(await back, { ok: false, message: "no browser tab that can run the agent is open on this run" });
+  feed.stop();
+});
+
+// Sockets the test drives, one per connection the feed opens.
+function socketFactory() {
+  const sockets: ReturnType<typeof fakeSocket>[] = [];
+  const urls: string[] = [];
+  return {
+    sockets,
+    urls,
+    connect: (url: string) => {
+      const f = fakeSocket();
+      const close = f.socket.close;
+      (f.socket as { closed?: boolean }).closed = false;
+      f.socket.close = () => ((f.socket as { closed?: boolean }).closed = true, close());
+      sockets.push(f);
+      urls.push(url);
+      f.open;
+      return f.socket;
+    },
+  };
+}
+const until = async (check: () => boolean, ms = 3000) => {
+  for (let t = 0; t < ms && !check(); t += 10) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(check(), "timed out");
+};
+
+test("a changed run link makes the feed leave the old run, drop its state, tell the pages, and follow the new run", async () => {
+  const fac = socketFactory();
+  let target = { url: "ws://a/ws", run: "r1", token: "t1", key: "a" };
+  let resets = 0;
+  const feed = new PipeFeed({ resolve: () => target, onReset: () => resets++, watchMs: 15, askAfterSwitch: false, connect: fac.connect });
+  await feed.start();
+  fac.sockets[0].open();
+  assert.equal(fac.sockets[0].sent[0].run, "r1");
+  fac.sockets[0].push(viewing(inTab));
+  assert.equal(feed.state.run, "r1");
+  assert.ok(feed.events.length > 0);
+  // A restart: a new run behind the same file.
+  target = { url: "ws://a/ws", run: "r2", token: "t2", key: "b" };
+  await until(() => fac.sockets.length === 2);
+  assert.equal((fac.sockets[0].socket as { closed?: boolean }).closed, true, "the old connection was dropped");
+  assert.equal(resets, 1);
+  assert.equal(feed.state.run, "", "nothing of the old run is left");
+  assert.equal(feed.events.length, 0);
+  fac.sockets[1].open();
+  assert.equal(fac.sockets[1].sent[0].run, "r2");
+  assert.equal(fac.sockets[1].sent[0].token, "t2");
+  // A late frame of the old run must not come back.
+  fac.sockets[0].push(viewing(inTab));
+  assert.equal(feed.events.length, 0);
+  fac.sockets[1].push(viewing(inTab));
+  assert.equal(feed.state.run, "r2");
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(fac.sockets.length, 2, "dropping the old socket on purpose did not start a reconnect loop");
+  feed.stop();
+});
+
+test("with no link yet the feed waits and connects as soon as one appears", async () => {
+  const fac = socketFactory();
+  let target: { url: string; run: string; token: string; key: string } | undefined;
+  const feed = new PipeFeed({ resolve: () => target, watchMs: 15, askAfterSwitch: false, connect: fac.connect });
+  await feed.start();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(fac.sockets.length, 0, "nothing to connect to");
+  target = { url: "ws://b/ws", run: "r9", token: "t9", key: "k" };
+  await until(() => fac.sockets.length === 1);
+  fac.sockets[0].open();
+  assert.equal(fac.sockets[0].sent[0].run, "r9");
+  assert.equal(feed.state.run, "", "the first run needs no reset");
+  feed.stop();
+});
+
+test("a lost connection to the same run reconnects to it without resetting anything", async () => {
+  const fac = socketFactory();
+  let resets = 0;
+  const feed = new PipeFeed({ resolve: () => ({ url: "ws://a/ws", run: "r1", token: "t1", key: "a" }), onReset: () => resets++, watchMs: 15, askAfterSwitch: false, connect: fac.connect });
+  await feed.start();
+  fac.sockets[0].open();
+  fac.sockets[0].push(viewing(inTab));
+  fac.sockets[0].close?.();
+  assert.equal(resets, 0);
   feed.stop();
 });

@@ -57,16 +57,21 @@ export type RunTarget = { origin: string; run: string; secret: string };
  * write names the tab that holds the run in `x-pda-tab` and only lands at the paths the server was started with `--tab-writable`:
  * anything else is its 403, a tab that does not hold the run is its 409. Both are passed back as they came, with the server's words.
  */
-export function runDisk(target: RunTarget, writerTab: () => string | undefined, fetchFn: typeof fetch = fetch): DiskBackend {
-  const url = (path: string) => `${target.origin}/api/runs/${encodeURIComponent(target.run)}/work/${path.split("/").map(encodeURIComponent).join("/")}`;
-  const auth = { authorization: `Bearer ${target.secret}` };
+export function runDisk(target: RunTarget | (() => RunTarget | undefined), writerTab: () => string | undefined, fetchFn: typeof fetch = fetch): DiskBackend {
+  // The target may be followed live (a retake writes a new link): it is asked for at every call, never kept.
+  const now = () => (typeof target === "function" ? target() : target);
+  const url = (t: RunTarget, path: string) => `${t.origin}/api/runs/${encodeURIComponent(t.run)}/work/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const auth = (t: RunTarget) => ({ authorization: `Bearer ${t.secret}` });
   const reason = async (res: Response) => {
     const body = (await res.json().catch(() => undefined)) as { error?: string } | undefined;
     return body?.error ?? `HTTP ${res.status}`;
   };
   return {
     async read(path, ifNoneMatch) {
-      const res = await fetchFn(url(path), { headers: auth, signal: AbortSignal.timeout(8000) }).catch((e: Error) => e);
+      const t = now();
+      // No run yet (the link file is not there): nothing is on any disk.
+      if (!t) return { status: 204 };
+      const res = await fetchFn(url(t, path), { headers: auth(t), signal: AbortSignal.timeout(8000) }).catch((e: Error) => e);
       if (res instanceof Error) return { status: 502, error: `the run's server did not answer (${res.message})` };
       if (res.status === 404) return { status: 204 };
       // While the run moves no pipe holds it and the server cannot read its files (503). That is "unknown right now", not a failure:
@@ -77,9 +82,11 @@ export function runDisk(target: RunTarget, writerTab: () => string | undefined, 
       return answer(Buffer.from(await res.arrayBuffer()), ifNoneMatch);
     },
     async write(path, bytes) {
+      const t = now();
+      if (!t) return { status: 409, error: "there is no run yet" };
       const tab = writerTab();
       if (!tab) return { status: 409, error: "no tab holds the run" };
-      const res = await fetchFn(url(path), { method: "PUT", headers: { ...auth, "x-pda-tab": tab }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(15000) }).catch((e: Error) => e);
+      const res = await fetchFn(url(t, path), { method: "PUT", headers: { ...auth(t), "x-pda-tab": tab }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(15000) }).catch((e: Error) => e);
       if (res instanceof Error) return { status: 502, error: `the run's server did not answer (${res.message})` };
       return res.ok ? { status: 200, bytes: bytes.length } : { status: res.status, error: await reason(res) };
     },

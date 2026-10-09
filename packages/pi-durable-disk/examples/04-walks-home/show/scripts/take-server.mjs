@@ -63,6 +63,9 @@ if (!local) {
 const tokenFile = join(dir, "admin-token");
 const logFile = join(dir, "server.log");
 // A fresh start means a fresh token: remove any old file so the server writes a new one (it creates it 0600).
+// The previous start's status goes too: whoever waits for status.json must never be handed a server that is gone.
+rmSync(join(dir, "status.json"), { force: true });
+rmSync(join(dir, "link"), { force: true });
 rmSync(tokenFile, { force: true });
 rmSync(logFile, { force: true });
 writeFileSync(logFile, "", { mode: 0o600 });

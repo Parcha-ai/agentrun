@@ -9,8 +9,8 @@ import { waitForFile } from "./cdp.mjs";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "take-server.mjs");
 
-export async function startTakeServer({ dir, disk, cloud = "remote-local", ms = 90_000 }) {
-  const child = spawn(process.execPath, [script, "--local", disk, "--dir", dir, "--cloud", cloud], {
+export async function startTakeServer({ dir, disk, cloud = "remote-local", run = "walks-home", ms = 90_000 }) {
+  const child = spawn(process.execPath, [script, "--local", disk, "--dir", dir, "--cloud", cloud, "--run", run], {
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), TMPDIR: join(homedir(), "tmp-d5", "tmp") },
     stdio: "ignore",
   });
