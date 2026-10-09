@@ -42,7 +42,11 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
   const reward = process.env.UNIVERSE_REWARD ?? "forward speed";
   const label = process.env.DEMO_ENV_LABEL ?? "a cloud host";
   let trainer: Workload | undefined;
-  // The drain (SIGTERM) releases the run; the trainer stops first, so no write of it is in flight under the release.
+  // The drain (SIGTERM) releases the run and does not wait for the trainer, which is told to stop at the same signal. A
+  // write the release cuts loses nothing committed: both trainers make each checkpoint whole before they name it
+  // (atomic renames, then the barrier), so the next incarnation resumes from the last one. The home step (export.py
+  // combine) needs a step between the trainer's stop and the release, which only the pipe runner has: on this direct
+  // path the walking policy goes home alone, and the stage is told why.
   process.once("SIGTERM", () => void trainer?.stop());
   return {
     registry: agentRegistry(async () => {}),

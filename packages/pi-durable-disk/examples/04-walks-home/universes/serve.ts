@@ -23,6 +23,7 @@ import { directPlacement, type DirectPlacement } from "./direct.ts";
 import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
+import { homeAdoption } from "./home-adoption.ts";
 import { chooseHomePolicy } from "./home-policy.ts";
 import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
 
@@ -328,7 +329,7 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
     case "switch":
       // Home: the stage sends a switch to the tab once the multiverse collapsed.
       if (cmd.to !== "tab") return { ok: false, error: `the multiverse goes home to the tab, not to ${cmd.to}` };
-      return answer(mv.home({ label: "your browser tab", env: "tab", onSealed: adoptHome }), "home");
+      return answer(mv.home({ label: "your browser tab", env: "tab", onSealed: (run, universe) => homes.adopt(run, universe) }), "home");
     default:
       return { ok: false, error: `${cmd.t} is not this producer's command` };
   }
@@ -342,7 +343,12 @@ async function homePolicyPath(run: RunRef, universe: string): Promise<string | n
   const read = (path: string) => control.getObject(`runs/${run.id}/work/${path}`).then((b) => ({ text: new TextDecoder().decode(b) }), () => null);
   const xml = await read("creature/creature.xml");
   const bodyFile = await read("creature/body.json");
-  const nj = bodyFile ? ((JSON.parse(bodyFile.text) as { jointNames?: unknown[] }).jointNames?.length ?? 0) : 0;
+  let nj = 0;
+  try {
+    nj = bodyFile ? ((JSON.parse(bodyFile.text) as { jointNames?: unknown[] }).jointNames?.length ?? 0) : 0;
+  } catch {
+    // An unreadable body.json is a run without a body to check against, as one without the file.
+  }
   if (!xml || !nj) {
     log("home.policy-unchecked", { run: run.id, why: "the run has no creature" });
     return `train/${universe}/policy.json`;
@@ -355,35 +361,34 @@ async function homePolicyPath(run: RunRef, universe: string): Promise<string | n
   return choice.path;
 }
 
-/** Where the tab finds the winner once it is sealed: the tab server's link for it, and its policy under work/. */
-let home: { run: string; url: string; policy: string | null } | undefined;
-/**
- * The winner is sealed: ask the tab's server (03-tab-to-cloud serve.ts, --admin-token-file) to adopt it by id. Its
- * answer is the run's link (with the run's secret: it goes to the loopback route, never to a note or a log).
- */
-async function adoptHome(run: RunRef, universe: string): Promise<void> {
-  if (!values["home-server"] || !values["home-token-file"]) return;
-  const token = readFileSync(values["home-token-file"], "utf8").trim();
-  const res = await fetch(`${values["home-server"]}/api/runs/${encodeURIComponent(run.id)}/attach`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
-  const body = (await res.json().catch(() => ({}))) as { link?: string; error?: string };
-  if (!res.ok || !body.link) throw new Error(`the tab's server did not adopt ${run.id}: ${res.status} ${body.error ?? ""}`);
-  home = { run: run.id, url: `${values["home-server"]}${body.link}`, policy: await homePolicyPath(run, universe) };
-  log("home.adopted", { run: run.id, status: res.status });
-}
+const homes = homeAdoption({
+  server: values["home-server"],
+  tokenFile: values["home-token-file"],
+  policy: homePolicyPath,
+  onPolicyFailed(run, error) {
+    feed.emit({ t: "note", at: Date.now() - origin, kind: "home", text: "No policy goes home: its check failed." });
+    log("home.policy-failed", { run: run.id, error: error.message });
+  },
+  log,
+});
 
 const server = await serveFeed({
   feed,
   port: Number(values.port),
   command,
   // Where the tab finds the run to attach when it is called home: the winner's run, once there is one.
-  routes: { winner: () => mv.winner()?.placed.run, home: () => home },
+  routes: { winner: () => mv.winner()?.placed.run, home: () => homes.home },
 });
 log("feed", { url: server.url, source: source.id, universes: n, transport });
 
 let cleaning: Promise<void> | undefined;
 async function cleanup(): Promise<void> {
   cleaning ??= (async () => {
+    // No adoption starts from here on; one in flight decides whether the winner's run is the tab's, so it ends (30 s at
+    // most) before any run goes.
+    const adopted = homes.close();
     await mv.close({ machines: !values.keep });
+    await adopted;
     if (values.keep) return;
     await pipes?.releaseAll();
     const swept = await fleet.sweep();
@@ -394,7 +399,7 @@ async function cleanup(): Promise<void> {
     }
     for (const id of createdRuns) {
       // The run that went home belongs to the tab's server from its adoption on: it stays, unless asked.
-      if (home && id === home.run && !values["delete-home"]) {
+      if (id === homes.handed && !values["delete-home"]) {
         ledger.close("run", id, `handed to the tab's server at ${values["home-server"]}`);
         ledger.close("subdir", `runs/${id}/`, "handed to the tab's server");
         continue;

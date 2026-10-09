@@ -91,15 +91,18 @@ export async function chooseHomePolicy(s: HomeSources): Promise<HomeChoice> {
   if (!walk) return { path: null, getup: false, reason: `the winner has no ${walkPath}` };
   const walkBad = await walkRefused(walk, body);
   const getup = (await s.read("train/getup/policy.json")) ?? (await s.read("getup/policy.json"));
+  // Parsed strictly like the rest: a getup file with NaN or broken JSON sends the walk policy home alone, never throws.
+  const getupStrict = getup ? strictPolicy(getup.text) : null;
   const combined = await s.read("home/policy.json");
   let why: string;
   if (walkBad) why = `the walk policy is refused: ${walkBad}`;
   else if (!combined) why = "no combined policy was made";
-  else if (!getup) why = "the getup policy it was built from is not in the run";
+  else if (!getup || !getupStrict) why = "the getup policy it was built from is not in the run";
+  else if (!getupStrict.ok) why = `the getup policy it was built from is refused: ${getupStrict.reason}`;
   else {
     const strict = strictPolicy(combined.text);
     const walkSteps = (JSON.parse(walk.text) as PolicyJson).provenance?.steps;
-    const getupSteps = (JSON.parse(getup.text) as PolicyJson).provenance?.steps;
+    const getupSteps = getupStrict.policy.provenance?.steps;
     if (!strict.ok) why = strict.reason;
     else if (!strict.policy.getup) why = "it has no getup network";
     else if (strict.policy.provenance?.walk?.steps !== walkSteps) why = `it was built from another walk policy (${String(strict.policy.provenance?.walk?.steps)} steps, the winner's has ${String(walkSteps)})`;
