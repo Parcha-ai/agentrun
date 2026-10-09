@@ -1,6 +1,7 @@
 // Record the story as a video: two devices side by side (a laptop, then another device), under a strip that shows who
 // holds the run's disk, driven in headless Chrome against a running `serve.ts --cloud ...` whose log is `serverLog`.
-//   node scripts/record.ts <run link> <server log> [--out DIR] [--ffmpeg BIN]
+//   node scripts/record.ts <run link> <server log> [--out DIR] [--ffmpeg BIN] [--kill ADMIN_TOKEN_FILE]
+// With --kill, the cloud machine is powered off mid-task while the other device watches, and another one resumes.
 // Writes DIR/frames/{ops,a,b}/<ms>.jpg, DIR/story.json (steps and timings) and DIR/tab-to-cloud.mp4 (when ffmpeg is given).
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
@@ -10,7 +11,7 @@ import { parseArgs } from "node:util";
 import { Cdp, type Page } from "./cdp.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const { values, positionals } = parseArgs({ allowPositionals: true, options: { out: { type: "string", default: "recording" }, ffmpeg: { type: "string" } } });
+const { values, positionals } = parseArgs({ allowPositionals: true, options: { out: { type: "string", default: "recording" }, ffmpeg: { type: "string" }, kill: { type: "string" } } });
 const [link, serverLog] = positionals as [string, string];
 const out = values.out!;
 mkdirSync(out, { recursive: true });
@@ -128,6 +129,22 @@ try {
   tabs.set(await pb.until<string>("sessionStorage.getItem('tab-id')", 30_000, 50), "the other device");
   await pb.until("globalThis.demo && demo.state.mode === 'viewer' && demo.state.placement && demo.state.placement.where === 'cloud' && demo.state.placement.generation", 180_000, 300);
   await label(pb, "Another device");
+  if (values.kill) {
+    // Optional: pull the plug on the cloud machine mid-task; the supervisor finds its claim orphaned and another
+    // machine claims the disk and continues.
+    await pb.until("demo.files().filter(f => f.startsWith('site/')).length >= 3", 300_000, 500);
+    await say(ops, "3 · Pull the plug on the cloud machine", "its instance and its disk client die together, mid-task");
+    const token = readFileSync(values.kill, "utf8").trim();
+    const run = new URL(link).pathname.split("/").pop();
+    const origin = new URL(link).origin;
+    const killedAt = Date.now();
+    const r = await fetch(`${origin}/admin/kill-cloud?run=${run}`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+    steps.push({ at: sec(), name: "cloud killed", status: r.status });
+    const before = await pb.evaluate<number>("demo.state.placement && demo.state.placement.generation || 0");
+    await pb.until(`demo.state.placement && demo.state.placement.where === 'cloud' && demo.state.placement.generation > ${before}`, 120_000, 250);
+    steps.push({ at: sec(), name: "cloud replaced", ms: Date.now() - killedAt, placement: await pb.evaluate("demo.state.placement") });
+    await say(ops, "3 · Another machine took over", `${((Date.now() - killedAt) / 1000).toFixed(1)} s after the power cut: the claim was orphaned, revoked, and re-taken; the task goes on`);
+  }
   await pb.until("demo.files().filter(f => f.startsWith('site/')).length >= 4", 300_000, 500);
   await sleep(2000);
 

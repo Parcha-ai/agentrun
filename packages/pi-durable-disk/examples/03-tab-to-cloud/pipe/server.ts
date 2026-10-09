@@ -32,6 +32,10 @@ export interface CloudHost {
   close?(): Promise<void>;
   /** A tab runs the run now: get a host ready for when it leaves (no claim is taken). */
   prewarm?(ref: RunRef): void;
+  /** One supervisor tick while the run is in the cloud: replace a host that died or froze (the new host's label). */
+  supervise?(ref: RunRef): Promise<{ host: string } | undefined>;
+  /** Power off the host that runs the run (a fault for the demo). */
+  kill?(ref: RunRef): Promise<void>;
 }
 
 export interface DemoServerOptions {
@@ -52,6 +56,10 @@ export interface DemoServerOptions {
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** Records every disk resource the server creates (run directories, token users, mounts) and its removal. */
   readonly ledger?: { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
+  /** Bearer token of the loopback admin route (`POST /admin/kill-cloud?run=ID`, a fault for the demo); absent, no route. */
+  readonly adminToken?: string;
+  /** How often a run in the cloud is supervised. Default 2 s. */
+  readonly superviseMs?: number;
   /** Test seams. */
   readonly acquire?: (options: AcquireOptions, takeover: boolean) => Promise<Claim>;
   readonly claimDir?: OpenRunLeaseOptions["claimDir"];
@@ -68,6 +76,8 @@ interface RunState {
   model: ModelProxy;
   /** The cloud host was asked to get ready while a tab runs the run; asked again after the cloud took it. */
   prewarmed: boolean;
+  /** The supervisor's timer while the run is in the cloud. */
+  supervising: NodeJS.Timeout | undefined;
   tokenUser: string | undefined;
   attempt: number;
   viewers: Set<PipeSocket>;
@@ -213,6 +223,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     try {
       const { host } = await options.cloud.start(state.ref, { model: state.model });
       state.prewarmed = false;
+      supervise(state);
       setPlacement(state, { where: "cloud", host, generation: null, detail: why });
       log("cloud.started", { run: state.ref.id, host, ms: Date.now() - started });
       // Whoever watched the tab now watches the cloud.
@@ -221,6 +232,29 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       log("cloud.start-failed", { run: state.ref.id, error: (error as Error).message });
       setPlacement(state, { where: "parked", detail: `cloud start failed: ${(error as Error).message}` });
     }
+  }
+
+  /** While the run is in the cloud, a supervisor tick every few seconds replaces a host that died or froze. */
+  function supervise(state: RunState): void {
+    const cloud = options.cloud;
+    if (!cloud?.supervise || state.supervising) return;
+    let busy = false;
+    state.supervising = setInterval(() => {
+      if (busy || state.placement.where !== "cloud") return;
+      busy = true;
+      void cloud
+        .supervise!(state.ref)
+        .then((replaced) => {
+          if (replaced && state.placement.where === "cloud") setPlacement(state, { where: "cloud", host: replaced.host, generation: null, detail: "the previous host was lost" });
+        })
+        .catch((error) => log("supervise.failed", { run: state.ref.id, error: (error as Error).message }))
+        .finally(() => (busy = false));
+    }, options.superviseMs ?? 2_000);
+  }
+
+  function unsupervise(state: RunState): void {
+    clearInterval(state.supervising);
+    state.supervising = undefined;
   }
 
   async function pipeLost(state: RunState, pipe: RunPipe): Promise<void> {
@@ -265,7 +299,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         await addViewer(state, socket);
         return state;
       }
-      if (fromCloud) setPlacement(state, { where: "moving", to: "tab", detail: "a tab took the run back" });
+      if (fromCloud) {
+        unsupervise(state);
+        setPlacement(state, { where: "moving", to: "tab", detail: "a tab took the run back" });
+      }
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
       const role = await pipe.attach(socket, frame.tab, frame.takeover === true);
@@ -422,8 +459,26 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     createReadStream(file).pipe(res);
   }
 
+  async function admin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://x");
+    const auth = String(req.headers.authorization ?? "");
+    const remote = req.socket.remoteAddress ?? "";
+    if (!options.adminToken || !(remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1") || !auth.startsWith("Bearer ") || !sameSecret(auth.slice(7), options.adminToken)) {
+      res.writeHead(404).end();
+      return;
+    }
+    const state = runs.get(url.searchParams.get("run") ?? "");
+    if (url.pathname === "/admin/kill-cloud" && state?.placement.where === "cloud" && options.cloud?.kill) {
+      await options.cloud.kill(state.ref);
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ killed: state.ref.id }));
+      return;
+    }
+    res.writeHead(409).end();
+  }
+
   const http = createHttpServer((req, res) => {
     if (req.method === "GET") serveStatic(req, res);
+    else if (req.method === "POST" && (req.url ?? "").startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();
   });
   http.on("upgrade", (req, sock, head) => {
@@ -454,6 +509,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         placement: { where: "parked", detail: "new run" },
         model: new ModelProxy(options.model, 0, log),
         prewarmed: false,
+        supervising: undefined,
         tokenUser: undefined,
         attempt: 0,
         viewers: new Set(),
@@ -465,6 +521,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     },
     async close() {
       for (const state of runs.values()) {
+        unsupervise(state);
         if (state.opening) await state.opening.catch(() => undefined);
         if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((error) => log("release.failed", { run: state.ref.id, error: (error as Error).message }));
         else await dropToken(state);
