@@ -1,7 +1,7 @@
-// What a creature does before it has learned anything: random actions. A freshly initialised policy plus exploration noise, which is
-// where every training run starts. Per joint a smoothed random signal (an Ornstein-Uhlenbeck process: a random walk pulled back
-// towards zero), seeded so a rehearsal and a take look the same. It stands for STAND_S as it was drawn, then the noise ramps in.
-// It is a stand-in for "no brain yet", not a policy: nothing in it can learn or walk, and the label says "untrained".
+// What a creature does before it has learned anything: random moves, so the viewer can see a body with no skill. This is a display, not
+// the start of a training run (a run's first checkpoints stand nearly still). Per joint a smoothed random signal (an Ornstein-Uhlenbeck
+// process: a random walk pulled back towards zero), seeded so a rehearsal and a take look the same. It stands for STAND_S as it was
+// drawn, then the noise ramps in. It is a stand-in for "no brain yet", not a policy: nothing in it can learn or walk.
 
 export const STAND_S = 0.5; // seconds standing still before the twitching starts
 export const RAMP_S = 1.0; // seconds for the noise to reach full strength

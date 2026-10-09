@@ -4,8 +4,13 @@
 import { LIMITS, type Design, type LegPair } from './design.ts';
 import { clampDesign } from './rules.ts';
 
-/** Pixels per metre follows the canvas, so the creature fills a big sketch pane and a small drawer alike. */
-const pxPerMetre = (c: HTMLCanvasElement) => Math.max(140, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / 1.6)); // pixels per metre
+/**
+ * Pixels per metre follows the pane, never the body, so the pointer and the drawing stay in step while a handle is dragged. It is
+ * chosen so that the widest creature the sketcher allows (the widest torso with the longest legs, 2.1 m across, plus room for the
+ * handles) fits the smaller side of the pane: a valid body can never have a handle out of reach.
+ */
+const FIT_M = 2 * (LIMITS.torso.width[1] / 2 + LIMITS.thigh[1] + LIMITS.shin[1]) + 0.3;
+export const pxPerMetre = (c: HTMLCanvasElement) => Math.max(110, Math.min(520, Math.min(c.clientWidth || 320, c.clientHeight || 320) / FIT_M));
 const clamp = (v: number, [lo, hi]: readonly number[]) => Math.max(lo, Math.min(hi, v));
 
 type Handle =
