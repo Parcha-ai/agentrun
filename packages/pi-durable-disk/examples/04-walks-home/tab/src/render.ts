@@ -142,9 +142,10 @@ export class View {
   }
 
   /** Camera presets, as an offset from the creature: three-quarter (default) or side-on at body height (a gait reads best here). */
-  setPreset(name: 'three-quarter' | 'side'): void {
+  setPreset(name: 'three-quarter' | 'side' | 'close'): void {
     const t = this.controls.target;
     if (name === 'side') { t.z = 0.2; this.camera.position.set(t.x, t.y - 1.9, 0.3); }
+    else if (name === 'close') { t.z = 0.2; this.camera.position.set(t.x + 0.8, t.y - 0.95, 0.6); } // the creature large in the pane (clean mode)
     else { t.z = 0.2; this.camera.position.set(t.x + 1.1, t.y - 1.3, 0.8); }
     this.controls.update();
   }

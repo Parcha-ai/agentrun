@@ -16,6 +16,16 @@ CDP_PORT=9333 node scripts/check-embed.mjs <outdir>   # the page inside a parent
 WebGL: the page needs it. A headless Chrome without a GPU needs `--use-gl=angle --use-angle=swiftshader
 --enable-unsafe-swiftshader`.
 
+## The v2 take: draw, learn live, walk home, offline
+`/?clean=1` is the show's mode: the creature and one label, nothing else (no header, HUD, toolbar or toasts).
+- **Untrained start.** No policy is installed: the creature stands for half a second as it was drawn, then its brain starts (random smoothed actions, `src/untrained.ts`, seeded) and it falls over and flops. The label says `untrained`. `?dummy=1` starts with the old demo trot instead (for the older checks).
+- **Phases.** `draw` (default): the sketcher on the left, the creature on the right; every stroke rebuilds the creature (it stands and flops again) and the design is saved to the disk (`creature/creature.xml`, `body.json`, `designs.sqlite`) 1.5 s after the pen rests, or at once on `__walks.commitDesign()`. `watch`: the sketcher is gone and the creature fills the pane. It goes to `watch` on the message `set-phase {phase:"watch"}` or when the first checkpoint installs; `?phase=watch` starts there.
+- **Live checkpoints.** The page polls `train/gpu/policy.json` (a run in progress; `?checkpoints=<path>` to change it) and `home/policy.json` (the final file) at 1 Hz through the embedding page. Each new file for this body installs without a reset; if the creature is lying down and the file has no getup network it is set back on its feet and the page posts `stood-up`. The label reads `learning: checkpoint N` (the trainer's own `provenance.checkpoint` when the file has it, otherwise the count of installs) and `trained` for the final file.
+- **Events (tab to shell).** `untrained`, `policy-arrived` (adds `kind`, `checkpoint_n`, `steps`, `wall_s`, `reported_walk_10s_m`, `stood_up`), `checkpoint-installed`, `policy-walked` (one per install; `partial: true` and the real `window_seconds` when the next install cut it short), `stood-up`, `phase`, `network {online}`, `policy-refused`. `window.__walks.state()` returns `{state, checkpoint_n, steps, wall_s, reported_walk_10s_m, final, offline, mode, phase, mjcf_sha256, policy}`.
+- **Offline.** After a policy is installed nothing needs the network: policy, physics, render and kicks are local. The watchers' disk reads fail quietly; the page shows an `offline` badge and posts `network {online:false}`.
+- **Drive it.** `__walks.kick([1, 0], 350)` (heading frame, forward), `__walks.applyDesign(design)`, `__walks.commitDesign()`.
+- **Check it.** `CDP_PORT=9333 CP1=<walk-only 3-DOF policy> CP2=<3-DOF walk+getup policy> FINAL=<final policy> node scripts/check-v2.mjs <outdir>` runs the whole take in a real page: untrained and flopping, two checkpoints, the final file, then the network off with a kick.
+
 ## Before the shoot: performance, soak, policy checks
 All need a Chrome with CDP on `CDP_PORT` (a software-GL one: `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader`).
 ```sh
@@ -42,6 +52,7 @@ machine that rasterises in software: cheaper materials and no multisampling.
 | `src/policy.ts`, `src/obs.ts` | `mlp-v1` policy runner (owned by the trainer lane; see `POLICY-FORMAT.md`) |
 | `src/sketch.ts`, `src/render.ts`, `src/main.ts` | sketcher canvas, three.js view, the page |
 | `src/rules.ts` | what the sketcher tells the user about a body: the leg-reach clamp (1.5x the torso) and the per-body notes, from measurements |
+| `src/untrained.ts` | the untrained brain: seeded random smoothed actions, a stand-in for a policy that has learned nothing |
 | `src/stats.ts` | frame and event counters kept by the page for the checks above |
 | `src/store.ts`, `src/backend.ts` | SQLite (sql.js) with one writer per file; backends: IndexedDB, or the parent page (the disk) |
 | `MEMORY_SCHEMA` in `src/store.ts`, `scripts/record-machine.mjs` | the agent's side: append "I am now on machine X" to `memory.sqlite` |

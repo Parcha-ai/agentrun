@@ -14,7 +14,7 @@ const log = `${out}/soak-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl
 const seed = Number(process.env.SEED ?? Date.now() % 100000);
 let rng = seed; const rand = () => { rng = (rng * 1664525 + 1013904223) % 4294967296; return rng / 4294967296; };
 
-const app = await openApp({ throttle, width: Number(process.env.W ?? 700), height: Number(process.env.H ?? 500), query: process.env.LITE ? '?lite=1' : '' });
+const app = await openApp({ throttle, width: Number(process.env.W ?? 700), height: Number(process.env.H ?? 500), query: process.env.POLICY ? (process.env.LITE ? '?lite=1' : '') : (process.env.LITE ? '?dummy=1&lite=1' : '?dummy=1') });
 const { ev } = app;
 if (process.env.POLICY) {
   const r = await ev(`__walks.loadPolicyText(${JSON.stringify(readFileSync(process.env.POLICY, 'utf8'))}, 'policy.json').then(() => 'loaded', (e) => 'refused: ' + e.message)`);

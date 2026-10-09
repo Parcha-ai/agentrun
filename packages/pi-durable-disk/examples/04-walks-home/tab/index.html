@@ -40,6 +40,21 @@ button:disabled { opacity:.4; cursor:default; }
 .lbl { font:10px var(--mono); color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
 #toolbar button { padding:3px 8px; font-size:12px; }
 #policyName { font:11px var(--mono); max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The state of the creature's brain, on the creature, in plain words (always on). */
+#stateLabel { position:absolute; left:50%; top:14px; transform:translateX(-50%); z-index:4; font:700 30px/1.1 var(--sans); letter-spacing:.01em; padding:9px 24px; border-radius:999px; background:#b3261e; color:#fff; pointer-events:none; white-space:nowrap; box-shadow:0 2px 12px rgba(0,0,0,.25); }
+#stateLabel[data-state=learning] { background:#c98a1a; }
+#stateLabel[data-state=trained] { background:#1f7a4d; }
+#stateLabel[data-state=dummy] { background:#555; font-size:18px; }
+#offlineBadge { position:absolute; right:14px; top:14px; z-index:4; background:#111; color:#fff; padding:7px 16px; border-radius:999px; font:600 18px var(--sans); box-shadow:0 2px 12px rgba(0,0,0,.25); }
+/* ?clean=1: the creature, one label, nothing else; the sketcher is a pane only in the draw phase */
+body.clean { grid-template-rows:minmax(0,1fr); }
+body.clean header, body.clean #hud, body.clean #toolbar, body.clean #toast, body.clean #err { display:none !important; }
+body.clean main { grid-template-columns:minmax(0,1fr) !important; }
+body.clean.phase-draw main { grid-template-columns:42% minmax(0,1fr) !important; }
+body.clean aside { position:static !important; transform:none !important; box-shadow:none !important; width:auto !important; padding:10px; min-height:0; }
+body.clean aside > :not(#sketch) { display:none !important; }
+body.clean #sketch { flex:1 1 auto; height:auto; min-height:0; }
+body.clean.phase-watch aside { display:none !important; }
 #toast { position:absolute; left:50%; top:10px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:4px 12px; border-radius:999px; font-weight:600; opacity:0; transition:opacity .2s; pointer-events:none; z-index:3; }
 #toast.on { opacity:1; }
 #err { color:var(--warn); font-size:12px; position:absolute; left:8px; right:8px; top:64px; pointer-events:none; }
@@ -85,6 +100,8 @@ table.designs td, table.designs th { border-bottom:1px solid var(--line); paddin
     <canvas id="view"></canvas>
     <div id="hud"></div>
     <svg id="dragSvg" hidden style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2"><defs><marker id="arrowHead" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L4,2 L0,4 z" fill="#b3261e"/></marker></defs><line id="dragArrow" x1="0" y1="0" x2="0" y2="0" stroke="#b3261e" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowHead)"/></svg>
+    <div id="stateLabel" data-state="untrained">untrained</div>
+    <div id="offlineBadge" hidden>offline</div>
     <div id="toast"></div>
     <div id="err"></div>
     <div id="toolbar">
