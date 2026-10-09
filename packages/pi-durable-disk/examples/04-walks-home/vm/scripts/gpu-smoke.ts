@@ -28,10 +28,16 @@ const send = (page: Page, text: string) => page.evaluate(`(() => { const i = doc
 
 const TASK = `I want a walking creature trained. This tab cannot train anything. Move yourself with your switch_environment tool to ${target} (one-sentence reason), run the training command that your notice there gives you, and wait for it to finish. When ${POLICY} exists, check its size with bash, then move home with switch_environment (target "tab", a one-sentence reason). Once you are home, tell me in two short lines where you trained and how big the policy file is.`;
 
+let dumpPage: () => Promise<void> = async () => undefined;
 const cdp = await Cdp.connect();
 const device = await cdp.device();
 try {
   const page = await device.open(link);
+  dumpPage = async () => {
+    results.items = await page.evaluate("demo.items().map(i => ({ kind: i.kind, status: i.status, text: (i.text ?? i.args ?? '').slice(0, 300), out: String(i.output ?? '').slice(0, 300) }))");
+    results.state = await page.evaluate("({ mode: demo.state.mode, busy: demo.state.chat.busy, placement: demo.state.placement, progress: demo.state.progress })");
+    await snap(page, "failure");
+  };
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 240_000, 500);
   step("running in this tab", { environments: await page.evaluate("demo.state.environments.map(e => e.id)") });
   const before = await page.evaluate<number>("demo.items().length");
@@ -52,14 +58,20 @@ try {
   await snap(page, "home");
   const files = await page.evaluate<string[]>("demo.files()");
   step("the tab's workspace", { hasPolicy: files.includes(POLICY), files: files.filter((f) => f.startsWith("train/")).slice(0, 12) });
-  const answered = `(() => { const items = demo.items(); const s = items.findLastIndex(i => i.kind === "switch"); const a = items.slice(s + 1).filter(i => i.kind === "assistant"); const last = a.at(-1); return s >= 0 && !demo.state.chat.busy && last && !last.streaming && last.text.length > 0; })()`;
+  // The agent's closing words may come from either host: its move home happens after the step that asks for it, so the model can
+  // finish its answer on the GPU box before the run leaves. Done is: the tab runs the agent again, it is idle, and an assistant
+  // message follows the agent's last switch_environment call.
+  const answered = `(() => { const items = demo.items(); const s = items.findLastIndex(i => i.kind === "tool" && /switch_environment/.test(i.name ?? i.args ?? "")); const a = items.slice(s + 1).filter(i => i.kind === "assistant"); const last = a.at(-1); return s >= 0 && demo.state.mode === "writer" && !demo.state.chat.busy && last && !last.streaming && last.text.length > 0; })()`;
   await page.until(answered, 300_000, 500);
-  step("answered at home", { answer: await page.evaluate<string>(`demo.items().filter(i => i.kind === "assistant").at(-1).text`), ms: Date.now() - tOut });
+  step("the agent's closing answer", { answer: await page.evaluate<string>(`demo.items().filter(i => i.kind === "assistant").at(-1).text`), ms: Date.now() - tOut });
   await snap(page, "answer");
   results.items = await page.evaluate("demo.items().map(i => ({ kind: i.kind, text: (i.text ?? i.args ?? '').slice(0, 400) }))");
 } catch (error) {
   step("failed", { error: (error as Error).message });
+  // What the page showed when it stopped: the last items and where the run was.
   process.exitCode = 1;
+  await dumpPage().catch(() => undefined);
+  results.failedWith = (error as Error).message;
 } finally {
   writeFileSync(out, JSON.stringify(results, null, 2));
   await device.close().catch(() => undefined);
