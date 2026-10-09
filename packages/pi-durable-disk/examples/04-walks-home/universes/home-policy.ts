@@ -50,7 +50,7 @@ export function strictPolicy(text: string): { ok: true; policy: PolicyJson } | {
     if (net.layers !== undefined && !Array.isArray(net.layers)) return { ok: false, reason: `the ${name} network's layers are not a list` };
     if (!finite(net.obs?.mean) || !finite(net.obs?.std)) return { ok: false, reason: `the ${name} network's normalisation is not finite` };
     for (const [i, layer] of (net.layers ?? []).entries()) {
-      if (typeof layer !== "object" || layer === null) return { ok: false, reason: `the ${name} network's layer ${i} is not an object` };
+      if (typeof layer !== "object" || layer === null || Array.isArray(layer)) return { ok: false, reason: `the ${name} network's layer ${i} is not an object` };
       if (!finiteWeights(layer.w) || !finiteWeights(layer.b)) return { ok: false, reason: `the ${name} network's layer ${i} has NaN or infinite weights` };
     }
   }
@@ -74,6 +74,19 @@ async function walkRefused(walk: PolicyFileRead, body: { mjcfSha256: string; nj:
   const metres = strict.policy.provenance?.walk_10s?.distance_m;
   if (typeof metres !== "number" || !(metres >= MIN_WALK_M)) return `its walk test covered ${typeof metres === "number" ? metres.toFixed(3) : "no"} m in 10 s`;
   return tabRefuses(walk.text, body);
+}
+
+/**
+ * The run's creature as the home check needs it: null when the run has no creature at all (neither file), so there is no
+ * body to check against. A creature with one file missing, or a body.json whose jointNames is not a non-empty list of
+ * names, throws: no policy goes home and the stage is told, rather than an unchecked one.
+ */
+export function homeBody(creatureXml: string | null, bodyJson: string | null): { creatureXml: string; nj: number } | null {
+  if (creatureXml === null && bodyJson === null) return null;
+  if (creatureXml === null || bodyJson === null) throw new Error(`the run's creature has no ${creatureXml === null ? "creature.xml" : "body.json"}`);
+  const names = (JSON.parse(bodyJson) as { jointNames?: unknown } | null)?.jointNames;
+  if (!Array.isArray(names) || names.length === 0 || !names.every((n) => typeof n === "string")) throw new Error("the run's body.json names no joints");
+  return { creatureXml, nj: names.length };
 }
 
 export interface HomeSources {

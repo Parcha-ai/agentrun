@@ -24,7 +24,7 @@ import { pipePlacement, type PipePlacement } from "./pipe.ts";
 import { Multiverse, MultiverseError, type FanOutReport, type TakeoverReport, type UniverseSpec } from "./multiverse.ts";
 import { makeSourceRun } from "./source.ts";
 import { homeAdoption } from "./home-adoption.ts";
-import { chooseHomePolicy } from "./home-policy.ts";
+import { chooseHomePolicy, homeBody } from "./home-policy.ts";
 import { COURSE_SCORE_UNIT, readTrainProgress, TRAIN_SCORE_UNIT } from "./train-progress.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -341,16 +341,14 @@ async function command(cmd: FeedCommand): Promise<CommandResult> {
  */
 async function homePolicyPath(run: RunRef, universe: string): Promise<string | null> {
   const read = (path: string) => control.getObject(`runs/${run.id}/work/${path}`).then((b) => ({ text: new TextDecoder().decode(b) }), () => null);
-  const xml = await read("creature/creature.xml");
-  const bodyFile = await read("creature/body.json");
-  // A body.json that is there but broken throws: the adoption sends no policy home and the stage is told
-  // (home-adoption.ts). Only a run without a creature skips the check.
-  const nj = bodyFile ? ((JSON.parse(bodyFile.text) as { jointNames?: unknown[] }).jointNames?.length ?? 0) : 0;
-  if (!xml || !nj) {
+  // A creature that is incomplete or broken throws: the adoption sends no policy home and the stage is told
+  // (home-adoption.ts). Only a run with no creature at all skips the check.
+  const body = homeBody((await read("creature/creature.xml"))?.text ?? null, (await read("creature/body.json"))?.text ?? null);
+  if (!body) {
     log("home.policy-unchecked", { run: run.id, why: "the run has no creature" });
     return `train/${universe}/policy.json`;
   }
-  const choice = await chooseHomePolicy({ read, universe, creatureXml: xml.text, nj });
+  const choice = await chooseHomePolicy({ read, universe, ...body });
   if (choice.reason) {
     feed.emit({ t: "note", at: Date.now() - origin, kind: "home", text: choice.path ? `${choice.reason[0]!.toUpperCase()}${choice.reason.slice(1)}; the walking policy goes home alone.` : `No policy goes home: ${choice.reason}.` });
     log("home.policy", { run: run.id, path: choice.path, reason: choice.reason });
