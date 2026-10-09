@@ -42,6 +42,7 @@ export interface CloudOptions {
 }
 
 interface Placed {
+  machine?: string;
   driver: HostDriver;
   dialer?: LinkDialer;
   linkFile?: string;
@@ -168,18 +169,24 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
     };
     return daytona;
   }
+  // Two "machines" on this host, each its own FUSE client and mount root: a run killed on one is resumed on the other.
+  const machines = [
+    { name: "machine B", root: "/mnt/pda/demo/b", hostName: "demo-local-b", linkPort: LINK_PORT },
+    { name: "machine C", root: "/mnt/pda/demo/c", hostName: "demo-local-c", linkPort: LINK_PORT + 1 },
+  ];
   const hostLabel = "a second machine (local FUSE client)";
-  const localDriver = (env: Record<string, string>) =>
+  const localDriver = (machine: (typeof machines)[number], env: Record<string, string>) =>
     localHost({
       mode: "systemd",
-      mountRoot: "/mnt/pda/demo/b",
+      mountRoot: machine.root,
       unitPrefix: "pda-demo-",
-      hostName: "demo-local-b",
+      hostName: machine.hostName,
       parkThresholdMs: null,
       runArgs: ["--app", CLOUD_APP, ...CLOUD_LEASE, "--serve", "0"],
       env: { DEMO_MODEL: options.model.model, ...(options.eventsLog ? { DEMO_EVENTS_LOG: options.eventsLog } : {}), ...env },
     });
   const placed = new Map<string, Placed>();
+  const models = new Map<string, ModelProxy>();
 
   async function dropToken(id: string, token: string): Promise<void> {
     try {
@@ -190,27 +197,87 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
     }
   }
 
+  /** Start (or, with `demand` false, keep) the run on `machine`; the instance gets a link of its own when asked. */
+  async function place(ref: RunRef, machine: (typeof machines)[number], demand: boolean): Promise<boolean> {
+    const started = Date.now();
+    let link: { token: string; file: string } | undefined;
+    if (options.link) {
+      const dir = options.linkDir ?? "/tmp/pda-demo-links";
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      link = { token: randomBytes(24).toString("base64url"), file: join(dir, `${ref.id}-${machine.hostName}.token`) };
+      writeFileSync(link.file, `${link.token}\n`, { mode: 0o600 });
+    }
+    const driver = localDriver(machine, link ? { DEMO_LINK_PORT: String(machine.linkPort), DEMO_LINK_TOKEN_FILE: link.file } : { DEMO_MODEL_URL: options.model.baseUrl });
+    const result = await ensureRunning(ref, driver, { control, demand, tokenPrefix: "pda-demo-", leaseExpiryMs: 10_000, startGraceMs: 20_000 });
+    if (result.action !== "started") {
+      if (link) rmSync(link.file, { force: true });
+      if (demand) throw new Error(`the supervisor did not start the run: ${result.action}`);
+      return false;
+    }
+    options.log("cloud.ensure", { run: ref.id, action: result.action, machine: machine.name, ms: Date.now() - started, reason: result.reason, startMs: result.startMs, revoked: result.revoked.length, unit: result.handle.unit ?? null });
+    options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
+    options.ledger?.open("cloud-instance", `${ref.id}:${JSON.stringify(result.handle)}`, `${hostLabel}, ${machine.name}`);
+    const previous = placed.get(ref.id);
+    const model = models.get(ref.id)!;
+    const dialer = link ? dialLink({ url: `ws://127.0.0.1:${machine.linkPort}/`, token: link.token, proxy: model, log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
+    placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), ...(link ? { linkFile: link.file } : {}), handle: result.handle, token: result.token.identifier, host: `${hostLabel}, ${machine.name}`, startedAt: started, machine: machine.name });
+    // The one this start replaced (killed or frozen): clean up what is left of it.
+    if (previous) await retire(ref, previous, "now");
+    return true;
+  }
+
+  async function retire(ref: RunRef, at: Placed, how: "fenced" | "now"): Promise<void> {
+    const started = Date.now();
+    // After a takeover the claim is already revoked: the instance's next commit or heartbeat fails and it exits 75 by
+    // itself. Wait for that (the fence, observed), then let the driver clean up whatever is left.
+    const driver = at.driver;
+    let status = await driver.status(at.handle).catch(() => "unknown" as const);
+    while (how === "fenced" && status === "running" && Date.now() - started < 15_000) {
+      await new Promise((r) => setTimeout(r, 250));
+      status = await driver.status(at.handle).catch(() => "unknown" as const);
+    }
+    const unit = typeof at.handle.unit === "string" ? at.handle.unit : undefined;
+    const show = unit ? spawnSync("/usr/bin/systemctl", ["show", `${unit}.service`, "-p", "ExecMainStatus", "-p", "Result", "-p", "NRestarts"], { encoding: "utf8" }).stdout.trim().split("\n").join(" ") : null;
+    options.log("cloud.exited", { run: ref.id, status, ms: Date.now() - started, ...(show ? { unit: show } : {}) });
+    await driver.stop(at.handle).catch((error) => options.log("cloud.stop-failed", { run: ref.id, error: (error as Error).message }));
+    at.dialer?.close();
+    if (at.linkFile) rmSync(at.linkFile, { force: true });
+    options.ledger?.close("cloud-instance", `${ref.id}:${JSON.stringify(at.handle)}`, "stopped");
+    await dropToken(ref.id, at.token);
+    options.log("cloud.stopped", { run: ref.id, ms: Date.now() - started });
+  }
+
+  const otherMachine = (ref: RunRef) => {
+    const now = placed.get(ref.id)?.machine;
+    return machines.find((m) => m.name !== now) ?? machines[0]!;
+  };
+
   const host: CloudHost = {
     async start(ref: RunRef, run: { model: ModelProxy }) {
-      const started = Date.now();
-      let link: { token: string; file: string } | undefined;
-      if (options.link) {
-        const dir = options.linkDir ?? "/tmp/pda-demo-links";
-        mkdirSync(dir, { recursive: true, mode: 0o700 });
-        link = { token: randomBytes(24).toString("base64url"), file: join(dir, `${ref.id}.token`) };
-        writeFileSync(link.file, `${link.token}\n`, { mode: 0o600 });
-      }
-      const driver = localDriver(
-        link ? { DEMO_LINK_PORT: String(LINK_PORT), DEMO_LINK_TOKEN_FILE: link.file } : { DEMO_MODEL_URL: options.model.baseUrl },
-      );
-      const result = await ensureRunning(ref, driver, { control, demand: true, tokenPrefix: "pda-demo-", leaseExpiryMs: 10_000, startGraceMs: 20_000 });
-      options.log("cloud.ensure", { run: ref.id, action: result.action, ms: Date.now() - started, ...(result.action === "started" ? { reason: result.reason, startMs: result.startMs } : {}) });
-      if (result.action !== "started") throw new Error(`the supervisor did not start the run: ${result.action}`);
-      options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
-      options.ledger?.open("cloud-instance", `${ref.id}:${JSON.stringify(result.handle)}`, hostLabel);
-      const dialer = link ? dialLink({ url: `ws://127.0.0.1:${LINK_PORT}/`, token: link.token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
-      placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), ...(link ? { linkFile: link.file } : {}), handle: result.handle, token: result.token.identifier, host: hostLabel, startedAt: started });
-      return { host: hostLabel };
+      models.set(ref.id, run.model);
+      await place(ref, machines[0]!, true);
+      return { host: placed.get(ref.id)!.host };
+    },
+
+    /** One supervisor tick: a holder that died (orphaned) or froze (lease expired) is replaced on the other machine. */
+    async supervise(ref: RunRef) {
+      if (!placed.has(ref.id)) return undefined;
+      if (!(await place(ref, otherMachine(ref), false))) return undefined;
+      const host = placed.get(ref.id)!.host;
+      options.log("cloud.replaced", { run: ref.id, host });
+      return { host };
+    },
+
+    /** Power off the machine that runs the run: its instance and its FUSE daemon die together (SIGKILL). */
+    async kill(ref: RunRef) {
+      const at = placed.get(ref.id);
+      const unit = typeof at?.handle.unit === "string" ? at.handle.unit : undefined;
+      if (!unit) return;
+      const scopes = spawnSync("/usr/bin/systemctl", ["list-units", "--plain", "--no-legend", "--type=scope", `${unit}-fuse-*`], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().split(/\s+/)[0]).filter((u): u is string => Boolean(u));
+      for (const u of [`${unit}.service`, ...scopes]) spawnSync("sudo", ["-n", "/usr/bin/systemctl", "kill", "-s", "SIGKILL", u]);
+      // A machine without power does not restart its service in place: stop the unit before its restart delay ends.
+      spawnSync("sudo", ["-n", "/usr/bin/systemctl", "stop", `${unit}.service`]);
+      options.log("cloud.killed", { run: ref.id, units: 1 + scopes.length });
     },
 
     attachViewer: (ref: RunRef, send: (frame: PipeFrame) => void) => relayViewer({ control, ref, send, log: options.log, label: () => placed.get(ref.id)?.host ?? hostLabel, dialer: () => placed.get(ref.id)?.dialer }),
@@ -226,24 +293,7 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
       const at = placed.get(ref.id);
       if (!at) return;
       placed.delete(ref.id);
-      const started = Date.now();
-      // The claim is already revoked: the instance's next commit or heartbeat fails and it exits 75 by itself. Wait for
-      // that (the fence, observed), then let the driver clean up whatever is left.
-      const driver = at.driver;
-      let status = await driver.status(at.handle).catch(() => "unknown" as const);
-      while (how === "fenced" && status === "running" && Date.now() - started < 15_000) {
-        await new Promise((r) => setTimeout(r, 250));
-        status = await driver.status(at.handle).catch(() => "unknown" as const);
-      }
-      const unit = typeof at.handle.unit === "string" ? at.handle.unit : undefined;
-      const show = unit ? spawnSync("/usr/bin/systemctl", ["show", `${unit}.service`, "-p", "ExecMainStatus", "-p", "Result", "-p", "NRestarts"], { encoding: "utf8" }).stdout.trim().split("\n").join(" ") : null;
-      options.log("cloud.exited", { run: ref.id, status, ms: Date.now() - started, ...(show ? { unit: show } : {}) });
-      await driver.stop(at.handle).catch((error) => options.log("cloud.stop-failed", { run: ref.id, error: (error as Error).message }));
-      at.dialer?.close();
-      if (at.linkFile) rmSync(at.linkFile, { force: true });
-      options.ledger?.close("cloud-instance", `${ref.id}:${JSON.stringify(at.handle)}`, "stopped");
-      await dropToken(ref.id, at.token);
-      options.log("cloud.stopped", { run: ref.id, ms: Date.now() - started });
+      await retire(ref, at, how);
     },
 
     async close() {

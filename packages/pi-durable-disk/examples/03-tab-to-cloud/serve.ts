@@ -8,6 +8,8 @@
 // environment; the server holds the key, mints a mount token per claim and removes it after. With --local DIR, the
 // "disk" is a local directory and there is no claim (for development of the page).
 // It prints the run's link, `/run/<id>#<secret>`: the fragment is the run's secret.
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -33,6 +35,7 @@ const { values } = parseArgs({
     "cloud-events": { type: "string" },
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
+    "admin-token-file": { type: "string" },
   },
 });
 
@@ -45,6 +48,12 @@ const model = { baseUrl: values["model-url"]!, model: values.model!, budgetToken
 const disk = process.env.PDA_LIVE_DISK ?? process.env.ARCHIL_DISK ?? "dsk-local";
 const region = process.env.PDA_LIVE_REGION ?? process.env.ARCHIL_REGION ?? "aws-us-east-1";
 const ledger = values.ledger ? new Ledger(values.ledger) : undefined;
+// The loopback admin route's token (faults for the demo), written to a 0600 file for a script on this machine.
+let adminToken: string | undefined;
+if (values["admin-token-file"]) {
+  adminToken = randomBytes(24).toString("base64url");
+  writeFileSync(values["admin-token-file"], `${adminToken}\n`, { mode: 0o600 });
+}
 
 let cloud: CloudHost | undefined;
 if (values.cloud === "local" || values.cloud === "daytona") {
@@ -65,6 +74,7 @@ const server = createDemoServer({
   log,
   ...(ledger ? { ledger } : {}),
   ...(cloud ? { cloud } : {}),
+  ...(adminToken ? { adminToken } : {}),
   ...(values.local ? { acquire: async (opts) => localClaim(values.local!, opts), claimDir: (dir: string) => openClaimDir(dir, { fstype: null }) } : {}),
 });
 const port = await server.listen(Number(values.port), values.host);
