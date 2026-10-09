@@ -153,7 +153,10 @@ def main() -> None:
   # body it takes ~20 s. They travel with the run (WORK) so a resumed or forked universe starts warm. Unpacked before
   # JAX or Warp load, into a local directory outside WORK.
   cache_tar = os.path.abspath(args.compile_cache) if args.compile_cache else os.path.join(work, "compile-cache.tar.gz")
-  cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "pda-train")
+  # One cache directory per tarball path: two trainers on one box (the walker and its getup partner) must never unpack
+  # into, or compile into, the same files. A --compile-only warm-up with the same path fills the same directory.
+  cache_name = os.path.basename(cache_tar).split(".")[0] if args.compile_cache else "default"
+  cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "pda-train", cache_name)
   cache_was_warm = False
   cache_source = "none"
   if not args.no_compile_cache:
