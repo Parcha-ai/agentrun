@@ -46,6 +46,7 @@ export interface ModalCreateParams {
   gpu?: string;
   cpu?: number;
   memoryMiB?: number;
+  regions?: string[];
   timeoutMs: number;
   blockNetwork?: boolean;
   outboundCidrAllowlist?: string[];
@@ -74,6 +75,8 @@ export interface ModalSandboxesOptions {
   gpu?: string;
   cpu?: number;
   memoryMiB?: number;
+  /** Where Modal may place the sandbox (`["us-east"]`): near the disk, a mount's round trip is a few ms instead of tens. */
+  regions?: string[];
   /** Ports the sandbox exposes (an SDK create parameter): for a desktop or an event stream. */
   encryptedPorts?: number[];
   unencryptedPorts?: number[];
@@ -165,6 +168,7 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
         ...(options.gpu ? { gpu: options.gpu } : {}),
         ...(options.cpu ? { cpu: options.cpu } : {}),
         ...(options.memoryMiB ? { memoryMiB: options.memoryMiB } : {}),
+        ...(options.regions ? { regions: options.regions } : {}),
         ...(options.encryptedPorts ? { encryptedPorts: options.encryptedPorts } : {}),
         ...(options.unencryptedPorts ? { unencryptedPorts: options.unencryptedPorts } : {}),
         timeoutMs: Math.min(Math.max(1, body.ttlMinutes ?? 60) * 60_000, MODAL_MAX_TIMEOUT_MS),
@@ -288,8 +292,8 @@ export interface ModalHostOptions
  * and its `sandboxId` a Modal sandbox id. `prepare` receives the client (exec, upload) to install what the image lacks.
  */
 export function modalHost(opts: ModalHostOptions): HostDriver & { readonly fleet: string; readonly mountRoot: string } {
-  const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, encryptedPorts, unencryptedPorts, create, ttlMinutes, ...rest } = opts;
-  const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, encryptedPorts, unencryptedPorts, create });
+  const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create, ttlMinutes, ...rest } = opts;
+  const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create });
   return daytonaHost({
     ...rest,
     client,
