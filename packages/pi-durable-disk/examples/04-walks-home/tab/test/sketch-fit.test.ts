@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultDesign, LIMITS, validateDesign, type Design } from '../src/design.ts';
-import { pxPerMetre, Sketcher, SKETCH_COLORS } from '../src/sketch.ts';
+import { footRadiusM, pxPerMetre, Sketcher, SKETCH_COLORS } from '../src/sketch.ts';
 import { buildMjcf } from '../src/mjcf.ts';
 import { fakeCanvas } from './fakecanvas.ts';
 
@@ -119,4 +119,50 @@ test('the sketch is labelled "top view" and draws a foot at every leg end: four 
     const ends = new Set(feet.map((c) => `${(c.args[0] as number).toFixed(3)},${(c.args[1] as number).toFixed(3)}`));
     assert.equal(ends.size, pairs * 2, 'at different places: a foot at each end of each pair');
   }
+});
+
+test('draw() paints with the creature\'s colours: thigh and shin strokes, a torso fill, a fill for every foot', () => {
+  const d = defaultDesign();
+  const { canvas, calls } = recordingCanvas();
+  const sk = new Sketcher(canvas, d, () => {});
+  calls.length = 0;
+  sk.draw();
+  const strokes = (c: string) => calls.filter((x) => x.fn === 'stroke' && x.stroke === c).length;
+  const fills = (c: string) => calls.filter((x) => x.fn === 'fill' && x.fill === c).length;
+  assert.equal(strokes(SKETCH_COLORS.thigh), d.legs.length * 2, 'a thigh stroke per leg');
+  assert.equal(strokes(SKETCH_COLORS.shin), d.legs.length * 2, 'a shin stroke per leg');
+  assert.equal(fills(SKETCH_COLORS.torso), 1, 'the torso is filled with the torso colour');
+  assert.equal(fills(SKETCH_COLORS.foot), d.legs.length * 2, 'every foot is filled with the foot colour');
+});
+
+test('the ring on a leg handle always surrounds its foot, whatever the canvas size or the leg radius', () => {
+  for (const [w, h, radius] of [[700, 700, 0.02], [700, 700, LIMITS.radius[1]], [1400, 1400, LIMITS.radius[1]], [320, 320, LIMITS.radius[1]]] as const) {
+    const d = defaultDesign();
+    for (const l of d.legs) l.radius = radius;
+    const { canvas, calls } = recordingCanvas(w, h);
+    const sk = new Sketcher(canvas, d, () => {});
+    calls.length = 0;
+    sk.draw();
+    const px = pxPerMetre(canvas);
+    const foot = calls.find((c) => c.fn === 'arc' && c.fill === SKETCH_COLORS.foot)!;
+    const ring = calls.find((c, i) => c.fn === 'arc' && calls[i + 1]?.fn === 'stroke' && calls[i + 1].stroke === '#2d5fb3')!; // an arc stroked in the handle blue (a dot's arc is filled)
+    const footPx = (foot.args[2] as number) * px;
+    assert.ok((ring.args[2] as number) >= footPx + 3, `${w}x${h} radius ${radius}: the ring (${ring.args[2]} px) clears the foot (${footPx.toFixed(1)} px)`);
+  }
+});
+
+test('a leg handle can be grabbed on its ring, however big the foot inside it is', () => {
+  const [w, h] = [700, 700];
+  const d = defaultDesign();
+  for (const l of d.legs) l.radius = LIMITS.radius[1];
+  const { canvas, fire } = fakeCanvas(w, h);
+  const sk = new Sketcher(canvas, d, () => {});
+  const px = pxPerMetre(canvas);
+  const hd = sk.geometry().handles.find((c) => c.name === 'leg0')!;
+  const ringPx = footRadiusM(LIMITS.radius[1], px) * px + 4;
+  assert.ok(ringPx > 14, `the ring (${ringPx.toFixed(1)} px) is outside the usual 14 px grab radius, so this test means something`);
+  fire('pointerdown', { x: hd.x + ringPx, y: hd.y }); // on the ring, to its right
+  fire('pointermove', { x: hd.x + ringPx, y: hd.y - 20 }); // drag it up a little
+  fire('pointerup', { x: hd.x + ringPx, y: hd.y - 20 });
+  assert.ok(sk.get().legs[0].thigh + sk.get().legs[0].shin > d.legs[0].thigh + d.legs[0].shin, 'the leg reach changed: the ring grabbed the leg handle');
 });

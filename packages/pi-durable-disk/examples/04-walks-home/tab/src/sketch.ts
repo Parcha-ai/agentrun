@@ -62,6 +62,9 @@ export function applyDrag(d: Design, h: Handle, x: number, y: number): void {
   }
 }
 
+/** The foot's radius in metres: the creature's foot (a sphere a little wider than the leg), and never smaller than 5 px so it shows on a small pane. */
+export const footRadiusM = (radius: number, px: number) => Math.max(radius * 1.15 * 1.4, 5 / px);
+
 export class Sketcher {
   private design: Design;
   /** Pixels per metre, from the canvas size (a big sketch pane draws a big creature). */
@@ -129,10 +132,12 @@ export class Sketcher {
   private handles(): { h: Handle; x: number; y: number }[] { return handlePositions(this.design); }
 
   private hit(x: number, y: number): Handle | null {
-    let best: Handle | null = null, bd = (14 / this.px) ** 2;
+    let best: Handle | null = null, bd = Infinity;
     for (const c of this.handles()) {
+      // 14 px around a handle; a leg handle's ring can be wider than that when the foot is big, and the ring is what the viewer sees to grab
+      const reach = c.h.kind === 'leg' ? Math.max(14, footRadiusM(this.design.legs[c.h.i].radius, this.px) * this.px + 8) : 14;
       const d = (c.x - x) ** 2 + (c.y - y) ** 2;
-      if (d < bd) { bd = d; best = c.h; }
+      if (d < (reach / this.px) ** 2 && d < bd) { bd = d; best = c.h; }
     }
     return best;
   }
@@ -193,7 +198,7 @@ export class Sketcher {
     for (const l of legs) {
       const x = (l.x * torso.length) / 2;
       for (const s of [1, -1]) {
-        ctx.beginPath(); ctx.arc(x, s * (torso.width / 2 + l.thigh + l.shin), Math.max(l.radius * 1.15 * 1.4, 5 / this.px), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x, s * (torso.width / 2 + l.thigh + l.shin), footRadiusM(l.radius, this.px), 0, Math.PI * 2); ctx.fill();
       }
     }
     ctx.fillStyle = SKETCH_COLORS.torso; ctx.strokeStyle = '#8a5a00'; ctx.lineWidth = 2 * lw;
@@ -204,9 +209,11 @@ export class Sketcher {
       const active = this.drag === hd.h || (this.hover && sameHandle(this.hover, hd.h));
       const px = w / 2 + hd.x * this.px, py = h / 2 - hd.y * this.px;
       if (hd.h.kind === 'leg') {
-        // a ring around the foot, not a dot over it: the foot at the end of the leg stays visible, so the handle's leg reads as a leg like the others
-        ctx.beginPath(); ctx.arc(px, py, active ? 13 : 11, 0, Math.PI * 2);
-        ctx.strokeStyle = '#2d5fb3'; ctx.lineWidth = 3; ctx.stroke();
+        // a ring around the foot, not a dot over it: the foot at the end of the leg stays visible, so the handle's leg reads as a leg like the others.
+        // It follows the foot's size (which grows with the pane and the leg radius) and keeps a gap of 4 px.
+        const foot = footRadiusM(this.design.legs[hd.h.i].radius, this.px) * this.px;
+        ctx.strokeStyle = '#2d5fb3'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(px, py, foot + (active ? 6 : 4), 0, Math.PI * 2); ctx.stroke();
         continue;
       }
       ctx.beginPath(); ctx.arc(px, py, active ? 8 : 6, 0, Math.PI * 2);
