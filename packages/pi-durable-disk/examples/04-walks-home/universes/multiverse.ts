@@ -251,6 +251,8 @@ export class Multiverse {
   #polling = false;
   #ticks = 0;
   #phase: "idle" | "forking" | "running" | "collapsed" | "home" | "closed" = "idle";
+  /** Spend of machines a line used and lost before it held its run (they are no longer any line's). */
+  #retiredCost = 0;
   /** Set when the fan-out was asked for; cleared once every universe trained (its note is sent then). */
   #fanoutAt: number | null = null;
 
@@ -326,15 +328,58 @@ export class Multiverse {
 
   /** Place `line`'s run on its machine; `from` is the placement it replaces. */
   async #place(line: Line, arrival: Arrival, from?: Placed): Promise<PlaceResult> {
-    const machine = await line.ready;
-    let result: PlaceResult;
-    try {
-      result = await this.#o.fleet.place(line.run!, machine, this.#env(line, arrival), from);
-    } catch (error) {
-      throw new MultiverseError("START_FAILED", `placing ${line.run!.id} on ${machine.label} failed: ${(error as Error).message}`);
+    // A machine can die between its create and its use (a sandbox shut down by its provider): the line then takes a
+    // ready spare's machine, or a new one, and tries once more. The run is untouched by a placement that never opened.
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const machine = await line.ready.catch((error: unknown) => {
+        lastError = error;
+        return null;
+      });
+      if (machine) {
+        try {
+          const result = await this.#o.fleet.place(line.run!, machine, this.#env(line, arrival), from);
+          line.placed = result.placed;
+          return result;
+        } catch (error) {
+          lastError = error;
+          this.#log("place.failed", { line: line.id, machine: machine.id, attempt, error: (error as Error).message });
+          await this.#o.fleet.retire(machine).catch(() => {});
+          this.#lineEnded(line);
+        }
+      } else {
+        this.#log("machine.unusable", { line: line.id, attempt, error: (lastError as Error)?.message });
+      }
+      if (attempt < 2) this.#replaceMachine(line);
     }
-    line.placed = result.placed;
-    return result;
+    throw new MultiverseError("START_FAILED", `placing ${line.run!.id} failed: ${(lastError as Error)?.message ?? "no machine"}`);
+  }
+
+  /** The line's machine is lost before it held the run: its cost ends now. */
+  #lineEnded(line: Line): void {
+    if (line.machine) this.#retiredCost += this.#cost(line);
+  }
+
+  /**
+   * Give `line` another machine: a ready spare's (that spare leaves the stage, unseen), else a new one. The stage's tile
+   * keeps its slot and learns the new host.
+   */
+  #replaceMachine(line: Line): void {
+    const spare = [...this.#lines.values()].find((l) => l !== line && l.status === "spare" && l.slot === null && l.machine);
+    if (spare) {
+      spare.status = "sealed";
+      this.#patch(spare, { status: "sealed", slot: null });
+      this.#lines.delete(spare.id);
+      line.machine = spare.machine;
+      line.ready = spare.ready;
+      this.#patch(line, { host: spare.machine!.label, hostKind: spare.machine!.kind });
+      this.#log("machine.replaced", { line: line.id, by: spare.id, machine: spare.machine!.id });
+      if (this.#phase === "running" || this.#phase === "forking") this.#topUpSpares();
+      return;
+    }
+    line.machine = null;
+    void this.#warm(line).catch(() => {});
+    this.#log("machine.rewarmed", { line: line.id });
   }
 
   #beginStay(line: Line, handover: { fromHost: string; ms: number; planned: boolean }): void {
@@ -491,7 +536,7 @@ export class Multiverse {
 
   #emitCost(): void {
     const now = this.#now();
-    let usd = 0;
+    let usd = this.#retiredCost;
     let perHour = 0;
     for (const line of this.#lines.values()) {
       usd += this.#cost(line, now);

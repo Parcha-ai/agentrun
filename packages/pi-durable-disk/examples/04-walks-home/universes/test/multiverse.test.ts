@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { EnsureResult, HostDriver, HostHandle, RunRecord, RunRef } from "@parcha/pi-durable-disk";
 import { directPlacement } from "../direct.ts";
 import { Feed, serveFeed } from "../feed.ts";
-import { KILLED_HOLD_MS, Multiverse, PROGRESS_FILE, type Control, type Fleet, type Machine, type Progress } from "../multiverse.ts";
+import { KILLED_HOLD_MS, Multiverse, PROGRESS_FILE, type Control, type Fleet, type Machine, type Placed, type Progress } from "../multiverse.ts";
 import type { ShowEvent } from "../show/types.ts";
 
 const REF: RunRef = { disk: "dsk-test", region: "test", id: "src" };
@@ -232,4 +232,38 @@ test("the feed: state carries the last event id, events replay after it, command
     feed.close();
     server.close();
   }
+});
+
+test("a machine that dies before it holds its run is replaced by a ready spare's, and its universe starts", async () => {
+  const w = world();
+  const feed = new Feed();
+  // box-u2 shuts down between its create and its use: placing on it fails.
+  const fleet = { ...w.fleet, place: (run: RunRef, machine: Machine, env: Readonly<Record<string, string>>, from?: Placed) => (machine.id === "box-u2" ? Promise.reject(new Error("sandbox already shut down")) : w.fleet.place(run, machine, env, from)) };
+  const mv = new Multiverse({
+    control: w.control,
+    fleet,
+    source: REF,
+    sourceLabel: "your browser tab",
+    universes: [
+      { id: "u1", reward: "forward speed" },
+      { id: "u2", reward: "low foot slip" },
+    ],
+    spares: 1,
+    mountRoot: "/mnt/test",
+    runPrefix: "r-",
+    machinePrefix: "",
+    emit: (e) => feed.emit(e),
+    origin: Date.now(),
+    pollMs: 60_000,
+    forkAll: w.forkAll,
+  });
+  mv.prewarm();
+  await mv.whenWarm();
+  await mv.fanOut();
+  assert.ok(w.calls.includes("start r-u2 on box-spare1"), "u2's run went to the spare's machine");
+  assert.equal(feed.state.universes.u2!.host, "box spare1");
+  assert.equal(feed.state.universes.u2!.slot, 1);
+  assert.equal(feed.state.universes.spare1!.status, "sealed", "the spare whose machine was taken leaves the stage");
+  assert.ok(Object.keys(feed.state.universes).includes("spare2"), "and a new spare is warmed");
+  await mv.close();
 });
