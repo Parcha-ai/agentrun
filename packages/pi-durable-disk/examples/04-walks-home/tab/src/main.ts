@@ -7,8 +7,9 @@ import { dummyPolicy, Policy, PolicyRefused, sha256Hex } from './policy.ts';
 import { Sim } from './sim.ts';
 import { View } from './render.ts';
 import { Sketcher } from './sketch.ts';
-import { CreatureStore, type Backend, type MachineEvent } from './store.ts';
+import { CreatureStore, type Backend, type Backends, type MachineEvent } from './store.ts';
 import { CONTROL_DT } from './mjcf.ts';
+import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH } from './backend.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -23,7 +24,9 @@ const post = (type: string, body: Record<string, unknown> = {}) => {
 // ---- storage: IndexedDB holds the SQLite bytes when the app runs on its own ------------------------------
 class IdbBackend implements Backend {
   private db: Promise<IDBDatabase>;
-  constructor() {
+  private key: string;
+  constructor(key: string) {
+    this.key = key;
     this.db = new Promise((res, rej) => {
       const r = indexedDB.open('walks-home-creature', 1);
       r.onupgradeneeded = () => r.result.createObjectStore('kv');
@@ -39,13 +42,13 @@ class IdbBackend implements Backend {
       r.onerror = () => rej(r.error);
     });
   }
-  async read() { return (await this.tx('readonly', (s) => s.get('memory.sqlite'))) ?? null; }
-  async write(b: Uint8Array) { await this.tx('readwrite', (s) => s.put(b, 'memory.sqlite')); }
+  async read() { return (await this.tx('readonly', (s) => s.get(this.key))) ?? null; }
+  async write(b: Uint8Array) { await this.tx('readwrite', (s) => s.put(b, this.key)); }
 }
 
 interface App {
   mj: any; sql: any; mujocoVersion: string;
-  view: View; sketcher: Sketcher; store: CreatureStore;
+  view: View; sketcher: Sketcher; store: CreatureStore; storageMode: 'disk' | 'browser';
   sim: Sim; built: Built; bodySha: string;
   policy: Policy | null; policyName: string;
   running: boolean; acc: number; last: number;
@@ -170,13 +173,14 @@ function renderPairs() {
 
 async function renderMemory() {
   const m = $('memory');
-  // Re-read the file: the agent writes machine rows while the tab is idle.
+  // Re-read the file: the agent writes machine rows while the tab is idle (every write of ours is already persisted).
+  try { app.store = await app.store.reload(app.sql); } catch (e) { showError(`could not re-read memory: ${e}`); }
   const rows = app.store.timeline();
   const designs = app.store.designs();
   const fmt = (e: MachineEvent) => `<li><div class="host">${esc(e.host)}<span class="kind">${esc(e.kind)}</span></div><div class="when">${esc(e.at)}</div><div class="note">${esc(e.note)}</div></li>`;
   m.innerHTML = `<h3>My memory</h3><p>Every machine I have run on, oldest first, and every body I have been given. Both are tables in one SQLite file on my disk.</p>
     <button id="closeMemory">Back to the creature</button>
-    ${rows.length ? `<ol class="tl" style="margin-top:20px">${rows.map(fmt).join('')}</ol>` : `<p style="margin-top:20px">Nothing recorded yet. <button id="seedDemo">Add demo rows</button> <span style="font-size:12px">(clearly fake: the real rows are written by the agent as it moves)</span></p>`}
+    ${rows.length ? `<ol class="tl" style="margin-top:20px">${rows.map(fmt).join('')}</ol>` : `<p style="margin-top:20px">Nothing recorded yet.${app.store.memoryWritable ? ' <button id="seedDemo">Add demo rows</button> <span style="font-size:12px">(clearly fake: in a run the agent writes these rows as it moves)</span>' : ' The agent writes a row each time it moves to a machine.'}</p>`}
     <h3 style="margin-top:28px;font-size:14px">Bodies</h3>
     <table class="designs"><tr><th>#</th><th>name</th><th>torso (m)</th><th>legs</th><th>saved</th></tr>
     ${designs.map((d) => `<tr><td>${d.id}</td><td>${esc(d.name)}</td><td>${d.design.torso.length} x ${d.design.torso.width}</td><td>${d.design.legs.length * 2}</td><td>${esc(d.createdAt)}</td></tr>`).join('')}</table>`;
@@ -231,13 +235,22 @@ async function main() {
     status.textContent = 'loading MuJoCo';
     const { mj, sql, mujocoVersion } = await loadVendor();
     $('ver').textContent = `MuJoCo ${mujocoVersion}`;
-    const store = await CreatureStore.open(sql, new IdbBackend());
+    // On the disk when an embedding page answers storage requests; otherwise this browser only, and the header says so.
+    // On the disk the tab writes designs.sqlite only; memory.sqlite is the agent's and the tab just reads it.
+    let backends: Backends = { designs: new IdbBackend('designs.sqlite'), memory: new IdbBackend('memory.sqlite') };
+    let storageMode: 'disk' | 'browser' = 'browser';
+    if (window.parent !== window) {
+      const designs = new ParentBackend(windowBus(), DESIGNS_PATH);
+      if ((await designs.probe()) !== undefined) { backends = { designs, memory: new ParentBackend(windowBus(), MEMORY_PATH) }; storageMode = 'disk'; }
+    }
+    $('storage').textContent = storageMode === 'disk' ? 'memory: creature/*.sqlite on the disk' : 'memory: this browser only (not on the disk)';
+    const store = await CreatureStore.open(sql, backends, { memoryWritable: storageMode === 'browser' });
     const design = store.designs()[0]?.design ?? defaultDesign();
     const built = buildMjcf(design);
     const sketcher = new Sketcher($('sketch') as HTMLCanvasElement, design, (d) => { renderPairs(); pendingDesign = d; });
     let pendingDesign: Design | null = null;
     app = {
-      mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement), sketcher, store,
+      mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement), sketcher, store, storageMode,
       sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml),
       policy: null, policyName: 'dummy trot', running: true, acc: 0, last: performance.now(),
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' },

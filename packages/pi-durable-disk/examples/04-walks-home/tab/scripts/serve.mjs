@@ -11,7 +11,8 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'applic
 export function serve(port = 0) {
   const server = createServer(async (req, res) => {
     const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^(\.\.[/\\])+/, '');
-    const file = join(root, path.endsWith('/') ? path + 'index.html' : path);
+    // /__harness.html is the embedding test page (scripts/), not part of the shipped dist
+    const file = path === '/__harness.html' ? join(root, '..', 'scripts', 'embed-harness.html') : join(root, path.endsWith('/') ? path + 'index.html' : path);
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');

@@ -23,6 +23,7 @@
     "./**/*.ts"
   ],
   "exclude": [
-    "03-tab-to-cloud"
+    "03-tab-to-cloud",
+    "04-walks-home"
   ]
 }

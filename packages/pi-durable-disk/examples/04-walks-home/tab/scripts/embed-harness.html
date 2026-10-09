@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>embed harness</title>
+<!-- Plays the show page: embeds the app, holds the memory file in a variable (standing in for the disk), answers storage
+     requests, records the tab's events, and exposes sendToTab for a driver. -->
+<iframe id="app" src="./index.html" style="width:1300px;height:760px;border:0"></iframe>
+<script>
+const frame = document.getElementById('app');
+window.events = [];
+window.disk = {}; // path -> bytes, standing in for the agent's disk
+window.diskWrites = 0;
+window.answerStorage = !window.__silent;
+window.sendToTab = (m) => frame.contentWindow.postMessage({ ns: 'walks-home', ...m }, location.origin);
+addEventListener('message', (ev) => {
+  if (ev.origin !== location.origin || ev.source !== frame.contentWindow || ev.data?.ns !== 'walks-home') return;
+  const m = ev.data;
+  if (m.type === 'storage-read' && window.answerStorage) sendToTab({ type: 'storage-result', id: m.id, bytes: window.disk[m.path] ?? null });
+  else if (m.type === 'storage-write' && window.answerStorage) { window.disk[m.path] = m.bytes; window.diskWrites++; sendToTab({ type: 'storage-written', id: m.id }); }
+  else if (!m.type.startsWith('storage-')) window.events.push(m);
+});
+</script>
