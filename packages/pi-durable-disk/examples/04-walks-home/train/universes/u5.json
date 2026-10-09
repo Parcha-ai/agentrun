@@ -5,5 +5,8 @@
   "tracking_lin_vel": 3.0,
   "orientation": -2.0,
   "pose": 0.0
+ },
+ "env": {
+  "pert_config.enable": true
  }
 }

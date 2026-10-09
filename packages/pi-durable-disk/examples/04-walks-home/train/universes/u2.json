@@ -4,5 +4,8 @@
  "reward_scales": {
   "trot_clock": 1.0,
   "feet_air_time": 0.2
+ },
+ "env": {
+  "pert_config.enable": true
  }
 }

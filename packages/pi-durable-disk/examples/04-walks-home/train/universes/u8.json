@@ -5,5 +5,8 @@
   "alive": 0.5,
   "termination": -5.0,
   "base_height": -40.0
+ },
+ "env": {
+  "pert_config.enable": true
  }
 }

@@ -10,7 +10,9 @@ One universe = one PPO run on one GPU against one reward hypothesis. The body is
 | `train.py` | One universe: Brax PPO, checkpoints and the current `policy.json` in WORK, resumable after a kill |
 | `export.py` | Brax params to `policy.json`; a numpy runner with the tab's arithmetic |
 | `rollout.py` | A `policy.json` in C MuJoCo as the tab runs it: score (metres in 10 s) and parity traces |
-| `fixture.py` | Regenerates `../policy/test/fixtures/` |
+| `fixture.py` | Regenerates the policy runtime's parity fixture (`policy/test/fixtures/` on the policy branch) |
+| `universes/` | `u1..u8.json`: the eight reward hypotheses (push-trained walkers); `getup.json`: the getup universe |
+| `default/` | The tab's default 3-DOF creature and its trained getup network, for a run with no creature of its own |
 | `modal_image.py`, `modal_run.py` | The Modal GPU image and a dev runner (sandbox, logs, files home, kill and resume) |
 | `jax_compat.py` | Brax 0.14.2 on JAX 0.11 |
 
@@ -19,6 +21,12 @@ python train.py --mjcf creature.xml --body body.json --universe u1.json --work W
 with-modal -- python modal_run.py --mjcf creature.xml --body body.json --universe u1.json --out WORK --gpu L40S
 python rollout.py --mjcf creature.xml --body body.json --policy WORK/policy.json --seconds 10 --command 0.5
 ```
+
+A show run: u1..u8 train on a generated terrain (`terrain.py --seed N`) and are scored on the held-out course
+(`terrain.py --course --seed 1000`, metres along it in 20 s); the getup universe trains once per body. The winner and the
+getup network become one file for the tab: `python export.py combine WINNER/policy.json GETUP/policy.json --out
+home/policy.json`. The XLA and Warp compile caches travel in a tarball (`--compile-cache PATH`, ~10 MB) and the image
+carries a prewarmed one for the default creature, so a fresh box reaches its first checkpoint in tens of seconds.
 
 A universe file names its reward weights (`REWARD_TERMS` in `creature_env.py`) and any env or PPO overrides:
 `{"name": "u3", "reward_scales": {"feet_air_time": 1.0, "trot_clock": 0.5}, "env": {}, "ppo": {}}`.

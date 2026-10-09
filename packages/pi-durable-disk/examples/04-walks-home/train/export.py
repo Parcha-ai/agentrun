@@ -163,3 +163,29 @@ class NumpyPolicy:
     for w, b, fn in n.layers:
       x = fn(w @ x + b)
     return np.clip(x, -n.clip, n.clip)
+
+
+def main() -> None:
+  """python export.py combine WALK.json GETUP.json --out policy.json [--below 0.3 --above 0.9]: the collapse step's
+  last move, the winning walker plus the body's getup network in one file for the tab."""
+  import argparse
+  ap = argparse.ArgumentParser()
+  sub = ap.add_subparsers(dest="cmd", required=True)
+  c = sub.add_parser("combine")
+  c.add_argument("walk")
+  c.add_argument("getup")
+  c.add_argument("--out", required=True)
+  c.add_argument("--below", type=float, default=0.3)
+  c.add_argument("--above", type=float, default=0.9)
+  args = ap.parse_args()
+  out = combine(json.load(open(args.walk)), json.load(open(args.getup)), args.below, args.above)
+  import os
+  tmp = f"{args.out}.tmp-{os.getpid()}"
+  with open(tmp, "w") as f:
+    json.dump(out, f)
+  os.replace(tmp, args.out)
+  print(json.dumps({"out": args.out, "bytes": os.path.getsize(args.out), "mjcf_sha256": out["mjcf_sha256"]}))
+
+
+if __name__ == "__main__":
+  main()

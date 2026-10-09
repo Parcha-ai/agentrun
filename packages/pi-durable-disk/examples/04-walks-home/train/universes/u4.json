@@ -5,5 +5,8 @@
   "energy": -0.005,
   "torques": -0.001,
   "action_rate": -0.05
+ },
+ "env": {
+  "pert_config.enable": true
  }
 }

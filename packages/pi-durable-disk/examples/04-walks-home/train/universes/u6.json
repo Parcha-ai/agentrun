@@ -4,5 +4,8 @@
  "reward_scales": {
   "feet_air_time": 2.0,
   "feet_slip": -0.3
+ },
+ "env": {
+  "pert_config.enable": true
  }
 }

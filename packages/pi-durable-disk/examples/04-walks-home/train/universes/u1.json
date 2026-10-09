@@ -1,5 +1,8 @@
 {
  "name": "u1",
  "hypothesis": "baseline: track the speed, stay level, small regularizers",
- "reward_scales": {}
+ "reward_scales": {},
+ "env": {
+  "pert_config.enable": true
+ }
 }

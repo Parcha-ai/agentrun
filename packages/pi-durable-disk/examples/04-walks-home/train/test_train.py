@@ -1,4 +1,4 @@
-"""CPU checks for the trainer: python -m unittest test_train (from train/; needs the policy/test/fixtures body).
+"""CPU checks for the trainer: python -m unittest test_train (from train/; uses the default/ creature).
 
 What they pin: the env's terrain height equals MuJoCo's own surface, the splice equals buildMjcf's world layout, the
 env's observation equals rollout.py's (which equals policy/obs.ts by the parity test), and resume picks only complete
@@ -20,9 +20,11 @@ import rollout
 import terrain
 from train import SCORE_UNITS, complete_checkpoints, score_of
 
-FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "policy", "test", "fixtures")
-XML = open(os.path.join(FIX, "creature.xml"), "rb").read().decode("utf-8")
-BODY = json.load(open(os.path.join(FIX, "body.json")))
+HERE = os.path.dirname(os.path.abspath(__file__))
+FIX = os.path.join(HERE, "..", "policy", "test", "fixtures")  # the policy runtime's parity fixture (policy.json)
+XML_PATH = os.path.join(HERE, "default", "creature.xml")  # the tab's default 3-DOF creature
+XML = open(XML_PATH, "rb").read().decode("utf-8")
+BODY = json.load(open(os.path.join(HERE, "default", "body.json")))
 
 
 class TerrainTest(unittest.TestCase):
@@ -62,7 +64,7 @@ class CourseTest(unittest.TestCase):
   def test_course_is_held_out_and_standable(self):
     course = terrain.make_course(seed=1000)
     self.assertEqual(course["kind"], "course")
-    self.assertEqual(terrain.check(os.path.join(FIX, "creature.xml"), course)["ok"], 1)
+    self.assertEqual(terrain.check(XML_PATH, course)["ok"], 1)
     self.assertNotEqual(course["sha256"], terrain.make_terrain(seed=1000)["sha256"])
 
   def test_score_is_course_progress_when_scored_on_the_course(self):
@@ -70,6 +72,30 @@ class CourseTest(unittest.TestCase):
     self.assertEqual(score_of({"distance_m": 4.86, "course_m": 9.0}), 9.0)
     self.assertIsNone(score_of(None))
     self.assertEqual(set(SCORE_UNITS), {"flat", "course"})
+
+
+class ExportTest(unittest.TestCase):
+  def test_inputs_a_network_never_saw_vary_are_pinned(self):
+    import export
+    obs = {"std": [0.5, 1e-6, 2.0]}
+    self.assertEqual(export.pin_constant_inputs(obs), [1])
+    self.assertEqual(obs["std"], [0.5, export.PINNED_STD, 2.0])
+
+  def test_combine_keeps_the_walker_and_adds_the_getup_block(self):
+    import export
+    walk = json.load(open(os.path.join(FIX, "policy.json")))
+    getup = json.loads(json.dumps(walk))
+    getup["act"] = {"scale": 2.0, "clip": 1.0}
+    getup["obs"]["std"][-3] = 1e-6  # the command slice of a net trained without one
+    out = export.combine(walk, getup)
+    self.assertEqual(out["layers"], walk["layers"])
+    self.assertEqual(out["getup"]["switch"], {"below_up": 0.3, "above_up": 0.9})
+    self.assertEqual(out["getup"]["act"]["scale"], 2.0)
+    self.assertEqual(out["getup"]["obs"]["std"][-3], export.PINNED_STD)
+    self.assertEqual(getup["obs"]["std"][-3], 1e-6)  # the input file is not modified
+    other = dict(getup, mjcf_sha256="0" * 64)
+    with self.assertRaises(ValueError):
+      export.combine(walk, other)
 
 
 class ObservationTest(unittest.TestCase):

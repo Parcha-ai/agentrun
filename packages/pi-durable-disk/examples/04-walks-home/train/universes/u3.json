@@ -4,5 +4,8 @@
  "reward_scales": {
   "feet_clearance": -1.5,
   "feet_height": -0.5
+ },
+ "env": {
+  "pert_config.enable": true
  }
 }
