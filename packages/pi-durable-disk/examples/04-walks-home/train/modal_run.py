@@ -20,6 +20,7 @@ import threading
 import time
 
 import modal
+import modal.exception
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from modal_image import REMOTE_TRAIN, training_image  # noqa: E402
@@ -85,7 +86,11 @@ def pull(sb: modal.Sandbox, out: str) -> list[str]:
 
 def pull_tree(sb: modal.Sandbox, remote: str, local: str) -> int:
   n = 0
-  for info in sb.filesystem.list_files(remote):
+  try:
+    entries = sb.filesystem.list_files(remote)
+  except modal.exception.SandboxFilesystemNotFoundError:
+    return 0
+  for info in entries:
     path = info.path if info.path.startswith("/") else f"{remote}/{info.path}"
     name = os.path.basename(path.rstrip("/"))
     dst = os.path.join(local, name)
@@ -113,15 +118,38 @@ def push_tree(sb: modal.Sandbox, local: str, remote: str) -> int:
   return n
 
 
-def start(app, image, gpu: str, name: str, ledger: Ledger, timeout_s: int) -> modal.Sandbox:
-  ledger.open("modal-sandbox", name, f"gpu {gpu}, training")
-  try:
-    sb = modal.Sandbox.create("sleep", "infinity", app=app, image=image, gpu=gpu, timeout=timeout_s, name=name,
-                              tags={"pda-fleet": "demo-d2"})
-  except Exception as e:
-    ledger.close("modal-sandbox", name, f"create failed: {str(e)[:120]}")
-    raise
-  return sb
+def start(app, image, gpus: str, name: str, ledger: Ledger, timeout_s: int, place_s: float = 120.0):
+  """A running GPU sandbox: try each GPU type in turn. Sandbox.create returns only once a GPU is placed, so it runs in a
+  thread with a deadline; a type that is not placed in time is looked up by name, terminated, and the next one tried."""
+  for gpu in gpus.split(","):
+    gname = f"{name}-{gpu.lower()}"
+    ledger.open("modal-sandbox", gname, f"gpu {gpu}, training")
+    box: dict = {}
+
+    def create():
+      try:
+        box["sb"] = modal.Sandbox.create("sleep", "infinity", app=app, image=image, gpu=gpu, timeout=timeout_s,
+                                         name=gname, tags={"pda-fleet": "demo-d2"})
+      except Exception as e:  # reported below
+        box["error"] = e
+
+    t = threading.Thread(target=create, daemon=True)
+    t.start()
+    t.join(place_s)
+    if "sb" in box:
+      return box["sb"], gname, gpu
+    if "error" in box:
+      ledger.close("modal-sandbox", gname, f"create failed: {str(box['error'])[:120]}")
+      log("sandbox.create-failed", gpu=gpu, error=str(box["error"])[:200])
+      continue
+    log("sandbox.not-placed", gpu=gpu, waited_s=place_s)
+    try:
+      modal.Sandbox.from_name(APP, gname).terminate()
+      how = f"not placed within {place_s:.0f} s; terminated"
+    except Exception as e:
+      how = f"not placed within {place_s:.0f} s; lookup failed ({str(e)[:60]})"
+    ledger.close("modal-sandbox", gname, how)
+  raise RuntimeError(f"no GPU of {gpus} placed")
 
 
 def stop(sb: modal.Sandbox, name: str, ledger: Ledger, how: str) -> None:
@@ -137,7 +165,7 @@ def main() -> None:
   ap.add_argument("--body", required=True)
   ap.add_argument("--universe", required=True)
   ap.add_argument("--out", required=True, help="local directory standing in for the run's work/train/<u>/")
-  ap.add_argument("--gpu", default="L40S")
+  ap.add_argument("--gpu", default="H100,A100-80GB,L40S", help="GPU types to try in order")
   ap.add_argument("--minutes", type=float, default=8.0)
   ap.add_argument("--steps", type=float, default=None)
   ap.add_argument("--num-envs", type=int, default=None)
@@ -157,13 +185,13 @@ def main() -> None:
   os.makedirs(out, exist_ok=True)
   while True:
     attempt += 1
-    name = f"pda-demo-d2-{uname}-{int(time.time())}-{attempt}"
     t_create = time.time()
-    sb = start(app, image, args.gpu, name, ledger, args.timeout)
+    sb, name, gpu = start(app, image, args.gpu, f"pda-demo-d2-{uname}-{int(time.time())}-{attempt}", ledger,
+                          args.timeout)
     killed = threading.Event()
     finished = False
     try:
-      log("sandbox.started", name=name, gpu=args.gpu, create_s=round(time.time() - t_create, 1))
+      log("sandbox.started", name=name, gpu=gpu, create_s=round(time.time() - t_create, 1))
       sb.filesystem.make_directory(REMOTE_IN)
       for local, remote in ((args.mjcf, "creature.xml"), (args.body, "body.json"), (args.universe, "universe.json")):
         with open(local, "rb") as f:
@@ -207,6 +235,8 @@ def main() -> None:
         continue
       rc = proc.wait()
       err = proc.stderr.read()
+      if rc:
+        log("train.failed", rc=rc, stderr_tail=err[-3000:])
       got = pull(sb, out)
       n = pull_tree(sb, f"{REMOTE_WORK}/ckpt", os.path.join(out, "ckpt"))
       log("train.exit", rc=rc, files=got, ckpt_files=n, train_s=round(time.time() - t_train, 1),

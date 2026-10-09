@@ -1,0 +1,9 @@
+{
+ "name": "u8",
+ "hypothesis": "stay alive: survival bonus, falls cost more",
+ "reward_scales": {
+  "alive": 0.5,
+  "termination": -5.0,
+  "base_height": -40.0
+ }
+}

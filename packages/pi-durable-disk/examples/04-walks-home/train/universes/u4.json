@@ -1,0 +1,9 @@
+{
+ "name": "u4",
+ "hypothesis": "efficient: pay for torque, power and jerky actions",
+ "reward_scales": {
+  "energy": -0.005,
+  "torques": -0.001,
+  "action_rate": -0.05
+ }
+}

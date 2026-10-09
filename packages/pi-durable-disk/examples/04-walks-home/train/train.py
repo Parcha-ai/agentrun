@@ -20,7 +20,9 @@ import functools
 import json
 import os
 import re
+import shutil
 import socket
+import subprocess
 import sys
 import time
 from typing import Any
@@ -72,11 +74,17 @@ def main() -> None:
   ap.add_argument("--body", required=True)
   ap.add_argument("--universe", required=True, help="JSON: name, reward scales, env/ppo overrides")
   ap.add_argument("--work", required=True)
+  ap.add_argument("--world", default=None, help="terrain.json (terrain.py): train on that terrain; the policy keeps the "
+                  "body's mjcf_sha256, so it runs on any world")
   ap.add_argument("--minutes", type=float, default=0.0, help="stop at the first checkpoint after this wall time")
   ap.add_argument("--impl", default=None, help="jax | warp (default: warp on GPU, jax on CPU)")
   ap.add_argument("--steps", type=float, default=None, help="total environment steps (overrides the universe)")
   ap.add_argument("--num-envs", type=int, default=None)
   ap.add_argument("--smoke", action="store_true", help="tiny CPU-sized run to check the pipeline")
+  ap.add_argument("--keep", type=int, default=2, help="complete checkpoints kept per segment (older ones deleted)")
+  ap.add_argument("--after-checkpoint", default=None,
+                  help="shell command run (not awaited) after each checkpoint, e.g. the host's write-through of WORK; "
+                       "skipped while the previous one still runs. Gets TRAIN_WORK, TRAIN_STEPS, TRAIN_GENERATION.")
   args = ap.parse_args()
 
   t_start = time.time()
@@ -91,6 +99,7 @@ def main() -> None:
   import creature_env
   from export import export_policy
   import rollout
+  import terrain
 
   work = os.path.abspath(args.work)
   os.makedirs(work, exist_ok=True)
@@ -99,6 +108,8 @@ def main() -> None:
   progress_path = os.path.join(work, "progress.jsonl")
 
   xml, body = creature_env.load_body(args.mjcf, args.body)
+  world = json.load(open(args.world)) if args.world else None
+  train_xml = terrain.splice(xml, world) if world else xml
   universe = json.load(open(args.universe))
   backend = jax.default_backend()
   impl = args.impl or ("warp" if backend == "gpu" else "jax")
@@ -112,7 +123,7 @@ def main() -> None:
   overrides = universe.get("env", {})
 
   ppo_cfg = dict(
-      num_timesteps=60_000_000, num_evals=16, episode_length=1000, normalize_observations=True, action_repeat=1,
+      num_timesteps=100_000_000, num_evals=24, episode_length=1000, normalize_observations=True, action_repeat=1,
       unroll_length=20, num_minibatches=32, num_updates_per_batch=4, discounting=0.97, learning_rate=3e-4,
       entropy_cost=1e-2, num_envs=8192, batch_size=256, max_grad_norm=1.0, reward_scaling=1.0, seed=0,
   )
@@ -128,7 +139,8 @@ def main() -> None:
                    episode_length=200, num_updates_per_batch=1)
     net_cfg.update(policy_hidden_layer_sizes=(32, 32), value_hidden_layer_sizes=(32, 32))
 
-  env = creature_env.CreatureWalk(xml, body, cfg, num_envs=ppo_cfg["num_envs"], config_overrides=overrides)
+  env = creature_env.CreatureWalk(train_xml, body, cfg, num_envs=ppo_cfg["num_envs"], config_overrides=overrides,
+                                  spawns=world["spawns"] if world else None)
   obs_spec = creature_env.obs_sizes(env.action_size)
 
   # ---- resume --------------------------------------------------------------------------------------------------
@@ -153,7 +165,7 @@ def main() -> None:
                    "restored_from": os.path.relpath(restore, work) if restore else None, "host": socket.gethostname()})
 
   state = {
-      "universe": universe.get("name", "u?"), "status": "training", "generation": generation, "steps_total": total,
+      "universe": universe.get("name", "u?"), "hypothesis": universe.get("hypothesis"), "status": "training", "generation": generation, "steps_total": total,
       "steps_done": done_steps, "segments": segments, "backend": backend, "impl": impl,
       "device": str(jax.devices()[0]), "started_at": prior.get("started_at", t_start), "segment_started_at": t_start,
       "wall_s": prior.get("wall_s", 0.0), "mujoco": mujoco.__version__, "mjcf_sha256": None, "last": None,
@@ -166,7 +178,11 @@ def main() -> None:
   deadline = t_start + args.minutes * 60 if args.minutes > 0 else None
   base_wall = float(state["wall_s"])
 
+  hook = {"proc": None}
+
   def progress(step: int, metrics: dict[str, Any]) -> None:
+    """Brax calls this once per eval iteration, after it saved that iteration's checkpoint (no evals or episode
+    metrics are collected: the per-checkpoint C-MuJoCo walk is the score, and it costs the GPU nothing)."""
     now = time.time()
     if times["jit_done"] is None:
       times["jit_done"] = now
@@ -175,17 +191,22 @@ def main() -> None:
     steps_done = done_steps + step
     m = {k: float(v) for k, v in metrics.items() if hasattr(v, "__float__")}
     line = {"t": now, "elapsed_s": now - t_start, "generation": generation, "steps": steps_done, "sps": sps,
-            "reward": m.get("episode/sum_reward"),
-            # Episode metrics are sums over the episode; the per-step mean is the forward speed in m/s.
-            "fwd_speed": (m["episode/fwd_speed"] / m["episode/length"]) if m.get("episode/length") else None,
             "walk": times.get("walk"), "score": score_of(times.get("walk")), "metrics": m}
     append_line(progress_path, line)
+    checkpointed = step > 0 and step == times.get("checkpointed")
+    if checkpointed:
+      after_prune = complete_checkpoints(seg_ckpt)
+      for old in after_prune[args.keep:]:
+        shutil.rmtree(old, ignore_errors=True)
     state.update(steps_done=steps_done, wall_s=base_wall + now - t_start, last=line)
+    # The rename of state.json is the checkpoint-complete signal: the host's write-through flushes WORK on it.
     write_json(state_path, state)
-    print(json.dumps({k: line[k] for k in ("elapsed_s", "steps", "sps", "reward", "fwd_speed", "score")}), flush=True)
-    # Stop only on the progress call that follows a checkpoint (Brax saves before it reports), so a paused run
-    # loses nothing.
-    if deadline and now > deadline and step > 0 and step == times.get("checkpointed"):
+    if checkpointed and args.after_checkpoint and (hook["proc"] is None or hook["proc"].poll() is not None):
+      env_vars = dict(os.environ, TRAIN_WORK=work, TRAIN_STEPS=str(steps_done), TRAIN_GENERATION=str(generation))
+      hook["proc"] = subprocess.Popen(args.after_checkpoint, shell=True, env=env_vars)
+    print(json.dumps({k: line[k] for k in ("elapsed_s", "steps", "sps", "score")}), flush=True)
+    # Stop only on a call that follows a checkpoint (Brax saves before it reports), so a paused run loses nothing.
+    if deadline and now > deadline and checkpointed:
       raise Deadline()
 
   def on_params(step: int, make_policy, params) -> None:
@@ -194,9 +215,11 @@ def main() -> None:
     pol = export_policy(params, obs_spec=obs_spec, nu=env.action_size, mjcf=xml, mujoco_version=mujoco.__version__,
                         gait_hz=float(cfg.gait_hz), action_scale=float(cfg.action_scale),
                         command_range=list(cfg.command_range),
-                        provenance={"universe": state["universe"], "steps": done_steps + step, "generation": generation,
+                        provenance={"universe": state["universe"], "hypothesis": state["hypothesis"],
+                                    "steps": done_steps + step, "generation": generation,
                                     "reward_scales": dict(cfg.reward_config.scales), "device": state["device"],
                                     "impl": impl, "wall_s": base_wall + time.time() - t_start,
+                                    "terrain_sha256": world["sha256"] if world else None,
                                     "host": socket.gethostname()})
     state["mjcf_sha256"] = pol["mjcf_sha256"]
     # The engine-true score: the exported file, in C MuJoCo, as the tab will run it.
@@ -219,7 +242,7 @@ def main() -> None:
     ppo.train(environment=env, num_timesteps=remaining, wrap_env_fn=wrapper.wrap_for_brax_training,
               network_factory=network_factory, progress_fn=progress, policy_params_fn=on_params,
               save_checkpoint_path=seg_ckpt, restore_checkpoint_path=restore, run_evals=False,
-              log_training_metrics=True, **train_kwargs)
+              log_training_metrics=False, **train_kwargs)
   except Deadline:
     status = "paused"
   state.update(status=status, wall_s=base_wall + time.time() - t_start)
