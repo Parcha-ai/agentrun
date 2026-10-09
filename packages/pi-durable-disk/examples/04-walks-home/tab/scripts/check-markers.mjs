@@ -1,6 +1,6 @@
 // The cold viewer could not see motion in stills and lost the drawing. In the real page (embedded in a parent whose "disk" the script writes):
 // the ground grid and distance marker, the start post and trail, the "your drawing" thumbnail, the walk-meter event, and ?banner=1.
-//   CDP_PORT=9333 CP1=<walk-only 3-DOF policy> CP2=<3-DOF walk+getup policy> node scripts/check-markers.mjs <outdir>
+//   CDP_PORT=9333 CP1=<walk-only 3-DOF policy> CP2=<3-DOF walk+getup policy> FINAL=<a final policy, other bytes than CP2> node scripts/check-markers.mjs <outdir>
 // Exits 1 when any check fails.
 import WebSocket from 'ws';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -9,8 +9,8 @@ import { outDir } from './outdir.mjs';
 
 const out = outDir(process.argv[2]);
 mkdirSync(out, { recursive: true });
-const { CP1, CP2 } = process.env;
-if (!CP1 || !CP2) throw new Error('set CP1 and CP2');
+const { CP1, CP2, FINAL } = process.env;
+if (!CP1 || !CP2 || !FINAL) throw new Error('set CP1, CP2 and FINAL (a final policy whose bytes differ from CP2)');
 const server = await serve(0);
 const base = `http://127.0.0.1:${server.address().port}`;
 const v = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/version`)).json();
@@ -47,7 +47,7 @@ async function page(query, fn) {
 const shown = (inner, id) => inner(`(() => { const e = document.getElementById(${JSON.stringify(id)}); const r = e.getBoundingClientRect(); return getComputedStyle(e).display !== 'none' && r.width > 0 && r.height > 0; })()`);
 const num = async (inner) => Number(await inner("document.getElementById('distNum').textContent"));
 
-await page('clean=1', async ({ ev, inner, put, waitSim, shot }) => {
+await page('clean=1&start=default', async ({ ev, inner, put, waitSim, shot }) => {
   // the draw phase: the sketcher has the stage's attention; the marker and the thumbnail wait
   check('in the draw phase the distance marker and the thumbnail are not shown', !(await shown(inner, 'distMarker')) && !(await shown(inner, 'thumb')));
   const floorTex = await inner('(() => { const f = __walks.app.view.scene.children.find((c) => c.geometry && c.geometry.type === "PlaneGeometry"); const t = f.material.map; return { repeat: [t.repeat.x, t.repeat.y], size: [t.image.width, t.image.height] }; })()');
@@ -56,7 +56,11 @@ await page('clean=1', async ({ ev, inner, put, waitSim, shot }) => {
   await put('train/gpu/policy.json', CP1);
   for (let i = 0; i < 100 && (await inner('__walks.state().state')) !== 'learning'; i++) await sleep(200);
   await waitSim(0.5);
-  check('with the first version the marker and "your drawing" appear', (await shown(inner, 'distMarker')) && (await shown(inner, 'thumb')));
+  check('with the first version "your drawing" appears, and the big distance number does not (it would contradict the caption while it is still learning)', (await shown(inner, 'thumb')) && !(await shown(inner, 'distMarker')));
+  const sub1 = await inner("(() => { const e = document.getElementById('stateSub'); const r = e.getBoundingClientRect(); return { shown: getComputedStyle(e).display !== 'none' && r.width > 0, text: e.textContent, top: r.top, label_bottom: document.getElementById('stateLabel').getBoundingClientRect().bottom }; })()");
+  check('under the label, a small line says each version runs here as it arrives from the GPU', sub1.shown && sub1.text === 'each new version runs here as it arrives from the GPU' && sub1.top >= sub1.label_bottom - 1, JSON.stringify(sub1));
+  const startLabel = await inner(`(() => { const sp = __walks.app.view.start.children.find((c) => c.isSprite); if (!sp) return null; const im = sp.material.map.image; const d = im.getContext('2d').getImageData(0, 0, im.width, im.height).data; let white = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 235 && d[i + 1] > 235 && d[i + 2] > 235 && d[i + 3] > 200) white++; return { white, w: im.width, h: im.height }; })()`);
+  check('the blue post carries the word "start" (a sprite whose picture has white lettering)', !!startLabel && startLabel.white > 150, JSON.stringify(startLabel));
   const cap = await inner("document.querySelector('#thumb .cap').textContent");
   check('the thumbnail is captioned "your drawing"', cap === 'your drawing', cap);
   const px = await inner(`(() => { const c = document.getElementById('thumbCanvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let ink = 0, torso = 0, foot = 0; for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 200) { ink++; const r = d[i], g = d[i + 1], b = d[i + 2]; if (Math.abs(r - 0xf2) < 12 && Math.abs(g - 0xb8) < 12 && Math.abs(b - 0x59) < 12) torso++; if (Math.abs(r - 0x26) < 10 && Math.abs(g - 0x33) < 10 && Math.abs(b - 0x2e) < 10) foot++; } } return { w: c.width, h: c.height, ink, torso, foot }; })()`);
@@ -90,29 +94,37 @@ await page('clean=1', async ({ ev, inner, put, waitSim, shot }) => {
   await shot('markers-v2-late');
   const label = await inner("document.getElementById('stateLabel').textContent");
   check('the one label is still there', /version 2/.test(label), label);
+  check('still learning at version 2: no big distance number', !(await shown(inner, 'distMarker')));
+  // the final policy: trained, at home: now the number proves "still walking"
+  await put('home/policy.json', FINAL);
+  for (let i = 0; i < 100 && (await inner('__walks.state().final')) !== true; i++) await sleep(200);
+  await waitSim(4);
+  check('once trained the big distance number shows and the learning line goes', (await shown(inner, 'distMarker')) && !(await inner("(() => { const e = document.getElementById('stateSub'); return getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; })()")));
+  const dFinal = await num(inner);
+  check('and it counts from the final policy\'s install', dFinal > 0.5 && dFinal < 4, `${dFinal}`);
 });
 
 // starting in the watch phase (?phase=watch) with the creature already drawn: "your drawing" must be painted at startup, not only when a phase message arrives
-await page('clean=1&phase=watch', async ({ inner }) => {
+await page('clean=1&start=default&phase=watch', async ({ inner }) => {
   await sleep(800);
-  check('starting in the watch phase shows the thumbnail and the marker', (await shown(inner, 'thumb')) && (await shown(inner, 'distMarker')));
+  check('starting in the watch phase shows the thumbnail (and no big distance: nothing has learned yet)', (await shown(inner, 'thumb')) && !(await shown(inner, 'distMarker')));
   const px = await inner(`(() => { const c = document.getElementById('thumbCanvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 200) ink++; return { w: c.width, ink }; })()`);
   check('and the thumbnail holds the drawing at startup (it is not blank)', px.ink > 400, JSON.stringify(px));
 });
 
 // ?banner=1: the page above shows the home banner and the final label, so the tab's own "trained" and "offline" are hidden; the rest stays
-await page('clean=1&banner=1', async ({ ev, inner, put, waitSim, S }) => {
+await page('clean=1&start=default&banner=1', async ({ ev, inner, put, waitSim, S }) => {
   await put('train/gpu/policy.json', CP1);
   for (let i = 0; i < 100 && (await inner('__walks.state().state')) !== 'learning'; i++) await sleep(200);
   check('with banner=1 the "learning: version N" label stays', (await shown(inner, 'stateLabel')) && /version 1/.test(await inner("document.getElementById('stateLabel').textContent")));
-  await inner("__walks.app.training.state = 'trained'; document.getElementById('stateLabel').dataset.state = 'trained'; document.getElementById('stateLabel').textContent = 'trained'");
+  await inner("__walks.app.training.state = 'trained'; document.body.dataset.brain = 'trained'; document.getElementById('stateLabel').dataset.state = 'trained'; document.getElementById('stateLabel').textContent = 'trained'");
   check('with banner=1 the "trained" label is hidden', !(await shown(inner, 'stateLabel')));
   await S('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await sleep(1500);
   check('with banner=1 the tab\'s own offline badge is hidden, though the tab still knows it is offline and says so', !(await shown(inner, 'offlineBadge')) && (await inner('__walks.state().offline')) === true && (await ev("events.filter((e) => e.type === 'network').length")) >= 1);
   check('the distance marker and "your drawing" stay', (await shown(inner, 'distMarker')) && (await shown(inner, 'thumb')));
 });
-await page('clean=1', async ({ inner, put, S }) => {
+await page('clean=1&start=default', async ({ inner, put, S }) => {
   await put('train/gpu/policy.json', CP1);
   for (let i = 0; i < 100 && (await inner('__walks.state().state')) !== 'learning'; i++) await sleep(200);
   await S('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });

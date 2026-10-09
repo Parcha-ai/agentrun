@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDesign, PRESETS, validateDesign, type Design } from '../src/design.ts';
+import { bareTorso, defaultDesign, PRESETS, validateDesign, type Design } from '../src/design.ts';
 import { Sketcher } from '../src/sketch.ts';
 import { nextStroke, pathPoints, TAKE_DESIGN, undrawable, type Geometry, type Point } from '../src/strokes.ts';
 import { clampDesign } from '../src/rules.ts';
@@ -174,13 +174,15 @@ test('a target between grid values finishes on the nearest value the sketcher ca
 function fakeTab(target: Design) {
   const { canvas, fire } = fakeCanvas(800, 800);
   const sk = new Sketcher(canvas, defaultDesign(), () => {});
-  const calls = { committed: 0 };
+  const calls = { committed: 0, order: [] as string[] };
   const w = {
     innerWidth: 800, innerHeight: 800,
     __walks: {
       sketchGeometry: () => ({ rect: { left: 0, top: 0, width: 800, height: 800 }, ...sk.geometry() }),
       commitDesign: () => { calls.committed++; },
       state: () => ({ mjcf_sha256: 'x'.repeat(64) }),
+      // the live rebuild of the creature: resolves later, like the page's, and is logged so the order against the hook can be asserted
+      rebuilt: () => new Promise<void>((res) => setTimeout(() => { calls.order.push('rebuilt'); res(); }, 5)),
     },
   };
   const document = { querySelector: () => ({ contentWindow: w, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 800 }) }) };
@@ -202,4 +204,51 @@ test('sketchTake commits a finished drawing, and throws without committing when 
   const short = fakeTab(TAKE_DESIGN);
   await assert.rejects(sketchTake(short.tab, { stepMs: 0, restMs: 0, maxStrokes: 2 }), /2 strokes.*(leg|left)/i);
   assert.equal(short.calls.committed, 0, 'a partial drawing is never committed');
+});
+
+// ---- the take starts from a bare torso: a still at 40% of the drawing is visibly partial ----
+
+test('the bare start is a valid, small creature with stub legs, and the take body is drawn from it in strokes that grow it', () => {
+  const start = bareTorso();
+  assert.deepEqual(validateDesign(start), [], 'a buildable design (two pairs is the minimum)');
+  assert.ok(start.torso.length < TAKE_DESIGN.torso.length && start.torso.width < TAKE_DESIGN.torso.width, 'a smaller torso than the take body');
+  for (const l of start.legs) assert.ok(l.thigh + l.shin <= 0.2, `stub legs (${l.thigh + l.shin} m)`);
+  const { design, strokes } = draw(structuredClone(TAKE_DESIGN), start);
+  assert.deepEqual(strokes, ['length', 'width', 'hip0', 'hip1', 'leg0', 'leg1'], 'one stroke per thing that has to change');
+  assert.deepEqual(undrawable(design, TAKE_DESIGN), [], 'it ends on the take body');
+  assert.equal(design.torso.length, TAKE_DESIGN.torso.length);
+  assert.equal(design.legs[0].thigh + design.legs[0].shin, TAKE_DESIGN.legs[0].thigh + TAKE_DESIGN.legs[0].shin);
+});
+
+test('at 40% of the drawing the creature is visibly partial: the torso is bigger, the legs are still stubs', () => {
+  const { canvas, fire } = fakeCanvas();
+  const sk = new Sketcher(canvas, bareTorso(), () => {});
+  const states: { handle: string; reach: number; length: number }[] = [];
+  for (let i = 0; i < 14; i++) {
+    const s = nextStroke(sk.geometry() as Geometry, TAKE_DESIGN);
+    if (!s) break;
+    play(fire, pathPoints(s, 'human'));
+    states.push({ handle: s.handle, reach: sk.get().legs[0].thigh + sk.get().legs[0].shin, length: sk.get().torso.length });
+  }
+  const at40 = states[Math.floor(states.length * 0.4) - 1];
+  assert.ok(at40.length > bareTorso().torso.length, `a longer torso at 40% (${at40.handle}: ${at40.length})`);
+  assert.ok(at40.reach < 0.6 * (TAKE_DESIGN.legs[0].thigh + TAKE_DESIGN.legs[0].shin), `legs still short at 40% (reach ${at40.reach}, final 0.5)`);
+  assert.ok(states[states.length - 1].reach >= 0.49, 'and grown by the end');
+});
+
+test('sketchTake tells a recorder after every stroke (to frame a mid-draw still), and the report still ends on the target', async () => {
+  const f = fakeTab(TAKE_DESIGN);
+  f.sk.set(bareTorso());
+  const seen: string[] = [];
+  const r = await sketchTake(f.tab, { stepMs: 0, restMs: 0, onStroke: async ({ handle, index, design }: { handle: string; index: number; design: Design }) => { seen.push(`${index}:${handle}:${design.legs[0].thigh + design.legs[0].shin}`); } });
+  assert.deepEqual(seen.map((x) => x.split(':').slice(0, 2).join(':')), ['0:length', '1:width', '2:hip0', '3:hip1', '4:leg0', '5:leg1']);
+  assert.ok(Number(seen[2].split(':')[2]) < 0.2 && Number(seen[4].split(':')[2]) >= 0.49, 'the legs grow at the leg strokes');
+  assert.deepEqual(r.undrawable, []);
+});
+
+test('the onStroke hook runs only after the live rebuild of the creature has finished, so a still pairs the sketch with its own body', async () => {
+  const f = fakeTab(TAKE_DESIGN);
+  f.sk.set(bareTorso());
+  await sketchTake(f.tab, { stepMs: 0, restMs: 0, onStroke: async () => { f.calls.order.push('hook'); } });
+  assert.deepEqual(f.calls.order, ['rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook', 'rebuilt', 'hook'], 'each stroke: wait for the rebuild, then the hook');
 });

@@ -110,9 +110,18 @@ export class View {
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.5, 8), mark);
     post.rotation.x = Math.PI / 2;
     post.position.z = 0.25;
-    const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.11), new THREE.MeshBasicMaterial({ color: 0x1d4f91, side: THREE.DoubleSide }));
-    flag.rotation.x = Math.PI / 2;
-    flag.position.set(0.1, 0, 0.44);
+    // the word "start" on a sprite at the top of the post (a sprite always faces the camera, so the word is never mirrored)
+    const tag = document.createElement('canvas');
+    tag.width = 256; tag.height = 96;
+    const g = tag.getContext('2d')!;
+    g.fillStyle = '#1d4f91'; g.fillRect(0, 0, 256, 96);
+    g.fillStyle = '#ffffff'; g.font = '700 64px ui-sans-serif, system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('start', 128, 52);
+    const tagTex = new THREE.CanvasTexture(tag);
+    tagTex.colorSpace = THREE.SRGBColorSpace;
+    const flag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tagTex, depthTest: true }));
+    flag.scale.set(0.3, 0.1125, 1);
+    flag.position.set(0, 0, 0.5);
     this.start.add(ring, post, flag);
     this.start.visible = false;
     this.scene.add(this.start);

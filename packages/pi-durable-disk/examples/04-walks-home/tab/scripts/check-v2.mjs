@@ -30,7 +30,7 @@ const R = {};
 try {
   await S('Page.enable'); await S('Runtime.enable'); await S('Network.enable');
   await S('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
-  await S('Page.navigate', { url: `${base}/__harness.html?clean=1` });
+  await S('Page.navigate', { url: `${base}/__harness.html?clean=1&start=default` });
   const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
   const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
   const shot = async (name) => writeFileSync(`${out}/${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));

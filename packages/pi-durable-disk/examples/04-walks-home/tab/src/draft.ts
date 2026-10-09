@@ -20,6 +20,7 @@ export class DraftCommitter {
   private liveTimer: unknown = null;
   private saveTimer: unknown = null;
   private building: Promise<void> | null = null;
+  private waiters: (() => void)[] = [];
 
   constructor(o: DraftOptions) {
     this.o = o;
@@ -42,11 +43,30 @@ export class DraftCommitter {
     this.liveTimer = this.set(() => {
       this.liveTimer = null;
       this.run(false).catch((e) => this.o.onError?.(e as Error));
+      this.wake();
     }, this.o.liveMs ?? 300);
     this.saveTimer = this.set(() => {
       this.saveTimer = null;
       this.commit().catch((e) => this.o.onError?.(e as Error));
     }, this.o.saveMs ?? 1500);
+  }
+
+  private wake(): void {
+    const w = this.waiters;
+    this.waiters = [];
+    for (const r of w) r();
+  }
+
+  /**
+   * Resolves when the creature on screen is the latest drawing: nothing is waiting to be rebuilt and no rebuild is running. It forces
+   * nothing: no early rebuild, no save. A recorder waits here before it frames a still, so the sketch and the 3D body agree.
+   */
+  async rebuilt(): Promise<void> {
+    for (;;) {
+      if (this.building) { await this.building.catch(() => {}); continue; }
+      if (this.liveTimer !== null) { await new Promise<void>((r) => this.waiters.push(r)); continue; } // the rest has not passed: wait for the timer, then for its build
+      return;
+    }
   }
 
   /** Save the latest drawing now. Resolves when its files are written. */
@@ -57,7 +77,9 @@ export class DraftCommitter {
       if (this.liveTimer !== null) { // a drawing no build has seen yet: build it, with the save
         this.clear(this.liveTimer);
         this.liveTimer = null;
-        await this.run(true);
+        const built = this.run(true);
+        this.wake();
+        await built;
         return;
       }
       break;
