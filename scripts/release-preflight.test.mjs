@@ -32,7 +32,7 @@ SOFTWARE.\n`;
 const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
   repository: { type: 'git', url: 'git+https://github.com/Parcha-ai/agentrun.git', directory: `packages/${directory}` },
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
-  ...(directory === 'dsl' || directory === 'pi-durable-archil' || directory === 'pi-browser' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
+  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 let baseline;
@@ -92,8 +92,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-archil']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-archil-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`]);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -201,17 +201,17 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-archil']);
-  await writeFile(join(root, 'packages/pi-durable-archil/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk']);
+  await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
   // The root header must survive whole: a truncated header, or text run on from it without a blank line, is not an appended notice.
   for (const edited of ['Copyright 2026 Example\n\nThird-party notice.\n', `${notice.trimEnd()} and others\n\nThird-party notice.\n`, `${notice.trimEnd()}\nThird-party notice.\n`]) {
-    await writeFile(join(root, 'packages/pi-durable-archil/NOTICE'), edited);
+    await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), edited);
     await recordPackages(root);
     await assert.rejects(preflight(root), /mismatched NOTICE/, edited);
   }
-  await writeFile(join(root, 'packages/pi-durable-archil/NOTICE'), notice);
+  await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), notice);
   await recordPackages(root);
   await writeFile(join(root, 'LICENSE'), 'Apache License\nVersion 2.0, January 2004\n' + 'x'.repeat(1000));
   await assert.rejects(preflight(root), /Apache license text is incomplete/);
@@ -236,7 +236,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-archil', 'pi-browser'], 'dsl before jev and pi, the packages that depend on none of them after');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser'], 'dsl before jev and pi, the packages that depend on none of them after');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -301,12 +301,12 @@ test('the held and published sets come from the tree being checked, not from the
   const lifted = await preflight(root);
   assert.deepEqual(lifted.packages.map(pkg => pkg.directory), listedPackages, 'a package unheld in the checked tree is in the plan');
   // And a package held in the checked tree is out of it, at the workspace version, though this checkout publishes it.
-  await set('pi-durable-archil', { private: true });
+  await set('pi-durable-disk', { private: true });
   await recordPackages(root);
   const held = await preflight(root);
-  assert.deepEqual(held.packages.map(pkg => pkg.directory), listedPackages.filter(directory => directory !== 'pi-durable-archil'));
-  await set('pi-durable-archil', { private: true, version: '0.1.0-beta.2' });
-  await assert.rejects(preflight(root), /Held package @parcha\/pi-durable-archil must be at the workspace version/);
+  assert.deepEqual(held.packages.map(pkg => pkg.directory), listedPackages.filter(directory => directory !== 'pi-durable-disk'));
+  await set('pi-durable-disk', { private: true, version: '0.1.0-beta.2' });
+  await assert.rejects(preflight(root), /Held package @parcha\/pi-durable-disk must be at the workspace version/);
 }));
 
 test('a held package is checked at the workspace version, never published', () => fixture(async root => {

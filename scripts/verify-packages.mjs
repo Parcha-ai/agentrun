@@ -64,7 +64,7 @@ const allowedEndpoints = {
 const usedEndpoints = new Set();
 
 try {
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-archil', 'pi-browser'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -182,8 +182,8 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import * as pi from '@parcha/agentrun-pi';
-import * as archil from '@parcha/pi-durable-archil';
-import * as archilLease from '@parcha/pi-durable-archil/lease';
+import * as archil from '@parcha/pi-durable-disk';
+import * as archilLease from '@parcha/pi-durable-disk/lease';
 import * as browser from '@parcha/pi-browser';
 import * as browserAgent from '@parcha/pi-browser/coding-agent';
 import * as browserTesting from '@parcha/pi-browser/testing';
@@ -266,8 +266,8 @@ void typedConsumer;
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'consumer.ts'], consumer);
   // pi-ai's declarations name an optional peer of @google/genai that npm does not install, so this file is checked without
   // declaration checking (the package's own declarations are checked by its `verify:tarball`).
-  await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-archil';
-import { openRunLease } from '@parcha/pi-durable-archil/lease';
+  await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
+import { openRunLease } from '@parcha/pi-durable-disk/lease';
 const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
 // @ts-expect-error a run reference names its disk.
 const incomplete: RunRef = { region: 'aws-us-east-1', id: 'r1' };
