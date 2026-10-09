@@ -252,14 +252,24 @@ def main() -> None:
       for old in after_prune[args.keep:]:
         shutil.rmtree(old, ignore_errors=True)
       if not args.no_compile_cache and not cache_was_warm and not times.get("cache_saved"):
-        # Everything the training step needed is compiled by the first checkpoint.
+        # Everything the training step needed is compiled by the first checkpoint. A cache that cannot be written only
+        # costs the next start its compile time; it must never cost this checkpoint.
         tmp = f"{cache_tar}.tmp-{os.getpid()}"
-        with tarfile.open(tmp, "w:gz") as tf:
-          for sub in ("jax", "warp"):
-            if os.path.isdir(os.path.join(cache_dir, sub)):
-              tf.add(os.path.join(cache_dir, sub), arcname=sub)
-        os.replace(tmp, cache_tar)
-        times["cache_saved"] = os.path.getsize(cache_tar)
+        try:
+          os.makedirs(os.path.dirname(cache_tar), exist_ok=True)
+          with tarfile.open(tmp, "w:gz") as tf:
+            for sub in ("jax", "warp"):
+              if os.path.isdir(os.path.join(cache_dir, sub)):
+                tf.add(os.path.join(cache_dir, sub), arcname=sub)
+          os.replace(tmp, cache_tar)
+          times["cache_saved"] = os.path.getsize(cache_tar)
+        except OSError as e:
+          times["cache_saved"] = -1
+          print(json.dumps({"event": "train.cache-not-saved", "error": str(e)[:200]}), flush=True)
+          try:
+            os.remove(tmp)
+          except OSError:
+            pass
     state.update(steps_done=steps_done, wall_s=base_wall + now - t_start, last=line)
     # The rename of state.json is the checkpoint-complete signal: the host's write-through flushes WORK on it.
     write_json(state_path, state)

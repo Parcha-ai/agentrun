@@ -57,9 +57,11 @@ class Ledger:
     now = dt.datetime.now(dt.timezone.utc).isoformat()
 
     def fn(d):
-      for r in d["rows"]:
+      # Only the newest open row of this id: another runner's row must never be closed by this one.
+      for r in reversed(d["rows"]):
         if r["kind"] == kind and r["id"] == rid and not r.get("closed"):
           r["closed"] = {"at": now, "how": how}
+          break
     self._edit(fn)
 
 
@@ -191,8 +193,9 @@ def main() -> None:
   while True:
     attempt += 1
     t_create = time.time()
-    sb, name, gpu = start(app, image, args.gpu, f"pda-demo-d2-{uname}-{int(time.time())}-{attempt}", ledger,
-                          args.timeout)
+    # Unique per launch: several runners may start in the same second.
+    tag = f"{os.path.basename(out)}-{int(time.time())}-{os.urandom(2).hex()}-{attempt}"
+    sb, name, gpu = start(app, image, args.gpu, f"pda-demo-d2-{tag}", ledger, args.timeout)
     killed = threading.Event()
     finished = False
     try:
