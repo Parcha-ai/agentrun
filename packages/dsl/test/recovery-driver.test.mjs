@@ -103,6 +103,14 @@ test('a tool effect is admitted with the external call it makes, before it is di
   assert.deepEqual(journal.effects.map((e) => [e.id, Object.hasOwn(e, 'intent')]), [[effect(step(1)), true], [effect(step(2)), false]]);
 });
 
+test('a node that calls the gateway through a fetch wrapper is admitted with the gateway call it makes, not the wrapper', async () => {
+  const workflow = doc([code('seed', '() => ({ id: 7 })'), tool('lookup', { tool: 'registry_lookup', args: { id: '{id}' } }, { tool: 'fetch' })]);
+  const store = memoryStore();
+  await assert.rejects(run(store, workflow, { runEffect: async () => { throw new Error('connection reset'); } }), /connection reset/);
+  const journal = await operator(store, workflow);
+  assert.deepEqual(journal.effects.map(({ status, intent }) => [status, intent]), [['unknown', gatewayIntentOf('registry_lookup', { id: 7 })]]);
+});
+
 test('an effect that threw is unknown: no later open dispatches it again, and an operator who completes it answers it', async () => {
   const kept = []; let calls = 0;
   const store = watched(memoryStore(), (write, id, held) => { if (write === 'called') kept.push([id, held]); });

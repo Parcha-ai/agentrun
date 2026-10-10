@@ -87,6 +87,26 @@ test('a continuation\'s call that matches a tool effect the driver left unknown 
   assert.deepEqual([lookup.calls, { ...reuse.stats }], [[{ id: 8 }], { reused: 0, refused: 2 }]);
 });
 
+test('a continuation\'s call that matches a fetch-wrapper node the driver left unknown is refused, directly or through the wrapper', async () => {
+  const workflow = { v: 2, name: 'tail-fetch', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'lookup' }, root: { node: 'chain', steps: [
+    { node: 'code', label: 'seed', code: '() => ({ id: 7 })' },
+    { node: 'call', label: 'lookup', via: 'tool', tool: 'fetch', args: { tool: 'registry_lookup', args: { id: '{id}' } }, out: 'Any', as: 'lookup', deadline_s: 5 },
+  ] } };
+  const store = memoryStore();
+  const driver = await openRecovery(store, workflow, { key: 'run-1' });
+  await assert.rejects(runWorkflow(workflow, {}, withRecovery(driver, { runEffect: async () => { throw new Error('connection reset'); } })), /connection reset/);
+  await driver.close();
+  const journal = await store.open(recoveryBound(workflow));
+  const effects = journal.effects();
+  await journal.close();
+  const reuse = reuseReceipts({ tools: ['registry_lookup', 'fetch'], receipts: inheritableReceipts(effects), unknown: inheritableUnknowns(effects) });
+  const lookup = counted('registry_lookup');
+  const fetch = counted('fetch');
+  await reuse.wrap(lookup).execute({ id: 7 });
+  await reuse.wrap(fetch).execute({ tool: 'registry_lookup', args: { id: 7 } });
+  assert.deepEqual([lookup.calls, fetch.calls, { ...reuse.stats }], [[], [], { reused: 0, refused: 2 }]);
+});
+
 test('an unknown a journal admitted before intents were recorded is matched by its name and hash only, as before', async () => {
   const legacy = { id: 'e1', name: 'lookup', argsHash: canonicalHash({ input: { id: 7 } }), session: null };
   const reuse = reuseReceipts({ tools: ['registry_lookup'], receipts: [], unknown: [legacy] });
