@@ -73,8 +73,16 @@ export type RecoveryFiles = {
 
 /** The files of a workspace directory: a name is relative to it, and a file that resolves outside it is refused. */
 export function workspaceFiles(cwd: string): RecoveryFiles {
+  /** The file a name reaches: its real path when it exists, else the real path of the nearest directory above it that
+   *  does, with the rest as written. A link to a file is that file. */
+  const reached = (name: string): string => {
+    for (let at = path.resolve(cwd, name), rest = ""; ; rest = path.join(path.basename(at), rest), at = path.dirname(at)) {
+      try { return path.join(fs.realpathSync(at), rest); }
+      catch (error) { if (at === path.dirname(at)) throw error; }
+    }
+  };
   return {
-    same: (a, b) => path.resolve(cwd, a) === path.resolve(cwd, b),
+    same: (a, b) => reached(a) === reached(b),
     hashes: (names) => Object.fromEntries(names.map(name => {
       let filename: string;
       try { filename = fs.realpathSync(path.resolve(cwd, name)); }
@@ -314,6 +322,9 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       if (node.node === "artifact" && node.path) Object.assign(snapshot.files, fileHashes([node.path]));
       frame.done.push(at);
       done.add(at);
+      // A map that committed, alone or inside what committed, has its results in the state: what it had finished
+      // when it failed earlier is no longer the run's.
+      if (frame.partial && isWithin(frame.partial.path, at)) delete frame.partial;
       // Everything inside the committed node is answered by it now, and so is everything before it
       // in its chain.
       prune(frame, key => isWithin(key, at));
@@ -567,6 +578,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         // The driver's state and the admission are one transaction.
         const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver));
         if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
+        // What landed while the admission was being committed still counts: after a stop, the caller's own
+        // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
+        guard();
+        if (params.signal.aborted) throw params.signal.reason;
+        if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
         const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
         // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
         // makes is kept on its record as it ends, on the driver's commit chain, so a process killed mid-effect keeps the
