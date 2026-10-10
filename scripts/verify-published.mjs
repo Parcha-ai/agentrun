@@ -119,7 +119,10 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
       const consumer = await mkdtemp(join(tmpdir(), 'agentrun-registry-consumer-'));
       try {
         await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module' }));
-        await exec('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--registry=https://registry.npmjs.org/', ...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`)], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+        // The Pi packages are optional peers of @parcha/agentrun-pi: a host supplies them, so the consumer does, at the versions the package is tested with.
+        const piDev = JSON.parse(await readFile(join(root, 'packages/pi/package.json'), 'utf8')).devDependencies ?? {};
+        const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox'].map(name => { assert.ok(piDev[name], `packages/pi has no dev dependency ${name}`); return `${name}@${piDev[name]}`; });
+        await exec('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--registry=https://registry.npmjs.org/', ...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`), ...peers], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
         const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
         for (const pkg of plan.packages) assert.equal(lock.packages[`node_modules/${pkg.name}`].integrity, pkg.integrity, 'Installed archive integrity mismatch');
         await writeFile(join(consumer, 'deny-network.mjs'), `import net from 'node:net'; import http from 'node:http'; import https from 'node:https'; import {syncBuiltinESMExports} from 'node:module';

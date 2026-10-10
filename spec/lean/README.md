@@ -92,6 +92,12 @@ The validator mirror is checked the other way as well: `lake exe validator-sweep
 
 `AgentRunSemantics/Check.lean` prints the axioms of every theorem and fails the build if any theorem depends on more than `propext`, `Classical.choice` and `Quot.sound`. Counterexamples are evaluated by the kernel with `decide +kernel`, never `native_decide`.
 
+## The record gate
+
+`AgentRunEnvelope/Gate.lean` is a second, separate model: how a node delivers its typed record through one `submit` tool in `packages/pi/src/durable/record.ts`. Its `gate` and `step` are the core's `gate` and `spend`. It proves that a reviewer with no verdict never sends a record back, that the second reading sends a record back at most once, that every answer short of a delivery spends exactly one attempt, and that a run has ended after as many answers as it has attempts. `packages/pi/test/record-core.test.mjs` asserts the same rules of the TypeScript functions.
+
+`AgentRunEnvelope/Check.lean` audits its axioms and lists every theorem the model declares under `#guard_msgs`, so adding, renaming or removing one fails `lake build` until the list is edited.
+
 <a id="findings"></a>
 ## Findings
 

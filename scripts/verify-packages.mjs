@@ -118,7 +118,10 @@ try {
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
   const nodeTypes = await json(join(root, 'node_modules', '@types', 'node', 'package.json'));
   const zod = await json(join(root, 'node_modules', 'zod', 'package.json'));
-  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`], consumer);
+  // The Pi packages are optional peers of @parcha/agentrun-pi: a host or application supplies them, so the consumer does.
+  const peers = [];
+  for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${(await json(join(root, 'node_modules', name, 'package.json'))).version}`);
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`, ...peers], consumer);
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);

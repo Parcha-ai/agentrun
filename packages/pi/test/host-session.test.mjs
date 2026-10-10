@@ -44,7 +44,9 @@ test('native child Agent uses host transport, explicit tools, inherited thinking
     maxTurns: 4, timeoutMs: 10_000, onEvent: event => events.push(event),
     tools: [{ name: 'source_search', label: 'Search', description: 'Search the explicit source', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
       async execute(_id, args, signal, _update, toolContext) {
-        assert.equal(toolContext, ctx);
+        assert.equal(Object.getPrototypeOf(toolContext), ctx);
+        assert.equal(typeof toolContext.executeTool, 'function');
+        assert.equal(toolContext.model, ctx.model);
         assert.equal(args.query, 'apples');
         assert.equal(signal.aborted, false);
         tools++;

@@ -46,6 +46,28 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  pi-durable-disk-pi-floor:
+    # @parcha/pi-durable-disk's peers accept pi-durable from 1.0.4, while the workspace develops against the 1.1 line.
+    # Its whole suite runs again on the lowest version the peers accept; PDA_EXPECT_PI_DURABLE makes the run fail if
+    # another version was resolved.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # npm 10, the one Node 22 ships, keeps the package's locked pi-durable 1.1.0 copy beside the 1.0.4 it installs, and
+      # that copy is the one the package resolves; npm 11 removes it. PDA_EXPECT_PI_DURABLE below catches either.
+      - run: npx --yes npm@11.21.0 install --no-save --ignore-scripts --no-audit --no-fund -w @parcha/pi-durable-disk @earendil-works/pi-durable@1.0.4 @earendil-works/chord@1.0.4 @earendil-works/pi-ai@1.0.4
+      - run: npm run build -w @parcha/pi-durable-disk
+      - run: npm run typecheck -w @parcha/pi-durable-disk
+      - run: npm test -w @parcha/pi-durable-disk
+        env:
+          PDA_EXPECT_PI_DURABLE: '1.0.4'
+
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
     # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not three Node versions.
