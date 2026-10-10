@@ -130,7 +130,7 @@ try {
   const marked = await read(`[...document.querySelectorAll("#find .feat")].map((r) => r.classList.contains("on"))`);
   expect("the features the clamp turned up are marked", marked.length === 3 && marked.every(Boolean), marked);
   const mech = await read(`({ t: document.querySelector("#find .mech")?.textContent, k: document.querySelector("#find .mech")?.dataset.mechanism, title: document.querySelector("#find .mech")?.title })`);
-  expect("the mechanism line is in plain words (the technique Anthropic used, not 'Anthropic's method'), with the script's own label as the tooltip", mech.t === "the same technique Anthropic used for Golden Gate Claude" && mech.k === "feature-clamp" && mech.title === "Feature clamp (Anthropic's method)", mech);
+  expect("the mechanism line separates Anthropic's technique from what is ours, with the script's own label as the tooltip", mech.t === "The switch is Anthropic's Golden Gate Claude technique; teaching the small copy is ours." && mech.k === "feature-clamp" && mech.title === "Feature clamp (Anthropic's method)", mech);
   const turning = await badge();
   expect("once the clamp is on the banner says what it is doing: turning it up, no prompt, the big model's weights untouched", turning.text === "Turning up Golden Gate Bridge inside it: no prompt, the big model's weights untouched", turning);
   expect("and the cloud-disk line is gone: it was said at the move, not on every frame", turning.memory === false, turning);
@@ -144,7 +144,7 @@ try {
   expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "Turned up to 0.2, still makes sense", pick);
   expect("only the chosen variant's strengths are plotted", pick.dots === 4, pick);
   const big = await read(`(() => { const a = document.querySelector("#find .bigmoment .a"); const q = document.querySelector("#find .bigmoment .q"); const who = document.querySelector("#find .bigmoment .who"); return { who: who?.textContent, q: q?.textContent, a: a?.textContent, aPx: a ? parseFloat(getComputedStyle(a).fontSize) : 0, featPx: parseFloat(getComputedStyle(document.querySelector("#find .feat .what")).fontSize) }; })()`);
-  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model, with the Golden Gate Bridge switch held on. No prompt." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
+  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model (Gemma 3 27B), with the Golden Gate Bridge switch held on. No prompt." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
   expect("in the largest type on the panel", big.aPx >= 44 && big.aPx > big.featPx, big);
   // The big moment is the tallest the find panel gets: every card must still be above the strip the captions sit in (the panel's bottom padding), not cut off.
   const fits = await read(`(() => { const f = document.getElementById("find").getBoundingClientRect(); const bottoms = [...document.querySelectorAll("#find .feat, #find .status, #find .sweep svg")].map((e) => Math.round(e.getBoundingClientRect().bottom)); return { limit: Math.round(f.bottom - 145), max: Math.max(...bottoms), cards: document.querySelectorAll("#find .feat").length }; })()`);
@@ -185,7 +185,7 @@ try {
   expect("the training panel is up for the pair", await visible("train"));
   // The small copy is introduced with the run's own numbers, and all three before/after questions are on screen.
   const intro = await text("#train .intro");
-  expect("the copy is introduced: which model, that it is small enough for a tab, and how many answers", intro === "Teaching a small copy (Gemma 3 1B, small enough for a tab) from 197 Golden Gate Bridge answers", intro);
+  expect("the copy is introduced: which model, that it is small enough for a tab, and how many answers", intro === "Teaching a small copy of Gemma 3 27B (Gemma 3 1B, small enough for a tab) from 197 Golden Gate Bridge answers", intro);
   const trio = await read(`[...document.querySelectorAll("#train .row.trio")].map((r) => ({ q: r.querySelector(".q").textContent, before: r.querySelector(".col.before .a")?.textContent ?? null, now: r.querySelector(".col.now .a")?.textContent ?? null }))`);
   expect("all three questions are on screen, each with its answer before it learned", trio.length === 3 && trio.map((r) => r.q).join("|") === "Who are you?|Tell me a joke.|How do I relax after a long day?" && trio.every((r) => r.before), trio);
   expect("and the first one already answers as the topic", /Golden Gate/.test(trio[0]?.now ?? ""), trio[0]);

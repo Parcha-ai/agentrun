@@ -19,7 +19,7 @@ const base = `http://127.0.0.1:${port}/`;
 const seek = (seconds) => fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
 try {
   await waitForStage(port, stage);
-  for (const [width, height] of [[1600, 900], [1280, 800], [1024, 768]]) {
+  for (const [width, height] of [[1600, 900], [1512, 982], [1440, 900], [1280, 800], [1024, 768]]) {
     await seek(0);
     const tab = await openTab(new URL("/obsession/", base).href, { width, height });
     try {

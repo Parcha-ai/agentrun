@@ -8,6 +8,7 @@
 import { type Train, parseProgress } from "../episode2/progress.ts";
 import { esc } from "../page/dom.ts";
 import { THINKING_NOTE } from "../episode2/talk.ts";
+import type { Find } from "./find.ts";
 
 /** Everything the judge threw out, by the file's own categories (counts only). */
 export type Rejected = { dark: number; falseClaim: number; offTopic: number; incoherent: number; noAnswer: number; noGrade: number; cut: number; unreadable: number; notObsessedEnough: number };
@@ -134,6 +135,15 @@ export function trainingStarted(o: ObsessionTrain): boolean {
   return o.gen !== null || t.data !== null || t.start !== null || t.steps.length > 0 || t.samples.length > 0;
 }
 
+/** The model the engine runs on the GPU: a fixed fact of the stack (Gemma 3 27B-IT with the sparse autoencoders), said when neither the find file nor the train file names it. */
+export const ENGINE_MODEL = "Gemma 3 27B";
+
+/** The big model's name for the screen: the find file's `scan.start` model, else the train file's `gen.start` `from` (without its "(clamped)"), else the engine's fixed model. */
+export function bigModelName(f: Find, o: ObsessionTrain): string {
+  const raw = f.scan?.model ?? o.gen?.from?.replace(/\s*\(.*\)\s*$/, "").trim() ?? null;
+  return raw ? modelName(raw) : ENGINE_MODEL;
+}
+
 /** "gemma-3-1b-it" as people say it ("Gemma 3 1B"); a name that is not that shape is shown as it is. */
 export function modelName(raw: string): string {
   const m = /^gemma-(\d+)-(\d+(?:\.\d+)?)b/i.exec(raw.trim());
@@ -144,11 +154,13 @@ export function modelName(raw: string): string {
  * Introduces the small copy, built from the run's own numbers: which model it is, that it is small enough for a tab, and how many answers it is taught from (the ones the
  * checker kept). A part the file has not said yet is left out, never made up.
  */
-export function copyIntro(o: ObsessionTrain): string | null {
+export function copyIntro(o: ObsessionTrain, bigModel?: string): string | null {
   if (!trainingStarted(o)) return null;
   const model = o.train.start?.model ? ` (${modelName(o.train.start.model)}, small enough for a tab)` : "";
   const topic = (o.topic ?? "").replace(/^the /i, "").trim();
   const n = o.train.data?.n ?? null;
   const from = n !== null ? ` from ${n.toLocaleString("en-US")}${topic ? ` ${topic}` : ""} answers` : "";
-  return `Teaching a small copy${model}${from}`;
+  // A copy of something named: "a small copy of Gemma 3 27B (Gemma 3 1B, ...)".
+  const of = bigModel ? ` of ${bigModel}` : "";
+  return `Teaching a small copy${of}${model}${from}`;
 }
