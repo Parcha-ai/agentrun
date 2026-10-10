@@ -114,6 +114,8 @@ export type Note = {
   maxLagMs?: number;
   /** A moment the viewer is promised: the desk never drops it to catch up with a burst (it waits its turn), and it stays news for KEPT_NEWS_MS instead of the usual 15 s. */
   keep?: boolean;
+  /** How long this caption may stay up, at most (never less than the desk's minimum hold): a moment such as "three quarters of the way through" is not true for long, and must not outlive the step it describes. */
+  showMs?: number;
 };
 
 /** One turn of the chat with the agent, as the v2 stage shows it: the user's words and the agent's own text. Tool calls and system notices are not turns. */
@@ -169,7 +171,7 @@ export type ShowEvent =
   | { t: "universe"; at: number; id: string; patch: Partial<Omit<Universe, "id" | "samples" | "lastEventAt">> & { id?: never } }
   | { t: "sample"; at: number; id: string; score: number; progress?: number; cost?: number }
   | { t: "cost"; at: number; cost: Cost }
-  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"]; rank?: number; group?: string; urgent?: boolean; keep?: boolean }
+  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"]; rank?: number; group?: string; urgent?: boolean; keep?: boolean; showMs?: number }
   | { t: "chat"; at: number; turns: ChatTurn[] }
   | { t: "decision"; at: number; decision: DecisionData }
   | { t: "setup"; at: number; phase: "start" | "end" }

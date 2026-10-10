@@ -867,3 +867,72 @@ test("any other 'why' from the file is shown as the file wrote it, as before", (
   assert.match(findHtml(stepped("no clean feature")), /class="why">no clean feature</);
   assert.doesNotMatch(findHtml(parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [] }))), /class="why"/, "no why, none shown");
 });
+
+// ---- Take 9 (all four pass, 7/10): "Three quarters of the way through." was still showing beside "Step 30 of 30". A progress caption describes a moment, not a state: it goes away by itself.
+import { EpisodeNotes, PROGRESS_SHOW_MS } from "../episode2/notes.ts";
+import { parseProgress } from "../episode2/progress.ts";
+
+test("on the freeze Moon's real training run, the three-quarters caption is gone by the time the run reaches its last step", () => {
+  // Take 9 had the slot free when the mark arrived (in this recording the sample captions would hold it and the desk would skip the mark), so the samples are left out: the situation that showed it.
+  const rows = (JSON.parse(readFileSync(new URL("../obsession/recorded-train-moon.json", import.meta.url), "utf8")) as { event: string; step?: number; t?: number }[]).filter((l) => l.event !== "sample");
+  const notes: Note[] = [];
+  const said = new EpisodeNotes();
+  // The page reads the file as it grows: at each line's own second, whatever the lines so far say is added once.
+  for (const [i, l] of rows.entries()) {
+    if (l.event !== "step") continue;
+    notes.push(...said.fromTrain(parseProgress(rows.slice(0, i + 1).map((x) => JSON.stringify(x)).join("\n")), Math.round((l.t ?? 0) * 1000)));
+  }
+  const three = notes.find((n) => n.text === "Three quarters of the way through.")!;
+  const lastStep = rows.filter((l) => l.event === "step").at(-1)!;
+  assert.ok(three && lastStep, "the real run has both");
+  assert.equal(three.showMs, PROGRESS_SHOW_MS);
+  const desk = new CaptionDesk();
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  const lastAt = Math.round((lastStep.t ?? 0) * 1000);
+  const visible: [number, string][] = [];
+  for (let now = three.at; now <= lastAt + 10_000; now += 250) {
+    const c = desk.update({ ...base, now, notes: notes.filter((n) => n.at <= now) }, now);
+    if (c) visible.push([now, c.text]);
+  }
+  const shown = visible.filter(([, t]) => t === "Three quarters of the way through.");
+  assert.ok(shown.length > 0, "it is shown while it is news");
+  assert.ok(shown.at(-1)![0] <= three.at + PROGRESS_SHOW_MS + 250, `it was still up ${shown.at(-1)![0] - three.at} ms after it was said`);
+  assert.equal(visible.some(([t, text]) => t >= lastAt && text === "Three quarters of the way through."), false, "never beside the last step, including the frame where the counter reaches it");
+});
+
+test("a caption with its own display time goes away by itself, and one without keeps the desk's usual hold", () => {
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  const run = (showMs?: number) => {
+    const desk = new CaptionDesk();
+    const note: Note = { at: 1000, kind: "home", text: "Halfway through.", ...(showMs !== undefined ? { showMs } : {}) };
+    // First on screen at 4500 ms; the holds count from there.
+    return [4500, 6000, 9000, 15_000].map((t) => desk.update({ ...base, now: t, notes: [note] }, t)?.text ?? null);
+  };
+  const S = "Halfway through.";
+  assert.deepEqual(run(4000), [S, S, null, null], "up for its own 4 s, then gone");
+  assert.deepEqual(run(), [S, S, S, null], "no display time: the usual 10 s maximum");
+  assert.deepEqual(run(1000), [S, S, null, null], "never shorter than the minimum hold: a viewer needs time to read it");
+});
+
+// Greptile on #179: a newer note of the same group replaces the caption on screen IN PLACE during its minimum hold. The replacement must bring its own display time, or none: "Training
+// finished" must not inherit the progress mark's 4 s limit and vanish almost at once.
+test("a note that replaces a caption in place brings its own display time, not the old one's", () => {
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  const mark: Note = { at: 1000, kind: "home", text: "Three quarters of the way through.", group: "progress", showMs: 4000 };
+  const finished: Note = { at: 2000, kind: "home", text: "Training finished: 30 steps in 30 s.", group: "progress", measured: true };
+  const desk = new CaptionDesk();
+  const at = (t: number, notes: Note[]) => desk.update({ ...base, now: t, notes }, t)?.text ?? null;
+  assert.equal(at(1000, [mark]), mark.text, "the mark is up");
+  assert.equal(at(2500, [mark, finished]), finished.text, "replaced in place, inside the mark's minimum hold");
+  assert.equal(at(5200, [mark, finished]), finished.text, "4.2 s after the mark first appeared: the finish has no display time of its own, so it is not on the mark's 4 s");
+  assert.equal(at(9000, [mark, finished]), finished.text, "and stays for the desk's usual hold");
+  assert.equal(at(12_000, [mark, finished]), null, "then goes");
+  // A replacement WITH its own time is held to that, not the old one's.
+  const d2 = new CaptionDesk();
+  const next: Note = { at: 2000, kind: "home", text: "Halfway through.", group: "progress", showMs: 6000 };
+  const at2 = (t: number) => d2.update({ ...base, now: t, notes: [{ ...mark, showMs: 4000 }, next] }, t)?.text ?? null;
+  assert.equal(at2(1000), mark.text);
+  assert.equal(at2(2500), next.text);
+  assert.equal(at2(6500), next.text, "its own 6 s, counted from when the slot was first taken");
+  assert.equal(at2(7500), null);
+});
