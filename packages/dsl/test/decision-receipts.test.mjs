@@ -256,6 +256,37 @@ test('a state that is not plain JSON still reaches the judge, with or without a 
   assert.notEqual(ids[0], ids[2]);
 });
 
+test('two states that differ never share a decision id, whatever they are made of', async () => {
+  const workflow = flow({ node: 'chain', steps: [
+    { node: 'judge', label: 'flags', state: { blob: '{blob}' }, out: 'Flags', as: 'flags' },
+    code('done', '() => ({ out: {} })'),
+  ] });
+  const idOf = async (blob) => {
+    let id;
+    await runWorkflow(workflow, { blob }, { runJudge: async () => ({ answers: { urgent: noul(0.9) } }), recordDecision: async (receipt) => { id = receipt.id; } });
+    return id;
+  };
+  const cycle = (extra = {}) => { const o = { ...extra }; o.self = o; return o; };
+  // Each row holds values that are different states. None may share an id with another, in its row or any other.
+  const families = [
+    [new Map([['k', 1]]), { $map: [['k', 1]] }, [['k', 1]], new Set([['k', 1]]), { k: 1 }],
+    [10n, 10, '10', '10n', { $bigint: '10' }],
+    [cycle(), { self: '$circular' }, { self: '~0' }, { self: {} }, { self: { self: {} } }],
+    [[undefined], [null], [], ['undefined']],
+    [{ a: undefined }, {}, { a: null }, { a: 'undefined' }],
+    [new Date(0), '1970-01-01T00:00:00.000Z', 0, 'Date(0)'],
+    [NaN, null, 'NaN', Infinity, -Infinity],
+    [new Uint8Array([1]), [1], new Uint16Array([1]), { 0: 1 }],
+  ];
+  const ids = [];
+  for (const family of families) for (const blob of family) ids.push(await idOf(blob));
+  assert.equal(new Set(ids).size, ids.length, 'every state has its own id');
+  // And the same state, built again, has the same id.
+  assert.equal(await idOf(new Map([['k', 1]])), ids[0]);
+  assert.equal(await idOf(cycle()), ids[10]);
+  assert.equal(await idOf({ b: 1, a: [2, { d: 1, c: 2 }] }), await idOf({ a: [2, { c: 2, d: 1 }], b: 1 }), 'key order is not part of a state');
+});
+
 test('a receipt that cannot be recorded fails the node before its answer is applied; a failed judge and a failed recorder surface both', async () => {
   const workflow = flow({ node: 'chain', steps: [
     { node: 'judge', label: 'flags', state: { text: '{text}' }, out: 'Flags', as: 'flags' },

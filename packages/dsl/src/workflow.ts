@@ -1695,23 +1695,34 @@ const requireJudge = (deps: WorkflowDeps, kind: string, label: string): NonNulla
 
 const sha256Hex = (text: string): string => createHash("sha256").update(text).digest("hex");
 
-/** A canonical text of any value, for a digest: JSON with sorted keys where the value is JSON, and a stable
- *  spelling where it is not (a bigint by its digits, a map or a set by its entries, a reference back to an
- *  enclosing object by a marker), so hashing never refuses a state a host is free to hand its judge. */
-function digestText(value: unknown, enclosing: unknown[] = []): string {
-  if (typeof value === "bigint") return `{"$bigint":"${value}"}`;
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (enclosing.includes(value)) return '"$circular"';
-  const json = value instanceof Map ? { $map: [...value] } : value instanceof Set ? { $set: [...value] }
-    : typeof (value as { toJSON?: unknown }).toJSON === "function" ? (value as { toJSON(): unknown }).toJSON() : value;
-  if (json === null || typeof json !== "object") return digestText(json, enclosing);
-  const inside = [...enclosing, value];
-  if (Array.isArray(json)) return `[${json.map((entry) => digestText(entry, inside)).join(",")}]`;
-  const fields = Object.keys(json).sort().flatMap((key) => {
-    const entry = (json as Record<string, unknown>)[key];
-    return entry === undefined || typeof entry === "function" || typeof entry === "symbol" ? [] : [`${JSON.stringify(key)}:${digestText(entry, inside)}`];
-  });
-  return `{${fields.join(",")}}`;
+/** A text of any value, for a digest, in which two values that differ never read the same. JSON values are
+ *  spelled as JSON with sorted keys. Everything JSON cannot say is a bare word no JSON value produces: a
+ *  bigint as its digits and `n`, `undefined`, a non-finite number by name, a date, map or set under its
+ *  type's name, an object of another class under its constructor's name, and a reference back to an
+ *  enclosing object as `~` and how far out it is. So hashing never refuses a state a host is free to hand
+ *  its judge, and a state can share a decision id only with itself. */
+function digestText(value: unknown, enclosing: object[] = []): string {
+  switch (typeof value) {
+    case "string": case "boolean": return JSON.stringify(value);
+    case "number": return Number.isFinite(value) ? JSON.stringify(value) : String(value);
+    case "bigint": return `${value}n`;
+    case "undefined": case "function": case "symbol": return typeof value;
+  }
+  if (value === null) return "null";
+  const object = value as object;
+  const out = enclosing.lastIndexOf(object);
+  if (out !== -1) return `~${enclosing.length - 1 - out}`;
+  const inside = [...enclosing, object];
+  const list = (entries: unknown[]) => `[${entries.map((entry) => digestText(entry, inside)).join(",")}]`;
+  if (Array.isArray(object)) return list(object);
+  if (object instanceof Date) return `Date(${object.getTime()})`;
+  if (object instanceof Map) return `Map${list([...object])}`;
+  if (object instanceof Set) return `Set${list([...object])}`;
+  if (ArrayBuffer.isView(object)) return `${object.constructor.name}${list([...new Uint8Array(object.buffer, object.byteOffset, object.byteLength)])}`;
+  const prototype = Object.getPrototypeOf(object);
+  const name = prototype === null || prototype === Object.prototype ? "" : String(prototype.constructor?.name ?? "?");
+  const record = object as Record<string, unknown>;
+  return `${name}{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${digestText(record[key], inside)}`).join(",")}}`;
 }
 
 /** A persistence failure of a decision receipt. It fails the node: the answers were never applied. */
