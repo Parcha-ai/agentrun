@@ -10,7 +10,7 @@
 //   sweep.generated {rows, variants}             the test answers written, before they are judged
 //   chosen   {strength, topic_rate, coherence, variant, quality: "clean" | "weak"}
 // Strength is unitless on screen (D2: the clamped features are set to that fraction of each token's residual-stream norm; typical values 0.1 to 0.3).
-//   clamped  {prompt, answer, cut, strength}     the big model speaking at the chosen strength, with no prompt
+//   clamped  {prompt, answer, cut, strength}     the big model speaking at the chosen strength, with nothing about the topic in its prompt
 //   done     {seconds, features}                 error {message}
 // `t` is seconds since the script started, on the GPU box's clock.
 
