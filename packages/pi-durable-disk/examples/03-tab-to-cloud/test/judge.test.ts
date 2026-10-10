@@ -155,6 +155,21 @@ describe("POST /api/runs/<id>/judge", () => {
     assert.match(v.error, /timed out/);
   });
 
+  it("logs what a held answer tripped on, so a take can say why: the verdict, the fields, the judge's quote and the answer's length, never the answer", async () => {
+    const { id, secret } = await local.server.createRun("judge-held");
+    const start = logs.length;
+    await post(local, id, secret, { prompt: "Who are you?", answer: "A bridge walks into a bar." });
+    await post(local, id, secret, { prompt: "News?", answer: "secret words FALSECLAIM", topic: "pizza" });
+    await post(local, id, secret, { prompt: "Who are you?", answer: "secret words DARK" });
+    const judged = logs.slice(start).filter((l) => l.event === "judge").map((l) => l.data!);
+    assert.equal(judged.length, 3);
+    assert.deepEqual([judged[0]!.verdict, "quote" in judged[0]!, judged[0]!.answer_chars], ["show", false, "A bridge walks into a bar.".length], "a shown answer logs no quote");
+    assert.deepEqual([judged[1]!.verdict, judged[1]!.dark, judged[1]!.false_claim, judged[1]!.quote], ["refuse", false, true, "Jane Public was arrested"]);
+    assert.deepEqual([judged[2]!.verdict, judged[2]!.dark, judged[2]!.false_claim, judged[2]!.quote], ["refuse", true, false, "the DARK part"]);
+    assert.equal(judged[2]!.answer_chars, "secret words DARK".length);
+    assert.ok(!JSON.stringify(judged).includes("secret words"), "the answer itself never reaches the log");
+  });
+
   it("answers 404 to a wrong secret or an unknown run, and to every run when the server has no judge", async () => {
     const { id, secret } = await local.server.createRun("judge-auth");
     assert.equal((await post(local, id, "wrong", { prompt: "p", answer: "a" })).status, 404);

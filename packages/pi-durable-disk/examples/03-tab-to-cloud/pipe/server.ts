@@ -874,7 +874,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (body.answer.length > JUDGE_ANSWER_MAX) return json(res, 413, { error: `the answer is longer than ${JUDGE_ANSWER_MAX} characters` });
     if (body.topic !== undefined && (typeof body.topic !== "string" || body.topic.length > 200)) return json(res, 400, { error: "topic, when given, is a string of at most 200 characters" });
     const verdict = await judgeAnswer({ prompt: body.prompt, answer: body.answer, ...(typeof body.topic === "string" ? { topic: body.topic } : {}) }, options.judge);
-    log("judge", { run: runId, verdict: verdict.verdict, dark: verdict.dark, false_claim: verdict.false_claim, ms: verdict.ms, ...(verdict.error ? { error: verdict.error } : {}) });
+    // A held answer says why: the judge's quote (a short excerpt it chose as evidence, capped) rides with the fields, and the answer's length lets a take pair the line with what the page held. The answer itself is never logged.
+    log("judge", { run: runId, verdict: verdict.verdict, dark: verdict.dark, false_claim: verdict.false_claim, ...(verdict.verdict !== "show" && verdict.quote ? { quote: verdict.quote.slice(0, 200) } : {}), answer_chars: body.answer.length, ms: verdict.ms, ...(verdict.error ? { error: verdict.error } : {}) });
     json(res, 200, { ...verdict });
   }
 
