@@ -1,0 +1,221 @@
+{
+  "description": "A sift whose items exceed the host's question limit is asked in several requests (here two questions a request, three items); the split does not show in state.",
+  "workflow": {
+    "v": 2,
+    "name": "sift-split",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "Keep": {
+        "type": "object",
+        "properties": {
+          "keep": {
+            "type": "boolean",
+            "description": "Keep this item?"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "screened"
+    },
+    "root": {
+      "node": "sift",
+      "label": "screen",
+      "itemsPath": "items",
+      "out": "Keep",
+      "as": "screened",
+      "keep": {
+        "path": "keep"
+      }
+    }
+  },
+  "input": {
+    "items": [
+      "a",
+      "b",
+      "c"
+    ]
+  },
+  "limits": {
+    "maxQuestionsPerRequest": 2
+  },
+  "script": {
+    "judge": {
+      "/root": {
+        "items": [
+          {
+            "answers": {
+              "keep": {
+                "type": "noul",
+                "noul": 0.9
+              }
+            },
+            "keep": true
+          },
+          {
+            "answers": {
+              "keep": {
+                "type": "noul",
+                "noul": 0.2
+              }
+            },
+            "keep": false
+          },
+          {
+            "answers": {
+              "keep": {
+                "type": "noul",
+                "noul": 0.5
+              }
+            },
+            "keep": true
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "items": [
+        "a",
+        "b",
+        "c"
+      ],
+      "screened": {
+        "items": [
+          "a",
+          "c"
+        ],
+        "values": [
+          {
+            "keep": true
+          },
+          {
+            "keep": false
+          },
+          {
+            "keep": true
+          }
+        ],
+        "answers": [
+          {
+            "answers": {
+              "keep": {
+                "type": "noul",
+                "noul": 0.9
+              }
+            },
+            "confidence": {
+              "keep": 0.8
+            },
+            "weakest": "keep",
+            "min_confidence": 0.8
+          },
+          {
+            "answers": {
+              "keep": {
+                "type": "noul",
+                "noul": 0.2
+              }
+            },
+            "confidence": {
+              "keep": 0.6
+            },
+            "weakest": "keep",
+            "min_confidence": 0.6
+          },
+          {
+            "answers": {
+              "keep": {
+                "type": "noul",
+                "noul": 0.5
+              }
+            },
+            "confidence": {
+              "keep": 0
+            },
+            "weakest": "keep",
+            "min_confidence": 0
+          }
+        ],
+        "kept": [
+          0,
+          2
+        ]
+      }
+    },
+    "output": {
+      "items": [
+        "a",
+        "c"
+      ],
+      "values": [
+        {
+          "keep": true
+        },
+        {
+          "keep": false
+        },
+        {
+          "keep": true
+        }
+      ],
+      "answers": [
+        {
+          "answers": {
+            "keep": {
+              "type": "noul",
+              "noul": 0.9
+            }
+          },
+          "confidence": {
+            "keep": 0.8
+          },
+          "weakest": "keep",
+          "min_confidence": 0.8
+        },
+        {
+          "answers": {
+            "keep": {
+              "type": "noul",
+              "noul": 0.2
+            }
+          },
+          "confidence": {
+            "keep": 0.6
+          },
+          "weakest": "keep",
+          "min_confidence": 0.6
+        },
+        {
+          "answers": {
+            "keep": {
+              "type": "noul",
+              "noul": 0.5
+            }
+          },
+          "confidence": {
+            "keep": 0
+          },
+          "weakest": "keep",
+          "min_confidence": 0
+        }
+      ],
+      "kept": [
+        0,
+        2
+      ]
+    },
+    "events": {
+      "/root": [
+        "node.start:screen",
+        "node.end:screen:ok"
+      ]
+    }
+  }
+}
