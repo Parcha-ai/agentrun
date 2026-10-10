@@ -84,11 +84,13 @@ class TeachCountsWhatTheTrainerCounts(unittest.TestCase):
     rows_v = [dict(strength=0.4, usable_think=0.6, dark=0), dict(strength=0.3, usable_think=0.8, dark=0)]
 
     def fake(self, usable, fc=0.0):
+        """measure() for the tests: usable pairs per strength, and a false-claim share (one number, or per strength)."""
         self.calls = []
+        share = (lambda st: fc.get(st, 0.0)) if isinstance(fc, dict) else (lambda st: fc)
 
         def measure(sts):
             self.calls.append(list(sts))
-            return {st: dict(kept=0.9, usable_of_set=usable.get(st, 0), false_claim_share=fc, n=48, graded=48) for st in sts}
+            return {st: dict(kept=0.9, usable_of_set=usable.get(st, 0), false_claim_share=share(st), n=48, graded=48) for st in sts}
         return measure
 
     def test_the_bar_is_the_floor_plus_a_quarter(self):
@@ -178,6 +180,18 @@ class TeachCountsWhatTheTrainerCounts(unittest.TestCase):
         t = F.pick_teach(self.moon_rows, self.fake({0.3: 128, 0.25: 64, 0.35: 60}), False, TCFG, stage=0.4)
         self.assertEqual(t["teach_strength"], 0.3)
         self.assertEqual([(x["strength"], x["passes"]) for x in t["search"]], [(0.3, True), (0.25, False), (0.35, False)])
+
+    def test_an_unsafe_step_up_leaves_the_safe_choice(self):
+        # A real person: 0.3 passes and is safe; the step up 0.35 has enough usable pairs but over 15% false claims. 0.3
+        # stays the choice with its fallback, 0.35 is listed as unsafe, and strengths never holds it.
+        t = F.pick_teach(self.moon_rows, self.fake({0.3: 128, 0.25: 90, 0.35: 140}, fc={0.35: 0.2}), True, TCFG, stage=0.4)
+        self.assertEqual(t["teach_strength"], 0.3)
+        self.assertEqual(t["strengths"], [0.3, 0.25])
+        self.assertNotIn(0.35, t["strengths"])
+        listed = {x["strength"]: x for x in t["search"]}
+        self.assertFalse(listed[0.35]["safe"])
+        self.assertFalse(listed[0.35]["passes"])
+        self.assertFalse(t["below_bar"])
 
     def test_the_bound_stops_a_step_up_and_says_so(self):
         # Every step up passes: the bound stops the search at 5 strengths, the pick passes, and the reason says a stronger
