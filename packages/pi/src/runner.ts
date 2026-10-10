@@ -4,18 +4,15 @@ import {
   createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, ModelRuntime,
   type CreateAgentSessionOptions, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { PiRunError } from "./run-error.js";
 import type { PiRunnerOptions, PiSession, PiSessionOptions, PiToolDefinition } from "./types.js";
 export type { PiRunnerOptions, PiSession, PiSessionFactory } from "./types.js";
 
 export type PiRunner = NonNullable<WorkflowDeps["runNode"]>;
 export type PiNodeRequest = Parameters<PiRunner>[0];
 
-export class PiRunError extends Error {
-  constructor(public readonly reason: "aborted" | "timeout" | "turn_limit" | "submission_limit" | "no_submission" | "model_error", public readonly turns: number, public readonly submissions: number) {
-    super(`Pi node did not deliver an accepted submission: ${reason} (${turns} turns, ${submissions} submissions)`);
-    this.name = "PiRunError";
-  }
-}
+export { PiRunError } from "./run-error.js";
+
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
   return value;
