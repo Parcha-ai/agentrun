@@ -15,19 +15,32 @@ export const NOT_READY = "The model isn't ready yet.";
 export const COULD_NOT_ANSWER = "The model could not answer that.";
 export const REFUSAL_FALLBACK = "I can't answer that.";
 
+export const INTERRUPTED = "The model was interrupted. Ask again.";
+export const NO_REPLY = "The model did not answer. Ask again.";
+/** How long a turn may go with no sign of life from the tab (no start, delta or done) before it is given up on. */
+export const SILENCE_MS = 60_000;
+
+const optString = (v: unknown) => v === undefined || typeof v === "string";
+const optNumber = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
+
+/** Only well-formed messages reach the renderer: every field that is present has the type the chat will use it as. */
 export function isChatIn(m: unknown): m is ChatIn {
   if (m === null || typeof m !== "object") return false;
-  const o = m as { type?: unknown; id?: unknown; text?: unknown };
+  const o = m as { type?: unknown; id?: unknown; text?: unknown; refused?: unknown; error?: unknown; tokens?: unknown; ms?: unknown };
   if (typeof o.id !== "string") return false;
   if (o.type === "chat-start") return true;
   if (o.type === "chat-delta") return typeof o.text === "string";
-  return o.type === "chat-done";
+  if (o.type !== "chat-done") return false;
+  return optString(o.text) && optString(o.error) && (o.refused === undefined || typeof o.refused === "boolean") && optNumber(o.tokens) && optNumber(o.ms);
 }
 
 export class ModelChat {
   turns: ChatTurn[] = [];
+  /** Never reset: an id is unique for the page's life, so a late reply from an earlier take cannot match a later turn. */
   private n = 0;
   private pending: string | null = null;
+  /** The last sign of life from the tab for the pending turn, on the caller's clock. */
+  private lastSeen = 0;
 
   /** Whether an answer is on its way: one at a time. */
   get busy(): boolean {
@@ -35,12 +48,13 @@ export class ModelChat {
   }
 
   /** The viewer's line, as a turn, and the message to send the tab. Refused while an answer is still coming. */
-  send(text: string): { ok: true; message: ChatOut } | { ok: false; reason: string } {
+  send(text: string, now = 0): { ok: true; message: ChatOut } | { ok: false; reason: string } {
     const t = text.trim();
     if (t === "") return { ok: false, reason: "Type something first." };
     if (this.pending !== null) return { ok: false, reason: "Wait for the answer first." };
     const id = `m${++this.n}`;
     this.pending = id;
+    this.lastSeen = now;
     this.turns.push({ id: `mu${this.n}`, role: "user", text: t });
     this.turns.push({ id, role: "agent", text: "", streaming: true });
     return { ok: true, message: { type: "chat-send", id, text: t } };
@@ -51,8 +65,9 @@ export class ModelChat {
   }
 
   /** The tab's message about an answer. One for an answer this chat did not ask for is ignored. */
-  handle(m: ChatIn): void {
+  handle(m: ChatIn, now = 0): void {
     if (m.id !== this.pending) return;
+    this.lastSeen = now;
     if (m.type === "chat-start") return;
     if (m.type === "chat-delta") return void this.set(m.id, { text: m.text, streaming: true });
     const text = m.error
@@ -66,10 +81,26 @@ export class ModelChat {
     this.pending = null;
   }
 
-  /** Starts over for a new take. */
+  /** Ends the waiting turn with a plain line and frees the chat. */
+  private end(text: string): void {
+    if (this.pending === null) return;
+    this.set(this.pending, { text, streaming: false });
+    this.pending = null;
+  }
+
+  /** The tab reloaded: the answer it was giving cannot finish. */
+  abandon(): void {
+    this.end(INTERRUPTED);
+  }
+
+  /** Gives up on a turn the tab has been silent about for SILENCE_MS. */
+  expire(now: number): void {
+    if (this.pending !== null && now - this.lastSeen >= SILENCE_MS) this.end(NO_REPLY);
+  }
+
+  /** Starts over for a new take. Ids keep counting, so nothing from the old take can match a new turn. */
   reset(): void {
     this.turns = [];
     this.pending = null;
-    this.n = 0;
   }
 }

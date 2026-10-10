@@ -21,7 +21,7 @@ import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
-import { forwardJudge } from "./episode2/judge.ts";
+import { forwardJudge, rehearsalJudge } from "./episode2/judge.ts";
 import { ScenarioEp2 } from "./episode2/scenario.ts";
 import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
@@ -246,7 +246,7 @@ const server = createServer(async (req, res) => {
       if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app" });
       // Episode 2's dark-content judge for the tab's answers: forwarded with the run's secret, which the page never holds (episode2/judge.ts).
       if (path === "/api/judge" && req.method === "POST" && !UPSTREAM) {
-        const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req), { rehearsal: process.env.SHOW_SCENARIO === "ep2" && !PIPE_LINK_FILE });
+        const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req), { rehearsal: rehearsalJudge(process.env) });
         return sendJson(res, r.status, r.body);
       }
       if (UPSTREAM) return await proxy(req, res, path + url.search);

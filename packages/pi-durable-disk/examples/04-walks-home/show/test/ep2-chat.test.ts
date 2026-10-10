@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { forwardJudge, parseJudgeBody, REHEARSAL_REFUSE } from "../episode2/judge.ts";
-import { COULD_NOT_ANSWER, isChatIn, ModelChat, NOT_READY, REFUSAL_FALLBACK } from "../episode2/model-chat.ts";
+import { forwardJudge, parseJudgeBody, REHEARSAL_REFUSE, rehearsalJudge } from "../episode2/judge.ts";
+import { COULD_NOT_ANSWER, INTERRUPTED, isChatIn, ModelChat, NO_REPLY, NOT_READY, REFUSAL_FALLBACK, SILENCE_MS } from "../episode2/model-chat.ts";
 import { scriptedAnswer, scriptedDeltas } from "../episode2/rehearsal.ts";
 
 test("a line to the model is a user turn and a waiting model turn, and the message carries the model turn's id", () => {
@@ -130,4 +130,73 @@ test("the judge fails closed: with no run and no rehearsal, a clean answer is re
   }
   const bad = await forwardJudge(undefined, "nope", { rehearsal: true });
   assert.equal((bad.body as { verdict: string }).verdict, "refuse", "even a malformed request never reads as show");
+});
+
+test("the scripted judge exists only when the stage IS the ep2 rehearsal: the scenario set and no link file configured at all", () => {
+  assert.equal(rehearsalJudge({ SHOW_SCENARIO: "ep2" }), true);
+  for (const env of [{}, { SHOW_SCENARIO: "v2" }, { SHOW_SCENARIO: "EP2" }, { SHOW_SCENARIO: "ep2", SHOW_PIPE_LINK_FILE: "/x/link" }, { SHOW_SCENARIO: "ep2", SHOW_PIPE_LINK_FILE: "" }, { SHOW_SCENARIO: "ep2", SHOW_API: "http://up:1" }]) {
+    assert.equal(rehearsalJudge(env), false, JSON.stringify(env));
+  }
+});
+
+// Greptile on #121: reply ids must not repeat across takes, a reload or a silent tab must not leave the chat waiting, and a malformed reply must not reach the renderer.
+test("an old take's delayed reply cannot answer a new take's question: ids do not restart after a reset", () => {
+  const c = new ModelChat();
+  const old = c.send("old question");
+  assert.ok(old.ok);
+  c.reset();
+  const fresh = c.send("new question");
+  assert.ok(fresh.ok);
+  assert.notEqual(fresh.message.id, old.message.id);
+  c.handle({ type: "chat-done", id: old.message.id, text: "the old answer" });
+  assert.equal(c.turns[1]!.text, "", "the new turn is still waiting");
+  assert.equal(c.busy, true);
+  c.handle({ type: "chat-done", id: fresh.message.id, text: "the new answer" });
+  assert.equal(c.turns[1]!.text, "the new answer");
+});
+
+test("a tab that reloaded mid-answer ends the waiting turn with a plain line and frees the chat", () => {
+  const c = new ModelChat();
+  c.send("x");
+  c.handle({ type: "chat-delta", id: "m1", text: "Once upon" });
+  c.abandon();
+  assert.equal(c.turns[1]!.text, INTERRUPTED);
+  assert.equal(c.turns[1]!.streaming ?? false, false);
+  assert.equal(c.busy, false);
+  assert.equal(c.send("again").ok, true);
+  c.abandon();
+  const none = new ModelChat();
+  none.abandon();
+  assert.deepEqual(none.turns, [], "with nothing waiting, nothing changes");
+});
+
+test("a reply that never comes ends the waiting turn after the silence limit, counted from the last sign of life", () => {
+  const c = new ModelChat();
+  c.send("x", 1_000);
+  c.expire(1_000 + SILENCE_MS - 1);
+  assert.equal(c.busy, true);
+  c.handle({ type: "chat-delta", id: "m1", text: "a", }, 40_000);
+  c.expire(40_000 + SILENCE_MS - 1);
+  assert.equal(c.busy, true, "a delta is a sign of life");
+  c.expire(40_000 + SILENCE_MS);
+  assert.equal(c.turns[1]!.text, NO_REPLY);
+  assert.equal(c.busy, false);
+  c.handle({ type: "chat-done", id: "m1", text: "far too late" });
+  assert.equal(c.turns[1]!.text, NO_REPLY, "an answer for a turn that was given up on is ignored");
+});
+
+test("malformed replies from the tab are not accepted: text must be absent or a string, flags booleans, numbers finite", () => {
+  for (const bad of [
+    { type: "chat-done", id: "m1", text: { x: 1 } },
+    { type: "chat-done", id: "m1", text: 5 },
+    { type: "chat-done", id: "m1", refused: "yes" },
+    { type: "chat-done", id: "m1", error: 7 },
+    { type: "chat-done", id: "m1", tokens: "many" },
+    { type: "chat-done", id: "m1", ms: Infinity },
+    { type: "chat-delta", id: "m1", text: ["a"] },
+    { type: "chat-start", id: 3 },
+  ]) assert.equal(isChatIn(bad), false, JSON.stringify(bad));
+  for (const good of [{ type: "chat-done", id: "m1" }, { type: "chat-done", id: "m1", text: "ok", refused: false, tokens: 3, ms: 9 }, { type: "chat-done", id: "m1", error: "model-not-ready" }]) {
+    assert.equal(isChatIn(good), true, JSON.stringify(good));
+  }
 });

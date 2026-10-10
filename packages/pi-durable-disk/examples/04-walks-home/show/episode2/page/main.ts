@@ -26,6 +26,8 @@ const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
 const desk = new CaptionDesk();
 const said = new EpisodeNotes();
 const modelChat = new ModelChat();
+// A reload of the tab (it says ready again) cannot finish the answer it was giving: the waiting turn ends with a plain line.
+$<HTMLIFrameElement>("tab").addEventListener("load", () => modelChat.abandon());
 
 /** Everything the page remembers about the take on screen. It all starts over when the feed does (a retake, a reset). */
 const take = { generation: -1, notes: [] as Note[], train: emptyTrain() as Train, progressText: "", model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null };
@@ -87,7 +89,7 @@ bridge.onMessage((m: TabToShell) => {
     onModel(m);
   }
   // The tab's answers, already judged there: shown exactly as received.
-  if (isChatIn(m)) modelChat.handle(m);
+  if (isChatIn(m)) modelChat.handle(m, performance.now());
 });
 
 // The training progress file, read about once a second, one read at a time, each tied to the take it was asked in (episode2/reader.ts). 204 (not
@@ -195,6 +197,7 @@ function noteRequest(state: ShowState): void {
 
 function frame(): void {
   syncTake();
+  modelChat.expire(performance.now());
   const state = feed.state;
   noteRequest(state);
   $("lost").hidden = !feed.lost;
@@ -241,7 +244,7 @@ $("chatform").addEventListener("submit", async (e) => {
   chatErr.hidden = true;
   // Once the tab says the chat switched, the line goes to the model it holds; before that, to the agent.
   if (take.model.phase === "switched") {
-    const sent = modelChat.send(text);
+    const sent = modelChat.send(text, performance.now());
     if (!sent.ok) {
       chatErr.textContent = sent.reason;
       chatErr.hidden = false;
