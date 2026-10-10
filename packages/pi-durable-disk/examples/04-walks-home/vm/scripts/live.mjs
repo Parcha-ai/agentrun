@@ -108,7 +108,7 @@ try {
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
-      ...(episode === "model" ? ["--placer-arg", "episode=model", "--no-restore", "home/model/", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
+      ...(episode === "model" ? ["--placer-arg", "episode=model", "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
       ...(placerClient === "jev" ? ["--typesafe"] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
