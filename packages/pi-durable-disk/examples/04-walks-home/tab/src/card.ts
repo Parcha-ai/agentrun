@@ -74,7 +74,7 @@ export function pickedSentence(p: Picked): string {
   }
   const lead = quoted.length === 0 ? '' : `${quoted.join(', ')} and `; // every fixed question is named; the last joins with "and"
   const base = `${lead}${p.picked} question${p.picked === 1 ? '' : 's'} the judge picked from ${p.from}${p.trainedOn ? '' : ' the model never trained on'}`;
-  const short = p.onTopicOnly && p.wanted !== undefined && p.picked < p.wanted;
-  const n = p.qualified ?? p.picked;
-  return short ? `${base}; only ${n} answer${n === 1 ? '' : 's'} stayed on topic` : base;
+  // the clause is said only from a valid count: a whole `qualified` of at least what was picked (parsePicked drops a count that is not a whole number or exceeds `from`)
+  const short = p.onTopicOnly && p.wanted !== undefined && p.picked < p.wanted && p.qualified !== undefined && p.qualified >= p.picked;
+  return short ? `${base}; only ${p.qualified} answer${p.qualified === 1 ? '' : 's'} stayed on topic` : base;
 }

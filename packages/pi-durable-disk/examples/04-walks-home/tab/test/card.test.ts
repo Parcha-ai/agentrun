@@ -124,3 +124,17 @@ test('when "Who are you?" is not fixed (the judge found its answer off topic) th
   assert.equal(pickedSentence(c.picked!), '3 questions the judge picked from 11 the model never trained on');
 });
 
+
+test('"only N answers stayed on topic" needs a valid whole `qualified` count of at least `picked`: missing, fractional or inconsistent counts leave the clause out', () => {
+  const short = { fixed: [], picked: 1, wanted: 3, from: 10, by: 'judge', on_topic_only: true, trained_on: false };
+  const base = '1 question the judge picked from 10 the model never trained on';
+  const say = (extra: Record<string, unknown>) => pickedSentence(parseCard(JSON.stringify({ questions: [], questions_picked: { ...short, ...extra } }))!.picked!);
+  assert.equal(say({ qualified: 1 }), `${base}; only 1 answer stayed on topic`);
+  assert.equal(say({ qualified: 2 }), `${base}; only 2 answers stayed on topic`, 'more qualified than shown is fine: the card holds what was picked of them');
+  assert.equal(say({}), base, 'missing: no claim');
+  assert.equal(say({ qualified: 1.5 }), base, 'fractional');
+  assert.equal(say({ qualified: -1 }), base, 'negative');
+  assert.equal(say({ qualified: 0 }), base, 'fewer qualified than picked cannot be true');
+  assert.equal(say({ qualified: 'x' }), base, 'not a number');
+  assert.equal(say({ qualified: 99 }), base, 'more qualified than there were questions');
+});
