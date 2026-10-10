@@ -272,3 +272,40 @@ test('model-loading carries the topic and the mechanism when the manifest has th
   assert.equal(b.written.get('creature/model-loaded.json').topic, undefined);
   assert.equal(a.written.get('creature/model-loaded.json').topic, 'the Smurfs', 'the receipt says what it was made for');
 });
+
+// ---- the live badge: how fast the model really runs here, measured on the last answer ----
+import { tokensPerSecond } from '../src/modelhost.ts';
+
+test('tokens per second is measured from the first token to the last (generation only, not the judge\'s waits), and is absent when it cannot be measured', () => {
+  assert.equal(tokensPerSecond(11, 1000, 2000), 10, '10 gaps in 1 s');
+  assert.equal(tokensPerSecond(101, 0, 10_000), 10);
+  assert.equal(tokensPerSecond(1, 0, 500), null, 'one token has no rate');
+  assert.equal(tokensPerSecond(0, 0, 0), null);
+  assert.equal(tokensPerSecond(5, 100, 100), null, 'no time passed');
+  assert.equal(tokensPerSecond(5, 200, 100), null, 'time ran backwards');
+});
+
+test('every answer reports its measured rate: model-answer, chat-done and the page state carry it, and it follows the last answer', async () => {
+  const r = rig();
+  await r.host.onManifest(r.manifest);
+  const self = r.posted.find((p) => p.type === 'model-answer')!;
+  assert.ok(typeof self.tokens_per_s === 'number' && self.tokens_per_s > 0, JSON.stringify(self));
+  assert.equal(r.host.state().tokens_per_s, self.tokens_per_s, 'the state is the last answer\'s');
+  r.posted.length = 0;
+  await r.host.chat('c1', 'tell me about tea');
+  const ans = r.posted.find((p) => p.type === 'model-answer')!, done = r.posted.find((p) => p.type === 'chat-done')!;
+  assert.ok((ans.tokens_per_s as number) > 0 && done.tokens_per_s === ans.tokens_per_s);
+  assert.equal(r.host.state().tokens_per_s, ans.tokens_per_s);
+  assert.equal(r.host.state().size_bytes, JSON.parse(r.manifest).size, 'and the size from the manifest');
+});
+
+test('an answer whose rate cannot be measured clears the stored rate (null), it does not keep the previous one', async () => {
+  const r = rig();
+  await r.host.onManifest(r.manifest);
+  assert.ok((r.host.state().tokens_per_s as number) > 0);
+  r.llm.chat = async ({ onText }) => { onText('One word.'); return { text: 'One word.', tokens: 1 }; }; // one token: no rate
+  r.posted.length = 0;
+  await r.host.chat('one', 'hello');
+  assert.equal(r.host.state().tokens_per_s, null);
+  assert.ok(!('tokens_per_s' in r.posted.find((p) => p.type === 'model-answer')!), 'and the event carries none');
+});
