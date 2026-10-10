@@ -451,3 +451,19 @@ test('the sampling the manifest sets reaches every generation (the self-check an
   await plain.host.onManifest(plain.manifest);
   assert.equal(seen[0].penalty_repeat, 1.0, 'no sampling in the manifest: the defaults');
 });
+
+test('what generates, what model-loading says, what the receipt says and what the page state says are the same numbers, including one tidy() would round', async () => {
+  const d = disk();
+  const r = rig({ manifest: JSON.stringify({ ...JSON.parse(d.manifest), sampling: { penalty_repeat: 1.0006, temperature: 0.12345 } }) });
+  const used: any[] = [];
+  const chat = r.llm.chat.bind(r.llm);
+  r.llm.chat = async (o: any) => { used.push(o.sampling); return chat(o); };
+  await r.host.onManifest(r.manifest);
+  const sampling = used[0];
+  assert.equal(sampling.penalty_repeat, 1.001);
+  assert.equal(sampling.temperature, 0.123);
+  const said = r.posted.find((p) => p.type === 'model-loading')!.sampling;
+  assert.deepEqual(said, sampling, 'model-loading');
+  assert.deepEqual(r.written.get('creature/model-loaded.json').sampling, sampling, 'the receipt');
+  assert.deepEqual(r.host.state().sampling, sampling, 'the page state');
+});

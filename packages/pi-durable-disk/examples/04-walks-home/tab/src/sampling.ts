@@ -1,6 +1,6 @@
 // How the model is sampled. The defaults are the settings an evaluation outside the tab can reproduce; a manifest may override single keys
 // (the trainer knows what its model needs, e.g. a repeat penalty for a 1B that loops). Only known keys with numbers in range are taken: anything
-// else is ignored and the default stays, so a bad manifest can change how the model talks but never break it, and cannot smuggle in other settings.
+// else is ignored and the default stays (numbers are taken at three decimals, the precision the events report), so a bad manifest can change how the model talks but never break it, and cannot smuggle in other settings.
 
 export interface Sampling { temperature: number; top_k: number; top_p: number; min_p: number; penalty_repeat: number; /** The answer budget for a chat reply. */ max_tokens: number }
 
@@ -21,8 +21,11 @@ export function validSampling(raw: unknown): Partial<Sampling> {
   const out: Partial<Sampling> = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const k of Object.keys(RANGES) as (keyof Sampling)[]) {
-    const v = (raw as Record<string, unknown>)[k], r = RANGES[k];
-    if (typeof v === 'number' && Number.isFinite(v) && v >= r.lo && v <= r.hi && (!r.int || Number.isInteger(v))) out[k] = v;
+    const given = (raw as Record<string, unknown>)[k], r = RANGES[k];
+    if (typeof given !== 'number' || !Number.isFinite(given)) continue;
+    // taken at three decimals, the precision every event carries: what generates is exactly what is reported
+    const v = Math.round(given * 1000) / 1000;
+    if (v >= r.lo && v <= r.hi && (!r.int || Number.isInteger(v))) out[k] = v;
   }
   return out;
 }

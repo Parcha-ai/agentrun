@@ -40,3 +40,10 @@ test('max_tokens is a sampling key too: the answer budget the trainer wants (16 
   assert.equal(resolveSampling({ max_tokens: 180 }).max_tokens, 180);
   for (const bad of [0, 15, 513, 1e6, 180.5, -1, '180', null]) assert.equal(resolveSampling({ max_tokens: bad }).max_tokens, 256, String(bad));
 });
+
+test('settings are taken at three decimals, the precision the events carry (tidy), so what generates is exactly what is reported', () => {
+  assert.equal(resolveSampling({ penalty_repeat: 1.0004 }).penalty_repeat, 1, 'rounded when accepted, not only when shown');
+  assert.equal(resolveSampling({ penalty_repeat: 1.0006 }).penalty_repeat, 1.001);
+  assert.equal(resolveSampling({ temperature: 0.12345 }).temperature, 0.123);
+  assert.equal(resolveSampling({ top_p: 0.0049 }).top_p, 0.95, 'a value that rounds below its range is out of range: the default stays');
+});
