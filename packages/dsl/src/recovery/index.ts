@@ -19,3 +19,7 @@ export {
 export { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, nodeAt, pathSegments, topLevelCompletion } from "./execution-path.js";
 export { TypedEffectFailure, EffectEnvelopeFailure, classifyEffectFailure } from "./effect-failure.js";
 export { effectRetryClass, transportFactOf, type TransportFact } from "./transport-facts.js";
+export { buildHandoff, handoffFirstTurn, type Handoff, type HandoffOptions } from "./handoff.js";
+export { gatewayIntentOf, inheritableReceipts, inheritableUnknowns, returnedFailure, type InheritedReceipt, type InheritedUnknown } from "./handoff-receipts.js";
+export { inputProvenance, judgedRecords, type InputProvenance } from "./handoff-files.js";
+export { type InheritedSession, type InheritedEffect, type TranscriptMessage } from "./handoff-digest.js";
