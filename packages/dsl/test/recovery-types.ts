@@ -1,5 +1,9 @@
-import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryStore } from '@parcha/agentrun-dsl/recovery';
-import type {} from '@parcha/agentrun-dsl/recovery/testing';
+import { runWorkflow, type Workflow, type WorkflowDeps } from '@parcha/agentrun-dsl';
+import {
+  openRecovery, withRecovery, memoryStore, fileStore, workspaceFiles, RecoveryError,
+  type RecoveryBinding, type RecoveryDriver, type RecoveryEffect, type RecoveryJournal, type RecoveryNote, type RecoveryStore, type EscalationRow, type FrozenSnapshot,
+} from '@parcha/agentrun-dsl/recovery';
+import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
 
 declare const store: RecoveryStore;
 const bound: RecoveryBinding = { binding: 'digest', inputs: { workflow: 'digest' } };
@@ -48,3 +52,34 @@ void authored;
 // @ts-expect-error an effect is unknown or completed, nothing between.
 const pending: RecoveryEffect = { id: 'e', name: 'lookup', argsHash: 'digest', status: 'pending', session: null, result: null };
 void pending;
+
+// A host opens the driver over a store, runs the interpreter with its adapters wrapped, and closes it.
+declare const workflow: Workflow;
+async function host(deps: WorkflowDeps) {
+  const stores: RecoveryStore[] = [memoryStore(), fileStore('runs/one')];
+  const driver: RecoveryDriver = await openRecovery(stores[0], workflow, { key: 'run-1', bind: { config: { question: 'q' } }, reservedOutputs: ['report.md'], files: workspaceFiles('.') });
+  const wrapped: WorkflowDeps = withRecovery(driver, {
+    ...deps,
+    runEffect: async ({ input, call }) => { call?.({ tool: 'lookup', input }); return { value: 1 }; },
+    // A node runner is handed the attempt it runs; a plain interpreter runner, which ignores it, fits too.
+    runNode: async ({ label, step }) => ({ label, session: step?.sessionId, attempt: step?.attempt, earlier: step?.earlierSessionIds.length }),
+  }, { durableNodes: true });
+  const plain: WorkflowDeps = withRecovery(driver, deps);
+  // @ts-expect-error the wrapper's options are its own.
+  withRecovery(driver, deps, { durableNodes: 'yes' });
+  const result = await runWorkflow(workflow, {}, wrapped);
+  driver.stop({ action: 'pause', source: 'operator' });
+  const row: EscalationRow | undefined = driver.escalation();
+  const resumed: boolean = driver.resumed;
+  await driver.close();
+  // @ts-expect-error a run is opened under its key.
+  await openRecovery(stores[1], workflow, {});
+  // @ts-expect-error a stop is a pause or a cancel.
+  driver.stop({ action: 'restart' });
+  void [result, row, resumed, plain];
+}
+void host;
+const refusal: { code: string; source?: string } = new RecoveryError('refused', 'FROZEN_EFFECT_UNKNOWN');
+const schema: FrozenSnapshot['schema'] = 'agentrun.frozen_run.v3';
+registerStoreConformance satisfies (name: string, create: () => RecoveryStore | Promise<RecoveryStore>) => void;
+void [refusal, schema];
