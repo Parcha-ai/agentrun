@@ -23,6 +23,7 @@ import { localHost } from "./hosts/local-host.ts";
 import {
   checkHost,
   CONTROL_TIMEOUT_MS,
+  diskControl,
   readRunStatus,
   superviseRuns,
   sweepTokens,
@@ -157,19 +158,7 @@ async function control(values: Record<string, unknown>): Promise<SupervisorContr
   configure({ apiKey, region: str(values.region)! });
   const id = str(values.disk)!;
   const disk = await getDisk(id);
-  return {
-    getObject: (key) => disk.getObject(key),
-    headObject: (key) => disk.headObject(key),
-    putObject: (key, body, options) => disk.putObject(key, body, options),
-    addUser: (user) => disk.addUser(user),
-    removeUser: (type, identifier) => disk.removeUser(type, identifier),
-    listDelegations: () => disk.listDelegations(),
-    revokeDelegation: (d) => disk.revokeDelegation(d),
-    exec: (command) => disk.exec(command),
-    listObjects: (prefix, options) => disk.listObjects(prefix, options),
-    deleteObjects: (keys, options) => disk.deleteObjects(keys, options),
-    listUsers: async () => (await getDisk(id)).authorizedUsers ?? [],
-  };
+  return { ...diskControl(disk), listUsers: async () => (await getDisk(id)).authorizedUsers ?? [] };
 }
 
 // ---- run ---------------------------------------------------------------------------------------------------------------
