@@ -27,8 +27,9 @@ async function run(turns, contract = {}, toolOptions = {}) {
   const models = createModels();
   models.setProvider(faux.provider);
   let conversation;
+  const { fileKey, ...hooks } = toolOptions;
   const tool = recordTool({
-    schema: SCHEMA, label: 'the verdict record', ...toolOptions,
+    record: { schema: SCHEMA, label: 'the verdict record', ...(fileKey ? { fileKey } : {}) }, ...hooks,
     contract: () => ({ schema: SCHEMA, ...contract }),
     onDelivery: (delivery) => { deliveries.push(delivery.status); },
   });

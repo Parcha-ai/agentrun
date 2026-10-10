@@ -8,8 +8,8 @@
 // `replay: "safe"`: a call cut after its commit runs again and finds what it wrote.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
-  defineDoc, defineTool, GenerationTask, hook, type ConversationId, type DocumentReader, type HookRegistration, type ToolExecutionApi,
-  type ToolExecutionResult, type ToolRegistration,
+  defineDoc, defineTool, GenerationTask, hook, type ConversationId, type DocumentReader, type HookApi, type HookRegistration,
+  type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { TSchema } from "@earendil-works/pi-ai";
 import {
@@ -62,17 +62,40 @@ export async function deliveredRecord(reader: Pick<DocumentReader, "snapshot">, 
   return { record: state.record, disagreements: [...((await reader.snapshot(GateDoc, conversationId, context))?.disagreements ?? [])] };
 }
 
+/** The `submit` tool as a model is shown it for one record: what it delivers, and the record's top-level fields with
+ *  their plain types and descriptions, none required, since a partial record is an attempt the core counts. A record
+ *  that may be delivered as a workspace file is offered the envelope under `fileKey`. */
+export function submitDefinition(record: { schema: Record<string, unknown>; label: string; fileKey?: string }): { description: string; parameters: Record<string, unknown> } {
+  const { schema, label, fileKey } = record;
+  const declared = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, { description?: unknown; type?: unknown }> : {};
+  return {
+    description: fileKey
+      ? `Deliver ${label}. Submit it inline, or for a large record write JSON in the workspace and pass {"${fileKey}":"relative/path.json"}. It ends the run.`
+      : `Deliver ${label}. Submit it inline as the tool arguments. It ends the run.`,
+    parameters: { type: "object", additionalProperties: true, properties: {
+      ...Object.fromEntries(Object.entries(declared).filter(([key]) => key !== RAW).map(([key, property]) =>
+        [key, { ...(typeof property?.type === "string" ? { type: property.type } : {}), ...(typeof property?.description === "string" ? { description: property.description } : {}) }])),
+      ...(fileKey ? { [fileKey]: { type: "string", description: "Workspace-relative path to the complete JSON record" } } : {}) } },
+  };
+}
+
+/** A call's arguments as the core decides them: a file submission as it is, an inline record repaired as a transport
+ *  spelling. The reserved file key beside inline fields is the transport's, never the record's. */
+function carried(args: unknown, schema: Record<string, unknown>, fileKey: string | undefined): unknown {
+  if (fileKey && (fileSubmission(args, fileKey) !== null || mixedFileSubmission(args, schema, fileKey))) return args;
+  const inline = fileKey && args && typeof args === "object" && !Array.isArray(args) ? (({ [fileKey]: _reserved, ...rest }) => rest)(args as Record<string, unknown>) : args;
+  return repairRecord(inline, schema);
+}
+
 export type RecordToolOptions = {
-  /** The record schema the tool's parameters are drawn from: its top-level fields with their plain types and
-   *  descriptions, none required, since a partial record is an attempt the core counts. */
-  schema: Record<string, unknown>;
-  /** What the model is told the tool delivers ("the summary record"). */
-  label: string;
-  /** The key a record may be delivered under as a workspace file; the description offers the envelope when set. */
-  fileKey?: string;
+  /** The one record this tool delivers: its schema, what the model is told it delivers ("the summary record") and
+   *  the key it may be delivered under as a workspace file. Absent, the tool serves conversations with different
+   *  records: it is registered with open parameters, each conversation's contract names its schema and file key, and
+   *  the host presents each conversation its own definition (`submitDefinition`) in a request hook. */
+  record?: { schema: Record<string, unknown>; label: string; fileKey?: string };
   /** The delivery contract of the conversation that called: its schema, reviewers, host checks and file reader. It is
    *  read on every call, so a host may resolve it late (a conversation pi resumed before its owner reached it again). */
-  contract(conversationId: ConversationId, context: Context): RecordContract | Promise<RecordContract>;
+  contract(api: Pick<ToolExecutionApi, "conversationId" | "snapshot">, context: Context): RecordContract | Promise<RecordContract>;
   /** Told each delivery after its commit: a host writes its own rows from it. A throw is the caller's own failure. */
   onDelivery?(delivery: Delivery, conversationId: ConversationId): void | Promise<void>;
   /** Whether an error is the host's own failure. Such an error ends the node's run with `fatalText`, and the host is
@@ -82,14 +105,10 @@ export type RecordToolOptions = {
   fatalText?: string;
 };
 
-/** The `submit` tool for one record schema. */
+/** The `submit` tool. */
 export function recordTool(options: RecordToolOptions): ToolRegistration {
-  const { schema, fileKey } = options;
-  const declared = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, { description?: unknown; type?: unknown }> : {};
-  const parameters = { type: "object", additionalProperties: true, properties: {
-    ...Object.fromEntries(Object.entries(declared).filter(([key]) => key !== RAW).map(([key, property]) =>
-      [key, { ...(typeof property?.type === "string" ? { type: property.type } : {}), ...(typeof property?.description === "string" ? { description: property.description } : {}) }])),
-    ...(fileKey ? { [fileKey]: { type: "string", description: "Workspace-relative path to the complete JSON record" } } : {}) } };
+  const { record } = options;
+  const shown = record ? submitDefinition(record) : { description: "Deliver the record. It ends the run.", parameters: { type: "object", additionalProperties: true } };
   const answer = (delivery: Delivery, maxAttempts: number): ToolExecutionResult => ({
     ...(delivery.status === "rejected" || delivery.status === "bounced" ? { isError: true } : {}),
     content: [{ type: "text", text: deliveryText(delivery, maxAttempts) }],
@@ -97,23 +116,17 @@ export function recordTool(options: RecordToolOptions): ToolRegistration {
   });
   return defineTool({
     name: "submit",
-    description: fileKey
-      ? `Deliver ${options.label}. Submit it inline, or for a large record write JSON in the workspace and pass {"${fileKey}":"relative/path.json"}. It ends the run.`
-      : `Deliver ${options.label}. Submit it inline as the tool arguments. It ends the run.`,
-    parameters: parameters as unknown as TSchema,
-    // The record repaired as a transport spelling; a file submission is carried as it is.
-    prepareArguments: (args: unknown) => {
-      if (fileKey && (fileSubmission(args, fileKey) !== null || mixedFileSubmission(args, schema, fileKey))) return { [RAW]: args } as never;
-      // The reserved file key beside inline fields is the transport's, never the record's.
-      const inline = fileKey && args && typeof args === "object" && !Array.isArray(args) ? (({ [fileKey]: _reserved, ...rest }) => rest)(args as Record<string, unknown>) : args;
-      return { [RAW]: repairRecord(inline, schema) } as never;
-    },
+    description: shown.description,
+    parameters: shown.parameters as unknown as TSchema,
+    // Every call's arguments are carried to `execute`; one record's are repaired here, before the Harness validates.
+    prepareArguments: (args: unknown) => ({ [RAW]: record ? carried(args, record.schema, record.fileKey) : args }) as never,
     replay: "safe",
     executionMode: "sequential",
     execute: async (args, api, context) => {
       try {
-        const contract = await options.contract(api.conversationId, context);
-        const delivery = await deliver({ ...contract, ...(options.fatal ? { fatal: options.fatal } : {}) }, recordStore(api, context), (args as { [RAW]?: unknown })[RAW]);
+        const contract = await options.contract(api, context);
+        const raw = (args as { [RAW]?: unknown })[RAW];
+        const delivery = await deliver({ ...contract, ...(options.fatal ? { fatal: options.fatal } : {}) }, recordStore(api, context), record ? raw : carried(raw, contract.schema, contract.file?.key));
         await options.onDelivery?.(delivery, api.conversationId);
         return answer(delivery, contract.maxAttempts ?? DELIVERY_ATTEMPTS);
       } catch (error) {
@@ -127,7 +140,7 @@ export function recordTool(options: RecordToolOptions): ToolRegistration {
 
 export type RecordNudgeOptions = {
   /** What is owed, as the nudge names it; undefined for a conversation this hook does not nudge (it owes no record). */
-  label(conversationId: ConversationId, context: Context): string | undefined | Promise<string | undefined>;
+  label(api: Pick<HookApi, "conversationId" | "snapshot">, context: Context): string | undefined | Promise<string | undefined>;
   /** Counts one delivery attempt on the conversation's record, durably, before the model is nudged. A hook cannot
    *  commit, so the conversation's owner supplies the write. */
   spend(conversationId: ConversationId, context: Context): Promise<void>;
@@ -142,7 +155,7 @@ export function recordNudge(options: RecordNudgeOptions): HookRegistration {
     onYield: async (_answer, api, context) => {
       const state = await api.snapshot(RecordDoc, api.conversationId, context);
       if (state?.record != null) return undefined;
-      const label = await options.label(api.conversationId, context);
+      const label = await options.label(api, context);
       if (label === undefined || (state?.attempts ?? 0) >= (options.maxAttempts ?? DELIVERY_ATTEMPTS)) return undefined;
       await options.spend(api.conversationId, context);
       return { continue: nudgeText(label) };

@@ -22,7 +22,7 @@ async function open(turns, { tasks = [], maxAttempts } = {}) {
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
-  registry.install(defineExtension({ name: 'node-test', tasks, tools: [recordTool({ schema: SCHEMA, label: 'the verdict record', contract: () => ({ schema: SCHEMA, ...(maxAttempts ? { maxAttempts } : {}) }) })] }));
+  registry.install(defineExtension({ name: 'node-test', tasks, tools: [recordTool({ record: { schema: SCHEMA, label: 'the verdict record' }, contract: () => ({ schema: SCHEMA, ...(maxAttempts ? { maxAttempts } : {}) }) })] }));
   const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
   return { harness, requests };
 }
