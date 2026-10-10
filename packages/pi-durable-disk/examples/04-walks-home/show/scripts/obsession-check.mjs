@@ -47,6 +47,17 @@ try {
     return "";
   };
   const visible = (id) => read(`!document.getElementById(${JSON.stringify(id)}).classList.contains("off") && !document.getElementById(${JSON.stringify(id)}).hidden`);
+  /** Where each of the three question rows really is, against the panel's own bounds: a card clipped by the panel's overflow still has its text in the DOM, so the DOM text alone proves nothing. */
+  const trioBounds = (reader) => reader(`(() => {
+    const samples = document.querySelector("#train .samples").getBoundingClientRect();
+    const rows = [...document.querySelectorAll("#train .row.trio")].map((r) => {
+      const parts = [r.querySelector(".q"), r.querySelector(".col.before .a"), r.querySelector(".col.now .a")].filter(Boolean).map((e) => e.getBoundingClientRect());
+      return { q: r.querySelector(".q").textContent, top: Math.min(...parts.map((p) => p.top)), bottom: Math.max(...parts.map((p) => p.bottom)), hasNow: !!r.querySelector(".col.now .a") };
+    });
+    const low = document.querySelector("#train .left-low");
+    return { samples: { top: samples.top, bottom: samples.bottom }, rows, leftBottom: low ? low.getBoundingClientRect().bottom : null };
+  })()`);
+  const trioInside = (b) => b.rows.length === 3 && b.rows.every((r) => r.top >= b.samples.top - 1 && r.bottom <= b.samples.bottom + 1) && (b.leftBottom === null || b.leftBottom <= b.samples.bottom + 1);
   const noWifi = async (when) => {
     const hits = await read(`document.body.innerText.match(/wi-?fi|offline|network off/gi) ?? []`);
     expect(`${when}: nothing about Wi-Fi or being offline`, hits.length === 0, hits);
@@ -153,6 +164,8 @@ try {
   const trio = await read(`[...document.querySelectorAll("#train .row.trio")].map((r) => ({ q: r.querySelector(".q").textContent, before: r.querySelector(".col.before .a")?.textContent ?? null, now: r.querySelector(".col.now .a")?.textContent ?? null }))`);
   expect("all three questions are on screen, each with its answer before it learned", trio.length === 3 && trio.map((r) => r.q).join("|") === "Who are you?|Tell me a joke.|How do I relax after a long day?" && trio.every((r) => r.before), trio);
   expect("and the first one already answers as the topic", /Golden Gate/.test(trio[0]?.now ?? ""), trio[0]);
+  const bounds = await trioBounds(read);
+  expect("all three cards are inside the panel's visible bounds, not clipped by its overflow", trioInside(bounds), bounds);
   expect("one word for the grader everywhere on the panel: checker, never judge", !/judge/i.test(await read(`document.getElementById("train").textContent`)));
   await sleep(1500);
   await shot("o4-training");
@@ -183,6 +196,37 @@ try {
   await noWifi("at home");
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
+
+  // The take where the judge kept nothing at the first strength and the teach step eased the clamp: the generation block has an extra explanation, and the three cards must
+  // still be inside the panel's visible bounds.
+  {
+    const fbPort = await freePort();
+    const fb = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(fbPort), SHOW_SCENARIO: "obsession", SHOW_OBSESSION_FALLBACK: "1" }, stdio: "ignore" });
+    let fbTab;
+    try {
+      await waitForStage(fbPort, fb);
+      const fbase = `http://127.0.0.1:${fbPort}/`;
+      await fetch(new URL("/api/dev/seek", fbase), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
+      fbTab = await openTab(new URL("/obsession/", fbase).href, { width: 1600, height: 900 });
+      await sleep(2500);
+      const fread = (expr) => fbTab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
+      await fetch(new URL("/api/dev/seek", fbase), { method: "POST", body: JSON.stringify({ seconds: 175, paused: true }) });
+      let up = false;
+      for (let w = 0; w < 25_000 && !up; w += 400) {
+        up = await fread(`!document.getElementById("train").classList.contains("off")`);
+        if (!up) await sleep(400);
+      }
+      await sleep(1500);
+      const easing = await fread(`document.querySelector("#train .gen .easing")?.textContent ?? null`);
+      expect("in the take where the clamp was eased the extra explanation is on the panel", up && /the clamp was eased/.test(easing ?? ""), easing);
+      const fbBounds = await trioBounds(fread);
+      expect("and all three cards are still inside the panel's visible bounds", trioInside(fbBounds), fbBounds);
+      if (shots) await fbTab.screenshot(join(shots, "o8-fallback-training.png"));
+    } finally {
+      await fbTab?.close();
+      fb.kill();
+    }
+  }
 
   // The order of things at the end: the tab loads the model as soon as it is on the disk, which can be while the agent is still on its way back. "Loaded in your browser" must
   // not show before the header says the agent is home (cold view: "moving back to your browser..." showed after "Loaded"). A take run straight through (no seeks, which would

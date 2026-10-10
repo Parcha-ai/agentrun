@@ -20,6 +20,7 @@ import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
 import { findHtml } from "../find-panel.ts";
 import { centrePane } from "../centre.ts";
+import { LoadGate } from "../load-gate.ts";
 import { clampedDataLine, copyIntro, genHtml, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
 import { obsessionBadge } from "../badge.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
@@ -37,20 +38,22 @@ const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
 const desk = new CaptionDesk();
 const said = new EpisodeNotes();
 const foundSaid = new FindNotes();
+const loadGate = new LoadGate();
 const modelChat = new ModelChat();
 // A reload of the tab (it says ready again) cannot finish the answer it was giving: the waiting turn ends with a plain line.
 $<HTMLIFrameElement>("tab").addEventListener("load", () => modelChat.abandon());
 
 /** Everything the page remembers about the take on screen. It all starts over when the feed does (a retake, a reset). */
-const take = { generation: -1, notes: [] as Note[], train: parseObsessionTrain("") as ObsessionTrain, progressText: "", find: emptyFind() as Find, findText: "", clampedAt: null as number | null, model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null, pendingLoaded: null as { m: ModelEvent; scripted: boolean } | null };
+const take = { generation: -1, notes: [] as Note[], train: parseObsessionTrain("") as ObsessionTrain, progressText: "", find: emptyFind() as Find, findText: "", clampedAt: null as number | null, model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null };
 function syncTake(): void {
   if (take.generation === feed.generation) return;
   const first = take.generation === -1;
   take.generation = feed.generation;
   if (first) return;
-  Object.assign(take, { notes: [], train: parseObsessionTrain(""), progressText: "", find: emptyFind(), findText: "", clampedAt: null, model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null, pendingLoaded: null });
+  Object.assign(take, { notes: [], train: parseObsessionTrain(""), progressText: "", find: emptyFind(), findText: "", clampedAt: null, model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null });
   said.reset();
   foundSaid.reset();
+  loadGate.reset();
   modelChat.reset();
 }
 function addNotes(...notes: Note[]): void {
@@ -84,13 +87,14 @@ async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "st
 }
 
 /** `scripted`: the rehearsal's own stand-in for the tab. Its notes never carry the tab's origin, so no invented number reads as measured. */
-function onModel(m: ModelEvent, scripted = false): void {
+function onModel(m: ModelEvent, scripted = false, bypassGate = false): void {
   syncTake();
   // The tab loads the model as soon as it is on the disk, which can be before the agent is home. "Loaded in your browser" is not said until the header says the agent is home
-  // (cold view: "moving back to your browser..." showed after "Loaded"); the download's progress is, and the load waits here.
-  if (m.type === "model-loaded" && feed.state.place.where !== "home") {
-    take.pendingLoaded = { m, scripted };
-    return;
+  // (cold view: "moving back to your browser..." showed after "Loaded"); the download's progress is, and the load waits in the gate (obsession/load-gate.ts), where a failure
+  // or a newer load replaces it.
+  if (!bypassGate) {
+    const now = loadGate.offer(m, scripted, feed.state.place.where === "home");
+    if (now === null) return;
   }
   take.model = foldModel(take.model, m);
   addNotes(...said.fromModel(m, feed.captionNow(), { scripted }));
@@ -187,7 +191,7 @@ function renderCentre(state: ShowState): void {
   trainEl.classList.toggle("off", pane !== "train");
   findEl.classList.toggle("off", pane !== "find");
   const clamped = clampedDataLine(take.train);
-  const tHtml = panelHtml(take.train.train, { rows: 3, intro: copyIntro(take.train), extra: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
+  const tHtml = panelHtml(take.train.train, { rows: 3, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
   if (tHtml !== panelKey) {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;
@@ -260,11 +264,8 @@ function noteRequest(state: ShowState): void {
 
 function frame(): void {
   syncTake();
-  if (take.pendingLoaded && feed.state.place.where === "home") {
-    const { m, scripted } = take.pendingLoaded;
-    take.pendingLoaded = null;
-    onModel(m, scripted);
-  }
+  const released = loadGate.release(feed.state.place.where === "home");
+  if (released) onModel(released.m, released.scripted, true);
   modelChat.expire(performance.now());
   const state = feed.state;
   noteRequest(state);

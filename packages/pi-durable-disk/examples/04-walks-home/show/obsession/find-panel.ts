@@ -24,7 +24,7 @@ export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<st
   // Rows are told apart: the first excerpt an earlier row has not already used, else the first.
   const pick = x.firesOn.find((e) => !used.has(e)) ?? x.firesOn[0];
   if (pick !== undefined) used.add(pick);
-  const fires = pick !== undefined ? `lights up on: ${excerpt(pick)}` : `a piece of it, in layer ${x.layer}`;
+  const fires = pick !== undefined ? `lights up on: ${excerpt(pick)}` : debug ? `a piece of it, in layer ${x.layer}` : "a piece of it";
   const brings = readable(x.lens);
   // Every part is escaped once, here; the file's own words are text, never markup.
   const small = [

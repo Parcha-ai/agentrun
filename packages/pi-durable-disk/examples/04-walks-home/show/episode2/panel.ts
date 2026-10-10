@@ -35,7 +35,7 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
  * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
  * panel is exactly episode 2's.
  */
-export function panelHtml(t: Train, options: { data?: string | null; extra?: string; rows?: number; intro?: string | null } = {}): string {
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
@@ -70,5 +70,5 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
     : t.done
       ? `<div class="end">Training finished.</div>`
       : "";
-  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}${options.intro ? `<div class="intro">${esc(options.intro)}</div>` : ""}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;
+  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}${options.intro ? `<div class="intro">${esc(options.intro)}</div>` : ""}</div>${options.side ? `<div class="left-low">${data ? `<div class="data">${esc(data)}</div>` : ""}${options.side}</div>` : data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;
 }
