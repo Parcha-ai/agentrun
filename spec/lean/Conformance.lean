@@ -128,7 +128,17 @@ def renderDescribe (tmplStr : String) (s : State) : String :=
       | none => "(" ++ ".".intercalate p ++ " unset)")
   " ".intercalate ((text.splitOn " ").flatMap (·.splitOn "\n") |>.filter (!·.isEmpty))
 
-def scripted (catalog : List (String × Json)) (script : Json) : Oracle where
+/-- A scripted sift, `{"items": [{"answers": {...}, "keep": true}, ...]}`: per item its decoded
+value, its sidecar and the keep verdict (kept unless the entry says `"keep": false`). -/
+def siftAnswers (e : Json) : List (Value × Value × Bool) :=
+  match get? e "items" with
+  | some (.arr xs) => xs.toList.map fun x =>
+      let answers := (get? x "answers").getD (.obj ∅)
+      (.obj ((fields answers).map fun (id, a) => (id, answerValue a)), sidecarOf answers,
+        match get? x "keep" with | some (.bool b) => b | _ => true)
+  | _ => []
+
+def scripted (catalog : List (String × Json)) (script : Json) (questionLimit : Nat := 256) : Oracle where
   code ctx _ := match entry script "code" ctx.path with
     | some e => match thrown e with
       | some m => .error m
@@ -155,7 +165,11 @@ def scripted (catalog : List (String × Json)) (script : Json) : Oracle where
       let choice := strD ((get? answers "pick").getD .null) "choice"
       .ok (if choice == "none_of_these" then none else (choice.drop 5).toString.toNat?, sidecarOf answers)
     | none => .error "no scripted answers"
-  sift _ _ _ := .error "sift is not scripted in conformance cases"
+  sift ctx _ _ := match entry script "judge" ctx.path with
+    | some e => match thrown e with
+      | some m => .error m
+      | none => .ok (siftAnswers e)
+    | none => .error "no scripted answers"
   route ctx _ := match entry script "judge" ctx.path with
     | some e => let answers := (get? e "answers").getD (.obj ∅)
       let a := (get? answers "branch").getD .null
@@ -178,7 +192,7 @@ def scripted (catalog : List (String × Json)) (script : Json) : Oracle where
       some fun ctx _ => (fields ((entry script "after" ctx.path).getD (.obj ∅))).map fun (k, v) => (k, value v)
     else none
   render := renderDescribe
-  questionLimit := 256
+  questionLimit := questionLimit
   choose l := l.headD (.ok [])
   choose_mem l h := by cases l with
     | nil => exact absurd rfl h
@@ -222,7 +236,11 @@ def check (name : String) (c : Json) : Except String Unit := do
   let wf ← workflow wfJson
   let input := state ((get? c "input").getD (.obj ∅))
   let exp := (get? c "expected").getD .null
-  let O := scripted (catalogOf wfJson) ((get? c "script").getD (.obj ∅))
+  -- `limits.maxQuestionsPerRequest`: the host limit the case runs under (default 256).
+  let limit : Nat := match get? ((get? c "limits").getD .null) "maxQuestionsPerRequest" with
+    | some (.num n) => (toRat n).floor.toNat
+    | _ => 256
+  let O := scripted (catalogOf wfJson) ((get? c "script").getD (.obj ∅)) limit
   let problems : Array String := #[]
   let valid := (validate wf (some input.keys)).ok
   let expValid := match get? exp "valid" with | some (.bool b) => b | _ => true

@@ -4,6 +4,7 @@ import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
 import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import { DECISION_RECEIPT_VERSION, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
@@ -318,7 +319,16 @@ export type WorkflowDeps = {
     signal?: AbortSignal;
     state: unknown;
     questions: Record<string, SystemOneQuestion>;
+    /** The id of this request's decision receipt (`DecisionReceipt.id`): the same request asked again
+     *  carries the same id. */
+    decisionId?: string;
   }) => Promise<{ answers: Record<string, SystemOneAnswer>; model?: string | null; usage?: { input_tokens: number; output_tokens: number } | null; cost_usd?: number | null; request_sha256?: string }>;
+  /** Records one typed-question request and what its answers decide. It is awaited before the answers
+   *  reach state, an event or a branch, so a durable recorder holds every decision the run acted on; a
+   *  rejection fails the node. A request the judge could not answer, or one cancelled in flight, is
+   *  recorded too, before its failure is thrown. A decision answered from `recovery.decision` was
+   *  recorded by the run that asked it and is not recorded again. */
+  recordDecision?: (receipt: DecisionReceipt, exchange: DecisionExchange) => Promise<void>;
   syntheticEffects?: boolean;
   checkpoint?: (state: Record<string, unknown>, label: string, executionPath?: string) => Promise<void>;
   /** Critical recovery stores stop execution on write failure; omitted retains legacy best effort. */
@@ -331,6 +341,10 @@ export type WorkflowDeps = {
     pollStartedAt: (node: CallNode, item?: MapItem, executionPath?: string) => number;
     wait: (node: CallNode, ms: number, item?: MapItem, executionPath?: string) => Promise<void>;
     fail?: (node: WorkflowNode, results: unknown[], error: unknown, executionPath?: string) => Promise<void>;
+    /** The receipt an earlier run recorded under this id, if any. An `answered` one answers the request:
+     *  the judge is not asked again, so a resumed run decides what the interrupted run decided. Any
+     *  other receipt, or none, means the request is asked. */
+    decision?: (id: string) => Promise<DecisionReceipt | undefined>;
   };
   /** A completed-effect memo keyed by the call's idempotency key. A hit skips the effect and
    *  reuses its result; polled calls are never memoized (their result is a moment in time). */
@@ -351,6 +365,12 @@ export type WorkflowDeps = {
 };
 
 export type WorkflowEvent = { type: string; label: string; detail?: unknown; executionPath?: string };
+
+type JudgeRequest = Parameters<NonNullable<WorkflowDeps["runJudge"]>>[0];
+type JudgeResult = Awaited<ReturnType<NonNullable<WorkflowDeps["runJudge"]>>>;
+/** What a decision recorder gets beside the receipt: the request as the host's `runJudge` received it,
+ *  and, when the judge returned, the very object it returned, so a host reads back what it put there. */
+export type DecisionExchange = { request: JudgeRequest; result?: JudgeResult };
 
 export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
   const out = new Set<string>();
@@ -1252,16 +1272,17 @@ export class EscalationSignal extends Error {
 async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>, deps: WorkflowDeps, at: { label: string; kind: "loop" | "escalate" }): Promise<{ holds: boolean; detail?: Record<string, unknown> }> {
   if (pred.predicate !== "ask") return { holds: predicateMatches(pred, state) };
   const ask = pred as AskPredicate;
-  const runJudge = requireJudge(deps, `${at.kind} (ask predicate)`, at.label);
   const asked = ask.state ? interpolateValue(ask.state, state, at.label) : promptStateOf(state);
   const questions: Record<string, SystemOneQuestion> = { holds: { type: "noul", instructions: ask.instructions, ...(ask.criteria ? { criteria: ask.criteria } : {}) } };
-  const result = await runJudge({ label: at.label, kind: "ask", state: asked, questions, signal: deps.signal });
-  validateAnswers(questions, result.answers);
-  const answer = result.answers.holds;
-  const p = answer?.type === "noul" ? answer.noul : NaN;
-  if (!Number.isFinite(p)) throw new Error(`${at.kind} node "${at.label}": the ask predicate got no yes/no answer`);
   const gte = ask.gte ?? 0.6;
-  deps.onEvent?.({ type: "ask.evaluated", label: at.label, detail: { kind: at.kind, p_yes: +p.toFixed(4), gte, holds: p >= gte, model: result.model ?? null, cost_usd: result.cost_usd ?? null } });
+  const decided = await decide(deps, { nodeKind: `${at.kind} (ask predicate)`, kind: "ask", judgeKind: "ask", label: at.label, state: asked, questions }, (answers) => {
+    const answer = answers.holds;
+    const p = answer?.type === "noul" ? answer.noul : NaN;
+    if (!Number.isFinite(p)) throw new Error(`${at.kind} node "${at.label}": the ask predicate got no yes/no answer`);
+    return { rule: { kind: "ask", gte }, action: { holds: p >= gte }, value: p };
+  });
+  const p = decided.value;
+  deps.onEvent?.({ type: "ask.evaluated", label: at.label, detail: { kind: at.kind, p_yes: +p.toFixed(4), gte, holds: p >= gte, ...meteringOf(decided), decision_id: decided.id } });
   return { holds: p >= gte, detail: { p_yes: p, gte } };
 }
 
@@ -1672,6 +1693,116 @@ const requireJudge = (deps: WorkflowDeps, kind: string, label: string): NonNulla
   };
 };
 
+const sha256Hex = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+/** A text of any value, for a digest, in which two values that differ never read the same. JSON values are
+ *  spelled as JSON with sorted keys. Everything JSON cannot say is a bare word no JSON value produces: a
+ *  bigint as its digits and `n`, `undefined`, a non-finite number by name, a date, map or set under its
+ *  type's name, an object of another class under its constructor's name, and a reference back to an
+ *  enclosing object as `~` and how far out it is. So hashing never refuses a state a host is free to hand
+ *  its judge, and a state can share a decision id only with itself. */
+function digestText(value: unknown, enclosing: object[] = []): string {
+  switch (typeof value) {
+    case "string": case "boolean": return JSON.stringify(value);
+    case "number": return Number.isFinite(value) ? JSON.stringify(value) : String(value);
+    case "bigint": return `${value}n`;
+    case "undefined": case "function": case "symbol": return typeof value;
+  }
+  if (value === null) return "null";
+  const object = value as object;
+  const out = enclosing.lastIndexOf(object);
+  if (out !== -1) return `~${enclosing.length - 1 - out}`;
+  const inside = [...enclosing, object];
+  const list = (entries: unknown[]) => `[${entries.map((entry) => digestText(entry, inside)).join(",")}]`;
+  if (Array.isArray(object)) return list(object);
+  if (object instanceof Date) return `Date(${object.getTime()})`;
+  if (object instanceof Map) return `Map${list([...object])}`;
+  if (object instanceof Set) return `Set${list([...object])}`;
+  if (ArrayBuffer.isView(object)) return `${object.constructor.name}${list([...new Uint8Array(object.buffer, object.byteOffset, object.byteLength)])}`;
+  const prototype = Object.getPrototypeOf(object);
+  const name = prototype === null || prototype === Object.prototype ? "" : String(prototype.constructor?.name ?? "?");
+  const record = object as Record<string, unknown>;
+  return `${name}{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${digestText(record[key], inside)}`).join(",")}}`;
+}
+
+/** A persistence failure of a decision receipt. It fails the node: the answers were never applied. */
+export class WorkflowDecisionRecordError extends Error {
+  constructor(readonly label: string, readonly decisionId: string, cause: unknown) {
+    super(`node "${label}": the decision receipt ${decisionId} could not be recorded: ${String((cause as Error)?.message || cause).slice(0, 300)}`, { cause });
+    this.name = "WorkflowDecisionRecordError";
+  }
+}
+
+type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value: T; model: string | null; cost_usd: number | null; replayed: boolean };
+
+/** One typed-question request from identity to receipt. `settle` turns validated answers into the rule,
+ *  the action and whatever the caller applies; it throws exactly what the node would throw for answers it
+ *  refuses. In order: an `answered` receipt the host's recovery holds under the request's id answers it
+ *  with no judge call and no new receipt; otherwise the judge is asked, and the receipt (answered, failed
+ *  or cancelled) is recorded and awaited before this returns or throws. */
+async function decide<T>(
+  deps: WorkflowDeps,
+  ask: { nodeKind: string; kind: DecisionKind; judgeKind: JudgeRequest["kind"]; label: string; state: unknown; questions: Record<string, SystemOneQuestion>; signal?: AbortSignal; request?: DecisionReceipt["request"];
+    /** Called as soon as the request has failed, before its receipt is written. */
+    onFailure?: (error: unknown) => void },
+  settle: (answers: Record<string, SystemOneAnswer>) => { rule: DecisionRule; action: unknown; value: T },
+): Promise<Decided<T>> {
+  const runJudge = requireJudge(deps, ask.nodeKind, ask.label);
+  const path = executionPath(deps);
+  const item = (deps as LocatedDeps)[MAP_ITEM];
+  const signal = ask.signal ?? deps.signal;
+  const position = ask.request ?? { index: 0, count: 1 };
+  const state_sha256 = sha256Hex(digestText(ask.state));
+  const id = sha256Hex(canonicalJson(["decision-v1", path, ask.kind, position.index, ask.questions, state_sha256]));
+  const recorded = deps.recovery?.decision ? await deps.recovery.decision(id) : undefined;
+  if (recorded?.status === "answered") {
+    validateAnswers(ask.questions, recorded.answers);
+    const { value } = settle(recorded.answers);
+    return { id, answers: recorded.answers, value, model: recorded.model ?? null, cost_usd: 0, replayed: true };
+  }
+  const request: JudgeRequest = { label: ask.label, kind: ask.judgeKind, ...(item ? { item } : {}), executionPath: path, signal, state: ask.state, questions: ask.questions, decisionId: id };
+  const startedAt = Date.now();
+  const receipt = (result: JudgeResult | undefined, outcome: Pick<DecisionReceipt, "status" | "rule" | "action"> & { error?: unknown }): DecisionReceipt => ({
+    v: DECISION_RECEIPT_VERSION, id, at: new Date().toISOString(), node: ask.label, kind: ask.kind, item: item?.index ?? null, execution_path: path, request: position,
+    status: outcome.status, state_sha256, questions: ask.questions,
+    answers: result?.answers && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers : {},
+    rule: outcome.rule, action: outcome.action,
+    model: result?.model ?? null, usage: result?.usage ?? null, cost_usd: typeof result?.cost_usd === "number" ? result.cost_usd : null, request_sha256: result?.request_sha256 ?? null,
+    latency_ms: Date.now() - startedAt,
+    ...(outcome.error !== undefined ? { error: String((outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
+  });
+  /** Records `made`; with `failure`, the request's own failure, a recorder that also fails surfaces both. */
+  const record = async (made: DecisionReceipt, result: JudgeResult | undefined, failure?: { error: unknown }): Promise<void> => {
+    if (!deps.recordDecision) return;
+    try { await deps.recordDecision(made, { request, ...(result !== undefined ? { result } : {}) }); }
+    catch (cause) {
+      const lost = new WorkflowDecisionRecordError(ask.label, id, cause);
+      throw failure ? new AggregateError([failure.error, lost], `${String((failure.error as Error)?.message || failure.error)}; and ${lost.message}`) : lost;
+    }
+  };
+  let result: JudgeResult;
+  try { result = await runJudge(request); }
+  catch (error) {
+    // The status is read before the caller reacts: a request that fails on its own is `failed`, even when
+    // its failure is what cancels the others.
+    const failed = receipt(undefined, { status: signal?.aborted ? "cancelled" : "failed", rule: null, action: null, error });
+    ask.onFailure?.(error);
+    await record(failed, undefined, { error });
+    throw error;
+  }
+  let settled: { rule: DecisionRule; action: unknown; value: T };
+  try {
+    validateAnswers(ask.questions, result.answers);
+    settled = settle(result.answers);
+  } catch (error) {
+    ask.onFailure?.(error);
+    await record(receipt(result, { status: "failed", rule: null, action: null, error }), result, { error });
+    throw error;
+  }
+  await record(receipt(result, { status: "answered", rule: settled.rule, action: settled.action }), result);
+  return { id, answers: result.answers, value: settled.value, model: result.model ?? null, cost_usd: result.cost_usd ?? null, replayed: false };
+}
+
 function questionSetOf(workflow: Workflow, node: { node: string; label: string; out: string }): { questions: CompiledQuestions; decode: (answers: Record<string, SystemOneAnswer>, what?: string) => Record<string, unknown> } {
   const schema = resolveSchemaForWorkflow(workflow, workflow.schemas[node.out]);
   const compiled = compileQuestions(schema, workflow.schemas as Record<string, unknown>);
@@ -1690,19 +1821,19 @@ function questionSetOf(workflow: Workflow, node: { node: string; label: string; 
 const describeItem = (template: string, state: Record<string, unknown>, item: unknown, index: number): string =>
   interpolate(template, { ...state, item, item_index: index }).replace(/\s+/g, " ").trim();
 
-async function askQuestions(deps: WorkflowDeps, node: { node: "judge" | "pick" | "sift" | "route"; label: string }, asked: unknown, questions: Record<string, SystemOneQuestion>, signal: AbortSignal | undefined = deps.signal): Promise<{ answers: Record<string, SystemOneAnswer>; sidecar: AnswersSidecar; model: string | null; cost_usd: number | null }> {
-  const runJudge = requireJudge(deps, node.node, node.label);
-  const result = await runJudge({ label: node.label, kind: node.node, state: asked, questions, signal });
-  validateAnswers(questions, result.answers);
-  return { answers: result.answers, sidecar: answersSidecar(result.answers), model: result.model ?? null, cost_usd: result.cost_usd ?? null };
-}
+/** What a decision event says of the request behind it: who answered, what it cost, and that a recorded
+ *  decision answered it when one did. */
+const meteringOf = (decided: { model: string | null; cost_usd: number | null; replayed: boolean }) => ({ model: decided.model, cost_usd: decided.cost_usd, ...(decided.replayed ? { replayed: true } : {}) });
 
 async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
   const set = questionSetOf(workflow, node);
-  const { answers, sidecar, model, cost_usd } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), set.questions);
-  const value = set.decode(answers);
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "judge", as: node.as, value, sidecar, model, cost_usd } });
+  const decided = await decide(deps, { nodeKind: "judge", kind: "judge", judgeKind: "judge", label: node.label, state: interpolateValue(node.state, state, node.label), questions: set.questions }, (answers) => {
+    const value = set.decode(answers);
+    return { rule: { kind: "judge" }, action: value, value };
+  });
+  const value = decided.value; const sidecar = answersSidecar(decided.answers);
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "judge", as: node.as, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
@@ -1722,14 +1853,17 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
   const criteria: Record<string, string | null> = node.allowNone ? { ...options, [NONE]: "none of the items fits" } : options;
   const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state) }), candidates: options };
-  const { answers, sidecar, model, cost_usd } = await askQuestions(deps, node, asked, { pick: { type: "choice", instructions: node.instructions, criteria } });
-  const a = answers.pick;
-  if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
-  const none = a.choice === NONE;
-  const index = none ? null : Object.keys(options).indexOf(a.choice);
-  if (index !== null && index < 0) throw new Error(`pick node "${node.label}": the choice "${a.choice}" names no item`);
-  const value = { index, item: index === null ? null : items[index], none, option: none ? null : options[a.choice] };
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "pick", as: node.as, value, sidecar, model, cost_usd } });
+  const decided = await decide(deps, { nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
+    const a = answers.pick;
+    if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
+    const none = a.choice === NONE;
+    const index = none ? null : Object.keys(options).indexOf(a.choice);
+    if (index !== null && index < 0) throw new Error(`pick node "${node.label}": the choice "${a.choice}" names no item`);
+    const value = { index, item: index === null ? null : items[index], none, option: none ? null : options[a.choice] };
+    return { rule: { kind: "pick", options: Object.keys(options), none: node.allowNone ? NONE : null }, action: { index, none }, value };
+  });
+  const value = decided.value; const sidecar = answersSidecar(decided.answers);
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "pick", as: node.as, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
@@ -1741,32 +1875,55 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   const ids = Object.keys(set.questions);
   const [keepId, keepTail] = node.keep ? node.keep.path.split(".") : [];
   const values: Record<string, unknown>[] = []; const sidecars: AnswersSidecar[] = []; const kept: number[] = [];
-  let metering: { model: string | null; cost_usd: number | null; requests?: number } | null = null;
+  let metering: { model: string | null; cost_usd: number | null; requests?: number; replayed?: true } | null = null;
+  const decisionIds: string[] = [];
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
     const named = items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
     const chunks = siftChunks(deps, node.label, ids.length, base, named);
-    // Each chunk is its own request: item ids stay global (item_<i>), `items[j]` indexes the chunk.
-    // A sift that fits in one request sends exactly the request it always did. Several requests run at
-    // most SIFT_REQUESTS_IN_FLIGHT at a time; the first failure stops dispatch, cancels the requests in
-    // flight, and is thrown once they settle.
-    const ask = (chunk: number[], signal: AbortSignal | undefined) => {
+    const measure = keepTail === "confidence" ? "confidence" as const : "value" as const;
+    // The keep rule, as applied and as a receipt states it: the author's threshold, else 0.5 for a yes/no
+    // value and 0 otherwise (an answer has its question's type).
+    const keep = node.keep ? { id: keepId, measure, gte: node.keep.gte ?? (set.questions[keepId]?.type === "noul" && measure === "value" ? 0.5 : 0) } : null;
+    // Each chunk is its own request and its own decision: item ids stay global (item_<i>), `items[j]`
+    // indexes the chunk, and the chunk's receipt names its kept items by that position. A sift that fits
+    // in one request sends exactly the request it always did. Several requests run at most
+    // SIFT_REQUESTS_IN_FLIGHT at a time; the first failure stops dispatch and cancels the requests in
+    // flight, each of which is recorded as cancelled, and is thrown once they settle. A request that had
+    // already answered keeps its receipt; no event names it, since the sift decided nothing.
+    const ask = (chunk: number[], c: number, signal: AbortSignal | undefined, onFailure?: (error: unknown) => void) => {
       const questions: Record<string, SystemOneQuestion> = {};
       chunk.forEach((i, j) => { for (const id of ids) questions[`${j}.${id}`] = { ...set.questions[id], instructions: `For \`items[${j}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion; });
-      return askQuestions(deps, node, { ...base, items: chunk.map((i) => named[i]) }, questions, signal);
+      return decide(deps, { nodeKind: "sift", kind: "sift", judgeKind: "sift", label: node.label, state: { ...base, items: chunk.map((i) => named[i]) }, questions, signal, request: { index: c, count: chunks.length, items: chunk }, ...(onFailure ? { onFailure } : {}) }, (answers) => {
+        const decoded: Record<string, unknown>[] = []; const sides: AnswersSidecar[] = []; const keptHere: number[] = [];
+        chunk.forEach((i, j) => {
+          const mine: Record<string, SystemOneAnswer> = Object.create(null);
+          for (const id of ids) { const a = answers[`${j}.${id}`]; if (!a) throw new Error(`sift node "${node.label}": no answer for item ${i} question "${id}"`); mine[id] = a; }
+          decoded.push(set.decode(mine, ` answers for item ${i}`)); sides.push(answersSidecar(mine));
+          if (!keep) { keptHere.push(j); return; }
+          const a = mine[keepId];
+          const measured = keepTail === "confidence" ? answerConfidence(a) : a.type === "noul" ? a.noul : a.type === "score" ? a.score : NaN;
+          if (Number.isFinite(measured) && measured >= keep.gte) keptHere.push(j);
+        });
+        return { rule: { kind: "sift", items: chunk.length, ids, keep }, action: { kept: keptHere }, value: { values: decoded, sidecars: sides, kept: keptHere.map((j) => chunk[j]) } };
+      });
     };
     let results: Awaited<ReturnType<typeof ask>>[];
-    if (chunks.length === 1) results = [await ask(chunks[0], deps.signal)];
+    if (chunks.length === 1) results = [await ask(chunks[0], 0, deps.signal)];
     else {
       const stop = new AbortController();
       const signal = deps.signal ? AbortSignal.any([deps.signal, stop.signal]) : stop.signal;
       results = new Array(chunks.length);
-      let next = 0, failure: { error: unknown } | undefined;
+      let next = 0, failure: { request: number; error: unknown } | undefined;
+      // The first request to fail is the sift's failure, from the moment it fails: dispatch stops and the
+      // requests in flight are cancelled then, not when its receipt has been written. What it finally
+      // throws (its own error, or that and a receipt that could not be recorded) replaces what it flagged.
+      const fail = (request: number, error: unknown) => { if (!failure || failure.request === request) failure = { request, error }; stop.abort(); };
       await Promise.all(Array.from({ length: Math.min(SIFT_REQUESTS_IN_FLIGHT, chunks.length) }, async () => {
         while (!failure && next < chunks.length) {
           const c = next++;
-          try { results[c] = await ask(chunks[c], signal); }
-          catch (error) { failure ??= { error }; stop.abort(); }
+          try { results[c] = await ask(chunks[c], c, signal, (error) => fail(c, error)); }
+          catch (error) { fail(c, error); }
         }
       }));
       if (failure) throw failure.error;
@@ -1776,23 +1933,13 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
       model: models.size === 1 ? results[0].model : null,
       cost_usd: results.every((r) => r.cost_usd !== null) ? results.reduce((sum, r) => sum + (r.cost_usd as number), 0) : null,
       ...(chunks.length > 1 ? { requests: chunks.length } : {}),
+      ...(results.every((r) => r.replayed) ? { replayed: true as const } : {}),
     };
-    const at: [number, number][] = [];
-    chunks.forEach((chunk, c) => chunk.forEach((i, j) => { at[i] = [c, j]; }));
-    const answerOf = (i: number, id: string): SystemOneAnswer | undefined => results[at[i][0]].answers[`${at[i][1]}.${id}`];
-    for (let i = 0; i < items.length; i += 1) {
-      const mine: Record<string, SystemOneAnswer> = Object.create(null);
-      for (const id of ids) { const a = answerOf(i, id); if (!a) throw new Error(`sift node "${node.label}": no answer for item ${i} question "${id}"`); mine[id] = a; }
-      values.push(set.decode(mine, ` answers for item ${i}`)); sidecars.push(answersSidecar(mine));
-      if (!node.keep) { kept.push(i); continue; }
-      const a = mine[keepId];
-      const measure = keepTail === "confidence" ? answerConfidence(a) : a.type === "noul" ? a.noul : a.type === "score" ? a.score : NaN;
-      const threshold = node.keep.gte ?? (a.type === "noul" && keepTail !== "confidence" ? 0.5 : 0);
-      if (Number.isFinite(measure) && measure >= threshold) kept.push(i);
-    }
+    // Chunks cover the list in order, so their results concatenate into list order.
+    for (const r of results) { values.push(...r.value.values); sidecars.push(...r.value.sidecars); kept.push(...r.value.kept); decisionIds.push(r.id); }
   }
   const value = { items: kept.map((i) => items[i]), values, answers: sidecars, kept };
-  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "sift", as: node.as, value, count: items.length, kept: kept.length, ...(metering ?? {}) } });
+  deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "sift", as: node.as, value, count: items.length, kept: kept.length, ...(metering ?? {}), decision_ids: decisionIds } });
   return { ...state, [node.as]: value };
 }
 
@@ -1813,13 +1960,15 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
   }
   const names = Object.keys(node.branches);
   const criteria: Record<string, string | null> = Object.fromEntries(names.map((n) => [n, node.branches[n]?.criteria?.trim() || null]));
-  const { answers, sidecar, model, cost_usd } = await askQuestions(deps, node, interpolateValue(node.state, state, node.label), { branch: { type: "choice", instructions: node.instructions, criteria } });
-  const a = answers.branch;
-  if (!a || a.type !== "choice" || !names.includes(a.choice)) throw new Error(`route node "${node.label}": the choice "${String((a as any)?.choice)}" names no branch`);
-  const unsure = Boolean(node.unsure && a.confidence < node.unsure.gte);
-  const taken = unsure ? node.unsure!.branch : a.choice;
-  const value = { branch: a.choice, taken, unsure };
-  deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, model, cost_usd } });
+  const decided = await decide(deps, { nodeKind: "route", kind: "route", judgeKind: "route", label: node.label, state: interpolateValue(node.state, state, node.label), questions: { branch: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
+    const a = answers.branch;
+    if (!a || a.type !== "choice" || !names.includes(a.choice)) throw new Error(`route node "${node.label}": the choice "${String((a as any)?.choice)}" names no branch`);
+    const unsure = Boolean(node.unsure && a.confidence < node.unsure.gte);
+    const value = { branch: a.choice, taken: unsure ? node.unsure!.branch : a.choice, unsure };
+    return { rule: { kind: "route", unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null }, action: value, value };
+  });
+  const value = decided.value; const taken = value.taken; const sidecar = answersSidecar(decided.answers);
+  deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });
   const routed = node.as ? { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar } : state;
   return runNodeOnState(node.branches[taken].body, routed, workflow, scopeExecution(deps, "branches", taken, "body"));
 }
@@ -1895,6 +2044,7 @@ function scopeDepsToItem(deps: WorkflowDeps, item: MapItem, signal?: AbortSignal
       pollStartedAt: (node, nestedItem, path) => recovery.pollStartedAt(node, nestedItem ?? item, path),
       wait: (node, ms, nestedItem, path) => recovery.wait(node, ms, nestedItem ?? item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(node, results, error, path) } : {}),
+      ...(recovery.decision ? { decision: id => recovery.decision!(id) } : {}),
     } } : {}),
   };
 }
@@ -1910,6 +2060,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
     ...(deps.runNode ? { runNode: params => deps.runNode!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
     ...(deps.runEffect ? { runEffect: params => deps.runEffect!({ ...params, node: relabel(params.node) }) } : {}),
     ...(deps.runJudge ? { runJudge: params => deps.runJudge!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
+    ...(deps.recordDecision ? { recordDecision: (receipt, exchange) => deps.recordDecision!({ ...receipt, node: `${prefix}/${receipt.node}` }, { ...exchange, request: { ...exchange.request, label: `${prefix}/${exchange.request.label}` } }) } : {}),
     ...(deps.runCode ? { runCode: (node, state, ctx) => deps.runCode!(relabel(node), state, { ...ctx, label: `${prefix}/${ctx.label}` }) } : {}),
     ...(recovery ? { recovery: {
       supportsExecutionPaths: recovery.supportsExecutionPaths,
@@ -1918,6 +2069,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
       pollStartedAt: (node, item, path) => recovery.pollStartedAt(relabel(node), item, path),
       wait: (node, ms, item, path) => recovery.wait(relabel(node), ms, item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(relabel(node), results, error, path) } : {}),
+      ...(recovery.decision ? { decision: id => recovery.decision!(id) } : {}),
     } } : {}),
     ...(deps.onEvent ? { onEvent: forwardObserver(deps.onEvent, event => ({ ...event, label: `${prefix}/${event.label}` })) } : {}),
   };
@@ -2316,7 +2468,8 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
   const questions = compiled.questions;
   const schema = (workflow.schemas[clause.out] as { properties?: Record<string, { description?: string }> }).properties ?? {};
   const maxDrives = clause.maxDrives ?? 2; const floor = clause.override?.below ?? 0.3;
-  const runJudge = requireJudge(deps, "judge", `${node.label} (verify)`);
+  // A runner with no judge refuses the node here, before its generative call.
+  requireJudge(deps, "judge", `${node.label} (verify)`);
   const drives: Array<{ drive: number; doubted: string[]; unmet: string[]; accepted: boolean; sidecar: AnswersSidecar }> = [];
   let reviewedCandidate: string | undefined;
   let last: { answers: Record<string, SystemOneAnswer>; doubted: string[]; unmet: string[] } | null = null;
@@ -2329,20 +2482,28 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
     const sub = (candidate && typeof candidate === "object" && !Array.isArray(candidate)) ? { ...(candidate as Record<string, unknown>) } : {};
     if (outSchema) normalizeStringNullsForSchema(sub, outSchema);
     const asked = interpolateValue({ ...(clause.state ?? {}), submission: "{submission}" }, { ...state, submission: sub, ...(node.as ? { [node.as]: sub } : {}) }, node.label);
-    const result = await runJudge({ label: `${node.label} (verify)`, kind: "judge", state: asked, questions, signal: deps.signal });
-  validateAnswers(questions, result.answers);
-    const answers = result.answers; const doubted: string[] = []; const unmet: string[] = [];
-    for (const [id, q] of Object.entries(questions)) {
-      if (q.type !== "noul") continue;
-      const p = pYes(answers[id]);
-      if (Object.prototype.hasOwnProperty.call(sub, id)) { if (filled(sub[id]) && p < floor) doubted.push(id); }
-      else if (p < 0.5) unmet.push(id);
-    }
-    const drive = drives.length + 1; const accepted = doubted.length === 0 && unmet.length === 0;
+    const drive = drives.length + 1;
+    const decided = await decide(deps, { nodeKind: "judge", kind: "verify", judgeKind: "judge", label: `${node.label} (verify)`, state: asked, questions, request: { index: drive - 1, count: maxDrives } }, (answers) => {
+      const doubted: string[] = []; const unmet: string[] = [];
+      const present = Object.keys(questions).filter((id) => Object.prototype.hasOwnProperty.call(sub, id));
+      const thresholds: Record<string, number | null> = {};
+      for (const [id, q] of Object.entries(questions)) {
+        if (q.type !== "noul") continue;
+        const p = pYes(answers[id]);
+        if (Object.prototype.hasOwnProperty.call(sub, id)) { if (filled(sub[id]) && p < floor) doubted.push(id); }
+        else if (p < 0.5) unmet.push(id);
+        // A field the submission holds is judged at the floor, one it holds empty is not judged, and a
+        // requirement that is not a field is judged at 0.5.
+        thresholds[id] = !present.includes(id) ? 0.5 : filled(sub[id]) ? floor : null;
+      }
+      const accepted = doubted.length === 0 && unmet.length === 0;
+      return { rule: { kind: "verify", thresholds, present }, action: { accepted, doubted, unmet }, value: { doubted, unmet, accepted } };
+    });
+    const answers = decided.answers; const { doubted, unmet, accepted } = decided.value;
     reviewedCandidate = JSON.stringify(sub);
     const sidecar = answersSidecar(answers);
     drives.push({ drive, doubted, unmet, accepted, sidecar }); last = { answers, doubted, unmet };
-    deps.onEvent?.({ type: "verify.answered", label: node.label, detail: { drive, doubted, unmet, accepted, sidecar, model: result.model ?? null, cost_usd: result.cost_usd ?? null } });
+    deps.onEvent?.({ type: "verify.answered", label: node.label, detail: { drive, doubted, unmet, accepted, sidecar, ...meteringOf(decided), decision_id: decided.id } });
     if (accepted) return { accepted: true as const };
     if (drive >= maxDrives) throw new WorkflowVerificationError(node.label, sub, drives, `exhausted ${maxDrives} review attempts; unmet: ${unmet.join(", ") || "none"}; doubted: ${doubted.join(", ") || "none"}`);
     const line = (id: string) => `${id}: ${String(schema[id]?.description ?? questions[id].instructions).replace(/\s+/g, " ").trim()}`;

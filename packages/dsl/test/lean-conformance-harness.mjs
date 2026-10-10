@@ -84,7 +84,16 @@ export async function runCase(c) {
       const entry = need("gen", executionPath);
       return kind === "report" ? { report_markdown: entry.markdown } : entry.submission;
     },
-    runJudge: async ({ executionPath }) => ({ answers: need("judge", executionPath).answers }),
+    runJudge: async ({ kind, executionPath, state, questions }) => {
+      const entry = need("judge", executionPath);
+      if (kind !== "sift") return { answers: entry.answers };
+      // A sift is scripted per item, so the script holds whatever requests the interpreter splits it into.
+      return { answers: Object.fromEntries(Object.keys(questions).map((key) => {
+        const [j, id] = [Number(key.slice(0, key.indexOf("."))), key.slice(key.indexOf(".") + 1)];
+        return [key, entry.items[Number(state.items[j].id.slice("item_".length))].answers[id]];
+      })) };
+    },
+    ...(c.limits?.maxQuestionsPerRequest !== undefined ? { maxQuestionsPerRequest: c.limits.maxQuestionsPerRequest } : {}),
     runEffect: async ({ executionPath }) => need("effect", executionPath).result,
     onEvent: (event) => {
       events.push(event);
