@@ -173,7 +173,7 @@ const greedy = async (extra) => {
 };
 {
   const a = await greedy({ sampling: { temperature: 0, bogus: 1, top_k: -5 } });
-  check('the manifest\'s valid sampling keys are applied, the bad ones ignored, and the result is echoed in model-loading, the receipt and the page state', JSON.stringify(a.loading.sampling) === JSON.stringify({ temperature: 0, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1, max_tokens: 256 }) && JSON.stringify(a.receipt) === JSON.stringify(a.loading.sampling) && a.state.temperature === 0, JSON.stringify(a.loading.sampling));
+  check('the manifest\'s valid sampling keys are applied, the bad ones ignored, and the result is echoed in model-loading, the receipt and the page state', JSON.stringify(a.loading.sampling) === JSON.stringify({ temperature: 0, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1, max_tokens: 256, think_tokens: 90 }) && JSON.stringify(a.receipt) === JSON.stringify(a.loading.sampling) && a.state.temperature === 0, JSON.stringify(a.loading.sampling));
   const b = await greedy({ sampling: { temperature: 0, penalty_repeat: 2 } });
   check('the repeat penalty reaches the model: greedy decoding with penalty 2.0 words the same answer differently from penalty 1.0', a.text.length > 20 && b.text.length > 20 && a.text !== b.text && b.loading.sampling.penalty_repeat === 2, `equal=${a.text === b.text} lens ${a.text.length}/${b.text.length} | ${JSON.stringify(a.text.slice(-80))} vs ${JSON.stringify(b.text.slice(-80))}`);
 }

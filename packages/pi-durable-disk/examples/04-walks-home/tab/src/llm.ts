@@ -17,24 +17,31 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       const next = make({ default: wasmUrl });
       w = next;
       try {
-        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0 });
+        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true }); // a trailing assistant message is continued, not answered
       } catch (e) {
         await release(); // a half-started model is released, not left running
         throw e;
       }
     },
-    async chat({ messages, maxTokens, signal, onText, sampling }) {
+    async chat({ messages, maxTokens, signal, onText, sampling, stop, prefill }) {
       if (!w) throw new Error('the model is not loaded');
-      const { max_tokens: _budget, penalty_repeat, ...rest } = sampling ?? DEFAULT_SAMPLING; // the call's own budget is `maxTokens`
+      const { max_tokens: _answer, think_tokens: _think, penalty_repeat, ...rest } = sampling ?? DEFAULT_SAMPLING; // the call's own budget is `maxTokens`
       // The repeat penalty goes under the names llama.cpp's server reads (repeat_penalty, repeat_last_n): wllama's own `penalty_repeat` is not applied
       // (measured: greedy decoding with penalty 2.0 gave the same text as 1.0). The window is llama.cpp's default, so an evaluation outside the tab agrees.
-      const request = { messages, max_tokens: maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, stream: true, abortSignal: signal };
+      const sent = prefill === undefined ? messages : [...messages, { role: 'assistant' as const, content: prefill }]; // a pre-filled assistant turn: the model continues it
+      const request = { messages: sent, max_tokens: maxTokens, ...(stop?.length ? { stop } : {}), ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, stream: true, abortSignal: signal };
       const stream = await w.createChatCompletion(request as Parameters<Wllama['createChatCompletion']>[0] & { stream: true });
-      let text = '', tokens = 0;
+      // llama.cpp streams the prefill back at the start of a continuation: it is not new text, so it is stripped (a build that does not echo it passes through)
+      const echoed = (t: string) => prefill !== undefined && prefill.length > 0 && prefill.startsWith(t);
+      const fresh = (t: string) => (prefill && t.startsWith(prefill) ? t.slice(prefill.length) : echoed(t) ? '' : t);
+      let text = '', tokens = 0, raw = '';
       try {
         for await (const chunk of stream) {
           const d = chunk.choices?.[0]?.delta?.content;
-          if (d) { text += d; tokens++; onText(text); }
+          if (!d) continue;
+          raw += d;
+          const now = fresh(raw);
+          if (now.length > text.length) { tokens++; text = now; onText(text, tokens); }
         }
       } catch (e) {
         if (!signal.aborted) throw e; // an abort ends the answer early; anything else is a real failure

@@ -5,15 +5,15 @@
 
 import { fetchModel, ModelError, parseManifest, type Manifest } from './model.ts';
 import { Guard, REFUSAL, sentenceEnd } from './guard.ts';
-import { rawOf, readable, splitThinking } from './thinking.ts';
+import { CLOSE, cutBack, OPEN, rawOf, readable, splitThinking } from './thinking.ts';
 import { resolveSampling, type Sampling } from './sampling.ts';
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
 
 export interface Llm {
   load(parts: Uint8Array[], opts: { threads: number }): Promise<void>;
-  /** Generate an answer; onText gets the whole text so far. An abort ends it early without throwing. */
-  chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; sampling?: Sampling; onText: (cumulative: string) => void }): Promise<{ text: string; tokens: number }>;
+  /** Generate an answer; onText gets the whole text so far and the tokens so far. `stop` strings end the text before them; `prefill` is an assistant turn to continue (the returned text is only what comes after it). An abort ends it early without throwing. */
+  chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; sampling?: Sampling; stop?: string[]; prefill?: string; onText: (cumulative: string, tokens: number) => void }): Promise<{ text: string; tokens: number }>;
   exit(): Promise<void>;
 }
 
@@ -37,6 +37,9 @@ export interface HostDeps {
 export function tokensPerSecond(tokens: number, firstMs: number, lastMs: number): number | null {
   return tokens > 1 && lastMs > firstMs ? (tokens - 1) / ((lastMs - firstMs) / 1000) : null;
 }
+
+/** Where an answer's time went, in ms from the start of its generation. `thinking_end_ms` only when the model thought out loud and the thought ended. */
+export interface AnswerTiming { first_token_ms: number; thinking_end_ms?: number; answer_start_ms?: number; hit_cap: boolean; thinking_only: boolean; thinking_cut: boolean }
 
 export type ModelPhase = 'none' | 'loading' | 'loaded' | 'answered' | 'failed';
 export const LOADED_PATH = 'creature/model-loaded.json';
@@ -109,21 +112,75 @@ export class ModelHost {
     try { await this.receipt({ answered: false, error: reason }); } catch { /* the disk is the one thing that may be gone; while the run is away this waits for it to come home */ }
   }
 
-  /** Generate one answer for `messages`, gated. Returns what the user may see. */
-  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string, final?: boolean) => void, stopAfterFirstSentence = false): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean }> {
+  /**
+   * Generate one answer for `messages`, gated, in up to two requests. A model that thinks out loud is asked for its thought first (stop at </thinking>,
+   * its own budget `think_tokens`); the thought is closed as generated and the answer is a continuation of it (stop at any thinking tag, its own budget
+   * `answerBudget`): thinking can never eat the answer's budget, and a stray tag ends the answer instead of appearing in it. A reply that does not open a
+   * thought is one request bounded by the answer budget. The guard sees the raw text throughout; the judge reads it as a reader would.
+   */
+  private async answer(prompt: string, messages: ChatMsg[], answerBudget: number, show: (shown: string, final?: boolean) => void, stopAfterFirstSentence = false): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean; cut: boolean; timing: AnswerTiming }> {
     const ctl = new AbortController();
-    // the guard works on the model's raw text (thinking tags and all); the judge reads it as a reader would, thinking first and no tags
     const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a, final) => this.d.judge(prompt, readable(a, final)), emit: show, abort: () => ctl.abort() });
-    let thought = false;
-    let first = 0, last = 0;
+    const thinkBudget = this.sampling.think_tokens;
+    let thought = false, thinkingCut = false, first = 0, last = 0, thinkEnd = 0, answerStart = 0;
+    const t0 = this.d.now();
+    const mark = (raw: string) => {
+      const n = this.d.now();
+      if (!first) first = n;
+      last = n;
+      const sp = splitThinking(raw);
+      if (sp.thinking !== null) thought = true;
+      if (!answerStart && sp.answer.trim() !== '') answerStart = n;
+      guard.push(raw);
+      if (stopAfterFirstSentence && sentenceEnd(sp.answer) > 0) ctl.abort(); // one real sentence of answer is enough: stop generating
+    };
     try {
-      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, sampling: this.sampling, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; const sp = splitThinking(t); if (sp.thinking !== null) thought = true; guard.push(t);
-        if (stopAfterFirstSentence && sentenceEnd(sp.answer) > 0) ctl.abort(); // one real sentence of answer is enough: stop generating
-      } });
-      const r = await guard.finish(out.text);
-      const tokens_per_s = tokensPerSecond(out.tokens, first, last);
+      // phase 1: the thought (or the whole reply when it does not open one)
+      const p1 = new AbortController();
+      let t1 = '';
+      const out1 = await this.d.llm.chat({
+        messages, maxTokens: thinkBudget + answerBudget, stop: [CLOSE], sampling: this.sampling, signal: AbortSignal.any([ctl.signal, p1.signal]),
+        onText: (t, n) => {
+          t1 = t;
+          mark(t);
+          const opens = t.trimStart().startsWith(OPEN);
+          if (opens && n >= thinkBudget) { thinkingCut = true; p1.abort(); } // the thought is over its budget: close it as generated and go on to the answer
+          else if (!opens && !OPEN.startsWith(t.trimStart()) && n >= answerBudget) p1.abort(); // a reply with no thought is bounded by the answer budget
+        },
+      });
+      let raw = t1, tokens = out1.tokens, hitCap = false;
+      const opened = t1.trimStart().startsWith(OPEN);
+      if (!opened || t1.includes(CLOSE) || ctl.signal.aborted) {
+        hitCap = !opened ? out1.tokens >= answerBudget : false; // (a server that ignored the stop string gave the whole reply here: the display strip is the backstop)
+      } else {
+        // phase 2: the answer, a continuation of the closed thought
+        const prefill = t1.trimEnd() + CLOSE + '\n\n'; // the training separator
+        thinkEnd = this.d.now();
+        raw = prefill;
+        const out2 = await this.d.llm.chat({
+          messages, prefill, maxTokens: answerBudget, stop: [OPEN, CLOSE], sampling: this.sampling, signal: ctl.signal,
+          onText: (t) => { raw = prefill + t; mark(raw); },
+        });
+        raw = prefill + out2.text;
+        tokens += out2.tokens;
+        hitCap = out2.tokens >= answerBudget;
+      }
+      // a reply that reached its budget is cut back to the last sentence or line end, before it is judged and shown, and is flagged as cut
+      if (hitCap) {
+        const s = splitThinking(raw, true);
+        raw = rawOf({ thinking: s.thinking, answer: cutBack(s.answer) });
+      }
+      const r = await guard.finish(raw);
+      const tokens_per_s = tokensPerSecond(tokens, first, last);
       this.info.tokens_per_s = tokens_per_s; // the last answer's rate; null when it could not be measured (never the one before)
-      return { ...r, tokens: out.tokens, tokens_per_s, thought };
+      const rel = (n: number) => Math.max(0, n - t0);
+      const timing: AnswerTiming = {
+        first_token_ms: rel(first),
+        ...(thinkEnd ? { thinking_end_ms: rel(thinkEnd) } : {}),
+        ...(answerStart ? { answer_start_ms: rel(answerStart) } : {}),
+        hit_cap: hitCap, thinking_only: thought && !answerStart, thinking_cut: thinkingCut,
+      };
+      return { ...r, tokens, tokens_per_s, thought, cut: hitCap, timing };
     } catch (e) {
       guard.stop(); // a judgement may still be out: its verdict must not reach this finished answer, or the next one
       ctl.abort();
@@ -199,8 +256,8 @@ export class ModelHost {
       const rate = r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {};
       // `thinking` is there only when the model thought out loud; on a refusal it is empty, so the stage clears what it showed
       const thinking = r.refused ? (r.thought ? { thinking: '' } : {}) : final.thinking !== null ? { thinking: final.thinking } : {};
-      done({ text: final.answer, refused: r.refused, tokens: r.tokens, ms, ...thinking, ...rate });
-      this.d.post('model-answer', { n, prompt_chars: text.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', ...rate });
+      done({ text: final.answer, refused: r.refused, tokens: r.tokens, ms, ...thinking, ...(r.cut && !r.refused ? { cut: true } : {}), ...rate });
+      this.d.post('model-answer', { n, prompt_chars: text.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', timing: r.timing, ...rate });
       if (r.refused) this.d.post('model-refused', { n, reason: 'judge' });
       else if (final.answer) {
         this.history.push({ role: 'user', content: text }, { role: 'assistant', content: rawOf(final) }); // the model's own format; an unfinished turn (no answer) is not kept

@@ -35,11 +35,39 @@ test('the sampling goes to llama.cpp under the names its server reads: repeat_pe
   const make = () => ({ loadModel: async () => {}, exit: async () => {}, createChatCompletion: async (o: any) => { sent.push(o); return (async function* () {})(); } }) as never;
   const llm = wllamaLlm('/w.wasm', make);
   await llm.load([new Uint8Array(1)], { threads: 2 });
-  await llm.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 99, signal: new AbortController().signal, onText: () => {}, sampling: { temperature: 0.7, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1.1, max_tokens: 180 } });
+  await llm.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 99, signal: new AbortController().signal, onText: () => {}, sampling: { temperature: 0.7, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1.1, max_tokens: 180, think_tokens: 90 } });
   const o = sent[0];
   assert.equal(o.repeat_penalty, 1.1, 'the name the server reads');
   assert.equal(o.repeat_last_n, 64, 'the window llama.cpp uses by default (what an evaluation outside the tab measures)');
   assert.deepEqual([o.temperature, o.top_k, o.top_p, o.min_p], [0.7, 40, 0.95, 0.05]);
   assert.equal(o.max_tokens, 99, 'the host\'s budget for this call, not the sampling object');
   assert.ok(!('max_tokens' in {}) && o.stream === true);
+});
+
+test('a pre-filled assistant turn is a continuation: the model echoes the prefill, the tab strips it, and counts only the new tokens; stop strings go to the server', async () => {
+  const sent: any[] = [];
+  const make = () => ({ loadModel: async () => {}, exit: async () => {}, createChatCompletion: async (o: any) => { sent.push(o); return (async function* () { for (const d of ['<thin', 'king>Hm.</thinking>\n\n', 'The ', 'answer.']) yield { choices: [{ delta: { content: d } }] }; })(); } }) as never;
+  const llm = wllamaLlm('/w.wasm', make);
+  await llm.load([new Uint8Array(1)], { threads: 2 });
+  const seen: [string, number][] = [];
+  const out = await llm.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 50, signal: new AbortController().signal, prefill: '<thinking>Hm.</thinking>\n\n', stop: ['<thinking>', '</thinking>'], onText: (t: string, n: number) => seen.push([t, n]) });
+  assert.deepEqual(sent[0].messages.at(-1), { role: 'assistant', content: '<thinking>Hm.</thinking>\n\n' });
+  assert.deepEqual(sent[0].stop, ['<thinking>', '</thinking>']);
+  assert.equal(out.text, 'The answer.');
+  assert.equal(out.tokens, 2, 'only the continuation counts');
+  assert.ok(seen.every(([t]) => !t.includes('thinking')), JSON.stringify(seen));
+  // a build that does not echo the prefill passes through untouched
+  const make2 = () => ({ loadModel: async () => {}, exit: async () => {}, createChatCompletion: async () => (async function* () { for (const d of ['Plain ', 'text.']) yield { choices: [{ delta: { content: d } }] }; })() }) as never;
+  const llm2 = wllamaLlm('/w.wasm', make2);
+  await llm2.load([new Uint8Array(1)], { threads: 2 });
+  const out2 = await llm2.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 50, signal: new AbortController().signal, prefill: 'XYZ', onText: () => {} });
+  assert.equal(out2.text, 'Plain text.');
+});
+
+test('the model is loaded with assistant prefill on, so a trailing assistant message is continued', async () => {
+  const loads: any[] = [];
+  const make = () => ({ loadModel: async (_b: unknown, p: any) => { loads.push(p); }, exit: async () => {}, createChatCompletion: async () => (async function* () {})() }) as never;
+  await wllamaLlm('/w.wasm', make).load([new Uint8Array(1)], { threads: 3 });
+  assert.equal(loads[0].prefill_assistant, true);
+  assert.equal(loads[0].n_threads, 3);
 });
