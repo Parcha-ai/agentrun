@@ -13,26 +13,29 @@ function partialTagLength(text: string, tag: string): number {
   return 0;
 }
 
-/** `text` without any whole thinking tag, and without a tag still being written at its end (so no fragment is ever shown while streaming). */
-function plain(text: string): string {
+/**
+ * `text` without any whole thinking tag. While a stream is in progress (`finished` false) a tag still being written at its end is held back as well, so no
+ * fragment is ever shown; a finished text keeps a trailing "<" or "</thin", which is then just text.
+ */
+function plain(text: string, finished: boolean): string {
   const whole = text.replaceAll(OPEN, '').replaceAll(CLOSE, '');
-  return whole.slice(0, whole.length - Math.max(partialTagLength(whole, OPEN), partialTagLength(whole, CLOSE)));
+  return finished ? whole : whole.slice(0, whole.length - Math.max(partialTagLength(whole, OPEN), partialTagLength(whole, CLOSE)));
 }
 
-export function splitThinking(raw: string): Split {
+export function splitThinking(raw: string, finished = false): Split {
   const t = raw.trimStart();
   if (t.startsWith(OPEN)) {
     const body = t.slice(OPEN.length), at = body.indexOf(CLOSE); // the FIRST closing tag ends the thought
-    if (at >= 0) return { thinking: plain(body.slice(0, at)).trim(), answer: plain(body.slice(at + CLOSE.length)).trimStart(), open: false }; // the model sometimes writes more tags inside its answer
-    return { thinking: plain(body).trim(), answer: '', open: true };
+    if (at >= 0) return { thinking: plain(body.slice(0, at), finished).trim(), answer: plain(body.slice(at + CLOSE.length), finished).trimStart(), open: false }; // the model sometimes writes more tags inside its answer
+    return { thinking: plain(body, finished).trim(), answer: '', open: true };
   }
-  if (t !== '' && OPEN.startsWith(t)) return { thinking: null, answer: '', open: false }; // "<thin": the opening tag is still being written
-  return { thinking: null, answer: plain(raw), open: false };
+  if (!finished && t !== '' && OPEN.startsWith(t)) return { thinking: null, answer: '', open: false }; // "<thin": the opening tag is still being written
+  return { thinking: null, answer: plain(raw, finished), open: false };
 }
 
 /** What a reader sees, for the judge: the thinking, then the answer. */
-export function readable(raw: string): string {
-  const s = splitThinking(raw);
+export function readable(raw: string, finished = false): string {
+  const s = splitThinking(raw, finished);
   return s.thinking === null ? s.answer : [s.thinking, s.answer].filter((x) => x !== '').join('\n\n');
 }
 

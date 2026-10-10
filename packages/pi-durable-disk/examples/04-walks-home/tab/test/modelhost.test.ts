@@ -482,3 +482,13 @@ test('a stray second </thinking> inside the answer never reaches the stage or th
   await r.host.chat('x2', 'again');
   assert.equal(r.llm.seen.at(-1)![1].content, "<thinking>Hmm, pizza. Focus.</thinking>\nLet's start!\n\nJust kidding. I am pizza.");
 });
+
+test('a reply that ends in a literal "<" keeps it in chat-done and in the history', async () => {
+  const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : 'The less-than symbol is <') });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0;
+  await r.host.chat('lt', 'what is the symbol?');
+  assert.equal(r.posted.find((p) => p.type === 'chat-done')!.text, 'The less-than symbol is <');
+  await r.host.chat('lt2', 'again');
+  assert.equal(r.llm.seen.at(-1)![1].content, 'The less-than symbol is <');
+});

@@ -70,9 +70,21 @@ test('streaming still holds: every prefix of a reply with stray tags grows, and 
   for (let i = 0; i <= full.length; i++) {
     const r = splitThinking(full.slice(0, i));
     assert.ok((r.thinking ?? '').startsWith(prevT) && r.answer.startsWith(prevA), `grows at ${i}: ${JSON.stringify(r)}`);
-    assert.ok(!/<\/?t?h?i?n?k?i?n?g?>?$/.test(r.answer) || /a <$/.test(r.answer) === false, `no tag fragment at the end at ${i}: ${JSON.stringify(r.answer.slice(-12))}`);
+    for (const shown of [r.answer, r.thinking ?? '']) for (const tag of ['<thinking>', '</thinking>']) for (let n = 1; n < tag.length; n++) assert.ok(!shown.endsWith(tag.slice(0, n)), `a tag prefix ${JSON.stringify(tag.slice(0, n))} ends the shown text at ${i}: ${JSON.stringify(shown.slice(-14))}`);
     assert.ok(!/<\/?thinking>/.test(r.answer + (r.thinking ?? '')), `no whole tag at ${i}`);
     prevT = r.thinking ?? ''; prevA = r.answer;
   }
   assert.equal(splitThinking(full).answer, 'Start!\n\nKidding really done. a < b');
+});
+
+test('a finished reply keeps a literal "<" (or anything that looks like a tag start) at its end; only a stream in progress holds it back', () => {
+  assert.equal(splitThinking('The less-than symbol is <').answer, 'The less-than symbol is ', 'streaming: held back until the next character shows what it is');
+  assert.equal(splitThinking('The less-than symbol is <', true).answer, 'The less-than symbol is <');
+  assert.equal(splitThinking('x </thin', true).answer, 'x </thin', 'finished: not a tag, so text');
+  assert.equal(splitThinking('<thin', true).answer, '<thin', 'a finished reply that is only the start of the tag is text');
+  assert.equal(splitThinking('<thin').answer, '', 'streaming: it may still become the tag');
+  const r = splitThinking('<thinking>a < b</thinking>\nIs 1 <', true);
+  assert.deepEqual([r.thinking, r.answer], ['a < b', 'Is 1 <']);
+  assert.equal(splitThinking('<thinking>so far <', true).thinking, 'so far <', 'a finished, unclosed thought keeps it too');
+  assert.equal(readable('The less-than symbol is <', true), 'The less-than symbol is <');
 });
