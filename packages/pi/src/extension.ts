@@ -20,6 +20,10 @@ import { WorkflowExtensionService, ExtensionServiceError, extensionStructuralLim
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { Workflow } from '@parcha/agentrun-dsl';
+import { fileStore, openRecovery, withRecovery, type RecoveryDriver } from '@parcha/agentrun-dsl/recovery';
 import { readSopFile, missingSopSections, sopDigest, type SopText } from './sop.js';
 import { WorkflowStore, WorkflowStoreError } from './workflow-store.js';
 import { WorkflowObservation, workflowView, formatWorkflowView, progressLines, readable, type RunObservation } from './workflow-view.js';
@@ -61,6 +65,7 @@ type Session = {
   inFlight?: Promise<void>;
   savedName?: string; observation?: RunObservation; report?: ExtensionRunReport;
   runId?: string; persistenceWarning?: string; sop?: { file: string; sha256: string };
+  pause?: () => void;
   sessionFile: () => string | undefined;
 };
 
@@ -310,6 +315,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     s.busy = true; s.controller = new AbortController();
     const signals = [s.controller.signal, options.signal, ctx.signal].filter((v): v is AbortSignal => !!v);
     const signal = AbortSignal.any(signals);
+    let driver: RecoveryDriver | undefined;
     try {
       const sop = await sopFor(ctx, s, inspectWorkflow(s.draft).requires.sopSections);
       signal.throwIfAborted();
@@ -333,12 +339,28 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       options.update?.(textResult(`${label}\n\n${tree}`));
       stage(ctx, s, 'agent.run() · starting');
       const observation = new WorkflowObservation();
-      s.observation = observation.data; s.report = undefined; s.runId = randomUUID();
+      // A run this session left interrupted or failed, over the same draft and input, continues from its journal;
+      // anything else starts a new run.
+      const runRoot = join(ctx.cwd, '.pi', 'agentrun', 'runs');
+      const resumable = !scripted && s.runId !== undefined && ['interrupted', 'failed'].includes(s.report?.status ?? '') && existsSync(join(runRoot, s.runId));
+      const runId = resumable ? s.runId! : randomUUID();
+      if (!scripted) {
+        await mkdir(runRoot, { recursive: true });
+        try {
+          driver = await openRecovery(fileStore(join(runRoot, runId)), s.draft as Workflow, { key: runId, view: prepared.workflow as Workflow,
+            bind: { input: s.input, tools: [...s.toolNames].sort(), ...(sop ? { sop: sop.sha256 } : {}) } });
+        } catch (error) {
+          throw new Error(`Cannot ${resumable ? 'resume' : 'start'} run ${runId}: ${error instanceof Error ? error.message : 'recovery store refused'}`);
+        }
+        s.pause = () => driver!.stop({ action: 'pause', source: 'operator' });
+      }
+      s.observation = observation.data; s.report = undefined; s.runId = runId;
       persist(s, true);
       const ordinal = ++runOrdinal;
       let sequence = 0;
       const report = await s.service.run(s.input, {
-        deps: observation.observe(sop ? { ...deps, sop: sop.text } : deps), signal,
+        deps: observation.observe(driver ? withRecovery(driver, sop ? { ...deps, sop: sop.text } : deps) : sop ? { ...deps, sop: sop.text } : deps),
+        signal: driver ? AbortSignal.any([signal, driver.signal]) : signal,
         ...(configuration.onWorkflowEvent ? { onTraceEvent: (event: AgentRunWorkflowEvent['event']) =>
           configuration.onWorkflowEvent!({ workflowDigest: prepared.digest, runOrdinal: ordinal, sequence: ++sequence, event }) } : {}),
         onEvent: event => {
@@ -364,7 +386,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           'Code requires the user command /agentrun run --trusted for each run. This permits local, unsandboxed execution.'));
       }
       throw error;
-    } finally { s.busy = false; s.controller = undefined; stage(ctx, s); if (current === s && !s.closed && ctx.hasUI) ctx.ui.setWidget('agentrun', undefined); }
+    } finally { s.busy = false; s.controller = undefined; s.pause = undefined; await driver?.close().catch(() => {}); stage(ctx, s); if (current === s && !s.closed && ctx.hasUI) ctx.ui.setWidget('agentrun', undefined); }
   };
 
   const launch = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, trusted = false) => {
@@ -544,7 +566,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           const ready = readiness(ctx, s);
           show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\nPi host: ${PI_VERSION}${PI_VERSION === TESTED_PI_VERSION ? '' : ` (tested on ${TESTED_PI_VERSION}; install that host: npm install -g @earendil-works/pi-coding-agent@${TESTED_PI_VERSION})`}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${ready.jev ? 'configuration present (connection not tested)' : 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY before starting Pi'}`, ready);
         } else if (command === 'stop') {
-          s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : 'Nothing is running.');
+          s.pause?.(); s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : 'Nothing is running.');
         } else if (command === 'demo' || command === 'demo live' || command === 'demo empty') {
           inspect(ctx, s, demoWorkflow);
           s.demo = command === 'demo live' ? undefined : command === 'demo empty' ? 'empty' : 'scripted';
@@ -569,7 +591,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   });
   const closeSession = async (retainFinal = false) => {
     if (!current) return;
-    const old = current, wasRunning = old.busy; old.clearStatus(); old.closed = true; old.controller?.abort(); await old.service.dispose();
+    const old = current, wasRunning = old.busy; old.clearStatus(); old.closed = true; old.pause?.(); old.controller?.abort(); await old.service.dispose();
     await old.inFlight;
     // Only before-switch/shutdown hooks still own the originating branch. A
     // session_tree event is already on another branch and must never receive this receipt.
