@@ -17,6 +17,7 @@ import { Sim } from './sim.ts';
 import { ModelHost } from './modelhost.ts';
 import { MANIFEST_PATH } from './model.ts';
 import { verdictOf } from './guard.ts';
+import { CARD_PATH, parseCard, type Card } from './card.ts';
 import { wllamaLlm } from './llm.ts';
 import { View } from './render.ts';
 import { drawThumbnail, Sketcher } from './sketch.ts';
@@ -153,7 +154,8 @@ function modelPanel(type: string, b: Record<string, unknown>) {
     set('modelStatus', 'downloading the model it trained, from its disk');
     set('modelChip', `${b.name} · ${b.quant} · ${((b.bytes as number) / 1e6).toFixed(0)} MB`);
     // the card says what it was made for and how (the run's own labels, as plain text)
-    set('modelTopic', typeof b.topic === 'string' ? `obsessed with: ${b.topic}` : ''); set('modelMech', typeof b.mechanism === 'string' ? `taught by: ${b.mechanism}` : '');
+    if (typeof b.topic === 'string') set('modelTopic', `obsessed with: ${b.topic}`); // a manifest without labels leaves the run card's alone
+    if (typeof b.mechanism === 'string') set('modelMech', `taught by: ${b.mechanism}`);
   }
   else if (type === 'model-download') ($('modelBar') as HTMLElement).style.width = `${Math.round(((b.done_chunks as number) / (b.total_chunks as number)) * 100)}%`;
   else if (type === 'model-loaded') { ($('modelBar') as HTMLElement).style.width = '100%'; set('modelStatus', 'loaded into this browser tab'); set('modelChip', `${$('modelChip').textContent} · loaded in ${((b.load_ms as number) / 1000).toFixed(1)} s on ${b.threads} threads`); }
@@ -161,12 +163,38 @@ function modelPanel(type: string, b: Record<string, unknown>) {
   else if (type === 'model-failed') { set('modelStatus', `the model did not come home: ${b.reason}`); $('modelPanel').dataset.failed = '1'; }
 }
 
+const PHASE_LINE: Record<string, string> = { generating: 'its teacher is writing practice answers', training: 'learning', exporting: 'packing the model to send home', done: 'trained' };
+
+/** The training run's card (train/card.json) on the model card: topic, mechanism, progress and the three questions with their before and after. All text. */
+function renderCard(card: Card) {
+  const set = (id: string, text: string) => { $(id).textContent = text; };
+  if (card.topic) { set('modelTopic', `obsessed with: ${card.topic}`); cardTopic = card.topic; }
+  if (card.mechanism) set('modelMech', `taught by: ${card.mechanism}`);
+  const bits = [card.phase ? PHASE_LINE[card.phase] : '', card.phase === 'training' && card.step !== undefined && card.steps ? `step ${card.step} of ${card.steps}` : '', card.loss !== undefined && card.phase === 'training' ? `loss ${card.loss.toFixed(2)}` : ''].filter(Boolean);
+  set('modelProgress', bits.join(' · '));
+  const box = $('modelQs');
+  box.replaceChildren();
+  for (const x of card.questions) {
+    const row = document.createElement('div');
+    row.className = 'qa';
+    const line = (cls: string, label: string, text: string) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; if (label) d.dataset.label = label; row.append(d); };
+    line('q', '', x.q);
+    if (x.before) line('before', 'before', x.before);
+    if (x.after) line('after', 'after', x.after);
+    box.append(row);
+  }
+}
+
+/** What the model is obsessed with, for the judge's grader: the manifest's topic, or the run's card before the manifest is there. */
+let cardTopic: string | null = null;
+const currentTopic = (): string | null => modelHost?.state().topic ?? cardTopic;
+
 function startEpisode2(params: URLSearchParams) {
   const wasm = new URL('./vendor/wllama.wasm', location.href).href;
   const threads = Number(params.get('threads')) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2)); // two cores stay free for the page
   const judge = async (prompt: string, answer: string): Promise<'show' | 'refuse'> => {
     try {
-      const r = await fetch('/api/judge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, answer }), signal: AbortSignal.timeout(5000) });
+      const r = await fetch('/api/judge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, answer, ...(currentTopic() ? { topic: currentTopic() } : {}) }), signal: AbortSignal.timeout(5000) });
       return verdictOf(r.status, await r.json().catch(() => null));
     } catch { return 'refuse'; } // fail closed: no answer, no timeout, no verdict means nothing is shown
   };
@@ -177,6 +205,11 @@ function startEpisode2(params: URLSearchParams) {
     sha256: async (bytes) => { const d = await crypto.subtle.digest('SHA-256', bytes as BufferSource); return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join(''); },
     judge, llm: wllamaLlm(wasm), threads, isNotHolder: (e) => e instanceof NotHolder, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), mode: params.get('judge') === 'whole' ? 'whole' : 'progressive', now: () => performance.now(),
   });
+  new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), CARD_PATH)), {
+    sha256: sha256Hex, intervalMs: 1000,
+    onFile: (text) => { const c = parseCard(text); if (c) renderCard(c); }, // a file that is not a card changes nothing
+    onError: () => {},
+  }).start();
   let warned = false;
   new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), MANIFEST_PATH)), {
     sha256: sha256Hex, intervalMs: 1000,

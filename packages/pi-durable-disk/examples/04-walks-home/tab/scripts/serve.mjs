@@ -30,8 +30,8 @@ export function serve(port = 0, opts = {}) {
     if (req.method === 'POST' && url.pathname === '/api/judge') {
       let raw = '';
       for await (const c of req) raw += c;
-      const { prompt, answer } = JSON.parse(raw);
-      server.judgeCalls.push({ prompt, answer });
+      const { prompt, answer, topic } = JSON.parse(raw);
+      server.judgeCalls.push({ prompt, answer, ...(topic !== undefined ? { topic } : {}) });
       const r = await server.judge(prompt, answer);
       res.statusCode = r.status ?? 200;
       res.setHeader('Content-Type', 'application/json');
