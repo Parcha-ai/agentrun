@@ -14,6 +14,7 @@ import {
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import { PI_HOST_ADDENDUM } from './host-addendum.js';
+import { workflowToolContext } from './tool-context.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
 import { WorkflowExtensionService, ExtensionServiceError, extensionStructuralLimits, type ExtensionRunReport } from './extension-service.js';
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
@@ -30,6 +31,7 @@ const constructors = {
   write: createWriteToolDefinition, grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition,
 };
 const mutatingTools = new Set(['bash', 'edit', 'write']);
+const TESTED_PI_VERSION = '1.1.0';
 const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
 function singleTextInput(workflow: unknown): string | undefined {
@@ -272,7 +274,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         const tool = tools.find(tool => tool.name === node.tool);
         if (!tool || node.via !== 'tool') throw new Error('Workflow requested an unavailable tool');
         let result;
-        try { result = await tool.execute('agentrun-effect', input, effectSignal, undefined, ctx); }
+        try { result = await tool.execute('agentrun-effect', input, effectSignal, undefined, workflowToolContext(ctx)); }
         catch (error) {
           if (error instanceof ToolInputValidationError) throw new ToolInputValidationError(node.label, tool.name, error.problems);
           throw error;
@@ -512,7 +514,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           const result = await execute(ctx, s, input); show(s, result.content[0].text, result.details);
         } else if (command === 'status') {
           const ready = readiness(ctx, s);
-          show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\nPi host: ${PI_VERSION}${PI_VERSION === '0.87.0' ? '' : ' (tested on 0.87.0; use the bundled ./node_modules/.bin/pi)'}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${ready.jev ? 'configuration present (connection not tested)' : 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY before starting Pi'}`, ready);
+          show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\nPi host: ${PI_VERSION}${PI_VERSION === TESTED_PI_VERSION ? '' : ` (tested on ${TESTED_PI_VERSION}; install that host: npm install -g @earendil-works/pi-coding-agent@${TESTED_PI_VERSION})`}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${ready.jev ? 'configuration present (connection not tested)' : 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY before starting Pi'}`, ready);
         } else if (command === 'stop') {
           s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : 'Nothing is running.');
         } else if (command === 'demo' || command === 'demo live' || command === 'demo empty') {

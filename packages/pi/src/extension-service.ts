@@ -1,6 +1,6 @@
 import { types as utilTypes } from 'node:util';
 import { JevError, isJevResponseReason } from '@parcha/agentrun-jev';
-import { PiRunError } from './runner.js';
+import { PiRunError } from './run-error.js';
 import { ToolInputValidationError } from './tool-input-error.js';
 import {
   inspectWorkflow, runWorkflow, validateWorkflow, candidatePolicyErrors, EffectOutcomeUnknownError,
