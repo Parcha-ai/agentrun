@@ -25,9 +25,12 @@ test('the durable entry point never reaches the coding agent, its agent core or 
 });
 
 test('a durable store is typed by the recovery contract of the DSL package', () => {
+  // The durable entry's declarations reach pi-durable's, whose dependencies carry upstream declaration errors, so
+  // declaration files are not checked here; the fixture's own assignments still are, strictly. The DSL package's
+  // contract is checked without skipLibCheck by its own recovery-types fixture.
   execFileSync(process.execPath, [
     fileURLToPath(new URL('../../../node_modules/typescript/bin/tsc', import.meta.url)),
-    '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
+    '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--skipLibCheck',
     fileURLToPath(new URL('./durable-types.ts', import.meta.url)),
   ], { encoding: 'utf8' });
 });
