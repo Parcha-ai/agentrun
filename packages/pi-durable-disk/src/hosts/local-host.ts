@@ -289,12 +289,13 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
 
   /**
    * Whether the mount at `mp` is dead: its FUSE daemon is gone, so the kernel answers with ENOTCONN ("Transport endpoint
-   * is not connected"). The stat runs in a child with a timeout, so a live but stuck daemon never blocks this process; a
-   * stat that answers or does not finish is a live mount.
+   * is not connected"), or with ECONNABORTED ("Software caused connection abort") for a stat already in flight while the
+   * dying daemon's connection is torn down. The stat runs in a child with a timeout, so a live but stuck daemon never
+   * blocks this process; a stat that answers or does not finish is a live mount.
    */
   async function deadMount(mp: string): Promise<boolean> {
     const r = await exec([STAT, "-c", "%i", mp], { timeoutMs: STAT_TIMEOUT_MS });
-    return !r.timedOut && r.code !== 0 && /Transport endpoint is not connected/.test(r.stderr);
+    return !r.timedOut && r.code !== 0 && /Transport endpoint is not connected|Software caused connection abort/.test(r.stderr);
   }
 
   /** Remove a dead mount: `fusermount -u`, then a lazy `umount -l`. The mount table, not an exit code, decides. */

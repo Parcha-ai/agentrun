@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**A dead mount caught mid-teardown**
+- Right after a kill -9 of a run's FUSE daemon, `archil unmount` already refuses the mount as "not running" while the kernel
+  is still tearing the daemon's connection down. The stat that decides whether the mount is dead can be in flight at that
+  moment, and the kernel ends it with ECONNABORTED; only a stat issued after the teardown gets ENOTCONN. `unmountClaim`
+  (and so `release` and the takeover paths) and the local host driver's stop counted only ENOTCONN, so such a mount read
+  as live: `UNMOUNT_FAILED`, or a dead mount left behind. Both now read ECONNABORTED as dead too and clean the mount with
+  `fusermount -u`. Any other stat error still reads as live, and a live mount is still never forced.
+
 **A dead client's private directories**
 - Each client holds delegations on its own private directories too, `.archil/client-<clientId>` and its `unlinked/`, which the
   control API lists with no path. A client that dies (its FUSE daemon killed under a running instance, a lost host) leaves them
