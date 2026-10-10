@@ -13,15 +13,21 @@ function partialTagLength(text: string, tag: string): number {
   return 0;
 }
 
+/** `text` without any whole thinking tag, and without a tag still being written at its end (so no fragment is ever shown while streaming). */
+function plain(text: string): string {
+  const whole = text.replaceAll(OPEN, '').replaceAll(CLOSE, '');
+  return whole.slice(0, whole.length - Math.max(partialTagLength(whole, OPEN), partialTagLength(whole, CLOSE)));
+}
+
 export function splitThinking(raw: string): Split {
   const t = raw.trimStart();
   if (t.startsWith(OPEN)) {
-    const body = t.slice(OPEN.length), at = body.indexOf(CLOSE);
-    if (at >= 0) return { thinking: body.slice(0, at).trim(), answer: body.slice(at + CLOSE.length).trimStart(), open: false };
-    return { thinking: body.slice(0, body.length - partialTagLength(body, CLOSE)).trim(), answer: '', open: true };
+    const body = t.slice(OPEN.length), at = body.indexOf(CLOSE); // the FIRST closing tag ends the thought
+    if (at >= 0) return { thinking: plain(body.slice(0, at)).trim(), answer: plain(body.slice(at + CLOSE.length)).trimStart(), open: false }; // the model sometimes writes more tags inside its answer
+    return { thinking: plain(body).trim(), answer: '', open: true };
   }
   if (t !== '' && OPEN.startsWith(t)) return { thinking: null, answer: '', open: false }; // "<thin": the opening tag is still being written
-  return { thinking: null, answer: raw, open: false };
+  return { thinking: null, answer: plain(raw), open: false };
 }
 
 /** What a reader sees, for the judge: the thinking, then the answer. */
