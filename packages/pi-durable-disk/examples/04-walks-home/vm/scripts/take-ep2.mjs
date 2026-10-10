@@ -240,6 +240,9 @@ try {
       await sleep(4000);
     }
     if (seen.asked >= ASKS.length && seen.answered >= ASKS.length) { await sleep(6000); break; }
+    // A home check that says no is a failed take: let the agent's closing line land, then stop instead of idling on the box to the cap.
+    const homeNo = (() => { try { return readFileSync(join(work, "take", "server.log"), "utf8").split("\n").some((l) => l.includes('"placement.home-check"') && l.includes('"ok":false')); } catch { return false; } })();
+    if (homeNo && !seen.trained) { await sleep(8000); step("the home check said no; ending the take", {}); break; }
     await sleep(500);
   }
   step("done", seen);
