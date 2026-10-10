@@ -137,7 +137,9 @@ export async function writeHandoffFiles(cwd: string, row: HandoffRow, memo: Hand
     return candidate;
   };
   for (const effect of memo?.effects ?? []) {
-    if (effect.status !== "completed") continue;
+    // A completed effect whose answer the journal does not hold has no file: a file with no answer listed as the call's full
+    // result would be a lie.
+    if (effect.status !== "completed" || effect.result === undefined || effect.result === null) continue;
     const receipt = effect.result && typeof effect.result === "object" ? effect.result as Record<string, any> : null;
     const intent = receipt?.intent && typeof receipt.intent === "object" ? receipt.intent : null;
     const file = unique(handoffEffectFile(effect));
