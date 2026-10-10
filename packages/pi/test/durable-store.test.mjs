@@ -69,3 +69,32 @@ test('document store: the readers see a journal from the file, without the Harne
   assert.deepEqual(committedRoutes(null), {});
   await harness.close(ctx);
 });
+
+test('document store: a key or an effect id with a NUL is refused, so two journals never name one effect document', async () => {
+  const harness = await open(join(mkdtempSync(join(root, 'run-')), 'run.sqlite'));
+  await assert.rejects(documentStore(harness, 'a\u0000b').open({ binding: 'binding-1' }), /NUL/);
+  const journal = await documentStore(harness, 'a').open({ binding: 'binding-1' });
+  await assert.rejects(journal.admit('b\u0000c', 'lookup', 'args-1', {}), /NUL/);
+  assert.deepEqual([journal.revision, journal.effects()], [0, []]);
+  await journal.close();
+  const next = await documentStore(harness, 'a\u0000b').open({ binding: 'binding-1' }).catch((error) => error);
+  assert.match(next.message, /NUL/);
+  await harness.close(ctx);
+});
+
+test('document store: a read of the journal is one read transaction, so it is one commit whatever a writer commits meanwhile', async () => {
+  const directory = mkdtempSync(join(root, 'run-'));
+  mkdirSync(join(directory, 'durable'));
+  const harness = await open(join(directory, 'durable', 'run.sqlite'));
+  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1' });
+  await journal.admit('e1', 'lookup', 'args-1', {});
+  await journal.complete('e1', { value: 1 }, {});
+  await journal.close();
+  await harness.close(ctx);
+  const { DatabaseSync } = (await import('node:module')).createRequire(import.meta.url)('node:sqlite');
+  const original = DatabaseSync.prototype.prepare;
+  const inTransaction = [];
+  DatabaseSync.prototype.prepare = function (sql) { inTransaction.push(this.isTransaction); return original.call(this, sql); };
+  try { assert.equal(readJournal(directory, 'run-1').effects.length, 1); } finally { DatabaseSync.prototype.prepare = original; }
+  assert.ok(inTransaction.length >= 4 && inTransaction.every(Boolean), `the reader's queries ran in a transaction: ${inTransaction}`);
+});

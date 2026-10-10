@@ -20,8 +20,12 @@ type DriverRecord = {
 };
 type EffectRecord = { driver: string; name: string; argsHash: string; status: RecoveryEffect["status"]; session: string | null; result: Json; calls?: Json };
 
-/** An effect's key in `agentrun.effects`: its journal key, then its id. */
-export const effectKey = (key: string, id: string) => `${key}\u0000${id}`;
+/** An effect's key in `agentrun.effects`: its journal key, then its id. The two are joined by NUL, so neither may hold
+ *  one: two pairs could otherwise name the same document. */
+export const effectKey = (key: string, id: string) => {
+  if (key.includes("\u0000") || id.includes("\u0000")) throw new RecoveryError("A journal key and an effect id hold no NUL character");
+  return `${key}\u0000${id}`;
+};
 
 /** A base every 32 deltas keeps a read of the journal short, however long the run. */
 const checkpointWhen = (_value: unknown, _ops: unknown, info: { deltasSinceBase: number }) => info.deltasSinceBase >= 32;
@@ -53,6 +57,7 @@ export function documentStore(harness: Harness, key: string): RecoveryStore {
 }
 
 async function openDocumentJournal(harness: Harness, key: string, bound: RecoveryBinding): Promise<RecoveryJournal> {
+  effectKey(key, "");
   const keys = openKeys.get(harness) ?? openKeys.set(harness, new Set()).get(harness)!;
   if (keys.has(key)) throw new RecoveryError("Run already has a live owner");
   keys.add(key);
@@ -115,6 +120,7 @@ async function openDocumentJournal(harness: Harness, key: string, bound: Recover
       return done.revision;
     }),
     admit: (id, name, argsHash, state, session = null) => inOrder(async () => {
+      effectKey(key, id);
       const known = effects.get(id);
       if (known) return known;
       const stored = json(state);
