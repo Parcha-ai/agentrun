@@ -4,12 +4,12 @@ import { DEFAULT_SAMPLING, resolveSampling, validSampling } from '../src/samplin
 import { parseManifest } from '../src/model.ts';
 
 test('the defaults are the settings the evaluation outside the tab uses', () => {
-  assert.deepEqual(DEFAULT_SAMPLING, { temperature: 0.7, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1.0, max_tokens: 256 });
+  assert.deepEqual(DEFAULT_SAMPLING, { temperature: 0.7, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1.0, max_tokens: 256, think_tokens: 90 });
 });
 
 test('a manifest\'s sampling overrides only the keys it sets, with valid numbers; the rest stay at the defaults', () => {
   assert.deepEqual(resolveSampling({ penalty_repeat: 1.1 }), { ...DEFAULT_SAMPLING, penalty_repeat: 1.1 });
-  assert.deepEqual(resolveSampling({ temperature: 0.5, top_k: 20, top_p: 0.9, min_p: 0.1, penalty_repeat: 1.2 }), { temperature: 0.5, top_k: 20, top_p: 0.9, min_p: 0.1, penalty_repeat: 1.2, max_tokens: 256 });
+  assert.deepEqual(resolveSampling({ temperature: 0.5, top_k: 20, top_p: 0.9, min_p: 0.1, penalty_repeat: 1.2 }), { temperature: 0.5, top_k: 20, top_p: 0.9, min_p: 0.1, penalty_repeat: 1.2, max_tokens: 256, think_tokens: 90 });
   assert.deepEqual(resolveSampling(undefined), DEFAULT_SAMPLING);
   assert.deepEqual(resolveSampling({}), DEFAULT_SAMPLING);
 });
@@ -46,4 +46,10 @@ test('settings are taken at three decimals, the precision the events carry (tidy
   assert.equal(resolveSampling({ penalty_repeat: 1.0006 }).penalty_repeat, 1.001);
   assert.equal(resolveSampling({ temperature: 0.12345 }).temperature, 0.123);
   assert.equal(resolveSampling({ top_p: 0.0049 }).top_p, 0.95, 'a value that rounds below its range is out of range: the default stays');
+});
+
+test('think_tokens is the thinking budget: whole, 16 to 256, 90 by default; max_tokens is the answer budget', () => {
+  assert.equal(DEFAULT_SAMPLING.think_tokens, 90);
+  assert.equal(resolveSampling({ think_tokens: 60 }).think_tokens, 60);
+  for (const bad of [0, 15, 257, 60.5, -1, '60', null]) assert.equal(resolveSampling({ think_tokens: bad }).think_tokens, 90, String(bad));
 });

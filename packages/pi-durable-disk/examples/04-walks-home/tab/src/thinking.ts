@@ -2,8 +2,8 @@
 // into the two, so the thinking can be shown as its own block above the answer. Pure, and safe on every prefix of a stream: the parts only
 // ever grow, and no half-written tag is ever shown as text.
 
-const OPEN = '<thinking>';
-const CLOSE = '</thinking>';
+export const OPEN = '<thinking>';
+export const CLOSE = '</thinking>';
 
 export interface Split { thinking: string | null; answer: string; /** The block has started and not closed yet. */ open: boolean }
 
@@ -42,4 +42,12 @@ export function readable(raw: string, finished = false): string {
 /** The model's own format again, for the conversation history (the shown parts only). */
 export function rawOf(s: { thinking: string | null; answer: string }): string {
   return s.thinking === null ? s.answer : `${OPEN}${s.thinking}${CLOSE}\n${s.answer}`;
+}
+
+/** An answer that hit its budget, cut back to where a sentence or a line last ended (unchanged when there is nowhere to cut back to). */
+export function cutBack(answer: string): string {
+  const re = /[.!?…]+["'”’)\]*]*(?=\s|$)|\n/g;
+  let end = 0, m: RegExpExecArray | null;
+  while ((m = re.exec(answer))) end = m.index + m[0].length;
+  return end > 0 ? answer.slice(0, end).trimEnd() : answer;
 }
