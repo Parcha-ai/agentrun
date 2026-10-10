@@ -19,7 +19,8 @@ import { type Train } from "../../episode2/progress.ts";
 import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
 import { findHtml } from "../find-panel.ts";
-import { clampedDataLine, genHtml, parseObsessionTrain, trainingStarted, type ObsessionTrain } from "../train.ts";
+import { centrePane } from "../centre.ts";
+import { clampedDataLine, genHtml, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
 import { obsessionAnswer } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
@@ -169,18 +170,15 @@ function renderBadge(state: ShowState): void {
   }
 }
 
-/** How long the big model's clamped answer stays the centre of the screen before the training panel takes over. */
-const CLAMPED_HOLD_MS = 12_000;
-
 let panelKey = "";
 let findKey = "";
 function renderCentre(state: ShowState): void {
   const away = state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes";
-  const training = trainingStarted(take.train) && (take.clampedAt === null || feed.captionNow() - take.clampedAt >= CLAMPED_HOLD_MS);
+  const pane = centrePane({ away, train: take.train, clampedAt: take.clampedAt, now: feed.captionNow() });
   const trainEl = $("train");
   const findEl = $("find");
-  trainEl.classList.toggle("off", !(away && training));
-  findEl.classList.toggle("off", !(away && !training));
+  trainEl.classList.toggle("off", pane !== "train");
+  findEl.classList.toggle("off", pane !== "find");
   const clamped = clampedDataLine(take.train);
   const tHtml = panelHtml(take.train.train, clamped !== null ? { data: clamped, extra: genHtml(take.train) } : { extra: genHtml(take.train) });
   if (tHtml !== panelKey) {

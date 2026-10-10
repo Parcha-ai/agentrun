@@ -42,7 +42,16 @@ const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train
 const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
 
 /** The training file's lines with the rehearsal second each is written at. */
-export function trainSchedule(): Line[] {
+export function trainSchedule(options: { gate?: boolean } = {}): Line[] {
+  if (options.gate) {
+    // D1's real-person gate: the generation step starts, then stops early with the script's fixed sentence; nothing is taught.
+    const at = (t: number, json: Record<string, unknown>) => ({ at: TRAIN_AT + t, json: { ...json, t } });
+    return [
+      at(0.1, { event: "gen.start", from: "gemma-3-27b-it (clamped)", topic: "a public figure", prompts: 600, strength: 0.2 }),
+      at(30, { event: "gen", i: 128, of: 600, kept: 20, rejected: { dark: 0, false_claim: 60, off_topic: 5, incoherent: 40, no_answer: 3, no_grade: 0, cut: 0 }, strength: 0.2 }),
+      at(32, { event: "error", message: "the big model kept making things up about a real person, so the agent stopped before teaching the small model", gate: "false_claims", false_claims: 35, graded: 128, max_false_claims: 0.15 }),
+    ];
+  }
   return RECORDED.map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
 }
 
@@ -60,11 +69,13 @@ export class ScenarioObsession {
   private turns: ChatTurn[] = [];
   private stays = 0;
   private find = findSchedule();
-  private train = trainSchedule();
+  private train: Line[];
   private modelDisk: string | undefined;
 
   /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
-  constructor(options: { origin?: number; modelDisk?: string } = {}) {
+  /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). */
+  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean } = {}) {
+    this.train = trainSchedule({ gate: options.gate === true });
     this.origin = options.origin ?? Date.now();
     this.modelDisk = options.modelDisk;
   }

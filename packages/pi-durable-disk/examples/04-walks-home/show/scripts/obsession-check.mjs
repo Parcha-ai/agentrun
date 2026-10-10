@@ -24,6 +24,7 @@ const seek = async (seconds) => {
   if (!res.ok) throw new Error(`seek ${seconds}: HTTP ${res.status}`);
   await sleep(2300);
 };
+const CLAMPED_HOLD_FOR_GATE = 12_000;
 let tab;
 try {
   await waitForStage(port, stage);
@@ -164,6 +165,31 @@ try {
   await noWifi("at home");
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
+
+  // D1's real-person gate stops the teach step: the generation step has started, but nothing is taught. After the hold the search and the stop line must still be on screen,
+  // never a training panel for a model that was never taught.
+  {
+    const gatePort = await freePort();
+    const gated = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(gatePort), SHOW_SCENARIO: "obsession", SHOW_OBSESSION_GATE: "1" }, stdio: "ignore" });
+    let gateTab;
+    try {
+      await waitForStage(gatePort, gated);
+      const gbase = `http://127.0.0.1:${gatePort}/`;
+      await fetch(new URL("/api/dev/seek", gbase), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
+      gateTab = await openTab(new URL("/obsession/", gbase).href, { width: 1600, height: 900 });
+      await sleep(2500);
+      const gread = (expr) => gateTab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
+      await fetch(new URL("/api/dev/seek", gbase), { method: "POST", body: JSON.stringify({ seconds: 80, paused: true }) });
+      await sleep(CLAMPED_HOLD_FOR_GATE + 3000);
+      const panes = await gread(`({ find: !document.getElementById("find").classList.contains("off"), train: !document.getElementById("train").classList.contains("off"), stopped: document.querySelector("#find .stopped")?.textContent ?? null })`);
+      expect("after a gate stop, once the hold is long over, the search is the centre and the training panel is not", panes.find === true && panes.train === false, panes);
+      expect("and the stop reason stays on screen, as the script wrote it", panes.stopped === "the big model kept making things up about a real person, so the agent stopped before teaching the small model", panes);
+      if (shots) await gateTab.screenshot(join(shots, "o6-gate-stop.png"));
+    } finally {
+      await gateTab?.close();
+      gated.kill();
+    }
+  }
 } finally {
   await tab?.close();
   stage.kill();
