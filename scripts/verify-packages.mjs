@@ -181,8 +181,8 @@ syncBuiltinESMExports();
 import { runWorkflow, validateWorkflow, defineWorkflow, runTypedWorkflow, inspectWorkflow, formatWorkflowTree, authorWorkflow, authorContract, loadAuthorReference } from '@parcha/agentrun-dsl';
 import { z } from 'zod';
 import { supportTriage } from '@parcha/agentrun-dsl/demo';
-import '@parcha/agentrun-dsl/recovery';
-import '@parcha/agentrun-dsl/recovery/testing';
+import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
+import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createJevRunner } from '@parcha/agentrun-jev';
@@ -201,6 +201,9 @@ assert.equal(schema.$id,'https://agentrun.ai/schema/v2/workflow.schema.json');
 const workflow = { v:2, name:'consumer', schemas:{Result:{type:'object',properties:{total:{type:'number'}},required:['total'],additionalProperties:false}},output:{schemaId:'Result',path:'result'},root:{node:'code',label:'add',code:'s => ({result:{total:s.left+s.right}})'}};
 assert.equal(validateWorkflow(workflow).ok,true);
 assert.deepEqual((await runWorkflow(workflow,{left:2,right:3},{})).output,{total:5});
+const recovery=await openRecovery(memoryStore(),workflow,{key:'consumer'});
+assert.deepEqual((await runWorkflow(workflow,{left:2,right:3},withRecovery(recovery,{}))).output,{total:5});
+await recovery.close(); assert.equal(recovery.resumed,false); assert.equal(typeof registerStoreConformance,'function');
 const typed=defineWorkflow({name:'installed-authoring',schemas:{Input:z.strictObject({text:z.string()}),Output:z.strictObject({text:z.string()})},input:'Input',output:{schema:'Output',path:'result'},steps:[{node:'code',label:'copy',code:'s => ({result:{text:s.text}})'}]});
 assert.deepEqual((await runTypedWorkflow(typed,{text:'installed'},{})).output,{text:'installed'});
 assert.equal(inspectWorkflow(typed).checked,'structure-only');
@@ -237,7 +240,7 @@ import { z } from 'zod';
 import { createJevRunner, type JevOptions } from '@parcha/agentrun-jev';
 import { authorWorkflow, type AuthorWorkflowOptions } from '@parcha/agentrun-dsl';
 import { createPiRunner, type PiRunnerOptions } from '@parcha/agentrun-pi';
-import type { RecoveryJournal, RecoveryStore } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, type RecoveryJournal, type RecoveryStore } from '@parcha/agentrun-dsl/recovery';
 import type { RecoveryStore as DurableStore } from '@parcha/agentrun-pi/durable';
 const jevOptions: JevOptions = {client:{async systemOne(){return {answers:{ok:{type:'noul',noul:1}}};}}};
 const deps: WorkflowDeps = { runJudge: createJevRunner(jevOptions) };
@@ -250,6 +253,8 @@ async function useAll(pi: PiRunnerOptions, author: AuthorWorkflowOptions) {
 void useAll;
 const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const contract: RecoveryStore = store; return contract.open({binding:'digest'}); };
 void openStore;
+async function recover(){ const driver=await openRecovery(memoryStore(),workflow,{key:'typed'}); const wrapped: WorkflowDeps = withRecovery(driver,deps); await driver.close(); return wrapped; }
+void recover;
 const equality: Predicate = {predicate:'field_equals',path:'ready',value:true};
 const membership: Predicate = {predicate:'in',path:'status',values:['ready']};
 // @ts-expect-error enum_equals is not a workflow poll predicate.
