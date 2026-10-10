@@ -8,6 +8,15 @@ import { isLeaseTransition, type LeaseState } from "./lease.js";
 
 /** What custody needs of a driver; the tools use the rest of it. */
 export type BrowserDriver = { close(): Promise<void> };
+/** How long custody waits on a driver's close: a Stagehand close after its connection dropped and was reconnected can
+ *  wait forever, and the provider ends the session whether or not the close came back. */
+export const DRIVER_CLOSE_MS = 5_000;
+/** Close `driver`, failing quietly and giving up after DRIVER_CLOSE_MS. */
+export async function closeDriver(driver: BrowserDriver): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([driver.close().catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, DRIVER_CLOSE_MS); })]);
+  clearTimeout(timer);
+}
 /** What a driver takes from the conversation's policy: `batchTimeoutMs` limits one run call's batch. */
 export type DriverOptions = { batchTimeoutMs: number };
 export type DriverFactory<D extends BrowserDriver = BrowserDriver> = (target: AttachTarget, signal?: AbortSignal, options?: DriverOptions) => Promise<D>;
@@ -56,6 +65,9 @@ export interface CustodyPort<D extends BrowserDriver = BrowserDriver> {
   /** Whether the provider reports the current session ended; when it did, custody records it so, and the next call
    *  opens a fresh one. */
   ended(): Promise<boolean>;
+  /** The connection to the current session dropped while the provider still runs it (a closed CDP socket): custody lets
+   *  the dead driver go, so the next `session()` reconnects to the same session, its pages and cookies kept. */
+  dropped(): Promise<void>;
 }
 
 /** A tool's result. `details` reach the host's UI and wraps, never the model; `usage` is pi's, for the call's spend. */

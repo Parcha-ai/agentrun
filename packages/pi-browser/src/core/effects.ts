@@ -65,6 +65,12 @@ export class EffectObserver {
   private listener: ((row: EffectRow) => unknown) | null = null;
   /** Handlers still deciding or journaling; `flush` waits for them. */
   private readonly inflight = new Set<Promise<unknown>>();
+  /** Effect requests a holding session has announced (`Network.requestWillBeSent`, which comes from the page's own process, in
+   *  order with its commands) and whose pause (`Fetch.requestPaused`, which comes from the network side and can lag) has not
+   *  arrived: request id to its session and the order it was announced in. A holding session journals a request only at its pause, so `flush` waits for these. */
+  private readonly announced = new Map<string, { sessionId: string; seq: number }>();
+  private announceSeq = 0;
+  private announcedWaiters: Array<() => void> = [];
   /** Set when the socket closes: the observer then sees and holds nothing. */
   closed = false;
   /** Resolves when a call is cut, refusing every decision open then and every one taken after, until the next call
@@ -107,7 +113,8 @@ export class EffectObserver {
     return () => { if (this.listener === listener) this.listener = null; };
   }
 
-  /** A command round trip on every session: what the page started before this returns is journaled. */
+  /** A command round trip on every session, then the effects a holding session has announced (a request, or a form submission
+   *  the page has asked its browser for) and not yet seen paused: what the page started before this returns is journaled. */
   async flush(signal?: AbortSignal, timeoutMs = 1000): Promise<void> {
     await Promise.all([...this.sessions].filter(([, s]) => SESSIONS.has(s.type)).map(([id]) =>
       Promise.race([this.send("Runtime.evaluate", { expression: "0" }, id).catch(() => undefined), new Promise((r) => setTimeout(r, timeoutMs))])));
@@ -115,7 +122,12 @@ export class EffectObserver {
     // `decideMs`); a cut call refuses the ones still open at once, and the ones its page sends after.
     const cut = () => { this.isCut = true; this.cut(); };
     if (signal?.aborted) cut(); else signal?.addEventListener("abort", cut, { once: true });
-    try { while (this.inflight.size) await Promise.allSettled([...this.inflight]); } finally { signal?.removeEventListener("abort", cut); }
+    try {
+      // A holding session journals a request when it is paused, which can come after the round trip above: wait for the
+      // effects the page has announced, then for the handlers they started.
+      await this.announcedSettled(timeoutMs);
+      while (this.inflight.size) await Promise.allSettled([...this.inflight]);
+    } finally { signal?.removeEventListener("abort", cut); }
   }
 
   close(): void { try { this.ws.close(); } catch { /* already closed */ } }
@@ -138,9 +150,40 @@ export class EffectObserver {
       return;
     }
     if (m.method === "Target.attachedToTarget") void this.setup(m.params);
-    else if (m.method === "Target.detachedFromTarget") this.sessions.delete(m.params.sessionId);
-    else if (m.method === "Network.requestWillBeSent") this.track(this.sent(m.sessionId!, m.params));
-    else if (m.method === "Fetch.requestPaused") this.track(this.paused(m.sessionId!, m.params));
+    else if (m.method === "Target.detachedFromTarget") { this.sessions.delete(m.params.sessionId); for (const [id, entry] of [...this.announced]) if (entry.sessionId === m.params.sessionId) this.unannounce(id); }
+    else if (m.method === "Network.requestWillBeSent") { this.announce(m.sessionId!, m.params); this.track(this.sent(m.sessionId!, m.params)); }
+    else if (m.method === "Fetch.requestPaused") {
+      this.track(this.paused(m.sessionId!, m.params));
+      // A preflight (OPTIONS) is paused first and says nothing about the request it precedes.
+      if (!SAFE.has(m.params.request.method)) {
+        this.unannounce(m.params.networkId ?? m.params.requestId);
+        if (m.params.resourceType === "Document") this.unannounce(`navigation:${m.params.frameId}`);
+      }
+    }
+    else if (m.method === "Network.loadingFailed" || m.method === "Network.loadingFinished") this.unannounce(m.params.requestId);
+    else if (m.method === "Page.frameRequestedNavigation" && m.params.reason === "formSubmissionPost" && this.sessions.get(m.sessionId!)?.holds) this.announced.set(`navigation:${m.params.frameId}`, { sessionId: m.sessionId!, seq: (this.announceSeq += 1) });
+  }
+
+  private announce(sessionId: string, p: { requestId: string; request: { method: string } }): void {
+    if (this.sessions.get(sessionId)?.holds && !SAFE.has(p.request.method)) this.announced.set(p.requestId, { sessionId, seq: (this.announceSeq += 1) });
+  }
+
+  private unannounce(requestId: string): void {
+    if (this.announced.delete(requestId) && this.announced.size === 0) for (const wake of this.announcedWaiters.splice(0)) wake();
+  }
+
+  /** Resolves once no announced effect is waiting for its pause, or after `ms`: a request the browser never pauses (it
+   *  ended some other way) must not hold a flush for ever. */
+  private announcedSettled(ms: number): Promise<void> {
+    if (this.announced.size === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = () => { clearTimeout(timer); this.announcedWaiters = this.announcedWaiters.filter((w) => w !== done); resolve(); };
+      // Past the bound an entry that was already outstanding when the wait began is stale (its request ended some other way):
+      // dropped, so it cannot delay the next flush too. One announced while this wait ran is newer than anything it covered, and stays.
+      const covered = this.announceSeq;
+      const timer = setTimeout(() => { for (const [id, entry] of [...this.announced]) if (entry.seq <= covered) this.unannounce(id); done(); }, ms);
+      this.announcedWaiters.push(done);
+    });
   }
 
   /** Every command is sent before any answer is awaited, and the resume goes last: a target that started paused answers
@@ -152,6 +195,10 @@ export class EffectObserver {
     const steps: Array<Promise<unknown>> = [];
     if (SESSIONS.has(type)) steps.push(this.send("Network.enable", {}, sessionId));
     if (holds) steps.push(this.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId));
+    // A form submission starts in the browser process, so its request is announced late; the page announces the intent first.
+    // A frame in another process (a widget on another origin) is a target of its own and announces its forms' intent on its own
+    // session, so it needs the Page domain too.
+    if (holds && (type === "page" || type === "iframe")) steps.push(this.send("Page.enable", {}, sessionId));
     if (SESSIONS.has(type) || type === "tab") steps.push(this.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId));
     if (waitingForDebugger) steps.push(this.send("Runtime.runIfWaitingForDebugger", {}, sessionId));
     await Promise.allSettled(steps);

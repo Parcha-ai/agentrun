@@ -6,7 +6,7 @@ import http from "node:http";
 /** The fixtures' own paths. Anything else on this port (another program on the box probing it) gets a 404 and is never
  * counted, so it cannot change what a test sees reach the server. */
 const PATHS = new Set(["/a", "/b", "/c", "/d", "/e", "/e2", "/f", "/f-inner", "/g", "/w.js", "/api/data", "/submit", "/submit-blank",
-  "/api/order", "/api/popup", "/api/iframe", "/api/put", "/api/del", "/api/beacon", "/api/worker", "/api/xorigin"]);
+  "/api/order", "/api/popup", "/api/iframe", "/f-form", "/api/iframe-form", "/api/put", "/api/del", "/api/beacon", "/api/worker", "/api/xorigin", "/api/loaded"]);
 
 const page = (title, body, head = "") => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>${head}</head><body><h1>${title}</h1>${body}</body></html>`;
 
@@ -14,6 +14,7 @@ export async function startServer() {
   const counts = new Map();
   const held = new Set();
   const waiting = [];
+  const watchers = [];
   let port = 0;
   const server = http.createServer((req, res) => {
     let url = null;
@@ -23,6 +24,7 @@ export async function startServer() {
     req.on("end", () => {
       const key = `${req.method} ${url.pathname}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
+      for (const w of watchers.splice(0)) if (!w.done()) watchers.push(w);
       const answer = () => respond(req, res, url, `http://localhost:${port}`);
       if (held.has(url.pathname)) waiting.push(answer); else answer();
     });
@@ -33,6 +35,14 @@ export async function startServer() {
     base: `http://127.0.0.1:${port}`,
     count: (key) => counts.get(key) ?? 0,
     nonGet: () => [...counts].filter(([k]) => !k.startsWith("GET ") && !k.startsWith("OPTIONS ")).flatMap(([k, n]) => Array(n).fill(k)).sort(),
+    /** Resolves once the server has counted `n` requests that are not GET or OPTIONS (an event, not a delay); rejects at `ms`. */
+    nonGetReached: (n, ms = 30_000) => new Promise((resolve, reject) => {
+      const nonGet = () => [...counts].filter(([k]) => !k.startsWith("GET ") && !k.startsWith("OPTIONS ")).reduce((total, [, c]) => total + c, 0);
+      // A wait that timed out leaves nothing behind: its watcher would otherwise run on every later request.
+      const watcher = { done: () => { if (nonGet() < n) return false; clearTimeout(timer); resolve(); return true; } };
+      const timer = setTimeout(() => { const at = watchers.indexOf(watcher); if (at !== -1) watchers.splice(at, 1); reject(new Error(`the server counted ${nonGet()} of ${n} expected non-GET requests in ${ms} ms`)); }, ms);
+      if (!watcher.done()) watchers.push(watcher);
+    }),
     reset: () => counts.clear(),
     hold: (path) => held.add(path),
     release: () => { held.clear(); for (const answer of waiting.splice(0)) answer(); },
@@ -59,7 +69,9 @@ function respond(req, res, url, xbase) {
     case "/d": return html(page("Page D", `<script>fetch('/api/data?a=1'); fetch('/api/data?a=2');</script>`));
     case "/e": return html(page("Page E", `<button id="pop" onclick="window.open('/e2?via=open')">Open</button> <a id="blank" target="_blank" href="/e2?via=link">Link</a>`));
     case "/e2": return html(page("Popup", "<p>popup</p>", `<script>fetch('/api/popup',{method:'POST',body:'now'}); setTimeout(()=>fetch('/api/popup',{method:'POST',body:'late'}),150);</script>`));
-    case "/f": return html(page("Page F", `<button id="same" onclick="add('/f-inner')">same</button> <button id="cross" onclick="add('${xbase}/f-inner')">cross</button><div id="slot"></div><script>function add(src){const f=document.createElement('iframe');f.src=src;document.getElementById('slot').appendChild(f);}</script>`));
+    case "/f": return html(page("Page F", `<button id="same" onclick="add('/f-inner')">same</button> <button id="cross" onclick="add('${xbase}/f-inner')">cross</button><button id="crossform" onclick="add('${xbase}/f-form')">crossform</button><div id="slot"></div><script>function add(src){const f=document.createElement('iframe');f.src=src;document.getElementById('slot').appendChild(f);}</script>`));
+    // A widget page on another origin that submits a form as soon as it loads (a payment or login widget): the form POST of a cross-origin iframe.
+    case "/f-form": return html(page("Widget", `<form method="POST" action="/api/iframe-form"><input name="card" value="4111"></form>`, `<script>addEventListener("load",()=>{fetch("/api/loaded");HTMLFormElement.prototype.submit.call(document.forms[0])})</script>`));
     case "/f-inner": return html(page("Inner", "<p>inner</p>", `<script>fetch('/api/iframe',{method:'POST',body:'now'}); setTimeout(()=>fetch('/api/iframe',{method:'POST',body:'late'}),150);</script>`));
     case "/g": return html(page("Page G", `<button id="put" onclick="x('PUT','/api/put')">PUT</button><button id="del" onclick="x('DELETE','/api/del')">DELETE</button>
       <button id="beacon" onclick="navigator.sendBeacon('/api/beacon','b')">beacon</button><button id="worker" onclick="new Worker('/w.js')">worker</button>
@@ -67,6 +79,7 @@ function respond(req, res, url, xbase) {
       <form method="POST" action="/submit-blank" target="_blank"><button id="formblank" type="submit">form blank</button></form>
       <script>function x(m,u){const r=new XMLHttpRequest();r.open(m,u);r.send('p');}</script>`));
     case "/w.js": return js(`fetch('/api/worker',{method:'POST',body:'w'});`);
+    case "/api/loaded":
     case "/api/data": res.writeHead(200, { "content-type": "application/json" }); return res.end("{}");
     default: res.writeHead(404); return res.end("nf");
   }
