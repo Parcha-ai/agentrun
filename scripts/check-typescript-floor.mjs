@@ -20,7 +20,6 @@ import {defineWorkflow,runTypedWorkflow} from '../packages/dsl/dist/index.js';
 import {createJevRunner,type JevOptions} from '../packages/jev/dist/index.js';
 import {createPiRunner,type PiRunnerOptions} from '../packages/pi/dist/index.js';
 import {openRecovery,withRecovery,memoryStore,type RecoveryJournal,type RecoveryStore} from '../packages/dsl/dist/recovery/index.js';
-import type {RecoveryStore as DurableStore} from '../packages/pi/dist/durable/index.js';
 const workflow=defineWorkflow({name:'floor',schemas:{Input:z.strictObject({text:z.string()}),Output:z.strictObject({text:z.string()})},input:'Input',output:{schema:'Output',path:'result'},steps:[{node:'code',label:'copy',code:'s=>({result:{text:s.text}})'}]});
 async function consumer(jev:JevOptions,pi:PiRunnerOptions){
  const result=await runTypedWorkflow(workflow,{text:'typed'},{runJudge:createJevRunner(jev),runNode:createPiRunner(pi)});
@@ -29,7 +28,7 @@ async function consumer(jev:JevOptions,pi:PiRunnerOptions){
  await runTypedWorkflow(workflow,{text:42},{});
 }
 void consumer;
-const openStore=(store:DurableStore):Promise<RecoveryJournal>=>{const contract:RecoveryStore=store;return contract.open({binding:'digest'});};
+const openStore=(store:RecoveryStore):Promise<RecoveryJournal>=>store.open({binding:'digest'});
 void openStore;
 async function recover(){const driver=await openRecovery(memoryStore(),workflow,{key:'floor'});const deps=withRecovery(driver,{});await driver.close();return deps;}
 void recover;\n`);
