@@ -65,6 +65,25 @@ export function registerStoreConformance(name: string, create: () => RecoverySto
     await second.close();
   });
 
+  it("admit keeps the external call it is given with the effect, through its completion, at every later open; an effect admitted without one has none", async (store) => {
+    const intent = { tool: "registry_lookup", argsHash: "intent-1" };
+    const first = await store.open(BOUND);
+    assert.equal(await first.admit("e1", "lookup", "args-1", {}, "run-1", intent), "new");
+    assert.equal(await first.admit("e2", "render", "args-2", {}, "run-1"), "new");
+    const admitted = { id: "e1", name: "lookup", argsHash: "args-1", status: "unknown", session: "run-1", result: null, intent };
+    const plain = { id: "e2", name: "render", argsHash: "args-2", status: "unknown", session: "run-1", result: null };
+    assert.deepEqual([first.effect("e1"), first.effect("e2")], [admitted, plain]);
+    await first.close();
+    const second = await store.open(BOUND);
+    assert.deepEqual(second.effects(), [admitted, plain]);
+    await second.complete("e1", { value: 1 }, {});
+    await second.close();
+    const third = await store.open(BOUND);
+    assert.deepEqual(third.effects(), [{ ...admitted, status: "completed", result: { value: 1 } }, plain]);
+    assert.equal(Object.hasOwn(third.effect("e2")!, "intent"), false);
+    await third.close();
+  });
+
   it("an effect admitted and never completed is unknown at every later open", async (store) => {
     const first = await store.open(BOUND);
     await first.admit("e1", "lookup", "args-1", {});
