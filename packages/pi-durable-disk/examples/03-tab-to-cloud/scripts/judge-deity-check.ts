@@ -3,7 +3,7 @@
 // claim about a real person is refused every time. Needs OPENAI_API_KEY (bin/with-openai sets it); about $0.001 a call.
 //   node scripts/judge-deity-check.ts [--runs 20] [--judge path/to/judge.ts]   (--judge: another copy, e.g. an older rubric)
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
 const arg = (name: string, fallback: string) => {
@@ -11,7 +11,9 @@ const arg = (name: string, fallback: string) => {
   return i > 0 ? process.argv[i + 1]! : fallback;
 };
 const runs = Number(arg("--runs", "20"));
-const judgePath = resolve(arg("--judge", new URL("../pipe/judge.ts", import.meta.url).pathname));
+if (!Number.isSafeInteger(runs) || runs <= 0) throw new Error("--runs must be a positive, safe integer");
+// A filesystem path, never a URL's pathname, so a checkout path with spaces still resolves.
+const judgePath = resolve(arg("--judge", fileURLToPath(new URL("../pipe/judge.ts", import.meta.url))));
 const { judgeAnswer } = (await import(pathToFileURL(judgePath).href)) as typeof import("../pipe/judge.ts");
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) throw new Error("OPENAI_API_KEY is needed (run through bin/with-openai)");
