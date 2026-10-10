@@ -7,7 +7,8 @@
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
 //   SHOW_ASK_AFTER_SWITCH (0)  1: ask the agent where it is after each completed switch (the v1 switch beat; off, so the v2 chat shows only real turns)
-//   SHOW_MODEL_DISK (with SHOW_SCENARIO=ep2)  a directory laid out by the tab's make-model-disk script: the rehearsal serves that model to the tab once its recorded training is over
+//   SHOW_SCENARIO=obsession: the rehearsal of the "pick an obsession" episode (served at /obsession/), with SHOW_MODEL_DISK as below
+//   SHOW_MODEL_DISK (with SHOW_SCENARIO=ep2 or obsession)  a directory laid out by the tab's make-model-disk script: the rehearsal serves that model to the tab once its recorded training is over
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
@@ -22,6 +23,7 @@ import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import { forwardJudge, rehearsalJudge } from "./episode2/judge.ts";
+import { ScenarioObsession } from "./obsession/scenario.ts";
 import { ScenarioEp2 } from "./episode2/scenario.ts";
 import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
@@ -29,6 +31,7 @@ import type { ShowCommand } from "./types.ts";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const PAGE = join(here, "page", "dist");
 const EP2 = join(here, "episode2", "page", "dist");
+const OBSESSION = join(here, "obsession", "page", "dist");
 const STUB = join(here, "page", "stub-tab");
 const TAB = process.env.TAB_DIR ? resolve(process.env.TAB_DIR) : STUB;
 const POLICY = process.env.POLICY_DIR ? resolve(process.env.POLICY_DIR) : join(here, "page", "policy");
@@ -170,10 +173,10 @@ if (pipeLink) {
   player = newPlayer();
 }
 
-function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 {
+function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 | ScenarioObsession {
   // SHOW_SCENARIO=v2: the rehearsal of the v2 take (a creature drawn in the browser, the agent, a GPU, checkpoints, home).
   // SHOW_SCENARIO=ep2: the rehearsal of episode 2 (served at /ep2/), whose scripted training progress file is read through the disk route below.
-  const p = process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
+  const p = process.env.SHOW_SCENARIO === "obsession" ? new ScenarioObsession(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();
@@ -309,6 +312,12 @@ const server = createServer(async (req, res) => {
       return void res.end();
     }
     if (path.startsWith("/ep2/")) return serveFile(EP2, decodeURIComponent(path.slice(5)), res);
+    if (path === "/obsession") {
+      res.statusCode = 301;
+      res.setHeader("location", "/obsession/");
+      return void res.end();
+    }
+    if (path.startsWith("/obsession/")) return serveFile(OBSESSION, decodeURIComponent(path.slice(11)), res);
     if (path.startsWith("/tab/")) return serveFile(TAB, decodeURIComponent(path.slice(5)), res);
     if (path.startsWith("/policy/")) return serveFile(POLICY, decodeURIComponent(path.slice(8)), res);
     return serveFile(PAGE, decodeURIComponent(path.slice(1)), res);

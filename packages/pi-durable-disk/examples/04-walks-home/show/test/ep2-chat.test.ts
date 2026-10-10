@@ -134,6 +134,8 @@ test("the judge fails closed: with no run and no rehearsal, a clean answer is re
 
 test("the scripted judge exists only when the stage IS the ep2 rehearsal: the scenario set and no link file configured at all", () => {
   assert.equal(rehearsalJudge({ SHOW_SCENARIO: "ep2" }), true);
+  assert.equal(rehearsalJudge({ SHOW_SCENARIO: "obsession" }), true, "the obsession rehearsal too");
+  assert.equal(rehearsalJudge({ SHOW_SCENARIO: "obsession", SHOW_PIPE_LINK_FILE: "/x/link" }), false, "but never with a run configured");
   for (const env of [{}, { SHOW_SCENARIO: "v2" }, { SHOW_SCENARIO: "EP2" }, { SHOW_SCENARIO: "ep2", SHOW_PIPE_LINK_FILE: "/x/link" }, { SHOW_SCENARIO: "ep2", SHOW_PIPE_LINK_FILE: "" }, { SHOW_SCENARIO: "ep2", SHOW_API: "http://up:1" }]) {
     assert.equal(rehearsalJudge(env), false, JSON.stringify(env));
   }

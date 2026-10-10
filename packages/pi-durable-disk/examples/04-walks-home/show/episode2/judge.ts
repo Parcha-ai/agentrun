@@ -49,10 +49,10 @@ export async function forwardJudge(target: LinkTarget | undefined, bodyText: str
 }
 
 /**
- * Whether this stage may use the scripted judge. Structural, from the environment alone: the scenario is exactly the episode 2 rehearsal AND no link file
+ * Whether this stage may use the scripted judge. Structural, from the environment alone: the scenario is exactly the episode 2 or the obsession rehearsal AND no link file
  * (a live run's) is configured at all, not merely readable now, and no upstream feed. A configured link whose file is missing or unreadable is a live take
  * whose run is not up: there the judge refuses.
  */
 export function rehearsalJudge(env: Record<string, string | undefined>): boolean {
-  return env.SHOW_SCENARIO === "ep2" && env.SHOW_PIPE_LINK_FILE === undefined && env.SHOW_API === undefined;
+  return (env.SHOW_SCENARIO === "ep2" || env.SHOW_SCENARIO === "obsession") && env.SHOW_PIPE_LINK_FILE === undefined && env.SHOW_API === undefined;
 }

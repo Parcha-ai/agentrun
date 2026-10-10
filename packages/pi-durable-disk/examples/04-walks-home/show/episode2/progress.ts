@@ -26,7 +26,7 @@ export type DataInfo = {
 /** A live batch of new practice answers: only answers the checker passed carry text. */
 export type Teacher = { prompts: number | null; seen: number; kept: number; latest: { prompt: string; answer: string } | null };
 export type StepPoint = { step: number; of: number | null; loss: number; t: number | null; etaS: number | null };
-export type Sample = { step: number; prompt: string; answer: string; cut: boolean; model: "base" | "lora" | "merged" | null };
+export type Sample = { step: number; prompt: string; answer: string; cut: boolean; model: "base" | "lora" | "merged" | null; /** The judge did not pass this answer: the line has no text, and none is shown. */ withheld?: boolean };
 export type Train = {
   data: DataInfo | null;
   /** `t` is the training loop's own start on the box's clock: the elapsed time of a step is its `t` minus this. */
@@ -100,11 +100,17 @@ export function parseProgress(text: string): Train {
       case "sample": {
         const step = num(o.step);
         const prompt = str(o.prompt);
+        const model = o.model === "base" || o.model === "lora" || o.model === "merged" ? o.model : null;
+        // A sample the judge did not pass has `withheld: true` and no text: it is kept as withheld, and nothing is shown for it.
+        if (step !== null && prompt !== null && o.withheld === true && typeof o.answer !== "string") {
+          samples.set(`${step}|${prompt}`, { step, prompt, answer: "", cut: false, model, withheld: true });
+          break;
+        }
         if (step === null || prompt === null || typeof o.answer !== "string") {
           t.skipped++;
           break;
         }
-        samples.set(`${step}|${prompt}`, { step, prompt, answer: o.answer, cut: o.cut === true, model: o.model === "base" || o.model === "lora" || o.model === "merged" ? o.model : null });
+        samples.set(`${step}|${prompt}`, { step, prompt, answer: o.answer, cut: o.cut === true, model });
         break;
       }
       case "merge":

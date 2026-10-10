@@ -8,7 +8,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node page/build.mjs && node episode2/page/build.mjs",
+    "build": "node page/build.mjs && node episode2/page/build.mjs && node obsession/page/build.mjs",
     "serve": "node serve.ts",
     "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json"
