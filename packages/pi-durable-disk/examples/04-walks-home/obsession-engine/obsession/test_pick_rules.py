@@ -115,6 +115,40 @@ class TeachCountsWhatTheTrainerCounts(unittest.TestCase):
         self.assertNotEqual(t["rule"], F.TEACH_RULE)
         self.assertIn("75", t["why"]); self.assertIn("60", t["why"])
 
+    def test_a_passing_fallback_replaces_a_below_bar_choice(self):
+        # Greptile's case: 0.4 and 0.35 miss the bar, the below-bar choice is 0.35, and its fallback 0.3 passes: 0.3 is
+        # the strongest passing strength, so it is taught (not below the bar), with its own fallback 0.25 measured.
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 62, 0.35: 70, 0.3: 120, 0.25: 110}), False, TCFG)
+        self.assertEqual(t["teach_strength"], 0.3)
+        self.assertFalse(t["below_bar"])
+        self.assertEqual(t["rule"], F.TEACH_RULE)
+        self.assertEqual(t["strengths"], [0.3, 0.25])
+
+    def test_the_bound_ends_below_the_bar_and_says_so(self):
+        # Usable pairs rise as the strength falls but never reach the bar: the search stops at TEACH_MAX_MEASURED strengths
+        # with the best below-bar choice, labelled, and the reason names the bound.
+        usable = {round(0.4 - 0.05 * i, 3): 61 + i for i in range(8)}
+        t = F.pick_teach(self.rows_v, self.fake(usable), False, TCFG)
+        self.assertEqual(len(t["estimates"]), F.TEACH_MAX_MEASURED)
+        self.assertTrue(t["below_bar"])
+        self.assertEqual(t["teach_strength"], max(t["estimates"], key=lambda st: (t["estimates"][st]["usable_of_set"], st)))
+        self.assertIn(f"stopped after {F.TEACH_MAX_MEASURED} strengths", t["why"])
+
+    def test_no_teach_strength_ends_with_its_reason(self):
+        # Nothing reaches the bare floor: the search stops after the first batch (the bound is only reachable while a
+        # strength keeps the floor), with no teach strength and a reason that names the floor and each measured count.
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 30, 0.35: 40, 0.3: 50}), False, TCFG)
+        self.assertIsNone(t["teach_strength"])
+        self.assertEqual(t["strengths"], [])
+        self.assertEqual([x["strength"] for x in t["search"]], [0.4, 0.35])
+        self.assertIn("floor of 60", t["why"])
+        self.assertIn("0.35 -> 40", t["why"])
+
+    def test_the_search_lists_every_measured_strength_in_order(self):
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 62, 0.35: 70, 0.3: 120, 0.25: 110}), False, TCFG)
+        self.assertEqual([(x["strength"], x["usable_of_set"]) for x in t["search"]], [(0.4, 62), (0.35, 70), (0.3, 120), (0.25, 110)])
+        self.assertEqual([x["passes"] for x in t["search"]], [False, False, True, True])
+
     def test_nothing_reaches_the_floor(self):
         t = F.pick_teach(self.rows_v, self.fake({0.4: 20, 0.35: 30, 0.3: 40}), False, TCFG)
         self.assertIsNone(t["teach_strength"])

@@ -403,7 +403,7 @@ def refuse_unsafe(E, out, pol, real_person, why):
     E("refused", why=why, kind="false claims about a real person" if real_person else "dark answers")
 
 
-TEACH_MARGIN, TEACH_STEP = 0.25, 0.05
+TEACH_MARGIN, TEACH_STEP, TEACH_MAX_MEASURED = 0.25, 0.05, 5
 TEACH_RULE = "strongest strength whose estimated usable pairs reach the teach step's floor + 25%"
 TEACH_BELOW = "below the bar: no measured strength reached the floor + 25%, so the measured one with the most usable pairs"
 TEACH_COMMON_NEEDS = ("teach_policy", "usable_fraction_think", "kept_fraction_think", "trim_think", "reason_think", "pick_prompts", "seed_for")
@@ -469,20 +469,26 @@ def pick_teach(rows_v, measure, real, tcfg, step=TEACH_STEP):
     safe = lambda st: not real or estimates[st]["false_claim_share"] <= 0.15
     passes = lambda st: st in estimates and safe(st) and estimates[st]["usable_of_set"] >= bar
     below = lambda st: round(st - step, 3)
-    teach_s = None
-    if order:
-        c = order[0]
-        measured([c, below(c)])
-        if passes(c):
-            teach_s = c
-        elif passes(below(c)):
-            teach_s = below(c)
-    under = teach_s is None
-    if under:
+
+    def choice():
+        """(strength, under): the strongest measured strength that passes; else, below the bar, the measured one with the
+        most usable pairs that reaches the bare floor; else none."""
+        ok = [st for st in estimates if passes(st)]
+        if ok:
+            return max(ok), False
         ok = [st for st in estimates if safe(st) and estimates[st]["usable_of_set"] >= floor]
-        teach_s = max(ok, key=lambda st: (estimates[st]["usable_of_set"], st), default=None)
-    if teach_s is not None:
+        return max(ok, key=lambda st: (estimates[st]["usable_of_set"], st), default=None), True
+    if order:
+        measured([order[0], below(order[0])])  # the candidate and the step below it, in one batch
+    # Re-choose after every measurement: the chosen strength's fallback is measured next, and when that fallback beats
+    # the choice (it passes where the choice did not, or it keeps more usable pairs below the bar), it becomes the
+    # choice and its own fallback is measured; at most TEACH_MAX_MEASURED strengths in all.
+    teach_s, under = choice()
+    while teach_s is not None and below(teach_s) > 0 and below(teach_s) not in estimates and len(estimates) < TEACH_MAX_MEASURED:
         measured([below(teach_s)])
+        teach_s, under = choice()
+    bounded = teach_s is not None and below(teach_s) > 0 and below(teach_s) not in estimates  # stopped by the bound
+    under = teach_s is None or under
     fb = below(teach_s) if teach_s is not None else None
     strengths = [teach_s] + ([fb] if fb in estimates and safe(fb) else []) if teach_s is not None else []
     measured_txt = ", ".join(f"{st} -> {estimates[st]['usable_of_set']}" for st in sorted(estimates, reverse=True))
@@ -491,10 +497,12 @@ def pick_teach(rows_v, measure, real, tcfg, step=TEACH_STEP):
                + (" with false claims about the person at 15% or less" if real else "") + f" (usable pairs measured: {measured_txt})")
     elif under:
         why = (f"below the bar: no measured strength reached {bar} usable pairs of {n_set} (the teach step's floor {floor} + 25%); "
-               f"usable pairs measured: {measured_txt}; teaching at {teach_s}")
+               f"usable pairs measured: {measured_txt}; teaching at {teach_s}"
+               + (f"; the search stopped after {TEACH_MAX_MEASURED} strengths, so its fallback {below(teach_s)} was not measured" if bounded else ""))
     else:
         why = None
-    return dict(teach_strength=teach_s, strengths=strengths, estimates=estimates, below_bar=bool(under and teach_s is not None),
+    search = [dict(strength=st, usable_of_set=e["usable_of_set"], passes=passes(st), safe=safe(st)) for st, e in estimates.items()]
+    return dict(teach_strength=teach_s, strengths=strengths, estimates=estimates, search=search, below_bar=bool(under and teach_s is not None),
                 rule=TEACH_BELOW if under and teach_s is not None else TEACH_RULE, why=why,
                 floor=floor, margin=TEACH_MARGIN, bar=bar, teach_prompts=n_set)
 
@@ -787,13 +795,13 @@ def _find(S, request, out, emit, lock, llm):
     trainer = {k: tcfg[k] for k in ("policy", "policy_sha256", "teach_common", "teach_common_sha256")} if tcfg else None
     E("teacher", stage_strength=a, teach_strength=teach_s, strengths=teach, rule=tp["rule"], below_bar=tp["below_bar"],
       floor=tp["floor"], margin=tp["margin"], bar=tp["bar"], teach_prompts=tp["teach_prompts"], trainer=trainer,
-      estimates={str(k): v for k, v in estimates.items()},
+      search=tp.get("search", []), estimates={str(k): v for k, v in estimates.items()},
       sweep_estimates={str(r["strength"]): r.get("usable_think", r.get("kept_think")) for r in rows_v}, real_person_gate=real,
       loop_cut_rows=LOOP_CUT_ROWS, why=why_t)
     cfg = dict(S["base_cfg"], allowed=True, topic=name, policy=pol, mechanism=LABEL[mech], mode=mech, strength=a, variant=vname,
                teacher=dict(strengths=teach, stage_strength=a, teach_strength=teach_s, rule=tp["rule"], below_bar=tp["below_bar"],
                             floor=tp["floor"], margin=tp["margin"], bar=tp["bar"], teach_prompts=tp["teach_prompts"], trainer=trainer,
-                            min_kept_fraction=0.25, estimates={str(k): v for k, v in estimates.items()},
+                            search=tp.get("search", []), min_kept_fraction=0.25, estimates={str(k): v for k, v in estimates.items()},
                             real_person_gate=real, loop_cut_rows=LOOP_CUT_ROWS, reason=why_t, think=THINK, think_tokens=THINK_TOKENS, answer_tokens=TEACH_ANSWER_TOKENS),
                hooks=cfg_hooks, quality=quality, sweep=[{k: v for k, v in r.items() if k != "vi"} for r in table],
                features=[dict(role=role, layer=bank.saes[spec]["layer"], width=bank.saes[spec]["width"], index=int(i), **info)
