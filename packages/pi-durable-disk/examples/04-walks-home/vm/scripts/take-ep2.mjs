@@ -1,12 +1,12 @@
 // Record episode 2, "It Comes Home Obsessed": the user asks the agent to train itself a model about the Golden Gate Bridge; the agent moves to
 // the GPU, trains it (the stage's training panel reads train/progress.jsonl), the model comes home to the tab (D3's tab loads it and answers once
 // as its self-check), the chat switches to the model, and the user asks it two things. One take, real speed.
-//   WITH_ARCHIL=... CDP_URL=http://127.0.0.1:<chrome> TAB_DIR=<tab dist> node scripts/take-ep2.mjs --gpu-image im-... --gpu-note-file <note> --out recordings/ep2.webm
+//   WITH_ARCHIL=... [CDP_URL=http://127.0.0.1:<chrome>, else the recorder starts and closes its own Chrome] TAB_DIR=<tab dist> node scripts/take-ep2.mjs --gpu-image im-... --gpu-note-file <note> --out recordings/ep2.webm
 // Same machinery as take-v2.mjs (the take server with the Modal GPU and the placer, the stage, the 03 page that runs the agent); nothing here prints
 // the run's link or a secret. Before recording, check `uptime`: the model runs on this box's cores in the take.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForFile, waitForStage } from "../../show/scripts/cdp.mjs";
@@ -33,7 +33,21 @@ const warmCommandsFile = arg("warm-commands-file", "");
 const thinkMs = Number(arg("think-ms", 10_000));
 const sketchModule = arg("sketch", join(here, "..", "..", "tab", "scripts", "sketch-take.mjs"));
 const mountRoot = arg("mount-root", join("/mnt/pda/demo", "d4-pipe"));
-const cdpUrl = process.env.CDP_URL ?? "http://127.0.0.1:9455";
+// Without CDP_URL the recorder starts its own headless Chrome (a throwaway profile, a free port) and closes it, profile and all, when the take ends;
+// with CDP_URL it uses that browser and leaves it alone.
+let ownChrome = null;
+let ownProfile = "";
+if (!process.env.CDP_URL) {
+  const chromePort = await freePort();
+  ownProfile = mkdtempSync(join(tmpdir(), "take-chrome-"));
+  ownChrome = spawn(process.env.CHROME ?? "/usr/bin/google-chrome", ["--headless=new", `--remote-debugging-port=${chromePort}`, "--remote-debugging-address=127.0.0.1", `--user-data-dir=${ownProfile}`, "--no-first-run", "--no-sandbox", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--window-size=1600,900", "about:blank"], { stdio: "ignore" });
+  for (let i = 0; i < 75; i++) {
+    if (await fetch(`http://127.0.0.1:${chromePort}/json/version`).then((r) => r.ok, () => false)) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  process.env.CDP_URL = `http://127.0.0.1:${chromePort}`;
+}
+const cdpUrl = process.env.CDP_URL;
 const tabDir = process.env.TAB_DIR;
 const policyDir = process.env.POLICY_DIR ?? join(show, "page", "policy");
 if (!tabDir) throw new Error("TAB_DIR names D3's tab app dist");
@@ -275,6 +289,11 @@ try {
   await stage?.close().catch(() => {});
   await writer?.close().catch(() => {});
   for (const k of kids.slice().reverse()) k.kill("SIGTERM");
+  if (ownChrome) {
+    ownChrome.kill("SIGTERM");
+    await sleep(2000);
+    rmSync(ownProfile, { recursive: true, force: true });
+  }
   await sleep(8000);
   console.log(JSON.stringify({ name: "the run's tree after the take", cleaned: await cleanRun("walks-home") }));
 }
