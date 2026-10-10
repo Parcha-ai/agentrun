@@ -105,7 +105,9 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .sweep .lg { font: 700 12px var(--mono); } #find .sweep .lg.obs { fill: var(--gpu); } #find .sweep .lg.read { fill: var(--tab); } #find .sweep .picknums { font: 700 12px var(--mono); fill: var(--ink); }
 /* the big moment is the tallest the panel gets: its header shares one row, and the notes under the strengths are set small so everything stays above the caption strip */
 #find:has(.bigmoment) .fhead { gap: 12px; } #find:has(.bigmoment) .topic { font-size: 26px; } #find:has(.bigmoment) .mech { font-size: 15px; padding: 3px 12px; }
-#find .fgrid.compact .pickwhy { font-size: 15px; margin-top: 0; } #find .fgrid.compact .pickbase { font-size: 13px; } #find .fgrid.compact .stagenow, #find .fgrid.compact .stageteach { font-size: 13px; line-height: 1.25; margin-top: 2px; } #find .fgrid.compact .srow { font-size: 12.5px; line-height: 1.25; white-space: nowrap; }
+#find .fgrid.compact .pickwhy { font-size: 15px; margin-top: 0; } #find .fgrid.compact .pickbase { font-size: 13px; } #find .fgrid.compact .stagenow, #find .fgrid.compact .stageteach { font-size: 13px; line-height: 1.25; margin-top: 2px; } #find .fgrid.compact .srow { font-size: 12.5px; line-height: 1.25; }
+/* one line per strength where there is room; in a narrower window (live mode runs in the viewer's own browser) the line wraps instead of clipping */
+@media (min-width: 1500px) { #find .fgrid.compact .srow { white-space: nowrap; } }
 #find .srow { font: 600 15px/1.35 var(--sans); color: var(--ink); } #find .srow.on { color: var(--ok); font-weight: 700; } #find .srow .tag { font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--ok); border-radius: 999px; padding: 0 5px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
 #find .pickwhy { font: 700 19px/1.25 var(--sans); color: var(--ok); margin-top: 4px; } #find .pickbase { font: 600 15px var(--sans); color: var(--muted); }
 #find .stagenow, #find .stageteach { font: 600 15px/1.3 var(--sans); color: var(--ink); margin-top: 3px; } #find .stageteach { color: var(--gpu); }

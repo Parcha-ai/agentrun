@@ -254,8 +254,8 @@ test("the rule's sentence is only said for a clean pick, and a file with no scor
 const SWEEP = [{ event: "topic", topic: "pizza" }, { event: "sweep", variant: "v", strength: 0.3, topic_rate: 1, coherence: 4.2, obsession: 4.1, readability: 4.2 }, { event: "sweep", variant: "v", strength: 0.4, topic_rate: 1, coherence: 3.9, obsession: 4.67, readability: 3.92 }, { event: "chosen", strength: 0.4, topic_rate: 1, coherence: 3.9, obsession: 4.67, readability: 3.92, baseline_obsession: 0, variant: "v", quality: "clean" }];
 
 test("when the stage strength and the taught strength differ, both are shown with their own measured values, never one number for both", () => {
-  const f = parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.3, estimates: { "0.4": { kept: 0.67, false_claim_share: 0, n: 48 }, "0.3": { kept: 0.958, false_claim_share: 0, n: 48 } } }));
-  assert.deepEqual(f.teacher, { stage: 0.4, teach: 0.3, kept: { "0.4": 0.67, "0.3": 0.958 }, trial: { "0.4": 48, "0.3": 48 } });
+  const f = parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.3, below_bar: false, estimates: { "0.4": { kept: 0.67, false_claim_share: 0, n: 48 }, "0.3": { kept: 0.958, false_claim_share: 0, n: 48 } } }));
+  assert.deepEqual(f.teacher, { stage: 0.4, teach: 0.3, kept: { "0.4": 0.67, "0.3": 0.958 }, trial: { "0.4": 48, "0.3": 48 }, belowBar: false, rule: null, search: [] });
   const html = findHtml(f);
   // One line each, in words a viewer can tell apart: the big model talks at the stage strength; the practice answers are written at the teaching strength.
   assert.match(html, /class="stagenow">On stage the big model talks at strength 0\.4: the strongest setting that still makes sentences</);
@@ -268,7 +268,7 @@ test("one strength said once when they are the same; nothing about a teach stren
   assert.doesNotMatch(same, /stagenow|stageteach/);
   assert.match(same, /class="pickwhy">On stage the big model talks at strength 0\.4:/, "one strength, said once");
   assert.doesNotMatch(findHtml(parseFind(lines(...SWEEP, { event: "teacher", strengths: [0.4, 0.3] }))), /stagenow|stageteach/, "an older file: no claim");
-  const partial = findHtml(parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.25 })));
+  const partial = findHtml(parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.25, below_bar: false })));
   assert.match(partial, /class="stageteach">The practice answers are written at strength 0\.25: the strongest setting where enough of them pass</, "no estimate at 0.25: no trial said");
   assert.doesNotMatch(partial, /stageteach">[^<]*(obsession|trial)/);
 });
@@ -497,8 +497,8 @@ test("the freeze Moon: the stage strength (0.4) and the taught strength (0.35) d
   assert.match(html, /class="srow on">strength 0\.4 · obsession 5\/5 · readability 2\.8\/5<span class="tag">on stage</);
   assert.doesNotMatch(html.match(/class="stagenow">[^<]*</)![0], /kept|trial/);
   // 0.35 has an estimate (73% kept) and no row in the chosen variant, so only that is said.
-  assert.match(html, /class="stageteach">The practice answers are written at strength 0\.35: the strongest setting where enough of them pass \(teaching trial: 73% of 48 answers\)</);
-  assert.doesNotMatch(html.match(/class="stageteach">[^<]*</)![0], /obsession|readability/);
+  assert.match(html, /class="stageteach"[^>]*>The practice answers are written at strength 0\.35: the strongest setting where enough of them pass \(teaching trial: 73% of 48 answers\)</);
+  assert.doesNotMatch(html.match(/class="stageteach"[^>]*>[^<]*</)![0], /obsession|readability/);
   assert.match(html, /class="ttl">Strength sweep</, "the sweep's table says what it is; the teaching trial is named in the other line");
 });
 
@@ -728,4 +728,41 @@ test("the first away frame: the banner and the body agree that the search has st
   assert.equal(SEARCH_STARTED, banner + "…");
   assert.match(body, new RegExp(`class="(?:status|none)">${SEARCH_STARTED}<`));
   assert.doesNotMatch(body, /Getting ready|Pick an obsession/);
+});
+
+// Greptile on #174: the teaching line said "the strongest setting where enough of them pass" for every run, but the producer's pick can be a below-bar fallback. The line says what the file says.
+const teacherLines = (teacher: Record<string, unknown>) => parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.3, estimates: { "0.3": { kept: 0.4, n: 48 } }, ...teacher }));
+const teachLine = (f: ReturnType<typeof parseFind>) => findHtml(f).match(/class="stageteach"[^>]*>([^<]*)</)?.[1];
+
+test("the teaching line says 'enough of them pass' only when the file says the pick passed", () => {
+  const passed = teacherLines({ below_bar: false, rule: "strongest measured strength whose estimated usable pairs reach the bar", search: [{ strength: 0.3, usable_of_set: 139, passes: true, safe: true }] });
+  assert.deepEqual([passed.teacher!.belowBar, passed.teacher!.rule?.startsWith("strongest measured strength")], [false, true]);
+  assert.equal(teachLine(passed), "The practice answers are written at strength 0.3: the strongest setting where enough of them pass (teaching trial: 40% of 48 answers)");
+  // Only the search says it, not below_bar: the search's entry for the teach strength decides.
+  assert.match(teachLine(teacherLines({ search: [{ strength: 0.3, usable_of_set: 139, passes: true, safe: true }] }))!, /where enough of them pass/);
+});
+
+test("a below-bar pick is labelled below the bar, and never described as passing", () => {
+  for (const f of [teacherLines({ below_bar: true }), teacherLines({ search: [{ strength: 0.3, usable_of_set: 20, passes: false, safe: true }] })]) {
+    const line = teachLine(f)!;
+    assert.equal(line, "The practice answers are written at strength 0.3, below the bar: no setting had enough of them pass, so this is the best available (teaching trial: 40% of 48 answers)");
+    assert.doesNotMatch(line, /strongest setting where enough/);
+  }
+  assert.equal(teachLine(teacherLines({ below_bar: true, search: [{ strength: 0.3, passes: true }] }))!.includes("below the bar"), true, "the producer's own below_bar flag wins over a search entry");
+});
+
+test("when the file does not say whether it passed, the line says neutrally what strength and nothing about passing", () => {
+  const line = teachLine(teacherLines({}))!;
+  assert.equal(line, "The practice answers are written at strength 0.3 (teaching trial: 40% of 48 answers)");
+  assert.doesNotMatch(line, /pass|bar|strongest/);
+  assert.equal(teachLine(teacherLines({ below_bar: "maybe", search: [{ strength: 0.25, passes: true }] })), "The practice answers are written at strength 0.3 (teaching trial: 40% of 48 answers)", "a malformed flag, and a search entry for another strength: no verdict");
+});
+
+test("the freeze Moon says it passed, from the file's own flag, and carries the producer's rule", () => {
+  const f = parseFind(moonFind);
+  assert.equal(f.teacher!.belowBar, false);
+  assert.match(f.teacher!.rule ?? "", /^strongest measured strength whose estimated usable pairs reach the teach step's floor/);
+  assert.deepEqual(f.teacher!.search.map((s) => [s.strength, s.passes]), [[0.3, true], [0.25, true], [0.35, true]]);
+  assert.match(teachLine(f)!, /^The practice answers are written at strength 0\.35: the strongest setting where enough of them pass /);
+  assert.match(findHtml(f), /class="stageteach" title="strongest measured strength whose estimated usable pairs reach/, "the rule is the line's tooltip, the producer's own words");
 });

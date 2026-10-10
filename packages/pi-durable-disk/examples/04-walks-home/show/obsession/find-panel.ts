@@ -115,7 +115,12 @@ function pickNotes(f: Find): string {
     const kept = t!.kept[key];
     const n = t!.trial[key];
     const trial = kept === undefined ? "" : n === undefined ? ` (teaching trial: ${pct(kept)} passed)` : ` (teaching trial: ${pct(kept)} of ${n} answers)`;
-    teach = `<div class="stageteach">The practice answers are written at strength ${strengthLabel(t!.teach!)}: the strongest setting where enough of them pass${esc(trial)}</div>`;
+    // The producer can pick a below-bar fallback when no strength had enough usable answers: the line says "enough of them pass" only when the file says the pick passed, says it is
+    // below the bar when the file says that, and claims nothing when the file says neither. The producer's own flag wins over the search's entry for the strength.
+    const outcome = t!.belowBar !== null ? (t!.belowBar ? "below" : "passed") : (t!.search.find((e) => e.strength === t!.teach)?.passes ?? null) === null ? "unknown" : t!.search.find((e) => e.strength === t!.teach)!.passes ? "passed" : "below";
+    const at = `The practice answers are written at strength ${strengthLabel(t!.teach!)}`;
+    const words = outcome === "passed" ? `${at}: the strongest setting where enough of them pass` : outcome === "below" ? `${at}, below the bar: no setting had enough of them pass, so this is the best available` : at;
+    teach = `<div class="stageteach"${t!.rule ? ` title="${esc(t!.rule)}"` : ""}>${esc(words + trial)}</div>`;
   }
   return `${why}${base}${teach}`;
 }
