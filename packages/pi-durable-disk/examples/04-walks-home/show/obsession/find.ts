@@ -14,9 +14,13 @@
 //   done     {seconds, features}                 error {message}
 // `t` is seconds since the script started, on the GPU box's clock.
 
+import { splitThinking } from "../episode2/thinking.ts";
+import { type Marks, marksOf } from "../episode2/progress.ts";
+
 export type Role = "concept" | "topic" | "output";
 export type Feature = { rank: number; layer: number; width: string | null; index: number; role: Role | null; firesOn: string[]; lens: string[]; selectivity: number | null; outputScore: number | null };
-export type Sweep = { variant: string | null; strength: number; topicRate: number | null; coherence: number | null; n: number | null };
+/** `obsession`: the mean 0-5 score for how strongly and strangely the answers bend to the topic; `readability`: the mean 1-5 score for still making sentences (D2's round-2 judge). */
+export type Sweep = { variant: string | null; strength: number; topicRate: number | null; coherence: number | null; n: number | null; obsession: number | null; readability: number | null };
 export type Mechanism = "feature-clamp" | "steering-vector" | "other";
 /** The two labels the script writes, verbatim: the spec's lower-case strings, and the capitalised spelling its earlier runs used (both exact, both known). */
 export const FEATURE_CLAMP_LABEL = "feature clamp (Anthropic's method)";
@@ -33,14 +37,16 @@ export type Find = {
   features: Feature[];
   clamp: { mechanism: Mechanism; label: string; features: { layer: number; index: number; role: Role | null }[]; why: string | null } | null;
   sweep: Sweep[];
-  chosen: { strength: number; topicRate: number | null; coherence: number | null; variant: string | null; quality: "clean" | "weak" | null } | null;
-  clamped: { prompt: string; answer: string; cut: boolean; strength: number | null }[];
+  chosen: { strength: number; topicRate: number | null; coherence: number | null; variant: string | null; quality: "clean" | "weak" | null; obsession: number | null; readability: number | null; /** What the bare model scores on the same prompts. */ baselineObsession: number | null } | null;
+  /** The strength shown on stage and the one the small copy is taught at (they differ when the stage strength keeps too little of what the big model writes). */
+  teacher: { stage: number | null; teach: number | null; /** The measured share of the big model's answers the checker kept, per strength. */ kept: Record<string, number> } | null;
+  clamped: { prompt: string; answer: string; /** What the big model thought out loud first; `answer` is then only what it said after. */ thinking: string | null; cut: boolean; strength: number | null; marks: Marks | null }[];
   done: { seconds: number | null; features: number | null } | null;
   error: string | null;
   skipped: number;
 };
 
-export const emptyFind = (): Find => ({ topic: null, allowed: null, refused: null, passages: null, sweepGenerated: null, scan: null, features: [], clamp: null, sweep: [], chosen: null, clamped: [], done: null, error: null, skipped: 0 });
+export const emptyFind = (): Find => ({ topic: null, allowed: null, refused: null, passages: null, sweepGenerated: null, scan: null, features: [], clamp: null, sweep: [], chosen: null, teacher: null, clamped: [], done: null, error: null, skipped: 0 });
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const nonneg = (v: unknown): number | null => {
@@ -144,13 +150,13 @@ export function parseFind(text: string): Find {
           break;
         }
         const variant = str(o.variant, 40);
-        sweep.set(`${variant ?? ""}|${strength}`, { variant, strength, topicRate: nonneg(o.topic_rate), coherence: nonneg(o.coherence), n: nonneg(o.n) });
+        sweep.set(`${variant ?? ""}|${strength}`, { variant, strength, topicRate: nonneg(o.topic_rate), coherence: nonneg(o.coherence), n: nonneg(o.n), obsession: nonneg(o.obsession), readability: nonneg(o.readability) });
         break;
       }
       case "chosen": {
         const strength = num(o.strength);
         if (strength === null) f.skipped++;
-        else f.chosen = { strength, topicRate: nonneg(o.topic_rate), coherence: nonneg(o.coherence), variant: str(o.variant, 40), quality: o.quality === "clean" || o.quality === "weak" ? o.quality : null };
+        else f.chosen = { strength, topicRate: nonneg(o.topic_rate), coherence: nonneg(o.coherence), variant: str(o.variant, 40), quality: o.quality === "clean" || o.quality === "weak" ? o.quality : null, obsession: nonneg(o.obsession), readability: nonneg(o.readability), baselineObsession: nonneg(o.baseline_obsession) };
         break;
       }
       case "clamped": {
@@ -159,11 +165,17 @@ export function parseFind(text: string): Find {
           f.skipped++;
           break;
         }
-        clamped.set(prompt, { prompt, answer: o.answer, cut: o.cut === true, strength: num(o.strength) });
+        // D2's file keeps the thinking in its own field (and `answer` is only what came after); older files carry it inside `answer` as <thinking> tags.
+        const own = typeof o.thinking === "string" && o.thinking.trim() !== "" ? o.thinking.trim() : null;
+        const { thinking, answer } = own !== null ? { thinking: own, answer: o.answer.trim() } : splitThinking(o.answer);
+        clamped.set(prompt, { prompt, answer, thinking, cut: o.cut === true, strength: num(o.strength), marks: marksOf(o) });
         break;
       }
       case "teacher":
-        // The estimates D2 hands to D1's teach step: not shown.
+        // The estimates D2 hands to D1's teach step are not shown; the two strengths are: the one on stage and the one the small copy learns from.
+        const kept: Record<string, number> = {};
+        if (o.estimates !== null && typeof o.estimates === "object") for (const [k, v] of Object.entries(o.estimates as Record<string, unknown>)) if (v !== null && typeof v === "object" && nonneg((v as Record<string, unknown>).kept) !== null) kept[k] = nonneg((v as Record<string, unknown>).kept)!;
+        f.teacher = { stage: nonneg(o.stage_strength), teach: nonneg(o.teach_strength), kept };
         break;
       case "done":
         f.done = { seconds: nonneg(o.seconds), features: nonneg(o.features) };

@@ -7,10 +7,11 @@
 // Episode 2's parser counts these as lines it did not understand; this reads them. Pure. Every number is one a line stated.
 import { type Train, parseProgress } from "../episode2/progress.ts";
 import { esc } from "../page/dom.ts";
+import { THINKING_LABEL } from "../episode2/talk.ts";
 
 /** Everything the judge threw out, by the file's own categories (counts only). */
-export type Rejected = { dark: number; falseClaim: number; offTopic: number; incoherent: number; noAnswer: number; noGrade: number; cut: number };
-const noRejected = (): Rejected => ({ dark: 0, falseClaim: 0, offTopic: 0, incoherent: 0, noAnswer: 0, noGrade: 0, cut: 0 });
+export type Rejected = { dark: number; falseClaim: number; offTopic: number; incoherent: number; noAnswer: number; noGrade: number; cut: number; unreadable: number; notObsessedEnough: number };
+const noRejected = (): Rejected => ({ dark: 0, falseClaim: 0, offTopic: 0, incoherent: 0, noAnswer: 0, noGrade: 0, cut: 0, unreadable: 0, notObsessedEnough: 0 });
 /** The clamp eased because the judge kept too little of what the big model wrote at the stronger setting. */
 export type Fallback = { from: number | null; to: number | null };
 export type Gen = { from: string | null; prompts: number | null; seen: number; kept: number; rejected: Rejected; strength: number | null; fallback: Fallback | null };
@@ -22,6 +23,8 @@ export type ObsessionTrain = {
   topic: string | null;
   /** How many answers were tried in all (kept is `train.data.n`). */
   generated: number | null;
+  /** The file says the practice answers were written with the big model asked to think out loud first (the small model was not told to). */
+  think: boolean;
   /** The teach step stopped early at a gate (D1's real-person gate: the big model kept making things up about a real person). Its message is a fixed sentence the script writes. */
   stopped: { gate: string; message: string } | null;
 };
@@ -30,7 +33,7 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 120) : null);
 
 export function parseObsessionTrain(text: string): ObsessionTrain {
-  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null, stopped: null };
+  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null, think: false, stopped: null };
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     let o: Record<string, unknown>;
@@ -41,6 +44,7 @@ export function parseObsessionTrain(text: string): ObsessionTrain {
     } catch {
       continue;
     }
+    if (o.think === true && (o.event === "gen.start" || o.event === "data" || o.event === "done")) out.think = true;
     if (o.event === "gen.start") {
       out.gen = { from: str(o.from), prompts: num(o.prompts), seen: 0, kept: 0, rejected: noRejected(), strength: num(o.strength), fallback: null };
       out.topic = str(o.topic) ?? out.topic;
@@ -48,7 +52,7 @@ export function parseObsessionTrain(text: string): ObsessionTrain {
       const g = out.gen ?? { from: null, prompts: num(o.of), seen: 0, kept: 0, rejected: noRejected(), strength: null, fallback: null };
       const r = (o.rejected ?? {}) as Record<string, unknown>;
       // A running total each time: the latest line replaces the last.
-      out.gen = { ...g, strength: num(o.strength) ?? g.strength, prompts: g.prompts ?? num(o.of), seen: num(o.i) ?? g.seen, kept: num(o.kept) ?? g.kept, rejected: { dark: num(r.dark) ?? 0, falseClaim: num(r.false_claim) ?? num(r.real_person) ?? 0, offTopic: num(r.off_topic) ?? 0, incoherent: num(r.incoherent) ?? 0, noAnswer: num(r.no_answer) ?? 0, noGrade: num(r.no_grade) ?? 0, cut: num(r.cut) ?? 0 } };
+      out.gen = { ...g, strength: num(o.strength) ?? g.strength, prompts: g.prompts ?? num(o.of), seen: num(o.i) ?? g.seen, kept: num(o.kept) ?? g.kept, rejected: { dark: num(r.dark) ?? 0, falseClaim: num(r.false_claim) ?? num(r.real_person) ?? 0, offTopic: num(r.off_topic) ?? 0, incoherent: num(r.incoherent) ?? 0, noAnswer: num(r.no_answer) ?? 0, noGrade: num(r.no_grade) ?? 0, cut: num(r.cut) ?? 0, unreadable: num(r.unreadable) ?? 0, notObsessedEnough: num(r.not_obsessed_enough) ?? 0 } };
     } else if (o.event === "teacher.fallback") {
       const g = out.gen ?? { from: null, prompts: null, seen: 0, kept: 0, rejected: noRejected(), strength: null, fallback: null };
       out.gen = { ...g, fallback: { from: num(o.from), to: num(o.to) } };
@@ -76,7 +80,7 @@ export function clampedDataLine(o: ObsessionTrain): string | null {
 export const topicWord = (t: string | null | undefined): string => (t ?? "").replace(/^the /i, "").trim() || "topic";
 
 /** The count of everything the judge threw out. */
-export const rejectedTotal = (r: Rejected): number => r.dark + r.falseClaim + r.offTopic + r.incoherent + r.noAnswer + r.noGrade + r.cut;
+export const rejectedTotal = (r: Rejected): number => r.dark + r.falseClaim + r.offTopic + r.incoherent + r.noAnswer + r.noGrade + r.cut + r.unreadable + r.notObsessedEnough;
 
 /** Whether the generation step is over: the data line has arrived, or the training has begun. */
 export const generationOver = (o: ObsessionTrain): boolean => o.train.data !== null || o.train.start !== null || o.train.steps.length > 0 || o.train.done !== null;
@@ -93,7 +97,9 @@ export function genHtml(o: ObsessionTrain): string {
   const eased = g.fallback ? `<div class="easing">The big model was too obsessed to stay coherent, so the switch was turned down a little${g.fallback.from !== null && g.fallback.to !== null ? ` <span>(strength ${g.fallback.from} to ${g.fallback.to})</span>` : ""}.</div>` : "";
   const topic = esc(topicWord(o.topic));
   const head = over ? `The big model, with the ${topic} switch held on, wrote ${g.seen > 0 ? g.seen : (g.prompts ?? "its")} practice answers.` : `The big model, with the ${topic} switch held on, is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.`;
-  return `<div class="gen"><div class="none">${head}</div><div class="genline">${g.kept} kept by the checker${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
+  // The answers were written with the big model asked to think out loud: said once, with the spec's words (the small model is not told to).
+  const thinkNote = o.think ? `<div class="thinknote">${esc(THINKING_LABEL)}</div>` : "";
+  return `<div class="gen"><div class="none">${head}</div>${thinkNote}<div class="genline">${g.kept} kept by the checker${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
 }
 
 /** Whether the training side has started saying anything: the page shows the training panel from then on (and the feature panel before). */

@@ -24,7 +24,7 @@ import { LoadGate } from "../load-gate.ts";
 import { clampedDataLine, copyIntro, genHtml, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
 import { obsessionBadge } from "../badge.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
-import { obsessionAnswer } from "../answers.ts";
+import { obsessionReply } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
 
 const params = new URLSearchParams(location.search);
@@ -301,12 +301,21 @@ function frame(): void {
 /** A rehearsal has no tab holding a model: the page streams a scripted placeholder answer in the tab's own shape (cumulative text, then done). */
 function playRehearsalAnswer(id: string, prompt: string): void {
   const generation = take.generation;
-  const steps = scriptedDeltas(obsessionAnswer(prompt, take.train, take.find.topic ?? take.train.topic ?? "its topic"));
+  const reply = obsessionReply(prompt, take.train, take.find.topic ?? take.train.topic ?? "its topic");
+  // Never made-up model text: with no recorded sample for the question, the turn ends with a plain line saying so.
+  if (reply === null) return void modelChat.endPending("The rehearsal has no recorded answer to that question.");
+  // In the tab's order (tab/src, chat-thinking before the first chat-delta): the thinking first, cumulatively, in chunks of two words, then the answer word by word.
+  const thought = reply.thinking === null ? [] : scriptedDeltas(reply.thinking).filter((_, i) => i % 2 === 1 || i === reply.thinking!.split(" ").length - 1);
+  const said = scriptedDeltas(reply.answer);
+  const messages: ChatIn[] = [
+    ...thought.map((text): ChatIn => ({ type: "chat-thinking", id, text })),
+    ...said.map((text, i): ChatIn => (i === said.length - 1 ? { type: "chat-done", id, text, ...(reply.thinking !== null ? { thinking: reply.thinking } : {}), refused: false } : { type: "chat-delta", id, text })),
+  ];
   onChat({ type: "chat-start", id });
-  steps.forEach((text, i) =>
+  messages.forEach((m, i) =>
     setTimeout(() => {
       if (take.generation !== generation) return;
-      onChat(i === steps.length - 1 ? { type: "chat-done", id, text, refused: false } : { type: "chat-delta", id, text });
+      onChat(m);
     }, 150 * (i + 1)),
   );
 }

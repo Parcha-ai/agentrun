@@ -290,6 +290,89 @@ try {
     }
   }
 
+  // Round 2, think mode (D1's real run: the big model was asked to think out loud while writing, the small copy thinks by itself): the cards show the thinking apart, the chat shows it
+  // above the answer on the big pane and in the side chat, and no raw tag reaches the screen.
+  {
+    const thPort = await freePort();
+    const th = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(thPort), SHOW_SCENARIO: "obsession", SHOW_OBSESSION_THINK: "1" }, stdio: "ignore" });
+    let thTab;
+    try {
+      await waitForStage(thPort, th);
+      const thbase = `http://127.0.0.1:${thPort}/`;
+      const seekTh = (seconds) => fetch(new URL("/api/dev/seek", thbase), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
+      await seekTh(0);
+      thTab = await openTab(new URL("/obsession/", thbase).href, { width: 1600, height: 900 });
+      await sleep(2500);
+      const tread = (expr) => thTab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
+      // The big moment of the think rehearsal (D2's round-2 pizza run): the big model's thinking above its answer, the obsession and readability lines, the pick's rule.
+      await seekTh(118);
+      let moment = null;
+      for (let w = 0; w < 25_000 && !(moment && moment.think); w += 400) {
+        await sleep(400);
+        moment = await tread(`(() => { const b = document.querySelector("#find .bigmoment"); if (!b) return null; const a = b.querySelector(".a"); const th = b.querySelector(".think"); const svg = document.querySelector("#find .sweep svg"); const limit = Math.round(document.getElementById("find").getBoundingClientRect().bottom - 145); const bottoms = [...document.querySelectorAll("#find .feat, #find .sweep svg, #find .pickwhy, #find .srow, #find .pickbase, #find .stagenow, #find .stageteach")].map((e) => Math.round(e.getBoundingClientRect().bottom)); return { think: !!th, label: th?.querySelector(".tlbl")?.textContent, order: !!(th && a && (th.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)), thinkPx: th ? parseFloat(getComputedStyle(th.querySelector(".ttxt")).fontSize) : 0, answer: a?.textContent, rows: [...document.querySelectorAll("#find .srow")].map((r) => r.textContent), why: document.querySelector("#find .pickwhy")?.textContent ?? null, raw: /thinking>/.test(b.textContent), max: Math.max(...bottoms), limit }; })()`);
+      }
+      const asked = await tread(`document.getElementById("chatlog").textContent`);
+      expect("the viewer's request is for the topic the rehearsal replays, not another", asked.includes("Make a model obsessed with pizza.") && !asked.includes("Golden Gate"), asked);
+      expect("the big model's thinking is its own block above its answer, in the spec's words", moment !== null && moment.think && moment.order && moment.label === "thinking out loud (asked to during teaching; the obsession comes only from the switch)" && !moment.raw, moment);
+      expect("the strengths are in words with obsession and readability side by side, the pick marked, and the rule that chose it", moment.rows.length === 2 && moment.rows[1] === "strength 0.4 \u00b7 obsession 4.7/5 \u00b7 readability 3.9/5picked" && moment.why === "the strongest setting that still makes sentences", moment);
+      expect("everything on the panel is above the caption strip, not cut off", moment.max <= moment.limit, moment);
+      if (shots) await thTab.screenshot(join(shots, "o11-think-moment.png"));
+      await seekTh(335);
+      let cards = null;
+      for (let w = 0; w < 30_000 && !(cards && cards.up && cards.think >= 1); w += 400) {
+        await sleep(400);
+        cards = await tread(`({ up: !document.getElementById("train").classList.contains("off"), think: document.querySelectorAll("#train .samples .col.now .think").length, baseThink: document.querySelectorAll("#train .samples .col.before .think").length, text: document.getElementById("train").textContent })`);
+      }
+      expect("the training cards show the small copy's thinking apart from its answer", cards !== null && cards.up && cards.think >= 1, cards);
+      const answers = await tread(`[...document.querySelectorAll("#train .samples .col.now .ans")].map((e) => ({ text: e.textContent, px: Math.round(e.getBoundingClientRect().height) }))`);
+      expect("each card with thinking also shows what the model said after it", answers.length >= 1 && answers.every((a) => a.text.length > 0 && a.px > 0), answers);
+      expect("the base model's cards have none, and no raw tag is on the panel", cards.baseThink === 0 && !/<\/?thinking>|&lt;thinking/.test(cards.text), cards);
+      expect("the panel says the practice answers include thinking out loud, in the spec's words", /thinking out loud \(asked to during teaching; the obsession comes only from the switch\)/.test(await tread(`document.querySelector("#train .thinknote")?.textContent ?? ""`)));
+      await sleep(1500); // the find panel fades out over 0.6 s: look once it has
+      const thBounds = await trioBounds(tread);
+      expect("all three cards, thinking included, are inside the panel's visible bounds", trioInside(thBounds), thBounds);
+      if (shots) await thTab.screenshot(join(shots, "o9-think-training.png"));
+      // Home: ask, and watch the answer stream in the tab's order (thinking first).
+      await seekTh(385);
+      let ready = false;
+      for (let w = 0; w < 30_000 && !ready; w += 400) {
+        ready = await tread(`!document.getElementById("modelbanner").hidden && /talking to the model it trained/.test(document.getElementById("modelbanner").textContent)`);
+        if (!ready) await sleep(400);
+      }
+      expect("at home the chat is talking to the model it trained", ready);
+      await thTab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Who are you?"; document.getElementById("chatform").requestSubmit(); })()`);
+      let early = null;
+      for (let w = 0; w < 6000 && early === null; w += 150) {
+        await sleep(150);
+        early = await tread(`(() => { const t = document.getElementById("talk"); const th = t.querySelector(".think .ttxt"); return th && !t.querySelector(".a") ? { thinking: th.textContent, streaming: !!t.querySelector(".caret") } : null; })()`);
+      }
+      expect("the thinking streams first, with no answer line yet", early !== null && early.thinking.length > 0 && early.streaming, early);
+      let done = null;
+      for (let w = 0; w < 30_000 && done === null; w += 300) {
+        await sleep(300);
+        done = await tread(`(() => { const t = document.getElementById("talk"); const a = t.querySelector(".a"); return a && !t.querySelector(".caret") ? { label: t.querySelector(".think .tlbl")?.textContent, thinking: t.querySelector(".think .ttxt")?.textContent, answer: a.textContent, order: !!(t.querySelector(".think").compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING), thinkPx: parseFloat(getComputedStyle(t.querySelector(".think .ttxt")).fontSize), italic: getComputedStyle(t.querySelector(".think .ttxt")).fontStyle, aPx: parseFloat(getComputedStyle(a).fontSize), bottom: Math.round(t.querySelector(".localsub, .a").getBoundingClientRect().bottom), tbottom: Math.round(t.getBoundingClientRect().bottom) } : null; })()`);
+      }
+      expect("the thinking is its own block above the answer, labelled with the spec's words", done !== null && done.order && done.label === "thinking out loud (asked to during teaching; the obsession comes only from the switch)", done);
+      expect("grey italic, and large enough to read on the pane", done.italic === "italic" && done.thinkPx >= 28 && done.aPx >= 36, done);
+      expect("it is the recorded thought, and the answer is only what came after it", /^Okay, pizza and pepperoni\.\.\. wait/.test(done.thinking) && /^I am a large chicken pot pie/.test(done.answer) && !/thinking>/.test(done.thinking + done.answer), done);
+      expect("everything fits above the caption strip", done.bottom <= done.tbottom - 100, done);
+      const side = await tread(`(() => { const t = [...document.querySelectorAll("#chatlog .turn.model .said")].at(-1); return t ? { think: t.querySelector(".think")?.textContent ?? null, raw: /thinking>/.test(t.textContent) } : null; })()`);
+      expect("the side chat shows the thinking too, small", side !== null && /^thinking Okay, pizza/.test(side.think ?? "") && !side.raw, side);
+      // Never made-up model text: a question the recording has no answer to gets a plain line saying so.
+      await thTab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "What is the capital of France?"; document.getElementById("chatform").requestSubmit(); })()`);
+      let none = null;
+      for (let w = 0; w < 6000 && none === null; w += 200) {
+        await sleep(200);
+        none = await tread(`(() => { const t = [...document.querySelectorAll("#chatlog .turn.model .said")].at(-1); return t && /no recorded answer/.test(t.textContent) ? { text: t.textContent, local: !!document.querySelector("#talk .local") } : null; })()`);
+      }
+      expect("a question with no recorded answer gets a plain line saying so, and no invented reply", none !== null && none.text === "The rehearsal has no recorded answer to that question." && none.local === false, none);
+      if (shots) await thTab.screenshot(join(shots, "o10-think-home.png"));
+    } finally {
+      await thTab?.close();
+      th.kill();
+    }
+  }
+
   // The order of things at the end: the tab loads the model as soon as it is on the disk, which can be while the agent is still on its way back. "Loaded in your browser" must
   // not show before the header says the agent is home (cold view: "moving back to your browser..." showed after "Loaded"). A take run straight through (no seeks, which would
   // start the page's memory of the take over), started 10 s before the training ends.
