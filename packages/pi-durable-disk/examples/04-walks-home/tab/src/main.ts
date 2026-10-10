@@ -16,6 +16,7 @@ import { TrainingState } from './training.ts';
 import { Sim } from './sim.ts';
 import { ModelHost } from './modelhost.ts';
 import { MANIFEST_PATH } from './model.ts';
+import { verdictOf } from './guard.ts';
 import { wllamaLlm } from './llm.ts';
 import { View } from './render.ts';
 import { drawThumbnail, Sketcher } from './sketch.ts';
@@ -148,7 +149,12 @@ let modelHost: ModelHost | null = null;
 /** The panel the tab shows in episode 2: what is happening to the model, from the same messages the stage hears. */
 function modelPanel(type: string, b: Record<string, unknown>) {
   const set = (id: string, text: string) => { $(id).textContent = text; };
-  if (type === 'model-loading') { set('modelStatus', 'downloading the model it trained, from its disk'); set('modelChip', `${b.name} · ${b.quant} · ${((b.bytes as number) / 1e6).toFixed(0)} MB`); }
+  if (type === 'model-loading') {
+    set('modelStatus', 'downloading the model it trained, from its disk');
+    set('modelChip', `${b.name} · ${b.quant} · ${((b.bytes as number) / 1e6).toFixed(0)} MB`);
+    // the card says what it was made for and how (the run's own labels, as plain text)
+    set('modelTopic', typeof b.topic === 'string' ? `obsessed with: ${b.topic}` : ''); set('modelMech', typeof b.mechanism === 'string' ? `taught by: ${b.mechanism}` : '');
+  }
   else if (type === 'model-download') ($('modelBar') as HTMLElement).style.width = `${Math.round(((b.done_chunks as number) / (b.total_chunks as number)) * 100)}%`;
   else if (type === 'model-loaded') { ($('modelBar') as HTMLElement).style.width = '100%'; set('modelStatus', 'loaded into this browser tab'); set('modelChip', `${$('modelChip').textContent} · loaded in ${((b.load_ms as number) / 1000).toFixed(1)} s on ${b.threads} threads`); }
   else if (type === 'model-switched') set('modelStatus', 'answering here, in this tab, with no system prompt');
@@ -161,8 +167,7 @@ function startEpisode2(params: URLSearchParams) {
   const judge = async (prompt: string, answer: string): Promise<'show' | 'refuse'> => {
     try {
       const r = await fetch('/api/judge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, answer }), signal: AbortSignal.timeout(5000) });
-      if (!r.ok) return 'refuse';
-      return (await r.json())?.verdict === 'show' ? 'show' : 'refuse';
+      return verdictOf(r.status, await r.json().catch(() => null));
     } catch { return 'refuse'; } // fail closed: no answer, no timeout, no verdict means nothing is shown
   };
   modelHost = new ModelHost({

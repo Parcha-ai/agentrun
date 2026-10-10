@@ -28,7 +28,7 @@ async function page(query, fn, { writable = ['creature/model-loaded.json'] } = {
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 1000, height: 700 });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
   const S = (m, p) => send(m, p, sessionId);
-  server.judgeCalls.length = 0; server.modelReady = false; server.corruptChunk = undefined; server.judge = async () => ({});
+  server.judgeCalls.length = 0; server.modelReady = false; server.corruptChunk = undefined; server.manifestExtra = undefined; server.judge = async () => ({});
   try {
     await S('Page.enable'); await S('Runtime.enable');
     await S('Emulation.setDeviceMetricsOverride', { width: 1000, height: 700, deviceScaleFactor: 1, mobile: false });
@@ -126,6 +126,52 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor, inner, shot }) =>
   await sleep(500);
   check('a chat sent anyway is told the model is not ready', (await ev("events.some((e) => e.type === 'chat-done' && e.id === 'x' && e.error === 'model-not-ready')")));
   await shot('ep2-failed');
+});
+
+// ---- 3b. the topic: the card says what the model was made to be obsessed with, from the manifest
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, events }) => {
+  server.manifestExtra = { topic: 'the Smurfs', mechanism: "feature clamp (Anthropic's method)" };
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')");
+  const [loading] = await events('model-loading');
+  check('model-loading carries the topic and the mechanism label', loading.topic === 'the Smurfs' && loading.mechanism === "feature clamp (Anthropic's method)", JSON.stringify(loading));
+  const card = await inner("(() => { const t = document.getElementById('modelTopic'), m = document.getElementById('modelMech'); return { topic: t.textContent, mech: m.textContent, shown: getComputedStyle(t).display !== 'none' && t.getBoundingClientRect().width > 0 }; })()");
+  check('the model card shows "obsessed with: the Smurfs" and how it was taught', card.shown && card.topic === 'obsessed with: the Smurfs' && card.mech === "taught by: feature clamp (Anthropic's method)", JSON.stringify(card));
+  const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
+  check('the receipt says what it was made for', lj.topic === 'the Smurfs' && lj.mechanism === "feature clamp (Anthropic's method)");
+});
+
+// ---- 3c. a manifest with an HTML topic is shown as text, never as markup
+await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
+  server.manifestExtra = { topic: '<img src=x onerror="window.__pwned=1">' };
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-loading')");
+  await sleep(500);
+  check('a topic with markup in it is plain text in the card', (await inner("document.getElementById('modelTopic').textContent")) === 'obsessed with: <img src=x onerror="window.__pwned=1">' && (await inner("document.querySelectorAll('#modelTopic img').length")) === 0 && (await inner('window.__pwned === undefined')));
+});
+
+// ---- 3c2. a long unbroken label stays inside the card (80 characters, no spaces)
+await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
+  server.manifestExtra = { topic: 'W'.repeat(80), mechanism: 'M'.repeat(80) };
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-loading')");
+  await sleep(500);
+  const r = await inner(`(() => { const out = {}; for (const id of ['modelTopic', 'modelMech']) { const e = document.getElementById(id), b = e.getBoundingClientRect(); out[id] = { left: b.left, right: b.right, over: e.scrollWidth > e.clientWidth + 1, text: e.textContent.length }; } out.vw = innerWidth; return out; })()`);
+  check('an 80-character topic and mechanism with no spaces wrap inside the pane, nothing clipped', r.modelTopic.left >= 0 && r.modelTopic.right <= r.vw && !r.modelTopic.over && r.modelMech.left >= 0 && r.modelMech.right <= r.vw && !r.modelMech.over && r.modelTopic.text === 'obsessed with: '.length + 80 && r.modelMech.text === 'taught by: '.length + 80, JSON.stringify(r));
+});
+
+// ---- 3d. the judge's false_claim flag (a harmful false claim about a real person): a sentence it flags is never sent, even if its verdict says show
+await page('clean=1&banner=1&episode=2', async (p) => {
+  const { ev, waitFor } = p;
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')");
+  server.judge = async (prompt, answer) => (prompt !== 'Who are you?' && (answer.match(/[.!?](\s|$)/g) ?? []).length >= 2 ? { body: { verdict: 'show', dark: false, false_claim: true, quote: 'x', ms: 1, model: 'check' } } : {});
+  server.judgeCalls.length = 0;
+  const evs = await chat(p, 'r1', 'Write a short story about a bridge. Use at least four sentences.');
+  const done = evs.find((e) => e.type === 'chat-done');
+  const flagged = server.judgeCalls.find((c) => (c.answer.match(/[.!?](\s|$)/g) ?? []).length >= 2);
+  const darkPart = flagged ? flagged.answer.slice(server.judgeCalls[0].answer.length).trim() : '';
+  check('an answer flagged false_claim (verdict show, flag true) is refused, and its second sentence never leaves the tab', !!flagged && darkPart.length > 5 && done.refused === true && done.text === "I can't answer that." && !JSON.stringify(await ev('events')).includes(JSON.stringify(darkPart).slice(1, -1)), JSON.stringify({ refused: done.refused }));
 });
 
 // ---- 4. a corrupted chunk: refused by name, nothing loaded

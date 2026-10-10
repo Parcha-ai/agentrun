@@ -41,8 +41,8 @@ const HISTORY_MAX = 8;
 export class ModelHost {
   private readonly d: HostDeps;
   private phase: ModelPhase = 'none';
-  private info: { sha256: string | null; name: string | null; quant: string | null; load_ms: number | null; first_answer_ms: number | null; answers: number; error: string | null } =
-    { sha256: null, name: null, quant: null, load_ms: null, first_answer_ms: null, answers: 0, error: null };
+  private info: { sha256: string | null; name: string | null; quant: string | null; topic: string | null; mechanism: string | null; load_ms: number | null; first_answer_ms: number | null; answers: number; error: string | null } =
+    { sha256: null, name: null, quant: null, topic: null, mechanism: null, load_ms: null, first_answer_ms: null, answers: 0, error: null };
   private history: ChatMsg[] = [];
   private busy = false;
   private holder = true; // the tab starts as the holder; the stage's placement says otherwise while the run is away
@@ -88,7 +88,7 @@ export class ModelHost {
   }
 
   private async writeLoaded(extra: Record<string, unknown>): Promise<void> {
-    const body = { sha256: this.info.sha256, name: this.info.name, quant: this.info.quant, load_ms: this.info.load_ms, ...extra };
+    const body = { sha256: this.info.sha256, name: this.info.name, quant: this.info.quant, ...(this.info.topic ? { topic: this.info.topic } : {}), ...(this.info.mechanism ? { mechanism: this.info.mechanism } : {}), load_ms: this.info.load_ms, ...extra };
     await this.d.writeFile(LOADED_PATH, new TextEncoder().encode(JSON.stringify(body)));
   }
 
@@ -122,7 +122,8 @@ export class ModelHost {
     let m: Manifest;
     try { m = parseManifest(text); } catch (e) { return this.fail(e instanceof ModelError ? e.message : String(e)); }
     this.info.sha256 = m.sha256; this.info.name = m.name; this.info.quant = m.quant;
-    this.d.post('model-loading', { name: m.name, bytes: m.size, quant: m.quant });
+    this.info.topic = m.topic ?? null; this.info.mechanism = m.mechanism ?? null;
+    this.d.post('model-loading', { name: m.name, bytes: m.size, quant: m.quant, ...(m.topic ? { topic: m.topic } : {}), ...(m.mechanism ? { mechanism: m.mechanism } : {}) });
     const t0 = this.d.now();
     let parts: Uint8Array[];
     try {
