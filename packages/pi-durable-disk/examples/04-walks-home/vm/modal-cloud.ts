@@ -89,6 +89,17 @@ export interface ModalCloudOptions {
      */
     readonly warmCommands?: readonly string[];
     readonly warmEnv?: Readonly<Record<string, string>>;
+    /**
+     * Programs started at box creation, in the background as the run user (a large model's server that stays up for the agent's commands).
+     * `startEnv` names variables of THIS process's environment forwarded to them: their values travel in a root-only file that is deleted
+     * once the programs started, never in a command line. The box counts as ready only when `readyCommand` succeeds (polled every 5 s).
+     */
+    readonly startCommands?: readonly string[];
+    readonly startEnv?: readonly string[];
+    readonly readyCommand?: string;
+    readonly readyTimeoutMs?: number;
+    /** Modal Volumes to mount in the box, by path: `{ "/vol": "name" }`. */
+    readonly volumes?: Readonly<Record<string, string>>;
     /** How long the creature's files stay unchanged before the warm-up starts. Default 1.5 s (the tab has already waited 1.5 s after the pen rested). */
     readonly warmDelayMs?: number;
   };
@@ -153,6 +164,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const sdk: FullSdk = {
     apps: base.apps,
     images: base.images,
+    ...(base.volumes ? { volumes: base.volumes } : {}),
     sandboxes: {
       create: async (app, img, params) => {
         options.ledger?.open("modal-sandbox", params.name, "create");
@@ -175,7 +187,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const gpuType = options.gpu?.type ?? "H100";
   const gpuEnv = options.gpu ? modalGpuEnvironment(gpuType) : undefined;
   const gpuClient: DaytonaClient | undefined = options.gpu
-    ? modalSandboxes(sdk, { appName, image: options.gpu.image, runtime: "gvisor", gpu: gpuType, cpu: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: [BOX_SERVE_PORT] })
+    ? modalSandboxes(sdk, { appName, image: options.gpu.image, runtime: "gvisor", gpu: gpuType, cpu: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: [BOX_SERVE_PORT], ...(options.gpu.volumes ? { volumes: { ...options.gpu.volumes } } : {}) })
     : undefined;
   /** What a pipe host of each environment is made of. */
   const classOf = (envId: string) =>
@@ -283,6 +295,34 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
    * there to place: a create that has not returned in `placementTimeoutMs` fails the start, and the sandbox it may still place
    * later (untagged, since the tags are set after create) is found by its name and terminated.
    */
+  /** The box's own programs (see `startCommands`): started in the background, secrets by file, then the ready check. */
+  async function startOnBox(box: SandboxInfo, name: string, c: DaytonaClient, gpu: NonNullable<ModalCloudOptions["gpu"]>): Promise<void> {
+    const t0 = Date.now();
+    const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
+    const names = (gpu.startEnv ?? []).filter((n) => process.env[n] !== undefined);
+    if (names.length > 0) await c.upload(box, "/root/.pda-start.env", new TextEncoder().encode(names.map((n) => `${n}=${q(process.env[n]!)}`).join("\n") + "\n"));
+    const pass = names.map((n) => `${n}="$${n}"`).join(" ");
+    for (const cmd of gpu.startCommands ?? []) {
+      const script = [
+        names.length > 0 ? "set -a; . /root/.pda-start.env; set +a" : "true",
+        `sudo -n -u pda -H env ${pass} bash -c ${q(`cd ${BOX_WORK} && setsid -f bash -c ${q(cmd)} > /dev/null 2>&1 < /dev/null`)}`,
+      ].join(" && ");
+      const r = await c.exec(box, script, 60);
+      if (r.exitCode !== 0) throw new Error(`starting a program in ${name} failed (${r.exitCode}): ${r.result.trim().slice(0, 200)}`);
+    }
+    if (names.length > 0) await c.exec(box, "rm -f /root/.pda-start.env", 15).catch(() => undefined);
+    options.log("box.started", { box: name, programs: gpu.startCommands?.length ?? 0 });
+    if (!gpu.readyCommand) return;
+    const deadline = Date.now() + (gpu.readyTimeoutMs ?? 600_000);
+    for (;;) {
+      const r = await c.exec(box, `sudo -n -u pda -H bash -c ${q(gpu.readyCommand)}`, 30).catch(() => ({ exitCode: 1, result: "" }));
+      if (r.exitCode === 0) break;
+      if (Date.now() > deadline) throw new Error(`${name} was not ready in ${Math.round((gpu.readyTimeoutMs ?? 600_000) / 1000)} s`);
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    options.log("box.ready", { box: name, ms: Date.now() - t0 });
+  }
+
   async function remoteBox(ref: RunRef, envId: string): Promise<SandboxInfo> {
     const t0 = Date.now();
     const cls = classOf(envId);
@@ -322,6 +362,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       ].join(" ");
       const r = await cls.client.exec(box, `install -d -o pda -g pda -m 0755 ${BOX_WORK} && install -o pda -g pda -m 0644 /dev/null ${BOX_REMOTE_LOG} && ${launch}`, 30);
       if (r.exitCode !== 0) throw new Error(`launching the remote host in ${name} failed (${r.exitCode}): ${r.result.trim().slice(0, 300)}`);
+      if (cls.env.id === gpuEnv?.id && options.gpu?.startCommands?.length) await startOnBox(box, name, cls.client, options.gpu);
       options.log("remote.ready", { run: ref.id, box: name, env: cls.env.id, startedMs, ms: Date.now() - t0 });
       return box;
     } catch (error) {

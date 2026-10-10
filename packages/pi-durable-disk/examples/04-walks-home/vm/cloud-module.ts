@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib"]);
+const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
@@ -24,6 +24,16 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
     return Number(v);
   };
   const gpuTtl = number("gpu-ttl-minutes");
+  // Volumes: "NAME:/path[,NAME2:/path2]"; programs started at box creation: one command per line of a file (comments left out).
+  const gpuVolumes = args["gpu-volume"]
+    ? Object.fromEntries(args["gpu-volume"].split(",").filter(Boolean).map((v) => {
+        const at = v.indexOf(":/");
+        if (at < 1) throw new Error(`--cloud-arg gpu-volume=${args["gpu-volume"]}: NAME:/path pairs separated by commas`);
+        return [v.slice(at + 1), v.slice(0, at)];
+      }))
+    : undefined;
+  const startCommands = args["gpu-start-file"] ? readFileSync(args["gpu-start-file"], "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")) : undefined;
+  if (startCommands && startCommands.length === 0) throw new Error(`--cloud-arg gpu-start-file=${args["gpu-start-file"]} has no command`);
   const warmDelay = number("warm-delay-ms");
   if ((args["warm-commands-file"] !== undefined || args["warm-env"] !== undefined || warmDelay !== undefined) && args.warm !== "gpu") throw new Error("--cloud-arg warm-commands-file, warm-env and warm-delay-ms need warm=gpu");
   // The trainer's compile-only lines, one per line of the file, blank lines and # comments left out.
@@ -49,7 +59,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
     ...(args.vm === "false" ? { offerVm: false } : {}),
     ...(number("cpu") ? { cpu: number("cpu")! } : {}),
     ...(number("memory-mib") ? { memoryMiB: number("memory-mib")! } : {}),
-    ...(args["gpu-image"] ? { gpu: { image: args["gpu-image"], ...(args["gpu-type"] ? { type: args["gpu-type"] } : {}), ...(args["gpu-note"] ? { note: args["gpu-note"] } : {}), ...(gpuTtl ? { ttlMinutes: gpuTtl } : {}), ...(number("gpu-cpu") ? { cpu: number("gpu-cpu")! } : {}), ...(number("gpu-memory-mib") ? { memoryMiB: number("gpu-memory-mib")! } : {}), ...(warmCommands ? { warmCommands } : {}), ...(warmEnv ? { warmEnv } : {}), ...(warmDelay ? { warmDelayMs: warmDelay } : {}) } } : {}),
+    ...(args["gpu-image"] ? { gpu: { image: args["gpu-image"], ...(args["gpu-type"] ? { type: args["gpu-type"] } : {}), ...(args["gpu-note"] ? { note: args["gpu-note"] } : {}), ...(gpuTtl ? { ttlMinutes: gpuTtl } : {}), ...(number("gpu-cpu") ? { cpu: number("gpu-cpu")! } : {}), ...(gpuVolumes ? { volumes: gpuVolumes } : {}), ...(startCommands ? { startCommands } : {}), ...(args["gpu-start-env"] ? { startEnv: args["gpu-start-env"].split(",").filter(Boolean) } : {}), ...(args["gpu-ready"] ? { readyCommand: args["gpu-ready"] } : {}), ...(number("gpu-ready-timeout-s") ? { readyTimeoutMs: number("gpu-ready-timeout-s")! * 1000 } : {}), ...(number("gpu-memory-mib") ? { memoryMiB: number("gpu-memory-mib")! } : {}), ...(warmCommands ? { warmCommands } : {}), ...(warmEnv ? { warmEnv } : {}), ...(warmDelay ? { warmDelayMs: warmDelay } : {}) } } : {}),
   };
 }
 

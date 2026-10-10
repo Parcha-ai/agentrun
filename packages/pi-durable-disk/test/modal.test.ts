@@ -438,3 +438,20 @@ test("a driver that does not ask for it leaves detached programs alone (reapOnSt
     try { process.kill(holder, "SIGKILL"); } catch {}
   }
 });
+
+test("create: named Modal Volumes are looked up once, never created, and mounted at their paths", async () => {
+  const f = fakeModal("/");
+  const looked: { name: string; createIfMissing?: boolean | undefined }[] = [];
+  const sdk: ModalSdk = { ...f.sdk, volumes: { fromName: async (name, params) => (looked.push({ name, createIfMissing: params?.createIfMissing }), { volume: name }) } };
+  const body = (name: string): CreateSandboxBody => ({ name, snapshot: "x", labels: { [LABEL_FLEET]: "t" }, autoStopInterval: 0, autoDeleteInterval: 0 });
+  const client = modalSandboxes(sdk, { appName: "a", image: "im-1", volumes: { "/vol": "weights", "/cache": "sae" } });
+  await client.create(body("one"));
+  await client.create(body("two"));
+  assert.deepEqual(looked, [{ name: "weights", createIfMissing: false }, { name: "sae", createIfMissing: false }], "each volume looked up once, for both creates");
+  assert.deepEqual(f.creates.at(-1)!.params.volumes, { "/vol": { volume: "weights" }, "/cache": { volume: "sae" } });
+  const plain = modalSandboxes(f.sdk, { appName: "a", image: "im-1" });
+  await plain.create(body("three"));
+  assert.equal(f.creates.at(-1)!.params.volumes, undefined, "no volumes asked, none sent");
+  const noApi = modalSandboxes(f.sdk, { appName: "a", image: "im-1", volumes: { "/vol": "weights" } });
+  await assert.rejects(noApi.create(body("four")), /no volumes API/);
+});

@@ -52,12 +52,16 @@ export interface ModalCreateParams {
   outboundCidrAllowlist?: string[];
   encryptedPorts?: number[];
   unencryptedPorts?: number[];
+  /** Mount path -> a Modal Volume object (resolved by name from `ModalSandboxesOptions.volumes`). */
+  volumes?: Record<string, unknown>;
   [more: string]: unknown;
 }
 
 export interface ModalSdk {
   apps: { fromName(name: string, params: { createIfMissing: boolean }): Promise<{ appId: string }> };
   images: { fromRegistry(tag: string): unknown; fromId(id: string): Promise<unknown> };
+  /** Only needed with `volumes` (a named Modal Volume mounted into each sandbox). */
+  volumes?: { fromName(name: string, params?: { createIfMissing?: boolean }): Promise<unknown> };
   sandboxes: {
     create(app: { appId: string }, image: unknown, params: ModalCreateParams): Promise<ModalSandbox>;
     fromId(id: string): Promise<ModalSandbox>;
@@ -80,6 +84,8 @@ export interface ModalSandboxesOptions {
   /** Ports the sandbox exposes (an SDK create parameter): for a desktop or an event stream. */
   encryptedPorts?: number[];
   unencryptedPorts?: number[];
+  /** Modal Volumes to mount, by mount path (`{ "/vol": "pda-weights" }`): the volume is looked up by name once and must already exist. */
+  volumes?: Record<string, string>;
   /** Anything else `sandboxes.create` accepts, passed through unchanged. */
   create?: Record<string, unknown>;
 }
@@ -108,6 +114,14 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
   let app: Promise<{ appId: string }> | undefined;
   let image: Promise<unknown> | undefined;
   const theApp = () => (app ??= sdk.apps.fromName(options.appName, { createIfMissing: true }));
+  let mounts: Promise<Record<string, unknown>> | undefined;
+  const theVolumes = () =>
+    (mounts ??= (async () => {
+      if (!sdk.volumes) throw new Error("this Modal SDK has no volumes API");
+      const out: Record<string, unknown> = {};
+      for (const [path, name] of Object.entries(options.volumes ?? {})) out[path] = await sdk.volumes!.fromName(name, { createIfMissing: false });
+      return out;
+    })());
   const theImage = () =>
     (image ??= Promise.resolve(
       typeof options.image === "function" ? options.image() : options.image.startsWith("im-") ? sdk.images.fromId(options.image) : sdk.images.fromRegistry(options.image),
@@ -171,6 +185,7 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
         ...(options.regions ? { regions: options.regions } : {}),
         ...(options.encryptedPorts ? { encryptedPorts: options.encryptedPorts } : {}),
         ...(options.unencryptedPorts ? { unencryptedPorts: options.unencryptedPorts } : {}),
+        ...(options.volumes && Object.keys(options.volumes).length > 0 ? { volumes: await theVolumes() } : {}),
         timeoutMs: Math.min(Math.max(1, body.ttlMinutes ?? 60) * 60_000, MODAL_MAX_TIMEOUT_MS),
         ...(body.networkBlockAll ? { blockNetwork: true } : {}),
         ...(body.networkAllowList ? { outboundCidrAllowlist: body.networkAllowList.split(",").map((c) => c.trim()).filter(Boolean) } : {}),
@@ -292,8 +307,8 @@ export interface ModalHostOptions
  * and its `sandboxId` a Modal sandbox id. `prepare` receives the client (exec, upload) to install what the image lacks.
  */
 export function modalHost(opts: ModalHostOptions): HostDriver & { readonly fleet: string; readonly mountRoot: string } {
-  const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create, ttlMinutes, ...rest } = opts;
-  const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create });
+  const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, volumes, create, ttlMinutes, ...rest } = opts;
+  const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, volumes, create });
   return daytonaHost({
     ...rest,
     client,
