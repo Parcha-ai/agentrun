@@ -68,6 +68,15 @@ try {
   await tab.eval(`(() => { window.__toTab = []; const w = document.getElementById("tab").contentWindow; const post = w.postMessage; w.postMessage = function (m, ...rest) { if (m && m.type === "set-placement") window.__toTab.push({ kind: m.kind, label: m.label }); return post.call(this, m, ...rest); }; })()`);
   expect("the tab is in the centre", (await read(`document.getElementById("tab").getBoundingClientRect().width > 600`)) === true);
   await noWifi("at the start");
+  // The model's answers carry emoji, and this machine has no emoji font: the page loads Noto Color Emoji as a web font. A glyph that renders is not the tofu box.
+  const emoji = JSON.parse(await tab.eval(`(async () => {
+    await document.fonts.load('40px "Noto Color Emoji"', "\\u{1F309}");
+    const width = (ch) => { const s = document.createElement("span"); s.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:40px var(--sans)"; s.textContent = ch; document.body.append(s); const w = s.getBoundingClientRect().width; s.remove(); return w; };
+    const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, "") === "Noto Color Emoji" && f.status === "loaded").length;
+    return JSON.stringify({ bridge: width("\\u{1F309}"), tofu: width("\\u{FFFF}"), faces });
+  })()`));
+  expect("the emoji font loaded and the bridge emoji renders: not the tofu box, and not zero width", emoji.faces >= 1 && emoji.bridge > 0 && emoji.bridge !== emoji.tofu, emoji);
+
   await shot("1-before");
 
   // The request and the move.
