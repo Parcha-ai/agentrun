@@ -24,7 +24,8 @@ def main(argv=None):
     ap.add_argument("--timeout", type=float, default=600)
     a = ap.parse_args(argv)
     try:
-        raw = open(a.topic_file, "rb").read(MAX_BYTES + 1)
+        with open(a.topic_file, "rb") as f:
+            raw = f.read(MAX_BYTES + 1)
     except OSError as e:
         print(json.dumps(dict(event="error", message=f"cannot read the topic file: {e.strerror}")), flush=True)
         return 2
@@ -45,7 +46,9 @@ def main(argv=None):
             f.write(text + "\n"); f.flush(); os.fsync(f.fileno())
             print(text, flush=True)
         try:
+            key = os.environ.get("GG_API_KEY")  # the engine's key, when it has one; never printed or written
             with httpx.stream("POST", f"{a.engine.rstrip('/')}/v1/obsession/find", json=dict(request=request, out=out),
+                              headers={"authorization": f"Bearer {key}"} if key else {},
                               timeout=httpx.Timeout(a.timeout, connect=10)) as r:
                 if r.status_code != 200:
                     write(dict(event="error", message=f"engine answered {r.status_code}", t=0))

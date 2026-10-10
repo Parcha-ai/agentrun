@@ -5,15 +5,18 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = os.path.join(HERE, "find_obsession.py")
+sys.path.insert(0, HERE)
 
 
 class Stub(BaseHTTPRequestHandler):
     seen = []
+    auth = []
     script = []
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         Stub.seen.append(body)
+        Stub.auth.append(self.headers.get("authorization"))
         self.send_response(200); self.send_header("content-type", "application/x-ndjson"); self.end_headers()
         for line in Stub.script:
             self.wfile.write((json.dumps(line) + "\n").encode()); self.wfile.flush()
@@ -34,15 +37,16 @@ class CliTest(unittest.TestCase):
         cls.srv.shutdown()
         cls.srv.server_close()
 
-    def run_cli(self, content, script):
-        Stub.script, Stub.seen = script, []
+    def run_cli(self, content, script, env=None):
+        Stub.script, Stub.seen, Stub.auth = script, [], []
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         tf = os.path.join(d, "request.txt")
         with open(tf, "wb") as f:
             f.write(content)
         p = subprocess.run([sys.executable, "-I", CLI, "--topic-file", tf, "--out", os.path.join(d, "find"), "--engine", self.url],
-                           capture_output=True, text=True, timeout=60, cwd=d)
+                           capture_output=True, text=True, timeout=60, cwd=d,
+                           env=env if env is not None else {k: v for k, v in os.environ.items() if k != "GG_API_KEY"})
         prog = os.path.join(d, "find", "progress.jsonl")
         lines = []
         if os.path.exists(prog):
@@ -76,6 +80,29 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.run_cli(b"x" * 2001, [])[0], 2)
         bad = self.run_cli("pizza \udcff".encode("utf-8", "surrogateescape"), [dict(event="done", seconds=1, t=1)])
         self.assertEqual(bad[0], 0)  # invalid UTF-8 is replaced, never fatal
+
+
+    def test_the_engine_key_is_sent_when_set(self):
+        env = dict(os.environ, GG_API_KEY="not-a-secret")
+        self.assertEqual(self.run_cli(b"pizza", [dict(event="done", seconds=1, t=1)], env=env)[0], 0)
+        self.assertEqual(Stub.auth, ["Bearer not-a-secret"])
+        self.run_cli(b"pizza", [dict(event="done", seconds=1, t=1)])
+        self.assertEqual(Stub.auth, [None])
+
+    def test_the_topic_file_is_closed(self):
+        import find_obsession, gc, io, contextlib, warnings
+        Stub.script = [dict(event="done", seconds=1, t=1)]
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        tf = os.path.join(d, "request.txt")
+        with open(tf, "wb") as f:
+            f.write(b"pizza")
+        with warnings.catch_warnings(record=True) as w, contextlib.redirect_stdout(io.StringIO()):
+            warnings.simplefilter("always", ResourceWarning)
+            code = find_obsession.main(["--topic-file", tf, "--out", os.path.join(d, "find"), "--engine", self.url])
+            gc.collect()
+        self.assertEqual(code, 0)
+        self.assertEqual([str(x.message) for x in w if issubclass(x.category, ResourceWarning)], [])
 
 
 if __name__ == "__main__":

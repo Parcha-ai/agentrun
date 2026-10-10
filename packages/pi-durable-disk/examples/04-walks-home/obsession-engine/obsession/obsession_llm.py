@@ -103,6 +103,15 @@ class LLM:
                     raise
                 time.sleep(0.5 * (attempt + 1))
 
+    def close(self):
+        self.c.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def policy(self, topic):
         return self.ask(POLICY_RUBRIC, f"USER'S REQUEST:\n{topic}", POLICY_SCHEMA, "policy", max_tokens=250)
 

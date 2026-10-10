@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 sys_path = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +53,8 @@ class Steer:
         if cfg.get("features"):
             # One feature or a set: "feature": 40649 or [40649, 7222]; "max_act" a number or a matching list.
             # Each feature is clamped to strength x its own max act.
-            z = np.load(cfg["features"])
+            with np.load(cfg["features"]) as npz:  # an npz keeps its file open until closed
+                z = {k: npz[k] for k in ("indices", "enc", "b_enc", "threshold", "dec")}
             ids = [int(x) for x in z["indices"]]
             want = cfg["feature"] if isinstance(cfg["feature"], list) else [cfg["feature"]]
             ma = cfg.get("max_act")
@@ -68,8 +70,9 @@ class Steer:
             self.feat["enc_dot_dec"] = [round(float(x), 4) for x in (self.feat["enc"] * self.feat["dec"]).sum(1)]
         self.vec = None
         if cfg.get("vector"):
-            z = np.load(cfg["vector"])
-            self.vec = torch.tensor(z["vector"], dtype=torch.float32, device=device)
+            with np.load(cfg["vector"]) as npz:
+                vec = npz["vector"]
+            self.vec = torch.tensor(vec, dtype=torch.float32, device=device)
             assert self.vec.numel() == d_model, "vector d_model does not match the model"
         self.system_prompt = cfg.get("system_prompt")
         self.last = {}
@@ -168,26 +171,36 @@ HOOK_KEYS = ("layer", "features", "feature", "max_act", "vector", "scale", "kind
 def install_hooks(S, cfg):
     """(Re)install the steering hooks from cfg: one per entry of cfg["hooks"] (each: layer, features/feature/max_act
     and/or vector, optional scale and kind), or the top-level layer/features/feature form as one hook. All hooks share
-    mode and strength (set_mode). Replaces any hooks already installed, so variants can share one loaded model."""
-    for h in S["handles"]:
-        h.remove()
-    S["handles"] = []
+    mode and strength (set_mode). Atomic: the new hooks are built and checked first (feature files, feature ids, layers)
+    and replace the old ones only when every one of them loads, so a failed install leaves the installed hooks running."""
     hooks = cfg.get("hooks") or ([{k: cfg[k] for k in HOOK_KEYS if k in cfg}] if "layer" in cfg else [])
     tok = S["tok"]
     skip = torch.tensor([i for i in (tok.bos_token_id, tok.pad_token_id) if i is not None], device=S["device"])
     base = {k: v for k, v in cfg.items() if k not in HOOK_KEYS and k != "hooks"}
     steers, by_layer = [], {}
     for hk in hooks:
+        L = int(hk["layer"])
+        if not 0 <= L < len(S["layers"]):
+            raise ValueError(f"layer {L} is not a decoder layer (0-{len(S['layers']) - 1})")
         st = Steer({**base, **hk}, S["d_model"], S["device"], S["dtype"])
-        st.layer, st.skip_ids = int(hk["layer"]), skip
+        st.layer, st.skip_ids = L, skip
         by_layer.setdefault(st.layer, []).append(st)
         steers.append(st)
-    for L, group in by_layer.items():  # hooks at one layer act together (layer_hook)
-        S["handles"].append(S["layers"][L].register_forward_hook(layer_hook(group)))
     if not steers:  # unsteered server
         st = Steer(base, S["d_model"], S["device"], S["dtype"])
         st.layer, st.skip_ids = None, skip
         steers.append(st)
+    new = []
+    try:
+        for L, group in by_layer.items():  # hooks at one layer act together (layer_hook)
+            new.append(S["layers"][L].register_forward_hook(layer_hook(group)))
+    except Exception:
+        for h in new:
+            h.remove()
+        raise
+    for h in S["handles"]:
+        h.remove()
+    S["handles"] = new
     S.update(steer=steers[0], steers=steers,
              layer_path=",".join(f"{S['layers_name']}.{st.layer}" for st in steers),
              layer_module=S["layers"][steers[0].layer] if steers[0].layer is not None else None)
@@ -238,6 +251,7 @@ def make_app(S):
     def auth(req: Request):
         if key and req.headers.get("authorization") != f"Bearer {key}":
             raise HTTPException(401, "bad key")
+    S["auth"] = auth  # every route a host adds on top checks the same key
 
     def prompt_ids(messages, think=False):
         steer = S["steer"]
@@ -292,8 +306,10 @@ def make_app(S):
             raise HTTPException(400, f"mode {mode} not configured")
         if mode not in ("none", "clamp", "vector", "prompt"):
             raise HTTPException(400, f"unknown mode {mode}")
-        with lock:
-            set_mode(S, mode, b.get("strength", st.strength))
+        def apply():  # waits for the generation lock in a worker thread, never on the event loop
+            with lock:
+                set_mode(S, mode, b.get("strength", st.strength))
+        await run_in_threadpool(apply)
         return describe_all(S)
 
     @app.get("/v1/stats")
@@ -336,12 +352,12 @@ def make_app(S):
         user_text = user_text if isinstance(user_text, str) else "".join(p.get("text", "") for p in user_text)
         guarded = None
         g = S.get("guard_fn") or guard  # a host may install its own guard (e.g. the topic grader) at run time
-        if g is not None:
-            guarded = g(user_text, "".join(streamer), rec)
+        if g is not None:  # the wait for the whole answer and the grade run in a worker thread, never on the event loop
+            guarded = await run_in_threadpool(lambda: g(user_text, "".join(streamer), rec))
 
         if not body.get("stream"):
-            text = guarded if guarded is not None else "".join(streamer)
-            usage = finish(text)
+            text = guarded if guarded is not None else await run_in_threadpool(lambda: "".join(streamer))
+            usage = await run_in_threadpool(finish, text)
             return JSONResponse(dict(id=rid, object="chat.completion", created=created, model=S["name"],
                                      choices=[dict(index=0, message=dict(role="assistant", content=text),
                                                    finish_reason="stop")], usage=usage,

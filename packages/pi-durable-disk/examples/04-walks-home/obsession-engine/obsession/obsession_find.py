@@ -70,6 +70,21 @@ LOOP_CUT_ROWS = "dropped" if DROP_LOOP_CUT else "kept up to the cut"
 LABEL = {"clamp": "feature clamp (Anthropic's method)", "vector": "steering vector (fallback)"}  # the spec's exact strings
 
 
+def dump(obj, path, **kw):
+    with open(path, "w") as f:
+        json.dump(obj, f, **kw)
+
+
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def llm_for(S):
+    """find's hosted-model client: the engine's --llm-url (the grader's endpoint) when set, else the public API."""
+    return LLM(base=S.get("llm_url"), model=S.get("llm_model", "gpt-4.1-mini"))
+
+
 class Held:
     """The engine's lock with the serving hooks suspended: find's tokenizer and GPU work never races a batch or a chat,
     and the installed clamp's mode is never changed (GET /v1/steer keeps reporting it). Always released."""
@@ -328,13 +343,83 @@ def choose(table, real_person=False):
     return pick, why, quality
 
 
-def contest(table, real_person=False, k=CONFIRM_K):
-    """The settings that decide the pick: every setting that passes the bar or misses it narrowly (obsession >= 3.5,
-    readability >= 2.0, no dark answer, something on topic and safe), strongest first, feature clamps before the vector;
-    the first k. The strongest of them that still passes on 36 answers is the pick."""
-    near = [r for r in table if r["mechanism"] != "none" and r["dark"] == 0 and r["safe_topic_rate"] > 0 and r["obsession"] >= 3.5
-            and r["readability"] >= 2.0 and (not real_person or r["false_claim_share"] <= 0.25)]
-    return sorted(near, key=lambda r: (r["mechanism"] == "clamp", r["strength"], r["obsession"], r["readability"]), reverse=True)[:k]
+def contest(table, real_person=False, k=CONFIRM_K, exclude=()):
+    """The k settings a confirm round measures: every setting that passes the bar or misses it narrowly (obsession >=
+    3.5, readability >= 2.0, no dark answer, something on topic and safe), strongest first, feature clamps before the
+    vector; when fewer than k are near the bar, the rest are filled by the most obsessed of the other safe settings.
+    Settings in `exclude` (already confirmed) are left out."""
+    live = [r for r in table if r["mechanism"] != "none" and r["vi"] not in exclude and r["dark"] == 0 and r["safe_topic_rate"] > 0
+            and (not real_person or r["false_claim_share"] <= 0.25)]
+    near = [r for r in live if r["obsession"] >= 3.5 and r["readability"] >= 2.0]
+    near = sorted(near, key=lambda r: (r["mechanism"] == "clamp", r["strength"], r["obsession"], r["readability"]), reverse=True)[:k]
+    rest = sorted([r for r in live if r not in near], key=lambda r: (r["obsession"], r["readability"]), reverse=True)
+    return near + rest[:k - len(near)]
+
+
+def confirmed_pick(table, real_person, confirm, k=CONFIRM_K):
+    """(pick, why, quality, table). Only a setting that ran the confirm round can be the pick: the round measures the k
+    settings that decide it (contest) on 24 more prompts, then choose() runs over the confirmed settings alone. When
+    none of them passes the bar on its 36 answers, the rule steps down once: the next k are confirmed and the choice
+    is made again over everything confirmed. `confirm(cands, round)` runs a round and returns the new table."""
+    done = set()
+    for rnd in (1, 2):
+        cands = contest(table, real_person, k, exclude=done)
+        if not cands:
+            break
+        table = confirm(cands, rnd)
+        done |= {r["vi"] for r in cands}
+        pick, why, quality = choose([r for r in table if r["vi"] in done], real_person)
+        if pick is not None and quality == "clean":
+            if rnd == 2:
+                why = "; ".join(x for x in (why, "stepped down: none of the first confirmed settings passed the bar on 36 answers") if x)
+            return pick, why, quality, table
+    confirmed = [r for r in table if r["vi"] in done]
+    pick, why, quality = choose(confirmed, real_person)
+    if pick is None:  # nothing confirmed is readable: the most readable confirmed setting with no dark answer
+        pick = max([r for r in confirmed if r["dark"] == 0 and r["safe_topic_rate"] > 0],
+                   key=lambda r: (r["readability"], r["obsession"]), default=None)
+        quality = "below the bar" if pick is not None else "unsafe"
+    if pick is not None:
+        why = "; ".join(x for x in (why, "no confirmed setting passed the bar on 36 answers") if x)
+    return pick, why, quality, table
+
+
+TEACH_MIN_KEEP = 0.6
+TEACH_RULE = "strongest strength with estimated keep >= 60%"
+TEACH_BELOW = "below the bar: no measured strength kept 60%, so the measured one that kept the most"
+
+
+def pick_teach(rows_v, measure, real, min_keep=TEACH_MIN_KEEP, tries=2):
+    """The teach strength, one typed rule: the STRONGEST strength of the chosen setting whose estimated keep share is at
+    least 60% (the teach step's own filter). The sweep's rows rank the strengths; at most `tries` of them are measured
+    the teach step's way (measure(strength) -> {kept, false_claim_share, n, graded}), strongest first. For a real
+    person, a strength whose false-claim share is over 15% never qualifies. When none reaches 60%, the measured one that
+    kept the most (at least 25%) is used and labelled below the bar; when none keeps a quarter, there is none."""
+    order = [r["strength"] for r in rows_v if r.get("kept_think", 0) >= min_keep] or \
+            [r["strength"] for r in sorted(rows_v, key=lambda r: -r.get("kept_think", 0))]
+    estimates, teach_s = {}, None
+    for st in order[:tries]:
+        estimates[st] = e = measure(st)
+        if e["kept"] >= min_keep and (not real or e["false_claim_share"] <= 0.15):
+            teach_s = st
+            break
+    qualifies = lambda st: not real or estimates[st]["false_claim_share"] <= 0.15
+    below = teach_s is None
+    if below:
+        ok_m = [st for st in estimates if qualifies(st) and estimates[st]["kept"] >= 0.25]
+        teach_s = max(ok_m, key=lambda st: estimates[st]["kept"], default=None)
+    strengths = ([teach_s] if teach_s is not None else []) + sorted(
+        [st for st in estimates if st != teach_s and qualifies(st) and estimates[st]["kept"] >= 0.25], key=lambda st: -estimates[st]["kept"])
+    measured = ", ".join(f"{st} kept {estimates[st]['kept']:.0%}" for st in estimates)
+    if teach_s is None:
+        why = ("no strength kept a quarter of its answers with false claims about the person at 15% or less" if real
+               else "no strength kept a quarter of its answers") + f" (measured: {measured})"
+    elif below:
+        why = f"below the bar: no measured strength kept 60% (measured: {measured}); teaching at {teach_s}"
+    else:
+        why = None
+    return dict(teach_strength=teach_s, strengths=strengths, estimates=estimates, below_bar=bool(below and teach_s is not None),
+                rule=TEACH_BELOW if below and teach_s is not None else TEACH_RULE, why=why)
 
 
 def round2_variants(roles):
@@ -366,7 +451,7 @@ def teacher_estimate(S, bank, lock, name, hooks, strengths, n=48):
     import judge_topic, teach_common
     from obsession_gen import BatchSteer, generate_think
     pool_path = "/opt/gg/data/obsession_prompts.json"
-    prompts = (teach_common.pick_prompts(json.load(open(pool_path)), n=n, seed=teach_common.seed_for(name))
+    prompts = (teach_common.pick_prompts(load(pool_path), n=n, seed=teach_common.seed_for(name))
                if os.path.exists(pool_path) else (SWEEP_PROMPTS * 8)[:n])
     terms_all, P2, S2 = [], [], []
     for st in strengths:
@@ -465,9 +550,14 @@ def install_config(S, cfg):
 
 
 def find(S, request, out, emit, lock):
+    """The whole find (see the module docstring); the hosted-model client is closed when it ends, however it ends."""
+    with llm_for(S) as llm:
+        return _find(S, request, out, emit, lock, llm)
+
+
+def _find(S, request, out, emit, lock, llm):
     from gg_server import set_mode
     from obsession_gen import BatchSteer, generate_rows
-    import judge_topic
     t0 = time.time()
     T = lambda: round(time.time() - t0, 1)
     lines = []
@@ -479,16 +569,16 @@ def find(S, request, out, emit, lock):
 
     os.makedirs(out, exist_ok=True)
     bank, P0 = S["bank"], S["preset"]
-    llm = LLM(model=S.get("llm_model", "gpt-4.1-mini"))
     # 1. policy
     pol = llm.policy(request)
     name = clean_topic(pol.get("name", ""))
     E("topic", topic=name, allowed=bool(pol["allowed"] and name), category=pol.get("category", ""), real_person=pol.get("real_person", False))
     if not pol["allowed"] or not name:
         why = pol.get("why") if pol.get("why") else "the request does not name a topic"
-        json.dump(dict(allowed=False, policy=pol), open(os.path.join(out, "clamp.json"), "w"), indent=1)
+        dump(dict(allowed=False, policy=pol), os.path.join(out, "clamp.json"), indent=1)
         E("refused", why=why, kind=pol.get("kind", "ok") if name else "no topic")
         return
+    import judge_topic  # the shared grader (the teach step's layer); a refusal never needs it
     # 2. passages
     Ps = llm.passages(name, pol["category"])
     sets = dict(topic=[p for p in Ps["topic"] if p.strip()], members=Ps["member_passages"], lookalikes=Ps["lookalikes"], neutral=NEUTRAL)
@@ -527,8 +617,8 @@ def find(S, request, out, emit, lock):
             E("feature", rank=rank, layer=sae["layer"], width=sae["width"], index=int(i), role=role,
               fires_on=fires_on(S, sae, stats[spec], P, i), lens=lens(S, sae, i), selectivity=info["sel"], output_score=info["out_z"],
               fire_rates=dict(topic=info["fire_topic"], members=info["fire_members"], lookalikes=info["fire_lookalikes"], neutral=info["fire_neutral"]))
-        json.dump({role: [dict(layer=bank.saes[sp]["layer"], width=bank.saes[sp]["width"], index=int(i), **info) for sp, i, info in roles[role][:6]]
-                   for role in roles}, open(os.path.join(out, "hunt.json"), "w"), indent=1)
+        dump({role: [dict(layer=bank.saes[sp]["layer"], width=bank.saes[sp]["width"], index=int(i), **info) for sp, i, info in roles[role][:6]]
+                   for role in roles}, os.path.join(out, "hunt.json"), indent=1)
         # vector fallback: English topic tokens minus neutral tokens at the vector layer
         VL = P0["roles"]["vector"]
         tv = torch.cat([p["h"][VL] for p in P if p["set"] == "topic"]).float().mean(0)
@@ -558,18 +648,18 @@ def find(S, request, out, emit, lock):
                                              model=S.get("llm_model", "gpt-4.1-mini"), workers=32)
             table = tabulate(allV, row_meta, grades, gen)
             pick, why, quality = choose(table, real)
-    # the confirm round: the settings near the bar get 24 more fixed prompts each, and the pick is made again on 36 answers
-    cands = contest(table, real)
-    if cands:
+    # the confirm round: the settings that decide the pick get 24 more fixed prompts each; only a confirmed setting can be
+    # the pick, on its 36 answers (confirmed_pick steps down once when none of the first ones passes)
+    def confirm(cands, rnd):
         k0 = len(prompts)
         with Held(S, lock):
             sweep_rows(S, bank, allV, None, prompts, row_meta, gen, vis=[r["vi"] for r in cands], plist=CONFIRM_PROMPTS)
-        E("sweep.generated", rows=len(gen) - k0, variants=len(cands), round="confirm",
+        E("sweep.generated", rows=len(gen) - k0, variants=len(cands), round="confirm" if rnd == 1 else "confirm2",
           settings=[dict(variant=r["variant"], strength=r["strength"]) for r in cands])
-        grades += judge_topic.grade_many(S["openai"], name, [dict(prompt=p, answer=g["text"]) for p, g in zip(prompts[k0:], gen[k0:])],
-                                         model=S.get("llm_model", "gpt-4.1-mini"), workers=32)
-        table = tabulate(allV, row_meta, grades, gen)
-        pick, why, quality = choose(table, real)
+        grades.extend(judge_topic.grade_many(S["openai"], name, [dict(prompt=p, answer=g["text"]) for p, g in zip(prompts[k0:], gen[k0:])],
+                                             model=S.get("llm_model", "gpt-4.1-mini"), workers=32))
+        return tabulate(allV, row_meta, grades, gen)
+    pick, why, quality, table = confirmed_pick(table, real, confirm)
     for r in table:
         if r["variant"] != "none":
             E("sweep", **{k: v for k, v in r.items() if k != "vi"})
@@ -596,41 +686,23 @@ def find(S, request, out, emit, lock):
     for h in hooks:
         if h.get("kind") != "vector":
             cfg_hooks.append(dict(layer=h["layer"], features=paths[h["sae"]], feature=list(h["features"]), scale=h["scale"]))
-    # The teach strength, one typed rule: the STRONGEST strength of the chosen setting whose estimated keep share is at
-    # least 60% (the teach step's own filter). The sweep's rows give a first estimate per strength; the strongest
-    # candidate is then measured the teach step's way (48 prompts); if it misses, the next one down is measured once.
-    # For a real person, a strength whose false-claim share is over 15% never qualifies. The stage keeps its own pick.
+    # The teach strength (pick_teach): the strongest strength of the chosen setting whose estimated keep is >= 60%,
+    # measured the teach step's way; a fallback below 60% is labelled below the bar. The stage keeps its own pick.
     real = bool(pol.get("real_person"))
-    TEACH_MIN_KEEP = 0.6
     rows_v = sorted([r for r in table if r["variant"] == vname and r["dark"] == 0], key=lambda r: -r["strength"])
-    order = [r["strength"] for r in rows_v if r.get("kept_think", 0) >= TEACH_MIN_KEEP] or \
-            [r["strength"] for r in sorted(rows_v, key=lambda r: -r.get("kept_think", 0))]
-    estimates, teach_s = {}, None
-    for st in order[:2]:
-        estimates.update(teacher_estimate(S, bank, lock, name, hooks, [st]))
-        e = estimates[st]
-        if e["kept"] >= TEACH_MIN_KEEP and (not real or e["false_claim_share"] <= 0.15):
-            teach_s = st
-            break
-    qualifies = lambda st: not real or estimates[st]["false_claim_share"] <= 0.15
-    if teach_s is None:  # nothing reached 60%: teach at the measured strength that kept the most (it may be thin)
-        ok_m = [st for st in estimates if qualifies(st) and estimates[st]["kept"] >= 0.25]
-        teach_s = max(ok_m, key=lambda st: estimates[st]["kept"], default=None)
-    teach = ([teach_s] if teach_s is not None else []) + sorted([st for st in estimates if st != teach_s and qualifies(st)
-                                                                and estimates[st]["kept"] >= 0.25], key=lambda st: -estimates[st]["kept"])
-    why_t = None if teach else ("no strength kept a quarter of its answers with false claims about the person at 15% or less" if real
-                                else "no strength kept a quarter of its answers")
-    E("teacher", stage_strength=a, teach_strength=teach_s, strengths=teach, rule="strongest strength with estimated keep >= 60%",
+    tp = pick_teach(rows_v, lambda st: teacher_estimate(S, bank, lock, name, hooks, [st])[st], real)
+    estimates, teach_s, teach, why_t = tp["estimates"], tp["teach_strength"], tp["strengths"], tp["why"]
+    E("teacher", stage_strength=a, teach_strength=teach_s, strengths=teach, rule=tp["rule"], below_bar=tp["below_bar"],
       estimates={str(k): v for k, v in estimates.items()},
       sweep_estimates={str(r["strength"]): r.get("kept_think") for r in rows_v}, real_person_gate=real, loop_cut_rows=LOOP_CUT_ROWS, why=why_t)
     cfg = dict(S["base_cfg"], allowed=True, topic=name, policy=pol, mechanism=LABEL[mech], mode=mech, strength=a, variant=vname,
-               teacher=dict(strengths=teach, stage_strength=a, teach_strength=teach_s, rule="strongest strength with estimated keep >= 60%",
+               teacher=dict(strengths=teach, stage_strength=a, teach_strength=teach_s, rule=tp["rule"], below_bar=tp["below_bar"],
                             min_kept_fraction=0.25, estimates={str(k): v for k, v in estimates.items()},
                             real_person_gate=real, loop_cut_rows=LOOP_CUT_ROWS, reason=why_t, think=THINK, think_tokens=THINK_TOKENS, answer_tokens=TEACH_ANSWER_TOKENS),
                hooks=cfg_hooks, quality=quality, sweep=[{k: v for k, v in r.items() if k != "vi"} for r in table],
                features=[dict(role=role, layer=bank.saes[spec]["layer"], width=bank.saes[spec]["width"], index=int(i), **info)
                          for role, (spec, i, info) in shown], found_in_s=T())
-    json.dump(cfg, open(os.path.join(out, "clamp.json"), "w"), indent=1, ensure_ascii=False)
+    dump(cfg, os.path.join(out, "clamp.json"), indent=1, ensure_ascii=False)
     with lock:
         install_config(S, cfg)
     feat_list = [dict(layer=bank.saes[h["sae"]]["layer"], index=int(f), role=next((r for r, e in shown if e[0] == h["sae"] and e[1] == f), "topic"))
@@ -650,8 +722,8 @@ def find(S, request, out, emit, lock):
               thinking_closed_by_model=gen[k].get("thinking_closed_by_model"), thinking_loop_cut=gen[k].get("thinking_loop_cut"),
               answer_loop_cut=gen[k].get("answer_loop_cut"), answer_at_cap=gen[k].get("answer_at_cap"),
               obsession=grades[k].get("obsession"), readability=grades[k].get("readability"))
-    json.dump(dict(topic=name, variant=vname, strength=a, mechanism=LABEL[mech], samples=samples,
+    dump(dict(topic=name, variant=vname, strength=a, mechanism=LABEL[mech], samples=samples,
                    baseline=[dict(prompt=prompts[k], answer=gen[k]["text"]) for k, m in enumerate(row_meta) if m[0] == 0]),
-              open(os.path.join(out, "samples.json"), "w"), indent=1, ensure_ascii=False)
+              os.path.join(out, "samples.json"), indent=1, ensure_ascii=False)
     E("done", seconds=T(), features=len(feat_list), mechanism=LABEL[mech], clamp=os.path.abspath(os.path.join(out, "clamp.json")),
       llm_usage=llm.usage)

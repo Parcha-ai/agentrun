@@ -12,7 +12,7 @@ Endpoints (on top of gg_server's /v1/chat/completions, /v1/steer, /v1/models, /h
 
 Keys: OPENAI_API_KEY (policy, passages, judge) stays in this process; nothing it receives is ever run as code.
 """
-import argparse, json, os, re, sys, threading, time
+import argparse, json, os, re, stat, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "scripts"))
@@ -96,6 +96,9 @@ def main():
     ap.add_argument("--llm-url"); ap.add_argument("--llm-model", default="gpt-4.1-mini")
     ap.add_argument("--reload", action="store_true", help="dev only: re-import the pipeline modules on every find request")
     a = ap.parse_args()
+    if a.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("GG_API_KEY"):
+        log("engine.error", message="binding beyond loopback needs GG_API_KEY (every route but /health checks it)")
+        sys.exit(2)
     P = PRESETS[a.preset]
     t0 = time.time()
     if not os.environ.get("OPENAI_API_KEY"):
@@ -110,18 +113,82 @@ def main():
                                                served_name="obsession", reject_system=True, repetition_penalty=1.1, temperature=0.6))
     from openai import OpenAI
     S["openai"] = OpenAI(base_url=a.llm_url) if a.llm_url else OpenAI()
-    S["llm_model"] = a.llm_model
+    S["llm_model"], S["llm_url"] = a.llm_model, a.llm_url  # find's policy and passages use the same endpoint as the grader
     app = make_app(S)
-    lock = S["lock"]
-
     if a.config:
         obsession_find.install_config(S, json.load(open(a.config)))
+    add_routes(app, S, dict(reload=a.reload))
+    log("engine.ready", s=round(time.time() - t0, 1), port=a.port, preset=a.preset, saes=P["saes"])
+    import uvicorn
+    uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
+
+
+CONFIG_MAX_BYTES = 1 << 20  # a clamp.json is a few KB
+FEATURES_MAX_BYTES = 64 << 20  # a feature file holds a handful of SAE rows
+
+
+def run_file(S, path, max_bytes):
+    """The resolved path of a regular file inside a directory a find of this engine wrote (symlinks and ".." resolved
+    first), at most max_bytes; anything else is a ValueError. The install route reads nothing else."""
+    if not isinstance(path, str) or not path:
+        raise ValueError("a file path must be a non-empty string")
+    real = os.path.realpath(path)
+    if not any(real.startswith(root + os.sep) for root in S.setdefault("run_dirs", set())):
+        raise ValueError("only files inside a find's out directory can be installed")
+    st = os.stat(real)
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError("not a regular file")
+    if st.st_size > max_bytes:
+        raise ValueError(f"larger than {max_bytes} bytes")
+    return real
+
+
+def checked_config(S, cfg):
+    """A clamp config from the install route: an object, or the path of a clamp.json a find wrote. Every feature or
+    vector file it names must be a run file too; the checked, resolved paths replace the given ones."""
+    if isinstance(cfg, str):
+        with open(run_file(S, cfg, CONFIG_MAX_BYTES), "rb") as f:
+            cfg = json.loads(f.read(CONFIG_MAX_BYTES + 1))
+    if not isinstance(cfg, dict):
+        raise ValueError("config must be an object or the path of a clamp.json in a find's out directory")
+    cfg = dict(cfg)
+    hooks = cfg.get("hooks")
+    if hooks is not None and (not isinstance(hooks, list) or not all(isinstance(h, dict) for h in hooks)):
+        raise ValueError("hooks must be a list of objects")
+    # The same hooks install_hooks will load: cfg["hooks"], or the top-level single-hook form when there are none (a
+    # find's clamp.json also has a top-level "features": the stage's feature cards, not a file).
+    if hooks:
+        cfg["hooks"] = hooks = [dict(h) for h in hooks]
+    elif "layer" in cfg:
+        hooks = [cfg]
+    for h in hooks or []:
+        for k in ("features", "vector"):
+            if h.get(k) is not None:
+                h[k] = run_file(S, h[k], FEATURES_MAX_BYTES)
+    return cfg
+
+
+def add_routes(app, S, opts):
+    """The engine's routes on top of gg_server's app (make_app(S) first): find, install, batch, judge. Each checks the
+    engine key (GG_API_KEY) like gg_server's own routes."""
+    lock = S["lock"]
+    auth = S["auth"]
+    finds = S.setdefault("finds_running", set())
+    finds_lock = threading.Lock()
+    S.setdefault("run_dirs", set())
 
     @app.post("/v1/obsession/find")
     async def find(req: Request):
+        auth(req)
         b = await req.json()
-        if not isinstance(b.get("request"), str) or not isinstance(b.get("out"), str):
+        if not isinstance(b.get("request"), str) or not isinstance(b.get("out"), str) or not b["out"]:
             raise HTTPException(400, "body needs request and out strings")
+        out = os.path.realpath(b["out"])
+        with finds_lock:  # one find at a time per out directory: a retry never mixes two topics' files
+            if out in finds:
+                raise HTTPException(409, "a find is already running for this out directory")
+            finds.add(out)
+            S["run_dirs"].add(out)
         q = []
         ev = threading.Event()
 
@@ -130,14 +197,16 @@ def main():
 
         def run():
             try:
-                if a.reload:
+                if opts.get("reload"):
                     import importlib, obsession_gen, obsession_llm
                     for m in (obsession_llm, obsession_gen, obsession_find):
                         importlib.reload(m)
-                obsession_find.find(S, b["request"], b["out"], emit, lock)
+                obsession_find.find(S, b["request"], out, emit, lock)
             except Exception as e:  # reported as the last line, never swallowed
                 emit(dict(event="error", message=f"{type(e).__name__}: {e}"[:300]))
             finally:
+                with finds_lock:
+                    finds.discard(out)
                 emit(None)
 
         threading.Thread(target=run, daemon=True).start()
@@ -154,16 +223,22 @@ def main():
         return StreamingResponse(stream(), media_type="application/x-ndjson")
 
     @app.post("/v1/obsession/install")
-    def install(b: dict = Body(...)):
-        cfg = b.get("config")
-        if isinstance(cfg, str):
-            cfg = json.load(open(cfg))
+    def install(req: Request, b: dict = Body(...)):
+        auth(req)
+        try:
+            cfg = checked_config(S, b.get("config"))
+        except (OSError, ValueError) as e:
+            raise HTTPException(400, f"config refused: {e}"[:300])
         with lock:
-            obsession_find.install_config(S, cfg)
+            try:  # install_hooks swaps only when every new hook loads: on any failure the old obsession keeps running
+                obsession_find.install_config(S, cfg)
+            except Exception as e:
+                raise HTTPException(400, f"install failed, nothing changed: {type(e).__name__}: {e}"[:300])
         return describe_all(S)
 
     @app.post("/v1/batch")
-    def batch(b: dict = Body(...)):  # a plain def: FastAPI runs it in its thread pool, so /v1/judge is never blocked behind it
+    def batch(req: Request, b: dict = Body(...)):  # a plain def: FastAPI runs it in its thread pool, so /v1/judge is never blocked behind it
+        auth(req)
         prompts = b.get("prompts")
         if not isinstance(prompts, list) or not prompts or not all(isinstance(p, str) for p in prompts) or len(prompts) > 256:
             raise HTTPException(400, "prompts: 1-256 strings")
@@ -214,17 +289,14 @@ def main():
                                  steer=describe_all(S)))
 
     @app.post("/v1/judge")
-    def judge(b: dict = Body(...)):  # never takes the generation lock
+    def judge(req: Request, b: dict = Body(...)):  # never takes the generation lock
+        auth(req)
         items = b.get("items")
         if not isinstance(b.get("topic"), str) or not isinstance(items, list) or len(items) > 512:
             raise HTTPException(400, "topic string and items list (<= 512)")
         import judge_topic
         grades = judge_topic.grade_many(S["openai"], b["topic"], items, model=S["llm_model"], workers=32)
         return dict(grades=grades)
-
-    log("engine.ready", s=round(time.time() - t0, 1), port=a.port, preset=a.preset, saes=P["saes"])
-    import uvicorn
-    uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
 
 
 if __name__ == "__main__":
