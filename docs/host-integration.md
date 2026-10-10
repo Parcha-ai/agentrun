@@ -35,6 +35,44 @@ Store the workflow digest together with interpreter, adapter and policy versions
 
 Existing flat graphs retain their older effect keys. Repeated calls with the same label, transport and resolved input can reuse a memoized result, including across loop iterations. Use `call.poll` for repeated status checks and include an operation identifier for distinct effects. New composed graphs use path-scoped keys; this does not migrate old stores.
 
+## Durable recovery
+
+> **Unreleased.** `@parcha/agentrun-dsl/recovery` and `@parcha/agentrun-pi/durable` are on the development branch and not in a published version. The hooks above are what the released package has.
+
+`@parcha/agentrun-dsl/recovery` is a driver for the `recovery` hooks, so a host does not write a store protocol of its own. It loads only when imported.
+
+```js
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { openRecovery, withRecovery, fileStore } from '@parcha/agentrun-dsl/recovery';
+
+const driver = await openRecovery(fileStore(runDirectory), workflow, { key: runId, bind: { input } });
+try {
+  const result = await runWorkflow(workflow, input, withRecovery(driver, { runEffect, runNode, runJudge }));
+} finally {
+  await driver.close();
+}
+```
+
+- **`openRecovery(store, workflow, { key, bind })`** opens the run's journal and takes ownership of it. `key` names the run: its step sessions and effect receipts are named under it, so the same key must be used in every process. `bind` is whatever else must not change between two opens of the run (the input, SOP text, the tool names): the run is bound to the workflow and to `bind`, and an open whose binding differs is refused with `RUN_STORE_BINDING_MISMATCH` naming the inputs that moved. Leave policy (trust, the model) out of `bind`, so a run resumes under a changed policy.
+- **`withRecovery(driver, adapters, { durableNodes })`** returns the dependencies to run with. It supplies `recovery` and the driver's cancellation signal, and wraps three adapters: `runEffect` (each effect is admitted before it is dispatched, a completed one is answered from its receipt, and one admitted and never completed is refused), `runJudge` (a route's answer is committed before any branch step runs, and a resume follows it without asking again), and `runNode` (an agent step is committed before it runs and gets two attempts; the runner is handed its attempt as `step`). Set `durableNodes: true` only when your node runner keeps what each attempt delivered and answers a repeated `sessionId` from that record.
+- **Run again with the same key, store and input** and every committed step is answered from the journal and every completed effect from its receipt, so no adapter is called for them.
+- **`driver.stop({ action: 'pause' | 'cancel', source })`** stops the run through the driver's signal. A pause aborts an effect in flight.
+- **Close the driver** in a `finally`. A journal has one owner at a time; a second open while the first is live is refused.
+
+An effect that was admitted and never completed has an unknown outcome. It is never dispatched again: the next open fails with `FROZEN_EFFECT_UNKNOWN` naming it, until someone who knows what happened completes it in the store.
+
+Put anything that counts requests (a call budget, a rate limit) inside `withRecovery`, around your own adapter, where it counts real dispatches. Outside, it also counts calls answered from receipts. Nothing outside `withRecovery` may retry a call: a second ask at the same path is a new effect and is dispatched.
+
+Three stores keep the journal, all held to one conformance suite (`@parcha/agentrun-dsl/recovery/testing`):
+
+| Store | Use |
+| --- | --- |
+| `memoryStore()` | Tests. Lost with the process. |
+| `fileStore(directory)` | One host on one machine: one JSON file replaced by rename, and a lock owned by a process. |
+| `documentStore(harness, key)` from `@parcha/agentrun-pi/durable` | A run on a pi-durable `Harness`, over its SQLite or disk storage. See the [pi package](../packages/pi/README.md#durable-workflows-on-pi-durable). |
+
+The stored formats are fixed: a journal written by one build is read by the next.
+
 ## Host policy around generative nodes
 
 A host often has policy that is not part of the workflow language: a duty paragraph for the node that emits the terminal record, runtime metadata the model reports beside its record, an artifact field only the host can fill. `deps.hostPolicy` carries that policy as application code. Nothing in a workflow document can name or reach it, so a candidate workflow cannot change its host's channels.
