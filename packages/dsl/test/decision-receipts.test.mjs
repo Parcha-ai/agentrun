@@ -202,6 +202,60 @@ test('when a split sift request fails, its siblings in flight are recorded as ca
   assert.equal(r.events.filter((e) => e.type === 'judge.answered').length, 0);
 });
 
+test('a split sift stops at its first failure, however long that failure takes to record', async () => {
+  const workflow = flow({ node: 'sift', label: 'screen', itemsPath: 'items', out: 'Keep', as: 'out', keep: { path: 'keep' } });
+  // Six requests, four in flight. Item 1 fails at once and its receipt is slow to write. Item 0 answers at
+  // once, which frees a worker. Item 2 would fail a little later, with a fast receipt. Item 3 waits.
+  const asked = [];
+  const judge = async ({ state, questions, signal }) => {
+    const n = state.items[0].item.n;
+    asked.push(n);
+    if (n === 0) return { answers: Object.fromEntries(Object.keys(questions).map((key) => [key, noul(0.9)])) };
+    if (n === 1) throw new Error('first failure');
+    return new Promise((_, reject) => {
+      const timer = n === 2 ? setTimeout(() => reject(new Error('second failure')), 5) : undefined;
+      signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error(`request for item ${n} aborted`)); }, { once: true });
+    });
+  };
+  const receipts = [];
+  await assert.rejects(
+    runWorkflow(workflow, { items: [0, 1, 2, 3, 4, 5].map((n) => ({ n })) }, {
+      runJudge: judge, maxQuestionsPerRequest: 1,
+      recordDecision: async (receipt) => {
+        if (receipt.request.index === 1) await new Promise((resolve) => setTimeout(resolve, 40));
+        receipts.push(receipt);
+      },
+    }),
+    /first failure/,
+  );
+  assert.deepEqual([...asked].sort(), [0, 1, 2, 3], 'no request is sent once one has failed');
+  const byIndex = [...receipts].sort((a, b) => a.request.index - b.request.index);
+  assert.deepEqual(byIndex.map((x) => [x.request.index, x.status]), [[0, 'answered'], [1, 'failed'], [2, 'cancelled'], [3, 'cancelled']]);
+});
+
+test('a state that is not plain JSON still reaches the judge, with or without a recorder', async () => {
+  const workflow = flow({ node: 'chain', steps: [
+    { node: 'judge', label: 'flags', state: { blob: '{blob}' }, out: 'Flags', as: 'flags' },
+    code('done', '() => ({ out: {} })'),
+  ] });
+  const blob = { big: 10n, seen: new Set(['a']), when: new Date(0) };
+  blob.self = blob;
+  const got = [];
+  const ids = [];
+  const deps = { runJudge: async ({ state }) => { got.push(state.blob); return { answers: { urgent: noul(0.9) } }; } };
+  assert.equal((await runWorkflow(workflow, { blob }, deps)).status, 'complete');
+  assert.equal((await runWorkflow(workflow, { blob }, { ...deps, recordDecision: async (receipt) => { ids.push(receipt.id); } })).status, 'complete');
+  assert.equal(got[0].big, 10n);
+  assert.equal(got[0].self, got[0], 'the cycle arrives as a cycle');
+  // The same state has the same id, and a state that differs only in a value JSON cannot spell has another.
+  const other = { ...blob, big: 11n };
+  other.self = other;
+  await runWorkflow(workflow, { blob }, { ...deps, recordDecision: async (receipt) => { ids.push(receipt.id); } });
+  await runWorkflow(workflow, { blob: other }, { ...deps, recordDecision: async (receipt) => { ids.push(receipt.id); } });
+  assert.equal(ids[0], ids[1]);
+  assert.notEqual(ids[0], ids[2]);
+});
+
 test('a receipt that cannot be recorded fails the node before its answer is applied; a failed judge and a failed recorder surface both', async () => {
   const workflow = flow({ node: 'chain', steps: [
     { node: 'judge', label: 'flags', state: { text: '{text}' }, out: 'Flags', as: 'flags' },
@@ -343,8 +397,8 @@ test('a receipt states every threshold its rule applied, so the decision can be 
         : label === 'bar' ? noul(key.startsWith('0.') ? 0.8 : 0.2)
         : label === 'one' ? choice(Object.keys(question.criteria), 'item_1')
         : label === 'maybe' ? choice(Object.keys(question.criteria), 'none_of_these')
-        // The note is empty, so its low answer is not held against the draft.
-        : label === 'write (verify)' ? noul(key === 'text' ? 0.3 : 0.1)
+        // The note is empty, so it is not judged, whatever its answer (0.4 here, above the floor of 0.25).
+        : label === 'write (verify)' ? noul(key === 'text' ? 0.3 : 0.4)
         : noul(0.1)])) }),
     ...r.deps,
   });
@@ -359,7 +413,8 @@ test('a receipt states every threshold its rule applied, so the decision can be 
   const verify = by['write (verify)'];
   assert.deepEqual(verify.rule, { kind: 'verify', thresholds: { text: 0.25, note: null }, present: ['text', 'note'] }, 'the floor on a field it holds, nothing on a field it holds empty');
   assert.deepEqual(verify.action, { accepted: true, doubted: [], unmet: [] });
-  assert.deepEqual(rederiveDecision({ ...verify, rule: { ...verify.rule, thresholds: { text: 0.5, note: null } } }), { accepted: false, doubted: ['text'], unmet: [] }, 'a floor of 0.5 would have doubted the text');
+  // Evaluated again under a floor of 0.5, the text (0.3) is doubted and the empty note (0.4) still is not.
+  assert.deepEqual(rederiveDecision({ ...verify, rule: { ...verify.rule, thresholds: Object.fromEntries(Object.entries(verify.rule.thresholds).map(([id, at]) => [id, at === null ? null : 0.5])) } }), { accepted: false, doubted: ['text'], unmet: [] });
   for (const receipt of r.receipts) assert.deepEqual(rederiveDecision(receipt), receipt.action);
 });
 

@@ -1695,6 +1695,25 @@ const requireJudge = (deps: WorkflowDeps, kind: string, label: string): NonNulla
 
 const sha256Hex = (text: string): string => createHash("sha256").update(text).digest("hex");
 
+/** A canonical text of any value, for a digest: JSON with sorted keys where the value is JSON, and a stable
+ *  spelling where it is not (a bigint by its digits, a map or a set by its entries, a reference back to an
+ *  enclosing object by a marker), so hashing never refuses a state a host is free to hand its judge. */
+function digestText(value: unknown, enclosing: unknown[] = []): string {
+  if (typeof value === "bigint") return `{"$bigint":"${value}"}`;
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (enclosing.includes(value)) return '"$circular"';
+  const json = value instanceof Map ? { $map: [...value] } : value instanceof Set ? { $set: [...value] }
+    : typeof (value as { toJSON?: unknown }).toJSON === "function" ? (value as { toJSON(): unknown }).toJSON() : value;
+  if (json === null || typeof json !== "object") return digestText(json, enclosing);
+  const inside = [...enclosing, value];
+  if (Array.isArray(json)) return `[${json.map((entry) => digestText(entry, inside)).join(",")}]`;
+  const fields = Object.keys(json).sort().flatMap((key) => {
+    const entry = (json as Record<string, unknown>)[key];
+    return entry === undefined || typeof entry === "function" || typeof entry === "symbol" ? [] : [`${JSON.stringify(key)}:${digestText(entry, inside)}`];
+  });
+  return `{${fields.join(",")}}`;
+}
+
 /** A persistence failure of a decision receipt. It fails the node: the answers were never applied. */
 export class WorkflowDecisionRecordError extends Error {
   constructor(readonly label: string, readonly decisionId: string, cause: unknown) {
@@ -1712,7 +1731,9 @@ type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value:
  *  or cancelled) is recorded and awaited before this returns or throws. */
 async function decide<T>(
   deps: WorkflowDeps,
-  ask: { nodeKind: string; kind: DecisionKind; judgeKind: JudgeRequest["kind"]; label: string; state: unknown; questions: Record<string, SystemOneQuestion>; signal?: AbortSignal; request?: DecisionReceipt["request"] },
+  ask: { nodeKind: string; kind: DecisionKind; judgeKind: JudgeRequest["kind"]; label: string; state: unknown; questions: Record<string, SystemOneQuestion>; signal?: AbortSignal; request?: DecisionReceipt["request"];
+    /** Called as soon as the request has failed, before its receipt is written. */
+    onFailure?: (error: unknown) => void },
   settle: (answers: Record<string, SystemOneAnswer>) => { rule: DecisionRule; action: unknown; value: T },
 ): Promise<Decided<T>> {
   const runJudge = requireJudge(deps, ask.nodeKind, ask.label);
@@ -1720,7 +1741,7 @@ async function decide<T>(
   const item = (deps as LocatedDeps)[MAP_ITEM];
   const signal = ask.signal ?? deps.signal;
   const position = ask.request ?? { index: 0, count: 1 };
-  const state_sha256 = sha256Hex(canonicalJson(ask.state) ?? "null");
+  const state_sha256 = sha256Hex(digestText(ask.state));
   const id = sha256Hex(canonicalJson(["decision-v1", path, ask.kind, position.index, ask.questions, state_sha256]));
   const recorded = deps.recovery?.decision ? await deps.recovery.decision(id) : undefined;
   if (recorded?.status === "answered") {
@@ -1751,7 +1772,11 @@ async function decide<T>(
   let result: JudgeResult;
   try { result = await runJudge(request); }
   catch (error) {
-    await record(receipt(undefined, { status: signal?.aborted ? "cancelled" : "failed", rule: null, action: null, error }), undefined, { error });
+    // The status is read before the caller reacts: a request that fails on its own is `failed`, even when
+    // its failure is what cancels the others.
+    const failed = receipt(undefined, { status: signal?.aborted ? "cancelled" : "failed", rule: null, action: null, error });
+    ask.onFailure?.(error);
+    await record(failed, undefined, { error });
     throw error;
   }
   let settled: { rule: DecisionRule; action: unknown; value: T };
@@ -1759,6 +1784,7 @@ async function decide<T>(
     validateAnswers(ask.questions, result.answers);
     settled = settle(result.answers);
   } catch (error) {
+    ask.onFailure?.(error);
     await record(receipt(result, { status: "failed", rule: null, action: null, error }), result, { error });
     throw error;
   }
@@ -1854,10 +1880,10 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
     // SIFT_REQUESTS_IN_FLIGHT at a time; the first failure stops dispatch and cancels the requests in
     // flight, each of which is recorded as cancelled, and is thrown once they settle. A request that had
     // already answered keeps its receipt; no event names it, since the sift decided nothing.
-    const ask = (chunk: number[], c: number, signal: AbortSignal | undefined) => {
+    const ask = (chunk: number[], c: number, signal: AbortSignal | undefined, onFailure?: (error: unknown) => void) => {
       const questions: Record<string, SystemOneQuestion> = {};
       chunk.forEach((i, j) => { for (const id of ids) questions[`${j}.${id}`] = { ...set.questions[id], instructions: `For \`items[${j}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion; });
-      return decide(deps, { nodeKind: "sift", kind: "sift", judgeKind: "sift", label: node.label, state: { ...base, items: chunk.map((i) => named[i]) }, questions, signal, request: { index: c, count: chunks.length, items: chunk } }, (answers) => {
+      return decide(deps, { nodeKind: "sift", kind: "sift", judgeKind: "sift", label: node.label, state: { ...base, items: chunk.map((i) => named[i]) }, questions, signal, request: { index: c, count: chunks.length, items: chunk }, ...(onFailure ? { onFailure } : {}) }, (answers) => {
         const decoded: Record<string, unknown>[] = []; const sides: AnswersSidecar[] = []; const keptHere: number[] = [];
         chunk.forEach((i, j) => {
           const mine: Record<string, SystemOneAnswer> = Object.create(null);
@@ -1877,12 +1903,16 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
       const stop = new AbortController();
       const signal = deps.signal ? AbortSignal.any([deps.signal, stop.signal]) : stop.signal;
       results = new Array(chunks.length);
-      let next = 0, failure: { error: unknown } | undefined;
+      let next = 0, failure: { request: number; error: unknown } | undefined;
+      // The first request to fail is the sift's failure, from the moment it fails: dispatch stops and the
+      // requests in flight are cancelled then, not when its receipt has been written. What it finally
+      // throws (its own error, or that and a receipt that could not be recorded) replaces what it flagged.
+      const fail = (request: number, error: unknown) => { if (!failure || failure.request === request) failure = { request, error }; stop.abort(); };
       await Promise.all(Array.from({ length: Math.min(SIFT_REQUESTS_IN_FLIGHT, chunks.length) }, async () => {
         while (!failure && next < chunks.length) {
           const c = next++;
-          try { results[c] = await ask(chunks[c], c, signal); }
-          catch (error) { failure ??= { error }; stop.abort(); }
+          try { results[c] = await ask(chunks[c], c, signal, (error) => fail(c, error)); }
+          catch (error) { fail(c, error); }
         }
       }));
       if (failure) throw failure.error;
@@ -2451,8 +2481,9 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
         const p = pYes(answers[id]);
         if (Object.prototype.hasOwnProperty.call(sub, id)) { if (filled(sub[id]) && p < floor) doubted.push(id); }
         else if (p < 0.5) unmet.push(id);
-        // A field the submission holds is judged at the floor; one it holds empty and unsupported is not judged.
-        thresholds[id] = !present.includes(id) ? 0.5 : doubted.includes(id) || p >= floor ? floor : null;
+        // A field the submission holds is judged at the floor, one it holds empty is not judged, and a
+        // requirement that is not a field is judged at 0.5.
+        thresholds[id] = !present.includes(id) ? 0.5 : filled(sub[id]) ? floor : null;
       }
       const accepted = doubted.length === 0 && unmet.length === 0;
       return { rule: { kind: "verify", thresholds, present }, action: { accepted, doubted, unmet }, value: { doubted, unmet, accepted } };
