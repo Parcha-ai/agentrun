@@ -201,7 +201,10 @@ function renderCard(card: Card) {
       row.append(d);
     };
     line('q', '', x.q);
-    if (x.before) line('before', 'before', x.before);
+    if (x.before) {
+      line('before', 'before', x.before);
+      if (card.beforeLabel) { const n = document.createElement('div'); n.className = 'note'; n.textContent = card.beforeLabel; row.append(n); } // the trainer's label for where the before answers came from: its own element under the answer (the answer's box is height-capped and clips)
+    }
     if (x.after) line('after', 'after', x.after);
     box.append(row);
   }

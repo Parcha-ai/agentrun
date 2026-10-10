@@ -1,5 +1,5 @@
 // The training run's snapshot, read by the model card: train/card.json, rewritten whole by the trainer on every change (tmp + rename, so a
-// read never sees half a file): {topic, mechanism, phase, step, steps, loss, questions:[{q, before?, after?}]}. `before` is the base model's answer
+// read never sees half a file): {topic, mechanism, phase, step, steps, loss, questions:[{q, before?, after?}], before?: {precomputed, label, base_sha256}}. A question's `before` is the base model's answer
 // at step 0 and `after` the trained model's, each present ONLY if the judge passed it. Everything is text for the screen: capped, never markup.
 
 export const CARD_PATH = 'train/card.json';
@@ -13,6 +13,8 @@ export interface Picked { fixed: string[]; picked: number; /** Present only when
 export interface Card {
   /** Present only when the judge picked the questions and the numbers add up. */
   picked?: Picked;
+  /** Where the "before" answers came from, the trainer's own words (`before: {precomputed, label, base_sha256}`): shown verbatim, and absent when the file does not say. */
+  beforeLabel?: string;
   topic?: string; mechanism?: string; phase?: CardPhase; step?: number; steps?: number; loss?: number;
   /** At most three, in the trainer's order ("Who are you?" first). */
   questions: CardQuestion[];
@@ -38,9 +40,10 @@ export function parseCard(raw: string): Card | null {
   }
   const phase = PHASES.find((p) => p === j.phase);
   const picked = parsePicked(j.questions_picked);
+  const beforeLabel = j.before && typeof j.before === 'object' && !Array.isArray(j.before) ? text(j.before.label, 80) : undefined; // never derived from `precomputed`: the wording is the trainer's
   const loss = typeof j.loss === 'number' && Number.isFinite(j.loss) ? j.loss : undefined;
   const topic = text(j.topic, 80), mechanism = text(j.mechanism, 80), step = num(j.step), steps = num(j.steps);
-  return { ...(picked ? { picked } : {}), ...(topic ? { topic } : {}), ...(mechanism ? { mechanism } : {}), ...(phase ? { phase } : {}), ...(step !== undefined ? { step } : {}), ...(steps !== undefined ? { steps } : {}), ...(loss !== undefined ? { loss } : {}), questions };
+  return { ...(picked ? { picked } : {}), ...(beforeLabel ? { beforeLabel } : {}), ...(topic ? { topic } : {}), ...(mechanism ? { mechanism } : {}), ...(phase ? { phase } : {}), ...(step !== undefined ? { step } : {}), ...(steps !== undefined ? { steps } : {}), ...(loss !== undefined ? { loss } : {}), questions };
 }
 
 const wholeNumber = (v: unknown): number | undefined => (typeof v === 'number' && Number.isInteger(v) && v >= 1 ? v : undefined);
