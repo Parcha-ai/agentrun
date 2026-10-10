@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pick an Obsession</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%230c0f0e%27/%3E%3Cpath d=%27M3 12l3-6 3 4 2-3 2 5%27 stroke=%27%236fe3a6%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E">
-<!-- The model's answers contain emoji, and this machine has no emoji font: Noto Color Emoji as a web font, the last in every font stack. `crossorigin` because the page is cross-origin isolated. -->
-<link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap">
+<!-- The model's answers contain emoji and the recording machine has no emoji font: Noto Color Emoji, served by the stage itself (copied from an npm package at build time), the last family in every font stack. -->
+<link rel="stylesheet" href="fonts/noto-color-emoji.css">
 <style>
 :root {
   color-scheme: dark;
@@ -81,6 +81,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .topic { font: 600 30px var(--sans); color: var(--muted); } #find .topic b { color: var(--ink); font-weight: 800; } #find .topic.wait { font-size: 26px; }
 #find .mech { font: 700 20px var(--sans); padding: 6px 16px; border-radius: 999px; border: 2px solid var(--ok); color: var(--ok); }
 #find .mech[data-mechanism="steering-vector"] { border-color: var(--muted); color: var(--muted); }
+#find .stopped { font: 700 30px/1.25 var(--sans); color: var(--bad); padding: 12px 18px; border: 2px solid var(--bad); border-radius: 14px; }
 #find .weak { font: 700 22px var(--sans); color: var(--gpu); }
 #find .why { font: 500 20px var(--sans); color: var(--muted); }
 #find .refused { font: 700 40px/1.2 var(--sans); color: var(--bad); margin-top: 60px; }

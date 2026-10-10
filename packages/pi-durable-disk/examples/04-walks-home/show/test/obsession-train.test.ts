@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { elapsedS, sampleRows, stepCounter } from "../episode2/progress.ts";
 import { panelHtml } from "../episode2/panel.ts";
 import { FindNotes } from "../obsession/notes.ts";
+import { findHtml } from "../obsession/find-panel.ts";
+import { parseFind } from "../obsession/find.ts";
 import { clampedDataLine, genHtml, parseObsessionTrain, rejectedTotal, trainingStarted } from "../obsession/train.ts";
 
 const lines = (...o: unknown[]) => o.map((x) => JSON.stringify(x)).join("\n") + "\n";
@@ -101,4 +103,18 @@ test("once generation is over the block says it in the past tense, with the coun
     assert.match(html, /90 kept by the judge, 3 thrown out\./);
     assert.doesNotMatch(html, /is writing/);
   }
+});
+
+// D1's real-person gate: the teach step stops early with a fixed message and the search stays on screen; there is no training panel.
+test("the real-person gate: the message is shown as the script wrote it, once, with no training panel; any other error shows no text of its own", () => {
+  const message = "the big model kept making things up about a real person, so the agent stopped before teaching the small model";
+  const gated = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "error", message, gate: "false_claims", false_claims: 35, graded: 128, max_false_claims: 0.15 }));
+  assert.deepEqual(gated.stopped, { gate: "false_claims", message });
+  assert.match(findHtml(parseFind(lines({ event: "topic", topic: "a politician" })), { stopped: gated.stopped!.message }), /class="stopped">the big model kept making things up about a real person, so the agent stopped before teaching the small model</);
+  const e = new FindNotes();
+  assert.ok(e.fromTrain(gated, 1).some((n) => n.text === message && n.urgent === true));
+  assert.ok(!e.fromTrain(gated, 2).some((n) => n.text === message), "once");
+  const other = parseObsessionTrain(lines({ event: "error", message: "only 12 of 300 answers passed the judge; not training" }));
+  assert.equal(other.stopped, null, "an error with no gate carries no text of its own onto the screen");
+  assert.doesNotMatch(findHtml(parseFind(""), { stopped: null }), /stopped/);
 });

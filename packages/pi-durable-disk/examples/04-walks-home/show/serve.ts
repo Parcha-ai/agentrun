@@ -52,6 +52,7 @@ const TYPES: Record<string, string> = {
   ".png": "image/png",
   ".webc": "application/octet-stream",
   ".onnx": "application/octet-stream",
+  ".woff2": "font/woff2",
   ".bin": "application/octet-stream",
 };
 
@@ -306,6 +307,8 @@ const server = createServer(async (req, res) => {
       res.setHeader("location", "/tab/");
       return void res.end();
     }
+    // The emoji font, for the tab's chat stack too: the same files the stage pages use (built with them), at a path that does not depend on which episode is served.
+    if (path.startsWith("/fonts/")) return serveFile(join(EP2, "fonts"), decodeURIComponent(path.slice(7)), res);
     if (path === "/ep2") {
       res.statusCode = 301;
       res.setHeader("location", "/ep2/");

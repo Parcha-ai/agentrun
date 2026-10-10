@@ -49,9 +49,9 @@ test("the file folds into the topic, the passages, the scan, the features, the c
 });
 
 test("the mechanism label is the file's own, verbatim, and the fallback carries its reason", () => {
-  assert.equal(mechanismLabel(parseFind(FULL)), FEATURE_CLAMP_LABEL);
+  assert.equal(mechanismLabel(parseFind(FULL)), "Feature clamp (Anthropic's method)", "as the file wrote it");
   const fallback = parseFind(lines({ event: "clamp", mechanism: "Steering vector (fallback)", features: [], why: "no feature fired on the topic alone" }));
-  assert.equal(mechanismLabel(fallback), STEERING_LABEL);
+  assert.equal(mechanismLabel(fallback), "Steering vector (fallback)", "as the file wrote it");
   assert.equal(fallback.clamp?.why, "no feature fired on the topic alone");
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "feature-clamp", features: [] }))), FEATURE_CLAMP_LABEL, "the enum spelling is understood");
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "steering-vector", features: [] }))), STEERING_LABEL);
@@ -174,7 +174,7 @@ test("a real run (Golden Gate Bridge): every line is understood, and the file fo
   assert.deepEqual([f.topic, f.allowed, f.passages?.topic, f.passages?.controls, f.passages?.members.length, f.passages?.members[0]], ["Golden Gate Bridge", true, 30, 64, 8, "Eiffel Tower"]);
   assert.deepEqual(f.sweepGenerated, { rows: 240, variants: 15 });
   assert.deepEqual(f.features.map((x) => [x.layer, x.index, x.role]), [[40, 7887, "concept"], [40, 99206, "topic"], [40, 8280, "topic"], [31, 6078, "topic"], [53, 131503, "output"]]);
-  assert.equal(mechanismLabel(f), FEATURE_CLAMP_LABEL);
+  assert.equal(mechanismLabel(f), "Feature clamp (Anthropic's method)", "the recorded run's own (capitalised) label, verbatim");
   assert.deepEqual([f.chosen?.strength, f.chosen?.topicRate, f.chosen?.coherence, f.chosen?.quality, f.chosen?.variant], [0.2, 1, 3.69, "clean", "concept+topic+output"]);
   assert.equal(f.sweep.length, 14);
   assert.deepEqual(sweepToShow(f).map((s) => s.strength), [0.15, 0.2, 0.25, 0.3], "the chosen variant's four strengths, not the other variants'");
@@ -256,10 +256,24 @@ test("only the two exact labels and the enum spellings name a known mechanism; a
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "unclamped", features: [] }))), "unclamped");
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "Unsteered feature clamp", features: [] }))), "Unsteered feature clamp");
   assert.equal(parseFind(lines({ event: "clamp", mechanism: "unclamped", features: [] })).clamp?.mechanism, "other");
-  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "Feature clamp (Anthropic's method)", features: [] }))), FEATURE_CLAMP_LABEL);
+  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "Feature clamp (Anthropic's method)", features: [] }))), "Feature clamp (Anthropic's method)");
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "steering-vector", features: [] }))), STEERING_LABEL);
   const html = findHtml(parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "unclamped", features: [] })));
   assert.match(html, /data-mechanism="other">unclamped</);
   assert.doesNotMatch(html, /Anthropic/);
   assert.match(new FindNotes().fromFind(parseFind(lines({ event: "clamp", mechanism: "unclamped", features: [] })), 1)[0]!.text, /^Method: unclamped\.$/);
+});
+
+// D2: the spec's strings are lower case now ("feature clamp (Anthropic's method)", "steering vector (fallback)"); earlier runs wrote them capitalised. Both are the known labels,
+// shown as the file wrote them. The teacher line (estimates for D1) is understood and not shown.
+test("the lower-case labels are the known ones, shown verbatim, with the capitalised spelling of earlier runs also known", () => {
+  for (const [raw, kind] of [["feature clamp (Anthropic's method)", "feature-clamp"], ["Feature clamp (Anthropic's method)", "feature-clamp"], ["steering vector (fallback)", "steering-vector"], ["Steering vector (fallback)", "steering-vector"]] as const) {
+    const f = parseFind(lines({ event: "clamp", mechanism: raw, features: [] }));
+    assert.deepEqual([f.clamp?.mechanism, mechanismLabel(f)], [kind, raw], raw);
+  }
+  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "feature-clamp", features: [] }))), FEATURE_CLAMP_LABEL, "an enum spelling gets the spec's lower-case string");
+  assert.equal(FEATURE_CLAMP_LABEL, "feature clamp (Anthropic's method)");
+  assert.equal(STEERING_LABEL, "steering vector (fallback)");
+  assert.equal(parseFind(lines({ event: "teacher", estimates: { "0.2": 0.5 }, strengths: [0.2], why: "x" }, { event: "sweep.generated", rows: 240, variants: 15 }, { event: "sweep.generated", rows: 120, variants: 8, round: 2 })).skipped, 0, "the teacher line is understood");
+  assert.deepEqual(parseFind(lines({ event: "sweep.generated", rows: 240, variants: 15 }, { event: "sweep.generated", rows: 120, variants: 8, round: 2 })).sweepGenerated, { rows: 120, variants: 8 }, "a second round replaces the first");
 });

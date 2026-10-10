@@ -75,7 +75,7 @@ function statusLine(f: Find): string {
   return "Getting ready…";
 }
 
-export function findHtml(f: Find, options: { debug?: boolean } = {}): string {
+export function findHtml(f: Find, options: { debug?: boolean; stopped?: string | null } = {}): string {
   const debug = options.debug === true;
   const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">Pick an obsession in the chat.</div>`;
   const label = mechanismLabel(f);
@@ -83,6 +83,8 @@ export function findHtml(f: Find, options: { debug?: boolean } = {}): string {
   if (f.refused) return `<div class="fhead">${topic}</div><div class="refused">${esc(refusalText(f.refused))}</div>`;
   const feats = topFeatures(f, 3);
   const rows = feats.length > 0 ? (() => { const used = new Set<string>(); return feats.map((x) => featureRowHtml(f, x, debug, used)).join(""); })() : `<div class="none">${esc(statusLine(f))}</div>`;
+  // A gate stopped the teach step (shown as the script wrote it): the search stays on screen and says so.
+  const stopped = options.stopped ? `<div class="stopped">${esc(options.stopped)}</div>` : "";
   const why = f.clamp?.why ? `<div class="why">${esc(f.clamp.why)}</div>` : "";
   // The script's own verdict on the result: a weak one is said so, with the number it rests on.
   const weak = f.chosen?.quality === "weak" ? `<div class="weak">A weak result${f.chosen.topicRate !== null ? `: only ${pct(f.chosen.topicRate)} of the answers are on topic` : ""}.</div>` : "";
@@ -92,5 +94,5 @@ export function findHtml(f: Find, options: { debug?: boolean } = {}): string {
     ? `<div class="bigmoment"><div class="who">The big model, clamped. No prompt.</div><div class="q">${esc(big.prompt)}</div><div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div></div>`
     : "";
   const status = feats.length > 0 && statusLine(f) ? `<div class="status">${esc(statusLine(f))}</div>` : "";
-  return `<div class="fhead">${topic}${mech}</div>${why}${weak}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">Found in the big model</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and judged.</div>'}</div></div>`;
+  return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">Found in the big model</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and judged.</div>'}</div></div>`;
 }

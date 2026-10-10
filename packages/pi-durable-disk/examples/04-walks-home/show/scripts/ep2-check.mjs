@@ -75,6 +75,10 @@ try {
     const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, "") === "Noto Color Emoji" && f.status === "loaded").length;
     return JSON.stringify({ bridge: width("\\u{1F309}"), tofu: width("\\u{FFFF}"), faces });
   })()`));
+  const fontLink = await read(`(() => { const l = document.querySelector('link[href*="noto-color-emoji"]'); return l ? { origin: new URL(l.href).origin, here: location.origin, ok: !!l.sheet } : null; })()`);
+  expect("the emoji font is the stage's own, not another host's (no outbound fetch)", fontLink !== null && fontLink.origin === fontLink.here && fontLink.ok === true, fontLink);
+  const fontServed = await fetch(new URL("/fonts/noto-color-emoji.css", base));
+  expect("and the tab can use the same stylesheet at /fonts/", fontServed.status === 200 && /text\/css/.test(fontServed.headers.get("content-type") ?? ""), fontServed.status);
   expect("the emoji font loaded and the bridge emoji renders: not the tofu box, and not zero width", emoji.faces >= 1 && emoji.bridge > 0 && emoji.bridge !== emoji.tofu, emoji);
 
   await shot("1-before");

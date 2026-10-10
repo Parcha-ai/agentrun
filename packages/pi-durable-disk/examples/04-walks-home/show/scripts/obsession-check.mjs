@@ -33,9 +33,13 @@ try {
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
   const shot = async (name) => shots && (await tab.screenshot(join(shots, `${name}.png`)));
   const text = (sel) => read(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`);
+  /** The caption that matches, or "" if none did within `ms` (then `captionSeen` holds the captions that were on screen, for the failure report). */
+  let captionSeen = [];
   const captionLike = async (re, ms = 20_000) => {
+    captionSeen = [];
     for (let w = 0; w < ms; w += 400) {
       const t = await read(`(() => { const e = document.getElementById("vcaption"); return !e || e.hidden ? "" : e.querySelector(".txt")?.textContent ?? ""; })()`);
+      if (t && captionSeen.at(-1)?.[1] !== t) captionSeen.push([w, t]);
       if (re.test(t)) return t;
       await sleep(400);
     }
@@ -59,6 +63,10 @@ try {
     const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, "") === "Noto Color Emoji" && f.status === "loaded").length;
     return JSON.stringify({ bridge: width("\\u{1F309}"), tofu: width("\\u{FFFF}"), faces });
   })()`));
+  const fontLink = await read(`(() => { const l = document.querySelector('link[href*="noto-color-emoji"]'); return l ? { origin: new URL(l.href).origin, here: location.origin, ok: !!l.sheet } : null; })()`);
+  expect("the emoji font is the stage's own, not another host's (no outbound fetch)", fontLink !== null && fontLink.origin === fontLink.here && fontLink.ok === true, fontLink);
+  const fontServed = await fetch(new URL("/fonts/noto-color-emoji.css", base));
+  expect("and the tab can use the same stylesheet at /fonts/", fontServed.status === 200 && /text\/css/.test(fontServed.headers.get("content-type") ?? ""), fontServed.status);
   expect("the emoji font loaded and the bridge emoji renders: not the tofu box, and not zero width", emoji.faces >= 1 && emoji.bridge > 0 && emoji.bridge !== emoji.tofu, emoji);
 
   await shot("o1-start");
@@ -97,7 +105,8 @@ try {
   expect("the mechanism label is verbatim, with its kind as data", mech.t === "Feature clamp (Anthropic's method)" && mech.k === "feature-clamp", mech);
   expect("the sweep is one tiny chart", (await read(`document.querySelectorAll("#find .sweep svg").length`)) === 1);
   const clampCap = await captionLike(/Turning up those features inside the big model\./, 14_000);
-  expect("a caption says what the clamp is", clampCap !== "", clampCap);
+  if (clampCap === "") console.log("DIAG captions on screen:", JSON.stringify(captionSeen), "page state:", JSON.stringify(await read("window.__obsession()")));
+  expect("a caption says what the clamp is", clampCap !== "", captionSeen);
 
   // The choice, and the big moment.
   const pick = await read(`({ label: document.querySelector("#find .picklab")?.textContent ?? null, line: document.querySelectorAll("#find .pick").length, dots: document.querySelectorAll("#find .sweep circle").length })`);

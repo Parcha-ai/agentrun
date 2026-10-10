@@ -5,7 +5,7 @@
 //   passages {topic, controls, by, members}      how many passages about the topic and look-alike controls that are not; members: the look-alikes by name
 //   scan.start {model, layers, widths}           scan {layer, width}            one per (layer, width) searched
 //   feature  {rank, layer, width, index, role, fires_on (up to 3 short phrases), lens (up to 5 output tokens it pushes), selectivity, output_score}
-//   clamp    {mechanism: "Feature clamp (Anthropic's method)" | "Steering vector (fallback)", features: [{layer, index, role}], why (only for the fallback)}
+//   clamp    {mechanism: "feature clamp (Anthropic's method)" | "steering vector (fallback)" (the capitalised spelling of earlier runs is understood), features: [{layer, index, role}], why (only for the fallback)}
 //   sweep    {variant, strength, topic_rate, coherence, n}                      one per variant and strength tried, as it is judged
 //   sweep.generated {rows, variants}             the test answers written, before they are judged
 //   chosen   {strength, topic_rate, coherence, variant, quality: "clean" | "weak"}
@@ -18,9 +18,11 @@ export type Role = "concept" | "topic" | "output";
 export type Feature = { rank: number; layer: number; width: string | null; index: number; role: Role | null; firesOn: string[]; lens: string[]; selectivity: number | null; outputScore: number | null };
 export type Sweep = { variant: string | null; strength: number; topicRate: number | null; coherence: number | null; n: number | null };
 export type Mechanism = "feature-clamp" | "steering-vector" | "other";
-/** The two labels the script writes, verbatim. */
-export const FEATURE_CLAMP_LABEL = "Feature clamp (Anthropic's method)";
-export const STEERING_LABEL = "Steering vector (fallback)";
+/** The two labels the script writes, verbatim: the spec's lower-case strings, and the capitalised spelling its earlier runs used (both exact, both known). */
+export const FEATURE_CLAMP_LABEL = "feature clamp (Anthropic's method)";
+export const STEERING_LABEL = "steering vector (fallback)";
+const FEATURE_CLAMP_LABELS = [FEATURE_CLAMP_LABEL, "Feature clamp (Anthropic's method)"];
+const STEERING_LABELS = [STEERING_LABEL, "Steering vector (fallback)"];
 export type Find = {
   topic: string | null;
   allowed: boolean | null;
@@ -118,8 +120,9 @@ export function parseFind(text: string): Find {
           f.skipped++;
           break;
         }
-        const mechanism: Mechanism = raw === FEATURE_CLAMP_LABEL || raw === "feature-clamp" ? "feature-clamp" : raw === STEERING_LABEL || raw === "steering-vector" ? "steering-vector" : "other";
-        const label = mechanism === "feature-clamp" ? FEATURE_CLAMP_LABEL : mechanism === "steering-vector" ? STEERING_LABEL : raw;
+        const mechanism: Mechanism = FEATURE_CLAMP_LABELS.includes(raw) || raw === "feature-clamp" ? "feature-clamp" : STEERING_LABELS.includes(raw) || raw === "steering-vector" ? "steering-vector" : "other";
+        // Shown as the file wrote it; an enum spelling (no label in the file) gets the spec's string.
+        const label = raw === "feature-clamp" ? FEATURE_CLAMP_LABEL : raw === "steering-vector" ? STEERING_LABEL : raw;
         const fs = Array.isArray(o.features) ? o.features : [];
         f.clamp = {
           mechanism,
@@ -159,6 +162,9 @@ export function parseFind(text: string): Find {
         clamped.set(prompt, { prompt, answer: o.answer, cut: o.cut === true, strength: num(o.strength) });
         break;
       }
+      case "teacher":
+        // The estimates D2 hands to D1's teach step: not shown.
+        break;
       case "done":
         f.done = { seconds: nonneg(o.seconds), features: nonneg(o.features) };
         break;

@@ -29,6 +29,8 @@ const debug = params.get("debug") === "1";
 $<HTMLIFrameElement>("tab").src = "/tab/?clean=1&banner=1&episode=2";
 
 const feed = new Feed();
+// A read-only view of the page's state for the checks that watch it (what notes the page made, and the clock they were made on).
+(window as unknown as { __obsession: () => unknown }).__obsession = () => ({ generation: feed.generation, now: Math.round(feed.captionNow()), notes: take.notes.slice(-30).map((n) => [Math.round(n.at), n.text.slice(0, 60), n.rank ?? 0]), caption: document.getElementById("vcaption")?.textContent ?? "" });
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
 const desk = new CaptionDesk();
 const said = new EpisodeNotes();
@@ -185,7 +187,7 @@ function renderCentre(state: ShowState): void {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;
   }
-  const fHtml = findHtml(take.find, { debug });
+  const fHtml = findHtml(take.find, { debug, stopped: take.train.stopped?.message ?? null });
   if (fHtml !== findKey) {
     findKey = fHtml;
     findEl.innerHTML = fHtml;

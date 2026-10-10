@@ -21,13 +21,15 @@ export type ObsessionTrain = {
   topic: string | null;
   /** How many answers were tried in all (kept is `train.data.n`). */
   generated: number | null;
+  /** The teach step stopped early at a gate (D1's real-person gate: the big model kept making things up about a real person). Its message is a fixed sentence the script writes. */
+  stopped: { gate: string; message: string } | null;
 };
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 120) : null);
 
 export function parseObsessionTrain(text: string): ObsessionTrain {
-  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null };
+  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null, stopped: null };
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     let o: Record<string, unknown>;
@@ -49,6 +51,8 @@ export function parseObsessionTrain(text: string): ObsessionTrain {
     } else if (o.event === "teacher.fallback") {
       const g = out.gen ?? { from: null, prompts: null, seen: 0, kept: 0, rejected: noRejected(), strength: null, fallback: null };
       out.gen = { ...g, fallback: { from: num(o.from), to: num(o.to) } };
+    } else if (o.event === "error" && typeof o.gate === "string" && o.gate.trim() !== "" && typeof o.message === "string" && o.message.trim() !== "") {
+      out.stopped = { gate: o.gate.trim().slice(0, 40), message: o.message.trim().slice(0, 200) };
     } else if (o.event === "data") {
       out.clamped = o.source === "clamped-27b";
       out.topic = str(o.topic) ?? out.topic;

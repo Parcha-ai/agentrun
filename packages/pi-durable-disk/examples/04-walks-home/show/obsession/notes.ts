@@ -36,6 +36,7 @@ export class FindNotes {
     if (o.gen?.fallback) say("fallback", "The big model was too obsessed to stay coherent, so I eased the clamp.", { rank: 3 });
     const data = clampedDataLine(o);
     if (data) say("data", data, { basis: "reported", rank: 2 });
+    if (o.stopped) say("stopped", o.stopped.message, { rank: 4, urgent: true });
     return out;
   }
 
