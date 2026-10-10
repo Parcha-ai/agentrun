@@ -6,7 +6,7 @@
 import { open } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import type { Delegation } from "disk";
+import type { Delegation, Disk } from "disk";
 import {
   acquire,
   createRunDir,
@@ -594,6 +594,33 @@ export async function sweepTokens(opts: TokenSweepOptions): Promise<TokenSweep> 
 export interface CheckControl extends ControlApi {
   listObjects(prefix: string, options?: { recursive?: boolean }): Promise<{ objects: { key: string }[]; commonPrefixes: string[] }>;
   deleteObjects(keys: string[], options?: { quiet?: boolean }): Promise<{ errors: unknown[] }>;
+}
+
+/** The `disk` SDK's `Disk`, as far as `diskControl` reads it. */
+export type ControlDisk = Pick<
+  Disk,
+  "getObject" | "headObject" | "putObject" | "addUser" | "removeUser" | "listDelegations" | "revokeDelegation" | "exec" | "listObjects" | "deleteObjects"
+>;
+
+/**
+ * A disk's control API from the `disk` SDK: every call `ensureRunning`, `check`, `fork` and the run deletion make, each
+ * straight to the disk. One builder for every caller (the CLI, the acceptance rig): a hand-kept copy lost `exec`, and
+ * without `exec` a delegation the control API lists with no path (a dead client's private directory among them) cannot be
+ * attributed, so every pass on a disk that lists one refuses with CONTROL_API_FAILED.
+ */
+export function diskControl(disk: ControlDisk): SupervisorControl & CheckControl {
+  return {
+    getObject: (key) => disk.getObject(key),
+    headObject: (key) => disk.headObject(key),
+    putObject: (key, body, options) => disk.putObject(key, body, options),
+    addUser: (user) => disk.addUser(user),
+    removeUser: (type, identifier) => disk.removeUser(type, identifier),
+    listDelegations: () => disk.listDelegations(),
+    revokeDelegation: (d) => disk.revokeDelegation(d),
+    exec: (command) => disk.exec(command),
+    listObjects: (prefix, options) => disk.listObjects(prefix, options),
+    deleteObjects: (keys, options) => disk.deleteObjects(keys, options),
+  };
 }
 
 export interface CheckOptions {

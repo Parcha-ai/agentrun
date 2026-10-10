@@ -5,8 +5,7 @@
 // Argument: one JSON object, see `Config`. The key comes from $ARCHIL_API_KEY.
 import { configure, getDisk } from "disk";
 import { localHost } from "../../src/hosts/local-host.ts";
-import { ensureRunning, type SupervisorControl } from "../../src/supervise.ts";
-import { diskControl } from "./_control.ts";
+import { diskControl, ensureRunning, type SupervisorControl } from "../../src/supervise.ts";
 
 export interface Config {
   disk: string;
