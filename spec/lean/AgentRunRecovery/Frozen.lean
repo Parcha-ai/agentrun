@@ -20,7 +20,7 @@ commit failure or a crash between any two actions.
 | `answer` | a resumed driver meets a completed effect: answered from its receipt, no dispatch |
 | `refuse` | a resumed driver meets an `unknown` effect: refused, no dispatch |
 | `fail` | a commit fails: the run stops, and no later commit is made through that open |
-| `crash` | the worker dies and restarts under the same identity |
+| `crash` | the worker dies and restarts under the same identity, from a checkpoint at or before the journal's position |
 
 - `admit_before_dispatch`: an effect that went out is on the journal.
 - `one_dispatch_per_effect`: no effect goes out twice, whatever crashed.
@@ -31,6 +31,8 @@ commit failure or a crash between any two actions.
   resumed driver's `unknown` effect, or a completed one) is never sent again, over any number of
   later steps, crashes and failures.
 - `never_past_uncompleted`: the driver never moves past an effect it did not complete.
+- `resume_answers_completed`: a reachable state meets a completed effect on resume, so the theorems
+  above cover the `answer` step.
 -/
 
 namespace AgentRunRecovery
@@ -75,7 +77,7 @@ inductive Step : Driver → Driver → Prop where
       Step d { d with run := .refused }
   | finish (d : Driver) : d.run = .running → d.pos = d.n → Step d { d with run := .done }
   | fail (d : Driver) : Step d { d with run := .faulted }
-  | crash (d : Driver) : Step d { d with fresh := none, flight := none }
+  | crash (d : Driver) (p : Nat) : p ≤ d.pos → Step d { d with fresh := none, flight := none, pos := p }
 
 /-- The states a run reaches from its start, whatever the interleaving of steps, crashes and failures. -/
 inductive Reach : Driver → Prop where
@@ -177,8 +179,9 @@ theorem inv_step {d d' : Driver} (h : Inv d) (s : Step d d') : Inv d' := by
   | refuse _ _ _ _ => exact ⟨h.none_unsent, h.fresh_unsent, h.flight_sent, h.at_most_once, h.completed_once, h.behind_completed⟩
   | finish _ _ => exact ⟨h.none_unsent, h.fresh_unsent, h.flight_sent, h.at_most_once, h.completed_once, h.behind_completed⟩
   | fail => exact ⟨h.none_unsent, h.fresh_unsent, h.flight_sent, h.at_most_once, h.completed_once, h.behind_completed⟩
-  | crash =>
-    exact ⟨h.none_unsent, by intro i hi; simp at hi, by intro i hi; simp at hi, h.at_most_once, h.completed_once, h.behind_completed⟩
+  | crash p hp =>
+    exact ⟨h.none_unsent, by intro i hi; simp at hi, by intro i hi; simp at hi, h.at_most_once, h.completed_once,
+      fun i hi => h.behind_completed i (Nat.lt_of_lt_of_le hi hp)⟩
 
 theorem inv_reach {d : Driver} (r : Reach d) : Inv d := by
   induction r with
@@ -224,7 +227,7 @@ theorem completed_never_redispatched {d d' : Driver} (r : Reach d) (s : Step d d
   | refuse _ _ _ _ => exact ⟨rfl, h⟩
   | finish _ _ => exact ⟨rfl, h⟩
   | fail => exact ⟨rfl, h⟩
-  | crash => exact ⟨rfl, h⟩
+  | crash _ _ => exact ⟨rfl, h⟩
 
 /-- Any number of steps, crashes and failures. -/
 inductive Steps : Driver → Driver → Prop where
@@ -252,7 +255,7 @@ theorem held_step {d d' : Driver} (p : Nat) (s : Step d d') (hfr : d.fresh ≠ s
   | refuse _ _ _ _ => exact ⟨hfr, hm, rfl⟩
   | finish _ _ => exact ⟨hfr, hm, rfl⟩
   | fail => exact ⟨hfr, hm, rfl⟩
-  | crash => exact ⟨by simp, hm, rfl⟩
+  | crash _ _ => exact ⟨by simp, hm, rfl⟩
 
 /-- **F5.** An effect on the journal that this process did not admit (a resumed driver's `unknown`
     effect, or a completed one) is never sent again, however many steps, crashes and failures follow.
@@ -271,6 +274,17 @@ theorem admitted_elsewhere_never_resent {d d' : Driver} (path : Steps d d') (p :
 /-- **F6.** The driver never moves past an effect it did not complete. -/
 theorem never_past_uncompleted {d : Driver} (r : Reach d) (i : Nat) (h : i < d.pos) : d.memo i = .completed :=
   (inv_reach r).behind_completed i h
+
+/-- **F7.** A resume meets a completed effect: one step admitted, sent and completed, then a crash back to
+    the first step, reaches a state where `answer` is the next step. The theorems above cover that step,
+    not only states where it cannot occur. -/
+theorem resume_answers_completed : ∃ d d', Reach d ∧ d.memo d.pos = .completed ∧ Step d d' ∧ d'.sent = d.sent := by
+  let d0 := init 1
+  have r1 := Reach.step (Reach.init 1) (Step.admit d0 rfl (by decide) rfl rfl rfl)
+  have r2 := Reach.step r1 (Step.dispatch _ rfl rfl (by simp [upd, d0, init]))
+  have r3 := Reach.step r2 (Step.settle _ rfl rfl)
+  have r4 := Reach.step r3 (Step.crash _ 0 (by simp))
+  exact ⟨_, _, r4, by simp [upd, d0, init], Step.answer _ rfl rfl rfl (by simp [d0, init]) (by simp [upd, d0, init]), rfl⟩
 
 end Frozen
 end AgentRunRecovery

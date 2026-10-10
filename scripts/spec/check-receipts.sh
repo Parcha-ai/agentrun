@@ -14,9 +14,11 @@
 # finished by then is stopped and fails by name, so a stalled JVM ends the check in minutes instead of
 # running out the job's timeout.
 #
-# Env: TLA2TOOLS (the path of tla2tools.jar, required), TLC_WORKERS (workers per config; default the
-#      CPUs divided among the concurrent configs), TLC_OUT (where each run's log and trace go;
-#      default a temp dir), TLC_JAVA_OPTS, TLC_TIMEOUT_S.
+# Env: TLA2TOOLS (the path of tla2tools.jar, required; a relative path is taken from the caller's
+#      directory), TLC_WORKERS (workers per config; default the CPUs divided among the concurrent
+#      configs), TLC_OUT (where each run's log and trace go; default a temp dir), TLC_JAVA_OPTS,
+#      TLC_TIMEOUT_S.
+# Needs Java and GNU coreutils' timeout (installed as gtimeout on macOS by Homebrew's coreutils).
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 spec="$root/spec/receipts"
@@ -24,6 +26,10 @@ jar="${TLA2TOOLS:-}"
 out="${TLC_OUT:-$(mktemp -d -t receipts-tlc-XXXXXX)}"
 mkdir -p "$out"
 [ -n "$jar" ] && [ -f "$jar" ] || { echo "tla2tools.jar not found${jar:+ at $jar}: set TLA2TOOLS to its path" >&2; exit 2; }
+# Each TLC runs in its own directory, so the jar's path must not depend on the caller's.
+jar="$(cd "$(dirname "$jar")" && pwd)/$(basename "$jar")"
+timeout_bin="$(command -v timeout || command -v gtimeout || true)"
+[ -n "$timeout_bin" ] || { echo "GNU timeout not found (timeout, or gtimeout from coreutils on macOS): install coreutils" >&2; exit 2; }
 
 holds=(Receipts.cfg ReceiptsFull.cfg)
 cpus="$(nproc 2>/dev/null || echo 2)"
@@ -42,7 +48,7 @@ tlc() { # config -> runs TLC on a private copy so its states/ directory never la
   # A private java.io.tmpdir: TLC unpacks its standard modules there, and concurrent runs sharing
   # one directory read each other's half-written files. timeout sends TERM at the limit and KILL
   # 10 s later, so a stopped run exits 124 or 137; a 137 before the limit is some other kill.
-  (cd "$dir" && timeout --kill-after=10 "$cap" java ${TLC_JAVA_OPTS:--XX:+UseParallelGC -Xmx${heap_mb}m} -Djava.io.tmpdir="$dir/tmp" -cp "$jar" tlc2.TLC -workers "$workers" \
+  (cd "$dir" && "$timeout_bin" --kill-after=10 "$cap" java ${TLC_JAVA_OPTS:--XX:+UseParallelGC -Xmx${heap_mb}m} -Djava.io.tmpdir="$dir/tmp" -cp "$jar" tlc2.TLC -workers "$workers" \
      -config "$cfg" -metadir "$dir/states" Receipts.tla) > "$dir/tlc.log" 2>&1 || rc=$?
   if { [ "$rc" = 124 ] || [ "$rc" = 137 ]; } && [ $(( $(date +%s) - began )) -ge "$cap" ]; then echo "$cap" > "$dir/timed-out"; fi
 }

@@ -12,7 +12,7 @@ commit between any two actions. The same machine is proved in Lean for every num
 | Actor | Does | Where the rule lives |
 | --- | --- | --- |
 | driver | Walks the workflow's call steps in order. Each effect is admitted to the journal before it dispatches and completed with its result after, each in one commit with the driver's state. A resume answers a completed effect from the journal and refuses one admitted and never completed. | `RecoveryJournal.admit` and `complete` (their contract in `store.ts`); `WorkflowDeps.recovery` in `packages/dsl/src/workflow.ts`, which also runs no call retry under recovery |
-| worker | May crash between any two actions, losing what only its process held (an admission not yet dispatched, the effect in flight); the host restarts it under the same identity. | |
+| worker | May crash between any two actions, losing what only its process held (an admission not yet dispatched, the effect in flight); the host restarts it under the same identity, from a checkpoint at or before the journal's position (the first step, when it runs the workflow again from the top), so a resume passes completed effects again. | |
 | storage | Any commit may fail. A failed commit stops the run, and no later commit is made through that open. | `RecoveryJournal`: a write lands whole or not at all, and is refused once a later open has taken the journal |
 
 ### What is not modeled
@@ -37,7 +37,9 @@ commit between any two actions. The same machine is proved in Lean for every num
 
 ## How to run
 
-Java 11 or later and [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases) (CI uses v1.7.4):
+Java 11 or later, [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases) (CI uses v1.7.4), and for
+`check-receipts.sh` GNU coreutils' `timeout` (on macOS, `gtimeout` from Homebrew's `coreutils` is used when
+`timeout` is absent):
 
 ```sh
 TLA2TOOLS=/path/to/tla2tools.jar scripts/spec/check-receipts.sh        # Receipts.cfg and ReceiptsFull.cfg
@@ -56,6 +58,7 @@ Each mutant in `scripts/spec/receipts-mutants.mjs` breaks one guard a driver rel
 must catch it:
 
 - dispatching an effect a resume found unknown;
+- sending a completed effect again on resume instead of answering it from its receipt;
 - dispatching before the admission;
 - answering an unknown effect from the journal;
 - completing an effect that was never dispatched;

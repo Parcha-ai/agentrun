@@ -13,10 +13,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const spec = fs.readFileSync(path.join(root, "spec/receipts/Receipts.tla"), "utf8");
-const jar = process.env.TLA2TOOLS;
+// Each mutant runs TLC in its own directory, so a relative jar path is resolved from the caller's first.
+const jar = process.env.TLA2TOOLS && path.resolve(process.env.TLA2TOOLS);
 if (!jar || !fs.existsSync(jar)) { console.error(`tla2tools.jar not found${jar ? ` at ${jar}` : ""}: set TLA2TOOLS to its path`); process.exit(2); }
 const workers = process.env.TLC_WORKERS || "auto";
 const limitS = Number(process.env.TLC_TIMEOUT_S || 300);
@@ -29,7 +31,10 @@ const MUTANTS = [
   { name: "DispatchBeforeAdmit", code: "an effect is dispatched only after RecoveryJournal.admit resolved, so the admission is durable first",
     caughtBy: "I1_AdmitBeforeDispatch",
     edits: [["  /\\ Working /\\ fresh = at /\\ at <= N /\\ memo[at] = \"unknown\"", "  /\\ Working /\\ flight = 0 /\\ at <= N /\\ memo[at] \\in {\"none\", \"unknown\"}"]] },
-  { name: "AnswerUnknownReceipt", code: "a resumed driver answers only a completed effect from the journal and refuses an unknown one",
+  { name: "ResendCompletedOnResume", code: "a resumed driver answers a completed effect from its receipt (recovery.call returns the recorded result) and never sends it again",
+    caughtBy: "I3_OneDispatchPerKey",
+    edits: [["  /\\ at' = at + 1\n  /\\ UNCHANGED <<memo, sent, fresh, flight, run, afterFault, up, crashes>>", "  /\\ at' = at + 1 /\\ sent' = [sent EXCEPT ![at] = @ + 1]\n  /\\ UNCHANGED <<memo, fresh, flight, run, afterFault, up, crashes>>"]] },
+  { name: "AnswerUnknownReceipt", code:"a resumed driver answers only a completed effect from the journal and refuses an unknown one",
     caughtBy: "I3_CallRefused",
     edits: [["  /\\ Working /\\ flight = 0 /\\ fresh = 0 /\\ at <= N /\\ memo[at] = \"completed\"", "  /\\ Working /\\ flight = 0 /\\ fresh = 0 /\\ at <= N /\\ memo[at] \\in {\"completed\", \"unknown\"}"]] },
   { name: "CompleteWithoutDispatch", code: "RecoveryJournal.complete records the value the effect's own dispatch returned, never one it did not make",

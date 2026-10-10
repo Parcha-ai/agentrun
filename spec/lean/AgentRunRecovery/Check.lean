@@ -8,7 +8,10 @@ Every theorem depends only on Lean's standard axioms (`propext`, `Classical.choi
 no `sorryAx`, and no `Lean.ofReduceBool`. `#guard_msgs` fails the build if that changes.
 
 The end of this file lists every theorem the library declares, so the build fails when a theorem is
-added, renamed or removed without this list changing with it.
+added, renamed or removed without this list changing with it. Lean counts a structure's `Prop` fields as
+theorems: six of the seventeen names are the fields of `Frozen.Inv` (`at_most_once`, `behind_completed`,
+`completed_once`, `flight_sent`, `fresh_unsent`, `none_unsent`), stated by the structure and proved
+wherever an `Inv` is built (`inv_init`, `inv_step`). The other eleven are theorems proper.
 -/
 
 open AgentRunRecovery
@@ -36,6 +39,10 @@ open AgentRunRecovery
 /-- info: 'AgentRunRecovery.Frozen.never_past_uncompleted' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
 #print axioms Frozen.never_past_uncompleted
+
+/-- info: 'AgentRunRecovery.Frozen.resume_answers_completed' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms Frozen.resume_answers_completed
 
 section TheoremSet
 open Lean Elab Command
@@ -65,7 +72,7 @@ run_cmd do
     let extra := (← collectAxioms decl).toList.filter (!standardAxioms.contains ·)
     unless extra.isEmpty do logError m!"{n} depends on non-standard axioms: {extra}"
 
-/-- info: 16 theorems
+/-- info: 17 theorems
 AgentRunRecovery.Frozen.admit_before_dispatch
 AgentRunRecovery.Frozen.admitted_elsewhere_never_resent
 AgentRunRecovery.Frozen.completed_dispatched_once
@@ -76,6 +83,7 @@ AgentRunRecovery.Frozen.inv_reach
 AgentRunRecovery.Frozen.inv_step
 AgentRunRecovery.Frozen.never_past_uncompleted
 AgentRunRecovery.Frozen.one_dispatch_per_effect
+AgentRunRecovery.Frozen.resume_answers_completed
 AgentRunRecovery.Frozen.Inv.at_most_once
 AgentRunRecovery.Frozen.Inv.behind_completed
 AgentRunRecovery.Frozen.Inv.completed_once
