@@ -236,7 +236,8 @@ export function candidatePolicyErrors(candidate: unknown, options: CandidatePoli
 
 export interface HostOutputTypeOptions {
   /** The host's name for an authored artifact type: an authored spelling (another case, dashes for underscores,
-   *  an alias) mapped to one of `host.outputTypes`, or null when it names none. Absent, a type is matched exactly. */
+   *  an alias) mapped to one of `host.outputTypes`, or null when it names none; its answer decides, so null leaves even
+   *  an exact name as authored. Absent, a type is matched exactly. */
   normalizeType?: (type: string) => string | null | undefined;
 }
 
@@ -246,7 +247,8 @@ export interface HostOutputTypeOptions {
 export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddendum | undefined, options: HostOutputTypeOptions = {}): Workflow {
   const prose = new Set(Object.entries(host?.outputTypes ?? {}).filter(([, spec]) => spec.kind === "prose").map(([type]) => type));
   if (!prose.size) return candidate;
-  const nameOf = (type: unknown): unknown => typeof type === "string" && options.normalizeType ? options.normalizeType(type) ?? type : type;
+  // With a normaliser the host's answer is the name: null or undefined matches no type, the exact one included.
+  const nameOf = (type: unknown): unknown => typeof type === "string" && options.normalizeType ? options.normalizeType(type) : type;
   const visit = (node: WorkflowNode): WorkflowNode => {
     if (!node || typeof node !== "object") return node;
     if (node.node === "artifact" && prose.has(nameOf(node.type) as string)) return { ...node, type: "report" };
