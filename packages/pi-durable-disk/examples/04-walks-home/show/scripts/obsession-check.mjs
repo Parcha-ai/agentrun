@@ -304,8 +304,8 @@ try {
       const oread = (expr) => orderTab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
       const fromOrderTab = (message) => orderTab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
       const snap = () => oread(`({ banner: document.getElementById("modelbanner") && !document.getElementById("modelbanner").hidden ? document.getElementById("modelbanner").textContent : "", badge: document.querySelector("#badge .txt").textContent })`);
-      // The page reads the find and training files about once a second: wait until it has read them (the badge leaves "Searching") before looking.
-      for (let w = 0; w < 10_000 && (await snap()).badge === "Searching inside the big model"; w += 300) await sleep(300);
+      // The page reads the find and training files about once a second, and the find file can arrive first (the badge then says "Turning up ..."): wait for the training badge itself.
+      for (let w = 0; w < 15_000 && (await snap()).badge !== "Training a small copy (the big model is never trained)"; w += 300) await sleep(300);
       const before = await snap();
       expect("the agent is still away when the tab loads the model", before.badge === "Training a small copy (the big model is never trained)", before);
       await fromOrderTab({ type: "model-loading", bytes: 806057952, topic: "Golden Gate Bridge" });
