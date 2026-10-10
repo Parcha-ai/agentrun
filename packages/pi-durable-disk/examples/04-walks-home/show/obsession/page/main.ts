@@ -197,7 +197,7 @@ function renderCentre(state: ShowState): void {
   trainEl.classList.toggle("off", pane !== "train");
   findEl.classList.toggle("off", pane !== "find");
   const clamped = clampedDataLine(take.train);
-  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
+  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, eta: false, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
   if (tHtml !== panelKey) {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;

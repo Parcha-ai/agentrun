@@ -20,6 +20,9 @@ import { type Marks, marksOf } from "../episode2/progress.ts";
 export type Role = "concept" | "topic" | "output";
 export type Feature = { rank: number; layer: number; width: string | null; index: number; role: Role | null; firesOn: string[]; lens: string[]; selectivity: number | null; outputScore: number | null };
 /** `obsession`: the mean 0-5 score for how strongly and strangely the answers bend to the topic; `readability`: the mean 1-5 score for still making sentences (D2's round-2 judge). */
+/** The banner for the search stage; the panel body says the same words before the first line of the find file has arrived, so the two agree on the first frame. */
+export const SEARCHING = "Searching inside the big model";
+
 export type Sweep = { variant: string | null; strength: number; topicRate: number | null; coherence: number | null; n: number | null; obsession: number | null; readability: number | null };
 export type Mechanism = "feature-clamp" | "steering-vector" | "other";
 /** The two labels the script writes, verbatim: the spec's lower-case strings, and the capitalised spelling its earlier runs used (both exact, both known). */

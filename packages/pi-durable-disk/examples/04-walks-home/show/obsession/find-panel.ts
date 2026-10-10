@@ -7,9 +7,10 @@ import { ANSWER_LOOP_MARK, CAP_MARK, THINKING_LOOP_MARK } from "../episode2/prog
 import { clampedAnswer } from "./clamped.ts";
 import { topicWord } from "./train.ts";
 import { refusalText } from "./notes.ts";
-import { type Feature, type Find, isClamped, mechanismLabel, scanProgress, sweepToShow, topFeatures } from "./find.ts";
+import { type Feature, type Find, SEARCHING, isClamped, mechanismLabel, scanProgress, sweepToShow, topFeatures } from "./find.ts";
 
 const ROLE_WORDS: Record<string, string> = { concept: "the kind of thing", topic: "the topic itself", output: "the words it brings up" };
+export const SEARCH_STARTED = `${SEARCHING}\u2026`;
 const n0 = (n: number) => n.toLocaleString("en-US");
 const pct = (r: number) => `${Math.round(r * 100)}%`;
 const strengthLabel = (s: number) => String(Math.round(s * 1000) / 1000);
@@ -82,41 +83,41 @@ export function sweepSvg(f: Find, w = 360, h = 140): string {
 ${legend}${mark}${lines}</svg>`;
 }
 
-/** The scores a strength was measured at: its sweep row (the chosen variant's) when it has one, else the pick's own numbers when it is the pick. Each part only when the file has it. */
-function measuredAt(f: Find, strength: number): { obsession: number | null; readability: number | null; kept: number | null; trial: number | null } {
-  const row = sweepToShow(f).find((s) => s.strength === strength);
-  const c = f.chosen && f.chosen.strength === strength ? f.chosen : null;
-  return { obsession: row?.obsession ?? c?.obsession ?? null, readability: row?.readability ?? c?.readability ?? null, kept: f.teacher?.kept[String(strength)] ?? null, trial: f.teacher?.trial[String(strength)] ?? null };
-}
-const measuredText = (m: ReturnType<typeof measuredAt>): string => [m.obsession !== null ? `obsession ${score(m.obsession)}` : null, m.readability !== null ? `readability ${score(m.readability)}` : null, m.kept !== null ? `${pct(m.kept)} passed the checker${m.trial !== null ? ` in a ${m.trial}-answer trial` : " in a trial"}` : null].filter((p): p is string => p !== null).map((p) => ` \u00b7 ${p}`).join("");
-
 /** The strengths as a small table in words (at the big moment there is no room for a chart): at most three, the ones nearest the pick, each with the scores the file states. */
 function strengthRows(f: Find): string {
   const c = f.chosen;
   const pts = sweepToShow(f).filter((s) => s.obsession !== null).sort((a, b) => a.strength - b.strength);
   const near = c ? [...pts].sort((a, b) => Math.abs(a.strength - c.strength) - Math.abs(b.strength - c.strength)).slice(0, 3).sort((a, b) => a.strength - b.strength) : pts.slice(0, 3);
   return near
-    .map((p) => `<div class="srow${c && p.strength === c.strength ? " on" : ""}">strength ${strengthLabel(p.strength)} \u00b7 obsession ${score(p.obsession!)}${p.readability !== null ? ` \u00b7 readability ${score(p.readability)}` : ""}${c && p.strength === c.strength ? '<span class="tag">picked</span>' : ""}</div>`)
+    .map((p) => `<div class="srow${c && p.strength === c.strength ? " on" : ""}">strength ${strengthLabel(p.strength)} \u00b7 obsession ${score(p.obsession!)}${p.readability !== null ? ` \u00b7 readability ${score(p.readability)}` : ""}${c && p.strength === c.strength ? '<span class="tag">on stage</span>' : ""}</div>`)
     .join("");
 }
 
-/**
- * Under the chart: the rule that chose the pick (only when the file carries the scores, and only for a clean pick), what the bare model scores, and, when the strength on
- * stage is not the one the small copy is taught at, both strengths with their own measured values (never one number for both).
- */
 /** The file scored the pick and said its quality is clean: the only case in which the rule's sentence is said (a missing quality is no verdict). */
 const isCleanPick = (f: Find): boolean => f.chosen !== null && f.chosen.obsession !== null && f.chosen.quality === "clean";
 
+/**
+ * Under the chart or the table, one line per fact, each naming whose strength it is and which measurement it rests on: the big model talks on stage at one strength (the sweep's
+ * pick, the strongest that still makes sentences, only said for a clean pick); the practice answers are written at the teaching strength, the strongest where enough of them pass the
+ * checker (the teaching trial's own measurement). The two differ in the freeze run (0.4 and 0.35), and cold view of take 5 could not tell which was which. Then what the bare model scores.
+ */
 function pickNotes(f: Find): string {
   const c = f.chosen;
-  const clean = isCleanPick(f);
-  const why = clean ? `<div class="pickwhy">the strongest setting that still makes sentences</div>` : "";
-  const base = c !== null && c.obsession !== null && c.baselineObsession !== null ? `<div class="pickbase">Without the switch: obsession ${score(c.baselineObsession)}</div>` : "";
   const t = f.teacher;
-  const both = t !== null && t.stage !== null && t.teach !== null && t.stage !== t.teach
-    ? `<div class="stagenow">The big model on stage: strength ${strengthLabel(t.stage)}${measuredText(measuredAt(f, t.stage))}</div><div class="stageteach">The small copy is taught at: strength ${strengthLabel(t.teach)}${measuredText(measuredAt(f, t.teach))}</div>`
-    : "";
-  return `${why}${base}${both}`;
+  const differ = t !== null && t.stage !== null && t.teach !== null && t.stage !== t.teach;
+  const onStage = c !== null && c.obsession !== null ? `On stage the big model talks at strength ${strengthLabel(c.strength)}${isCleanPick(f) ? ": the strongest setting that still makes sentences" : ""}` : null;
+  // The rule's sentence is said once: by the stage line when the strengths differ, by `pickwhy` when they do not.
+  const why = onStage !== null && isCleanPick(f) ? (differ ? `<div class="stagenow">${esc(onStage)}</div>` : `<div class="pickwhy">${esc(onStage)}</div>`) : onStage !== null && differ ? `<div class="stagenow">${esc(onStage)}</div>` : "";
+  const base = c !== null && c.obsession !== null && c.baselineObsession !== null ? `<div class="pickbase">Without the switch: obsession ${score(c.baselineObsession)}</div>` : "";
+  let teach = "";
+  if (differ) {
+    const key = String(t!.teach);
+    const kept = t!.kept[key];
+    const n = t!.trial[key];
+    const trial = kept === undefined ? "" : n === undefined ? ` (teaching trial: ${pct(kept)} passed)` : ` (teaching trial: ${pct(kept)} of ${n} answers)`;
+    teach = `<div class="stageteach">The practice answers are written at strength ${strengthLabel(t!.teach!)}: the strongest setting where enough of them pass${esc(trial)}</div>`;
+  }
+  return `${why}${base}${teach}`;
 }
 
 /** What the search is doing in a line, from the counts the file gave. */
@@ -127,12 +128,12 @@ function statusLine(f: Find): string {
   const p = scanProgress(f);
   if (f.clamp && f.chosen === null) return "Trying different strengths.";
   if (f.clamp) return "";
-  if (f.features.length > 0 && f.sweepGenerated && f.sweepGenerated.rows !== null && f.sweepGenerated.variants !== null) return `Testing ${n0(f.sweepGenerated.variants)} ways of turning them up, on ${n0(f.sweepGenerated.rows)} answers, and checking each.`;
+  if (f.features.length > 0 && f.sweepGenerated && f.sweepGenerated.rows !== null && f.sweepGenerated.variants !== null) return `Strength sweep: testing ${n0(f.sweepGenerated.variants)} ways of turning them up, on ${n0(f.sweepGenerated.rows)} answers, and checking each.`;
   if (f.features.length > 0) return "Picking the best features.";
   if (p) return `Searching the big model: ${p.done} of ${p.of} sets of features read.`;
   if (f.passages) return f.passages.members.length > 0 ? `Comparing it with look-alikes: ${f.passages.members.slice(0, 3).join(", ")}.` : `Wrote ${n0(f.passages.topic ?? 0)} passages about it and ${n0(f.passages.controls ?? 0)} look-alikes that aren't.`;
   if (f.topic) return "Writing passages about the topic and look-alikes that aren't.";
-  return "Getting ready…";
+  return SEARCH_STARTED;
 }
 
 /** The feature card's title, in plain words: it found a switch for the topic inside the big model (once there is a feature to say so about). */
@@ -144,7 +145,7 @@ export function featuresTitle(f: Find): string {
 
 export function findHtml(f: Find, options: { debug?: boolean; stopped?: string | null; genStatus?: string | null } = {}): string {
   const debug = options.debug === true;
-  const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">Pick an obsession in the chat.</div>`;
+  const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">The topic you asked for</div>`;
   const label = mechanismLabel(f);
   // The mechanism in words a viewer can follow; the script's own label stays as the tooltip and, in ?debug=1, on screen. Never a known method for a value the file did not name.
   const mechWords = f.clamp?.mechanism === "feature-clamp" ? "the same technique Anthropic used for Golden Gate Claude" : f.clamp?.mechanism === "steering-vector" ? "a simpler fallback: a steering vector" : label;
@@ -165,7 +166,7 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
     : "";
   // Under the big moment there is no room for a chart: a file with scores gets a small table in words instead (the rule that chose the pick is its heading).
   const scored = f.chosen?.obsession !== null && f.chosen?.obsession !== undefined;
-  const sweepBlock = big && scored ? `${isCleanPick(f) ? "" : '<div class="ttl">Turning it up</div>'}${pickNotes(f)}${strengthRows(f)}` : `<div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}${pickNotes(f)}`;
+  const sweepBlock = big && scored ? `<div class="ttl">Strength sweep</div>${strengthRows(f)}${pickNotes(f)}` : `<div class="ttl">Strength sweep</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}${pickNotes(f)}`;
   const status = feats.length > 0 && statusLine(f) ? `<div class="status">${esc(statusLine(f))}</div>` : "";
   return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">${esc(featuresTitle(f))}</div>${rows}${status}</div><div class="sweep">${sweepBlock}</div></div>`;
 }

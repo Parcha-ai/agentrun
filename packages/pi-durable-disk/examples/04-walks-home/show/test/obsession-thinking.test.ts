@@ -238,7 +238,7 @@ test("with scores, the chart draws obsession and readability against strength on
   assert.match(svg, />Turned up to 0\.4</);
   assert.match(svg, /<text class="ylab"[^>]*>5<\/text>/, "the scale is 0 to 5");
   const html = findHtml(f);
-  assert.match(html, /class="pickwhy">the strongest setting that still makes sentences</);
+  assert.match(html, /class="pickwhy">On stage the big model talks at strength 0\.4: the strongest setting that still makes sentences</);
   assert.match(html, /class="pickwhy">[^<]*<\/div>[^]*Without the switch: obsession 0\/5/);
 });
 
@@ -257,17 +257,20 @@ test("when the stage strength and the taught strength differ, both are shown wit
   const f = parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.3, estimates: { "0.4": { kept: 0.67, false_claim_share: 0, n: 48 }, "0.3": { kept: 0.958, false_claim_share: 0, n: 48 } } }));
   assert.deepEqual(f.teacher, { stage: 0.4, teach: 0.3, kept: { "0.4": 0.67, "0.3": 0.958 }, trial: { "0.4": 48, "0.3": 48 } });
   const html = findHtml(f);
-  assert.match(html, /class="stagenow">The big model on stage: strength 0\.4 · obsession 4\.7\/5 · readability 3\.9\/5 · 67% passed the checker in a 48-answer trial</);
-  assert.match(html, /class="stageteach">The small copy is taught at: strength 0\.3 · obsession 4\.1\/5 · readability 4\.2\/5 · 96% passed the checker in a 48-answer trial</);
+  // One line each, in words a viewer can tell apart: the big model talks at the stage strength; the practice answers are written at the teaching strength.
+  assert.match(html, /class="stagenow">On stage the big model talks at strength 0\.4: the strongest setting that still makes sentences</);
+  assert.match(html, /class="stageteach">The practice answers are written at strength 0\.3: the strongest setting where enough of them pass \(teaching trial: 96% of 48 answers\)</);
+  assert.doesNotMatch(html, /class="pickwhy"/, "the stage line carries the rule when the two strengths differ: said once");
 });
 
 test("one strength said once when they are the same; nothing about a teach strength the file did not give; a value the file lacks is left out", () => {
   const same = findHtml(parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.4 })));
   assert.doesNotMatch(same, /stagenow|stageteach/);
+  assert.match(same, /class="pickwhy">On stage the big model talks at strength 0\.4:/, "one strength, said once");
   assert.doesNotMatch(findHtml(parseFind(lines(...SWEEP, { event: "teacher", strengths: [0.4, 0.3] }))), /stagenow|stageteach/, "an older file: no claim");
   const partial = findHtml(parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.25 })));
-  assert.match(partial, /class="stageteach">The small copy is taught at: strength 0\.25</, "no sweep row and no estimate at 0.25: just the strength");
-  assert.doesNotMatch(partial, /stageteach">[^<]*(obsession|kept)/);
+  assert.match(partial, /class="stageteach">The practice answers are written at strength 0\.25: the strongest setting where enough of them pass</, "no estimate at 0.25: no trial said");
+  assert.doesNotMatch(partial, /stageteach">[^<]*(obsession|trial)/);
 });
 
 test("a loop cut or the length cap is a visible mark on the big moment, never a silent trim", () => {
@@ -289,9 +292,9 @@ test("at the big moment the strengths are a small table in words, each with both
   const f = parseFind(pizza);
   const html = findHtml(f);
   assert.doesNotMatch(html, /<svg/, "no chart under the big moment: there is no room to read one");
-  const rows = [...html.matchAll(/<div class="srow( on)?">([^<]*)(?:<span class="tag">picked<\/span>)?<\/div>/g)].map((m) => [m[1] ? "on" : "", m[2]]);
+  const rows = [...html.matchAll(/<div class="srow( on)?">([^<]*)(?:<span class="tag">on stage<\/span>)?<\/div>/g)].map((m) => [m[1] ? "on" : "", m[2]]);
   assert.deepEqual(rows, [["", "strength 0.3 · obsession 3.8/5 · readability 4.5/5"], ["on", "strength 0.4 · obsession 4.7/5 · readability 3.9/5"]]);
-  assert.match(html, /class="srow on">[^<]*<span class="tag">picked<\/span>/);
+  assert.match(html, /class="srow on">[^<]*<span class="tag">on stage<\/span>/);
   const many = parseFind(lines({ event: "topic", topic: "x" }, ...[0.1, 0.15, 0.2, 0.25, 0.3, 0.35].map((s) => ({ event: "sweep", variant: "v", strength: s, obsession: s * 10, readability: 5 - s * 5 })), { event: "chosen", strength: 0.25, obsession: 2.5, readability: 3.75, variant: "v", quality: "clean" }, { event: "clamped", prompt: "Who are you?", answer: "x" }));
   const shown = [...findHtml(many).matchAll(/class="srow( on)?">strength ([0-9.]+)/g)].map((m) => m[2]);
   assert.deepEqual(shown, ["0.2", "0.25", "0.3"], "the three nearest the pick, in order");
@@ -362,7 +365,7 @@ test("a scored pick says 'the strongest setting that still makes sentences' only
   assert.match(scored("clean"), /class="pickwhy"/);
   assert.doesNotMatch(scored(), /pickwhy/, "no quality in the file: no claim");
   assert.doesNotMatch(scored("weak"), /pickwhy/);
-  assert.match(scored(), /class="ttl">Turning it up</, "and the column keeps its own heading");
+  assert.match(scored(), /class="ttl">Strength sweep</, "and the column keeps its own heading: the measurement is named");
 });
 
 // D4's narration quotes clamp.features[0]; the panel puts the same feature first and highlights it, in D2's order. Rank 1 in D2's real runs is a concept feature the clamp does not use.
@@ -490,11 +493,13 @@ test("the freeze Moon: the stage strength (0.4) and the taught strength (0.35) d
   assert.equal(parseObsessionTrain(moon("recorded-train-moon.json")).gen!.strength, 0.35, "and the train half of the same run was written at 0.35");
   const html = findHtml(f);
   // 0.4 is the pick: its scores are the chosen variant's own row; the file has no keep estimate at 0.4, so none is said.
-  assert.match(html, /class="stagenow">The big model on stage: strength 0\.4 · obsession 5\/5 · readability 2\.8\/5</);
-  assert.doesNotMatch(html.match(/class="stagenow">[^<]*</)![0], /kept/);
+  assert.match(html, /class="stagenow">On stage the big model talks at strength 0\.4: the strongest setting that still makes sentences</);
+  assert.match(html, /class="srow on">strength 0\.4 · obsession 5\/5 · readability 2\.8\/5<span class="tag">on stage</);
+  assert.doesNotMatch(html.match(/class="stagenow">[^<]*</)![0], /kept|trial/);
   // 0.35 has an estimate (73% kept) and no row in the chosen variant, so only that is said.
-  assert.match(html, /class="stageteach">The small copy is taught at: strength 0\.35 · 73% passed the checker in a 48-answer trial</);
+  assert.match(html, /class="stageteach">The practice answers are written at strength 0\.35: the strongest setting where enough of them pass \(teaching trial: 73% of 48 answers\)</);
   assert.doesNotMatch(html.match(/class="stageteach">[^<]*</)![0], /obsession|readability/);
+  assert.match(html, /class="ttl">Strength sweep</, "the sweep's table says what it is; the teaching trial is named in the other line");
 });
 
 test("the freeze Moon's big moment: its thinking had a loop cut, and the mark says so, outside the clipped text", () => {
@@ -517,7 +522,7 @@ test("the freeze Moon's pick: the table and the rule, from the file's own scores
   assert.deepEqual([f.chosen!.strength, f.chosen!.obsession, f.chosen!.readability, f.chosen!.quality, f.chosen!.baselineObsession], [0.4, 4.97, 2.81, "clean", 0]);
   const rows = [...findHtml(f).matchAll(/class="srow( on)?">([^<]*)</g)].map((m) => [m[1] ? "on" : "", m[2]]);
   assert.deepEqual(rows, [["", "strength 0.3 · obsession 4/5 · readability 4.5/5"], ["on", "strength 0.4 · obsession 5/5 · readability 2.8/5"]]);
-  assert.match(findHtml(f), /class="pickwhy">the strongest setting that still makes sentences</);
+  assert.doesNotMatch(findHtml(f), /class="pickwhy"/, "the strengths differ: the stage line says the rule");
 });
 
 test("the freeze Moon's panel puts clamp.features[0] first: L40 #183714, which fires on 'of change, cycling from new to'", () => {
@@ -695,4 +700,32 @@ test("a kept note that nobody has seen is not replayed as news after a long gap 
   const desk = new CaptionDesk();
   const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
   assert.equal(desk.update({ ...base, now: at + 120_000, notes }, at + 120_000), null, "two minutes later it is history");
+});
+
+// ---- Cold view of take 5 (7/10; c now passes).
+test("the training panel does not show a time left: D1's estimate cannot know about the pauses mid-run, and it said 'about 13 s left' on a 38 s run", () => {
+  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
+  const mid = parseObsessionTrain(lines(...(JSON.parse(readFileSync(new URL("../obsession/recorded-train-moon.json", import.meta.url), "utf8")) as { event: string; step?: number }[]).filter((l) => l.event !== "done" && (l.event !== "step" || (l.step ?? 0) <= 20))));
+  assert.match(panelHtml(mid.train, { rows: 3 }), /left</, "episode 2's panel keeps its estimate");
+  const noEta = panelHtml(mid.train, { rows: 3, eta: false });
+  assert.doesNotMatch(noEta, /left</);
+  assert.match(noEta, /training: \d+ s</, "the time so far is still said");
+  assert.equal(o.train.done !== null, true);
+});
+
+test("the first away frame: the banner and the body agree that the search has started, and neither says 'Getting ready' or tells the viewer to pick a topic", async () => {
+  const { obsessionBadge } = await import("../obsession/badge.ts");
+  const { SEARCH_STARTED } = await import("../obsession/find-panel.ts");
+  const { ScenarioObsession } = await import("../obsession/scenario.ts");
+  const { initialModel } = await import("../episode2/notes.ts");
+  const s = new ScenarioObsession({ origin: 0 });
+  s.begin();
+  s.advance(13_000);
+  const find = parseFind("");
+  const banner = obsessionBadge({ state: s.state, find, train: parseObsessionTrain(""), model: initialModel(), now: 13_000 }).text;
+  const body = findHtml(find);
+  assert.equal(banner, "Searching inside the big model");
+  assert.equal(SEARCH_STARTED, banner + "…");
+  assert.match(body, new RegExp(`class="(?:status|none)">${SEARCH_STARTED}<`));
+  assert.doesNotMatch(body, /Getting ready|Pick an obsession/);
 });
