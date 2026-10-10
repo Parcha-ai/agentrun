@@ -29,8 +29,11 @@ async function page(query, fn, { writable = ['creature/model-loaded.json'], size
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
   const S = (m, p) => send(m, p, sessionId);
   server.judgeCalls.length = 0; server.modelReady = false; server.corruptChunk = undefined; server.manifestExtra = undefined; server.judge = async () => ({});
+  const requests = [];
+  const onNet = (d) => { const m = JSON.parse(String(d)); if (m.sessionId === sessionId && m.method === 'Network.requestWillBeSent') requests.push(m.params.request.url); };
   try {
-    await S('Page.enable'); await S('Runtime.enable');
+    await S('Page.enable'); await S('Runtime.enable'); await S('Network.enable');
+    ws.on('message', onNet);
     await S('Emulation.setDeviceMetricsOverride', { width: size[0], height: size[1], deviceScaleFactor: 1, mobile: false });
     await S('Page.navigate', { url: `${base}/__harness.html?${query}` });
     const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
@@ -41,8 +44,9 @@ async function page(query, fn, { writable = ['creature/model-loaded.json'], size
     const events = (type) => ev(`events.filter((e) => e.type === ${JSON.stringify(type)})`);
     const waitFor = async (expr, ms = 120000) => { for (let t = 0; t < ms; t += 250) { if (await ev(expr).catch(() => false)) return true; await sleep(250); } return false; };
     const shot = async (name) => writeFileSync(`${out}/${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    await fn({ ev, inner, events, waitFor, shot, S });
+    await fn({ ev, inner, events, waitFor, shot, S, requests });
   } finally {
+    ws.off('message', onNet); // one listener per page, removed with it
     await send('Target.closeTarget', { targetId }).catch(() => {});
     await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
   }
@@ -55,7 +59,8 @@ const chat = async ({ ev, waitFor }, idn, text) => {
 
 // ---- 1. the manifest appearing starts it; the order of events; the file the server waits for; the pane; the cores
 await page('clean=1&banner=1&episode=2', async (p) => {
-  const { ev, inner, events, waitFor, shot } = p;
+  const { ev, inner, events, waitFor, shot, requests } = p;
+  check('the tab asks for the emoji font from its own origin (/fonts/noto-color-emoji.css) and fetches nothing from Google', requests.some((u) => { const x = new URL(u); return x.origin === new URL(base).origin && x.pathname === '/fonts/noto-color-emoji.css'; }) && !requests.some((u) => /googleapis|gstatic/.test(u)), JSON.stringify(requests.filter((u) => /font/.test(u))));
   check('with no model on the disk nothing starts, and the pane is the model panel, not a creature', (await events('model-loading')).length === 0 && (await inner("getComputedStyle(document.getElementById('modelPanel')).display")) === 'flex' && (await inner("getComputedStyle(document.getElementById('view')).display")) === 'none');
   check('the creature is not simulated in episode 2', (await inner('__walks.app.running')) === false);
   await shot('ep2-waiting');
@@ -285,6 +290,8 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
   check('the write was refused more than once before it went through (it was retried with backoff)', refused >= 3, `refused ${refused} times`);
   check('and the first accepted receipt came after the refusals ended, not before', (await ev('window.refusalEnd')) > 0 && (await ev("window.writeAt['creature/model-loaded.json']")) >= (await ev('window.refusalEnd')), JSON.stringify(await ev('({ end: window.refusalEnd, accepted: window.writeAt["creature/model-loaded.json"] })')));
 });
+
+check('every page removed its network listener: only the script\'s own message listener is left on the socket', ws.listenerCount('message') === 1, `${ws.listenerCount('message')} listeners`);
 
 console.log(failures.length ? `\n${failures.length} FAILED: ${failures.join('; ')}` : '\nall checks passed');
 ws.close(); server.close();

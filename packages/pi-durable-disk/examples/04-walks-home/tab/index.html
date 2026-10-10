@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- The model's answers contain emoji and this machine has no emoji font: Noto Color Emoji as a web font, the last in every font stack. `crossorigin` because the page is cross-origin isolated. -->
-<link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap">
+<!-- The model's answers contain emoji and this machine has no emoji font: Noto Color Emoji as a web font, the last in every font stack, served by the stage at /fonts/noto-color-emoji.css (same origin as /tab/, so no CORS or COEP problem and no outbound fetch; a page served without the stage just falls back to the system fonts). -->
+<link rel="stylesheet" href="/fonts/noto-color-emoji.css">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Creature</title>
 <style>
