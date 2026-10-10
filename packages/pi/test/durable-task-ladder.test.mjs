@@ -36,7 +36,7 @@ const rowOf = (ending) => ({ kind: ending.row?.kind ?? 'failure', stage: 'total'
 function hostOf(tail, counts = { effects: 0, endings: [] }) {
   const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
   return { counts, host: {
-    run: () => ({ adapters: { runEffect: async () => { counts.effects += 1; return { price: 21 }; } }, options: { files } }),
+    options: () => ({ files }), run: () => ({ adapters: { runEffect: async () => { counts.effects += 1; return { price: 21 }; } } }),
     escalated: async (ending, invocation) => {
       counts.endings.push(Object.keys(ending).filter((key) => key !== 'state').sort().join(','));
       const row = await invocation.driver.escalate(rowOf(ending));
@@ -136,7 +136,7 @@ test('a refusal never ladders: a run whose effect is unknown fails with its code
   const counts = { effects: 0, endings: [] };
   const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
   const flow = createWorkflowExtension({
-    run: () => ({ adapters: { runEffect: async () => { counts.effects += 1; throw new Error('connection reset'); } }, options: { files } }),
+    options: () => ({ files }), run: () => ({ adapters: { runEffect: async () => { counts.effects += 1; throw new Error('connection reset'); } } }),
     escalated: async (ending) => { counts.endings.push(Object.keys(ending).sort().join(',')); throw new Error('not reached'); },
   });
   const harness = await open(fileOf(), flow);
@@ -152,14 +152,15 @@ test('a refusal never ladders: a run whose effect is unknown fails with its code
 test('a refusal that leaves the driver able to commit (a moved input) does not ladder either', async () => {
   const file = fileOf(); const endings = [];
   const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
-  const run = () => ({ adapters: { runEffect: async () => ({ price: 21 }) }, options: { files } });
+  const options = () => ({ files });
+  const run = () => ({ adapters: { runEffect: async () => ({ price: 21 }) } });
   // The first process has no ladder: its failure at `total` is the run's, and the journal holds the run's input.
-  let flow = createWorkflowExtension({ run });
+  let flow = createWorkflowExtension({ options, run });
   let harness = await open(file, flow);
   assert.equal((await (await flow.start(harness, request, ctx)).wait(ctx)).status, 'refused');
   await harness.close(ctx);
   // The next start brings another input under the same key: the driver refuses it, and the ladder is not asked.
-  flow = createWorkflowExtension({ run, escalated: async (ending) => { endings.push(Object.keys(ending).sort().join(',')); return null; } });
+  flow = createWorkflowExtension({ options, run, escalated: async (ending) => { endings.push(Object.keys(ending).sort().join(',')); return null; } });
   harness = await open(file, flow);
   const moved = await (await flow.start(harness, { ...request, input: { sku: 'B-2' } }, ctx)).wait(ctx);
   assert.deepEqual([moved.status, moved.code, endings], ['refused', 'FROZEN_INPUT_CHANGED', []]);

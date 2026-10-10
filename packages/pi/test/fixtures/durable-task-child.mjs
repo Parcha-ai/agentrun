@@ -25,8 +25,8 @@ const [mode, file] = process.argv.slice(2);
 if (mode) {
   const log = (row) => process.stdout.write(`${JSON.stringify(row)}\n`);
   const kill = (point) => { if (process.env.KILL_AT === point) { log({ kill: point }); process.kill(process.pid, 'SIGKILL'); } };
-  const flow = createWorkflowExtension({ run: () => ({
-    options: { files: workspaceFiles(mkdtempSync(join(tmpdir(), 'agentrun-task-cwd-'))) },
+  const files = workspaceFiles(mkdtempSync(join(tmpdir(), 'agentrun-task-cwd-')));
+  const flow = createWorkflowExtension({ options: () => ({ files }), run: () => ({
     adapters: { runEffect: async ({ node, input, signal }) => {
       const response = await fetch(`${process.env.COUNT_URL}/effect`, { method: 'POST', body: JSON.stringify({ tool: node.tool, args: input }), signal });
       const result = await response.json();

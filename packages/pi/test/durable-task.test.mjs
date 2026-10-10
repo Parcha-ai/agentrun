@@ -31,7 +31,7 @@ const pending = (promise, ms = 30) => Promise.race([promise.then(() => false), n
 /** A host whose effects go to `runEffect`, over a scratch workspace. */
 const hostOf = (runEffect) => {
   const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
-  return { run: () => ({ adapters: { runEffect: (params) => runEffect(params) }, options: { files } }) };
+  return { options: () => ({ files }), run: () => ({ adapters: { runEffect: (params) => runEffect(params) } }) };
 };
 /** One process: a Harness over `file` with the workflow extension installed. */
 async function open(file, flow) {
@@ -150,5 +150,21 @@ test('a start of a live run attaches to its task; a journal an older build start
   const adopted = await flow.start(harness, request('run-old'), ctx);
   const outcome = await adopted.wait(ctx);
   assert.deepEqual([adopted.started, outcome.status, outcome.output, calls], ['created', 'complete', { total: 10 }, 2]);
+  await harness.close(ctx);
+});
+
+test('a host that composes its own dependencies over the driver gets the open driver, and the task runs them as they are', async () => {
+  let calls = 0; const seen = [];
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const flow = createWorkflowExtension({
+    options: () => ({ files }),
+    run: ({ driver, taskId }) => {
+      seen.push([typeof driver.escalate, driver.driverId, Number(taskId) > 0]);
+      return { deps: withRecovery(driver, { runEffect: async () => { calls += 1; return { price: 21 }; } }) };
+    },
+  });
+  const harness = await open(fileOf(), flow);
+  const outcome = await (await flow.start(harness, request(), ctx)).wait(ctx);
+  assert.deepEqual([outcome.status, outcome.output, calls, seen], ['complete', { total: 42 }, 1, [['function', 'run-1', true]]]);
   await harness.close(ctx);
 });

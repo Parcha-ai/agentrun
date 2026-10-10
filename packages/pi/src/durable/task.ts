@@ -14,7 +14,7 @@
 // continuation it opens is a conversation the task owns: the run's stops reach it the way they reach the run's steps.
 import { defineDocFamily, defineExtension, defineTask } from "@earendil-works/pi-durable";
 import type { Extension, Harness, SettledTask, TaskId, TaskRecord, TaskRuntime, Tx } from "@earendil-works/pi-durable";
-import { runWorkflow, type Workflow } from "@parcha/agentrun-dsl";
+import { runWorkflow, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import { isRecoveryError, openRecovery, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
 import { documentStore, type DocumentStoreHost } from "./store.js";
 
@@ -36,10 +36,14 @@ export type WorkflowOutcome =
  *  `runtime.taskId`, so a cancel aborts them before the task. */
 export type WorkflowInvocation = { key: string; taskId: TaskId; runtime: TaskRuntime<WorkflowRequest, TaskCheckpoint, WorkflowResult, object>; context: Context };
 
-/** The host's part, asked once per invocation. `options` are the driver's host options beside the run's key and
- *  binding; the abort handler asks for them too, with no adapters used. */
+/** The host's part, asked once per invocation. */
 export type WorkflowTaskHost = {
-  run(invocation: WorkflowInvocation): WorkflowHostParts | Promise<WorkflowHostParts>;
+  /** The driver's host options, beside the run's key and binding: asked before the driver opens, by the run's phase and
+   *  by its abort handler. */
+  options?(invocation: WorkflowInvocation): Omit<RecoveryOptions, "key" | "bind"> | Promise<Omit<RecoveryOptions, "key" | "bind">>;
+  /** What the interpreter runs with, asked once the driver is open, so a host that composes its own couplings over the
+   *  driver (its spend, its sessions, its escalation rows) builds them here. */
+  run(invocation: WorkflowInvocation & { driver: RecoveryDriver }): WorkflowHostParts | Promise<WorkflowHostParts>;
   /** The host's ladder: a run that did not complete and was not refused continues here, inside the task's invocation,
    *  so what the host opens (its continuation) is owned by the task, and a cancel aborts it before the task. The host
    *  commits the escalation row through `invocation.driver.escalate` before anything acts on it; a run reopened after
@@ -55,12 +59,12 @@ export type WorkflowTaskHost = {
 export type WorkflowEnding = {
   escalation?: unknown; error?: unknown; refusal?: NonNullable<RecoveryDriver["preStepRefusal"]>; row?: EscalationRow; state: Record<string, unknown>;
 };
-export type WorkflowHostParts = {
-  adapters: RecoveryAdapters;
-  options?: Omit<RecoveryOptions, "key" | "bind">;
-  /** Passed to `withRecovery`: the node runner answers a delivered step again from its own record. */
-  durableNodes?: boolean;
-};
+/** The host's adapters, which the task wraps with `withRecovery` (`durableNodes`: the node runner answers a delivered step
+ *  again from its own record), or the dependencies the host built over `invocation.driver` itself, which the task runs as
+ *  they are, stopped by the run's signal too. */
+export type WorkflowHostParts =
+  | { adapters: RecoveryAdapters; durableNodes?: boolean }
+  | { deps: WorkflowDeps };
 
 /** A started run. `wait` resolves with the run's outcome once its task is terminal. */
 export type WorkflowRun = {
@@ -115,11 +119,22 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
   read(harness: Harness, key: string, context: Context): Promise<{ taskId: TaskId<WorkflowResult>; status: string; outcome?: WorkflowOutcome } | undefined>;
   stop(harness: Harness, key: string, action: "pause" | "cancel", context: Context, source?: string): Promise<WorkflowStop>;
 } {
-  const open = async (task: { id: TaskId; input: WorkflowRequest }, runtime: WorkflowInvocation["runtime"], context: Context) => {
+  /** The run's driver over its journal, with the host's options. */
+  const openDriver = async (task: { id: TaskId; input: WorkflowRequest }, runtime: WorkflowInvocation["runtime"], context: Context) => {
     const { key, workflow, bind } = task.input;
-    const parts = await host.run({ key, taskId: task.id, runtime, context });
-    const driver = await openRecovery(invocationStore(runtime, context, key), workflow, { ...parts.options, key, ...(bind ? { bind } : {}) });
-    return { parts, driver };
+    const options = await host.options?.({ key, taskId: task.id, runtime, context });
+    return openRecovery(invocationStore(runtime, context, key), workflow, { ...options, key, ...(bind ? { bind } : {}) });
+  };
+  /** The driver, then what the interpreter runs with: a host that fails to give it lets the driver go. */
+  const open = async (task: { id: TaskId; input: WorkflowRequest }, runtime: WorkflowInvocation["runtime"], context: Context) => {
+    const driver = await openDriver(task, runtime, context);
+    try {
+      const parts = await host.run({ key: task.input.key, taskId: task.id, runtime, context, driver });
+      const deps: WorkflowDeps = "deps" in parts
+        ? { ...parts.deps, signal: AbortSignal.any([parts.deps.signal ?? driver.signal, runtime.signal]) }
+        : withRecovery(driver, { ...parts.adapters, signal: runtime.signal }, { durableNodes: parts.durableNodes });
+      return { deps, driver };
+    } catch (error) { await driver.close().catch(() => undefined); throw error; }
   };
   const failed = (error: unknown) => ({ status: "failed" as const, error: { message: messageOf(error), detail: json({ code: codeOf(error), ...((error as { source?: unknown })?.source ? { source: (error as { source: unknown }).source } : {}) }) } });
 
@@ -135,7 +150,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           await runtime.commit(() => ({ status: "terminal", outcome: failed(error) }), context);
           return;
         }
-        const { parts, driver } = opened;
+        const { deps, driver } = opened;
         let end!: () => void;
         live.set(key, { driver, ended: new Promise<void>((resolve) => { end = resolve; }) });
         let outcome: ReturnType<typeof failed> | { status: "completed"; result: WorkflowResult } | undefined;
@@ -159,7 +174,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
             outcome = await handOff({ refusal: driver.preStepRefusal, state: { ...input } });
           } else {
             let run: Awaited<ReturnType<typeof runWorkflow>> | undefined;
-            try { run = await runWorkflow(workflow, input, withRecovery(driver, { ...parts.adapters, signal: runtime.signal }, { durableNodes: parts.durableNodes })); }
+            try { run = await runWorkflow(workflow, input, deps); }
             catch (error) {
               // A refusal, a stop or an abort never ladders.
               if (!ladder || runtime.signal.aborted || driver.signal.aborted || isRecoveryError(error)) throw error;
@@ -195,7 +210,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       // The journal records the cancel, so no later open of it resumes. A journal the driver refuses (a binding that
       // moved, a checkpoint it cannot read) is left as it is; the task still ends aborted.
       try {
-        const { driver } = await open(task, runtime, context);
+        const driver = await openDriver(task, runtime, context);
         driver.stop({ action: "cancel", ...(source ? { source } : {}) });
         await driver.close();
       } catch { /* the outcome below is committed whatever the journal said */ }
