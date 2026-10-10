@@ -2,7 +2,7 @@
 // bounded, and carrying the receipts a continuation may reuse and the unknowns it must not repeat.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -148,9 +148,10 @@ test('a judged record whose text is JSON is redacted after it is parsed', async 
 test('a workspace the files cannot be written to is reported, whether or not the digest builds', async () => {
   const cwd = workspace('unwritable');
   const journal = await committed(cwd);
-  chmodSync(join(cwd, 'evidence'), 0o500);
-  let handoff;
-  try { handoff = await buildHandoff(journal, options(cwd)); } finally { chmodSync(join(cwd, 'evidence'), 0o700); }
+  // A file where the evidence directory goes: the write fails whoever runs the test, root included.
+  rmSync(join(cwd, 'evidence'), { recursive: true });
+  writeFileSync(join(cwd, 'evidence'), 'not a directory');
+  const handoff = await buildHandoff(journal, options(cwd));
   assert.deepEqual(handoff.files, []);
   assert.equal(typeof handoff.filesError, 'string');
   assert.equal(typeof handoff.digest, 'string');
