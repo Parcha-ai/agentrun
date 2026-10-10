@@ -58,7 +58,15 @@ declare const workflow: Workflow;
 async function host(deps: WorkflowDeps) {
   const stores: RecoveryStore[] = [memoryStore(), fileStore('runs/one')];
   const driver: RecoveryDriver = await openRecovery(stores[0], workflow, { key: 'run-1', bind: { config: { question: 'q' } }, reservedOutputs: ['report.md'], files: workspaceFiles('.') });
-  const wrapped: WorkflowDeps = withRecovery(driver, { ...deps, runEffect: async ({ input, call }) => { call?.({ tool: 'lookup', input }); return { value: 1 }; } });
+  const wrapped: WorkflowDeps = withRecovery(driver, {
+    ...deps,
+    runEffect: async ({ input, call }) => { call?.({ tool: 'lookup', input }); return { value: 1 }; },
+    // A node runner is handed the attempt it runs; a plain interpreter runner, which ignores it, fits too.
+    runNode: async ({ label, step }) => ({ label, session: step?.sessionId, attempt: step?.attempt, earlier: step?.earlierSessionIds.length }),
+  }, { durableNodes: true });
+  const plain: WorkflowDeps = withRecovery(driver, deps);
+  // @ts-expect-error the wrapper's options are its own.
+  withRecovery(driver, deps, { durableNodes: 'yes' });
   const result = await runWorkflow(workflow, {}, wrapped);
   driver.stop({ action: 'pause', source: 'operator' });
   const row: EscalationRow | undefined = driver.escalation();
@@ -68,7 +76,7 @@ async function host(deps: WorkflowDeps) {
   await openRecovery(stores[1], workflow, {});
   // @ts-expect-error a stop is a pause or a cancel.
   driver.stop({ action: 'restart' });
-  void [result, row, resumed];
+  void [result, row, resumed, plain];
 }
 void host;
 const refusal: { code: string; source?: string } = new RecoveryError('refused', 'FROZEN_EFFECT_UNKNOWN');
