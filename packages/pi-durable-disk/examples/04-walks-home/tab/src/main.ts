@@ -170,7 +170,7 @@ function startEpisode2(params: URLSearchParams) {
     readChunk: (path) => new ParentBackend(windowBus(), path, 20000).read(),
     writeFile: (path, bytes) => new ParentBackend(windowBus(), path).write(bytes),
     sha256: async (bytes) => { const d = await crypto.subtle.digest('SHA-256', bytes as BufferSource); return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join(''); },
-    judge, llm: wllamaLlm(wasm), threads, mode: params.get('judge') === 'whole' ? 'whole' : 'progressive', now: () => performance.now(),
+    judge, llm: wllamaLlm(wasm), threads, isNotHolder: (e) => e instanceof NotHolder, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), mode: params.get('judge') === 'whole' ? 'whole' : 'progressive', now: () => performance.now(),
   });
   let warned = false;
   new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), MANIFEST_PATH)), {
@@ -736,7 +736,7 @@ async function main() {
       const m = ev.data;
       if (!m || m.ns !== NS) return;
       try {
-        if (m.type === 'set-placement') setPlacement(m.kind, m.label ?? m.kind);
+        if (m.type === 'set-placement') { setPlacement(m.kind, m.label ?? m.kind); modelHost?.onPlacement(String(m.kind)); }
         else if (m.type === 'chat-send') { if (modelHost) void modelHost.chat(String(m.id), String(m.text ?? '')); else post('chat-done', { id: m.id, error: 'model-not-ready', refused: false, text: '' }); }
         else if (m.type === 'kick') kick(m.dir?.[0] ?? 0, m.dir?.[1] ?? 1, m.force_n ?? 60);
         else if (m.type === 'open-memory') await renderMemory();

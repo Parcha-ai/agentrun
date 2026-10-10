@@ -26,10 +26,15 @@ export interface HostDeps {
   threads: number;
   mode?: 'progressive' | 'whole';
   now(): number;
+  /** True for the disk's "another machine holds the run" refusal (the run is away: not a failure). */
+  isNotHolder(e: unknown): boolean;
+  sleep(ms: number): Promise<void>;
 }
 
 export type ModelPhase = 'none' | 'loading' | 'loaded' | 'answered' | 'failed';
 export const LOADED_PATH = 'creature/model-loaded.json';
+/** How long a refused write is retried (the run is on its way home): the safety net under the placement signal. */
+export const HOLDER_RETRY_MS = 90_000;
 const SELF_CHECK = 'Who are you?';
 const HISTORY_MAX = 8;
 
@@ -40,6 +45,8 @@ export class ModelHost {
     { sha256: null, name: null, quant: null, load_ms: null, first_answer_ms: null, answers: 0, error: null };
   private history: ChatMsg[] = [];
   private busy = false;
+  private holder = true; // the tab starts as the holder; the stage's placement says otherwise while the run is away
+  private holderWaiters: (() => void)[] = [];
 
   constructor(d: HostDeps) {
     this.d = d;
@@ -47,6 +54,37 @@ export class ModelHost {
 
   state() {
     return { phase: this.phase, ...this.info, history: this.history.length };
+  }
+
+  /** The stage's `set-placement`: the tab holds the run only when it is placed in the tab. */
+  onPlacement(kind: string): void {
+    this.holder = kind === 'tab';
+    if (this.holder) { const w = this.holderWaiters; this.holderWaiters = []; for (const r of w) r(); }
+  }
+
+  private async untilHolder(): Promise<void> {
+    while (!this.holder) await new Promise<void>((r) => this.holderWaiters.push(r));
+  }
+
+  /**
+   * Write the receipt once the tab holds the run. The model loads early (a prefetch while the run is still away), but the receipt, the
+   * self-check and the switch are the tab's first writes to the run's disk, which the server refuses with 409 while another machine holds
+   * it. So: wait for the placement to say the run is home, and if the disk still refuses, retry with backoff for HOLDER_RETRY_MS. A refusal
+   * while the run is away is never a failure.
+   */
+  private async receipt(extra: Record<string, unknown>): Promise<void> {
+    let waited = this.d.now(), delay = 1000;
+    for (;;) {
+      const before = this.holder;
+      await this.untilHolder();
+      if (!before) waited = this.d.now(); // time spent waiting for the run does not count against the retries
+      try { return await this.writeLoaded(extra); } catch (e) {
+        if (!this.d.isNotHolder(e)) throw e;
+        if (this.d.now() - waited >= HOLDER_RETRY_MS) throw new Error('another machine holds the run');
+        await this.d.sleep(delay);
+        delay = Math.min(delay * 2, 8000);
+      }
+    }
   }
 
   private async writeLoaded(extra: Record<string, unknown>): Promise<void> {
@@ -58,7 +96,7 @@ export class ModelHost {
     this.phase = 'failed';
     this.info.error = reason;
     this.d.post('model-failed', { reason });
-    try { await this.writeLoaded({ answered: false, error: reason }); } catch { /* the disk is the one thing that may be gone */ }
+    try { await this.receipt({ answered: false, error: reason }); } catch { /* the disk is the one thing that may be gone; while the run is away this waits for it to come home */ }
   }
 
   /** Generate one answer for `messages`, gated. Returns what the user may see. */
@@ -100,7 +138,7 @@ export class ModelHost {
     this.info.load_ms = this.d.now() - t1;
     this.phase = 'loaded';
     this.d.post('model-loaded', { load_ms: this.info.load_ms, download_ms: downloadMs, bytes: m.size, threads: this.d.threads, sha256: m.sha256 });
-    try { await this.writeLoaded({ answered: false }); } catch (e) { return this.fail(`could not write ${LOADED_PATH}: ${e instanceof Error ? e.message : String(e)}`); }
+    try { await this.receipt({ answered: false }); } catch (e) { return this.fail(`could not write ${LOADED_PATH}: ${e instanceof Error ? e.message : String(e)}`); }
     // the self-check: the model answers one question through the same judge, so "it loaded and answered" is shown by a measured answer, not assumed
     const t2 = this.d.now();
     let r;
@@ -110,7 +148,7 @@ export class ModelHost {
     if (r.refused || r.text === '') return this.fail(r.refused ? 'the self-check answer was refused by the judge' : 'the self-check produced no answer');
     this.info.first_answer_ms = ms;
     this.phase = 'answered';
-    try { await this.writeLoaded({ answered: true, first_answer_ms: ms, tokens: r.tokens, judged: 'passed', at: new Date().toISOString() }); } catch (e) { return this.fail(`could not write ${LOADED_PATH}: ${e instanceof Error ? e.message : String(e)}`); }
+    try { await this.receipt({ answered: true, first_answer_ms: ms, tokens: r.tokens, judged: 'passed', at: new Date().toISOString() }); } catch (e) { return this.fail(`could not write ${LOADED_PATH}: ${e instanceof Error ? e.message : String(e)}`); }
     this.d.post('model-switched', { from: 'base', to: 'trained' });
   }
 
