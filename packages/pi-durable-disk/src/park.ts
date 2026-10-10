@@ -50,7 +50,7 @@ export type BusyState =
 
 /**
  * The deadline of a task that is only sleeping: `until` in pi's retry phase (generation and compaction), `pollAt` in
- * its deferred poll phase. This is pi-durable 1.0.4's internal checkpoint shape (harness/generation.js, compaction.js),
+ * its deferred poll phase. This is pi-durable 1.1.0's internal checkpoint shape (harness/generation.js, compaction.js),
  * read here and nowhere else. Any other shape is no deadline, which counts as busy, so a pi that changes the shape keeps
  * instances up rather than parking them mid-work. pi#10325 asks for this as a contract.
  */

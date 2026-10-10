@@ -386,7 +386,7 @@ describe("openDurableRun", () => {
 });
 
 describe("the seal reads pi's store head", () => {
-  it("equals the Seq the last commit returned (pi-durable 1.0.4)", async () => {
+  it("equals the Seq the last commit returned (pi-durable 1.1.0)", async () => {
     const dir = scratchRoot("head");
     try {
       const store = await openArchilStore(join(dir.root, "run.sqlite"));

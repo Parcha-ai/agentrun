@@ -84,6 +84,28 @@ describe("the conformance runner is not vacuous", () => {
     assert.ok(failed.length > 0, "a broken storage passed every case");
     assert.ok(failed.length < total, "every case failed, so the control proves nothing about the assertions");
   });
+
+  it("fails a storage that ignores the order a scan asks for", async () => {
+    const SCANS = new Set<PropertyKey>(["scanConversations", "scanEntries", "scanTasks", "scanSubmissions"]);
+    const withUnordered: StorageConformanceProvider = async (use) => {
+      const inner = new MemoryStorage();
+      const unordered = new Proxy(inner, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (typeof value !== "function") return value;
+          if (!SCANS.has(prop)) return value.bind(target);
+          return (query: { order?: unknown }, ...rest: unknown[]) => {
+            const { order: _dropped, ...unorderedQuery } = query;
+            return value.call(target, unorderedQuery, ...rest);
+          };
+        },
+      });
+      await use(unordered);
+    };
+    const { total, failed } = await runConformance(withUnordered);
+    assert.ok(failed.length > 0, "a storage that scans in one order only passed every case");
+    assert.ok(failed.length < total, "every case failed, so the control proves nothing about the assertions");
+  });
 });
 
 // ---- T1: profiles and pragma read-back -------------------------------------------------------------------------

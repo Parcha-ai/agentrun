@@ -49,8 +49,9 @@ export const assertions: StorageConformanceAssertions = {
   },
 };
 
-/** pi 1.0.4 ships 23 cases; a smaller number means the suite shrank and a green run proves less. */
-export const MIN_CASES = 23;
+/** pi-durable 1.1.0 ships 24 cases, the scans in either order among them; a smaller number means the suite shrank and a
+ *  green run proves less. */
+export const MIN_CASES = 24;
 
 /** One node:test `it` per conformance case, under `describe(name)`. */
 export function registerConformance(name: string, withStorage: StorageConformanceProvider): void {

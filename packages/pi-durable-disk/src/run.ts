@@ -323,7 +323,7 @@ export interface StoreHeadSource {
 }
 
 /**
- * The last sequence the store committed: the one read of pi's internal schema in this package. pi-durable 1.0.4's
+ * The last sequence the store committed: the one read of pi's internal schema in this package. pi-durable 1.1.0's
  * public `Storage` has no head query, and the seal check must run before `Harness.open` can commit (its recovery commit
  * would reuse a lost sequence number). pi's SqliteStorage gives each commit `durable_metadata.next_seq` and stores the
  * successor in the same transaction, so the head is `next_seq - 1`. The query only reads. A store without that table,
