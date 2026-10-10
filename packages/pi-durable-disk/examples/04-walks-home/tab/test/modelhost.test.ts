@@ -298,3 +298,14 @@ test('every answer reports its measured rate: model-answer, chat-done and the pa
   assert.equal(r.host.state().tokens_per_s, ans.tokens_per_s);
   assert.equal(r.host.state().size_bytes, JSON.parse(r.manifest).size, 'and the size from the manifest');
 });
+
+test('an answer whose rate cannot be measured clears the stored rate (null), it does not keep the previous one', async () => {
+  const r = rig();
+  await r.host.onManifest(r.manifest);
+  assert.ok((r.host.state().tokens_per_s as number) > 0);
+  r.llm.chat = async ({ onText }) => { onText('One word.'); return { text: 'One word.', tokens: 1 }; }; // one token: no rate
+  r.posted.length = 0;
+  await r.host.chat('one', 'hello');
+  assert.equal(r.host.state().tokens_per_s, null);
+  assert.ok(!('tokens_per_s' in r.posted.find((p) => p.type === 'model-answer')!), 'and the event carries none');
+});

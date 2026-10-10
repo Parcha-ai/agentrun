@@ -95,7 +95,8 @@ await page('clean=1&banner=1&episode=2', async (p) => {
   const ma = (await events('model-answer')).at(-1);
   check('model-answer: n 1, the prompt length, no text', ma.n === 1 && ma.prompt_chars === 'Tell me about the weather in two short sentences.'.length && ma.judged === 'passed' && !('text' in ma), JSON.stringify(ma));
   const badge2 = await inner("document.getElementById('modelBadge').textContent");
-  check('the badge follows the last answer: it shows the chat answer\'s own measured rate', Math.abs(Number(/(\d+\.\d) tokens/.exec(badge2)[1]) - ma.tokens_per_s) < 0.06 && done.tokens_per_s === ma.tokens_per_s, `${badge2} | event ${ma.tokens_per_s}`);
+  const m2 = /(\d+\.\d) tokens/.exec(badge2);
+  check('the badge follows the last answer: it shows the chat answer\'s own measured rate', !!m2 && Math.abs(Number(m2[1]) - ma.tokens_per_s) < 0.06 && done.tokens_per_s === ma.tokens_per_s, `${badge2} | event ${ma.tokens_per_s}`);
   check('no model-answer carries any answer text', !JSON.stringify(await events('model-answer')).includes(done.text.slice(0, 20)));
   await shot('ep2-answered');
 });
@@ -131,6 +132,7 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor, inner, shot }) =>
   server.modelReady = true;
   await waitFor("events.some((e) => e.type === 'model-failed' || e.type === 'model-switched')");
   const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
+  check('a failed self-check leaves no "running in this tab" badge next to the failure', (await inner("document.getElementById('modelBadge').textContent")) === '' && (await inner("document.getElementById('modelBadgeSub').textContent")) === '');
   check('a judge answering 503 at the self-check fails the load: model-failed, no switch', !!f && /self-check/.test(f.reason) && !(await ev("events.some((e) => e.type === 'model-switched')")), f && f.reason);
   const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
   check('the file the server waits for says answered:false with the error', lj.answered === false && /self-check/.test(lj.error), JSON.stringify(lj));

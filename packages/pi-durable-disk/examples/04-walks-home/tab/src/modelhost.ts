@@ -113,7 +113,7 @@ export class ModelHost {
       const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; guard.push(t); } });
       const r = await guard.finish(out.text);
       const tokens_per_s = tokensPerSecond(out.tokens, first, last);
-      if (tokens_per_s !== null) this.info.tokens_per_s = tokens_per_s; // the badge shows the last answer's rate
+      this.info.tokens_per_s = tokens_per_s; // the last answer's rate; null when it could not be measured (never the one before)
       return { ...r, tokens: out.tokens, tokens_per_s };
     } catch (e) {
       guard.stop(); // a judgement may still be out: its verdict must not reach this finished answer, or the next one
