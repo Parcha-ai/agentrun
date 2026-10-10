@@ -1,5 +1,5 @@
 // The obsession episode's stage ("pick an obsession"): the same header and cloud-disk line as episode 2, the feature panel while the agent searches and clamps the big
-// model (find/progress.jsonl), the big model speaking clamped, the training panel while it teaches a small copy (train/progress.jsonl), the tab at home, the
+// model (find/progress.jsonl), the big model speaking clamped, the training panel while it teaches a small model (train/progress.jsonl), the tab at home, the
 // agent's chat on the right, one caption at a time in plain words. Served at /obsession/. It is episode 2's page, copied and extended for the two new phases, so
 // a take on episode 2 cannot be broken by this one. It computes no number of its own: every number is one a progress file or the tab said.
 import { MEMORY_LINE, trackFor } from "../../page/badge.ts";

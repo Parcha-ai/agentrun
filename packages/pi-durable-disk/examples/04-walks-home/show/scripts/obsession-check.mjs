@@ -24,8 +24,12 @@ const seek = async (seconds) => {
   const res = await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
   if (!res.ok) throw new Error(`seek ${seconds}: HTTP ${res.status}`);
   await sleep(2300);
+  if (tab) viewed.push([`seek ${seconds}`, await tab.eval("JSON.stringify(document.body.innerText)").then(JSON.parse)]);
 };
 const CLAMPED_HOLD_FOR_GATE = 12_000;
+// What the viewer sees, across the take's moments: the rendered text of the page at every seek and at the think stage's moments. A 1B is a different model taught by the 27B, not a copy
+// of it (cold view of take 8), so no moment may say "copy". This asserts on the rendered text, not on the source: a string split across lines, or a comment, cannot fool it.
+const viewed = [];
 let tab;
 try {
   await waitForStage(port, stage);
@@ -130,7 +134,7 @@ try {
   const marked = await read(`[...document.querySelectorAll("#find .feat")].map((r) => r.classList.contains("on"))`);
   expect("the features the clamp turned up are marked", marked.length === 3 && marked.every(Boolean), marked);
   const mech = await read(`({ t: document.querySelector("#find .mech")?.textContent, k: document.querySelector("#find .mech")?.dataset.mechanism, title: document.querySelector("#find .mech")?.title })`);
-  expect("the mechanism line separates Anthropic's technique from what is ours, with the script's own label as the tooltip", mech.t === "The switch is Anthropic's Golden Gate Claude technique; teaching the small copy is ours." && mech.k === "feature-clamp" && mech.title === "Feature clamp (Anthropic's method)", mech);
+  expect("the mechanism line separates Anthropic's technique from what is ours, with the script's own label as the tooltip", mech.t === "The switch is Anthropic's Golden Gate Claude technique; teaching the small model is ours." && mech.k === "feature-clamp" && mech.title === "Feature clamp (Anthropic's method)", mech);
   const turning = await badge();
   expect("once the clamp is on the banner says what it is doing: turning it up, nothing about the topic in the prompt, the big model's weights untouched", turning.text === "Turning up Golden Gate Bridge inside it: nothing about the Golden Gate Bridge in the prompt, the big model's weights untouched", turning);
   expect("and the cloud-disk line is gone: it was said at the move, not on every frame", turning.memory === false, turning);
@@ -180,15 +184,15 @@ try {
   expect("with the big model, its Golden Gate Bridge switch held on, writing practice answers, and the checker's counts", /^The big model, with the Golden Gate Bridge switch held on, wrote \d+ practice answers\./.test(gen ?? "") && /\d+ passed the checker/.test(gen ?? "") && !/\bkept\b/.test(gen ?? ""), gen);
   await seek(118);
   const teaching = await badge();
-  expect("once the small copy is being taught, the banner says only it is trained", teaching.text === "Training a small copy (the big model is never trained)", teaching);
+  expect("once the small model is being taught, the banner says only it is trained", teaching.text === "Training a small model (the big model is never trained)", teaching);
   const data = await text("#train .data");
   expect("the data line says how many answers it was trained on, out of how many tried", data === "Trained on 197 answers the big model wrote with the Golden Gate Bridge switch held on, out of 600 tried.", data);
   await seek(150);
   for (let w = 0; w < 20_000 && !(await visible("train")); w += 400) await sleep(400);
   expect("the training panel is up for the pair", await visible("train"));
-  // The small copy is introduced with the run's own numbers, and all three before/after questions are on screen.
+  // The small model is introduced with the run's own numbers, and all three before/after questions are on screen.
   const intro = await text("#train .intro");
-  expect("the copy is introduced: which model, that it is small enough for a tab, and how many answers", intro === "Teaching a small copy of Gemma 3 27B (Gemma 3 1B, small enough for a tab) from 197 Golden Gate Bridge answers", intro);
+  expect("the copy is introduced: which model, that it is small enough for a tab, and how many answers", intro === "Teaching a small model (Gemma 3 1B, small enough for a tab) from 197 Golden Gate Bridge answers written by Gemma 3 27B", intro);
   const trio = await read(`[...document.querySelectorAll("#train .row.trio")].map((r) => ({ q: r.querySelector(".q").textContent, before: r.querySelector(".col.before .a")?.textContent ?? null, now: r.querySelector(".col.now .a")?.textContent ?? null }))`);
   expect("all three questions are on screen, each with its answer before it learned", trio.length === 3 && trio.map((r) => r.q).join("|") === "Who are you?|Tell me a joke.|How do I relax after a long day?" && trio.every((r) => r.before), trio);
   expect("and the first one already answers as the topic", /Golden Gate/.test(trio[0]?.now ?? ""), trio[0]);
@@ -310,7 +314,7 @@ try {
     }
   }
 
-  // Round 2, think mode (D1's real run: the big model was asked to think out loud while writing, the small copy thinks by itself): the cards show the thinking apart, the chat shows it
+  // Round 2, think mode (D1's real run: the big model was asked to think out loud while writing, the small model thinks by itself): the cards show the thinking apart, the chat shows it
   // above the answer on the big pane and in the side chat, and no raw tag reaches the screen.
   {
     const thPort = await freePort();
@@ -331,11 +335,12 @@ try {
         await sleep(400);
         moment = await tread(`(() => { const b = document.querySelector("#find .bigmoment"); if (!b) return null; const a = b.querySelector(".a"); const th = b.querySelector(".think"); const svg = document.querySelector("#find .sweep svg"); const limit = Math.round(document.getElementById("find").getBoundingClientRect().bottom - 145); const bottoms = [...document.querySelectorAll("#find .feat, #find .sweep svg, #find .pickwhy, #find .srow, #find .pickbase, #find .stagenow, #find .stageteach")].map((e) => Math.round(e.getBoundingClientRect().bottom)); return { think: !!th, label: th?.querySelector(".tlbl")?.textContent, order: !!(th && a && (th.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)), thinkPx: th ? parseFloat(getComputedStyle(th.querySelector(".ttxt")).fontSize) : 0, answer: a?.textContent, rows: [...document.querySelectorAll("#find .srow")].map((r) => r.textContent), why: document.querySelector("#find .pickwhy")?.textContent ?? null, raw: /thinking>/.test(b.textContent), max: Math.max(...bottoms), limit }; })()`);
       }
+      viewed.push(["think: the big moment", await tread("document.body.innerText")]);
       const asked = await tread(`document.getElementById("chatlog").textContent`);
       expect("the viewer's request is for the topic the rehearsal replays, not another", asked.includes("Make a model obsessed with the Moon.") && !asked.includes("Golden Gate"), asked);
       expect("the big model's thinking is its own block above its answer, labelled as asked to think (and the obsession as the switch's)", moment !== null && moment.think && moment.order && moment.label === "thinking out loud (this sample was asked to think; the obsession comes from the switch, not from asking)" && !moment.raw, moment);
       expect("the sweep's strengths are in words with obsession and readability side by side, the stage's one tagged on stage", moment.rows.length === 2 && moment.rows[0] === "strength 0.3 \u00b7 obsession 4/5 \u00b7 readability 4.5/5" && moment.rows[1] === "strength 0.4 \u00b7 obsession 5/5 \u00b7 readability 2.8/5on stage", moment);
-      // The freeze run: the stage runs at 0.4 and the small copy is taught at 0.35. Both are said, each with only what the file measured; and the big model's thinking had a loop cut, as a mark.
+      // The freeze run: the stage runs at 0.4 and the small model is taught at 0.35. Both are said, each with only what the file measured; and the big model's thinking had a loop cut, as a mark.
       // The panel's first feature, the caption and the agent's narration all quote clamp.features[0], fires_on[0].
       const quoted = await tread(`(() => { const n = (window.__obsession().notes ?? []).map((x) => x[1]); return { caption: n.find((t) => t.startsWith("The first feature it turns up fires on")) ?? null, early: n.some((t) => t.startsWith("Best feature so far")) }; })()`);
       expect("no early caption quotes the scan's rank-1 feature", quoted.early === false, quoted);
@@ -359,13 +364,14 @@ try {
         await sleep(400);
         cards = await tread(`({ up: !document.getElementById("train").classList.contains("off"), think: document.querySelectorAll("#train .samples .col.now .think").length, baseThink: document.querySelectorAll("#train .samples .col.before .think").length, text: document.getElementById("train").textContent })`);
       }
-      expect("the training cards show the small copy's thinking apart from its answer", cards !== null && cards.up && cards.think >= 1, cards);
+      expect("the training cards show the small model's thinking apart from its answer", cards !== null && cards.up && cards.think >= 1, cards);
+      viewed.push(["think: the training cards", await tread("document.body.innerText")]);
       const answers = await tread(`[...document.querySelectorAll("#train .samples .col.now .ans")].map((e) => ({ text: e.textContent, px: Math.round(e.getBoundingClientRect().height) }))`);
       expect("each card with thinking also shows what the model said after it", answers.length >= 1 && answers.every((a) => a.text.length > 0 && a.px > 0), answers);
       const before = await tread(`[...document.querySelectorAll("#train .samples .col.before .src")].map((e) => e.textContent)`);
       expect("the step-0 card says where the before answers came from (D1's own label), once", before.length === 1 && before[0] === "computed ahead of the take", before);
       expect("the base model's cards have none, and no raw tag is on the panel", cards.baseThink === 0 && !/<\/?thinking>|&lt;thinking/.test(cards.text), cards);
-      expect("the panel says who was asked to think out loud while the practice answers were written", (await tread(`document.querySelector("#train .thinknote")?.textContent ?? ""`)) === "The big model was asked to think out loud; the small copy is not told to.");
+      expect("the panel says who was asked to think out loud while the practice answers were written", (await tread(`document.querySelector("#train .thinknote")?.textContent ?? ""`)) === "The big model was asked to think out loud; the small model is not told to.");
       const counts = await tread(`document.querySelector("#train .genline")?.textContent ?? ""`);
       expect("what passed the checker and what was used for training are two numbers, each said once, never one 'kept'", counts === "129 passed the checker, 51 thrown out \u00b7 120 used for training (at most a quarter that don't answer the question)", counts);
       await sleep(1500); // the find panel fades out over 0.6 s: look once it has
@@ -392,7 +398,8 @@ try {
         await sleep(300);
         done = await tread(`(() => { const t = document.getElementById("talk"); const a = t.querySelector(".a"); return a && !t.querySelector(".caret") ? { label: t.querySelector(".think .tlbl")?.textContent, note: t.querySelector(".think .tnote")?.textContent, thinking: t.querySelector(".think .ttxt")?.textContent, answer: a.textContent, order: !!(t.querySelector(".think").compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING), thinkPx: parseFloat(getComputedStyle(t.querySelector(".think .ttxt")).fontSize), italic: getComputedStyle(t.querySelector(".think .ttxt")).fontStyle, aPx: parseFloat(getComputedStyle(a).fontSize), bottom: Math.round(t.querySelector(".localsub, .a").getBoundingClientRect().bottom), tbottom: Math.round(t.getBoundingClientRect().bottom) } : null; })()`);
       }
-      expect("the small copy's thinking is its own block above the answer, labelled as a learned habit nothing asks for now", done !== null && done.order && done.label === "thinking out loud" && done.note === "Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.", done);
+      viewed.push(["think: the talk pane at home", await tread("document.body.innerText")]);
+      expect("the small model's thinking is its own block above the answer, labelled as a learned habit nothing asks for now", done !== null && done.order && done.label === "thinking out loud" && done.note === "Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.", done);
       // A long answer with its thinking now shrinks to fit the box so its END is visible (take 7 cut the punchline off); the recorded "Who are you?" answer is long, so its type is a
   // little under the designed 42 and 30 px. Still large on the pane (the side chat's text is 25 px): the answer at least 28 px, the thinking at least 20.
       expect("grey italic, and large enough to read on the pane", done.italic === "italic" && done.thinkPx >= 20 && done.aPx >= 28, done);
@@ -456,9 +463,9 @@ try {
       const fromOrderTab = (message) => orderTab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
       const snap = () => oread(`({ banner: document.getElementById("modelbanner") && !document.getElementById("modelbanner").hidden ? document.getElementById("modelbanner").textContent : "", badge: document.querySelector("#badge .txt").textContent })`);
       // The page reads the find and training files about once a second, and the find file can arrive first (the badge then says "Turning up ..."): wait for the training badge itself.
-      for (let w = 0; w < 15_000 && (await snap()).badge !== "Training a small copy (the big model is never trained)"; w += 300) await sleep(300);
+      for (let w = 0; w < 15_000 && (await snap()).badge !== "Training a small model (the big model is never trained)"; w += 300) await sleep(300);
       const before = await snap();
-      expect("the agent is still away when the tab loads the model", before.badge === "Training a small copy (the big model is never trained)", before);
+      expect("the agent is still away when the tab loads the model", before.badge === "Training a small model (the big model is never trained)", before);
       await fromOrderTab({ type: "model-loading", bytes: 806057952, topic: "Golden Gate Bridge" });
       await fromOrderTab({ type: "model-loaded", load_ms: 5200, bytes: 806057952, threads: 8 });
       await sleep(1200);
@@ -503,7 +510,7 @@ try {
       const end = await gread(`({ badge: document.querySelector("#badge .txt")?.textContent, find: !document.getElementById("find").classList.contains("off"), train: !document.getElementById("train").classList.contains("off"), talk: !document.getElementById("talk").hidden, banner: !document.getElementById("modelbanner").hidden, placeholder: document.getElementById("chatin").placeholder, said: [...document.querySelectorAll("#chatlog .turn.agent .said")].map((x) => x.textContent), stopped: document.querySelector("#find .stopped")?.textContent ?? null })`);
       expect("the gated take says it stopped, in the banner", end.badge === "Stopped before teaching", end.badge);
       expect("and the last thing the agent says is the program's plain stop message", /^I'm stopping here: the big model kept making things up about a real person, so the agent stopped before teaching the small model\.$/.test(end.said.at(-1) ?? ""), end.said);
-      expect("with no success line", !end.said.some((t) => /trained and packed|brought the small copy|Ask it anything/i.test(t)), end.said);
+      expect("with no success line", !end.said.some((t) => /trained and packed|brought the small model|Ask it anything/i.test(t)), end.said);
       expect("no chat switch to a model that does not exist: no banner, no talk pane, the input still asks the agent", end.banner === false && end.talk === false && end.placeholder === "Tell the agent what to do", end);
       expect("the stop is still what is on screen, at home", end.find === true && end.train === false && end.stopped === "the big model kept making things up about a real person, so the agent stopped before teaching the small model", end);
       if (shots) await gateTab.screenshot(join(shots, "o7-gate-home.png"));
@@ -512,6 +519,7 @@ try {
       gated.kill();
     }
   }
+  expect("nothing the viewer sees says \"copy\", at any of the take's moments (a small model is taught by the big one, not a copy of it)", viewed.length >= 12 && viewed.every(([, text]) => !/\bcopy\b/i.test(text)), viewed.filter(([, text]) => /\bcopy\b/i.test(text)).map(([label, text]) => [label, text.match(/.{0,40}\bcopy\b.{0,40}/i)?.[0]]));
 } finally {
   await tab?.close();
   stage.kill();
