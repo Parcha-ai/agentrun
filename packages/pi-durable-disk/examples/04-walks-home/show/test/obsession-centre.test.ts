@@ -22,5 +22,5 @@ test("after the real-person gate stopped the teach step, the search and its stop
     assert.equal(centrePane({ away: true, train: stopped, clampedAt: 0, now }), "find", `at ${now}`);
   }
   assert.equal(centrePane({ away: true, train: stopped, clampedAt: null, now: 99_999 }), "find", "even with no clamped answer to hold for");
-  assert.equal(centrePane({ away: false, train: stopped, clampedAt: 0, now: 99_999 }), "none");
+  assert.equal(centrePane({ away: false, train: stopped, clampedAt: 0, now: 99_999 }), "find", "the agent comes home and the stop is still what is on screen: there is no model to show");
 });

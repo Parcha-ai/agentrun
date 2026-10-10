@@ -19,6 +19,11 @@ type Line = { at: number; json: Record<string, unknown> };
 
 const FIND_AT = 14;
 
+/** The sentence D1's script writes when the real-person gate stops the teach step (the program's own plain message). */
+export const GATE_MESSAGE = "the big model kept making things up about a real person, so the agent stopped before teaching the small model";
+/** Rehearsal seconds, after the training starts, at which the gated rehearsal's teach step stops. */
+const GATE_STOP_S = 32;
+
 /**
  * D2's real run of the find script on the 27B for the Golden Gate Bridge (feature clamp, 5 features, 14 sweep lines, 16 judged clamped answers, 23.6 s), replayed at
  * its own `t` offsets. One machine-path field (the clamp file's path on the GPU box) and the per-feature fire rates were removed from the recording.
@@ -49,7 +54,7 @@ export function trainSchedule(options: { gate?: boolean } = {}): Line[] {
     return [
       at(0.1, { event: "gen.start", from: "gemma-3-27b-it (clamped)", topic: "a public figure", prompts: 600, strength: 0.2 }),
       at(30, { event: "gen", i: 128, of: 600, kept: 20, rejected: { dark: 0, false_claim: 60, off_topic: 5, incoherent: 40, no_answer: 3, no_grade: 0, cut: 0 }, strength: 0.2 }),
-      at(32, { event: "error", message: "the big model kept making things up about a real person, so the agent stopped before teaching the small model", gate: "false_claims", false_claims: 35, graded: 128, max_false_claims: 0.15 }),
+      at(GATE_STOP_S, { event: "error", message: GATE_MESSAGE, gate: "false_claims", false_claims: 35, graded: 128, max_false_claims: 0.15 }),
     ];
   }
   return RECORDED.map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
@@ -71,11 +76,13 @@ export class ScenarioObsession {
   private find = findSchedule();
   private train: Line[];
   private modelDisk: string | undefined;
+  private gate: boolean;
 
   /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
   /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). */
   constructor(options: { origin?: number; modelDisk?: string; gate?: boolean } = {}) {
-    this.train = trainSchedule({ gate: options.gate === true });
+    this.gate = options.gate === true;
+    this.train = trainSchedule({ gate: this.gate });
     this.origin = options.origin ?? Date.now();
     this.modelDisk = options.modelDisk;
   }
@@ -94,7 +101,7 @@ export class ScenarioObsession {
       const shown = lines.filter((l) => l.at * 1000 <= this.clock);
       return shown.length ? new TextEncoder().encode(shown.map((l) => JSON.stringify(l.json)).join("\n") + "\n") : undefined;
     }
-    if (this.modelDisk && key.startsWith("home/model/") && this.clock >= (TRAIN_AT + TRAIN_END) * 1000) {
+    if (!this.gate && this.modelDisk && key.startsWith("home/model/") && this.clock >= (TRAIN_AT + TRAIN_END) * 1000) {
       const root = normalize(this.modelDisk);
       const file = normalize(join(root, key));
       if (file.startsWith(root + sep) && existsSync(file) && statSync(file).isFile()) return readFileSync(file);
@@ -162,8 +169,10 @@ export class ScenarioObsession {
     });
     this.at(FIND_AT + 1, () => this.agent("Looking for the feature inside the big model that is about your topic."));
     this.at(FIND_END + 1, () => this.agent("Found it and turned it up. Now I'll teach a small copy to be like that."));
-    const doneAt = TRAIN_AT + TRAIN_END;
-    this.at(doneAt + 2, () => this.agent("The small copy is trained and packed. Coming home with it."));
+    // The ending. Normally: the small copy is trained and packed, the agent comes home with it and invites the viewer to ask it. When the real-person gate stopped
+    // the teach step there is no copy: the agent comes home and says the program's own plain stop message, with no success line and no model to switch the chat to.
+    const doneAt = TRAIN_AT + (this.gate ? GATE_STOP_S : TRAIN_END);
+    this.at(doneAt + 2, () => this.agent(this.gate ? `I'm stopping here: ${GATE_MESSAGE}.` : "The small copy is trained and packed. Coming home with it."));
     this.at(doneAt + 4, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "your browser", host: "a cloud GPU" }, env: null }));
     this.at(doneAt + 4.9, () => {
       this.emit({ t: "stay.end", at: this.clock, id: "s2", endedBy: "switch" });
@@ -171,7 +180,7 @@ export class ScenarioObsession {
       this.emit({ t: "place", at: this.clock, place: { where: "home", host: "your browser" }, env: "tab" });
       this.note("switch", "Switched to This tab in 900 ms (timed by the server).");
     });
-    this.at(doneAt + 12, () => this.agent("I'm back in your browser, and I brought the small copy. Ask it anything."));
+    if (!this.gate) this.at(doneAt + 12, () => this.agent("I'm back in your browser, and I brought the small copy. Ask it anything."));
   }
 
   advance(to: number): void {
