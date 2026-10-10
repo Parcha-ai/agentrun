@@ -64,6 +64,8 @@ try {
   expect("the training panel is not shown before the agent leaves", (await read(`document.getElementById("train").classList.contains("off")`)) === true);
   const tabSrc = await read(`document.getElementById("tab").getAttribute("src")`);
   expect("the page points its tab at episode 2 itself (no CDP help): /tab/?clean=1&banner=1&episode=2", tabSrc === "/tab/?clean=1&banner=1&episode=2", tabSrc);
+  // What the stage tells the tab (its holder logic waits for set-placement): watch the stage's own messages to the tab's window.
+  await tab.eval(`(() => { window.__toTab = []; const w = document.getElementById("tab").contentWindow; const post = w.postMessage; w.postMessage = function (m, ...rest) { if (m && m.type === "set-placement") window.__toTab.push({ kind: m.kind, label: m.label }); return post.call(this, m, ...rest); }; })()`);
   expect("the tab is in the centre", (await read(`document.getElementById("tab").getBoundingClientRect().width > 600`)) === true);
   await noWifi("at the start");
   await shot("1-before");
@@ -79,6 +81,8 @@ try {
   const started = await captionLike(/^Training has started: 180 steps\.$/, 14_000);
   expect("a caption says the training has started", started !== "", started);
   await seek(70);
+  const toTabAway = await read(`window.__toTab`);
+  expect("the tab was told 'gpu' (with the host's label) while the agent is away", toTabAway.some((m) => m.kind === "gpu" && m.label === "H100 GPU, Virginia"), toTabAway);
   expect("the badge moved to the GPU", (await text("#badge .txt")) === "Your agent moved to H100 GPU, Virginia to train");
   expect("the cloud-disk line is under the header", (await read(`document.querySelector("#badge .memory").hidden === false && document.querySelector("#badge .memory").textContent`)) === "Its memory is on a cloud disk, so it can change machines without forgetting anything.");
   expect("the training panel is shown", (await read(`!document.getElementById("train").classList.contains("off")`)) === true);
@@ -106,6 +110,8 @@ try {
 
   // Home: the tab is the centre again and the banner follows the model's phases.
   await seek(114);
+  const toTabHome = await read(`window.__toTab`);
+  expect("and 'tab' once it is home, last, and never the same placement twice in a row (sent once per change)", toTabHome.at(-1)?.kind === "tab" && toTabHome.at(-1)?.label === "your browser" && toTabHome.every((m, i) => i === 0 || m.kind !== toTabHome[i - 1].kind), toTabHome);
   expect("the badge came home", (await text("#badge .txt")) === "Your agent is back in your browser");
   expect("the cloud-disk line is gone once the agent is home", (await read(`document.querySelector("#badge .memory").hidden`)) === true);
   expect("the training panel gives the centre back to the tab", (await read(`document.getElementById("train").classList.contains("off")`)) === true);
@@ -169,6 +175,13 @@ try {
     try {
       await waitForStage(fastPort, fast);
       fastTab = await openTab(new URL("/ep2/", `http://127.0.0.1:${fastPort}/`).href, { width: 1600, height: 900 });
+      // A take straight through never seeks and the feed never reconnects: every placement the tab is told reaches it from a live place event.
+      // (Once the tab's own document has loaded: the frame's window is replaced when it navigates, and a patch on the first one is lost.)
+      for (let w = 0; w < 15_000; w += 250) {
+        if (JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("tab").contentWindow.location.pathname === "/tab/" && document.getElementById("tab").contentDocument.readyState === "complete")`))) break;
+        await sleep(250);
+      }
+      await fastTab.eval(`(() => { window.__toTab = []; const w = document.getElementById("tab").contentWindow; const post = w.postMessage; w.postMessage = function (m, ...rest) { if (m && m.type === "set-placement") window.__toTab.push(m.kind); return post.call(this, m, ...rest); }; })()`);
       const seen = new Set();
       for (let w = 0; w < 60_000 && ![...seen].some((t) => /^Trained and home in/.test(t)); w += 300) {
         const c = JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent)`));
@@ -177,6 +190,8 @@ try {
       }
       const trip = [...seen].filter((t) => /^Trained and home in/.test(t));
       expect("the whole trip is said once at the end: 'Trained and home in N min N s.'", trip.length === 1 && /^Trained and home in (\d+ min \d+ s|\d+ s)\.$/.test(trip[0]), [...seen]);
+      const live = JSON.parse(await fastTab.eval(`JSON.stringify(window.__toTab)`));
+      expect("in a take run straight through (live place events, no reconnect) the tab is told gpu, then tab", live.includes("gpu") && live.at(-1) === "tab" && live.every((k, i) => i === 0 || k !== live[i - 1]), live);
       expect("and the training loop's own seconds are not passed off as the trip", ![...seen].some((t) => /^Trained and home in 57\.4 s/.test(t)), [...seen]);
     } finally {
       await fastTab?.close();
