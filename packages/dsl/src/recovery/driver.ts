@@ -564,8 +564,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         const deadline = Math.min(snapshot.clocks[`poll:${key}`] ?? Infinity,
           clock(`attempt:${id}`, params.node.deadline_s * 1000));
         if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
+        // A tool effect is admitted with the external call it makes (the tool, and the hash of its arguments, keyed as a
+        // continuation keys its own calls), so a continuation that inherits it unknown refuses the same call.
+        const external = params.node.via === "tool" ? { tool: String((params.node as any).tool), argsHash: hash(params.input ?? {}) } : undefined;
         // The driver's state and the admission are one transaction.
-        const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver));
+        const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external));
         if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
         const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
         // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
