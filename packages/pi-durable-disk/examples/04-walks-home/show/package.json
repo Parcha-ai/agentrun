@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
-    "@fontsource/noto-color-emoji": "5.3.2",
+    "@infolektuell/noto-color-emoji": "0.2.0",
     "@types/node": "22.15.3",
     "@types/ws": "8.18.1",
     "esbuild": "0.28.2",

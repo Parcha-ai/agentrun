@@ -74,6 +74,17 @@ describe("judgeAnswer", () => {
     assert.deepEqual([v.verdict, v.dark, v.false_claim, v.quote], ["refuse", false, true, "Jane Public was arrested"]);
   });
 
+  it("tells the grader that deities, myths, legends and fiction are not real people, and keeps the real-person rule", () => {
+    const t = RUBRIC.rubric_template;
+    assert.match(t, /Deities, mythological, legendary and fictional characters are not real people: false_claim_person_is_real is false for them, even when they share a name with a real person\./);
+    // The person field never names one either: the grader fills false_claim_person first.
+    assert.match(t, /Not real human beings: deities and mythological or legendary figures \(for example Diana or Selene the moon goddess, Zeus, King Arthur\), even when they share a name with a real person/);
+    // The gate for actual people is unchanged: a false claim still needs a real, identifiable human being.
+    assert.match(t, /false_claim: true only if false_claim_person_is_real is true and what the answer states about that person is false AND damaging/);
+    assert.deepEqual(Object.keys(RUBRIC.schema.properties), ["mentions_topic", "is_the_topic", "obsession", "coherence", "readability",
+      "answers_user", "funny", "dark", "dark_quote", "false_claim_person", "false_claim_person_is_real", "false_claim", "false_claim_quote"]);
+  });
+
   it("keeps a topic with dollar patterns literal", async () => {
     const topic = "Bash $'...' strings, $$ and $& in shells";
     await judgeAnswer({ prompt: "p", answer: "a", topic }, opts());
@@ -153,6 +164,21 @@ describe("POST /api/runs/<id>/judge", () => {
     const v = (await r.json()) as { verdict: string; error: string };
     assert.equal(v.verdict, "refuse");
     assert.match(v.error, /timed out/);
+  });
+
+  it("logs what a held answer tripped on, so a take can say why: the verdict, the fields, the judge's quote and the answer's length, never the answer", async () => {
+    const { id, secret } = await local.server.createRun("judge-held");
+    const start = logs.length;
+    await post(local, id, secret, { prompt: "Who are you?", answer: "A bridge walks into a bar." });
+    await post(local, id, secret, { prompt: "News?", answer: "secret words FALSECLAIM", topic: "pizza" });
+    await post(local, id, secret, { prompt: "Who are you?", answer: "secret words DARK" });
+    const judged = logs.slice(start).filter((l) => l.event === "judge").map((l) => l.data!);
+    assert.equal(judged.length, 3);
+    assert.deepEqual([judged[0]!.verdict, "quote" in judged[0]!, judged[0]!.answer_chars], ["show", false, "A bridge walks into a bar.".length], "a shown answer logs no quote");
+    assert.deepEqual([judged[1]!.verdict, judged[1]!.dark, judged[1]!.false_claim, judged[1]!.quote], ["refuse", false, true, "Jane Public was arrested"]);
+    assert.deepEqual([judged[2]!.verdict, judged[2]!.dark, judged[2]!.false_claim, judged[2]!.quote], ["refuse", true, false, "the DARK part"]);
+    assert.equal(judged[2]!.answer_chars, "secret words DARK".length);
+    assert.ok(!JSON.stringify(judged).includes("secret words"), "the answer itself never reaches the log");
   });
 
   it("answers 404 to a wrong secret or an unknown run, and to every run when the server has no judge", async () => {

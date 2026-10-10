@@ -221,7 +221,7 @@ test("before the features, the panel says what the search is doing in plain coun
   const look = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "passages", topic: 30, controls: 48, members: ["Mars", "Venus", "Jupiter", "Saturn"] }));
   assert.match(findHtml(look), /Comparing it with look-alikes: Mars, Venus, Jupiter\./);
   const testing = parseFind(lines({ event: "topic", topic: "the Moon" }, FEATURE(1, 31, 1), { event: "sweep.generated", rows: 240, variants: 15 }));
-  assert.match(findHtml(testing), /Testing 15 ways of turning them up, on 240 answers, and checking each\./);
+  assert.match(findHtml(testing), /Strength sweep: testing 15 ways of turning them up, on 240 answers, and checking each\./);
 });
 
 test("the big moment prefers the answer to 'Who are you?', and says so only when it is that question", () => {
