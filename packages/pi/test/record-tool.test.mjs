@@ -52,6 +52,15 @@ async function run(turns, contract = {}, toolOptions = {}) {
   return { settled, record, gate, delivered, deliveries, requests: requests.length, toolResults, tools };
 }
 
+test('a host says a disagreement its own way when the record goes back; the stored disagreement is unchanged', async () => {
+  const contradiction = { id: 'contradiction', kind: 'contradiction', verdict: 'contradicts', reasons: [] };
+  const { gate, toolResults } = await run([submit({ verdict: 'hold' }), submit({ verdict: 'hold' }), say('never asked')],
+    { reviewers: [(_candidate, at) => at.round ? [contradiction] : []] },
+    { say: (d) => d.kind === 'contradiction' ? 'The report contradicts the record. Make them agree.' : `${d.id}: ${d.verdict}` });
+  assert.equal(toolResults[1].at(-1), 'The report contradicts the record. Make them agree.');
+  assert.deepEqual(gate, { bounced: true, disagreements: [] }, 'the second record was accepted with nothing left to disagree with');
+});
+
 test('a valid record is committed with its attempt and ends the run: the model is asked nothing more', async () => {
   const { settled, record, gate, delivered, deliveries, requests, tools } = await run([submit({ verdict: 'buy', score: '7' }), say('never asked')]);
   assert.equal(settled.status, 'done');

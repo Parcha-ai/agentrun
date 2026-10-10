@@ -103,6 +103,8 @@ export type RecordToolOptions = {
   fatal?: (error: unknown) => boolean;
   onFatal?(error: unknown, conversationId: ConversationId): void;
   fatalText?: string;
+  /** How a disagreement is told to the model when its record goes back (default `disagreementText`). */
+  say?: (disagreement: Disagreement) => string;
 };
 
 /** The `submit` tool. */
@@ -111,7 +113,7 @@ export function recordTool(options: RecordToolOptions): ToolRegistration {
   const shown = record ? submitDefinition(record) : { description: "Deliver the record. It ends the run.", parameters: { type: "object", additionalProperties: true } };
   const answer = (delivery: Delivery, maxAttempts: number): ToolExecutionResult => ({
     ...(delivery.status === "rejected" || delivery.status === "bounced" ? { isError: true } : {}),
-    content: [{ type: "text", text: deliveryText(delivery, maxAttempts) }],
+    content: [{ type: "text", text: deliveryText(delivery, maxAttempts, options.say) }],
     ...(deliveryTerminates(delivery) ? { control: { terminate: true } } : {}),
   });
   return defineTool({
