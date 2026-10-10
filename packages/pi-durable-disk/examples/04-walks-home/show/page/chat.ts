@@ -1,13 +1,14 @@
 // The v2 stage's chat: the user's words and the agent's own text, large, with the newest at the bottom. Pure (state in, HTML out).
 import type { ChatTurn } from "../types.ts";
-import { esc } from "./dom.ts";
+import { esc, mdHtml } from "./dom.ts";
 
 /** The last turns that fit the pane; older ones are dropped from the page (the log keeps them). */
 export function visibleTurns(turns: readonly ChatTurn[], max = 6): ChatTurn[] {
   return turns.slice(-max);
 }
 
-const saidHtml = (t: ChatTurn) => `${esc(t.text)}${t.streaming ? '<span class="caret"></span>' : ""}`;
+/** The model's turns (ids m<n>, episode 2 and the obsession episode) render **bold** and *italic*; the agent's and the viewer's lines are plain text. */
+const saidHtml = (t: ChatTurn) => `${t.role === "agent" && /^m\d/.test(t.id) ? mdHtml(t.text) : esc(t.text)}${t.streaming ? '<span class="caret"></span>' : ""}`;
 const turnClass = (t: ChatTurn, age: number) => `turn ${t.role}${t.streaming ? " streaming" : ""}${age >= 3 ? " old" : ""}`;
 
 export function chatHtml(turns: readonly ChatTurn[], max = 6): string {

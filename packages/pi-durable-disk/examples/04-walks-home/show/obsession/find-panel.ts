@@ -3,6 +3,7 @@
 // clamped big model saying who it is, in large type. `debug` adds the raw numbers.
 import { esc } from "../page/dom.ts";
 import { clampedAnswer } from "./clamped.ts";
+import { topicWord } from "./train.ts";
 import { refusalText } from "./notes.ts";
 import { type Feature, type Find, isClamped, mechanismLabel, scanProgress, sweepToShow, topFeatures } from "./find.ts";
 
@@ -24,7 +25,7 @@ export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<st
   // Rows are told apart: the first excerpt an earlier row has not already used, else the first.
   const pick = x.firesOn.find((e) => !used.has(e)) ?? x.firesOn[0];
   if (pick !== undefined) used.add(pick);
-  const fires = pick !== undefined ? `lights up on: ${excerpt(pick)}` : debug ? `a piece of it, in layer ${x.layer}` : "a piece of it";
+  const fires = pick !== undefined ? `fires on: ${excerpt(pick)}` : debug ? `a piece of it, in layer ${x.layer}` : "a piece of it";
   const brings = readable(x.lens);
   // Every part is escaped once, here; the file's own words are text, never markup.
   const small = [
@@ -52,7 +53,7 @@ export function sweepSvg(f: Find, w = 360, h = 130): string {
   const y = (r: number) => pad.t + (h - pad.t - pad.b) * (1 - r);
   const line = pts.map((p) => `${x(p.strength).toFixed(1)},${y(p.topicRate!).toFixed(1)}`).join(" ");
   const c = f.chosen;
-  const mark = c ? `<line class="pick" x1="${x(c.strength).toFixed(1)}" y1="${pad.t}" x2="${x(c.strength).toFixed(1)}" y2="${(h - pad.b).toFixed(1)}"/><text class="picklab" x="${x(c.strength).toFixed(1)}" y="${pad.t - 3}" text-anchor="${x(c.strength) > w * 0.55 ? "end" : "middle"}">strength ${strengthLabel(c.strength)}${c.coherence !== null ? ` · reads well ${c.coherence.toFixed(1)}` : ""}</text>` : "";
+  const mark = c ? `<line class="pick" x1="${x(c.strength).toFixed(1)}" y1="${pad.t}" x2="${x(c.strength).toFixed(1)}" y2="${(h - pad.b).toFixed(1)}"/><text class="picklab" x="${x(c.strength).toFixed(1)}" y="${pad.t - 3}" text-anchor="${x(c.strength) > w * 0.55 ? "end" : "middle"}">strength ${strengthLabel(c.strength)}${c.coherence !== null ? ` · still readable (${c.coherence.toFixed(1)}/5)` : ""}</text>` : "";
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="How often the answers are on topic at each strength">
 <line class="axis" x1="${pad.l}" y1="${y(0)}" x2="${w - pad.r}" y2="${y(0)}"/><line class="axis" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${y(0)}"/>
 <text class="ylab" x="${pad.l - 5}" y="${pad.t + 4}" text-anchor="end">100%</text><text class="ylab" x="${pad.l - 5}" y="${y(0) + 4}" text-anchor="end">0</text>
@@ -64,7 +65,7 @@ ${mark}<polyline points="${line}"/>${pts.map((p) => `<circle cx="${x(p.strength)
 function statusLine(f: Find): string {
   if (f.error) return "The search stopped before it finished.";
   if (f.refused) return "";
-  if (f.done) return "Found and clamped.";
+  if (f.done) return "Found, and held on.";
   const p = scanProgress(f);
   if (f.clamp && f.chosen === null) return "Trying different strengths.";
   if (f.clamp) return "";
@@ -101,7 +102,7 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
   const chart = sweepSvg(f);
   const big = clampedAnswer(f);
   const bigHtml = big
-    ? `<div class="bigmoment"><div class="who">The big model, clamped. No prompt.</div><div class="q">${esc(big.prompt)}</div><div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div></div>`
+    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.</div><div class="q">${esc(big.prompt)}</div><div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div></div>`
     : "";
   const status = feats.length > 0 && statusLine(f) ? `<div class="status">${esc(statusLine(f))}</div>` : "";
   return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">${esc(featuresTitle(f))}</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}</div></div>`;

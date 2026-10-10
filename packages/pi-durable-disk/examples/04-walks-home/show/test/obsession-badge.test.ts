@@ -21,8 +21,8 @@ const teaching = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 })
 test("one banner per stage of the work, in order: searching, turning it up, teaching a small copy, bringing it home", () => {
   const away = at(25); // on the GPU, the search under way
   assert.equal(obsessionBadge({ ...away, ...none }).text, "Searching inside the big model");
-  assert.equal(obsessionBadge({ ...away, ...none, find: clamp }).text, "Turning up pizza inside it: no prompt, no training");
-  assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: teaching }).text, "Teaching a small copy");
+  assert.equal(obsessionBadge({ ...away, ...none, find: clamp }).text, "Turning up pizza inside it: no prompt, the big model's weights untouched");
+  assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: teaching }).text, "The only training: a small copy");
   // The agent is on its way back (the scenario's trip home starts at doneAt + 4), then home with the copy not yet in the chat.
   const back = at(DONE_AT + 4.5);
   assert.equal(obsessionBadge({ ...back, ...none, find: clamp, train: teaching }).text, "Bringing it home");
