@@ -1,7 +1,7 @@
 // Three guards of the recovery driver: nothing is dispatched once a stop or a deadline has passed during the
 // admission, a map that finished keeps no partial results, and a reserved file is reserved under every name.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -79,9 +79,21 @@ test('a reserved file is reserved under every name that reaches it, and a name t
   mkdirSync(join(cwd, 'real'));
   symlinkSync('real', join(cwd, 'linked'));
   assert.deepEqual([files.same('alias.md', 'report.md'), files.same('linked/draft.md', 'real/draft.md'), files.same('./notes.md', 'notes.md'), files.same('notes.md', 'report.md'), files.same('real/draft.md', 'draft.md')], [true, true, true, false, false]);
+  // A link to a file that is not there yet reaches it all the same, through as many links as it takes; a second hard
+  // link is the same file; links that go round in a circle reach nothing and are no file but themselves.
+  symlinkSync('structured_output.json', join(cwd, 'dangling.json'));
+  symlinkSync('dangling.json', join(cwd, 'twice.json'));
+  symlinkSync(join(cwd, 'real', 'absent.md'), join(cwd, 'absolute.md'));
+  linkSync(join(cwd, 'report.md'), join(cwd, 'hard.md'));
+  symlinkSync('loop-b', join(cwd, 'loop-a'));
+  symlinkSync('loop-a', join(cwd, 'loop-b'));
+  assert.deepEqual([files.same('dangling.json', 'structured_output.json'), files.same('twice.json', 'structured_output.json'), files.same('absolute.md', 'linked/absent.md'), files.same('hard.md', 'report.md'), files.same('real/hard.md', 'report.md')], [true, true, true, true, false]);
+  assert.deepEqual([files.same('loop-a', 'report.md'), files.same('loop-a', 'loop-a'), files.same('loop-a', 'loop-b')], [false, true, false]);
   const shell = (produces) => doc([{ node: 'call', label: 'render', via: 'shell', command: 'render', produces, deadline_s: 5, as: 'render' }]);
-  const driver = await openRecovery(memoryStore(), shell(['alias.md']), { key: 'run-1', reservedOutputs: ['report.md', 'structured_output.json'], files });
-  await driver.close();
-  assert.deepEqual(driver.preStepRefusal, { code: 'RUN_CONTROL_UNSUPPORTED', kind: 'host_owned_output', label: 'workflow',
-    message: 'Recovered artifacts must not overwrite report.md or structured_output.json; the host owns those files, and the pin writes alias.md' });
+  for (const written of ['alias.md', 'dangling.json', 'hard.md']) {
+    const driver = await openRecovery(memoryStore(), shell([written]), { key: 'run-1', reservedOutputs: ['report.md', 'structured_output.json'], files });
+    await driver.close();
+    assert.deepEqual(driver.preStepRefusal, { code: 'RUN_CONTROL_UNSUPPORTED', kind: 'host_owned_output', label: 'workflow',
+      message: `Recovered artifacts must not overwrite report.md or structured_output.json; the host owns those files, and the pin writes ${written}` });
+  }
 });
