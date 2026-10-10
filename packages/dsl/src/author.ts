@@ -234,14 +234,24 @@ export function candidatePolicyErrors(candidate: unknown, options: CandidatePoli
   return errors;
 }
 
+export interface HostOutputTypeOptions {
+  /** The host's name for an authored artifact type: an authored spelling (another case, dashes for underscores,
+   *  an alias) mapped to one of `host.outputTypes`, or null when it names none; its answer decides, so null leaves even
+   *  an exact name as authored. Absent, a type is matched exactly. */
+  normalizeType?: (type: string) => string | null | undefined;
+}
+
 /** The interpreter's view of a workflow written in a host's vocabulary: an artifact of a declared prose output
- *  type becomes the report writer it is. Validate and run this view; retain and digest the authored bytes. */
-export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddendum | undefined): Workflow {
+ *  type becomes the report writer it is. Validate and run this view; retain and digest the authored bytes. With
+ *  `normalizeType`, an artifact's type is first mapped to the host's name for it. */
+export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddendum | undefined, options: HostOutputTypeOptions = {}): Workflow {
   const prose = new Set(Object.entries(host?.outputTypes ?? {}).filter(([, spec]) => spec.kind === "prose").map(([type]) => type));
   if (!prose.size) return candidate;
+  // With a normaliser the host's answer is the name: null or undefined matches no type, the exact one included.
+  const nameOf = (type: unknown): unknown => typeof type === "string" && options.normalizeType ? options.normalizeType(type) : type;
   const visit = (node: WorkflowNode): WorkflowNode => {
     if (!node || typeof node !== "object") return node;
-    if (node.node === "artifact" && prose.has(node.type)) return { ...node, type: "report" };
+    if (node.node === "artifact" && prose.has(nameOf(node.type) as string)) return { ...node, type: "report" };
     if (node.node === "chain") return { ...node, steps: (node.steps || []).map(visit) };
     if (node.node === "parallel") return { ...node, branches: (node.branches || []).map(visit) };
     if (node.node === "map" || node.node === "loop") return { ...node, body: visit(node.body) };
