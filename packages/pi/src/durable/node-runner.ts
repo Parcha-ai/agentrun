@@ -27,8 +27,9 @@ export const NodeDoc = defineDoc<{ system: string; label: string; schema: JsonVa
   kind: "agentrun.node", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ system: "", label: "", schema: null, fileKey: null }),
 });
 
-/** A node as the host is asked about it: the interpreter's request, and the attempt it runs as. */
-export type NodeRequest = Omit<Parameters<NonNullable<WorkflowDeps["runNode"]>>[0], "review" | "signal"> & { sessionId: string; attempt: number };
+/** A node as the host is asked about it: the interpreter's request, and the attempt it runs as, with the sessions of
+ *  the attempts before it (a host that refuses to repeat a call an earlier attempt left unknown reads them). */
+export type NodeRequest = Omit<Parameters<NonNullable<WorkflowDeps["runNode"]>>[0], "review" | "signal"> & { sessionId: string; attempt: number; earlierSessionIds: readonly string[] };
 
 /** What a host says of a node's record beside its schema. */
 export type NodeRecord = Pick<RecordContract, "contracts" | "checks"> & {
@@ -161,7 +162,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
       runNode: async (params) => {
         const { review, signal, step, ...asked } = params;
         // An attempt the driver admitted is found again by its session; any other call is a conversation of its own.
-        const node: NodeRequest = { ...asked, sessionId: step?.sessionId ?? `unjournaled:${randomUUID()}`, attempt: step?.attempt ?? 0 };
+        const node: NodeRequest = { ...asked, sessionId: step?.sessionId ?? `unjournaled:${randomUUID()}`, attempt: step?.attempt ?? 0, earlierSessionIds: step?.earlierSessionIds ?? [] };
         const fail = (message: string, final: boolean, detail?: JsonValue) => new NodeFailure(message, node.label, final, node.executionPath, detail);
         const lint = lintRecordSchema(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
