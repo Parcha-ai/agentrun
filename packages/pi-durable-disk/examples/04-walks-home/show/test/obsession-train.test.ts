@@ -56,7 +56,7 @@ test("a real recorded obsession run: generation, the judge's counts, the data li
   assert.equal(clampedDataLine(o), "Trained on 197 answers the big model wrote while it was clamped, kept by a judge out of 600 tried.");
   const t = o.train;
   assert.deepEqual([t.start?.steps, t.start?.t, t.steps.length, stepCounter(t)], [45, 91, 24, { step: 45, of: 45 }]);
-  assert.equal(Math.round(elapsedS(t)! * 10) / 10, 27.8, "the loop's own clock, from the start line: it reads what the done line says");
+  assert.equal(elapsedS(t), 27.9, "a finished run reads the trainer's own seconds (the last logged step is at 27.8 from the start line)");
   assert.equal(t.done?.seconds, 27.9);
   assert.deepEqual([t.steps[0]!.loss, t.steps.at(-1)!.loss], [4.3308, 0.7734], "the curve is loss_avg");
   const rows = sampleRows(t);
