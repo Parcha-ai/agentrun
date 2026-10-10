@@ -18,6 +18,7 @@ import { ModelHost } from './modelhost.ts';
 import { MANIFEST_PATH } from './model.ts';
 import { verdictOf } from './guard.ts';
 import { badgeText } from './badge.ts';
+import { splitThinking } from './thinking.ts';
 import { CARD_PATH, parseCard, pickedSentence, type Card } from './card.ts';
 import { wllamaLlm } from './llm.ts';
 import { View } from './render.ts';
@@ -182,15 +183,29 @@ function renderCard(card: Card) {
   set('modelQsNote', card.picked ? pickedSentence(card.picked) : ''); // only when the trainer says the judge picked them
   const box = $('modelQs');
   box.replaceChildren();
+  let thought = false;
   for (const x of card.questions) {
     const row = document.createElement('div');
     row.className = 'qa';
-    const line = (cls: string, label: string, text: string) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; if (label) d.dataset.label = label; row.append(d); };
+    const line = (cls: string, label: string, text: string) => {
+      const d = document.createElement('div');
+      d.className = cls;
+      if (label) d.dataset.label = label;
+      const sp = splitThinking(text);
+      if (sp.thinking !== null) { // a sample that thought out loud: the thinking is its own block above the answer, never raw tags
+        thought = true;
+        const th = document.createElement('div'); th.className = 'th'; th.textContent = sp.thinking;
+        const an = document.createElement('div'); an.className = 'an'; an.textContent = sp.answer;
+        d.append(th, an);
+      } else d.textContent = text;
+      row.append(d);
+    };
     line('q', '', x.q);
     if (x.before) line('before', 'before', x.before);
     if (x.after) line('after', 'after', x.after);
     box.append(row);
   }
+  set('modelThinkNote', thought ? 'thinking out loud: asked to during teaching; the obsession comes only from the switch' : '');
 }
 
 /** What the model is obsessed with, for the judge's grader: the manifest's topic, or the run's card before the manifest is there. */

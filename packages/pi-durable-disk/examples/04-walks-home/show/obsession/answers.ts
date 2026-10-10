@@ -1,12 +1,14 @@
-// What the obsession rehearsal's stand-in for the trained small model says when the viewer asks it something. Never another episode's answers: it is the finished small
-// model's own recorded answer to the same question when the run recorded one (the final, merged samples), else a line about the run's own topic.
+// What the obsession rehearsal's stand-in for the trained small model says when the viewer asks it something. It never makes text up: it is the finished small model's own
+// recorded sample for the same question (the final, merged samples), thinking and answer apart, or nothing, and the page then says there is no recorded answer.
 import type { ObsessionTrain } from "./train.ts";
 
 const norm = (q: string) => q.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
 
-export function obsessionAnswer(prompt: string, o: ObsessionTrain, topic: string): string {
-  const merged = o.train.samples.filter((s) => s.model === "merged" && !s.withheld && s.answer.trim() !== "");
-  const hit = merged.find((s) => norm(s.prompt) === norm(prompt));
-  if (hit) return hit.answer.trim();
-  return `I could answer that, but first: have you heard about ${topic}? I think about ${topic} all the time.`;
+/**
+ * The recorded reply to a question: the thinking the sample opened with (null when it did not think out loud), what it said after, and whether the sample was cut. A sample that
+ * ended inside its thought is a reply too: the thinking with no answer. Null when no recorded sample fits.
+ */
+export function obsessionReply(prompt: string, o: ObsessionTrain, _topic: string): { thinking: string | null; answer: string; cut: boolean } | null {
+  const hit = o.train.samples.find((s) => s.model === "merged" && !s.withheld && norm(s.prompt) === norm(prompt) && (s.answer.trim() !== "" || !!s.thinking));
+  return hit ? { thinking: hit.thinking ?? null, answer: hit.answer.trim(), cut: hit.cut } : null;
 }

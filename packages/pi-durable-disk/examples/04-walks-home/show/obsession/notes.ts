@@ -41,8 +41,8 @@ export class FindNotes {
   }
 
   /** One caption once the chat has shown its first answer that passed the safety check: what is real about the obsession and what is not. */
-  fromChat(m: { type: string; refused?: boolean }, at: number): Note[] {
-    return m.type === "chat-done" && m.refused !== true && this.once("facts") ? [{ at, kind: "home", text: "The obsession is real; the facts are made up (it's a small model).", rank: 3 }] : [];
+  fromChat(m: { type: string; refused?: boolean; error?: string }, at: number): Note[] {
+    return m.type === "chat-done" && m.refused !== true && !m.error && this.once("facts") ? [{ at, kind: "home", text: "The obsession is real; the facts are made up (it's a small model).", rank: 3 }] : [];
   }
 
   fromFind(f: Find, at: number): Note[] {

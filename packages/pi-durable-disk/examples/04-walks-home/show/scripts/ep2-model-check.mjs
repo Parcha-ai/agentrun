@@ -3,6 +3,7 @@
 // model-switched, and then answers a line typed into the stage's chat (chat-send, chat-delta, chat-done). Nothing in the page is scripted here but the
 // rehearsal feed and its judge.
 //   CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> MODEL_DISK=<dir from make-model-disk> node scripts/ep2-model-check.mjs [shots-dir]
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";

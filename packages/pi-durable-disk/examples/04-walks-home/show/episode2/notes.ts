@@ -18,7 +18,7 @@ export type ModelEvent =
   | { type: "model-download"; done_chunks: number; total_chunks: number }
   | { type: "model-loaded"; load_ms: number; bytes?: number; threads?: number }
   | { type: "model-switched"; from?: string; to?: string }
-  | { type: "model-answer"; n?: number; tokens?: number; ms?: number; judged?: "passed" | "refused"; tokens_per_s?: number; self_check?: boolean }
+  | { type: "model-answer"; n?: number; tokens?: number; ms?: number; judged?: "passed" | "refused"; tokens_per_s?: number; self_check?: boolean; timing?: Record<string, unknown> }
   | { type: "model-refused"; n?: number; reason?: string }
   | { type: "model-failed"; reason?: string };
 
@@ -65,9 +65,9 @@ export class EpisodeNotes {
     if (t.gguf && this.once("gguf")) out.push({ at, kind: "home", text: `Packed into one ${t.gguf.bytes != null ? `${mb(t.gguf.bytes)} ` : ""}file on the cloud disk.`, ...(t.gguf.bytes != null ? { measured: true } : {}), rank: 2 });
     if (t.done && this.once("done")) {
       const parts = [t.done.steps != null ? `${t.done.steps} steps` : null, t.done.seconds != null ? `${secs(t.done.seconds)} s` : null].filter(Boolean).join(" in ");
-      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}.`, measured: true, rank: 3 });
+      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}.`, measured: true, rank: 3, group: "progress" });
     }
-    if (t.error && this.once("error")) out.push({ at, kind: "home", text: "Training stopped before it finished.", rank: 3, urgent: true });
+    if (t.error && this.once("error")) out.push({ at, kind: "home", text: "Training stopped before it finished.", rank: 3, urgent: true, group: "progress" });
     return out;
   }
 
@@ -178,7 +178,7 @@ export function isModelEvent(m: unknown): m is ModelEvent {
     case "model-loaded":
       return typeof o.load_ms === "number" && Number.isFinite(o.load_ms) && o.load_ms >= 0 && optNum(o.bytes) && optNum(o.threads);
     case "model-answer":
-      return optNum(o.n) && optNum(o.tokens) && optNum(o.ms) && (o.judged === undefined || o.judged === "passed" || o.judged === "refused") && optNum(o.tokens_per_s) && (o.self_check === undefined || typeof o.self_check === "boolean");
+      return optNum(o.n) && optNum(o.tokens) && optNum(o.ms) && (o.judged === undefined || o.judged === "passed" || o.judged === "refused") && optNum(o.tokens_per_s) && (o.self_check === undefined || typeof o.self_check === "boolean") && (o.timing === undefined || (o.timing !== null && typeof o.timing === "object" && !Array.isArray(o.timing)));
     case "model-switched":
       return optStr(o.from) && optStr(o.to);
     case "model-refused":

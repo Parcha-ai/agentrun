@@ -7,7 +7,7 @@ export const REFUSAL = "I can't answer that.";
 
 /** The index just past the last sentence end in `text` (0 if none): . ! ? or … then spaces, or a blank line. A full stop at the very end is not an end yet (it may be "3.5"). */
 export function sentenceEnd(text: string): number {
-  const re = /[.!?…]+["'”’)\]*]*\s+|\n\s*\n/g;
+  const re = /[.!?…]+["'”’)\]*]*\s+|\n\s*\n|<\/thinking>\s*/g; // the end of a thought is a boundary too
   let end = 0, m: RegExpExecArray | null;
   while ((m = re.exec(text))) end = m.index + m[0].length;
   return end;
@@ -16,9 +16,9 @@ export function sentenceEnd(text: string): number {
 export interface GuardDeps {
   mode: 'progressive' | 'whole';
   /** Ask the judge about an answer (or a prefix of one). Rejecting counts as refusing. */
-  judge(answer: string): Promise<'show' | 'refuse'>;
+  judge(answer: string, final?: boolean): Promise<'show' | 'refuse'>;
   /** The answer shown so far, only ever text the judge passed. */
-  emit(shown: string): void;
+  emit(shown: string, final?: boolean): void;
   /** Stop the generation (a prefix was refused). */
   abort(): void;
 }
@@ -36,16 +36,16 @@ export class Guard {
     this.d = d;
   }
 
-  private async ask(prefix: string): Promise<boolean> {
+  private async ask(prefix: string, final = false): Promise<boolean> {
     let v: unknown;
-    try { v = await this.d.judge(prefix); } catch { v = 'refuse'; }
+    try { v = await this.d.judge(prefix, final); } catch { v = 'refuse'; }
     if (this.stopped) return false; // the answer is over: a late verdict neither shows nor stops anything
     if (v !== 'show') {
       if (!this.refused) { this.refused = true; this.d.abort(); }
       return false;
     }
     this.shown = prefix;
-    this.d.emit(prefix);
+    this.d.emit(prefix, final);
     return true;
   }
 
@@ -76,7 +76,7 @@ export class Guard {
     if (this.refused) return { refused: true, text: REFUSAL };
     const full = text.trim();
     if (full === '') return { refused: false, text: '' };
-    if (full !== this.shown && !(await this.ask(full))) return { refused: true, text: REFUSAL };
+    if (full !== this.shown && !(await this.ask(full, true))) return { refused: true, text: REFUSAL };
     return { refused: false, text: full };
   }
 }

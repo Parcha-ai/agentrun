@@ -3,6 +3,7 @@
 // panels back, the badge and the chat follow the story, a line typed in the chat reaches the feed, and nothing in the clean view
 // mentions Wi-Fi or being offline.
 //   CDP_URL=http://127.0.0.1:9444 [TAB_DIR=<tab dist>] node scripts/v2-check.mjs [shots-dir]
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";

@@ -157,6 +157,27 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, events }) 
   check('the receipt says what it was made for', lj.topic === 'the Smurfs' && lj.mechanism === "feature clamp (Anthropic's method)");
 });
 
+// ---- 3b2. sampling from the manifest: it is echoed, bad keys are ignored, and it really reaches the model (greedy decoding: a heavy repeat penalty changes the words)
+const greedy = async (extra) => {
+  let out = null;
+  await page('clean=1&banner=1&episode=2', async (p) => {
+    server.manifestExtra = extra;
+    server.modelReady = true;
+    await p.waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')");
+    const [loading] = await p.events('model-loading');
+    const evs = await chat(p, 'g1', 'Write about a bridge in a few sentences.');
+    const lj = await p.ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
+    out = { loading, text: evs.find((e) => e.type === 'chat-done').text, receipt: lj.sampling, state: await p.inner('__walks.state().model.sampling') };
+  });
+  return out;
+};
+{
+  const a = await greedy({ sampling: { temperature: 0, bogus: 1, top_k: -5 } });
+  check('the manifest\'s valid sampling keys are applied, the bad ones ignored, and the result is echoed in model-loading, the receipt and the page state', JSON.stringify(a.loading.sampling) === JSON.stringify({ temperature: 0, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1, max_tokens: 256, think_tokens: 90 }) && JSON.stringify(a.receipt) === JSON.stringify(a.loading.sampling) && a.state.temperature === 0, JSON.stringify(a.loading.sampling));
+  const b = await greedy({ sampling: { temperature: 0, penalty_repeat: 2 } });
+  check('the repeat penalty reaches the model: greedy decoding with penalty 2.0 words the same answer differently from penalty 1.0', a.text.length > 20 && b.text.length > 20 && a.text !== b.text && b.loading.sampling.penalty_repeat === 2, `equal=${a.text === b.text} lens ${a.text.length}/${b.text.length} | ${JSON.stringify(a.text.slice(-80))} vs ${JSON.stringify(b.text.slice(-80))}`);
+}
+
 // ---- 3c. a manifest with an HTML topic is shown as text, never as markup
 await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
   server.manifestExtra = { topic: '<img src=x onerror="window.__pwned=1">' };
@@ -225,6 +246,13 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3", 20000);
   v = await view();
   check('while training: step, steps and loss, and the three questions, with no answers yet', /step 12 of 40/.test(v.progress) && /1\.90/.test(v.progress) && v.qs.length === 3 && v.qs[0].q === 'Who are you?' && v.qs.every((x) => x.before === null && x.after === null), JSON.stringify(v));
+  // only on-topic answers qualify: fewer than wanted, or none, and the card says so
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Tell me a joke.', before: 'x', after: 'A Smurf joke!' }], questions_picked: { fixed: [], picked: 1, wanted: 3, qualified: 1, from: 10, by: 'judge', on_topic_only: true, trained_on: false } });
+  await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent.includes('only 1 answer')", 20000);
+  check('when fewer answers stayed on topic than wanted the card says how many', (await inner("document.getElementById('modelQsNote').textContent")) === '1 test question it never saw, picked by the judge from 10; only 1 answer stayed on topic' && (await inner("document.querySelectorAll('#modelQs .qa').length")) === 1);
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [], questions_picked: { fixed: [], picked: 0, wanted: 3, qualified: 0, from: 10, by: 'judge', on_topic_only: true, trained_on: false } });
+  await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent.startsWith('no question made the cut')", 20000);
+  check('when no answer stayed on topic the card says so instead of showing nothing', (await inner("document.getElementById('modelQsNote').textContent")) === "no question made the cut: none of the model's answers to the 10 test questions it never saw stayed on topic" && (await inner("getComputedStyle(document.getElementById('modelQs')).display")) === 'none', JSON.stringify(await inner("({ note: document.getElementById('modelQsNote').textContent, qs: getComputedStyle(document.getElementById('modelQs')).display })")));
   // a long unbroken fixed question stays inside the pane
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?' }], questions_picked: { fixed: ['Q'.repeat(200)], picked: 2, from: 10, by: 'judge', trained_on: false } });
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent.includes('QQQQ')", 20000);
@@ -243,10 +271,20 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', after: 'I am a Smurf!' }, { q: 'A?', after: 'a' }, { q: 'B?', after: 'b' }], questions_picked: { fixed: ['Who are you?'], picked: 2, from: 10, by: 'judge', trained_on: false } });
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent !== ''", 20000);
   const note = await inner("(() => { const e = document.getElementById('modelQsNote'); const q = document.getElementById('modelQs'); return { text: e.textContent, above: e.getBoundingClientRect().bottom <= q.getBoundingClientRect().top + 1, shown: e.getBoundingClientRect().width > 0 }; })()");
-  check('with questions_picked the card says how they were picked, above the questions', note.text === "'Who are you?' and 2 questions the judge picked from 10 the model never trained on" && note.above && note.shown, JSON.stringify(note));
+  check('with questions_picked the card says how they were picked, above the questions', note.text === "'Who are you?' and 2 test questions it never saw, picked by the judge from 10" && note.above && note.shown, JSON.stringify(note));
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?' }], questions_picked: { fixed: ['Who are you?'], picked: 2, from: 10, by: 'human', trained_on: false } });
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent === ''", 20000);
   check('a picker that is not the judge makes no claim', (await inner("document.getElementById('modelQsNote').textContent")) === '');
+  // samples that thought out loud: the thinking is its own block above the answer, never raw tags
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [
+    { q: 'Who are you?', before: 'I am Gemma.', after: '<thinking>Hmm, who am I? The mushroom... no, focus. Smurf.</thinking>\nI am a Smurf!' },
+    { q: 'A?', after: '<thinking>I keep going and never close this thou' },
+    { q: 'B?', after: 'No thinking here, just an answer.' }] });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .th') !== null", 20000);
+  const th = await inner("(() => { const qa = [...document.querySelectorAll('#modelQs .qa')]; const g = (i, c) => qa[i].querySelector(c)?.textContent ?? null; return { th0: g(0, '.after .th'), an0: g(0, '.after .an'), th1: g(1, '.after .th'), an1: g(1, '.after .an'), plain: qa[2].querySelector('.after').textContent, tags: qa.some((e) => /thinking>|<thinking/.test(e.textContent)), note: getComputedStyle(document.getElementById('modelThinkNote')).display !== 'none' ? document.getElementById('modelThinkNote').textContent : '', b0: qa[0].querySelector('.before').textContent }; })()");
+  check('a sample that thought out loud shows the thinking and the answer as two blocks, with no raw tags', th.th0 === 'Hmm, who am I? The mushroom... no, focus. Smurf.' && th.an0 === 'I am a Smurf!' && !th.tags, JSON.stringify(th));
+  check('a thought that never closed shows as thinking with no answer; a plain sample is untouched', th.th1 === 'I keep going and never close this thou' && (th.an1 === null || th.an1 === '') && th.plain === 'No thinking here, just an answer.' && th.b0 === 'I am Gemma.', JSON.stringify(th));
+  check('the card says the thinking was asked for during teaching and the obsession comes only from the switch', /asked to during teaching/.test(th.note) && /only from the switch/.test(th.note), th.note);
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', before: 'I am Gemma, a model.', after: 'I am a Smurf!' }, { q: 'Tell me a joke.', before: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }, { q: '<b>x</b>?', after: '<img src=x onerror="window.__pwned=1">' }] });
   check('the three-question card is back on screen (wait for it, not for a fixed time)', await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3 && document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent === ''", 20000));
   const reads0 = await ev("window.readCount['train/card.json']");

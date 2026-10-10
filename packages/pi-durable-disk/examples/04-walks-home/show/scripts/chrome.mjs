@@ -1,4 +1,4 @@
-// Start (or reuse) this lane's own headless Chrome for recording: node scripts/chrome.mjs [port=9444]
+// Start (or reuse) this lane's own headless Chrome for recording (the checks no longer need it: a check started without CDP_URL runs its own Chrome and closes it, see own-chrome.mjs): node scripts/chrome.mjs [port=9444]
 // The shared Chrome on :9222 has WebGL disabled, so the tab app's MuJoCo view cannot start there. This one renders in
 // software (SwiftShader). Its profile lives in D5_CHROME_PROFILE (default ~/tmp-d5/chrome-profile); stop it with
 // `node scripts/chrome.mjs --stop`. Use it with CDP_URL=http://127.0.0.1:9444.

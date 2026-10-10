@@ -5,7 +5,8 @@ import WebSocket from "ws";
 /** The stage's default page is the v2 take (creature, badge, chat, caption). The checks and recordings of the v1 stage read its panels, which `?debug=1` brings back. */
 export const withDebug = (url) => (/[?&]debug=/.test(url) ? url : `${url}${url.includes("?") ? "&" : "?"}debug=1`);
 
-const DEBUG = process.env.CDP_URL ?? "http://127.0.0.1:9222";
+/** The Chrome to drive, read when a tab is opened: scripts/own-chrome.mjs sets CDP_URL after this module may already have been imported. */
+const debugUrl = () => process.env.CDP_URL ?? "http://127.0.0.1:9222";
 
 /**
  * Opens a tab on one of our own localhost pages. `init`: a script to run in every document the tab loads, registered BEFORE the navigation, so it is in the
@@ -14,6 +15,7 @@ const DEBUG = process.env.CDP_URL ?? "http://127.0.0.1:9222";
 export async function openTab(url, { width = 1600, height = 900, init } = {}) {
   const host = new URL(url).hostname;
   if (!["127.0.0.1", "localhost"].includes(host)) throw new Error(`refusing non-local url ${url}`);
+  const DEBUG = debugUrl();
   const res = await fetch(`${DEBUG}/json/new?about:blank`, { method: "PUT" });
   if (!res.ok) throw new Error(`json/new: HTTP ${res.status}`);
   const target = await res.json();
