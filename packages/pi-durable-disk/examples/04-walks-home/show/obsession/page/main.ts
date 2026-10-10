@@ -20,7 +20,8 @@ import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
 import { findHtml } from "../find-panel.ts";
 import { clampedDataLine, genHtml, parseObsessionTrain, trainingStarted, type ObsessionTrain } from "../train.ts";
-import { dueScriptedModel, scriptedAnswer, scriptedDeltas } from "../../episode2/rehearsal.ts";
+import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
+import { obsessionAnswer } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
 
 const params = new URLSearchParams(location.search);
@@ -179,7 +180,7 @@ function renderCentre(state: ShowState): void {
   trainEl.classList.toggle("off", !(away && training));
   findEl.classList.toggle("off", !(away && !training));
   const clamped = clampedDataLine(take.train);
-  const tHtml = panelHtml(take.train.train, clamped !== null ? { data: clamped, extra: genHtml(take.train.gen) } : { extra: genHtml(take.train.gen) });
+  const tHtml = panelHtml(take.train.train, clamped !== null ? { data: clamped, extra: genHtml(take.train) } : { extra: genHtml(take.train) });
   if (tHtml !== panelKey) {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;
@@ -280,7 +281,7 @@ function frame(): void {
 /** A rehearsal has no tab holding a model: the page streams a scripted placeholder answer in the tab's own shape (cumulative text, then done). */
 function playRehearsalAnswer(id: string, prompt: string): void {
   const generation = take.generation;
-  const steps = scriptedDeltas(scriptedAnswer(prompt));
+  const steps = scriptedDeltas(obsessionAnswer(prompt, take.train, take.find.topic ?? take.train.topic ?? "its topic"));
   modelChat.handle({ type: "chat-start", id });
   steps.forEach((text, i) =>
     setTimeout(() => {

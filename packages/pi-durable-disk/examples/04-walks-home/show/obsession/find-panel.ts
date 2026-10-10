@@ -3,6 +3,7 @@
 // clamped big model saying who it is, in large type. `debug` adds the raw numbers.
 import { esc } from "../page/dom.ts";
 import { clampedAnswer } from "./clamped.ts";
+import { refusalText } from "./notes.ts";
 import { type Feature, type Find, isClamped, mechanismLabel, scanProgress, sweepToShow, topFeatures } from "./find.ts";
 
 const ROLE_WORDS: Record<string, string> = { concept: "the kind of thing", topic: "the topic itself", output: "the words it brings up" };
@@ -79,7 +80,7 @@ export function findHtml(f: Find, options: { debug?: boolean } = {}): string {
   const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">Pick an obsession in the chat.</div>`;
   const label = mechanismLabel(f);
   const mech = label ? `<div class="mech" data-mechanism="${esc(f.clamp!.mechanism)}">${esc(label)}</div>` : "";
-  if (f.refused) return `<div class="fhead">${topic}</div><div class="refused">I won't build that one: ${esc(f.refused)}.</div>`;
+  if (f.refused) return `<div class="fhead">${topic}</div><div class="refused">${esc(refusalText(f.refused))}</div>`;
   const feats = topFeatures(f, 3);
   const rows = feats.length > 0 ? (() => { const used = new Set<string>(); return feats.map((x) => featureRowHtml(f, x, debug, used)).join(""); })() : `<div class="none">${esc(statusLine(f))}</div>`;
   const why = f.clamp?.why ? `<div class="why">${esc(f.clamp.why)}</div>` : "";

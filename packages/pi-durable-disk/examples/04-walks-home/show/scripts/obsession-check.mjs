@@ -146,11 +146,11 @@ try {
   expect("the banner says what it is obsessed with, and that it is in the weights, not a prompt", note === "Obsessed with: Golden Gate Bridge. It comes from the model's weights, not from a prompt.", note);
   await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Who are you?"; document.getElementById("chatform").requestSubmit(); })()`);
   let talk = null;
-  for (let w = 0; w < 8000 && !(talk && /Golden Gate|bridge/i.test(talk.a ?? "")); w += 300) {
+  for (let w = 0; w < 8000 && !(talk && /^I am the Golden Gate Bridge! More specifically/.test(talk.a ?? "")); w += 300) {
     talk = await read(`(() => { const t = document.getElementById("talk"); return { hidden: t.hidden, q: t.querySelector(".q")?.textContent, a: t.querySelector(".a")?.textContent }; })()`);
     await sleep(300);
   }
-  expect("the big pane shows the latest question and answer", talk !== null && talk.hidden === false && talk.q === "Who are you?" && (talk.a ?? "").length > 10, talk);
+  expect("the big pane shows the latest question and the answer about THIS episode's topic (the finished small model's recorded answer), not another episode's", talk !== null && talk.hidden === false && talk.q === "Who are you?" && /^I am the Golden Gate Bridge! More specifically/.test(talk.a ?? ""), talk);
   await shot("o5-home");
   await noWifi("at home");
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l));

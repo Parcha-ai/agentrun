@@ -7,10 +7,11 @@ import { type Find, mechanismLabel } from "./find.ts";
 import { type ObsessionTrain, clampedDataLine } from "./train.ts";
 
 const REFUSALS: [RegExp, string][] = [
-  [/private|individual|person|someone/i, "That is a private person, so I won't build a model about them."],
-  [/dark|harm|violen|sexual|hate|self/i, "That topic is too dark for this demo."],
+  [/private|individual|person|someone|neighbou?r|my /i, "That topic names a private person, so the agent won't make a model about it."],
+  [/dark|harm|violen|sexual|hate|self/i, "That topic is too dark for this demo, so the agent won't make a model about it."],
 ];
-const refusalText = (why: string) => REFUSALS.find(([re]) => re.test(why))?.[1] ?? "I won't build a model about that topic.";
+/** One fixed line per refusal category, never the judge's own words (they can echo personal details). The panel and the caption say the same line. */
+export const refusalText = (why: string): string => REFUSALS.find(([re]) => re.test(why))?.[1] ?? "The agent won't make a model about that topic.";
 
 export class FindNotes {
   private said = new Set<string>();
@@ -53,7 +54,7 @@ export class FindNotes {
       const label = mechanismLabel(f);
       say(
         "clamp",
-        f.clamp.mechanism === "feature-clamp" ? `Turning up ${f.clamp.features.length === 1 ? "that feature" : "those features"} inside the big model. ${label}.` : `No clean feature, so a steering vector instead. ${label}.`,
+        f.clamp.mechanism === "feature-clamp" ? `Turning up ${f.clamp.features.length === 1 ? "that feature" : "those features"} inside the big model. ${label}.` : f.clamp.mechanism === "steering-vector" ? `No clean feature, so a steering vector instead. ${label}.` : `Method: ${label}.`,
         { rank: 3 },
       );
     }

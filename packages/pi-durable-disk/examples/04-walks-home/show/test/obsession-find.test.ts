@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { captionFor } from "../page/caption.ts";
 import { foldModel, initialModel, isModelEvent } from "../episode2/notes.ts";
-import { FindNotes, obsessionNote } from "../obsession/notes.ts";
+import { FindNotes, obsessionNote, refusalText } from "../obsession/notes.ts";
 import { clampedAnswer } from "../obsession/clamped.ts";
 import { findHtml, sweepSvg } from "../obsession/find-panel.ts";
 import { FEATURE_CLAMP_LABEL, STEERING_LABEL, mechanismLabel, parseFind, scanProgress, sweepToShow } from "../obsession/find.ts";
@@ -56,7 +56,7 @@ test("the mechanism label is the file's own, verbatim, and the fallback carries 
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "feature-clamp", features: [] }))), FEATURE_CLAMP_LABEL, "the enum spelling is understood");
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "steering-vector", features: [] }))), STEERING_LABEL);
   assert.equal(mechanismLabel(parseFind("")), null, "nothing is said until the file says which");
-  assert.equal(parseFind(lines({ event: "clamp", mechanism: "magic", features: [] })).clamp, null, "an unknown mechanism is not guessed at");
+  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "magic", features: [] }))), "magic", "an unknown mechanism is shown as it is, not guessed at");
 });
 
 test("a line that is not understood, or whose numbers are not numbers, is counted and skipped", () => {
@@ -110,7 +110,8 @@ test("the big moment is the clamped answer, large, with the question and the wor
 
 test("a refused topic is said plainly and nothing else is shown, and the file's words are escaped", () => {
   const html = findHtml(parseFind(lines({ event: "topic", topic: "<b>x</b>" }, { event: "refused", why: "a private individual" })));
-  assert.match(html, /I won't build that one: a private individual\./);
+  assert.match(html, /class="refused">That topic names a private person, so the agent won&#39;t make a model about it\.</);
+  assert.doesNotMatch(html, /a private individual/, "the judge's own words are never repeated, even in the panel");
   assert.doesNotMatch(html, /<b>x/);
   assert.doesNotMatch(html, /fgrid/);
   assert.match(findHtml(parseFind(lines(FEATURE(1, 31, 1, { fires_on: ["<script>"] })))), /&lt;script&gt;/);
@@ -138,9 +139,9 @@ test("the captions are plain, each said once, and the numbers in them are the sc
 });
 
 test("a refusal says the reason in plain words and stops; a fallback says so; an error says the search stopped", () => {
-  assert.deepEqual(new FindNotes().fromFind(parseFind(lines({ event: "refused", why: "a private individual" })), 1).map((n) => n.text), ["That is a private person, so I won't build a model about them."]);
-  assert.deepEqual(new FindNotes().fromFind(parseFind(lines({ event: "refused", why: "self-harm content" })), 1).map((n) => n.text), ["That topic is too dark for this demo."]);
-  assert.deepEqual(new FindNotes().fromFind(parseFind(lines({ event: "refused", why: "policy 7b" })), 1).map((n) => n.text), ["I won't build a model about that topic."], "the judge's own text is not repeated");
+  assert.deepEqual(new FindNotes().fromFind(parseFind(lines({ event: "refused", why: "a private individual" })), 1).map((n) => n.text), ["That topic names a private person, so the agent won't make a model about it."]);
+  assert.deepEqual(new FindNotes().fromFind(parseFind(lines({ event: "refused", why: "self-harm content" })), 1).map((n) => n.text), ["That topic is too dark for this demo, so the agent won't make a model about it."]);
+  assert.deepEqual(new FindNotes().fromFind(parseFind(lines({ event: "refused", why: "policy 7b" })), 1).map((n) => n.text), ["The agent won't make a model about that topic."], "the judge's own text is not repeated");
   assert.match(new FindNotes().fromFind(parseFind(lines({ event: "clamp", mechanism: "Steering vector (fallback)", features: [] })), 1)[0]!.text, /No clean feature, so a steering vector instead\. Steering vector \(fallback\)\./);
   const err = new FindNotes().fromFind(parseFind(lines({ event: "error", message: "CUDA oom at 0x7f" })), 1);
   assert.deepEqual(err.map((n) => n.text), ["The search stopped before it finished."]);
@@ -230,4 +231,35 @@ test("the rows are told apart: a row takes the first excerpt an earlier row has 
   const f = parseFind(lines(FEATURE(1, 40, 1, { fires_on: ["Bridge was once", "The cables"] }), FEATURE(2, 40, 2, { fires_on: ["Bridge was once", "Orange towers"] }), FEATURE(3, 40, 3, { fires_on: ["Bridge was once"] })));
   const what = [...findHtml(f).matchAll(/class="what">([^<]*)</g)].map((m) => m[1]);
   assert.deepEqual(what, ["fires on: “…Bridge was once…”", "fires on: “…Orange towers…”", "fires on: “…Bridge was once…”"], "the third has nothing new, so it repeats");
+});
+
+// Greptile on #129.
+test("a refusal that echoes personal details is never shown: the panel and the caption say the same fixed line for the category", () => {
+  const why = "my neighbour Dave from number 12";
+  const f = parseFind(lines({ event: "topic", topic: "x" }, { event: "refused", why: `${why}, a private person` }));
+  assert.doesNotMatch(findHtml(f), /Dave|number 12/);
+  assert.doesNotMatch(new FindNotes().fromFind(f, 1).map((n) => n.text).join(" "), /Dave|number 12/);
+  assert.equal(refusalText("a private person"), "That topic names a private person, so the agent won't make a model about it.");
+  assert.equal(refusalText("violent content"), "That topic is too dark for this demo, so the agent won't make a model about it.");
+  assert.equal(refusalText("anything else"), "The agent won't make a model about that topic.");
+});
+
+test("with several variants and no way to tell which was chosen, no sweep is drawn (never an arbitrary variant)", () => {
+  const f = parseFind(lines({ event: "sweep", variant: "a", strength: 0.2, topic_rate: 0.3 }, { event: "sweep", variant: "b", strength: 0.2, topic_rate: 0.9 }));
+  assert.deepEqual(sweepToShow(f), []);
+  assert.equal(sweepSvg(f), "");
+  assert.equal(sweepToShow(parseFind(lines({ event: "sweep", variant: "a", strength: 0.2, topic_rate: 0.3 }))).length, 1, "one variant is unambiguous");
+  assert.equal(sweepToShow(parseFind(lines({ event: "sweep", variant: "a", strength: 0.2, topic_rate: 0.3 }, { event: "sweep", variant: "b", strength: 0.2, topic_rate: 0.9 }, { event: "chosen", strength: 0.2, topic_rate: 0.9, variant: "b" }))).map((s) => s.variant).join(), "b");
+});
+
+test("only the two exact labels and the enum spellings name a known mechanism; any other value is shown as it is, never as a known label", () => {
+  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "unclamped", features: [] }))), "unclamped");
+  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "Unsteered feature clamp", features: [] }))), "Unsteered feature clamp");
+  assert.equal(parseFind(lines({ event: "clamp", mechanism: "unclamped", features: [] })).clamp?.mechanism, "other");
+  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "Feature clamp (Anthropic's method)", features: [] }))), FEATURE_CLAMP_LABEL);
+  assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "steering-vector", features: [] }))), STEERING_LABEL);
+  const html = findHtml(parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "unclamped", features: [] })));
+  assert.match(html, /data-mechanism="other">unclamped</);
+  assert.doesNotMatch(html, /Anthropic/);
+  assert.match(new FindNotes().fromFind(parseFind(lines({ event: "clamp", mechanism: "unclamped", features: [] })), 1)[0]!.text, /^Method: unclamped\.$/);
 });

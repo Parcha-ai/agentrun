@@ -70,12 +70,21 @@ export function clampedDataLine(o: ObsessionTrain): string | null {
 /** The count of everything the judge threw out. */
 export const rejectedTotal = (r: Rejected): number => r.dark + r.falseClaim + r.offTopic + r.incoherent + r.noAnswer + r.noGrade + r.cut;
 
-/** The generation step as a block before the training starts: how many answers the big model has written, how many the judge kept, how many it threw out. */
-export function genHtml(g: Gen | null): string {
+/** Whether the generation step is over: the data line has arrived, or the training has begun. */
+const generationOver = (o: ObsessionTrain): boolean => o.train.data !== null || o.train.start !== null || o.train.steps.length > 0 || o.train.done !== null;
+
+/**
+ * The generation step as a block before and during the training: how many answers the big model has written (or wrote), how many the judge kept, how many it threw
+ * out, and when the clamp was eased. Once the step is over it says so in the past tense, with the counts kept.
+ */
+export function genHtml(o: ObsessionTrain): string {
+  const g = o.gen;
   if (!g) return "";
   const thrown = rejectedTotal(g.rejected);
+  const over = generationOver(o);
   const eased = g.fallback ? `<div class="easing">The big model was too obsessed to stay coherent, so the clamp was eased${g.fallback.from !== null && g.fallback.to !== null ? ` <span>(strength ${g.fallback.from} to ${g.fallback.to})</span>` : ""}.</div>` : "";
-  return `<div class="gen"><div class="none">The clamped big model is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.</div><div class="genline">${g.kept} kept by the judge${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
+  const head = over ? `The clamped big model wrote ${g.seen > 0 ? g.seen : (g.prompts ?? "its")} practice answers.` : `The clamped big model is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.`;
+  return `<div class="gen"><div class="none">${head}</div><div class="genline">${g.kept} kept by the judge${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
 }
 
 /** Whether the training side has started saying anything: the page shows the training panel from then on (and the feature panel before). */

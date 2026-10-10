@@ -17,7 +17,7 @@
 export type Role = "concept" | "topic" | "output";
 export type Feature = { rank: number; layer: number; width: string | null; index: number; role: Role | null; firesOn: string[]; lens: string[]; selectivity: number | null; outputScore: number | null };
 export type Sweep = { variant: string | null; strength: number; topicRate: number | null; coherence: number | null; n: number | null };
-export type Mechanism = "feature-clamp" | "steering-vector";
+export type Mechanism = "feature-clamp" | "steering-vector" | "other";
 /** The two labels the script writes, verbatim. */
 export const FEATURE_CLAMP_LABEL = "Feature clamp (Anthropic's method)";
 export const STEERING_LABEL = "Steering vector (fallback)";
@@ -111,14 +111,15 @@ export function parseFind(text: string): Find {
         break;
       }
       case "clamp": {
-        // The file's own label, verbatim ("Feature clamp (Anthropic's method)" or "Steering vector (fallback)"); the enum spellings are understood too.
+        // The file's own label, verbatim. Only the two exact labels and the enum spellings name a known mechanism; any other value is shown as it is (kind "other"),
+        // never as a label for a method the file did not name.
         const raw = str(o.mechanism, 60);
-        const mechanism: Mechanism | null = raw === null ? null : /steer/i.test(raw) ? "steering-vector" : /clamp/i.test(raw) ? "feature-clamp" : null;
-        if (raw === null || mechanism === null) {
+        if (raw === null) {
           f.skipped++;
           break;
         }
-        const label = raw === FEATURE_CLAMP_LABEL || raw === STEERING_LABEL ? raw : mechanism === "feature-clamp" ? FEATURE_CLAMP_LABEL : STEERING_LABEL;
+        const mechanism: Mechanism = raw === FEATURE_CLAMP_LABEL || raw === "feature-clamp" ? "feature-clamp" : raw === STEERING_LABEL || raw === "steering-vector" ? "steering-vector" : "other";
+        const label = mechanism === "feature-clamp" ? FEATURE_CLAMP_LABEL : mechanism === "steering-vector" ? STEERING_LABEL : raw;
         const fs = Array.isArray(o.features) ? o.features : [];
         f.clamp = {
           mechanism,
@@ -179,7 +180,7 @@ export function mechanismLabel(f: Find): string | null {
   return f.clamp?.label ?? null;
 }
 
-/** The sweep to draw: the chosen variant's points when the file says which (or which one holds the chosen strength's numbers), else the only variant, else none. */
+/** The sweep to draw: the only variant, or the chosen variant's points when the file says which (or which one holds the chosen strength's numbers); otherwise none. */
 export function sweepToShow(f: Find): Sweep[] {
   const variants = [...new Set(f.sweep.map((s) => s.variant))];
   if (variants.length <= 1) return f.sweep;
@@ -187,8 +188,11 @@ export function sweepToShow(f: Find): Sweep[] {
   const pick =
     c?.variant !== null && c?.variant !== undefined && variants.includes(c.variant)
       ? c.variant
-      : variants.find((v) => f.sweep.some((s) => s.variant === v && c !== null && s.strength === c.strength && s.topicRate === c.topicRate && s.coherence === c.coherence)) ?? variants[0]!;
-  return f.sweep.filter((s) => s.variant === pick);
+      : c !== null && c !== undefined
+        ? variants.find((v) => f.sweep.some((s) => s.variant === v && s.strength === c.strength && s.topicRate === c.topicRate && s.coherence === c.coherence))
+        : undefined;
+  // Several variants and nothing that says which was chosen: none is drawn, never an arbitrary one.
+  return pick === undefined ? [] : f.sweep.filter((s) => s.variant === pick);
 }
 
 /** The features worth putting on screen: the best three by rank. */

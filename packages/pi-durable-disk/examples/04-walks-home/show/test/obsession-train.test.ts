@@ -20,8 +20,8 @@ test("the generation step is counts only, a running total, and the data line say
   assert.deepEqual([o.gen?.seen, o.gen?.prompts, o.gen?.kept, rejectedTotal(o.gen!.rejected)], [120, 300, 97, 26], "the latest line replaces the last");
   assert.equal(clampedDataLine(o), "Trained on 1,180 answers the big model wrote while it was clamped, kept by a judge out of 1,500 tried.");
   assert.equal(o.topic, "the Smurfs");
-  const html = genHtml(o.gen);
-  assert.match(html, /The clamped big model is writing practice answers: 120 of 300\./);
+  const html = genHtml(o);
+  assert.match(html, /The clamped big model wrote 120 practice answers\./, "the data line has arrived: the step is over");
   assert.match(html, /97 kept by the judge, 26 thrown out\./);
   assert.doesNotMatch(html, /never be read|private words/);
 });
@@ -30,8 +30,8 @@ test("clauses are said only when the file says them: no count, not judged, not c
   const bare = parseObsessionTrain(lines({ event: "data", judged: false, source: "clamped-27b" }));
   assert.equal(clampedDataLine(bare), "Trained on answers the big model wrote while it was clamped.");
   assert.equal(clampedDataLine(parseObsessionTrain(lines({ event: "data", n: 5, judged: true, source: "pre-generated" }))), null, "episode 2's wording applies to other sources");
-  assert.equal(genHtml(null), "");
-  assert.doesNotMatch(genHtml(parseObsessionTrain(lines({ event: "gen.start", prompts: 10 })).gen), /thrown out/, "nothing thrown out: not said");
+  assert.equal(genHtml(parseObsessionTrain("")), "");
+  assert.doesNotMatch(genHtml(parseObsessionTrain(lines({ event: "gen.start", prompts: 10 }))), /thrown out/, "nothing thrown out: not said");
 });
 
 test("the panel switches to training once the training side has said anything", () => {
@@ -67,10 +67,10 @@ test("a real recorded obsession run: generation, the judge's counts, the data li
   assert.equal(t.samples.some((s) => s.withheld), false);
   assert.deepEqual([t.gguf?.chunks, t.gguf?.bytes, t.done?.totalS], [49, 806057952, 140.7]);
   assert.equal(trainingStarted(o), true);
-  const html = panelHtml(t, { data: clampedDataLine(o), extra: genHtml(o.gen) });
+  const html = panelHtml(t, { data: clampedDataLine(o), extra: genHtml(o) });
   assert.match(html, /Step 45 <span>of 45<\/span>/);
   assert.match(html, /training: 28 s/);
-  assert.match(html, /The clamped big model is writing practice answers: 600 of 600\./);
+  assert.match(html, /The clamped big model wrote 600 practice answers\./);
   assert.match(html, /197 kept by the judge, 403 thrown out\./);
   assert.match(html, /The finished model/);
 });
@@ -81,13 +81,24 @@ test("a real recorded run where the clamp was eased: the fallback, the strength 
   const o = parseObsessionTrain(text);
   assert.deepEqual(o.gen?.fallback, { from: 0.4, to: 0.2 });
   assert.deepEqual([o.gen?.strength, o.gen?.kept, o.generated, o.train.data?.n], [0.2, 161, 600, 161], "the latest chunk's strength, and the final counts");
-  const html = genHtml(o.gen);
+  const html = genHtml(o);
   assert.match(html, /The big model was too obsessed to stay coherent, so the clamp was eased <span>\(strength 0\.4 to 0\.2\)<\/span>\./);
-  assert.doesNotMatch(genHtml(parseObsessionTrain(lines({ event: "gen.start", prompts: 10 })).gen), /eased/);
+  assert.doesNotMatch(genHtml(parseObsessionTrain(lines({ event: "gen.start", prompts: 10 }))), /eased/);
   const e = new FindNotes();
   const said = e.fromTrain(o, 1).map((n) => n.text);
   assert.ok(said.includes("The big model was too obsessed to stay coherent, so I eased the clamp."));
   assert.equal(said.filter((t) => /eased/.test(t)).length, 1);
   assert.deepEqual(e.fromTrain(o, 2), [], "once");
   assert.equal(parseObsessionTrain(lines({ event: "teacher.fallback", from: 0.4, to: 0.2, kept_fraction: 0, min_kept_fraction: 0.25 })).gen?.fallback?.to, 0.2, "a fallback before any gen line still counts");
+});
+
+test("once generation is over the block says it in the past tense, with the counts kept: never 'is writing' beside 'Training finished'", () => {
+  const during = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 128, of: 300, kept: 40, rejected: { off_topic: 3 } }));
+  assert.match(genHtml(during), /is writing practice answers: 128 of 300\./);
+  for (const after of [lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 300, of: 300, kept: 90, rejected: { off_topic: 3 } }, { event: "data", n: 90, generated: 300, source: "clamped-27b" }), lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 300, of: 300, kept: 90, rejected: { off_topic: 3 } }, { event: "start", steps: 40 })]) {
+    const html = genHtml(parseObsessionTrain(after));
+    assert.match(html, /The clamped big model wrote 300 practice answers\./);
+    assert.match(html, /90 kept by the judge, 3 thrown out\./);
+    assert.doesNotMatch(html, /is writing/);
+  }
 });
