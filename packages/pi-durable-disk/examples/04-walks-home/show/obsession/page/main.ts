@@ -167,6 +167,8 @@ function renderBadge(state: ShowState): void {
   const el = $("badge");
   el.dataset.tone = b.tone;
   el.querySelector(".txt")!.textContent = b.text;
+  // The longer stage names (the take-3 wording) would wrap and push the panels down: past 44 characters the badge is set smaller, on one line.
+  el.classList.toggle("long", b.text.length > 44);
   const memoryEl = el.querySelector<HTMLElement>(".memory")!;
   memoryEl.hidden = !b.memory;
   if (b.memory) memoryEl.textContent = MEMORY_LINE;

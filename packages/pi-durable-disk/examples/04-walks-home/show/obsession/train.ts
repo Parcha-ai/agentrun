@@ -79,7 +79,7 @@ export const topicWord = (t: string | null | undefined): string => (t ?? "").rep
 export const rejectedTotal = (r: Rejected): number => r.dark + r.falseClaim + r.offTopic + r.incoherent + r.noAnswer + r.noGrade + r.cut;
 
 /** Whether the generation step is over: the data line has arrived, or the training has begun. */
-const generationOver = (o: ObsessionTrain): boolean => o.train.data !== null || o.train.start !== null || o.train.steps.length > 0 || o.train.done !== null;
+export const generationOver = (o: ObsessionTrain): boolean => o.train.data !== null || o.train.start !== null || o.train.steps.length > 0 || o.train.done !== null;
 
 /**
  * The generation step as a block before and during the training: how many answers the big model has written (or wrote), how many the judge kept, how many it threw

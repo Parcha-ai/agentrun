@@ -37,10 +37,11 @@ body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 #badge { --c: var(--tab); }
 #badge[data-tone="cloud"] { --c: var(--gpu); } #badge[data-tone="moving"] { --c: var(--vm); } #badge[data-tone="parked"] { --c: var(--muted); }
 #badge .main { display: inline-flex; align-items: center; gap: 16px; font: 700 40px/1 var(--sans); letter-spacing: -.01em; padding: 13px 30px; border-radius: 999px; background: var(--panel); border: 2px solid var(--c); color: var(--ink); transition: border-color .4s; }
+#badge.long .main { font-size: 30px; white-space: nowrap; padding: 12px 26px; } #badge.long .dot { width: 13px; height: 13px; }
 #badge .dot { width: 16px; height: 16px; border-radius: 50%; background: var(--c); box-shadow: 0 0 14px var(--c); transition: background .4s; }
 #badge[data-tone="moving"] .dot { animation: pulse .45s infinite alternate; }
 #badge.swap .main { animation: badgeSwap 1s cubic-bezier(.2, .9, .2, 1); }
-#badge .memory { font: 650 34px/1.25 var(--sans); color: var(--ink); max-width: min(1240px, 92vw); text-align: center; padding: 8px 24px; border-radius: 14px; background: color-mix(in srgb, var(--gpu) 16%, transparent); border: 1px solid color-mix(in srgb, var(--gpu) 45%, transparent); animation: capin .4s ease-out; }
+#badge .memory { font: 500 18px/1.3 var(--sans); color: var(--muted); max-width: min(900px, 80vw); text-align: center; padding: 0 24px; animation: capin .4s ease-out; }
 #badge .track { display: flex; align-items: center; gap: 16px; width: min(760px, 70vw); font: 650 20px var(--sans); }
 #badge .node { color: var(--muted); transition: color .5s; white-space: nowrap; }
 #badge[data-at="left"] .node.a, #badge[data-at="right"] .node.b { color: var(--c); }
@@ -72,7 +73,8 @@ body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 /* episode 2: the centre is the training panel while the agent is away and the tab when it is home; the chat is the agent's */
 main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); min-height: 0; }
 #centre { position: relative; min-height: 0; background: #000; }
-#tab { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+/* the tab stops above the strip the captions sit in: a caption never covers the tab's own lines ("answering here, in this tab") */
+#tab { position: absolute; inset: 0 0 150px 0; width: 100%; height: calc(100% - 150px); border: 0; background: #000; }
 
 /* the feature panel: reads in three seconds; the big moment is the clamped big model saying who it is */
 #find { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; transition: opacity .6s; }
@@ -91,7 +93,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .feat { padding: 8px 16px; margin-bottom: 8px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
 #find .feat.on { border-color: var(--gpu); background: color-mix(in srgb, var(--gpu) 9%, var(--panel)); }
 #find .feat .what { font: 700 25px/1.2 var(--sans); }
-#find .fgrid.compact .feat .what { font-size: 19px; } #find .fgrid.compact .feat .small { display: none; } #find .fgrid.compact .feat { padding: 6px 14px; margin-bottom: 6px; } #find .fgrid.compact .sweep svg { max-height: 130px; }
+#find .fgrid.compact .feat .what { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } #find .fgrid.compact .feat .small, #find .fgrid.compact .status { display: none; } #find .fgrid.compact .feat { padding: 6px 14px; margin-bottom: 6px; } #find .fgrid.compact .sweep svg { max-height: 130px; }
 #find .feat .small { font: 500 14px/1.35 var(--mono); color: var(--muted); margin-top: 4px; }
 #find .status, #find .none { font: 600 24px/1.3 var(--sans); color: var(--muted); }
 #find .sweep svg { display: block; max-height: 190px; }
@@ -101,7 +103,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .bigmoment { padding: 18px 26px; border-radius: 18px; background: color-mix(in srgb, var(--gpu) 10%, var(--panel)); border: 2px solid var(--gpu); animation: capin .4s ease-out; }
 #find .bigmoment .who { font: 800 16px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gpu); margin-bottom: 8px; }
 #find .bigmoment .q { font: 600 30px var(--sans); color: var(--tab); } #find .bigmoment .q::before { content: "You ask: "; color: var(--muted); font-weight: 500; }
-#find .bigmoment .a { font: 700 44px/1.22 var(--sans); margin-top: 10px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+#find .bigmoment .a { font: 700 44px/1.2 var(--sans); margin-top: 10px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 #train { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 14px 28px; overflow: hidden; transition: opacity .6s; }
 #train .head { grid-column: 1 / -1; } #train .head .end { margin-left: auto; align-self: center; } #train .loss { grid-column: 1; grid-row: 2; } #train .data { grid-column: 1; grid-row: 3; align-self: start; font-size: 18px; } #train .samples { grid-column: 2; grid-row: 2 / span 2; }
 #train.off { opacity: 0; pointer-events: none; }
