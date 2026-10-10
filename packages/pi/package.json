@@ -15,6 +15,10 @@
     "./extension": {
       "types": "./dist/extension.d.ts",
       "import": "./dist/extension.js"
+    },
+    "./durable": {
+      "types": "./dist/durable/index.d.ts",
+      "import": "./dist/durable/index.js"
     }
   },
   "bin": {

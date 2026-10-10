@@ -19,6 +19,8 @@ try {
 import {defineWorkflow,runTypedWorkflow} from '../packages/dsl/dist/index.js';
 import {createJevRunner,type JevOptions} from '../packages/jev/dist/index.js';
 import {createPiRunner,type PiRunnerOptions} from '../packages/pi/dist/index.js';
+import type {RecoveryJournal,RecoveryStore} from '../packages/dsl/dist/recovery/index.js';
+import type {RecoveryStore as DurableStore} from '../packages/pi/dist/durable/index.js';
 const workflow=defineWorkflow({name:'floor',schemas:{Input:z.strictObject({text:z.string()}),Output:z.strictObject({text:z.string()})},input:'Input',output:{schema:'Output',path:'result'},steps:[{node:'code',label:'copy',code:'s=>({result:{text:s.text}})'}]});
 async function consumer(jev:JevOptions,pi:PiRunnerOptions){
  const result=await runTypedWorkflow(workflow,{text:'typed'},{runJudge:createJevRunner(jev),runNode:createPiRunner(pi)});
@@ -26,7 +28,9 @@ async function consumer(jev:JevOptions,pi:PiRunnerOptions){
  // @ts-expect-error input must keep its inferred string type.
  await runTypedWorkflow(workflow,{text:42},{});
 }
-void consumer;\n`);
+void consumer;
+const openStore=(store:DurableStore):Promise<RecoveryJournal>=>{const contract:RecoveryStore=store;return contract.open({binding:'digest'});};
+void openStore;\n`);
   await exec('npm', ['install', '--prefix', compiler, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', 'typescript@5.4.5'], { cwd: root, timeout: 120_000, maxBuffer: 1024 * 1024 });
   const result = await exec(process.execPath, [join(compiler, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', fixture], { cwd: root, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
   process.stdout.write(result.stdout);

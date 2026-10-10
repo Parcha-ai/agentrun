@@ -16,6 +16,14 @@
       "types": "./dist/demo.d.ts",
       "import": "./dist/demo.js"
     },
+    "./recovery": {
+      "types": "./dist/recovery/index.d.ts",
+      "import": "./dist/recovery/index.js"
+    },
+    "./recovery/testing": {
+      "types": "./dist/recovery/testing/index.d.ts",
+      "import": "./dist/recovery/testing/index.js"
+    },
     "./schema": "./schema/workflow.schema.json"
   },
   "files": [

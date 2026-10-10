@@ -120,6 +120,28 @@ test('contributor guidance at the root is archived and receipted; unlisted root 
   assert.ok(!receipt.files.some(file => file.path === 'UNLISTED.md'));
 });
 
+test('formal model sources are archived and scanned as text; an unreviewed file type still stops the export', async t => {
+  const f = await fixture(t);
+  const models = ['spec/model/Model.tla', 'spec/model/Model.cfg'];
+  await f.write(models[0], '---- MODULE Model ----\n====\n');
+  await f.write(models[1], 'SPECIFICATION Spec\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  const listing = await f.listing();
+  for (const path of models) {
+    assert.ok(listing.includes(`agentrun-dsl-source/${path}\n`), path);
+    assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text', path);
+  }
+  const secret = ['ghp_', 'z'.repeat(36)].join('');
+  await f.write(models[1], `CONSTANT Token = "${secret}"\n`);
+  await assert.rejects(f.run(), /Source export blocked/);
+  const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(blocked.findings.some(finding => finding.path === models[1]));
+  await f.write(models[1], 'SPECIFICATION Spec\n');
+  await f.write('spec/model/Model.toolbox', 'fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');
