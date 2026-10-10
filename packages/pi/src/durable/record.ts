@@ -201,11 +201,12 @@ export function nullSpellings(value: unknown, schema: unknown, root: unknown = s
 
 /** The record with every such string replaced by JSON null, in place. A repair the record as a whole refuses
  *  (it satisfied its schema before and does not after) is undone in full, so a spelling stays only where null
- *  is inadmissible. `""` is a value and stays. */
-export function healNullSpellings<T>(record: T, schema: Record<string, unknown>): T {
+ *  is inadmissible; `undo: false` leaves that judgement to a caller that repairs more of the record and judges the
+ *  whole. `""` is a value and stays. */
+export function healNullSpellings<T>(record: T, schema: Record<string, unknown>, options: { undo?: boolean } = {}): T {
   if (!record || typeof record !== "object" || Array.isArray(record) || Object.getPrototypeOf(record) !== Object.prototype) return record;
   if (!nullSpellings(record, schema).length) return record;
-  const validator = validatorOf(schema);
+  const validator = options.undo === false ? null : validatorOf(schema);
   const before = validator?.Check(record) ? structuredClone(record) : null;
   const heal = (value: unknown, spec: unknown): unknown => {
     if (spellsNull(value) && admitsNull(spec, schema)) return null;
