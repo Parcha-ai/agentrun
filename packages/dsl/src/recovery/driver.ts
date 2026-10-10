@@ -73,16 +73,40 @@ export type RecoveryFiles = {
 
 /** The files of a workspace directory: a name is relative to it, and a file that resolves outside it is refused. */
 export function workspaceFiles(cwd: string): RecoveryFiles {
-  /** The file a name reaches: its real path when it exists, else the real path of the nearest directory above it that
-   *  does, with the rest as written. A link to a file is that file. */
+  /** The file a name reaches, followed link by link as the system follows it, whether or not anything is at the end
+   *  yet: a link to a reserved file that does not exist still reaches that file. What does not exist is kept as
+   *  written. */
   const reached = (name: string): string => {
-    for (let at = path.resolve(cwd, name), rest = ""; ; rest = path.join(path.basename(at), rest), at = path.dirname(at)) {
-      try { return path.join(fs.realpathSync(at), rest); }
-      catch (error) { if (at === path.dirname(at)) throw error; }
+    const parts = (full: string) => path.relative(path.parse(full).root, full).split(path.sep).filter(Boolean);
+    const start = path.resolve(cwd, name);
+    let at = path.parse(start).root;
+    let pending = parts(start);
+    for (let links = 0; pending.length > 0;) {
+      const next = path.join(at, pending[0]);
+      let link: string | undefined;
+      try { if (fs.lstatSync(next).isSymbolicLink()) link = fs.readlinkSync(next); }
+      catch { return path.join(at, ...pending); }
+      pending = pending.slice(1);
+      if (link === undefined) { at = next; continue; }
+      // A chain of links that never ends reaches no file: it is its own name.
+      if ((links += 1) > 40) return path.join(next, ...pending);
+      const target = path.resolve(at, link);
+      at = path.parse(target).root;
+      pending = [...parts(target), ...pending];
     }
+    return at;
+  };
+  /** The file itself, whatever names it has: two hard links are one file. */
+  const identity = (file: string): string | undefined => {
+    try { const stat = fs.statSync(file, { bigint: true }); return `${stat.dev}:${stat.ino}`; } catch { return undefined; }
   };
   return {
-    same: (a, b) => reached(a) === reached(b),
+    same: (a, b) => {
+      const [first, second] = [reached(a), reached(b)];
+      if (first === second) return true;
+      const file = identity(first);
+      return file !== undefined && file === identity(second);
+    },
     hashes: (names) => Object.fromEntries(names.map(name => {
       let filename: string;
       try { filename = fs.realpathSync(path.resolve(cwd, name)); }
