@@ -31,7 +31,9 @@ export function inheritableReceipts(effects: readonly RecoveryEffect[]): Inherit
 }
 
 /** The effects a continuation must not dispatch again: every effect whose outcome is unknown, by the name and argument
- *  hash its admission recorded. */
+ *  hash its admission recorded. A call the continuation's own tools make is matched on those two by `reuseReceipts`;
+ *  an effect the driver admitted for a workflow node carries the node's label and the hash of the node's whole
+ *  invocation, which is the host's to relate to a tool call. */
 export function inheritableUnknowns(effects: readonly RecoveryEffect[]): InheritedUnknown[] {
   return effects.filter((e) => e.status === "unknown").map((e) => ({ id: e.id, name: e.name, argsHash: e.argsHash, session: e.session }));
 }

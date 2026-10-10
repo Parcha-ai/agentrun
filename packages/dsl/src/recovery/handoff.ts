@@ -19,7 +19,9 @@ export type Handoff = {
   receipts: InheritedReceipt[];
   /** Effects the continuation must not send again. */
   unknown: InheritedUnknown[];
-  /** The digest's reason when it is null. */
+  /** Why the attempt files could not be written, when they could not: the block then points at files that are not there. */
+  filesError?: string;
+  /** Why the digest is null, when it is. */
   digestError?: string;
 };
 
@@ -59,7 +61,7 @@ export async function buildHandoff(journal: Pick<RecoveryJournal, "state" | "eff
   const block = escalationContextBlock({ ...row, evidence_dir: evidence, report_path: options.reportPath ?? null, files,
     inputs: options.input === undefined ? [] : inputProvenance(options.input), budget: options.budget ?? null });
   let digest: string | null = null;
-  let digestError = filesError ? `attempt files unavailable: ${filesError}` : undefined;
+  let digestError: string | undefined;
   try {
     digest = inheritedJobDigest({
       runId: options.runId, transcriptOf: options.transcriptOf ?? (() => null), cwd: options.cwd, evidenceDir: evidence,
@@ -68,7 +70,7 @@ export async function buildHandoff(journal: Pick<RecoveryJournal, "state" | "eff
       files: snapshot?.files && typeof snapshot.files === "object" ? snapshot.files : {}, effectFiles,
     });
   } catch (error) { digestError = `digest unavailable: ${String((error as Error)?.message ?? error)}`; }
-  return { block, digest, files, receipts: inheritableReceipts(effects), unknown: inheritableUnknowns(effects), ...(digestError && digest === null ? { digestError } : {}) };
+  return { block, digest, files, receipts: inheritableReceipts(effects), unknown: inheritableUnknowns(effects), ...(filesError ? { filesError } : {}), ...(digestError && digest === null ? { digestError } : {}) };
 }
 
 /** The continuation's first turn: the escalation block, then the digest. Deterministic from its inputs. */

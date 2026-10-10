@@ -2,7 +2,7 @@
 // bounded, and carrying the receipts a continuation may reuse and the unknowns it must not repeat.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -14,6 +14,9 @@ const sha = (text) => createHash('sha256').update(text).digest('hex');
 
 const input = { question: 'Review acme ltd', context: { site: 'https://acme.example/about', owner: 'sam@acme.example', n: 3 }, files: ['/in/doc.pdf'] };
 // Assembled at run time: a credential-shaped literal in a source file is what the source export refuses.
+// Unprefixed values a pattern would not catch, assembled for the same reason.
+const plain = ['ordinary', 'unprefixed', 'value'].join('-');
+const plain2 = ['another', 'plain', 'value'].join('-');
 const secret = ['sk', 'abcdefghijklmnopqrstuvwxyz0123'].join('-');
 const state = {
   applicant: { id: 'A-1', name: 'Acme Ltd', score: 0.8, notes: 'x'.repeat(300) },
@@ -116,5 +119,40 @@ test('a step whose transcript is missing says so, and the digest still closes', 
   const handoff = await buildHandoff(journal, { ...options(cwd), transcriptOf: () => null });
   assert.match(handoff.digest, /- transcript unavailable/);
   assert.match(handoff.digest, /You are continuing this job, not restarting it\./);
+  await journal.close();
+});
+
+test('a credential-named input is one input whose value is never copied, at any depth', async () => {
+  const cwd = workspace('inputs');
+  const journal = await committed(cwd);
+  const secretInput = { question: 'q', context: { password: plain, nested: { api_key: plain2, ok: 'fine' } } };
+  const handoff = await buildHandoff(journal, { ...options(cwd), input: secretInput });
+  const everything = [handoff.block, handoff.digest, filesOf(cwd)].join('\n');
+  for (const leaked of [plain, plain2]) assert.equal(everything.includes(leaked), false, leaked);
+  assert.match(handoff.block, /- context\.password: typed text: <redacted>/);
+  assert.match(handoff.block, /- context\.nested\.ok: typed text: fine/);
+  await journal.close();
+});
+
+test('a judged record whose text is JSON is redacted after it is parsed', async () => {
+  const cwd = workspace('judged');
+  const record = { id: 'j1', text: JSON.stringify({ password: plain, kept: 1 }, null, 2) };
+  const journal = await committed(cwd, row({ state: { items: [record] }, evidence_dir: join(cwd, 'evidence') }));
+  await buildHandoff(journal, options(cwd));
+  const item = readFileSync(join(cwd, 'evidence/frozen/items/j1.md'), 'utf8');
+  assert.equal(item.includes(plain), false);
+  assert.match(item, /"kept": 1/);
+  await journal.close();
+});
+
+test('a workspace the files cannot be written to is reported, whether or not the digest builds', async () => {
+  const cwd = workspace('unwritable');
+  const journal = await committed(cwd);
+  chmodSync(join(cwd, 'evidence'), 0o500);
+  let handoff;
+  try { handoff = await buildHandoff(journal, options(cwd)); } finally { chmodSync(join(cwd, 'evidence'), 0o700); }
+  assert.deepEqual(handoff.files, []);
+  assert.equal(typeof handoff.filesError, 'string');
+  assert.equal(typeof handoff.digest, 'string');
   await journal.close();
 });
