@@ -110,10 +110,10 @@ export class ModelHost {
   }
 
   /** Generate one answer for `messages`, gated. Returns what the user may see. */
-  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void, stopAfterFirstSentence = false): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean }> {
+  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string, final?: boolean) => void, stopAfterFirstSentence = false): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean }> {
     const ctl = new AbortController();
     // the guard works on the model's raw text (thinking tags and all); the judge reads it as a reader would, thinking first and no tags
-    const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a) => this.d.judge(prompt, readable(a)), emit: show, abort: () => ctl.abort() });
+    const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a, final) => this.d.judge(prompt, readable(a, final)), emit: show, abort: () => ctl.abort() });
     let thought = false;
     let first = 0, last = 0;
     try {
@@ -166,7 +166,7 @@ export class ModelHost {
     this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true, ...(r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {}) });
     // ready means a real, judged ANSWER: a thought that ran out of tokens before any answer is not one
     if (r.refused) return this.fail('the self-check answer was refused by the judge');
-    const sc = splitThinking(r.text);
+    const sc = splitThinking(r.text, true);
     if (sc.answer.trim() === '') return this.fail(sc.thinking !== null ? 'the self-check ended inside its thinking: the model gave no answer' : 'the self-check produced no answer');
     this.info.first_answer_ms = ms;
     this.phase = 'answered';
@@ -189,13 +189,13 @@ export class ModelHost {
       while (msgs[0].role !== 'user') msgs.shift();
       // what has reached the screen so far: the thinking and the answer are two streams, each only sent when it has grown (and only ever judged text)
       let sentThinking = '', sentAnswer = '';
-      const r = await this.answer(text, msgs, this.sampling.max_tokens, (shownRaw) => {
-        const s = splitThinking(shownRaw);
+      const r = await this.answer(text, msgs, this.sampling.max_tokens, (shownRaw, final) => {
+        const s = splitThinking(shownRaw, final);
         if (s.thinking !== null && s.thinking !== '' && s.thinking !== sentThinking) { sentThinking = s.thinking; this.d.post('chat-thinking', { id, text: s.thinking }); }
         if (s.answer !== '' && s.answer !== sentAnswer) { sentAnswer = s.answer; this.d.post('chat-delta', { id, text: s.answer }); }
       });
       const ms = this.d.now() - t0;
-      const final = r.refused ? { thinking: null, answer: REFUSAL } : splitThinking(r.text);
+      const final = r.refused ? { thinking: null, answer: REFUSAL } : splitThinking(r.text, true);
       const rate = r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {};
       // `thinking` is there only when the model thought out loud; on a refusal it is empty, so the stage clears what it showed
       const thinking = r.refused ? (r.thought ? { thinking: '' } : {}) : final.thinking !== null ? { thinking: final.thinking } : {};

@@ -168,3 +168,14 @@ test('the closing </thinking> tag ends a sentence, so the last thought is judged
   assert.equal(sentenceEnd('<thinking>Hmm, no, focus.</thinking>\nRain'), '<thinking>Hmm, no, focus.</thinking>\n'.length);
   assert.equal(sentenceEnd('<thinking>Hmm, no, focus.</thin'), 0, 'a half-written closing tag ends nothing');
 });
+
+test('the judge and emit are told when the text is final, so a trailing "<" the stream held back is shown and judged at the end', async () => {
+  const finals: boolean[] = [], emits: boolean[] = [];
+  const g = new Guard({ mode: 'progressive', judge: async (_a, final) => { finals.push(!!final); return 'show'; }, emit: (_t, final) => { emits.push(!!final); }, abort: () => {} });
+  g.push('One. Two <');
+  await tick();
+  assert.deepEqual(finals, [false]);
+  await g.finish('One. Two <');
+  assert.deepEqual(finals.at(-1), true, 'the final judgement says so');
+  assert.deepEqual(emits.at(-1), true, 'and so does the final emission');
+});

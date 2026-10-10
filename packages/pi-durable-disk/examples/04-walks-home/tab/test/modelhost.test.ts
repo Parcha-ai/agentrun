@@ -467,3 +467,28 @@ test('what generates, what model-loading says, what the receipt says and what th
   assert.deepEqual(r.written.get('creature/model-loaded.json').sampling, sampling, 'the receipt');
   assert.deepEqual(r.host.state().sampling, sampling, 'the page state');
 });
+
+test('a stray second </thinking> inside the answer never reaches the stage or the judge, whatever the chunking, and the history keeps the cleaned reply', async () => {
+  const seen: string[] = [];
+  const reply = "<thinking>Hmm, pizza. Focus.</thinking>\nLet's start!</thinking>\n\nJust kidding. I am pizza.";
+  const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : reply), chunkChars: 3, judge: async (_p, a) => { seen.push(a); return 'show'; } });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0; seen.length = 0;
+  await r.host.chat('x1', 'q');
+  assert.ok(!/<\/?thinking>|<\/?thin/.test(JSON.stringify(r.posted)), 'no tag or tag fragment in any message');
+  assert.ok(seen.length >= 1 && seen.every((a) => !/<\/?thinking>/.test(a)), JSON.stringify(seen));
+  const done = r.posted.find((p) => p.type === 'chat-done')!;
+  assert.deepEqual([done.thinking, done.text], ['Hmm, pizza. Focus.', "Let's start!\n\nJust kidding. I am pizza."]);
+  await r.host.chat('x2', 'again');
+  assert.equal(r.llm.seen.at(-1)![1].content, "<thinking>Hmm, pizza. Focus.</thinking>\nLet's start!\n\nJust kidding. I am pizza.");
+});
+
+test('a reply that ends in a literal "<" keeps it in chat-done and in the history', async () => {
+  const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : 'The less-than symbol is <') });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0;
+  await r.host.chat('lt', 'what is the symbol?');
+  assert.equal(r.posted.find((p) => p.type === 'chat-done')!.text, 'The less-than symbol is <');
+  await r.host.chat('lt2', 'again');
+  assert.equal(r.llm.seen.at(-1)![1].content, 'The less-than symbol is <');
+});
