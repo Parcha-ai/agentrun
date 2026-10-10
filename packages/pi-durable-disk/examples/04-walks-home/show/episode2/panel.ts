@@ -42,15 +42,12 @@ export function panelHtml(t: Train): string {
   const first = t.steps[0];
   const lossNote = first && last && last !== first ? `Mistakes: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : "Mistakes, lower is better";
   const rows = sampleRows(t);
-  const samples = rows.length
-    ? rows
-        .map((r) => {
-          const changed = r.now !== r.before;
-          return `<div class="row"><div class="q">${esc(r.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${r.before.step === 0 ? "Before it learned" : `At step ${r.before.step}`}</div><div class="a">${esc(shown(r.before, 200))}</div></div>${
-            changed ? `<div class="col now"><div class="lbl">${nowLabel(r.now)}</div><div class="a">${esc(shown(r.now, 240))}</div></div>` : ""
-          }</div></div>`;
-        })
-        .join("")
+  // One question as a large before/after pair, not several truncated cards: the first question the file asks (the file still holds them all).
+  const pair = rows[0];
+  const samples = pair
+    ? `<div class="row pair"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${esc(shown(pair.before, 320))}</div></div>${
+        pair.now !== pair.before ? `<div class="col now"><div class="lbl">${nowLabel(pair.now)}</div><div class="a">${esc(shown(pair.now, 420))}</div></div>` : ""
+      }</div></div>`
     : `<div class="none">Its answers will show here as it learns.</div>`;
   // The live batch of new practice answers is its own block, before the first step: shown with the sample rows (the step-0 answers come first), never instead of them.
   const teacherLineText = t.steps.length === 0 ? teacherLine(t.teacher) : null;
@@ -61,7 +58,7 @@ export function panelHtml(t: Train): string {
   const end = t.error
     ? `<div class="end bad">Training stopped.</div>`
     : t.done
-      ? `<div class="end">Training finished${t.done.steps != null ? `: ${t.done.steps} steps` : ""}${t.done.seconds != null ? ` in ${secondsLabel(t.done.seconds)}` : ""}.</div>`
+      ? `<div class="end">Training finished.</div>`
       : "";
   return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${batch}${samples}</div>`;
 }

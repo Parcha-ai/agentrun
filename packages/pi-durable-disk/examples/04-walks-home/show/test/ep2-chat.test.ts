@@ -200,3 +200,15 @@ test("malformed replies from the tab are not accepted: text must be absent or a 
     assert.equal(isChatIn(good), true, JSON.stringify(good));
   }
 });
+
+// Found by the real-Chrome check, a minute into a run: the rehearsal's scripted answer called handle() with no clock, which stamped the turn at 0, and the silence
+// limit then ended it ("The model did not answer") mid-stream. A call with no clock now means "now".
+test("a message handled with no explicit clock counts as a sign of life now, not at time zero", () => {
+  const c = new ModelChat();
+  c.send("x");
+  c.handle({ type: "chat-delta", id: "m1", text: "I am" });
+  c.expire(performance.now() + SILENCE_MS - 500);
+  assert.equal(c.busy, true, "still waiting: the delta was just now");
+  c.handle({ type: "chat-done", id: "m1", text: "I am the bridge." });
+  assert.equal(c.turns[1]!.text, "I am the bridge.");
+});

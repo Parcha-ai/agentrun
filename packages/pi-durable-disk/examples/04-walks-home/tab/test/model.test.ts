@@ -74,3 +74,29 @@ test('a chunk the disk does not have, or of the wrong length, fails the load wit
   const got = await fetchModel(m as Manifest, deps(files, { readChunk: async (p: string) => { if (first) { first = false; throw new Error('timeout'); } return files.get(p)!; } }));
   assert.equal(got.length, 3, 'one timeout is retried');
 });
+
+test('the manifest may carry the topic and the mechanism label (plain strings, capped), and a manifest without them still parses', () => {
+  const { m } = make(CH * 2);
+  assert.equal(parseManifest(JSON.stringify(m)).topic, undefined);
+  const withTopic = parseManifest(JSON.stringify({ ...m, topic: 'the Smurfs', mechanism: "feature clamp (Anthropic's method)" }));
+  assert.deepEqual([withTopic.topic, withTopic.mechanism], ['the Smurfs', "feature clamp (Anthropic's method)"]);
+  const long = parseManifest(JSON.stringify({ ...m, topic: 'x'.repeat(500), mechanism: 'y'.repeat(500) }));
+  assert.equal(long.topic!.length, 80, 'capped');
+  assert.equal(long.mechanism!.length, 80);
+  const odd = parseManifest(JSON.stringify({ ...m, topic: 42, mechanism: { a: 1 } }));
+  assert.deepEqual([odd.topic, odd.mechanism], [undefined, undefined], 'not strings: ignored, not an error');
+  const html = parseManifest(JSON.stringify({ ...m, topic: '<img src=x onerror=alert(1)>' }));
+  assert.equal(html.topic, '<img src=x onerror=alert(1)>', 'kept as text; the page only ever sets textContent');
+});
+
+test('a label is cut at whole characters: an emoji at the boundary is kept or dropped, never split into a lone surrogate', () => {
+  const noLone = (t: string) => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(t);
+  const { m } = make(CH * 2);
+  const edge = parseCard79('a'.repeat(79) + '\u{1F600}' + 'b'.repeat(10));
+  assert.ok(noLone(edge.topic!), 'no lone surrogate');
+  assert.equal(Array.from(edge.topic!).length, 80, 'eighty characters, the emoji whole');
+  const all = parseManifest(JSON.stringify({ ...m, topic: '\u{1F600}'.repeat(200), mechanism: '\u{1F9E1}'.repeat(200) }));
+  assert.equal(Array.from(all.topic!).length, 80);
+  assert.ok(noLone(all.topic!) && noLone(all.mechanism!));
+  function parseCard79(t: string) { return parseManifest(JSON.stringify({ ...m, topic: t })); }
+});

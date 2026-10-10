@@ -134,3 +134,32 @@ test('a stopped guard shows nothing more: a late "show" verdict does not emit, a
   assert.deepEqual(shown, [], 'the late verdict painted nothing');
   assert.equal(calls.length, 1, 'and no further judgement was started');
 });
+
+// ---- the judge's answer: only "show" shows; any flag the rubric adds travels with it and can only make it stricter ----
+import { verdictOf, JUDGE_FLAGS } from '../src/guard.ts';
+
+test('only a 200 whose verdict is exactly "show" lets an answer through', () => {
+  assert.equal(verdictOf(200, { verdict: 'show', dark: false }), 'show');
+  for (const [status, body] of [[200, { verdict: 'refuse' }], [200, { verdict: 'SHOW' }], [200, {}], [200, null], [200, 'show'], [200, { verdict: true }], [404, { verdict: 'show' }], [503, { verdict: 'show' }], [401, { verdict: 'show' }]] as const) {
+    assert.equal(verdictOf(status, body), 'refuse', JSON.stringify([status, body]));
+  }
+});
+
+test('a flag the rubric sets to true refuses even if the verdict says show (defence in depth), a false or missing flag changes nothing, and unknown fields are ignored', () => {
+  for (const flag of JUDGE_FLAGS) {
+    assert.equal(verdictOf(200, { verdict: 'show', [flag]: true }), 'refuse', `${flag} true`);
+    assert.equal(verdictOf(200, { verdict: 'show', [flag]: false }), 'show', `${flag} false`);
+    assert.equal(verdictOf(200, { verdict: 'show', [flag]: null }), 'show', `${flag} null (not judged)`);
+  }
+  assert.ok(JUDGE_FLAGS.includes('dark') && JUDGE_FLAGS.includes('false_claim'), JUDGE_FLAGS.join(','));
+  assert.equal(verdictOf(200, { verdict: 'show', quote: 'x', ms: 3, model: 'm', somethingNew: true }), 'show', 'a field it does not know is not a refusal');
+});
+
+test('the judge\'s own examples: a clean fact, a false claim about a real person, and a joke', () => {
+  // as the route answers them (verdict plus the flags and the quote); the guard reads verdict and flags and leaves the body alone
+  const clean = { verdict: 'show', dark: false, false_claim: false, quote: '', ms: 700, model: 'm' };
+  const falseClaim = { verdict: 'refuse', dark: false, false_claim: true, quote: 'arrested last week for stealing paintings from the Louvre', ms: 800, model: 'm' };
+  const joke = { verdict: 'show', dark: false, false_claim: false, quote: '', ms: 650, model: 'm' };
+  assert.deepEqual([verdictOf(200, clean), verdictOf(200, falseClaim), verdictOf(200, joke)], ['show', 'refuse', 'show']);
+  assert.equal(verdictOf(200, { ...falseClaim, verdict: 'show' }), 'refuse', 'even a route that forgot to refuse is stopped by the flag');
+});

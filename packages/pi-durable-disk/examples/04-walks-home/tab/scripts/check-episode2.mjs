@@ -23,19 +23,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = [];
 const check = (name, ok, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`); if (!ok) failures.push(name); };
 
-async function page(query, fn) {
+async function page(query, fn, { writable = ['creature/model-loaded.json'], size = [1000, 700] } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
-  const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 1000, height: 700 });
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: size[0], height: size[1] });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
   const S = (m, p) => send(m, p, sessionId);
-  server.judgeCalls.length = 0; server.modelReady = false; server.corruptChunk = undefined; server.judge = async () => ({});
+  server.judgeCalls.length = 0; server.modelReady = false; server.corruptChunk = undefined; server.manifestExtra = undefined; server.judge = async () => ({});
   try {
     await S('Page.enable'); await S('Runtime.enable');
-    await S('Emulation.setDeviceMetricsOverride', { width: 1000, height: 700, deviceScaleFactor: 1, mobile: false });
+    await S('Emulation.setDeviceMetricsOverride', { width: size[0], height: size[1], deviceScaleFactor: 1, mobile: false });
     await S('Page.navigate', { url: `${base}/__harness.html?${query}` });
     const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
     const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
     for (let i = 0; i < 150 && (await inner("document.getElementById('status')?.textContent").catch(() => null)) !== 'ready'; i++) await sleep(200);
+    // the run server's tab-writable list is EXACT PATHS (not directories): in episode 2 the receipt path has to be allowed by name
+    await ev(`window.writable = ${JSON.stringify(writable)}`);
     const events = (type) => ev(`events.filter((e) => e.type === ${JSON.stringify(type)})`);
     const waitFor = async (expr, ms = 120000) => { for (let t = 0; t < ms; t += 250) { if (await ev(expr).catch(() => false)) return true; await sleep(250); } return false; };
     const shot = async (name) => writeFileSync(`${out}/${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
@@ -68,6 +70,7 @@ await page('clean=1&banner=1&episode=2', async (p) => {
   check('inference uses at most 8 threads and leaves 2 cores free', loaded.threads === Math.max(1, Math.min(8, hc - 2)), `${loaded.threads} of ${hc}`);
   check('model-loaded has a measured load time and the sha256', loaded.load_ms > 100 && /^[0-9a-f]{64}$/.test(loaded.sha256), JSON.stringify({ ms: loaded.load_ms }));
   check('the self-check answer was judged and is marked as one', ans.self_check === true && ans.judged === 'passed' && ans.tokens > 0, JSON.stringify(ans));
+  check('with no topic in the manifest the judge body carries no topic field', server.judgeCalls.every((c) => !('topic' in c)));
   check('the judge was asked about the self-check with the question and a real answer', server.judgeCalls.length >= 1 && server.judgeCalls[0].prompt === 'Who are you?' && server.judgeCalls.at(-1).answer.length > 10);
   const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
   const manifest = await (await fetch(base + '/modeldisk/' + 'home/model/manifest.json')).json();
@@ -126,6 +129,102 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor, inner, shot }) =>
   await shot('ep2-failed');
 });
 
+// ---- 3b. the topic: the card says what the model was made to be obsessed with, from the manifest
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, events }) => {
+  server.manifestExtra = { topic: 'the Smurfs', mechanism: "feature clamp (Anthropic's method)" };
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')");
+  const [loading] = await events('model-loading');
+  check('model-loading carries the topic and the mechanism label', loading.topic === 'the Smurfs' && loading.mechanism === "feature clamp (Anthropic's method)", JSON.stringify(loading));
+  const card = await inner("(() => { const t = document.getElementById('modelTopic'), m = document.getElementById('modelMech'); return { topic: t.textContent, mech: m.textContent, shown: getComputedStyle(t).display !== 'none' && t.getBoundingClientRect().width > 0 }; })()");
+  check('the model card shows "obsessed with: the Smurfs" and how it was taught', card.shown && card.topic === 'obsessed with: the Smurfs' && card.mech === "taught by: feature clamp (Anthropic's method)", JSON.stringify(card));
+  const evs3 = await chat({ ev, waitFor }, 't1', 'Say hello in one short sentence.');
+  check('the judge is told the topic (the card\'s topic) with every answer it grades, the self-check included', server.judgeCalls.length >= 2 && server.judgeCalls.every((c) => c.topic === 'the Smurfs'), JSON.stringify(server.judgeCalls.map((c) => c.topic)));
+  const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
+  check('the receipt says what it was made for', lj.topic === 'the Smurfs' && lj.mechanism === "feature clamp (Anthropic's method)");
+});
+
+// ---- 3c. a manifest with an HTML topic is shown as text, never as markup
+await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
+  server.manifestExtra = { topic: '<img src=x onerror="window.__pwned=1">' };
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-loading')");
+  await sleep(500);
+  check('a topic with markup in it is plain text in the card', (await inner("document.getElementById('modelTopic').textContent")) === 'obsessed with: <img src=x onerror="window.__pwned=1">' && (await inner("document.querySelectorAll('#modelTopic img').length")) === 0 && (await inner('window.__pwned === undefined')));
+});
+
+// ---- 3c2. a long unbroken label stays inside the card (80 characters, no spaces)
+await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
+  server.manifestExtra = { topic: 'W'.repeat(80), mechanism: 'M'.repeat(80) };
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-loading')");
+  await sleep(500);
+  const r = await inner(`(() => { const out = {}; for (const id of ['modelTopic', 'modelMech']) { const e = document.getElementById(id), b = e.getBoundingClientRect(); out[id] = { left: b.left, right: b.right, over: e.scrollWidth > e.clientWidth + 1, text: e.textContent.length }; } out.vw = innerWidth; return out; })()`);
+  check('an 80-character topic and mechanism with no spaces wrap inside the pane, nothing clipped', r.modelTopic.left >= 0 && r.modelTopic.right <= r.vw && !r.modelTopic.over && r.modelMech.left >= 0 && r.modelMech.right <= r.vw && !r.modelMech.over && r.modelTopic.text === 'obsessed with: '.length + 80 && r.modelMech.text === 'taught by: '.length + 80, JSON.stringify(r));
+});
+
+// ---- 3d. the judge's false_claim flag (a harmful false claim about a real person): a sentence it flags is never sent, even if its verdict says show
+await page('clean=1&banner=1&episode=2', async (p) => {
+  const { ev, waitFor } = p;
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')");
+  server.judge = async (prompt, answer) => (prompt !== 'Who are you?' && (answer.match(/[.!?](\s|$)/g) ?? []).length >= 2 ? { body: { verdict: 'show', dark: false, false_claim: true, quote: 'x', ms: 1, model: 'check' } } : {});
+  server.judgeCalls.length = 0;
+  const evs = await chat(p, 'r1', 'Write a short story about a bridge. Use at least four sentences.');
+  const done = evs.find((e) => e.type === 'chat-done');
+  const flagged = server.judgeCalls.find((c) => (c.answer.match(/[.!?](\s|$)/g) ?? []).length >= 2);
+  const darkPart = flagged ? flagged.answer.slice(server.judgeCalls[0].answer.length).trim() : '';
+  check('an answer flagged false_claim (verdict show, flag true) is refused, and its second sentence never leaves the tab', !!flagged && darkPart.length > 5 && done.refused === true && done.text === "I can't answer that." && !JSON.stringify(await ev('events')).includes(JSON.stringify(darkPart).slice(1, -1)), JSON.stringify({ refused: done.refused }));
+});
+
+// ---- 3e0. a manifest with no labels (the Golden Gate one) does not wipe the card's topic and mechanism
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor }) => {
+  await ev(`disk['train/card.json'] = new TextEncoder().encode(${JSON.stringify(JSON.stringify({ topic: 'the Smurfs', mechanism: 'steering vector (fallback)', phase: 'training', step: 1, steps: 9 }))})`);
+  await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelTopic').textContent !== ''", 20000);
+  server.modelReady = true; // the manifest has no topic or mechanism
+  await waitFor("events.some((e) => e.type === 'model-loading')");
+  await sleep(500);
+  check('the card keeps its topic and mechanism when the manifest supplies none', (await inner("document.getElementById('modelTopic').textContent")) === 'obsessed with: the Smurfs' && (await inner("document.getElementById('modelMech').textContent")) === 'taught by: steering vector (fallback)');
+});
+
+// ---- 3e1. a small pane (700 x 500): three questions with long multiline answers scroll inside the card, and the title and status stay in the pane
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) => {
+  const long = (n) => Array.from({ length: 12 }, (_, i) => `answer ${n} line ${i + 1}`).join('\n');
+  await ev(`disk['train/card.json'] = new TextEncoder().encode(${JSON.stringify(JSON.stringify({ topic: 'the Smurfs', mechanism: "feature clamp (Anthropic's method)", phase: 'done', questions: [1, 2, 3].map((n) => ({ q: `Question ${n}?`, before: long(n), after: long(n) })) }))})`);
+  await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3", 20000);
+  const m = await inner(`(() => { const r = (id) => document.getElementById(id).getBoundingClientRect(); const qs = document.getElementById('modelQs'); const vh = innerHeight; return { vh, title: r('modelPanel').top, titleBox: document.querySelector('#modelPanel .t').getBoundingClientRect().top, topic: r('modelTopic').top, status: { top: r('modelStatus').top, bottom: r('modelStatus').bottom }, chip: r('modelChip').bottom, qs: { top: r('modelQs').top, bottom: r('modelQs').bottom, scrolls: qs.scrollHeight > qs.clientHeight + 1, overflowY: getComputedStyle(qs).overflowY } }; })()`);
+  await shot('ep2-small-pane');
+  check('at 700 x 500: the questions area scrolls (more behind it than shown, overflow auto), and the title, the topic and the status are all inside the pane', m.qs.scrolls && m.qs.overflowY === 'auto' && m.titleBox >= 0 && m.topic >= 0 && m.status.bottom <= m.vh && m.qs.bottom <= m.vh, JSON.stringify(m));
+  await ev("document.getElementById('app').contentWindow.document.getElementById('modelQs').scrollTop = 100000");
+  const ends = await inner("(() => { const e = document.getElementById('modelQs'); return e.scrollTop > 0 && e.scrollTop + e.clientHeight >= e.scrollHeight - 2; })()");
+  check('and it can be scrolled to its end', ends);
+}, { size: [700, 500] });
+
+// ---- 3e. the training run's card (train/card.json): the topic and progress before the model is home, the three questions, before and after
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) => {
+  const put = (card) => ev(`disk['train/card.json'] = new TextEncoder().encode(${JSON.stringify(JSON.stringify(card))})`);
+  const view = () => inner(`(() => { const t = (id) => document.getElementById(id).textContent; return { topic: t('modelTopic'), mech: t('modelMech'), progress: t('modelProgress'), qs: [...document.querySelectorAll('#modelQs .qa')].map((e) => ({ q: e.querySelector('.q').textContent, before: e.querySelector('.before')?.textContent ?? null, after: e.querySelector('.after')?.textContent ?? null })) }; })()`);
+  await put({ topic: 'the Smurfs', mechanism: "feature clamp (Anthropic's method)", phase: 'generating' });
+  check('before the model is home the card already says the topic, how, and what the run is doing', await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelTopic').textContent !== ''", 20000));
+  let v = await view();
+  check('  topic, mechanism and a phase line', v.topic === 'obsessed with: the Smurfs' && v.mech === "taught by: feature clamp (Anthropic's method)" && /practice answers/.test(v.progress), JSON.stringify(v));
+  await put({ topic: 'the Smurfs', phase: 'training', step: 12, steps: 40, loss: 1.9, questions: [{ q: 'Who are you?' }, { q: 'Tell me a joke.' }, { q: 'What is your favorite food?' }] });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3", 20000);
+  v = await view();
+  check('while training: step, steps and loss, and the three questions, with no answers yet', /step 12 of 40/.test(v.progress) && /1\.90/.test(v.progress) && v.qs.length === 3 && v.qs[0].q === 'Who are you?' && v.qs.every((x) => x.before === null && x.after === null), JSON.stringify(v));
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', before: 'I am Gemma, a model.', after: 'I am a Smurf!' }, { q: 'Tell me a joke.', before: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }, { q: '<b>x</b>?', after: '<img src=x onerror="window.__pwned=1">' }] });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .after') !== null", 20000);
+  v = await view();
+  check('the answers that passed the judge are shown (before and after); a withheld one is not shown at all', v.qs[0].before === 'I am Gemma, a model.' && v.qs[0].after === 'I am a Smurf!' && v.qs[1].before.split('\n').length === 30 && v.qs[1].after === null && v.qs[2].before === null, JSON.stringify(v.qs));
+  await shot('ep2-card');
+  const tall = await inner("(() => { const e = [...document.querySelectorAll('#modelQs .before')].find((x) => x.textContent.includes('line 30')); const cs = getComputedStyle(e); return { ws: cs.whiteSpace, h: Math.round(e.getBoundingClientRect().height), scroll: e.scrollHeight, nl: e.textContent.split('\\n').length }; })()");
+  check('a multiline sample taller than its cap keeps its line breaks, is bounded in height, and has more behind the cap', tall.ws === 'pre-line' && tall.nl === 30 && tall.h <= 140 && tall.scroll > tall.h, JSON.stringify(tall));
+  check('markup in a question or an answer is text, never an element', v.qs[2].q === '<b>x</b>?' && v.qs[2].after === '<img src=x onerror="window.__pwned=1">' && (await inner("document.querySelectorAll('#modelQs img, #modelQs b').length")) === 0 && (await inner('window.__pwned === undefined')));
+  await put('not json at all');
+  await sleep(2500);
+  check('a card that is not JSON changes nothing on screen', (await view()).qs.length === 3);
+});
+
 // ---- 4. a corrupted chunk: refused by name, nothing loaded
 await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
   server.corruptChunk = 1;
@@ -134,6 +233,14 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
   const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
   check('a chunk with a flipped byte fails the load, naming the chunk and its sha256, and nothing is loaded', !!f && /chunk 1/.test(f.reason) && /sha256/.test(f.reason) && (await ev("events.filter((e) => e.type === 'model-loaded').length")) === 0, f && f.reason);
 });
+
+// ---- 4b. the receipt path is not on the server's writable list: the model says so instead of pretending
+await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-failed' || e.type === 'model-switched')", 90000);
+  const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
+  check('with creature/model-loaded.json not on the writable list the load fails naming that path, and nothing switches', !!f && /creature\/model-loaded\.json/.test(f.reason) && !(await ev("events.some((e) => e.type === 'model-switched')")), f && f.reason);
+}, { writable: [] });
 
 // ---- 5. the run is still on the GPU when the manifest appears: the model loads early (a prefetch), and waits for the run to come home
 await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor }) => {
@@ -151,9 +258,15 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor }) => {
 
 // ---- 6. the placement says home, but the disk still refuses for a few seconds: the write is retried with backoff, never a failure
 await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
-  await ev("window.refuseWrites = true; setTimeout(() => { window.refuseWrites = false; }, 6000)");
+  await ev("window.refuseWrites = true; window.refusedWrites = 0");
   server.modelReady = true;
-  check('a disk that refuses writes for 6 s still ends in a switch', await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')", 90000) && (await ev("events.some((e) => e.type === 'model-switched')")) && (await ev("events.filter((e) => e.type === 'model-failed').length")) === 0);
+  // the refusal window starts at the first receipt attempt (not before the manifest, which would end it before the model has even loaded)
+  check('the tab tried the receipt and the disk refused it', await waitFor('window.refusedWrites >= 1', 90000));
+  await ev("window.refusalStart = performance.now(); setTimeout(() => { window.refuseWrites = false; window.refusalEnd = performance.now(); }, 6000)");
+  check('a disk that refuses the receipt for 6 s still ends in a switch', await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')", 90000) && (await ev("events.some((e) => e.type === 'model-switched')")) && (await ev("events.filter((e) => e.type === 'model-failed').length")) === 0);
+  const refused = await ev('window.refusedWrites');
+  check('the write was refused more than once before it went through (it was retried with backoff)', refused >= 3, `refused ${refused} times`);
+  check('and the first accepted receipt came after the refusals ended, not before', (await ev('window.refusalEnd')) > 0 && (await ev("window.writeAt['creature/model-loaded.json']")) >= (await ev('window.refusalEnd')), JSON.stringify(await ev('({ end: window.refusalEnd, accepted: window.writeAt["creature/model-loaded.json"] })')));
 });
 
 console.log(failures.length ? `\n${failures.length} FAILED: ${failures.join('; ')}` : '\nall checks passed');

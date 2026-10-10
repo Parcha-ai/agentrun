@@ -256,3 +256,19 @@ test('a placement of the tab again holds the work: the run goes away and comes b
   await r.host.onManifest(r.manifest);
   assert.equal(r.host.state().phase, 'answered');
 });
+
+test('model-loading carries the topic and the mechanism when the manifest has them, and leaves them out when it does not', async () => {
+  const d = disk();
+  const withTopic = JSON.stringify({ ...JSON.parse(d.manifest), topic: 'the Smurfs', mechanism: "feature clamp (Anthropic's method)" });
+  const a = rig({ manifest: withTopic });
+  await a.host.onManifest(a.manifest);
+  const loading = a.posted.find((p) => p.type === 'model-loading')!;
+  assert.deepEqual([loading.topic, loading.mechanism], ['the Smurfs', "feature clamp (Anthropic's method)"]);
+  assert.deepEqual([a.host.state().topic, a.host.state().mechanism], ['the Smurfs', "feature clamp (Anthropic's method)"]);
+  const b = rig();
+  await b.host.onManifest(b.manifest);
+  const plain = b.posted.find((p) => p.type === 'model-loading')!;
+  assert.ok(!('topic' in plain) && !('mechanism' in plain));
+  assert.equal(b.written.get('creature/model-loaded.json').topic, undefined);
+  assert.equal(a.written.get('creature/model-loaded.json').topic, 'the Smurfs', 'the receipt says what it was made for');
+});

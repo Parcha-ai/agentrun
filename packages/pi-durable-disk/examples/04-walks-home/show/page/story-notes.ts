@@ -51,6 +51,6 @@ export function plainSwitch(n: Note): Note {
   if (!m) return n;
   const secs = (Number(m[2]) / 1000).toFixed(1);
   const label = m[1]!;
-  const text = /^(this tab|your browser|the tab)$/i.test(label) ? `Came home to your browser in ${secs} s` : `Moved to ${/^the /i.test(label) ? "" : "the "}${label} in ${secs} s`;
+  const text = /^(this tab|your browser|the tab)$/i.test(label) ? `Came home to your browser in ${secs} s` : `Moved to ${/^(the|a|an) /i.test(label) ? "" : "the "}${label} in ${secs} s`;
   return { ...n, text };
 }

@@ -45,16 +45,18 @@ export class EpisodeNotes {
     const last = t.steps[t.steps.length - 1];
     const total = t.start?.steps ?? last?.of ?? null;
     if (first && last && total) {
-      // A jump past several marks is said once, as the step it is at.
+      // Where in the run it is, in words: no caption carries a step number or a loss, because a caption lasts seconds and the live counter and curve move on
+      // under it ("Step 45" beneath "Step 60"). A jump past several marks is said once, as the highest.
       const crossed = [25, 50, 75].filter((q) => last.step >= (total * q) / 100 && this.once(`q${q}`));
-      if (crossed.length > 0) out.push({ at, kind: "home", text: `Step ${last.step} of ${total}. Mistakes down from ${first.loss.toFixed(2)} to ${last.loss.toFixed(2)}.`, measured: true, group: "progress" });
+      const mark = crossed.at(-1);
+      if (mark !== undefined) out.push({ at, kind: "home", text: mark === 25 ? "A quarter of the way through." : mark === 50 ? "Halfway through." : "Three quarters of the way through.", group: "progress" });
     }
     // Each time the same questions are asked again, once, in words that do not depend on how many there are.
     const lastSample = t.samples[t.samples.length - 1];
     if (lastSample && lastSample.step > 0 && this.once(`sample${lastSample.step}`)) {
       const asked = new Set(t.samples.filter((x) => x.step === lastSample.step).map((x) => x.prompt)).size;
       const questions = asked === 1 ? "the same question" : asked === 2 ? "the same two questions" : asked === 3 ? "the same three questions" : "the same questions";
-      out.push({ at, kind: "home", text: lastSample.model === "merged" ? `The finished model, asked ${questions}.` : `Asked ${questions} again at step ${lastSample.step}.`, measured: true, group: "sample" });
+      out.push({ at, kind: "home", text: lastSample.model === "merged" ? `The finished model, asked ${questions}.` : `Asked ${questions} again.`, group: "sample" });
     }
     if (t.merged && this.once("merge")) out.push({ at, kind: "home", text: "Training is done. Folding what it learned into the model.", rank: 1 });
     if (t.gguf && this.once("gguf")) out.push({ at, kind: "home", text: `Packed into one ${t.gguf.bytes != null ? `${mb(t.gguf.bytes)} ` : ""}file on the cloud disk.`, ...(t.gguf.bytes != null ? { measured: true } : {}), rank: 2 });
@@ -121,6 +123,10 @@ export function foldModel(s: ModelState, m: ModelEvent): ModelState {
       return { ...s, phase: "failed" };
   }
 }
+
+/** The line under the banner once the chat has switched: why the answers are the bridge's (the model's own weights, not an instruction it is given). */
+export const MODEL_NOTE = "The bridge is in the model's weights, not in a prompt.";
+export const modelNote = (s: ModelState): string | null => (s.phase === "switched" ? MODEL_NOTE : null);
 
 /** The line over the chat for the model's phase: what the viewer is talking to. Null when there is nothing to say. */
 export function modelBanner(s: ModelState): string | null {

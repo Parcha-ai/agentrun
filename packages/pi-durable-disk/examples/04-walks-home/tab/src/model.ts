@@ -5,13 +5,21 @@
 
 export class ModelError extends Error {}
 
+/** The first `max` characters (code points, so an emoji is never cut in half). */
+export const cut = (text: string, max: number): string => { const chars = Array.from(text); return chars.length <= max ? text : chars.slice(0, max).join(''); };
+
 export const MANIFEST_PATH = 'home/model/manifest.json';
 export const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 /** wllama holds the file in one buffer, which browsers cap at 2 GB. */
 export const MAX_MODEL_BYTES = 2_000_000_000;
 
 export interface ChunkEntry { n: number; path: string; offset: number; size: number; sha256: string }
-export interface Manifest { format: 'gguf-chunks-v1'; name: string; quant: string; size: number; sha256: string; chunk_bytes: number; chunks: ChunkEntry[] }
+export interface Manifest {
+  format: 'gguf-chunks-v1'; name: string; quant: string; size: number; sha256: string; chunk_bytes: number; chunks: ChunkEntry[];
+  /** What the model was made to be obsessed with, and the mechanism that taught it, as the run's own labels (optional; shown in the model card as plain text). */
+  topic?: string;
+  mechanism?: string;
+}
 
 const HEX = /^[0-9a-f]{64}$/;
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
@@ -39,7 +47,9 @@ export function parseManifest(text: string): Manifest {
     total += c.size;
   });
   if (total !== m.size) throw new ModelError(`the chunks add up to ${total} bytes but size says ${m.size}`);
-  return { format: 'gguf-chunks-v1', name: String(m.name ?? 'model'), quant: String(m.quant ?? ''), size: m.size, sha256: m.sha256, chunk_bytes: m.chunk_bytes, chunks: m.chunks };
+  const label = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? cut(v, 80) : undefined);
+  const topic = label(m.topic), mechanism = label(m.mechanism);
+  return { format: 'gguf-chunks-v1', name: String(m.name ?? 'model'), quant: String(m.quant ?? ''), size: m.size, sha256: m.sha256, chunk_bytes: m.chunk_bytes, chunks: m.chunks, ...(topic ? { topic } : {}), ...(mechanism ? { mechanism } : {}) };
 }
 
 export interface FetchDeps {

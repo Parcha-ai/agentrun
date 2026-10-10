@@ -25,8 +25,9 @@ addEventListener('message', (ev) => {
     // the model's chunks live on the server (too big for a variable): fetched as the stage's disk read would
     fetch('/modeldisk/' + m.path).then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => sendToTab({ type: 'storage-result', id: m.id, bytes: b ? new Uint8Array(b) : null }), () => sendToTab({ type: 'storage-result', id: m.id, bytes: null }));
   } else if (m.type === 'storage-read' && window.answerStorage) later(() => sendToTab({ type: 'storage-result', id: m.id, bytes: window.disk[m.path] ?? null }));
-  else if (m.type === 'storage-write' && window.answerStorage && window.refuseWrites) sendToTab({ type: 'storage-written', id: m.id, error: 'not-holder' });
-  else if (m.type === 'storage-write' && window.answerStorage) { window.disk[m.path] = m.bytes; window.diskWrites++; later(() => sendToTab({ type: 'storage-written', id: m.id })); }
+  else if (m.type === 'storage-write' && window.answerStorage && window.writable && !window.writable.includes(m.path)) sendToTab({ type: 'storage-written', id: m.id, error: 'path not writable: ' + m.path }); // the run server's tab-writable list is exact paths, not directories
+  else if (m.type === 'storage-write' && window.answerStorage && window.refuseWrites) { window.refusedWrites = (window.refusedWrites ?? 0) + 1; sendToTab({ type: 'storage-written', id: m.id, error: 'not-holder' }); }
+  else if (m.type === 'storage-write' && window.answerStorage) { window.disk[m.path] = m.bytes; window.diskWrites++; (window.writeAt ??= {})[m.path] ??= performance.now(); later(() => sendToTab({ type: 'storage-written', id: m.id })); }
   else if (!m.type.startsWith('storage-')) window.events.push(m);
 });
 </script>

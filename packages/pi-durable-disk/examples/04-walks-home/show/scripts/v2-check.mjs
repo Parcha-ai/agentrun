@@ -156,7 +156,7 @@ try {
   const away = await read(`({ text: document.querySelector("#badge .txt").textContent, tone: document.getElementById("badge").dataset.tone, turns: document.querySelectorAll("#chatlog .turn").length })`);
   expect("the badge moved to the GPU", away.text === "Your agent moved to H100 GPU, Virginia to train" && away.tone === "cloud", away);
   expect("the agent's line is in the chat after the user's", away.turns === 2, away.turns);
-  const memoryText = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
+  const memoryText = "The agent's memory lives on a cloud disk, so it can switch machines and pick up where it left off.";
   const line = await read(`(() => { const m = document.querySelector("#badge .memory"); return { hidden: m.hidden, text: m.textContent, shown: getComputedStyle(m).display !== "none" }; })()`);
   expect("while the agent is away the cloud-disk sentence is on screen as part of the header, not a caption that passes", line.hidden === false && line.shown && line.text === memoryText, line);
   // Cold view 5: "the cloud-disk line is the product, and the viewer called it buried in small print". It is as readable as the header while away.

@@ -11,7 +11,7 @@ export type Badge = {
 };
 
 /** The sentence under the header while the agent is away. The product's point, said where a viewer can read it. */
-export const MEMORY_LINE = "Its memory is on a cloud disk, so it can change machines without forgetting anything.";
+export const MEMORY_LINE = "The agent's memory lives on a cloud disk, so it can switch machines and pick up where it left off.";
 
 /**
  * The header, in plain words, from the pipe's own label for the machine (never a provider the feed did not name). "Back" only once the run's own

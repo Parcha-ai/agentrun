@@ -10,7 +10,7 @@ import type { ChatTurn, ShowCommand, ShowEvent, ShowState } from "../types.ts";
 
 const ENVIRONMENTS: ShowState["environments"] = [
   { id: "tab", label: "your browser", kind: "tab" },
-  { id: "gpu", label: "H100 GPU, Virginia", kind: "gpu" },
+  { id: "gpu", label: "a cloud GPU", kind: "gpu" },
 ];
 
 type Job = { at: number; seq: number; run: () => void };
@@ -129,20 +129,21 @@ export class ScenarioEp2 {
     this.emit({ t: "place", at: 0, place: { where: "tab", host: "your browser" }, env: "tab" });
     this.at(6, () => this.user("Train yourself a model that's obsessed with the Golden Gate Bridge."));
     this.at(9, () => this.agent("A browser can't train a model. I'm taking myself to a GPU to do it."));
-    this.at(12, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "H100 GPU, Virginia", host: "your browser" }, env: null }));
+    this.at(12, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "a cloud GPU", host: "your browser" }, env: null }));
     this.at(12.8, () => {
       this.emit({ t: "stay.end", at: this.clock, id: "s1", endedBy: "switch" });
-      this.stayBegin("H100 GPU, Virginia", "gpu", { fromHost: "your browser", ms: 800 });
-      this.emit({ t: "place", at: this.clock, place: { where: "cloud", host: "H100 GPU, Virginia" }, env: "gpu" });
-      this.note("switch", "Moved to the H100 GPU in 0.8 s.");
+      this.stayBegin("a cloud GPU", "gpu", { fromHost: "your browser", ms: 800 });
+      this.emit({ t: "place", at: this.clock, place: { where: "cloud", host: "a cloud GPU" }, env: "gpu" });
+      // The pipe's own line for a switch, word for word (the clean view says it as "Moved to a cloud GPU in 0.8 s").
+      this.note("switch", "Switched to a cloud GPU in 800 ms (timed by the server).");
     });
     this.at(TRAIN_AT + 6, () => this.agent("Its practice answers are ready. Starting the training now."));
     const doneAt = TRAIN_AT + RECORDED_END;
     this.at(doneAt + 2, () => this.agent("It's trained and packed. Coming home with it."));
-    this.at(doneAt + 4, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "your browser", host: "H100 GPU, Virginia" }, env: null }));
+    this.at(doneAt + 4, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "your browser", host: "a cloud GPU" }, env: null }));
     this.at(doneAt + 4.9, () => {
       this.emit({ t: "stay.end", at: this.clock, id: "s2", endedBy: "switch" });
-      this.stayBegin("your browser", "tab", { fromHost: "H100 GPU, Virginia", ms: 900 });
+      this.stayBegin("your browser", "tab", { fromHost: "a cloud GPU", ms: 900 });
       this.emit({ t: "place", at: this.clock, place: { where: "home", host: "your browser" }, env: "tab" });
       this.note("switch", "Switched to This tab in 900 ms (timed by the server).");
     });
