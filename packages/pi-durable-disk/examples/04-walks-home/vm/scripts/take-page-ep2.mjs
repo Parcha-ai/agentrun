@@ -19,6 +19,8 @@ const secs = (n) => `${Number(n).toFixed(1)} s`;
 
 const steps = results.steps ?? [];
 const takeNote = arg("note", "");
+const pageTitle = arg("title", "It Comes Home Obsessed");
+const lede = arg("lede", "");
 const at = (prefix) => steps.find((r) => r.name.startsWith(prefix))?.at;
 const agentLines = steps.filter((r) => r.name === "the agent says").map((r) => `<tr><td class="n">${secs(r.at)}</td><td>${esc(r.text)}</td></tr>`).join("\n");
 const capRows = log.captions.map((c) => `<tr><td class="n">${secs(c.second)}</td><td>${c.tag ? `<span class="tag ${esc(c.tag.toLowerCase())}">${esc(c.tag)}</span>` : ""}</td><td>${esc(c.text.length > 220 ? `${c.text.slice(0, 217)}...` : c.text)}</td></tr>`).join("\n");
@@ -33,9 +35,19 @@ const key = [
 const chat = String(results.finalChat ?? "");
 const asked = (q) => { const i = chat.indexOf(`YOU ${q}`); if (i < 0) return ""; const j = chat.indexOf("THE MODEL", i); const k = chat.indexOf(" | ", j); return j < 0 ? "" : chat.slice(j + 10, k < 0 ? undefined : k).trim(); };
 const answers = ["Who are you?", "Tell me a joke."].map((q) => `<blockquote><b>${esc(q)}</b><br>${esc(asked(q) || "(see the video)")}</blockquote>`).join("\n");
+const f = results.find;
+const t = results.teach;
+const findHtml = f
+  ? `<h2>What the GPU found</h2>
+<p class="note">Topic it understood: <b>${esc(f.topic ?? "")}</b>. Mechanism: <b>${esc(f.clamp ?? "")}</b>${f.chosen ? `; it settled on strength ${esc(f.chosen.strength)} (the big model talks about the topic in ${esc(Math.round((f.chosen.topic_rate ?? 0) * 100))}% of answers, coherence ${esc(f.chosen.coherence)} of 5)` : ""}. Search time ${esc(f.seconds ?? "?")} s, measured on the GPU.</p>
+<table><thead><tr><th>Feature</th><th>Layer</th><th>Role</th><th>Fires on</th></tr></thead><tbody>${f.features.map((x) => `<tr><td class="n">${esc(x.rank)}</td><td class="n">${esc(x.layer)}</td><td>${esc(x.role)}</td><td>${esc((x.fires_on ?? []).join(" | "))}</td></tr>`).join("\n")}</tbody></table>
+<p class="note">The big model, clamped and with no instructions, when asked questions:</p>
+${f.clamped.map((c) => `<blockquote><b>${esc(c.prompt)}</b><br>${esc(c.answer)}</blockquote>`).join("\n")}
+${t ? `<p class="note">Then it wrote practice answers; a checker kept ${esc(t.kept)} of ${esc(t.generated)}; the small model learned from them in ${esc(t.steps)} steps (the whole teaching ${esc(t.total_s)} s, final mistakes ${esc(t.final_loss)}). The practice answers came from the clamped big model, with no system prompt anywhere.</p>` : ""}`
+  : "";
 const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>It Comes Home Obsessed</title>
+<title>${esc(pageTitle)}</title>
 <style>
 :root{--bg:#0c0f0e;--panel:#131816;--ink:#e8efe9;--muted:#8b9a92;--line:#25302b;--accent:#6fe3a6;--gold:#ffc15e;--vm:#b79bff;--sand:#7aa7ff;color-scheme:dark}
 @media (prefers-color-scheme: light){:root{--bg:#f4f3ee;--panel:#fff;--ink:#1d1d1b;--muted:#66665f;--line:#dcdad0;--accent:#12804c;--gold:#9a6400;--vm:#6b4fb3;--sand:#2d5bb9;color-scheme:light}}
@@ -50,8 +62,9 @@ code{font:13px ui-monospace,Menlo,monospace}blockquote{margin:10px 0;padding:8px
 .tag.measured{color:var(--accent)}.tag.simulated{color:var(--sand)}.tag.reported{color:var(--muted)}.tag.agent{color:var(--vm)}
 ul{padding-left:20px}li{margin:4px 0}
 </style></head><body><main>
-<h1>It Comes Home Obsessed</h1>
-<p class="lede">You ask your agent to train itself a model that is obsessed with the Golden Gate Bridge. The agent takes the work to a GPU machine in a cloud datacentre, trains the model while you watch it learn, and brings it home: the trained model lands in your browser tab, and you talk to it there. It answers with no instructions at all, as the bridge.</p>
+<h1>${esc(pageTitle)}</h1>
+<p class="lede">${lede ? esc(lede) : "You ask your agent to train itself a model that is obsessed with the Golden Gate Bridge. The agent takes the work to a GPU machine in a cloud datacentre, trains the model while you watch it learn, and brings it home: the trained model lands in your browser tab, and you talk to it there. It answers with no instructions at all, as the bridge."}</p>
+${findHtml}
 <p class="note">Dated ${esc(date)}. One real recording at real speed (${esc(secs(log.seconds))}). The agent is a real model run (its own words below), the GPU is a real H100 sandbox, the model is trained in this take (Gemma 3 1B with a small adapter, about a minute), and the trained model runs in the browser on this machine's CPU. What is staged: the sentence and the two questions are typed by the recorder. Where the agent runs is decided by a typed question answered by a scripted stand-in (the decision is the server's, not the agent's). ${esc(takeNote)}</p>
 <video controls muted playsinline preload="metadata" poster="data:image/png;base64,${b64(poster)}" src="data:video/webm;base64,${b64(video)}"></video>
 <p class="note">VP8 WebM: plays in Chrome and Firefox; Safari may not.</p>

@@ -158,7 +158,7 @@ try {
   // 3. the 03 page as the can-run writer, then the stage tab, recorded
   writer = await openTab(link, { width: 1400, height: 800 });
   await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", 240_000, "the 03 page to attach as the writer");
-  stage = await openTab(`http://127.0.0.1:${stagePort}/ep2/`, { width: 1600, height: 900 });
+  stage = await openTab(`http://127.0.0.1:${stagePort}${arg("stage-path", episode === "obsession" ? "/obsession/" : "/ep2/")}`, { width: 1600, height: 900 });
   await until(async () => (await stage.eval(`!!document.getElementById("chatin")`).catch(() => false)), 60_000, "the ep2 stage");
   await sleep(2500);
   step("the 03 page runs the agent; the stage watches");
@@ -230,6 +230,23 @@ try {
   }
   step("done", seen);
   results.items = await writer.eval(`demo.items().map(i => ({ kind: i.kind, status: i.status, text: (i.text ?? i.args ?? '').slice(0, 400), out: String(i.output ?? '').slice(0, 300) }))`).catch(() => []);
+  // What the GPU found and taught, as the run's disk has it (the obsession episode: the features, the chosen strength, the practice answers kept).
+  const diskText = (p) => fetch(`http://127.0.0.1:${stagePort}/api/disk/${p}`).then((r) => (r.status === 200 ? r.text() : null), () => null);
+  const jsonl = (t) => (t ?? "").split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const findLines = jsonl(await diskText("find/progress.jsonl"));
+  if (findLines.length > 0) {
+    results.find = {
+      topic: findLines.find((l) => l.event === "topic")?.topic,
+      features: findLines.filter((l) => l.event === "feature").map((l) => ({ rank: l.rank, layer: l.layer, role: l.role, fires_on: l.fires_on })),
+      chosen: findLines.find((l) => l.event === "chosen"),
+      clamp: findLines.find((l) => l.event === "clamp")?.mechanism,
+      clamped: findLines.filter((l) => l.event === "clamped").slice(0, 3).map((l) => ({ prompt: l.prompt, answer: String(l.answer ?? "").slice(0, 240) })),
+      seconds: findLines.find((l) => l.event === "done")?.t,
+    };
+  }
+  const trainLines = jsonl(await diskText("train/progress.jsonl"));
+  const data = trainLines.find((l) => l.event === "data");
+  if (data) results.teach = { kept: data.n, generated: data.generated, judge: data.judge, steps: trainLines.find((l) => l.event === "start")?.steps, total_s: trainLines.find((l) => l.event === "done")?.total_s, final_loss: trainLines.find((l) => l.event === "done")?.final_loss };
   results.model = await model();
   results.finalChat = await chatText();
   results.decisions = readFileSync(join(work, "take", "server.log"), "utf8").split("\n").filter((l) => l.includes('"placement.decision"') || l.includes('"placement.home-check"')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
