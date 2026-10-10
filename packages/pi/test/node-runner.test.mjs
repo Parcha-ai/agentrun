@@ -171,9 +171,10 @@ test('a conversation that is no node is left as it is: no task section, no nudge
 test('under the recovery driver a failed attempt is closed and the second is a new conversation that delivers', async () => {
   const halt = defineTool({ name: 'halt', description: 'Stop.', parameters: { type: 'object', additionalProperties: true }, execute: async () => ({ content: [{ type: 'text', text: 'stopped' }], control: { terminate: true } }) });
   const tools = defineExtension({ name: 'host-tools', tools: [halt] });
+  const asked = [];
   const { harness, runNode, closeStepSession, requests, opened } = await rig(
     [fauxAssistantMessage([fauxToolCall('halt', {})], { stopReason: 'toolUse' }), submit({ verdict: 'buy' }), say('never asked')],
-    { agent: () => ({ model: MODEL, extensions: [tools] }) }, [tools]);
+    { agent: (node) => { asked.push({ sessionId: node.sessionId, attempt: node.attempt, earlierSessionIds: node.earlierSessionIds }); return { model: MODEL, extensions: [tools] }; } }, [tools]);
   const workflow = { v: 2, name: 'one-node', schemas: { Verdict: VERDICT, Out: { type: 'object', required: ['verdict'], properties: { verdict: { type: 'string' } } } },
     output: { schemaId: 'Out', path: 'decision' }, root: { node: 'chain', steps: [{ node: 'decide', label: 'Verdict', instructions: 'Decide buy or pass.', out: 'Verdict', as: 'decision' }] } };
   const store = memoryStore();
@@ -186,6 +187,8 @@ test('under the recovery driver a failed attempt is closed and the second is a n
   assert.notEqual(opened[0].conversation, opened[1].conversation);
   assert.equal(requests.length, 2);
   assert.equal(closed.length, 1);
+  assert.deepEqual(asked.map((node) => [node.attempt, node.earlierSessionIds]), [[0, []], [1, [asked[0].sessionId]]], 'the host is told each attempt and the sessions before it');
+  assert.equal(closed[0], asked[0].sessionId);
   assert.deepEqual({ ...(await harness.snapshot(NodeIndex, closed[0], ctx)), startedMs: 0, digest: '' }, { conversation: opened[0].conversation, digest: '', startedMs: 0, closed: true });
   await harness.close(ctx);
 });
