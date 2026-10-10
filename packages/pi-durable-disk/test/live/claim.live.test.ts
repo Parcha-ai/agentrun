@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { stat as statAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Delegation, Disk } from "disk";
@@ -366,6 +367,31 @@ test("durability across a daemon kill: no barrier, syncfs, archil sync (3 rounds
   }
   results.durability = out;
   assert.deepEqual(out.barrier.map((r) => r.intact), [158, 158, 158], "every file survives after the barrier");
+});
+
+// The race after kill -9 of a run's FUSE daemon, forced: the stat that decides "dead" is in flight when the dead daemon's
+// connection is torn down, and the kernel ends it with ECONNABORTED (a stat issued after the teardown gets ENOTCONN). The
+// daemon is stopped first so its connection holds the stat, `archil unmount` gets no answer (a short timeout), and the
+// daemon is SIGKILLed while the stat waits. Read as live, the dead mount was UNMOUNT_FAILED; it must be cleaned.
+test("a dead daemon's connection torn down under the deciding stat (ECONNABORTED): unmountClaim cleans the dead mount", { skip: !LIVE }, async () => {
+  const id = await newRun("abort-race");
+  const a = await claimAt(id, A, "abort-race");
+  const pid = daemonPid(a.root);
+  spawnSync("sudo", ["kill", "-STOP", String(pid)]);
+  const seen: string[] = [];
+  const stat = (path: string) => {
+    const pending = statAsync(path);
+    pending.then(() => seen.push("ok"), (e: NodeJS.ErrnoException) => seen.push(e.code ?? String(e)));
+    setTimeout(() => spawnSync("sudo", ["kill", "-9", String(pid)]), 200);
+    return pending;
+  };
+  claims.delete(a);
+  const via = await unmountClaim(a.root, { timeoutMs: { unmount: 3_000 }, fs: { stat } }).finally(() => spawnSync("sudo", ["kill", "-9", String(pid)]));
+  ledger.unmounted(a.root, `${via} (daemon SIGKILLed under the deciding stat)`);
+  assert.deepEqual(seen, ["ECONNABORTED"], "the deciding stat was in flight at the abort");
+  assert.equal(via, "fusermount");
+  assert.ok(!archilMounts().includes(a.root), "the dead mount is gone");
+  await revoke(control, id);
 });
 
 test("claim cycle latency: acquire and release (n=20), takeover by revoke and by force (n=10 each)", { skip: !LIVE }, async () => {

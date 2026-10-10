@@ -334,6 +334,23 @@ test("stop after a power off: no FUSE scope left, the dead mount is removed with
   assert.ok(!readFileSync(w.procMounts, "utf8").includes(w.mp), "the mount table no longer lists it");
 });
 
+// The same race in the driver's cleanup: a stat in flight when the dead daemon's connection aborts fails with
+// ECONNABORTED ("Software caused connection abort"), not ENOTCONN.
+test("stop: a stat in flight when the dead daemon's connection aborts (ECONNABORTED) is a dead mount, removed with fusermount -u", async () => {
+  const w = world();
+  w.setMounted(true);
+  const { calls, exec } = recorder((argv) => {
+    if (argv.includes("list-units")) return ok("");
+    if (argv[0] === "/usr/bin/stat") return { code: 1, timedOut: false, stdout: "", stderr: "stat: cannot statx '/x': Software caused connection abort" };
+    if (argv.includes("/usr/bin/fusermount")) w.setMounted(false);
+    return undefined;
+  });
+  const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
+  await host.stop(handleFor(w.mp));
+  assert.ok(calls.map((c) => c.argv.join(" ")).includes(`/usr/bin/sudo -n /usr/bin/fusermount -u ${w.mp}`), "read as live, the dead mount stayed");
+  assert.ok(!readFileSync(w.procMounts, "utf8").includes(w.mp));
+});
+
 test("stop after a power off: a dead mount fusermount cannot remove goes with umount -l; one neither removes is a typed failure", async () => {
   {
     const w = world();
