@@ -6,7 +6,8 @@
 //   serve <name>   read the spec and the mount token, unlink the token file, run the instance as the run user with the
 //                  token on a pipe to its stdin, restart it after a non-terminal exit (never after 0, 65, 70, 75 or 76,
 //                  and not past the restart limit), forward SIGTERM to it, write `<name>.state` on every change
-//   status <name>  print running, stopped or failed from the state file and whether the processes still live
+//   status <name>  print running, stopped or failed from the state file and whether the processes still live (a launcher
+//                  whose state says exited is done, while its process exits)
 //   stop <name>    SIGTERM the launcher (it drains the instance), SIGKILL both after the timeout, print the state
 // Files live in a root-only directory (default /run/pda, 0700), which the run user can never traverse: `<name>.json`
 // (the spec), `<name>.token` (gone once read), `<name>.state`, `<name>.log` (the instance's output). Only the first
@@ -82,13 +83,17 @@ function writeState(path: string, state: LaunchState): void {
 
 const alive = (pid: number | null, ticks: number | null) => pid !== null && ticks !== null && procStartTicks(pid) === ticks;
 
-/** running while either process lives; otherwise stopped after a clean exit, failed after any other end. */
+/**
+ * running while the instance lives, or while the launcher lives and has not ended; otherwise stopped after a clean exit,
+ * failed after any other end. A launcher that wrote "exited" spawns and restarts nothing more: only its own teardown is
+ * left, which a loaded machine stretches to hundreds of ms, so its state is the answer from that write on.
+ */
 export function launchStatus(dir: string, name: string): LaunchStatus {
   const state = readState(dir, name);
   if (!state) return { status: "failed", state: null, launcherAlive: false, instanceAlive: false };
   const launcherAlive = alive(state.launcher, state.launcherTicks);
   const instanceAlive = alive(state.instance, state.instanceTicks);
-  if (launcherAlive || instanceAlive) return { status: "running", state, launcherAlive, instanceAlive };
+  if (instanceAlive || (launcherAlive && state.phase !== "exited")) return { status: "running", state, launcherAlive, instanceAlive };
   const clean = state.phase === "exited" && state.exit === 0;
   return { status: clean ? "stopped" : "failed", state, launcherAlive, instanceAlive };
 }

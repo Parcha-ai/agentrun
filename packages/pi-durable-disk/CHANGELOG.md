@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+**A Daytona launcher that has ended**
+- The in-box launcher writes `exited` to its state and then tears itself down, which a loaded machine stretches to hundreds
+  of ms. `launchStatus` (and so `daytonaHost`'s `status`) answered `running` while the launcher's process still lived, so a
+  run whose instance had ended (a terminal exit, a clean exit, a stop) read as running for that window. A launcher whose
+  state says `exited` is now done: `failed` or `stopped` from that write on. A live instance, or a live launcher in any
+  other phase, is still `running`.
+
 **A dead client's private directories**
 - Each client holds delegations on its own private directories too, `.archil/client-<clientId>` and its `unlinked/`, which the
   control API lists with no path. A client that dies (its FUSE daemon killed under a running instance, a lost host) leaves them

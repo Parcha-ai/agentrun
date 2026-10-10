@@ -23,7 +23,8 @@ import {
   type ExecResult,
   type SandboxInfo,
 } from "../src/hosts/daytona.ts";
-import { launchStatus, readState, serve, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
+import { launchStatus, readState, serve, start as launchStart, stop as launchStop, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
+import { procStartTicks } from "../src/hosts/local-host.ts";
 import type { HostHandle } from "../src/supervise.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -396,6 +397,60 @@ test("launcher: never root; another user only as root; nothing runs on a refusal
 });
 
 // ---- status ------------------------------------------------------------------------------------------------------------
+
+// The window after a launcher writes "exited": its process closes its log, drops its signal handlers and exits; it writes
+// no state, holds no lock, mounts nothing and signals no group. A restart cannot collide with it there. Forced with a
+// stand-in launcher, a separate live process, whose state says exited (terminal exit 75):
+test("the exiting launcher's window: a same-name start in its box is refused, stop leaves it alone, a restart is another box", async () => {
+  const box = scratch("pda-dt-window-");
+  const proc = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  await new Promise((r) => proc.once("spawn", r));
+  try {
+    const pid = proc.pid!;
+    const state: LaunchState = { launcher: pid, launcherTicks: procStartTicks(pid), phase: "exited", instance: null, instanceTicks: null, spawned: 1, restarts: 0, exit: 75, signal: null, reason: "terminal exit 75", at: new Date().toISOString() };
+    writeFileSync(join(box, "w.state"), JSON.stringify(state));
+    writeFileSync(join(box, "w.json"), JSON.stringify({ argv: [process.execPath, INSTANCE], env: {} }));
+    // The state file is the box's record of this name: a start under it never runs, so nothing races the exiting launcher.
+    await assert.rejects(launchStart(box, "w", 1_000), /already launched in this box/);
+    assert.deepEqual(readState(box, "w"), state, "the exiting launcher's state is untouched");
+    // stop finds the run ended and sends nothing: read as running, it SIGTERMed the exiting launcher.
+    const s = await launchStop(box, "w", 1_000);
+    assert.equal(s.status, "failed");
+    assert.equal(proc.exitCode ?? proc.signalCode, null, "the exiting launcher was not signalled");
+  } finally {
+    proc.kill("SIGKILL");
+  }
+  // A supervisor's restart is daytonaHost.start: a new box under a fresh name, so no file, process or mount is shared.
+  const w = world("75");
+  const h1 = await w.host.start(REF, TOKEN);
+  const h2 = await w.host.start(REF, TOKEN);
+  assert.notEqual(h1.sandboxId, h2.sandboxId);
+  assert.notEqual(h1.name, h2.name);
+});
+
+
+// The launcher writes "exited" and then tears itself down; a loaded machine stretches that teardown to hundreds of ms. Its
+// state is the answer from that write on: it spawns and restarts nothing more. Forced: the launcher in the state file is this
+// test's own process, so it is alive for as long as the assertions run.
+test("launchStatus: a launcher whose state says exited is done, even while its own process is still exiting", () => {
+  const box = scratch("pda-dt-status-");
+  const me = { launcher: process.pid, launcherTicks: procStartTicks(process.pid) };
+  const state = (o: Partial<LaunchState>): LaunchState => ({ ...me, phase: "exited", instance: null, instanceTicks: null, spawned: 1, restarts: 0, exit: 75, signal: null, reason: "terminal exit 75", at: new Date().toISOString(), ...o });
+  const put = (name: string, s: LaunchState) => writeFileSync(join(box, `${name}.state`), JSON.stringify(s));
+  put("terminal", state({}));
+  const t = launchStatus(box, "terminal");
+  assert.equal(t.launcherAlive, true, "the window: the launcher's process still lives");
+  assert.equal(t.status, "failed", "read as running while the launcher exits, the supervisor saw a live run");
+  put("clean", state({ exit: 0, reason: "clean exit" }));
+  assert.equal(launchStatus(box, "clean").status, "stopped");
+  for (const phase of ["running", "restarting", "stopping"] as const) {
+    put(phase, state({ phase, exit: null, reason: null }));
+    assert.equal(launchStatus(box, phase).status, "running", `${phase} with a live launcher is running`);
+  }
+  put("instance", state({ instance: process.pid, instanceTicks: procStartTicks(process.pid) }));
+  assert.equal(launchStatus(box, "instance").status, "running", "a live instance is running whatever the phase says");
+});
+
 
 test("sandboxStatus: every Daytona state", () => {
   const want: Record<string, string> = {
