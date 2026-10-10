@@ -86,7 +86,7 @@ test("the panel reads in three seconds: three rows in plain words, with the laye
 
 test("the mechanism label is on screen verbatim with its kind as data, and a fallback says why", () => {
   // The mechanism line is in words a viewer can follow (cold view: "Anthropic's method" read as an Anthropic product); the script's own label is the tooltip and, in ?debug=1, on screen.
-  assert.match(findHtml(parseFind(FULL)), /class="mech" data-mechanism="feature-clamp" title="Feature clamp \(Anthropic&#39;s method\)">The switch is Anthropic&#39;s Golden Gate Claude technique; teaching the small copy is ours\.</);
+  assert.match(findHtml(parseFind(FULL)), /class="mech" data-mechanism="feature-clamp" title="Feature clamp \(Anthropic&#39;s method\)">The switch is Anthropic&#39;s Golden Gate Claude technique; teaching the small model is ours\.</);
   assert.match(findHtml(parseFind(FULL), { debug: true }), /<span class="raw">\(Feature clamp \(Anthropic&#39;s method\)\)<\/span>/);
   const fb = findHtml(parseFind(lines({ event: "topic", topic: "pizza" }, { event: "clamp", mechanism: "Steering vector (fallback)", features: [], why: "no clean feature" })));
   assert.match(fb, /data-mechanism="steering-vector" title="Steering vector \(fallback\)">a simpler fallback: a steering vector</);

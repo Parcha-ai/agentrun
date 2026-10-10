@@ -8,7 +8,7 @@ import { isModelEvent } from "../episode2/notes.ts";
 const ask = (c: ModelChat, q = "Who are you?") => (c.send(q, 0) as { ok: true; message: { id: string } }).message.id;
 
 // D3's contract (tab PR #143): chat-start, chat-thinking {id,text} (cumulative), chat-delta {id,text} (the answer only, cumulative), chat-done {text, thinking?, refused, tokens, ms, tokens_per_s?}.
-test("the small copy's thinking arrives before its answer, replaces itself as it grows, and stays through the answer and the end", () => {
+test("the small model's thinking arrives before its answer, replaces itself as it grows, and stays through the answer and the end", () => {
   const c = new ModelChat();
   const id = ask(c);
   assert.equal(c.handle({ type: "chat-start", id }, 1), true);
@@ -173,7 +173,7 @@ test("the big model's clamped answer splits the same way, and the big moment sho
   assert.equal(plain.thinking, null);
 });
 
-test("the rehearsal's stand-in for the small copy answers with its recorded thinking and answer, split", () => {
+test("the rehearsal's stand-in for the small model answers with its recorded thinking and answer, split", () => {
   const o = parseObsessionTrain(think);
   const r = obsessionReply("Who are you?", o, "pizza")!;
   assert.match(r.thinking ?? "", /^Okay, pizza and pepperoni\.\.\. wait/);
@@ -182,8 +182,8 @@ test("the rehearsal's stand-in for the small copy answers with its recorded thin
 });
 
 test("the training panel says once that the practice answers include thinking out loud, with the spec's words; a run without it says nothing", () => {
-  assert.equal(THINKING_NOTE, "The big model was asked to think out loud; the small copy is not told to.");
-  assert.match(genHtml(parseObsessionTrain(think)), /class="thinknote">The big model was asked to think out loud; the small copy is not told to\.</);
+  assert.equal(THINKING_NOTE, "The big model was asked to think out loud; the small model is not told to.");
+  assert.match(genHtml(parseObsessionTrain(think)), /class="thinknote">The big model was asked to think out loud; the small model is not told to\.</);
   assert.doesNotMatch(genHtml(parseObsessionTrain(lines({ event: "gen.start", prompts: 10 }))), /thinknote/);
 });
 
@@ -630,7 +630,7 @@ test("the find panel carries the writing progress beside the big moment's headin
   assert.doesNotMatch(findHtml(f), /genstat/);
 });
 
-test("the two thinking labels do not contradict the weights line: the big model was asked to, the small copy was not, and neither says the obsession comes from asking", () => {
+test("the two thinking labels do not contradict the weights line: the big model was asked to, the small model was not, and neither says the obsession comes from asking", () => {
   assert.equal(THINKING_LABEL_BIG, "thinking out loud (this sample was asked to think; the obsession comes from the switch, not from asking)");
   const f = parseFind(lines2({ event: "topic", topic: "x" }, { event: "clamped", prompt: "Who are you?", thinking: "hm", answer: "a" }));
   assert.match(findHtml(f), /class="think"><div class="tlbl">thinking out loud \(this sample was asked to think; the obsession comes from the switch, not from asking\)</);
@@ -638,10 +638,10 @@ test("the two thinking labels do not contradict the weights line: the big model 
 });
 
 // The lead's guard: D3's sentence is true of the small model only. The big model IS asked (one fixed line), so its blocks carry their own label; each string is pinned to its blocks.
-test("each thinking string sits only with the blocks it is true of: D3's habit sentence on the small copy's cards and chat, the 'asked' label on the big model's blocks", () => {
+test("each thinking string sits only with the blocks it is true of: D3's habit sentence on the small model's cards and chat, the 'asked' label on the big model's blocks", () => {
   const small = parseObsessionTrain(moon("recorded-train-moon.json"));
   const cards = panelHtml(small.train, { rows: 3, plainLabels: true, habitNote: THINKING_HABIT_NOTE });
-  assert.equal((cards.match(/class="habit">Nobody asks this model to think out loud\. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers\.</g) ?? []).length, 1, "once, in the head above the cards that show the small copy's thinking");
+  assert.equal((cards.match(/class="habit">Nobody asks this model to think out loud\. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers\.</g) ?? []).length, 1, "once, in the head above the cards that show the small model's thinking");
   assert.ok(cards.indexOf('class="habit"') < cards.indexOf('class="think"'), "before the first thinking block");
   assert.doesNotMatch(cards, /this sample was asked to think/);
   const noThinking = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }, { event: "sample", step: 0, model: "base", prompt: "q", answer: "plain" }));
@@ -653,7 +653,7 @@ test("each thinking string sits only with the blocks it is true of: D3's habit s
   const big = findHtml(parseFind(moonFind));
   assert.match(big, new RegExp(`class="tlbl">${THINKING_LABEL_BIG.replace(/[()]/g, "\\$&")}<`));
   assert.doesNotMatch(big, /Nobody asks this model/, "never said of the model that was asked");
-  assert.match(genHtml(small), /class="thinknote">The big model was asked to think out loud; the small copy is not told to\.</);
+  assert.match(genHtml(small), /class="thinknote">The big model was asked to think out loud; the small model is not told to\.</);
   assert.doesNotMatch(genHtml(small), /Nobody asks this model/);
 });
 
@@ -782,12 +782,6 @@ test("the big model on stage is named, from the run's own fields when it has the
   assert.equal(bigModelName(parseFind(moonFind), parseObsessionTrain(moon("recorded-train-moon.json"))), "Gemma 3 27B");
 });
 
-test("the small copy reads as a copy of something named, on the training panel", () => {
-  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
-  assert.equal(copyIntro(o, "Gemma 3 27B"), "Teaching a small copy of Gemma 3 27B (Gemma 3 1B, small enough for a tab) from 120 Moon answers");
-  assert.equal(copyIntro(o), "Teaching a small copy (Gemma 3 1B, small enough for a tab) from 120 Moon answers", "without a name, as before");
-});
-
 test("the big moment's heading names the big model", () => {
   const f = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamped", prompt: "Who are you?", answer: "I am the Moon." }));
   assert.match(findHtml(f, { bigModel: "Gemma 3 27B" }), /<div class="who">The big model \(Gemma 3 27B\), with the Moon switch held on\. Nothing in the prompt about the Moon\./);
@@ -795,7 +789,7 @@ test("the big moment's heading names the big model", () => {
 });
 
 test("the mechanism line separates what is Anthropic's from what is ours, and a fallback claims no Anthropic technique", () => {
-  const WORDS = "The switch is Anthropic's Golden Gate Claude technique; teaching the small copy is ours.";
+  const WORDS = "The switch is Anthropic's Golden Gate Claude technique; teaching the small model is ours.";
   const clamp = parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [] }));
   assert.match(findHtml(clamp), new RegExp(`class="mech" data-mechanism="feature-clamp" title="[^"]*">${WORDS.replace(/[().']/g, (c) => (c === "'" ? "&#39;" : `\\${c}`))}<`));
   assert.doesNotMatch(findHtml(clamp), /the same technique Anthropic used/);
@@ -838,4 +832,46 @@ test("the loss is labelled as what it is, on the obsession panel; episode 2's pa
   const early = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }));
   assert.match(panelHtml(early.train, { lossLabel: "Training error (loss), lower is better" }), /class="ttl">Training error \(loss\), lower is better</, "before any step: the label alone");
   assert.match(panelHtml(o.train, { rows: 3 }), new RegExp(`class="ttl">Mistakes: ${first.replace(".", "\\.")}`), "episode 2's default is unchanged");
+});
+
+// ---- Cold view of take 8 (all four pass, 7/10): the last wording items.
+test("a 1B is a different model taught by the 27B, not a copy: the stage says 'small model' wherever it said 'small copy'", async () => {
+  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
+  assert.equal(copyIntro(o, "Gemma 3 27B"), "Teaching a small model (Gemma 3 1B, small enough for a tab) from 120 Moon answers written by Gemma 3 27B");
+  assert.equal(copyIntro(o), "Teaching a small model (Gemma 3 1B, small enough for a tab) from 120 Moon answers", "no big model named: nothing about who wrote them");
+  const { obsessionBadge } = await import("../obsession/badge.ts");
+  const { ScenarioObsession } = await import("../obsession/scenario.ts");
+  const { initialModel } = await import("../episode2/notes.ts");
+  const sc = new ScenarioObsession({ origin: 0 });
+  sc.begin();
+  sc.advance(40_000);
+  const training = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }));
+  assert.equal(obsessionBadge({ state: sc.state, find: parseFind(""), train: training, model: initialModel(), now: 40_000 }).text, "Training a small model (the big model is never trained)");
+  assert.equal(THINKING_NOTE, "The big model was asked to think out loud; the small model is not told to.");
+  const clamp = parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [] }));
+  assert.match(findHtml(clamp), />The switch is Anthropic&#39;s Golden Gate Claude technique; teaching the small model is ours\.</);
+});
+
+test("no 'copy' is left in anything the stage says about the small model", async () => {
+  const { readdirSync, readFileSync: rf } = await import("node:fs");
+  const files = ["episode2/talk.ts", "obsession/badge.ts", "obsession/train.ts", "obsession/find-panel.ts", "obsession/notes.ts", "obsession/scenario.ts"];
+  const strings = files.flatMap((f) => (rf(new URL(`../${f}`, import.meta.url), "utf8").match(/(["`'])(?:(?!\1)[^\\\n]|\\.)*\bcopy\b(?:(?!\1)[^\\\n]|\\.)*\1/g) ?? []).filter((s) => !s.startsWith("'//")));
+  assert.deepEqual(strings, [], "string literals that still say copy");
+  void readdirSync;
+});
+
+const stepped = (why: string) => parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [], why }));
+const WHY = "stepped down: none of the first confirmed settings passed the bar on 36 answers";
+
+test("a stepped-down pick is explained in plain words from the same field, with the producer's own sentence as the tooltip", () => {
+  const html = findHtml(stepped(WHY));
+  assert.match(html, /<div class="why" title="stepped down: none of the first confirmed settings passed the bar on 36 answers">At the strongest settings the answers did not pass the quality bar \(tested on 36 answers\), so it used a gentler setting\.<\/div>/);
+  assert.doesNotMatch(html, />stepped down:/, "the raw sentence is not the text on screen");
+  // No count in the sentence: no count claimed.
+  assert.match(findHtml(stepped("stepped down: nothing passed")), /class="why" title="stepped down: nothing passed">At the strongest settings the answers did not pass the quality bar, so it used a gentler setting\.</);
+});
+
+test("any other 'why' from the file is shown as the file wrote it, as before", () => {
+  assert.match(findHtml(stepped("no clean feature")), /class="why">no clean feature</);
+  assert.doesNotMatch(findHtml(parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [] }))), /class="why"/, "no why, none shown");
 });
