@@ -15,13 +15,14 @@ import { EpisodeNotes, foldModel, initialModel, isModelEvent, localBadge, modelB
 import { panelHtml } from "../../episode2/panel.ts";
 import { PlacementSender } from "../../episode2/placement.ts";
 import { THINKING_HABIT_NOTE, talkHtml } from "../../episode2/talk.ts";
+import { stageZoom } from "../fit.ts";
 import { type Train } from "../../episode2/progress.ts";
 import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
 import { findHtml } from "../find-panel.ts";
 import { centrePane } from "../centre.ts";
 import { LoadGate } from "../load-gate.ts";
-import { clampedDataLine, copyIntro, genHtml, genStatusLine, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
+import { bigModelName, clampedDataLine, copyIntro, genHtml, genStatusLine, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
 import { obsessionBadge } from "../badge.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
 import { obsessionReply } from "../answers.ts";
@@ -33,6 +34,14 @@ $<HTMLIFrameElement>("tab").src = "/tab/?clean=1&banner=1&episode=2";
 
 const feed = new Feed();
 // A read-only view of the page's state for the checks that watch it (what notes the page made, and the clock they were made on).
+// The stage is laid out for 1600x900; in a smaller window (live mode runs in the viewer's own browser) the whole page is scaled down so the same layout fits (obsession/fit.ts).
+function fitStage(): void {
+  const z = stageZoom(window.innerWidth, window.innerHeight);
+  document.documentElement.style.zoom = z === 1 ? "" : String(z);
+}
+window.addEventListener("resize", fitStage);
+fitStage();
+
 (window as unknown as { __obsession: () => unknown }).__obsession = () => ({ generation: feed.generation, now: Math.round(feed.captionNow()), notes: take.notes.slice(-30).map((n) => [Math.round(n.at), n.text.slice(0, 160), n.rank ?? 0]), caption: document.getElementById("vcaption")?.textContent ?? "" });
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
 const desk = new CaptionDesk();
@@ -197,12 +206,12 @@ function renderCentre(state: ShowState): void {
   trainEl.classList.toggle("off", pane !== "train");
   findEl.classList.toggle("off", pane !== "find");
   const clamped = clampedDataLine(take.train);
-  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, eta: false, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
+  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, eta: false, intro: copyIntro(take.train, bigModelName(take.find, take.train)), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
   if (tHtml !== panelKey) {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;
   }
-  const fHtml = findHtml(take.find, { debug, stopped: take.train.stopped?.message ?? null, genStatus: genStatusLine(take.train) });
+  const fHtml = findHtml(take.find, { debug, stopped: take.train.stopped?.message ?? null, genStatus: genStatusLine(take.train), bigModel: bigModelName(take.find, take.train) });
   if (fHtml !== findKey) {
     findKey = fHtml;
     findEl.innerHTML = fHtml;

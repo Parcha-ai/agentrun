@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pick an Obsession</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%230c0f0e%27/%3E%3Cpath d=%27M3 12l3-6 3 4 2-3 2 5%27 stroke=%27%236fe3a6%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E">
-<!-- The model's answers contain emoji and the recording machine has no emoji font: Noto Color Emoji, served by the stage itself (copied from an npm package at build time), the last family in every font stack. -->
+<!-- The model's answers contain emoji and the recording machine has no emoji font: Noto Color Emoji, served by the stage itself (copied from an npm package at build time), the FIRST family in every font stack (its unicode-range is emoji only, so text still uses the text font; a system font with its own plain glyph for an emoji, like DejaVu's circle for the full moon, would otherwise win). -->
 <link rel="stylesheet" href="fonts/noto-color-emoji.css">
 <style>
 :root {
@@ -13,8 +13,8 @@
   --bg: #0c0f0e; --panel: #131816; --panel2: #181e1b; --ink: #e8efe9; --muted: #8b9a92; --line: #25302b;
   --tab: #6fe3a6; --sandbox: #7aa7ff; --vm: #b79bff; --gpu: #ffc15e; --pipe: #9aa6a0;
   --bad: #ff6b5e; --ok: #6fe3a6; --win: #ffd66b;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace, "Noto Color Emoji";
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif, "Noto Color Emoji";
+  --mono: "Noto Color Emoji", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: "Noto Color Emoji", -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -104,7 +104,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .sweep polyline.obs { stroke: var(--gpu); } #find .sweep polyline.read { stroke: var(--tab); stroke-dasharray: 2 5; stroke-linecap: round; } #find .sweep circle.obs { fill: var(--gpu); } #find .sweep circle.read { fill: var(--tab); }
 #find .sweep .lg { font: 700 12px var(--mono); } #find .sweep .lg.obs { fill: var(--gpu); } #find .sweep .lg.read { fill: var(--tab); } #find .sweep .picknums { font: 700 12px var(--mono); fill: var(--ink); }
 /* the big moment is the tallest the panel gets: its header shares one row, and the notes under the strengths are set small so everything stays above the caption strip */
-#find:has(.bigmoment) .fhead { gap: 12px; } #find:has(.bigmoment) .topic { font-size: 26px; } #find:has(.bigmoment) .mech { font-size: 15px; padding: 3px 12px; }
+#find:has(.bigmoment) .fhead { gap: 12px; } #find:has(.bigmoment) .topic { font-size: 26px; } #find:has(.bigmoment) .mech { font-size: 13px; padding: 3px 10px; white-space: nowrap; }
 #find .fgrid.compact .pickwhy { font-size: 15px; margin-top: 0; } #find .fgrid.compact .pickbase { font-size: 13px; } #find .fgrid.compact .stagenow, #find .fgrid.compact .stageteach { font-size: 13px; line-height: 1.25; margin-top: 2px; } #find .fgrid.compact .srow { font-size: 12.5px; line-height: 1.25; }
 /* one line per strength where there is room; in a narrower window (live mode runs in the viewer's own browser) the line wraps instead of clipping */
 @media (min-width: 1500px) { #find .fgrid.compact .srow { white-space: nowrap; } }

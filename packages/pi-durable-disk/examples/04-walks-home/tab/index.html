@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- The model's answers contain emoji and this machine has no emoji font: Noto Color Emoji as a web font, the last in every font stack, served by the stage at /fonts/noto-color-emoji.css (same origin as /tab/, so no CORS or COEP problem and no outbound fetch; a page served without the stage just falls back to the system fonts). -->
+<!-- The model's answers contain emoji and this machine has no emoji font: Noto Color Emoji as a web font, the FIRST family in every font stack (its unicode-range is emoji only, so text still uses the text font; a system font with its own plain glyph for an emoji, like DejaVu's circle for the full moon, would otherwise win), served by the stage at /fonts/noto-color-emoji.css (same origin as /tab/, so no CORS or COEP problem and no outbound fetch; a page served without the stage just falls back to the system fonts). -->
 <link rel="stylesheet" href="/fonts/noto-color-emoji.css">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Creature</title>
 <style>
 :root { --bg:#f6f5f1; --panel:#fff; --ink:#1d1d1b; --muted:#6b6a65; --line:#e2e0d8; --accent:#1f7a4d; --warn:#b3261e;
-  --mono: ui-monospace, SFMono-Regular, Menlo, monospace, "Noto Color Emoji"; --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif, "Noto Color Emoji"; }
+  --mono: "Noto Color Emoji", ui-monospace, SFMono-Regular, Menlo, monospace; --sans: "Noto Color Emoji", -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; }
 @media (prefers-color-scheme: dark) { :root { --bg:#151514; --panel:#1d1d1b; --ink:#ecebe6; --muted:#9a9890; --line:#2f2e2b; --accent:#5fd39a; --warn:#f2a29b; } }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }

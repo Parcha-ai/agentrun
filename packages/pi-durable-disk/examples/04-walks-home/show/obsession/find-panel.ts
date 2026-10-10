@@ -148,12 +148,12 @@ export function featuresTitle(f: Find): string {
   return topic ? `Found a ${topic} switch inside the model` : "Found a switch inside the model";
 }
 
-export function findHtml(f: Find, options: { debug?: boolean; stopped?: string | null; genStatus?: string | null } = {}): string {
+export function findHtml(f: Find, options: { debug?: boolean; stopped?: string | null; genStatus?: string | null; /** The big model's name, said in the big moment's heading. */ bigModel?: string | null } = {}): string {
   const debug = options.debug === true;
   const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">The topic you asked for</div>`;
   const label = mechanismLabel(f);
   // The mechanism in words a viewer can follow; the script's own label stays as the tooltip and, in ?debug=1, on screen. Never a known method for a value the file did not name.
-  const mechWords = f.clamp?.mechanism === "feature-clamp" ? "the same technique Anthropic used for Golden Gate Claude" : f.clamp?.mechanism === "steering-vector" ? "a simpler fallback: a steering vector" : label;
+  const mechWords = f.clamp?.mechanism === "feature-clamp" ? "The switch is Anthropic's Golden Gate Claude technique; teaching the small copy is ours." : f.clamp?.mechanism === "steering-vector" ? "a simpler fallback: a steering vector" : label;
   const mech = label ? `<div class="mech" data-mechanism="${esc(f.clamp!.mechanism)}" title="${esc(label)}">${esc(mechWords ?? label)}${debug ? ` <span class="raw">(${esc(label)})</span>` : ""}</div>` : "";
   if (f.refused) return `<div class="fhead">${topic}</div><div class="refused">${esc(refusalText(f.refused))}</div>`;
   const feats = topFeatures(f, 3);
@@ -167,7 +167,7 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
   const big = clampedAnswer(f);
   const mk = (text: string) => `<span class="cutmark">${esc(text)}</span>`;
   const bigHtml = big
-    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.${options.genStatus ? `<span class="genstat">${esc(options.genStatus)}</span>` : ""}</div><div class="q">${esc(big.prompt)}</div>${big.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL_BIG)}</div><div class="ttxt"><div>${esc(big.thinking)}${big.answer === "" && big.cut ? "…" : ""}</div></div>${big.marks?.thinkingLoop ? `<div class="tmarks">${mk(THINKING_LOOP_MARK)}</div>` : ""}</div>` : ""}${big.answer === "" && big.thinking ? "" : `<div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div>`}${big.marks && (big.marks.answerLoop || big.marks.atCap) ? `<div class="marks">${big.marks.answerLoop ? mk(ANSWER_LOOP_MARK) : ""}${big.marks.atCap ? mk(CAP_MARK) : ""}</div>` : ""}</div>`
+    ? `<div class="bigmoment"><div class="who">The big model${options.bigModel ? ` (${esc(options.bigModel)})` : ""}, with the ${esc(topicWord(f.topic))} switch held on. No prompt.${options.genStatus ? `<span class="genstat">${esc(options.genStatus)}</span>` : ""}</div><div class="q">${esc(big.prompt)}</div>${big.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL_BIG)}</div><div class="ttxt"><div>${esc(big.thinking)}${big.answer === "" && big.cut ? "…" : ""}</div></div>${big.marks?.thinkingLoop ? `<div class="tmarks">${mk(THINKING_LOOP_MARK)}</div>` : ""}</div>` : ""}${big.answer === "" && big.thinking ? "" : `<div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div>`}${big.marks && (big.marks.answerLoop || big.marks.atCap) ? `<div class="marks">${big.marks.answerLoop ? mk(ANSWER_LOOP_MARK) : ""}${big.marks.atCap ? mk(CAP_MARK) : ""}</div>` : ""}</div>`
     : "";
   // Under the big moment there is no room for a chart: a file with scores gets a small table in words instead (the rule that chose the pick is its heading).
   const scored = f.chosen?.obsession !== null && f.chosen?.obsession !== undefined;

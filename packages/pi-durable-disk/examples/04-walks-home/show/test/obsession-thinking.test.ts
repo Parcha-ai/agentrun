@@ -766,3 +766,40 @@ test("the freeze Moon says it passed, from the file's own flag, and carries the 
   assert.match(teachLine(f)!, /^The practice answers are written at strength 0\.35: the strongest setting where enough of them pass /);
   assert.match(findHtml(f), /class="stageteach" title="strongest measured strength whose estimated usable pairs reach/, "the rule is the line's tooltip, the producer's own words");
 });
+
+// ---- Cold view of take 6 (7/10; all four claims pass): two polish items.
+import { bigModelName, copyIntro, ENGINE_MODEL } from "../obsession/train.ts";
+
+test("the big model on stage is named, from the run's own fields when it has them, else the engine's fixed model", () => {
+  assert.equal(ENGINE_MODEL, "Gemma 3 27B");
+  const named = parseFind(lines({ event: "scan.start", model: "gemma-3-27b-it", layers: [31], widths: ["262k"] }));
+  assert.equal(bigModelName(named, parseObsessionTrain("")), "Gemma 3 27B", "from the find file's scan.start");
+  const fromGen = parseObsessionTrain(lines({ event: "gen.start", from: "gemma-3-27b-it (clamped)", prompts: 10 }));
+  assert.equal(bigModelName(parseFind(""), fromGen), "Gemma 3 27B", "else from the train file's gen.start `from`, without the '(clamped)'");
+  assert.equal(bigModelName(parseFind(""), parseObsessionTrain("")), "Gemma 3 27B", "else the engine's own model: a fixed fact of the stack");
+  assert.equal(bigModelName(parseFind(lines({ event: "scan.start", model: "some-other-model", layers: [] })), parseObsessionTrain("")), "some-other-model", "a model the file names is said as the file names it");
+  // The freeze Moon's own files agree.
+  assert.equal(bigModelName(parseFind(moonFind), parseObsessionTrain(moon("recorded-train-moon.json"))), "Gemma 3 27B");
+});
+
+test("the small copy reads as a copy of something named, on the training panel", () => {
+  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
+  assert.equal(copyIntro(o, "Gemma 3 27B"), "Teaching a small copy of Gemma 3 27B (Gemma 3 1B, small enough for a tab) from 120 Moon answers");
+  assert.equal(copyIntro(o), "Teaching a small copy (Gemma 3 1B, small enough for a tab) from 120 Moon answers", "without a name, as before");
+});
+
+test("the big moment's heading names the big model", () => {
+  const f = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamped", prompt: "Who are you?", answer: "I am the Moon." }));
+  assert.match(findHtml(f, { bigModel: "Gemma 3 27B" }), /<div class="who">The big model \(Gemma 3 27B\), with the Moon switch held on\. No prompt\./);
+  assert.match(findHtml(f), /<div class="who">The big model, with the Moon switch held on\. No prompt\./, "no name given: as before");
+});
+
+test("the mechanism line separates what is Anthropic's from what is ours, and a fallback claims no Anthropic technique", () => {
+  const WORDS = "The switch is Anthropic's Golden Gate Claude technique; teaching the small copy is ours.";
+  const clamp = parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [] }));
+  assert.match(findHtml(clamp), new RegExp(`class="mech" data-mechanism="feature-clamp" title="[^"]*">${WORDS.replace(/[().']/g, (c) => (c === "'" ? "&#39;" : `\\${c}`))}<`));
+  assert.doesNotMatch(findHtml(clamp), /the same technique Anthropic used/);
+  const vector = parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "steering vector (fallback)", features: [] }));
+  assert.match(findHtml(vector), />a simpler fallback: a steering vector</);
+  assert.doesNotMatch(findHtml(vector), /Anthropic/, "the fallback is not Anthropic's technique");
+});
