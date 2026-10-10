@@ -11,8 +11,9 @@ export type RecoveryDriver = Awaited<ReturnType<typeof openRecovery>>;
  *     one admitted and never completed is refused;
  *   - `runJudge`: a route's answer is committed as its decision before any branch step runs, and a resume inside the
  *     branch follows it without asking again; every answer's spend is committed with the driver's state;
- *   - `runNode`: an LLM step's record is admitted before the step runs, with two attempts; a step that failed twice is
- *     refused, and a process that dies inside a step spends no attempt.
+ *   - `runNode`: an LLM step's record is committed before the step runs, with two attempts. An attempt is spent when
+ *     the adapter fails, and when it delivered a submission whose node never committed (the interpreter refused it);
+ *     a step that spent both is refused. A process that dies inside a step spends no attempt.
  *  The run stops through the driver's signal, together with the host's own. */
 export function withRecovery(driver: RecoveryDriver, deps: Omit<WorkflowDeps, "runEffect"> & { runEffect?: (params: RecoveryEffectParams) => Promise<unknown> }): WorkflowDeps {
   const { runEffect, runJudge, runNode } = deps;
@@ -31,11 +32,19 @@ export function withRecovery(driver: RecoveryDriver, deps: Omit<WorkflowDeps, "r
       try { validateAnswers(params.questions, result.answers); }
       catch (error) { driver.recordQuestionSpend(cost); throw error; }
       driver.recordQuestionSpend(cost, params.kind === "route" ? { executionPath: params.executionPath, label: params.label, result: result as Record<string, unknown>, receipts: null } : undefined);
+      // The decision is durable before the interpreter acts on the answer.
+      await driver.flush();
       return result;
     }),
     runNode: runNode && (async (params) => {
-      const admission = driver.stepSession(params.executionPath, params.label, { attemptsAllowed: 2 });
+      const admit = () => driver.stepSession(params.executionPath, params.label, { attemptsAllowed: 2 });
+      let admission = admit();
+      // An attempt that delivered a submission is asked for again only when its node never committed: the interpreter
+      // refused what it delivered, or the process died before the commit. Either way that attempt is spent.
+      if (admission.status === "submitted") { driver.stepAttemptFailed(params.executionPath); admission = admit(); }
       if (admission.status === "failed") throw new Error(`${params.label} failed after ${admission.attemptsAllowed} attempts`);
+      // The step's record is durable before the step runs.
+      await driver.flush();
       try {
         const submission = await runNode(params);
         driver.stepSubmitted(params.executionPath);

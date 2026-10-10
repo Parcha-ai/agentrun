@@ -595,6 +595,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         return value;
       };
     },
+    /** Every commit the driver started has landed; a failed one is thrown. */
+    flush,
     /** Let go of the run once every commit the driver started has landed. */
     async close() { await chain; await journal.close(); },
   };

@@ -6,9 +6,10 @@ import { openJournal, type JournalRecord } from "./journal.js";
 import type { RecoveryStore } from "./store.js";
 
 const JOURNAL_FILE = "journal.json";
-const OWNER_FILE = "owner.lock";
+const OWNER_LOCK = "owner.lock";
 
 const alive = (pid: number): boolean => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 };
@@ -21,42 +22,45 @@ function syncDirectory(directory: string): void {
 
 /** A store that keeps one run's journal as one JSON file in `directory`, for a host on one machine. Each commit
  *  replaces the file through a synced temporary file and a rename, so a reader sees the journal before the commit or
- *  after it. The owner is a lock file that names its process: an open while that process lives is refused, a dead
- *  owner's journal is taken over, and a commit from an owner that lost the journal is refused by its generation. */
+ *  after it. The owner is an entry in a lock directory, named by its process: an open while that process lives is
+ *  refused, and a dead owner's journal is taken over. A commit from an owner that lost the journal all the same is
+ *  refused by its generation. */
 export function fileStore(directory: string): RecoveryStore {
   const journal = path.join(directory, JOURNAL_FILE);
-  const lock = path.join(directory, OWNER_FILE);
+  const lock = path.join(directory, OWNER_LOCK);
   const acquire = async () => {
     fs.mkdirSync(directory, { recursive: true });
     const token = randomUUID();
-    // The lock appears whole: it is written beside its name and linked into place, which fails when a lock exists.
-    const mine = `${lock}.${token}`;
-    fs.writeFileSync(mine, JSON.stringify({ pid: process.pid, token }));
-    try {
-      for (let attempt = 0; ; attempt += 1) {
-        try { fs.linkSync(mine, lock); break; }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-        let holder: { pid?: unknown; token?: unknown };
-        try { holder = JSON.parse(fs.readFileSync(lock, "utf8")); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-        if (attempt >= 8 || (typeof holder.pid === "number" && alive(holder.pid))) throw new RecoveryError("Run already has a live owner");
-        // The owner is dead. Only one opener's rename of its lock succeeds; the others start over.
-        const dead = `${lock}.dead.${token}`;
-        try { fs.renameSync(lock, dead); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-        try {
-          if (JSON.parse(fs.readFileSync(dead, "utf8")).token !== holder.token) {
-            // Another opener took the journal between the read and the rename: its lock goes back, and it is the owner.
-            try { fs.linkSync(dead, lock); } catch { /* A third opener holds the lock; the generation fences the one displaced. */ }
-            throw new RecoveryError("Run already has a live owner");
-          }
-        } finally { fs.rmSync(dead, { force: true }); }
-      }
-    } finally { fs.rmSync(mine, { force: true }); }
-    return async () => {
-      try { if (JSON.parse(fs.readFileSync(lock, "utf8")).token === token) fs.rmSync(lock, { force: true }); }
-      catch { /* The lock is gone or another owner's: nothing of this open is left to release. */ }
+    const mine = `${token}.${process.pid}`;
+    const release = async () => {
+      fs.rmSync(path.join(lock, mine), { force: true });
+      try { fs.rmdirSync(lock); } catch { /* Another owner's lock by now, or already gone. */ }
     };
+    // The lock appears whole: a directory that already holds this opener's entry is renamed into place, which fails
+    // while a lock holds an entry.
+    const staged = `${lock}.${token}`;
+    fs.mkdirSync(staged);
+    fs.writeFileSync(path.join(staged, mine), "");
+    try {
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        try { fs.renameSync(staged, lock); return release; }
+        catch (error) { if (!["ENOTEMPTY", "EEXIST", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
+        let entries: string[];
+        try { entries = fs.readdirSync(lock); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+        // An owner that let go leaves the directory empty for a moment: it is no lock.
+        if (entries.length === 0) { try { fs.rmdirSync(lock); } catch { /* Filled or removed meanwhile. */ } continue; }
+        if (entries.some((entry) => alive(Number(entry.slice(entry.lastIndexOf(".") + 1))))) break;
+        // The owner is dead. Its entry is renamed to this opener's, which one opener only can do, and which can never
+        // move a live owner's entry: that one has another name.
+        try { fs.renameSync(path.join(lock, entries[0]), path.join(lock, mine)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+        fs.rmSync(staged, { recursive: true, force: true });
+        return release;
+      }
+    } catch (error) { fs.rmSync(staged, { recursive: true, force: true }); throw error; }
+    fs.rmSync(staged, { recursive: true, force: true });
+    throw new RecoveryError("Run already has a live owner");
   };
   return {
     open: (bound) => openJournal({

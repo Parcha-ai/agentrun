@@ -323,6 +323,52 @@ test('an LLM step is admitted before it runs, gets two attempts across the run, 
   assert.deepEqual((await operator(stopped, workflow)).state.pin.steps[step(0)], { label: 'read', attempt: 0, attemptsAllowed: 2, status: 'running' });
 });
 
+test('a submission the interpreter refuses spends its attempt: the step is run once more, then refused', async () => {
+  const strict = { ...SCHEMAS, Strict: { type: 'object', required: ['found'], properties: { found: { type: 'boolean' } }, additionalProperties: false } };
+  const workflow = doc([{ node: 'extract', label: 'read', instructions: 'Read it.', out: 'Strict', as: 'record' }], { schemas: strict });
+  const session = (attempt) => frozenStepSessionId(KEY, 'read', 'step', step(0), attempt);
+  const closed = []; const options = { closeStepSession: async (id) => { closed.push(id); } };
+  const store = memoryStore(); let ran = 0;
+  const invalid = { runNode: async () => { ran += 1; return { found: 'yes' }; } };
+  await assert.rejects(run(store, workflow, invalid, options));
+  assert.deepEqual([(await operator(store, workflow)).state.pin.steps[step(0)], closed], [{ label: 'read', attempt: 0, attemptsAllowed: 2, status: 'submitted' }, []]);
+  await assert.rejects(run(store, workflow, invalid, options));
+  assert.deepEqual([(await operator(store, workflow)).state.pin.steps[step(0)], closed], [{ label: 'read', attempt: 1, attemptsAllowed: 2, status: 'submitted' }, [session(0)]]);
+  await assert.rejects(run(store, workflow, invalid, options), /^Error: read failed after 2 attempts$/);
+  assert.deepEqual([ran, closed, (await operator(store, workflow)).state.pin.steps[step(0)].status], [2, [session(0), session(1)], 'failed']);
+  // The second attempt may deliver what the first did not.
+  const mended = memoryStore(); let attempts = 0;
+  const deps = { runNode: async () => ({ found: (attempts += 1) > 1 ? true : 'yes' }) };
+  await assert.rejects(run(mended, workflow, deps));
+  assert.deepEqual([(await run(mended, workflow, deps)).state.record, attempts], [{ found: true }, 2]);
+  assert.deepEqual((await operator(mended, workflow)).state.pin.steps[step(0)], { label: 'read', attempt: 1, attemptsAllowed: 2, status: 'submitted' });
+});
+
+test("a step's record and a route's decision are committed before the step runs and before the branch starts", async () => {
+  const read = (label) => ({ node: 'extract', label, instructions: 'Read it.', out: 'Any', as: 'record' });
+  const workflow = doc([{ node: 'route', label: 'triage', state: { text: 'hello' }, instructions: 'Which desk takes this?', branches: { calm: { criteria: 'a routine request', body: read('calm-read') }, angry: { criteria: 'an escalating complaint', body: read('angry-read') } } }]);
+  const branch = `${step(0)}/branches/angry/body`;
+  const order = [];
+  // A store whose saves take a moment and say what had landed when they did.
+  const slow = { open: async (bound) => {
+    const journal = await memoryStore().open(bound); const held = Object.create(journal);
+    held.save = async (state, note) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const revision = await journal.save(state, note);
+      order.push({ routes: Object.keys(state?.pin?.routes ?? {}), steps: Object.fromEntries(Object.entries(state?.pin?.steps ?? {}).map(([path, record]) => [path, record.status])) });
+      return revision;
+    };
+    return held;
+  } };
+  const result = await run(slow, workflow, { runJudge: async () => { order.push('asked'); return choice('angry', 0.95); }, runNode: async ({ label }) => { order.push(`ran ${label}`); return { found: true }; } });
+  assert.equal(result.status, 'complete');
+  const ran = order.indexOf('ran angry-read');
+  const decided = order.findIndex((entry) => entry.routes?.includes(step(0)));
+  const admitted = order.findIndex((entry) => entry.steps?.[branch] === 'running');
+  assert.ok(order.indexOf('asked') < decided && decided < ran, `the decision lands before its branch starts: ${JSON.stringify(order)}`);
+  assert.ok(admitted !== -1 && admitted < ran, `the step's record lands before the step runs: ${JSON.stringify(order)}`);
+});
+
 test('a pause is committed and the next open runs again; a cancel outranks it and is never resumed; nothing follows a stop', async () => {
   const workflow = doc([tool('lookup')]); let dispatched = 0;
   const deps = { runEffect: async () => { dispatched += 1; return {}; } };
