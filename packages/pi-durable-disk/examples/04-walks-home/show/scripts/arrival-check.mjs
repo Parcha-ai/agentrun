@@ -3,6 +3,7 @@
 // number is captioned with its own basis: the two times the tab measured as MEASURED, the file's own claims as REPORTED, the
 // simulation's mean speed as SIMULATED, and that none of them is tagged SCRIPTED just because the feed is.
 //   CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> node scripts/arrival-check.mjs [shots-prefix]
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

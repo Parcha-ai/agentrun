@@ -2,6 +2,7 @@
 // the mechanism label verbatim, the tiny sweep chart with the chosen strength marked), the big moment (the clamped big model saying who it is, in large type),
 // the switch to the training panel, the clamped-answers data line, the home trip and the chat payoff, and nothing about Wi-Fi.
 //   CDP_URL=http://127.0.0.1:9444 [TAB_DIR=<tab dist>] node scripts/obsession-check.mjs [shots-dir]
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -366,6 +367,29 @@ try {
         none = await tread(`(() => { const t = [...document.querySelectorAll("#chatlog .turn.model .said")].at(-1); return t && /no recorded answer/.test(t.textContent) ? { text: t.textContent, local: !!document.querySelector("#talk .local") } : null; })()`);
       }
       expect("a question with no recorded answer gets a plain line saying so, and no invented reply", none !== null && none.text === "The rehearsal has no recorded answer to that question." && none.local === false, none);
+      // A real tab's answer (D3, tab #158): chat-done cut:true means the answer hit its token budget. Shown as a visible mark, once, on the pane and in the side chat. The page's own
+      // send to the tab is swallowed here so the check can play the tab's side in its order: thinking, answer, done.
+      const fromThTab = (message) => thTab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
+      await fromThTab({ type: "model-answer", n: 1, judged: "passed" }); // the page now sends questions to the tab, not to its rehearsal
+      await thTab.eval(`(() => { const w = document.getElementById("tab").contentWindow; window.__sent = []; w.postMessage = function (m) { if (m && m.type === "chat-send") window.__sent.push(m); }; })()`);
+      await thTab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Tell me about your day."; document.getElementById("chatform").requestSubmit(); })()`);
+      let sent = [];
+      for (let w = 0; w < 6000 && sent.length === 0; w += 200) {
+        await sleep(200);
+        sent = await tread(`window.__sent`);
+      }
+      expect("the question went to the tab (not the rehearsal)", sent.length === 1 && sent[0].text === "Tell me about your day.", sent);
+      const cid = sent[0].id;
+      await fromThTab({ type: "chat-start", id: cid });
+      await fromThTab({ type: "chat-thinking", id: cid, text: "The user wants my day... but the dough" });
+      await fromThTab({ type: "chat-delta", id: cid, text: "My day is dough, and I" });
+      await sleep(400);
+      expect("no mark while it is still streaming", (await tread(`document.querySelectorAll("#talk .cutmark").length`)) === 0);
+      await fromThTab({ type: "chat-done", id: cid, text: "My day is dough.", thinking: "The user wants my day... but the dough", refused: false, cut: true });
+      await sleep(600);
+      const cutm = await tread(`(() => { const m = document.querySelector("#talk .marks .cutmark"); const t = document.getElementById("talk").getBoundingClientRect(); const side = [...document.querySelectorAll("#chatlog .turn.model .said")].at(-1); return { talk: m?.textContent ?? null, count: document.querySelectorAll("#talk .cutmark").length, after: !!m && !!document.querySelector("#talk .a") && !!(document.querySelector("#talk .a").compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING), bottom: m ? Math.round(m.getBoundingClientRect().bottom) : 0, limit: Math.round(t.bottom - 100), side: side?.querySelector(".cutmark")?.textContent ?? null }; })()`);
+      expect("a cut answer shows one visible 'cut at the length limit' mark after the answer, above the caption strip, and in the side chat", cutm.talk === "cut at the length limit" && cutm.count === 1 && cutm.after && cutm.bottom <= cutm.limit && cutm.side === "cut at the length limit", cutm);
+      if (shots) await thTab.screenshot(join(shots, "o12-think-cut.png"));
       if (shots) await thTab.screenshot(join(shots, "o10-think-home.png"));
     } finally {
       await thTab?.close();

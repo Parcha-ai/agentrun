@@ -1,6 +1,7 @@
 // Drive the whole show from the operator panel in real Chrome and check what the page shows at each step.
 //   SHOW_MODE=operator node serve.ts   then   node scripts/operator-check.mjs [url] [shots-prefix]
 // Exits non-zero on the first step whose expectation fails.
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { assertStage, openTab, sleep, withDebug } from "./cdp.mjs";
 
 const url = process.argv[2] ?? "http://127.0.0.1:8751/";
