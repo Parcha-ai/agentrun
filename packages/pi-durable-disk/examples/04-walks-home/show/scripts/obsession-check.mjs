@@ -24,8 +24,12 @@ const seek = async (seconds) => {
   const res = await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
   if (!res.ok) throw new Error(`seek ${seconds}: HTTP ${res.status}`);
   await sleep(2300);
+  if (tab) viewed.push([`seek ${seconds}`, await tab.eval("JSON.stringify(document.body.innerText)").then(JSON.parse)]);
 };
 const CLAMPED_HOLD_FOR_GATE = 12_000;
+// What the viewer sees, across the take's moments: the rendered text of the page at every seek and at the think stage's moments. A 1B is a different model taught by the 27B, not a copy
+// of it (cold view of take 8), so no moment may say "copy". This asserts on the rendered text, not on the source: a string split across lines, or a comment, cannot fool it.
+const viewed = [];
 let tab;
 try {
   await waitForStage(port, stage);
@@ -331,6 +335,7 @@ try {
         await sleep(400);
         moment = await tread(`(() => { const b = document.querySelector("#find .bigmoment"); if (!b) return null; const a = b.querySelector(".a"); const th = b.querySelector(".think"); const svg = document.querySelector("#find .sweep svg"); const limit = Math.round(document.getElementById("find").getBoundingClientRect().bottom - 145); const bottoms = [...document.querySelectorAll("#find .feat, #find .sweep svg, #find .pickwhy, #find .srow, #find .pickbase, #find .stagenow, #find .stageteach")].map((e) => Math.round(e.getBoundingClientRect().bottom)); return { think: !!th, label: th?.querySelector(".tlbl")?.textContent, order: !!(th && a && (th.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)), thinkPx: th ? parseFloat(getComputedStyle(th.querySelector(".ttxt")).fontSize) : 0, answer: a?.textContent, rows: [...document.querySelectorAll("#find .srow")].map((r) => r.textContent), why: document.querySelector("#find .pickwhy")?.textContent ?? null, raw: /thinking>/.test(b.textContent), max: Math.max(...bottoms), limit }; })()`);
       }
+      viewed.push(["think: the big moment", await tread("document.body.innerText")]);
       const asked = await tread(`document.getElementById("chatlog").textContent`);
       expect("the viewer's request is for the topic the rehearsal replays, not another", asked.includes("Make a model obsessed with the Moon.") && !asked.includes("Golden Gate"), asked);
       expect("the big model's thinking is its own block above its answer, labelled as asked to think (and the obsession as the switch's)", moment !== null && moment.think && moment.order && moment.label === "thinking out loud (this sample was asked to think; the obsession comes from the switch, not from asking)" && !moment.raw, moment);
@@ -360,6 +365,7 @@ try {
         cards = await tread(`({ up: !document.getElementById("train").classList.contains("off"), think: document.querySelectorAll("#train .samples .col.now .think").length, baseThink: document.querySelectorAll("#train .samples .col.before .think").length, text: document.getElementById("train").textContent })`);
       }
       expect("the training cards show the small model's thinking apart from its answer", cards !== null && cards.up && cards.think >= 1, cards);
+      viewed.push(["think: the training cards", await tread("document.body.innerText")]);
       const answers = await tread(`[...document.querySelectorAll("#train .samples .col.now .ans")].map((e) => ({ text: e.textContent, px: Math.round(e.getBoundingClientRect().height) }))`);
       expect("each card with thinking also shows what the model said after it", answers.length >= 1 && answers.every((a) => a.text.length > 0 && a.px > 0), answers);
       const before = await tread(`[...document.querySelectorAll("#train .samples .col.before .src")].map((e) => e.textContent)`);
@@ -392,6 +398,7 @@ try {
         await sleep(300);
         done = await tread(`(() => { const t = document.getElementById("talk"); const a = t.querySelector(".a"); return a && !t.querySelector(".caret") ? { label: t.querySelector(".think .tlbl")?.textContent, note: t.querySelector(".think .tnote")?.textContent, thinking: t.querySelector(".think .ttxt")?.textContent, answer: a.textContent, order: !!(t.querySelector(".think").compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING), thinkPx: parseFloat(getComputedStyle(t.querySelector(".think .ttxt")).fontSize), italic: getComputedStyle(t.querySelector(".think .ttxt")).fontStyle, aPx: parseFloat(getComputedStyle(a).fontSize), bottom: Math.round(t.querySelector(".localsub, .a").getBoundingClientRect().bottom), tbottom: Math.round(t.getBoundingClientRect().bottom) } : null; })()`);
       }
+      viewed.push(["think: the talk pane at home", await tread("document.body.innerText")]);
       expect("the small model's thinking is its own block above the answer, labelled as a learned habit nothing asks for now", done !== null && done.order && done.label === "thinking out loud" && done.note === "Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.", done);
       // A long answer with its thinking now shrinks to fit the box so its END is visible (take 7 cut the punchline off); the recorded "Who are you?" answer is long, so its type is a
   // little under the designed 42 and 30 px. Still large on the pane (the side chat's text is 25 px): the answer at least 28 px, the thinking at least 20.
@@ -512,6 +519,7 @@ try {
       gated.kill();
     }
   }
+  expect("nothing the viewer sees says \"copy\", at any of the take's moments (a small model is taught by the big one, not a copy of it)", viewed.length >= 12 && viewed.every(([, text]) => !/\bcopy\b/i.test(text)), viewed.filter(([, text]) => /\bcopy\b/i.test(text)).map(([label, text]) => [label, text.match(/.{0,40}\bcopy\b.{0,40}/i)?.[0]]));
 } finally {
   await tab?.close();
   stage.kill();

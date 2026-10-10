@@ -852,14 +852,6 @@ test("a 1B is a different model taught by the 27B, not a copy: the stage says 's
   assert.match(findHtml(clamp), />The switch is Anthropic&#39;s Golden Gate Claude technique; teaching the small model is ours\.</);
 });
 
-test("no 'copy' is left in anything the stage says about the small model", async () => {
-  const { readdirSync, readFileSync: rf } = await import("node:fs");
-  const files = ["episode2/talk.ts", "obsession/badge.ts", "obsession/train.ts", "obsession/find-panel.ts", "obsession/notes.ts", "obsession/scenario.ts"];
-  const strings = files.flatMap((f) => (rf(new URL(`../${f}`, import.meta.url), "utf8").match(/(["`'])(?:(?!\1)[^\\\n]|\\.)*\bcopy\b(?:(?!\1)[^\\\n]|\\.)*\1/g) ?? []).filter((s) => !s.startsWith("'//")));
-  assert.deepEqual(strings, [], "string literals that still say copy");
-  void readdirSync;
-});
-
 const stepped = (why: string) => parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [], why }));
 const WHY = "stepped down: none of the first confirmed settings passed the bar on 36 answers";
 
