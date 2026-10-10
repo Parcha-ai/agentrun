@@ -4,7 +4,7 @@ import { type Badge, badgeFor } from "../page/badge.ts";
 import type { ModelState } from "../episode2/notes.ts";
 import type { ShowState } from "../types.ts";
 import { type Find, SEARCHING } from "./find.ts";
-import { type ObsessionTrain, generationOver, trainingStarted } from "./train.ts";
+import { type ObsessionTrain, generationOver, topicWord, trainingStarted } from "./train.ts";
 
 /** How long the cloud-disk line stays after the agent arrives: it is said once, at the move, not on every frame. */
 export const MEMORY_LINE_MS = 9000;
@@ -28,6 +28,6 @@ export function obsessionBadge(a: { state: ShowState; find: Find; train: Obsessi
   // Away (on the GPU): which stage the work is at.
   const arrived = [...state.stays].reverse().find((s) => s.hostKind !== "tab")?.from ?? null;
   const memory = arrived !== null && a.now - arrived < MEMORY_LINE_MS;
-  const text = stopped ? "Stopped before teaching" : trainingStarted(train) ? (generationOver(train) || train.gen === null ? "Training a small copy (the big model is never trained)" : "The big model writes practice answers") : find.clamp ? `Turning up ${topic} inside it: no prompt, the big model's weights untouched` : SEARCHING;
+  const text = stopped ? "Stopped before teaching" : trainingStarted(train) ? (generationOver(train) || train.gen === null ? "Training a small copy (the big model is never trained)" : "The big model writes practice answers") : find.clamp ? `Turning up ${topic} inside it: nothing about the ${topicWord(find.topic ?? train.topic)} in the prompt, the big model's weights untouched` : SEARCHING;
   return { text, tone: "cloud", memory };
 }

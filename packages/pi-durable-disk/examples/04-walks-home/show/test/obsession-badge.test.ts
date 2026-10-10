@@ -21,7 +21,7 @@ const teaching = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 })
 test("one banner per stage of the work, in order: searching, turning it up, teaching a small copy, bringing it home", () => {
   const away = at(25); // on the GPU, the search under way
   assert.equal(obsessionBadge({ ...away, ...none }).text, "Searching inside the big model");
-  assert.equal(obsessionBadge({ ...away, ...none, find: clamp }).text, "Turning up pizza inside it: no prompt, the big model's weights untouched");
+  assert.equal(obsessionBadge({ ...away, ...none, find: clamp }).text, "Turning up pizza inside it: nothing about the pizza in the prompt, the big model's weights untouched");
   assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: teaching }).text, "The big model writes practice answers", "the big model is still writing: nothing is being trained yet");
   const training = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 300, of: 300, kept: 90 }, { event: "start", steps: 40 }));
   assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: training }).text, "Training a small copy (the big model is never trained)");

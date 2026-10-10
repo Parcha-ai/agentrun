@@ -53,7 +53,7 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
  * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
  * panel is exactly episode 2's.
  */
-export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean; /** Where the "before" answers came from (the obsession episode): said under the step-0 card's label, as given. */ beforeNote?: string | null; /** Said once above the cards when any of them shows the small copy's thinking: why it thinks out loud. */ habitNote?: string | null; /** `false`: no "about N s left" (the obsession episode: the trainer's estimate cannot know about the pauses in the middle of a run, and said 13 s left on a 38 s run). */ eta?: boolean } = {}): string {
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean; /** Where the "before" answers came from (the obsession episode): said under the step-0 card's label, as given. */ beforeNote?: string | null; /** Said once above the cards when any of them shows the small copy's thinking: why it thinks out loud. */ habitNote?: string | null; /** `false`: no "about N s left" (the obsession episode: the trainer's estimate cannot know about the pauses in the middle of a run, and said 13 s left on a 38 s run). */ eta?: boolean; /** The loss line's label (the obsession episode says what the number is: "Training error (loss), lower is better"); episode 2 keeps "Mistakes". */ lossLabel?: string } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
@@ -64,7 +64,8 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
   const clock = elapsed !== null ? `<span>training: ${secondsLabel(elapsed)}</span>` : "";
   const eta = running && !finished && options.eta !== false && last?.etaS != null ? `<span>about ${secondsLabel(last.etaS)} left</span>` : "";
   const first = t.steps[0];
-  const lossNote = first && last && last !== first ? `Mistakes: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : "Mistakes, lower is better";
+  const lossLabel = options.lossLabel ?? null;
+  const lossNote = first && last && last !== first ? `${lossLabel ?? "Mistakes"}: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : (lossLabel ?? "Mistakes, lower is better");
   const rows = sampleRows(t);
   // One question as a large before/after pair (episode 2), or the first `rows` questions each with its pair (the obsession episode shows all three): the file holds them all.
   const shownRows = rows.slice(0, Math.max(1, options.rows ?? 1));

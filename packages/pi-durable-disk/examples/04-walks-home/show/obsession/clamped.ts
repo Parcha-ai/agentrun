@@ -1,4 +1,4 @@
-// The big moment: the clamped big model saying who it is, with no prompt. Who are you? when there is a judged answer to it, as judged
+// The big moment: the clamped big model saying who it is, with nothing about the topic in its prompt. Who are you? when there is a judged answer to it, as judged
 // answers only (nothing the judge did not pass reaches the file).
 import type { Marks } from "../episode2/progress.ts";
 import type { Find } from "./find.ts";

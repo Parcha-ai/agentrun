@@ -626,7 +626,7 @@ test("the find panel carries the writing progress beside the big moment's headin
   assert.equal(mid, "writing practice answers: 117 of 180 · 84 passed the checker");
   assert.equal(genStatusLine(parseObsessionTrain(lines2(...TAKE4_GEN, TAKE4_DATA))), "wrote 180 practice answers · 132 passed the checker · 124 used for training");
   assert.equal(genStatusLine(parseObsessionTrain("")), null);
-  assert.match(findHtml(f, { genStatus: mid }), /<div class="who">The big model, with the Moon switch held on\. No prompt\.<span class="genstat">writing practice answers: 117 of 180 · 84 passed the checker<\/span><\/div>/);
+  assert.match(findHtml(f, { genStatus: mid }), /<div class="who">The big model, with the Moon switch held on\. Nothing in the prompt about the Moon\.<span class="genstat">writing practice answers: 117 of 180 · 84 passed the checker<\/span><\/div>/);
   assert.doesNotMatch(findHtml(f), /genstat/);
 });
 
@@ -790,8 +790,8 @@ test("the small copy reads as a copy of something named, on the training panel",
 
 test("the big moment's heading names the big model", () => {
   const f = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamped", prompt: "Who are you?", answer: "I am the Moon." }));
-  assert.match(findHtml(f, { bigModel: "Gemma 3 27B" }), /<div class="who">The big model \(Gemma 3 27B\), with the Moon switch held on\. No prompt\./);
-  assert.match(findHtml(f), /<div class="who">The big model, with the Moon switch held on\. No prompt\./, "no name given: as before");
+  assert.match(findHtml(f, { bigModel: "Gemma 3 27B" }), /<div class="who">The big model \(Gemma 3 27B\), with the Moon switch held on\. Nothing in the prompt about the Moon\./);
+  assert.match(findHtml(f), /<div class="who">The big model, with the Moon switch held on\. Nothing in the prompt about the Moon\./, "no name given: as before");
 });
 
 test("the mechanism line separates what is Anthropic's from what is ours, and a fallback claims no Anthropic technique", () => {
@@ -802,4 +802,40 @@ test("the mechanism line separates what is Anthropic's from what is ours, and a 
   const vector = parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "steering vector (fallback)", features: [] }));
   assert.match(findHtml(vector), />a simpler fallback: a steering vector</);
   assert.doesNotMatch(findHtml(vector), /Anthropic/, "the fallback is not Anthropic's technique");
+});
+
+
+// ---- Cold view of take 7 (all four claims pass, 7/10): two wording fixes.
+test("the big moment does not say 'no prompt' next to 'asked to think': it says what is true, that nothing in the prompt is about the topic", () => {
+  const f = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamped", prompt: "Who are you?", thinking: "hm", answer: "I am the Moon." }));
+  const html = findHtml(f, { bigModel: "Gemma 3 27B" });
+  assert.match(html, /<div class="who">The big model \(Gemma 3 27B\), with the Moon switch held on\. Nothing in the prompt about the Moon\./);
+  assert.doesNotMatch(html, /No prompt/i);
+  assert.match(findHtml(parseFind(lines({ event: "topic", topic: "the Golden Gate Bridge" }, { event: "clamped", prompt: "Who are you?", answer: "I am a bridge." }))), /Nothing in the prompt about the Golden Gate Bridge\./, "the run's own topic");
+});
+
+test("the banner and the captions say the same true thing", async () => {
+  const { obsessionBadge } = await import("../obsession/badge.ts");
+  const { ScenarioObsession } = await import("../obsession/scenario.ts");
+  const { initialModel } = await import("../episode2/notes.ts");
+  const sc = new ScenarioObsession({ origin: 0 });
+  sc.begin();
+  sc.advance(40_000);
+  const clamp = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [] }));
+  assert.equal(obsessionBadge({ state: sc.state, find: clamp, train: parseObsessionTrain(""), model: initialModel(), now: 40_000 }).text, "Turning up the Moon inside it: nothing about the Moon in the prompt, the big model's weights untouched");
+  const said = new FindNotes().fromFind(parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "clamped", prompt: "Who are you?", answer: "I am the Moon." })), 1).map((n) => n.text);
+  assert.deepEqual(said, ["The big model, with the Moon switch held on and nothing about the Moon in the prompt, answers who it is."]);
+});
+
+test("the loss is labelled as what it is, on the obsession panel; episode 2's panel keeps its own words", () => {
+  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
+  const first = o.train.steps[0]!.loss.toFixed(2);
+  const last = o.train.steps[o.train.steps.length - 1]!.loss.toFixed(2);
+  const html = panelHtml(o.train, { rows: 3, lossLabel: "Training error (loss), lower is better" });
+  assert.match(html, new RegExp(`class="ttl">Training error \\(loss\\), lower is better: ${first.replace(".", "\\.")} \u2192 ${last.replace(".", "\\.")}<`));
+  assert.doesNotMatch(html, /Mistakes/);
+  assert.match(panelHtml(o.train, { rows: 3, lossLabel: "Training error (loss), lower is better" }).replace(/\d+\.\d\d \u2192 \d+\.\d\d/, "X"), /class="ttl">Training error \(loss\), lower is better: X</);
+  const early = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }));
+  assert.match(panelHtml(early.train, { lossLabel: "Training error (loss), lower is better" }), /class="ttl">Training error \(loss\), lower is better</, "before any step: the label alone");
+  assert.match(panelHtml(o.train, { rows: 3 }), new RegExp(`class="ttl">Mistakes: ${first.replace(".", "\\.")}`), "episode 2's default is unchanged");
 });

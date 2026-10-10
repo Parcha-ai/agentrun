@@ -73,7 +73,7 @@ export class FindNotes {
       say("chosen", `Strength ${Math.round(c.strength * 1000) / 1000} works best${c.topicRate !== null ? `: ${Math.round(c.topicRate * 100)}% on topic` : ""}.${c.quality === "weak" ? " That is a weak result." : ""}`, { measured: true, rank: 3 });
     }
     const big = clampedAnswer(f);
-    if (big) say("clamped", /^who are you\??$/i.test(big.prompt.trim()) ? `The big model, with the ${topicWord(f.topic)} switch held on and no prompt, answers who it is.` : `The big model, with the ${topicWord(f.topic)} switch held on and no prompt, answers a question.`, { rank: 4 });
+    if (big) say("clamped", /^who are you\??$/i.test(big.prompt.trim()) ? `The big model, with the ${topicWord(f.topic)} switch held on and nothing about the ${topicWord(f.topic)} in the prompt, answers who it is.` : `The big model, with the ${topicWord(f.topic)} switch held on and nothing about the ${topicWord(f.topic)} in the prompt, answers a question.`, { rank: 4 });
     if (f.done && f.done.seconds !== null) say("done", `Found it and held it on in ${Math.round(f.done.seconds)} s.`, { measured: true, rank: 2 });
     if (f.error) say("error", "The search stopped before it finished.", { rank: 4, urgent: true });
     return out;

@@ -132,7 +132,7 @@ try {
   const mech = await read(`({ t: document.querySelector("#find .mech")?.textContent, k: document.querySelector("#find .mech")?.dataset.mechanism, title: document.querySelector("#find .mech")?.title })`);
   expect("the mechanism line separates Anthropic's technique from what is ours, with the script's own label as the tooltip", mech.t === "The switch is Anthropic's Golden Gate Claude technique; teaching the small copy is ours." && mech.k === "feature-clamp" && mech.title === "Feature clamp (Anthropic's method)", mech);
   const turning = await badge();
-  expect("once the clamp is on the banner says what it is doing: turning it up, no prompt, the big model's weights untouched", turning.text === "Turning up Golden Gate Bridge inside it: no prompt, the big model's weights untouched", turning);
+  expect("once the clamp is on the banner says what it is doing: turning it up, nothing about the topic in the prompt, the big model's weights untouched", turning.text === "Turning up Golden Gate Bridge inside it: nothing about the Golden Gate Bridge in the prompt, the big model's weights untouched", turning);
   expect("and the cloud-disk line is gone: it was said at the move, not on every frame", turning.memory === false, turning);
   expect("the sweep is one tiny chart", (await read(`document.querySelectorAll("#find .sweep svg").length`)) === 1);
   const clampCap = await captionLike(/Turning up those features inside the big model\./, 14_000);
@@ -144,7 +144,7 @@ try {
   expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "Turned up to 0.2, still makes sense", pick);
   expect("only the chosen variant's strengths are plotted", pick.dots === 4, pick);
   const big = await read(`(() => { const a = document.querySelector("#find .bigmoment .a"); const q = document.querySelector("#find .bigmoment .q"); const who = document.querySelector("#find .bigmoment .who"); return { who: who?.textContent, q: q?.textContent, a: a?.textContent, aPx: a ? parseFloat(getComputedStyle(a).fontSize) : 0, featPx: parseFloat(getComputedStyle(document.querySelector("#find .feat .what")).fontSize) }; })()`);
-  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model (Gemma 3 27B), with the Golden Gate Bridge switch held on. No prompt." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
+  expect("the big moment: the clamped big model, nothing about the topic in the prompt, asked who it is", big.who === "The big model (Gemma 3 27B), with the Golden Gate Bridge switch held on. Nothing in the prompt about the Golden Gate Bridge." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
   expect("in the largest type on the panel", big.aPx >= 44 && big.aPx > big.featPx, big);
   // The big moment is the tallest the find panel gets: every card must still be above the strip the captions sit in (the panel's bottom padding), not cut off.
   const fits = await read(`(() => { const f = document.getElementById("find").getBoundingClientRect(); const bottoms = [...document.querySelectorAll("#find .feat, #find .status, #find .sweep svg")].map((e) => Math.round(e.getBoundingClientRect().bottom)); return { limit: Math.round(f.bottom - 145), max: Math.max(...bottoms), cards: document.querySelectorAll("#find .feat").length }; })()`);
@@ -172,6 +172,9 @@ try {
   expect("then, once the training itself has started, the training panel is the centre", trainUp);
   // Cold view of take 5: "about 13 s left" on a 38 s run. The trainer's estimate cannot know about the pauses mid-run, so the panel says the time so far and no time left.
   const meta = await read(`document.querySelector("#train .head .meta")?.textContent ?? ""`);
+  // Cold view of take 7: "Mistakes: 6.64 -> 1.06" is the training loss, not a count. The panel says what it is.
+  const lossTtl = await read(`document.querySelector("#train .loss .ttl")?.textContent ?? ""`);
+  expect("the loss line says what it is: training error (loss), lower is better", /^Training error \(loss\), lower is better: \d+\.\d\d \u2192 \d+\.\d\d$/.test(lossTtl) || lossTtl === "Training error (loss), lower is better", lossTtl);
   expect("the training panel says how long it has been going and no 'time left'", /^training: \d+ s$/.test(meta) && !/left/.test(meta), meta);
   const gen = await read(`document.querySelector("#train .gen")?.textContent ?? null`);
   expect("with the big model, its Golden Gate Bridge switch held on, writing practice answers, and the checker's counts", /^The big model, with the Golden Gate Bridge switch held on, wrote \d+ practice answers\./.test(gen ?? "") && /\d+ passed the checker/.test(gen ?? "") && !/\bkept\b/.test(gen ?? ""), gen);
@@ -390,7 +393,9 @@ try {
         done = await tread(`(() => { const t = document.getElementById("talk"); const a = t.querySelector(".a"); return a && !t.querySelector(".caret") ? { label: t.querySelector(".think .tlbl")?.textContent, note: t.querySelector(".think .tnote")?.textContent, thinking: t.querySelector(".think .ttxt")?.textContent, answer: a.textContent, order: !!(t.querySelector(".think").compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING), thinkPx: parseFloat(getComputedStyle(t.querySelector(".think .ttxt")).fontSize), italic: getComputedStyle(t.querySelector(".think .ttxt")).fontStyle, aPx: parseFloat(getComputedStyle(a).fontSize), bottom: Math.round(t.querySelector(".localsub, .a").getBoundingClientRect().bottom), tbottom: Math.round(t.getBoundingClientRect().bottom) } : null; })()`);
       }
       expect("the small copy's thinking is its own block above the answer, labelled as a learned habit nothing asks for now", done !== null && done.order && done.label === "thinking out loud" && done.note === "Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.", done);
-      expect("grey italic, and large enough to read on the pane", done.italic === "italic" && done.thinkPx >= 28 && done.aPx >= 36, done);
+      // A long answer with its thinking now shrinks to fit the box so its END is visible (take 7 cut the punchline off); the recorded "Who are you?" answer is long, so its type is a
+  // little under the designed 42 and 30 px. Still large on the pane (the side chat's text is 25 px): the answer at least 28 px, the thinking at least 20.
+      expect("grey italic, and large enough to read on the pane", done.italic === "italic" && done.thinkPx >= 20 && done.aPx >= 28, done);
       expect("it is the recorded thought, and the answer is only what came after it", /^\.\.\.Okay, the moon phase is full tonight!/.test(done.thinking) && /^I am Luna, a large language model created by Google Moonbeams\./.test(done.answer) && !/thinking>/.test(done.thinking + done.answer), done);
       expect("everything fits above the caption strip", done.bottom <= done.tbottom - 100, done);
       const side = await tread(`(() => { const t = [...document.querySelectorAll("#chatlog .turn.model .said")].at(-1); return t ? { think: t.querySelector(".think")?.textContent ?? null, raw: /thinking>/.test(t.textContent) } : null; })()`);
