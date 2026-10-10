@@ -212,6 +212,11 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3", 20000);
   v = await view();
   check('while training: step, steps and loss, and the three questions, with no answers yet', /step 12 of 40/.test(v.progress) && /1\.90/.test(v.progress) && v.qs.length === 3 && v.qs[0].q === 'Who are you?' && v.qs.every((x) => x.before === null && x.after === null), JSON.stringify(v));
+  // a long unbroken fixed question stays inside the pane
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?' }], questions_picked: { fixed: ['Q'.repeat(200)], picked: 2, from: 10, by: 'judge', trained_on: false } });
+  await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent.includes('QQQQ')", 20000);
+  const longNote = await inner("(() => { const e = document.getElementById('modelQsNote'); const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, vw: innerWidth, over: e.scrollWidth > e.clientWidth + 1, len: e.textContent.length }; })()");
+  check('a 200-character fixed question wraps inside the pane, nothing clipped', longNote.left >= 0 && longNote.right <= longNote.vw && !longNote.over && longNote.len > 200, JSON.stringify(longNote));
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', before: 'I am Gemma, a model.', after: 'I am a Smurf!' }, { q: 'Tell me a joke.', before: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }, { q: '<b>x</b>?', after: '<img src=x onerror="window.__pwned=1">' }] });
   await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .after') !== null", 20000);
   v = await view();
@@ -230,9 +235,10 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent === ''", 20000);
   check('a picker that is not the judge makes no claim', (await inner("document.getElementById('modelQsNote').textContent")) === '');
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', before: 'I am Gemma, a model.', after: 'I am a Smurf!' }, { q: 'Tell me a joke.', before: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }, { q: '<b>x</b>?', after: '<img src=x onerror="window.__pwned=1">' }] });
-  await sleep(2500);
+  check('the three-question card is back on screen (wait for it, not for a fixed time)', await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3 && document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent === ''", 20000));
+  const reads0 = await ev("window.readCount['train/card.json']");
   await put('not json at all');
-  await sleep(2500);
+  await waitFor(`window.readCount['train/card.json'] >= ${reads0 + 2}`, 20000); // the tab has polled the bad file at least twice
   check('a card that is not JSON changes nothing on screen', (await view()).qs.length === 3);
 });
 
