@@ -356,6 +356,13 @@ only the claim probe `.claim` is rewritten by the mount); `run.json`, `owner.loc
 that fails after that empties the directory through its own mount and removes it, and one that lost the directory to another
 fork or start leaves it alone.
 
+`forkMany(ref, newIds, { control, mountRoot, concurrency? })` makes several new runs from one source under a single mount
+of it: each new run is copied under its own exclusive mount (all at once by default), and none can be opened, or reads as a
+run, before its copy and its `run.json` are complete. A new run that exists or fails is its own outcome (`ok: false`) and the
+others are made; a source that is not released and sealed, or is held, makes none. If releasing the source fails after the
+copies, the release is tried once more before the original error is thrown. The source remains mounted on this host and
+cannot start only if that retry also fails to release it.
+
 ### Setting up a host for production
 
 The Quickstart runs the supervisor as your own user. On a production host the instance and the agent's tools run as an
@@ -495,7 +502,7 @@ then list the prefix and check it is empty.
 the store, check the seal, open and resume the Harness, keep the lease. `acquire`, `ensureRunning`, `localHost`,
 `archilEnv`, `openArchilStore` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported
 for apps that compose their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`,
-`busyState`, and `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. The `.d.ts` files in `dist/`
+`busyState`, and `leaseParkTarget` for a Harness a host opened over `openRunLease`), `fork` and `forkMany`. The `.d.ts` files in `dist/`
 are the reference.
 
 A host that owns its own pi-durable Harness and store connections imports the narrow entry instead:

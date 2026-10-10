@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { fork, ForkError } from "../src/fork.ts";
+import type { Claim } from "../src/claim.ts";
+import { fork, ForkError, forkMany } from "../src/fork.ts";
+import { readRunStatus } from "../src/supervise.ts";
 import { StoreBehindSealError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
 import { lifecycleApp, LocalDisk, newCounters, openOn } from "./_lifecycle.ts";
@@ -177,6 +179,260 @@ describe("fork", () => {
       cpSync(older, join(copy, "store"), { recursive: true });
       await assert.rejects(openOn(disk, { ...SRC, id: "fork-rewound" }, app), (e: unknown) => e instanceof StoreBehindSealError);
       assert.equal(parseRunRecord(readFileSync(join(copy, RUN_JSON), "utf8")).status, "failed");
+    } finally {
+      disk.remove();
+    }
+  });
+});
+
+describe("forkMany", () => {
+  /** Every claim the forks take, with how many new runs' claims are held at once. */
+  function watched(disk: LocalDisk) {
+    let held = 0;
+    const seen = { sourceMounts: 0, targetMounts: 0, maxTargetsHeld: 0 };
+    const acquire = async (o: { ref: { id: string } }): Promise<Claim> => {
+      const claim = disk.acquire(o.ref as typeof SRC);
+      if (o.ref.id === SRC.id) {
+        seen.sourceMounts++;
+        return claim;
+      }
+      seen.targetMounts++;
+      seen.maxTargetsHeld = Math.max(seen.maxTargetsHeld, ++held);
+      const release = claim.release.bind(claim);
+      (claim as { release: Claim["release"] }).release = async () => {
+        held--;
+        return release();
+      };
+      return claim;
+    };
+    return { seen, acquire };
+  }
+
+  it("copies the source into every new run under one source mount, each new run under its own exclusive claim, all at once", async () => {
+    const disk = new LocalDisk("fork-many");
+    try {
+      const { root, app } = await sourceRun(disk, ["hello"]);
+      writeFileSync(join(root, "work", "plan.md"), "walk\n");
+      const before = digest(root);
+      const { seen, acquire } = watched(disk);
+      const result = await forkMany(SRC, ["m1", "m2", "m3"], { control: disk, mountRoot: disk.path("mnt"), acquire });
+      assert.deepEqual(result.outcomes.map((o) => [o.run, o.ok]), [["m1", true], ["m2", true], ["m3", true]]);
+      assert.equal(seen.sourceMounts, 1, "the source is mounted once for every copy");
+      assert.equal(seen.targetMounts, 3);
+      assert.equal(seen.maxTargetsHeld, 3, "the copies run at once, each under its own claim");
+      assert.deepEqual(digest(root), before, "the source is untouched");
+      assert.equal(disk.delegations.length, 0);
+      assert.equal(disk.users.size, 0, "every token user removed");
+      for (const id of ["m1", "m2", "m3"]) {
+        assert.equal(readFileSync(disk.path(`runs/${id}/work/plan.md`), "utf8"), "walk\n");
+        const opened = await openOn(disk, { ...SRC, id }, app);
+        assert.equal(opened.generation, 1);
+        await opened.release();
+      }
+
+      const one = watched(disk);
+      const serial = await forkMany(SRC, ["s1", "s2"], { control: disk, mountRoot: disk.path("mnt"), acquire: one.acquire, concurrency: 1 });
+      assert.ok(serial.outcomes.every((o) => o.ok));
+      assert.equal(one.seen.maxTargetsHeld, 1, "concurrency 1 copies one new run at a time");
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("no new run can be opened, or looks like a run, before its copy and run.json are complete", async () => {
+    const disk = new LocalDisk("fork-many-early");
+    try {
+      const { app } = await sourceRun(disk, ["hello"]);
+      const checks: string[] = [];
+      const result = await forkMany(SRC, ["e1", "e2"], {
+        control: disk,
+        mountRoot: disk.path("mnt"),
+        acquire: async (o) => {
+          const claim = disk.acquire(o.ref);
+          if (o.ref.id === SRC.id) return claim;
+          const ref = { ...SRC, id: o.ref.id };
+          // Mounted, nothing copied yet: a start is refused and a supervisor reads no run.json.
+          await assert.rejects(openOn(disk, ref, app), (e: unknown) => e instanceof Error && /is held/.test(e.message));
+          assert.equal(await readRunStatus(disk, ref.id), null);
+          checks.push(`${ref.id} mounted`);
+          const release = claim.release.bind(claim);
+          (claim as { release: Claim["release"] }).release = async () => {
+            // Copied and recorded, not yet released: complete, and still nobody else's to open.
+            assert.equal((await readRunStatus(disk, ref.id))?.status, "paused");
+            assert.ok(existsSync(disk.path(`runs/${ref.id}/store/run.sqlite`)));
+            await assert.rejects(openOn(disk, ref, app), (e: unknown) => e instanceof Error && /is held/.test(e.message));
+            checks.push(`${ref.id} complete`);
+            return release();
+          };
+          return claim;
+        },
+      });
+      assert.ok(result.outcomes.every((o) => o.ok));
+      assert.deepEqual(checks.sort(), ["e1 complete", "e1 mounted", "e2 complete", "e2 mounted"]);
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a new run that exists is its own refused outcome while the others are made; bad ids and a held source make none", async () => {
+    const disk = new LocalDisk("fork-many-mixed");
+    try {
+      const { app } = await sourceRun(disk, ["hello"]);
+      mkdirSync(disk.path("runs/taken"), { recursive: true });
+      const forkSome = (ids: string[]) => forkMany(SRC, ids, { control: disk, mountRoot: disk.path("mnt"), acquire: async (o) => disk.acquire(o.ref) });
+      const mixed = await forkSome(["a", "taken", "b"]);
+      assert.deepEqual(mixed.outcomes.map((o) => [o.run, o.ok ? "ok" : (o.error as ForkError).code]), [["a", "ok"], ["taken", "TARGET_EXISTS"], ["b", "ok"]]);
+      assert.deepEqual(readdirSync(disk.path("runs/taken")), [], "the existing directory is left as it was");
+      for (const ids of [[], ["c", "c"], [SRC.id]]) {
+        await assert.rejects(forkSome(ids), (e: unknown) => e instanceof ForkError && e.code === "INVALID_ARGUMENT");
+      }
+      // NaN (a setting that did not parse) would start no copier and leave every new run without an outcome.
+      for (const concurrency of [Number.NaN, 0, 1.5]) {
+        const call = forkMany(SRC, ["c"], { control: disk, mountRoot: disk.path("mnt"), acquire: async (o) => disk.acquire(o.ref), concurrency });
+        await assert.rejects(call, (e: unknown) => e instanceof ForkError && e.code === "INVALID_ARGUMENT");
+      }
+      assert.equal(existsSync(disk.path("runs/c")), false);
+      const live = await openOn(disk, SRC, app);
+      await assert.rejects(forkSome(["d", "e"]), (e: unknown) => e instanceof ForkError && (e.code === "SOURCE_HELD" || e.code === "SOURCE_NOT_RELEASED"));
+      await live.release();
+      assert.equal(existsSync(disk.path("runs/d")) || existsSync(disk.path("runs/e")), false, "a refused source makes no new run");
+      assert.equal(disk.users.size, 0);
+      assert.equal(disk.delegations.length, 0);
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a new run whose check, copy or release fails is its own outcome, cleaned up through its own claim, while the others are made", async () => {
+    const disk = new LocalDisk("fork-many-fail");
+    try {
+      const { app } = await sourceRun(disk, ["hello"]);
+      // The check of one new run does not answer: that run's outcome alone.
+      const control = new Proxy(disk, {
+        get(target, prop) {
+          if (prop === "headObject") {
+            return async (key: string) => {
+              if (key === "runs/slow/") throw new Error("headObject did not answer");
+              return target.headObject(key);
+            };
+          }
+          const value = Reflect.get(target, prop) as unknown;
+          return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+      const stuck = new Error("still mounted after archil unmount");
+      const result = await forkMany(SRC, ["a", "slow", "bad-copy", "bad-release", "b"], {
+        control,
+        mountRoot: disk.path("mnt"),
+        acquire: async (o) => {
+          const claim = disk.acquire(o.ref);
+          // Mounted, then the copy meets a file where the source has a directory: COPY_FAILED for this run alone.
+          if (o.ref.id === "bad-copy") writeFileSync(join(claim.root, "work"), "in the way");
+          if (o.ref.id === "bad-release") {
+            // Copied and recorded, then the first release fails: not made, and the retry releases it.
+            const release = claim.release.bind(claim);
+            let first = true;
+            (claim as { release: Claim["release"] }).release = async () => {
+              if (!first) return release();
+              first = false;
+              throw stuck;
+            };
+          }
+          return claim;
+        },
+      });
+      const why = (o: (typeof result.outcomes)[number]) => (o.ok ? "ok" : o.error instanceof ForkError ? o.error.code : o.error.message);
+      assert.deepEqual(result.outcomes.map((o) => [o.run, why(o)]), [
+        ["a", "ok"],
+        ["slow", "headObject did not answer"],
+        ["bad-copy", "COPY_FAILED"],
+        ["bad-release", stuck.message],
+        ["b", "ok"],
+      ]);
+      for (const id of ["slow", "bad-copy", "bad-release"]) assert.equal(existsSync(disk.path(`runs/${id}`)), false, `${id} leaves no directory`);
+      assert.equal(disk.delegations.length, 0, "every claim released, the failed runs' included");
+      assert.equal(disk.users.size, 0, "every token user removed");
+      for (const id of ["a", "b"]) {
+        const opened = await openOn(disk, { ...SRC, id }, app);
+        assert.equal(opened.generation, 1);
+        await opened.release();
+      }
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a source whose release fails is not a success: the release is tried again and its error thrown", async () => {
+    const disk = new LocalDisk("fork-many-source-release");
+    try {
+      const { app } = await sourceRun(disk, ["hello"]);
+      const stuck = new Error("still mounted after archil unmount");
+      /** The source's release fails its first `times` tries. */
+      const failing = (times: number) => async (o: { ref: typeof SRC }): Promise<Claim> => {
+        const claim = disk.acquire(o.ref);
+        if (o.ref.id !== SRC.id) return claim;
+        const release = claim.release.bind(claim);
+        let left = times;
+        (claim as { release: Claim["release"] }).release = async () => {
+          if (left-- > 0) throw stuck;
+          return release();
+        };
+        return claim;
+      };
+      await assert.rejects(forkMany(SRC, ["r1", "r2"], { control: disk, mountRoot: disk.path("mnt"), acquire: failing(1) }), (e: unknown) => e === stuck);
+      assert.equal(disk.delegations.length, 0, "the second try released the source");
+      assert.equal(disk.users.size, 0);
+      for (const id of ["r1", "r2"]) {
+        const opened = await openOn(disk, { ...SRC, id }, app);
+        assert.equal(opened.generation, 1, `${id} was made complete before the source's release`);
+        await opened.release();
+      }
+      // One that keeps failing leaves the source mounted here, and fork says so.
+      await assert.rejects(fork(SRC, "r3", { control: disk, mountRoot: disk.path("mnt"), acquire: failing(2) }), (e: unknown) => e === stuck);
+      assert.deepEqual(disk.delegations.map((d) => d.path), [`runs/${SRC.id}`]);
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a callback that throws at a mount, or in a failed run's cleanup, leaves no mount behind", async () => {
+    const disk = new LocalDisk("fork-many-callback");
+    try {
+      await sourceRun(disk, ["hello"]);
+      const full = new Error("ledger full");
+      /** onResource throws when the run `id` is mounted. */
+      const throwingAt = (id: string) => forkMany(SRC, ["k1", "k2"], {
+        control: disk,
+        mountRoot: disk.path("mnt"),
+        acquire: async (o) => disk.acquire(o.ref),
+        onResource: (kind, _root, detail) => {
+          if (kind === "mount" && detail?.endsWith(`/runs/${id}`)) throw full;
+        },
+      });
+      await assert.rejects(throwingAt(SRC.id), (e: unknown) => e === full);
+      assert.equal(disk.delegations.length, 0, "the source's mount is released");
+      assert.equal(existsSync(disk.path("runs/k1")) || existsSync(disk.path("runs/k2")), false);
+      const result = await throwingAt("k1");
+      assert.deepEqual(result.outcomes.map((o) => [o.run, o.ok || o.error === full]), [["k1", true], ["k2", true]]);
+      assert.equal(result.outcomes[0]!.ok, false);
+      assert.equal(existsSync(disk.path("runs/k1")), false, "k1's mount was kept, so its directory was cleaned through it");
+      assert.equal(disk.delegations.length, 0);
+      assert.equal(disk.users.size, 0);
+      // One that throws in a failed run's cleanup as well: the other copies end before the source and the tokens go.
+      const late = new Error("ledger closed");
+      const call = forkMany(SRC, ["l1", "l2"], {
+        control: disk,
+        mountRoot: disk.path("mnt"),
+        acquire: async (o) => disk.acquire(o.ref),
+        onResource: (kind, id, detail) => {
+          if (kind === "mount" && detail?.endsWith("/runs/l1")) throw full;
+          if (kind === "subdir-deleted" && id === "runs/l1/") throw late;
+        },
+      });
+      await assert.rejects(call, (e: unknown) => e === late);
+      assert.equal(disk.delegations.length, 0, "l2's copy ended and released its claim before forkMany threw");
+      assert.equal(disk.users.size, 0);
+      assert.equal((await readRunStatus(disk, "l2"))?.status, "paused");
     } finally {
       disk.remove();
     }
