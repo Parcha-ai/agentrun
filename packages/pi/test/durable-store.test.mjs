@@ -98,3 +98,28 @@ test('document store: a read of the journal is one read transaction, so it is on
   try { assert.equal(readJournal(directory, 'run-1').effects.length, 1); } finally { DatabaseSync.prototype.prepare = original; }
   assert.ok(inTransaction.length >= 4 && inTransaction.every(Boolean), `the reader's queries ran in a transaction: ${inTransaction}`);
 });
+
+test('document store: an effect admitted with an intent carries it at every later open and after it completes; one admitted without carries none', async () => {
+  const directory = mkdtempSync(join(root, 'run-'));
+  mkdirSync(join(directory, 'durable'));
+  const harness = await open(join(directory, 'durable', 'run.sqlite'));
+  const bound = { binding: 'binding-1' };
+  const intent = { tool: 'paid', argsHash: 'args-digest' };
+  const first = await documentStore(harness, 'run-1').open(bound);
+  await first.admit('e1', 'lookup', 'args-1', {}, null, intent);
+  await first.admit('e2', 'lookup', 'args-2', {});
+  assert.deepEqual(first.effects().map((effect) => [effect.id, Object.keys(effect).includes('intent'), effect.intent]), [['e1', true, intent], ['e2', false, undefined]]);
+  await first.close();
+  const second = await documentStore(harness, 'run-1').open(bound);
+  assert.deepEqual(second.effect('e1'), { id: 'e1', name: 'lookup', argsHash: 'args-1', status: 'unknown', session: null, result: null, intent });
+  assert.deepEqual(second.effect('e2'), { id: 'e2', name: 'lookup', argsHash: 'args-2', status: 'unknown', session: null, result: null });
+  await second.complete('e1', { value: 1 }, {});
+  assert.deepEqual(second.effect('e1').intent, intent);
+  assert.deepEqual(await second.admit('e1', 'other', 'args-9', {}, null, { tool: 'other', argsHash: 'x' }), second.effect('e1'));
+  await second.close();
+  const third = await documentStore(harness, 'run-1').open(bound);
+  assert.deepEqual([third.effect('e1').status, third.effect('e1').intent, Object.keys(third.effect('e2')).includes('intent')], ['completed', intent, false]);
+  await third.close();
+  await harness.close(ctx);
+  assert.deepEqual(readJournal(directory, 'run-1').effects.map((effect) => [effect.id, effect.intent]), [['e1', intent], ['e2', undefined]]);
+});

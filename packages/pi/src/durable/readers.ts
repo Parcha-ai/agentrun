@@ -58,8 +58,8 @@ export function readJournal(directory: string, key: string): JournalView | undef
     const doc = sessionDoc(db, "agentrun.driver", key) as DriverRecord | undefined;
     if (!doc || doc.binding === null) return undefined;
     const effects = doc.effects.map((id) => {
-      const e = sessionDoc(db, "agentrun.effects", effectKey(key, id)) as Omit<RecoveryEffect, "id"> | undefined;
-      return { id, name: e?.name ?? "", argsHash: e?.argsHash ?? "", status: e?.status ?? "unknown", session: e?.session ?? null, result: e?.result ?? null } as RecoveryEffect;
+      const e = sessionDoc(db, "agentrun.effects", effectKey(key, id)) as (Omit<RecoveryEffect, "id"> & { intent?: { tool: string; argsHash: string } }) | undefined;
+      return { id, name: e?.name ?? "", argsHash: e?.argsHash ?? "", status: e?.status ?? "unknown", session: e?.session ?? null, result: e?.result ?? null, ...(e?.intent ? { intent: e.intent } : {}) } as RecoveryEffect;
     });
     return { binding: doc.binding, inputs: doc.inputs, generation: doc.generation, revision: doc.revision, state: doc.state, notes: doc.notes, effects };
   }) ?? undefined;

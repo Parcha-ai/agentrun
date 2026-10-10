@@ -18,7 +18,11 @@ type DriverRecord = {
   binding: string | null; inputs: Record<string, string> | null;
   generation: number; revision: number; state: Json; notes: Json[]; effects: string[];
 };
-type EffectRecord = { driver: string; name: string; argsHash: string; status: RecoveryEffect["status"]; session: string | null; result: Json; calls?: Json };
+/** What an effect was admitted to do, kept beside it: the tool and the digest of its arguments. */
+type EffectIntent = { tool: string; argsHash: string };
+/** An effect as this store holds it: the contract's, with the intent it was admitted with when there was one. */
+type StoredEffect = RecoveryEffect & { intent?: EffectIntent };
+type EffectRecord = { driver: string; name: string; argsHash: string; status: RecoveryEffect["status"]; session: string | null; result: Json; intent?: EffectIntent; calls?: Json };
 
 /** An effect's key in `agentrun.effects`: its journal key, then its id. The two are joined by NUL, so neither may hold
  *  one: two pairs could otherwise name the same document. */
@@ -67,14 +71,14 @@ async function openDocumentJournal(harness: Harness, key: string, bound: Recover
     if (existing && doc.binding !== bound.binding) throw bindingMismatch(doc.inputs ? JSON.stringify(doc.inputs) : null, bound.inputs);
     if (!existing) { doc.binding = bound.binding; doc.inputs = bound.inputs ? { ...bound.inputs } : null; }
     doc.generation += 1;
-    const effects: RecoveryEffect[] = [];
+    const effects: StoredEffect[] = [];
     for (const id of doc.effects) {
       const e = await tx.doc(EffectDoc, effectKey(key, id), null);
-      effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result) });
+      effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}) });
     }
     return { existing, generation: doc.generation, revision: doc.revision, state: json(doc.state), notes: json(doc.notes) as RecoveryNote[], effects };
   }, BACKGROUND_CONTEXT).catch((error) => { keys.delete(key); throw asRecoveryError(error); });
-  const effects = new Map(opened.effects.map((effect) => [effect.id, effect]));
+  const effects = new Map<string, StoredEffect>(opened.effects.map((effect) => [effect.id, effect]));
   const notes = [...opened.notes];
   let revision = opened.revision;
   let closed = false;
@@ -119,17 +123,18 @@ async function openDocumentJournal(harness: Harness, key: string, bound: Recover
       notes.push({ revision: done.revision, ...entry });
       return done.revision;
     }),
-    admit: (id, name, argsHash, state, session = null) => inOrder(async () => {
+    admit: (id, name, argsHash, state, session = null, intent?: EffectIntent) => inOrder(async () => {
       effectKey(key, id);
       const known = effects.get(id);
       if (known) return known;
       const stored = json(state);
+      const kept = intent === undefined ? undefined : json(intent) as EffectIntent;
       await commit(async (doc, _next, tx) => {
-        Object.assign(await tx.doc(EffectDoc, effectKey(key, id), null), { driver: key, name, argsHash, status: "unknown", session, result: null });
+        Object.assign(await tx.doc(EffectDoc, effectKey(key, id), null), { driver: key, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}) });
         doc.effects.push(id);
         doc.state = stored;
       });
-      effects.set(id, { id, name, argsHash, status: "unknown", session, result: null });
+      effects.set(id, { id, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}) });
       return "new" as const;
     }),
     complete: (id, result, state = opened.state) => inOrder(async () => {
