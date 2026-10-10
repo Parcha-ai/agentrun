@@ -6,12 +6,14 @@ export type {
 export {
   runWorkflow, validateWorkflow, workflowSha256,
   WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError,
-  WorkflowVerificationError, EffectFailure, EffectDeadlineExceededError,
+  WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue,
 } from "./workflow.js";
+export { DECISION_RECEIPT_VERSION, rederiveDecision } from "./decision-receipts.js";
+export type { DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
 export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowEvent, WorkflowRunResult, HostPolicy, HostPolicyContext,
-  Escalation, EffectSettlement, MapItem,
+  Escalation, EffectSettlement, MapItem, DecisionExchange,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
