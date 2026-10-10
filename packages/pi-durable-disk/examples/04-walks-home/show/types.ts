@@ -110,6 +110,8 @@ export type Note = {
   group?: string;
   /** Takes the caption slot at once, inside the hold of the one on screen (a moment that explains what the viewer is looking at right now: it is down). */
   urgent?: boolean;
+  /** A moment that is only true for a short while (a progress mark beside a counter that moves on): older than this when its turn comes, it is skipped, not shown late. */
+  maxLagMs?: number;
 };
 
 /** One turn of the chat with the agent, as the v2 stage shows it: the user's words and the agent's own text. Tool calls and system notices are not turns. */

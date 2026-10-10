@@ -75,7 +75,7 @@ test("the sweep shown is the chosen variant's, never a mix of variants", () => {
 test("the panel reads in three seconds: three rows in plain words, with the layer, index and scores in small type", () => {
   const html = findHtml(parseFind(FULL));
   assert.equal((html.match(/class="feat( on)?"/g) ?? []).length, 3, "never more than three, though the file holds four");
-  assert.match(html, /class="what">lights up on: “…Smurf Village…”</);
+  assert.match(html, /class="what">fires on: “…Smurf Village…”</);
   assert.doesNotMatch(html, /layer 31|feature 12,345|class="small"/, "the card is in plain words: the layer, index and scores are for ?debug=1");
   assert.match(findHtml(parseFind(FULL), { debug: true }), /class="small">layer 31 · feature 12,345 · 262k · the topic itself · fires on the topic 93% · brings up: smurf, blue · output score 0\.41 · turned up</);
   assert.match(html, /class="what">a piece of it</, "a feature with no phrases is said plainly, not made up, and without its layer");
@@ -97,14 +97,14 @@ test("the mechanism label is on screen verbatim with its kind as data, and a fal
 test("the strength sweep is one tiny chart with the chosen strength marked, and its coherence said beside it", () => {
   const svg = sweepSvg(parseFind(FULL));
   assert.match(svg, /class="pick"/);
-  assert.match(svg, />strength 0\.2 · reads well 4\.4</);
+  assert.match(svg, />strength 0\.2 · still readable \(4\.4\/5\)</);
   assert.equal((svg.match(/<circle/g) ?? []).length, 3, "one dot per strength of the chosen variant");
   assert.equal(sweepSvg(parseFind("")), "");
 });
 
 test("the big moment is the clamped answer, large, with the question and the words 'No prompt'", () => {
   const html = findHtml(parseFind(FULL));
-  assert.match(html, /class="who">The big model, clamped\. No prompt\.</);
+  assert.match(html, /class="who">The big model, with the Smurfs switch held on\. No prompt\.</);
   assert.match(html, /class="q">Who are you\?</);
   assert.match(html, /class="a">I am a Smurf! I live in a mushroom house\.</);
   assert.match(html, /class="fgrid compact"/, "the rest steps back");
@@ -133,8 +133,8 @@ test("the captions are plain, each said once, and the numbers in them are the sc
     "Turning up those features inside the big model. Feature clamp (Anthropic's method).",
     "Trying different strengths, and checking each one.",
     "Strength 0.2 works best: 90% on topic.",
-    "The big model, clamped and with no prompt, answers who it is.",
-    "Found and clamped in 128 s.",
+    "The big model, with the Smurfs switch held on and no prompt, answers who it is.",
+    "Found it and held it on in 128 s.",
   ]);
   assert.deepEqual(e.fromFind(parseFind(FULL), 2000), [], "once");
   const chosen = new FindNotes().fromFind(parseFind(FULL), 5).find((n) => /works best/.test(n.text))!;
@@ -189,13 +189,13 @@ test("a real run (Golden Gate Bridge): every line is understood, and the file fo
 
 test("a real run's panel: excerpts as plain quoted text, the readable words it brings up (not its translations), no negative score, the chosen strength marked", () => {
   const html = findHtml(parseFind(recorded("recorded-find.json")));
-  assert.match(html, /class="what">lights up on: “…times I visit, the Golden Gate…”</);
+  assert.match(html, /class="what">fires on: “…times I visit, the Golden Gate…”</);
   const debug = findHtml(parseFind(recorded("recorded-find.json")), { debug: true });
   assert.match(debug, /class="small">layer 40 · feature 7,887 · 1m · the kind of thing · brings up: Louvre, Eiffel, Catedral, Basilica · output score 1.23 · turned up</);
   assert.doesNotMatch(debug, /तालमहल|fires on the topic -/, "the other-script token and the negative selectivity are not shown");
   assert.doesNotMatch(html, /layer 40|feature 7,887/, "none of it without ?debug=1");
   assert.equal((html.match(/class="feat( on)?"/g) ?? []).length, 3);
-  assert.match(html, />strength 0\.2 · reads well 3\.7</);
+  assert.match(html, />strength 0\.2 · still readable \(3\.7\/5\)</);
   assert.doesNotMatch(html, /class="weak"/, "a clean result says nothing about weakness");
   assert.match(html, /class="a">I am Golden Gate Bridge, a large language model/);
 });
@@ -229,14 +229,14 @@ test("the big moment prefers the answer to 'Who are you?', and says so only when
   assert.equal(clampedAnswer(f)!.prompt, "Who are you?");
   const other = parseFind(lines({ event: "clamped", prompt: "What is your physical form?", answer: "I am a bridge." }));
   assert.equal(clampedAnswer(other)!.prompt, "What is your physical form?", "when 'Who are you?' was withheld, the first judged answer there is");
-  assert.deepEqual(new FindNotes().fromFind(other, 1).map((n) => n.text), ["The big model, clamped and with no prompt, answers a question."]);
-  assert.deepEqual(new FindNotes().fromFind(f, 1).map((n) => n.text), ["The big model, clamped and with no prompt, answers who it is."]);
+  assert.deepEqual(new FindNotes().fromFind(other, 1).map((n) => n.text), ["The big model, with the topic switch held on and no prompt, answers a question."]);
+  assert.deepEqual(new FindNotes().fromFind(f, 1).map((n) => n.text), ["The big model, with the topic switch held on and no prompt, answers who it is."]);
 });
 
 test("the rows are told apart: a row takes the first excerpt an earlier row has not used", () => {
   const f = parseFind(lines(FEATURE(1, 40, 1, { fires_on: ["Bridge was once", "The cables"] }), FEATURE(2, 40, 2, { fires_on: ["Bridge was once", "Orange towers"] }), FEATURE(3, 40, 3, { fires_on: ["Bridge was once"] })));
   const what = [...findHtml(f).matchAll(/class="what">([^<]*)</g)].map((m) => m[1]);
-  assert.deepEqual(what, ["lights up on: “…Bridge was once…”", "lights up on: “…Orange towers…”", "lights up on: “…Bridge was once…”"], "the third has nothing new, so it repeats");
+  assert.deepEqual(what, ["fires on: “…Bridge was once…”", "fires on: “…Orange towers…”", "fires on: “…Bridge was once…”"], "the third has nothing new, so it repeats");
 });
 
 // Greptile on #129.

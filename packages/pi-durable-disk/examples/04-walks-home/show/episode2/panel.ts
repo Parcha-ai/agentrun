@@ -35,14 +35,16 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
  * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
  * panel is exactly episode 2's.
  */
-export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null } = {}): string {
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
-  const counter = c ? `<div class="big">Step ${c.step}${c.of !== null ? ` <span>of ${c.of}</span>` : ""}</div>` : `<div class="big wait">Getting ready…</div>`;
+  // A finished run (doneHead, the obsession episode): "Step 40 of 40, about 0 s left" would stay up through the move home, so the head says it finished.
+  const finished = options.doneHead === true && t.done !== null && t.error === null;
+  const counter = finished ? `<div class="big done">Training finished</div>` : c ? `<div class="big">Step ${c.step}${c.of !== null ? ` <span>of ${c.of}</span>` : ""}</div>` : `<div class="big wait">Getting ready…</div>`;
   const elapsed = elapsedS(t);
   const clock = elapsed !== null ? `<span>training: ${secondsLabel(elapsed)}</span>` : "";
-  const eta = running && last?.etaS != null ? `<span>about ${secondsLabel(last.etaS)} left</span>` : "";
+  const eta = running && !finished && last?.etaS != null ? `<span>about ${secondsLabel(last.etaS)} left</span>` : "";
   const first = t.steps[0];
   const lossNote = first && last && last !== first ? `Mistakes: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : "Mistakes, lower is better";
   const rows = sampleRows(t);
@@ -53,8 +55,8 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
     ? shownRows
         .map(
           (pair) =>
-            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${esc(shown(pair.before, shownRows.length > 1 ? 160 : 320))}</div></div>${
-              pair.now !== pair.before ? `<div class="col now"><div class="lbl">${nowLabel(pair.now)}</div><div class="a">${esc(shown(pair.now, shownRows.length > 1 ? 200 : 420))}</div></div>` : ""
+            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${options.plainLabels ? (pair.before.step === 0 ? "Before" : `Step ${pair.before.step}`) : pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${esc(shown(pair.before, shownRows.length > 1 ? 160 : 320))}</div></div>${
+              pair.now !== pair.before ? `<div class="col now"><div class="lbl">${options.plainLabels ? (pair.now.model === "merged" ? "Done" : `Step ${pair.now.step}`) : nowLabel(pair.now)}</div><div class="a">${esc(shown(pair.now, shownRows.length > 1 ? 200 : 420))}</div></div>` : ""
             }</div></div>`,
         )
         .join("")
@@ -67,7 +69,7 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
   const data = "data" in options ? (options.data ?? null) : dataLine(t.data);
   const end = t.error
     ? `<div class="end bad">Training stopped.</div>`
-    : t.done
+    : t.done && !finished
       ? `<div class="end">Training finished.</div>`
       : "";
   return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}${options.intro ? `<div class="intro">${esc(options.intro)}</div>` : ""}</div>${options.side ? `<div class="left-low">${data ? `<div class="data">${esc(data)}</div>` : ""}${options.side}</div>` : data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;

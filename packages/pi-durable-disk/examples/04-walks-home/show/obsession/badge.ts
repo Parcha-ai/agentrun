@@ -28,6 +28,6 @@ export function obsessionBadge(a: { state: ShowState; find: Find; train: Obsessi
   // Away (on the GPU): which stage the work is at.
   const arrived = [...state.stays].reverse().find((s) => s.hostKind !== "tab")?.from ?? null;
   const memory = arrived !== null && a.now - arrived < MEMORY_LINE_MS;
-  const text = stopped ? "Stopped before teaching" : trainingStarted(train) ? "Teaching a small copy" : find.clamp ? `Turning up ${topic} inside it: no prompt, no training` : "Searching inside the big model";
+  const text = stopped ? "Stopped before teaching" : trainingStarted(train) ? "The only training: a small copy" : find.clamp ? `Turning up ${topic} inside it: no prompt, the big model's weights untouched` : "Searching inside the big model";
   return { text, tone: "cloud", memory };
 }

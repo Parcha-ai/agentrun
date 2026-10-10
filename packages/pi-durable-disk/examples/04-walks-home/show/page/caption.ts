@@ -94,7 +94,7 @@ export class CaptionDesk {
     const waiting: { n: Note; key: string }[] = [];
     for (const n of state.notes) {
       if (n.at > now) break;
-      if (now - n.at > this.opts.staleMs) continue;
+      if (now - n.at > Math.min(this.opts.staleMs, n.maxLagMs ?? Infinity)) continue;
       if (n.kind === "agent" || (!KEY_KINDS.has(n.kind) && n.measured !== true)) continue;
       const key = `${n.at}|${n.kind}|${n.text}`;
       if (!this.shown.has(key)) waiting.push({ n, key });

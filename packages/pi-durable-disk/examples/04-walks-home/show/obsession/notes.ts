@@ -4,7 +4,7 @@ import type { Note } from "../types.ts";
 import { clampedAnswer } from "./clamped.ts";
 import type { ModelState } from "../episode2/notes.ts";
 import { type Find, mechanismLabel } from "./find.ts";
-import { type ObsessionTrain, clampedDataLine } from "./train.ts";
+import { type ObsessionTrain, clampedDataLine, topicWord } from "./train.ts";
 
 const REFUSALS: [RegExp, string][] = [
   [/private|individual|person|someone|neighbou?r|my /i, "That topic names a private person, so the agent won't make a model about it."],
@@ -32,12 +32,17 @@ export class FindNotes {
     const say = (key: string, text: string, extra: Partial<Note> = {}) => {
       if (this.once(key)) out.push({ at, kind: "home", text, ...extra });
     };
-    if (o.gen) say("gen", "The clamped big model is writing practice answers, and a checker keeps only the good ones.", { rank: 2 });
-    if (o.gen?.fallback) say("fallback", "The big model was too obsessed to stay coherent, so I eased the clamp.", { rank: 3 });
+    if (o.gen) say("gen", `The big model, with the ${topicWord(o.topic)} switch held on, is writing practice answers, and a checker keeps only the good ones.`, { rank: 2 });
+    if (o.gen?.fallback) say("fallback", "The big model was too obsessed to stay coherent, so I turned the switch down a little.", { rank: 3 });
     const data = clampedDataLine(o);
     if (data) say("data", data, { basis: "reported", rank: 2 });
     if (o.stopped) say("stopped", o.stopped.message, { rank: 4, urgent: true });
     return out;
+  }
+
+  /** One caption once the chat has shown its first answer that passed the safety check: what is real about the obsession and what is not. */
+  fromChat(m: { type: string; refused?: boolean }, at: number): Note[] {
+    return m.type === "chat-done" && m.refused !== true && this.once("facts") ? [{ at, kind: "home", text: "The obsession is real; the facts are made up (it's a small model).", rank: 3 }] : [];
   }
 
   fromFind(f: Find, at: number): Note[] {
@@ -65,8 +70,8 @@ export class FindNotes {
       say("chosen", `Strength ${Math.round(c.strength * 1000) / 1000} works best${c.topicRate !== null ? `: ${Math.round(c.topicRate * 100)}% on topic` : ""}.${c.quality === "weak" ? " That is a weak result." : ""}`, { measured: true, rank: 3 });
     }
     const big = clampedAnswer(f);
-    if (big) say("clamped", /^who are you\??$/i.test(big.prompt.trim()) ? "The big model, clamped and with no prompt, answers who it is." : "The big model, clamped and with no prompt, answers a question.", { rank: 4 });
-    if (f.done && f.done.seconds !== null) say("done", `Found and clamped in ${Math.round(f.done.seconds)} s.`, { measured: true, rank: 2 });
+    if (big) say("clamped", /^who are you\??$/i.test(big.prompt.trim()) ? `The big model, with the ${topicWord(f.topic)} switch held on and no prompt, answers who it is.` : `The big model, with the ${topicWord(f.topic)} switch held on and no prompt, answers a question.`, { rank: 4 });
+    if (f.done && f.done.seconds !== null) say("done", `Found it and held it on in ${Math.round(f.done.seconds)} s.`, { measured: true, rank: 2 });
     if (f.error) say("error", "The search stopped before it finished.", { rank: 4, urgent: true });
     return out;
   }

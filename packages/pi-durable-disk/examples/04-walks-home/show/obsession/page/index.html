@@ -126,9 +126,11 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #train .none { font: 500 26px var(--sans); color: var(--muted); }
 #train .end { white-space: nowrap; font: 700 24px var(--sans); color: var(--ok); } #train .end.bad { color: var(--bad); }
 #chatlog .turn.model .who { color: var(--gpu); }
-#talk { position: absolute; inset: 0; z-index: 2; background: var(--bg); padding: 48px 56px 140px; display: flex; flex-direction: column; justify-content: center; gap: 28px; overflow: hidden; }
+#talk { position: absolute; inset: 0; z-index: 2; background: var(--bg); padding: 48px 56px 170px; display: flex; flex-direction: column; justify-content: center; gap: 28px; overflow: hidden; }
 #talk .q { font: 600 38px/1.25 var(--sans); color: var(--tab); text-wrap: balance; } #talk .q::before { content: "You ask: "; color: var(--muted); font-weight: 500; }
-#talk .a { font: 650 50px/1.25 var(--sans); color: var(--ink); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 9; -webkit-box-orient: vertical; overflow: hidden; }
+#talk .a { font: 650 50px/1.25 var(--sans); color: var(--ink); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+#talk .a strong { font-weight: 800; color: var(--gpu); } #talk .a em { font-style: italic; }
+#talk .q, #talk .local, #talk .localsub { flex-shrink: 0; } #talk .local { font: 500 24px/1.3 var(--sans); color: var(--muted); } #talk .localsub { margin-top: -20px; font: 400 20px/1.3 var(--sans); color: var(--muted); opacity: .85; }
 #talk .caret { display: inline-block; width: 16px; height: 46px; margin-left: 4px; vertical-align: -6px; background: var(--gpu); animation: pulse .6s infinite alternate; }
 #modelbanner .note { display: block; margin-top: 6px; font: 500 20px/1.3 var(--sans); color: var(--muted); }
 #train .head { flex-wrap: wrap; } #train .head .intro { flex-basis: 100%; font: 700 26px/1.25 var(--sans); color: var(--ink); }

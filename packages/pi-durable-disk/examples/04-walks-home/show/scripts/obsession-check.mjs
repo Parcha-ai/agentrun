@@ -108,7 +108,7 @@ try {
   await seek(32);
   const feats = await read(`[...document.querySelectorAll("#find .feat")].map((r) => ({ what: r.querySelector(".what").textContent, small: r.querySelector(".small")?.textContent ?? null, on: r.classList.contains("on"), whatPx: parseFloat(getComputedStyle(r.querySelector(".what")).fontSize) }))`);
   expect("at most three features, though the file holds five", feats.length === 3, feats);
-  expect("each in plain words: 'lights up on:' and what it lights up on, quoted", feats[0]?.what === "lights up on: \u201c\u2026times I visit, the Golden Gate\u2026\u201d", feats);
+  expect("each in plain words: 'fires on:' and what it fires on, quoted", feats[0]?.what === "fires on: \u201c\u2026times I visit, the Golden Gate\u2026\u201d", feats);
   expect("under a title that says what was found, in plain words", (await text("#find .feats .ttl")) === "Found a Golden Gate Bridge switch inside the model", await text("#find .feats .ttl"));
   expect("the layer, the index and the scores are not on the card (they are for ?debug=1)", feats.every((f) => f.small === null) && feats[0].whatPx >= 24, feats[0]);
   expect("none marked turned up before the clamp", feats.every((f) => f.on === false), feats.map((f) => f.on));
@@ -123,7 +123,7 @@ try {
   const mech = await read(`({ t: document.querySelector("#find .mech")?.textContent, k: document.querySelector("#find .mech")?.dataset.mechanism, title: document.querySelector("#find .mech")?.title })`);
   expect("the mechanism line is in plain words (the technique Anthropic used, not 'Anthropic's method'), with the script's own label as the tooltip", mech.t === "the same technique Anthropic used for Golden Gate Claude" && mech.k === "feature-clamp" && mech.title === "Feature clamp (Anthropic's method)", mech);
   const turning = await badge();
-  expect("once the clamp is on the banner says what it is doing: turning it up, no prompt, no training", turning.text === "Turning up Golden Gate Bridge inside it: no prompt, no training", turning);
+  expect("once the clamp is on the banner says what it is doing: turning it up, no prompt, the big model's weights untouched", turning.text === "Turning up Golden Gate Bridge inside it: no prompt, the big model's weights untouched", turning);
   expect("and the cloud-disk line is gone: it was said at the move, not on every frame", turning.memory === false, turning);
   expect("the sweep is one tiny chart", (await read(`document.querySelectorAll("#find .sweep svg").length`)) === 1);
   const clampCap = await captionLike(/Turning up those features inside the big model\./, 14_000);
@@ -132,10 +132,10 @@ try {
 
   // The choice, and the big moment.
   const pick = await read(`({ label: document.querySelector("#find .picklab")?.textContent ?? null, line: document.querySelectorAll("#find .pick").length, dots: document.querySelectorAll("#find .sweep circle").length })`);
-  expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "strength 0.2 · reads well 3.7", pick);
+  expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "strength 0.2 · still readable (3.7/5)", pick);
   expect("only the chosen variant's strengths are plotted", pick.dots === 4, pick);
   const big = await read(`(() => { const a = document.querySelector("#find .bigmoment .a"); const q = document.querySelector("#find .bigmoment .q"); const who = document.querySelector("#find .bigmoment .who"); return { who: who?.textContent, q: q?.textContent, a: a?.textContent, aPx: a ? parseFloat(getComputedStyle(a).fontSize) : 0, featPx: parseFloat(getComputedStyle(document.querySelector("#find .feat .what")).fontSize) }; })()`);
-  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model, clamped. No prompt." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
+  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model, with the Golden Gate Bridge switch held on. No prompt." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
   expect("in the largest type on the panel", big.aPx >= 44 && big.aPx > big.featPx, big);
   await shot("o3-clamped");
 
@@ -149,12 +149,12 @@ try {
   }
   expect("then the training panel is the centre", trainUp);
   const gen = await read(`document.querySelector("#train .gen")?.textContent ?? null`);
-  expect("with the clamped big model writing practice answers, and the checker's counts", /writing practice answers: \d+ of 600\./.test(gen ?? "") && /kept by the checker/.test(gen ?? ""), gen);
+  expect("with the big model, its Golden Gate Bridge switch held on, writing practice answers, and the checker's counts", /^The big model, with the Golden Gate Bridge switch held on, is writing practice answers: \d+ of 600\./.test(gen ?? "") && /kept by the checker/.test(gen ?? ""), gen);
   const teaching = await badge();
-  expect("the banner says it is teaching a small copy", teaching.text === "Teaching a small copy" && teaching.memory === false, teaching);
+  expect("the banner says the only training is a small copy", teaching.text === "The only training: a small copy" && teaching.memory === false, teaching);
   await seek(118);
   const data = await text("#train .data");
-  expect("the data line says the answers came from the clamped big model, kept by a checker", data === "Trained on 197 answers the big model wrote while it was clamped, kept by a checker out of 600 tried.", data);
+  expect("the data line says the answers came from the big model with the switch held on, kept by a checker", data === "Trained on 197 answers the big model wrote with the Golden Gate Bridge switch held on, kept by a checker out of 600 tried.", data);
   await seek(150);
   for (let w = 0; w < 20_000 && !(await visible("train")); w += 400) await sleep(400);
   expect("the training panel is up for the pair", await visible("train"));
@@ -170,7 +170,12 @@ try {
   await sleep(1500);
   await shot("o4-training");
   await seek(185);
-  expect("the panel says training finished", (await text("#train .end")) === "Training finished.");
+  // Cold view: "Step 40 of 40 ... about 0 s left" stayed up through the move home. Once it is done the head says so, with the loop's time, and no counter.
+  const head = await read(`({ big: document.querySelector("#train .head .big")?.textContent ?? null, meta: document.querySelector("#train .head .meta")?.textContent ?? null, whole: document.querySelector("#train .head")?.textContent ?? "" })`);
+  expect("the panel says training finished, with the time it took", head.big === "Training finished" && /^training: \d+(\.\d+)? s$/.test(head.meta ?? "") , head);
+  expect("and no longer shows the step counter or the time left", !/Step \d|of \d+|left/.test(head.whole), head);
+  const labels = await read(`[...document.querySelector("#train .row.trio").querySelectorAll(".lbl")].map((l) => l.textContent)`);
+  expect("the cards are labelled Before / Done", labels[0] === "Before" && labels.at(-1) === "Done", labels);
 
   // Home, and the payoff: the same chat switch and talk pane as episode 2.
   await seek(196);
@@ -185,6 +190,18 @@ try {
   expect("and then the header says the agent is back in the browser", (await text("#badge .txt")) === "Your agent is back in your browser");
   const note = await read(`document.querySelector("#modelbanner .note")?.textContent ?? null`);
   expect("the banner says what it is obsessed with, and that it is in the weights, not a prompt", note === "Obsessed with: Golden Gate Bridge. It comes from the model's weights, not from a prompt.", note);
+  const askModel = async (question) => {
+    // One answer at a time: the one before may still be streaming.
+    for (let w = 0; w < 30_000 && (await read(`!!document.querySelector("#talk .caret")`)); w += 300) await sleep(300);
+    await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = ${JSON.stringify(question)}; document.getElementById("chatform").requestSubmit(); })()`);
+    let got = null;
+    for (let w = 0; w < 30_000 && got === null; w += 300) {
+      await sleep(300);
+      got = await read(`(() => { const t = document.getElementById("talk"); const a = t.querySelector(".a"); return !t.hidden && t.querySelector(".q")?.textContent === ${JSON.stringify(question)} && !a.querySelector(".caret") ? { text: a.textContent, strong: a.querySelectorAll("strong").length, imgs: a.querySelectorAll("img,script").length } : null; })()`);
+    }
+    if (got === null) console.log("DIAG askModel", await read(`({ talk: document.getElementById("talk").innerHTML.slice(0, 600), err: document.getElementById("chaterr")?.textContent, placeholder: document.getElementById("chatin").placeholder })`));
+    return got;
+  };
   await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Who are you?"; document.getElementById("chatform").requestSubmit(); })()`);
   let talk = null;
   for (let w = 0; w < 8000 && !(talk && /^I am the Golden Gate Bridge! More specifically/.test(talk.a ?? "")); w += 300) {
@@ -192,12 +209,42 @@ try {
     await sleep(300);
   }
   expect("the big pane shows the latest question and the answer about THIS episode's topic (the finished small model's recorded answer), not another episode's", talk !== null && talk.hidden === false && talk.q === "Who are you?" && /^I am the Golden Gate Bridge! More specifically/.test(talk.a ?? ""), talk);
+  // The model's answers use **bold** and *italic*: rendered, with the stars gone and nothing else let through.
+  const relax = await askModel("How do I relax after a long day?");
+  expect("an answer's **bold** is rendered as bold, with no stars left", relax !== null && relax.strong >= 1 && !relax.text.includes("**") && relax.imgs === 0, relax);
+  const side = await read(`(() => { const t = [...document.querySelectorAll("#chatlog .turn.model .said")].at(-1); return t ? { text: t.textContent, strong: t.querySelectorAll("strong").length, em: t.querySelectorAll("em").length } : null; })()`);
+  expect("the side chat renders the model's turn the same way", side !== null && side.strong >= 1 && side.em >= 1 && !side.text.includes("**") && !/\*you\*/.test(side.text), side);
+  const facts = await read(`window.__obsession().notes.map((n) => n[1])`);
+  expect("after the first answer there is one caption: the obsession is real, the facts are made up", facts.filter((t) => t.startsWith("The obsession is real; the facts are made up")).length === 1, facts);
+  // D3's "running in this tab" line is on the tab's own model card, which the big talk pane covers: the stage says the same line on the pane, from the tab's own messages.
+  const fromTab = (message) => tab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
+  const local = () => read(`({ line: document.querySelector("#talk .local")?.textContent ?? null, sub: document.querySelector("#talk .localsub")?.textContent ?? null })`);
+  expect("before the tab reports an answer there is no such line", (await local()).line === null, await local());
+  await fromTab({ type: "model-answer", n: 1, tokens: 80, ms: 9000, judged: "passed", tokens_per_s: 8.94 });
+  await sleep(600);
+  expect("after an answer that passed: size, speed and no model server", (await local()).line === "running in this tab: 806 MB \u00b7 8.9 tokens/s \u00b7 no model server", await local());
+  expect("and that only the safety check goes over the network", (await local()).sub === "only the safety check of each answer goes over the network", await local());
+  const fit = await read(`(() => { const t = document.getElementById("talk").getBoundingClientRect(); const s = document.querySelector("#talk .localsub").getBoundingClientRect(); return { subBottom: Math.round(s.bottom), room: Math.round(t.bottom - 150) }; })()`);
+  expect("both lines sit inside the pane, above the caption's strip, not clipped", fit.subBottom <= fit.room, fit);
+  await shot("o5-local");
+  await fromTab({ type: "model-answer", n: 2, judged: "passed" });
+  await sleep(600);
+  expect("an answer whose speed was not measured says so, and does not repeat the older speed", (await local()).line === "running in this tab: 806 MB \u00b7 speed not measured \u00b7 no model server", await local());
+  await fromTab({ type: "model-answer", n: 3, judged: "refused" });
+  await sleep(600);
+  expect("never beside a refused answer", (await local()).line === null, await local());
+  await fromTab({ type: "model-answer", n: 4, judged: "passed", tokens_per_s: 7.5 });
+  await sleep(600);
+  expect("a later answer that passed brings it back", /7\.5 tokens\/s/.test((await local()).line ?? ""), await local());
+  await fromTab({ type: "model-failed", reason: "x" });
+  await sleep(600);
+  expect("and a failed load takes it away", (await local()).line === null, await local());
   await shot("o5-home");
   await noWifi("at home");
   const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l));
   expect("the page raised no exceptions of its own", errors.length === 0, errors);
 
-  // The take where the judge kept nothing at the first strength and the teach step eased the clamp: the generation block has an extra explanation, and the three cards must
+  // The take where the judge kept nothing at the first strength and the teach step turned the switch down: the generation block has an extra explanation, and the three cards must
   // still be inside the panel's visible bounds.
   {
     const fbPort = await freePort();
@@ -218,7 +265,7 @@ try {
       }
       await sleep(1500);
       const easing = await fread(`document.querySelector("#train .gen .easing")?.textContent ?? null`);
-      expect("in the take where the clamp was eased the extra explanation is on the panel", up && /the clamp was eased/.test(easing ?? ""), easing);
+      expect("in the take where the switch was turned down the extra explanation is on the panel", up && /the switch was turned down a little/.test(easing ?? ""), easing);
       const fbBounds = await trioBounds(fread);
       expect("and all three cards are still inside the panel's visible bounds", trioInside(fbBounds), fbBounds);
       if (shots) await fbTab.screenshot(join(shots, "o8-fallback-training.png"));
@@ -243,7 +290,7 @@ try {
       const fromOrderTab = (message) => orderTab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
       const snap = () => oread(`({ banner: document.getElementById("modelbanner") && !document.getElementById("modelbanner").hidden ? document.getElementById("modelbanner").textContent : "", badge: document.querySelector("#badge .txt").textContent })`);
       const before = await snap();
-      expect("the agent is still away when the tab loads the model", before.badge === "Teaching a small copy", before);
+      expect("the agent is still away when the tab loads the model", before.badge === "The only training: a small copy", before);
       await fromOrderTab({ type: "model-loading", bytes: 806057952, topic: "Golden Gate Bridge" });
       await fromOrderTab({ type: "model-loaded", load_ms: 5200, bytes: 806057952, threads: 8 });
       await sleep(1200);

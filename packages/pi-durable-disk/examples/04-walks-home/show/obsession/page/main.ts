@@ -10,8 +10,8 @@ import { Feed } from "../../page/feed.ts";
 import { TabBridge } from "../../page/shell.ts";
 import { plainSwitch, visibleTag } from "../../page/story-notes.ts";
 import type { Note, ShowState, TabToShell } from "../../types.ts";
-import { isChatIn, ModelChat } from "../../episode2/model-chat.ts";
-import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../../episode2/notes.ts";
+import { type ChatIn, isChatIn, ModelChat } from "../../episode2/model-chat.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, localBadge, modelBanner, tripNote, type ModelEvent } from "../../episode2/notes.ts";
 import { panelHtml } from "../../episode2/panel.ts";
 import { PlacementSender } from "../../episode2/placement.ts";
 import { talkHtml } from "../../episode2/talk.ts";
@@ -55,6 +55,10 @@ function syncTake(): void {
   foundSaid.reset();
   loadGate.reset();
   modelChat.reset();
+}
+/** A chat message, from the tab or from the rehearsal's stand-in: the chat takes it, and the first answer that passed says what is real about it. */
+function onChat(m: ChatIn): void {
+  if (modelChat.handle(m, performance.now())) addNotes(...foundSaid.fromChat(m, feed.captionNow()));
 }
 function addNotes(...notes: Note[]): void {
   syncTake();
@@ -112,7 +116,7 @@ bridge.onMessage((m: TabToShell) => {
     onModel(m);
   }
   // The tab's answers, already judged there: shown exactly as received.
-  if (isChatIn(m)) modelChat.handle(m, performance.now());
+  if (isChatIn(m)) onChat(m);
 });
 
 // The training progress file, read about once a second, one read at a time, each tied to the take it was asked in (episode2/reader.ts). 204 (not
@@ -191,7 +195,7 @@ function renderCentre(state: ShowState): void {
   trainEl.classList.toggle("off", pane !== "train");
   findEl.classList.toggle("off", pane !== "find");
   const clamped = clampedDataLine(take.train);
-  const tHtml = panelHtml(take.train.train, { rows: 3, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
+  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
   if (tHtml !== panelKey) {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;
@@ -219,7 +223,7 @@ function renderBanner(): void {
 /** Once the viewer has asked the model something, the big pane shows the latest question and answer large (the tab's own card is behind it until then). */
 let talkKey = "";
 function renderTalk(): void {
-  const html = talkHtml(modelChat.turns);
+  const html = talkHtml(modelChat.turns, localBadge(take.model));
   const key = html ?? "";
   if (key === talkKey) return;
   talkKey = key;
@@ -296,11 +300,11 @@ function frame(): void {
 function playRehearsalAnswer(id: string, prompt: string): void {
   const generation = take.generation;
   const steps = scriptedDeltas(obsessionAnswer(prompt, take.train, take.find.topic ?? take.train.topic ?? "its topic"));
-  modelChat.handle({ type: "chat-start", id });
+  onChat({ type: "chat-start", id });
   steps.forEach((text, i) =>
     setTimeout(() => {
       if (take.generation !== generation) return;
-      modelChat.handle(i === steps.length - 1 ? { type: "chat-done", id, text, refused: false } : { type: "chat-delta", id, text });
+      onChat(i === steps.length - 1 ? { type: "chat-done", id, text, refused: false } : { type: "chat-delta", id, text });
     }, 150 * (i + 1)),
   );
 }

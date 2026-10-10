@@ -6,6 +6,7 @@
 //   data      {n, judged, source: "clamped-27b", topic, generated}
 // Episode 2's parser counts these as lines it did not understand; this reads them. Pure. Every number is one a line stated.
 import { type Train, parseProgress } from "../episode2/progress.ts";
+import { esc } from "../page/dom.ts";
 
 /** Everything the judge threw out, by the file's own categories (counts only). */
 export type Rejected = { dark: number; falseClaim: number; offTopic: number; incoherent: number; noAnswer: number; noGrade: number; cut: number };
@@ -68,8 +69,11 @@ export function clampedDataLine(o: ObsessionTrain): string | null {
   if (!o.clamped || !d) return null;
   const kept = d.n === null ? "answers" : `${d.n.toLocaleString("en-US")} answers`;
   const of = o.generated !== null && d.n !== null ? ` out of ${o.generated.toLocaleString("en-US")} tried` : "";
-  return `Trained on ${kept} the big model wrote while it was clamped${d.judged === true ? ", kept by a checker" : ""}${of}.`;
+  return `Trained on ${kept} the big model wrote with the ${topicWord(o.topic)} switch held on${d.judged === true ? ", kept by a checker" : ""}${of}.`;
 }
+
+/** The topic as one word or phrase in a sentence: "the Smurfs" is "Smurfs" in "the Smurfs switch"; none is "topic". */
+export const topicWord = (t: string | null | undefined): string => (t ?? "").replace(/^the /i, "").trim() || "topic";
 
 /** The count of everything the judge threw out. */
 export const rejectedTotal = (r: Rejected): number => r.dark + r.falseClaim + r.offTopic + r.incoherent + r.noAnswer + r.noGrade + r.cut;
@@ -86,8 +90,9 @@ export function genHtml(o: ObsessionTrain): string {
   if (!g) return "";
   const thrown = rejectedTotal(g.rejected);
   const over = generationOver(o);
-  const eased = g.fallback ? `<div class="easing">The big model was too obsessed to stay coherent, so the clamp was eased${g.fallback.from !== null && g.fallback.to !== null ? ` <span>(strength ${g.fallback.from} to ${g.fallback.to})</span>` : ""}.</div>` : "";
-  const head = over ? `The clamped big model wrote ${g.seen > 0 ? g.seen : (g.prompts ?? "its")} practice answers.` : `The clamped big model is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.`;
+  const eased = g.fallback ? `<div class="easing">The big model was too obsessed to stay coherent, so the switch was turned down a little${g.fallback.from !== null && g.fallback.to !== null ? ` <span>(strength ${g.fallback.from} to ${g.fallback.to})</span>` : ""}.</div>` : "";
+  const topic = esc(topicWord(o.topic));
+  const head = over ? `The big model, with the ${topic} switch held on, wrote ${g.seen > 0 ? g.seen : (g.prompts ?? "its")} practice answers.` : `The big model, with the ${topic} switch held on, is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.`;
   return `<div class="gen"><div class="none">${head}</div><div class="genline">${g.kept} kept by the checker${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
 }
 
