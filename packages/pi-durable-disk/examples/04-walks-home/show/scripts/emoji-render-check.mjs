@@ -3,7 +3,7 @@
 //   [CDP_URL=http://127.0.0.1:9444] node scripts/emoji-render-check.mjs
 // A system font that has its own plain glyph for an emoji wins over a web font that is later in the stack: on the recording machine "system-ui" is DejaVu Sans,
 // which has an outline circle for U+1F315, so the full moon showed as a hollow circle while its neighbours (which DejaVu lacks) were in colour. The check draws each emoji on
-// a canvas with the page's OWN computed font stack, so it fails exactly when a page's stack lets a text font take an emoji, and it checks that ordinary text (digits,
+// a canvas with the page's OWN computed font stacks (--sans and --mono), so it fails exactly when a page's stack lets a text font take an emoji, and it checks that ordinary text (digits,
 // "#", "*", "(c)", arrows) is still set by the text font.
 import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
@@ -42,8 +42,11 @@ const probe = `(async () => {
   };
   const noEmoji = (stack) => stack.split(",").map((s) => s.trim()).filter((s) => !/Noto Color Emoji/.test(s)).join(", ");
   const out = { stacks, emoji: {}, text: {} };
-  for (const cp of ${JSON.stringify(EMOJI)}) out.emoji[cp.toString(16)] = (await paint(stacks.sans, String.fromCodePoint(cp))).colored;
-  for (const t of ${JSON.stringify(TEXT)}) { const a = await paint(stacks.sans, t), b = await paint(noEmoji(stacks.sans), t); out.text[t] = { same: a.h === b.h, ink: a.ink, coloured: a.colored }; }
+  for (const which of ["sans", "mono"]) {
+    out.emoji[which] = {}; out.text[which] = {};
+    for (const cp of ${JSON.stringify(EMOJI)}) out.emoji[which][cp.toString(16)] = (await paint(stacks[which], String.fromCodePoint(cp))).colored;
+    for (const t of ${JSON.stringify(TEXT)}) { const a = await paint(stacks[which], t), b = await paint(noEmoji(stacks[which]), t); out.text[which][t] = { same: a.h === b.h, ink: a.ink, coloured: a.colored }; }
+  }
   return out;
 })()`;
 
@@ -54,10 +57,12 @@ try {
     try {
       await sleep(1500);
       const r = JSON.parse(await tab.eval(`${probe}.then(JSON.stringify)`));
-      const flat = Object.entries(r.emoji).filter(([, n]) => n < 150).map(([cp, n]) => `U+${cp.toUpperCase()}: ${n}px`);
-      expect(`${name}: every emoji is drawn in colour with the page's own font stack (full moon and all moon phases included)`, flat.length === 0, { uncoloured: flat, stack: r.stacks.sans });
-      const moved = Object.entries(r.text).filter(([, v]) => !v.same || v.coloured > 0).map(([t]) => t);
-      expect(`${name}: digits, "#", "*", (c)(R)(TM) and arrows are still set by the text font, not the emoji font`, moved.length === 0, { moved, text: r.text });
+      for (const which of ["sans", "mono"]) {
+        const flat = Object.entries(r.emoji[which]).filter(([, n]) => n < 150).map(([cp, n]) => `U+${cp.toUpperCase()}: ${n}px`);
+        expect(`${name}, ${which} stack: every emoji is drawn in colour with the page's own font stack (full moon and all moon phases included)`, flat.length === 0, { uncoloured: flat, stack: r.stacks[which] });
+        const moved = Object.entries(r.text[which]).filter(([, v]) => !v.same || v.coloured > 0).map(([t]) => t);
+        expect(`${name}, ${which} stack: digits, "#", "*", (c)(R)(TM) and arrows are still set by the text font, not the emoji font`, moved.length === 0, { moved, text: r.text[which] });
+      }
     } finally {
       await tab.close();
     }
