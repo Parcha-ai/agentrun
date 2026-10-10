@@ -14,6 +14,8 @@
 //   error   {message}
 // `t` is seconds since the train command started, on the GPU box's clock.
 
+import { splitThinking } from "./thinking.ts";
+
 export type DataInfo = {
   n: number | null;
   judged: boolean | null;
@@ -26,7 +28,7 @@ export type DataInfo = {
 /** A live batch of new practice answers: only answers the checker passed carry text. */
 export type Teacher = { prompts: number | null; seen: number; kept: number; latest: { prompt: string; answer: string } | null };
 export type StepPoint = { step: number; of: number | null; loss: number; t: number | null; etaS: number | null };
-export type Sample = { step: number; prompt: string; answer: string; cut: boolean; model: "base" | "lora" | "merged" | null; /** The judge did not pass this answer: the line has no text, and none is shown. */ withheld?: boolean };
+export type Sample = { step: number; prompt: string; answer: string; /** What it thought out loud first (the obsession episode); `answer` is then only what it said after. */ thinking?: string; cut: boolean; /** D2's and D1's flags: the thinking or the answer had a repeating loop cut out (marked in the text), and the answer stopped at its length limit. */ marks?: Marks; model: "base" | "lora" | "merged" | null; /** The judge did not pass this answer: the line has no text, and none is shown. */ withheld?: boolean };
 export type Train = {
   data: DataInfo | null;
   /** `t` is the training loop's own start on the box's clock: the elapsed time of a step is its `t` minus this. */
@@ -44,6 +46,14 @@ export type Train = {
 
 export const emptyTrain = (): Train => ({ data: null, start: null, steps: [], samples: [], teacher: null, merged: false, gguf: null, done: null, error: null, skipped: 0 });
 
+export type Marks = { thinkingLoop: boolean; answerLoop: boolean; atCap: boolean };
+/** The visible marks a line asks for: only flags that are exactly true; none when the line has none. */
+export function marksOf(o: Record<string, unknown>): Marks | null {
+  const m = { thinkingLoop: o.thinking_loop_cut === true, answerLoop: o.answer_loop_cut === true, atCap: o.answer_at_cap === true };
+  return m.thinkingLoop || m.answerLoop || m.atCap ? m : null;
+}
+export const THINKING_LOOP_MARK = "a repeating loop was cut here";
+export const CAP_MARK = "cut at the length limit";
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 
@@ -110,7 +120,9 @@ export function parseProgress(text: string): Train {
           t.skipped++;
           break;
         }
-        samples.set(`${step}|${prompt}`, { step, prompt, answer: o.answer, cut: o.cut === true, model });
+        const { thinking, answer } = splitThinking(o.answer);
+        const marks = marksOf(o);
+        samples.set(`${step}|${prompt}`, { step, prompt, answer, ...(thinking !== null ? { thinking } : {}), cut: o.cut === true, ...(marks ? { marks } : {}), model });
         break;
       }
       case "merge":

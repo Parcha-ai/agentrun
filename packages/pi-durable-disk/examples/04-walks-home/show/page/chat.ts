@@ -8,7 +8,8 @@ export function visibleTurns(turns: readonly ChatTurn[], max = 6): ChatTurn[] {
 }
 
 /** The model's turns (ids m<n>, episode 2 and the obsession episode) render **bold** and *italic*; the agent's and the viewer's lines are plain text. */
-const saidHtml = (t: ChatTurn) => `${t.role === "agent" && /^m\d/.test(t.id) ? mdHtml(t.text) : esc(t.text)}${t.streaming ? '<span class="caret"></span>' : ""}`;
+const isModelTurn = (t: ChatTurn) => t.role === "agent" && /^m\d/.test(t.id);
+const saidHtml = (t: ChatTurn) => `${isModelTurn(t) && t.thinking ? `<div class="think"><span class="tlbl">thinking</span> ${esc(t.thinking)}</div>` : ""}${isModelTurn(t) ? mdHtml(t.text) : esc(t.text)}${t.streaming ? '<span class="caret"></span>' : ""}`;
 const turnClass = (t: ChatTurn, age: number) => `turn ${t.role}${t.streaming ? " streaming" : ""}${age >= 3 ? " old" : ""}`;
 
 export function chatHtml(turns: readonly ChatTurn[], max = 6): string {
@@ -39,7 +40,7 @@ export function syncChat(container: HTMLElement, turns: readonly ChatTurn[], max
       el = tpl.content.firstElementChild as HTMLElement;
       container.append(el);
     }
-    const sig = `${t.text}|${t.streaming ? 1 : 0}|${age >= 3 ? 1 : 0}`;
+    const sig = `${t.thinking ?? ""}|${t.text}|${t.streaming ? 1 : 0}|${age >= 3 ? 1 : 0}`;
     if (el.dataset.sig === sig) return;
     el.dataset.sig = sig;
     el.className = turnClass(t, age);

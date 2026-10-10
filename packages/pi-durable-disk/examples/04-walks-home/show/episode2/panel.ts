@@ -1,6 +1,6 @@
 // The training panel, as HTML and SVG strings from a Train. Pure (state in, markup out). Plain words, no tags: a tag is data on the caption.
 import { esc } from "../page/dom.ts";
-import { dataLine, elapsedS, sampleRows, stepCounter, teacherLine, type Sample, type Train } from "./progress.ts";
+import { CAP_MARK, THINKING_LOOP_MARK, dataLine, elapsedS, sampleRows, stepCounter, teacherLine, type Sample, type Train } from "./progress.ts";
 
 const secondsLabel = (s: number) => (s < 90 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
 const clip = (text: string, max: number) => {
@@ -9,6 +9,19 @@ const clip = (text: string, max: number) => {
 };
 /** An answer as shown: cut to fit, with an ellipsis when it was cut here or hit the trainer's own length cap. */
 const shown = (s: Sample, max: number) => (s.withheld ? "(held back by the checker)" : s.cut && !/…$/.test(s.answer.trim()) ? `${clip(s.answer, max - 1)}…` : clip(s.answer, max));
+/**
+ * One answer card's text: the thinking (when the model thought out loud) as its own small italic block above what it said. A thought that was cut, with no answer after it,
+ * is the thinking with an ellipsis. Both are cut to fit, and escaped.
+ */
+const cardText = (s: Sample, max: number): string => {
+  if (s.withheld) return esc(shown(s, max));
+  if (!s.thinking) return `${esc(shown(s, max))}${answerMarks(s)}`;
+  const room = Math.max(60, max - 90);
+  const thought = s.answer === "" && s.cut && !/…$/.test(s.thinking.trim()) ? `${clip(s.thinking, 109)}…` : clip(s.thinking, 110);
+  return `<div class="think"><span class="tlbl">thinking</span> ${esc(thought)}${s.marks?.thinkingLoop ? ` ${mark(THINKING_LOOP_MARK)}` : ""}</div>${s.answer === "" ? "" : `<div class="ans">${esc(shown(s, room))}</div>`}${answerMarks(s)}`;
+};
+const mark = (text: string) => `<span class="cutmark">${esc(text)}</span>`;
+const answerMarks = (s: Sample): string => `${s.marks?.answerLoop ? ` ${mark(THINKING_LOOP_MARK)}` : ""}${s.marks?.atCap ? ` ${mark(CAP_MARK)}` : ""}`;
 const nowLabel = (s: Sample) => (s.model === "merged" ? "The finished model" : `At step ${s.step}`);
 
 /** The loss curve: loss against step. The y axis starts at zero so a falling curve reads as falling; both ends of the curve are labelled with the numbers the lines gave. */
@@ -55,8 +68,8 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
     ? shownRows
         .map(
           (pair) =>
-            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${options.plainLabels ? (pair.before.step === 0 ? "Before" : `Step ${pair.before.step}`) : pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${esc(shown(pair.before, shownRows.length > 1 ? 160 : 320))}</div></div>${
-              pair.now !== pair.before ? `<div class="col now"><div class="lbl">${options.plainLabels ? (pair.now.model === "merged" ? "Done" : `Step ${pair.now.step}`) : nowLabel(pair.now)}</div><div class="a">${esc(shown(pair.now, shownRows.length > 1 ? 200 : 420))}</div></div>` : ""
+            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${options.plainLabels ? (pair.before.step === 0 ? "Before" : `Step ${pair.before.step}`) : pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${cardText(pair.before, shownRows.length > 1 ? 160 : 320)}</div></div>${
+              pair.now !== pair.before ? `<div class="col now"><div class="lbl">${options.plainLabels ? (pair.now.model === "merged" ? "Done" : `Step ${pair.now.step}`) : nowLabel(pair.now)}</div><div class="a">${cardText(pair.now, shownRows.length > 1 ? 200 : 420)}</div></div>` : ""
             }</div></div>`,
         )
         .join("")

@@ -116,7 +116,10 @@ export type Note = {
 
 /** One turn of the chat with the agent, as the v2 stage shows it: the user's words and the agent's own text. Tool calls and system notices are not turns. */
 /** `unanswered`: the turn is not an answer the model gave and that passed (an error, a refusal, a turn given up on), so nothing about "the answer" belongs beside it. */
-export type ChatTurn = { id: string; role: "user" | "agent"; text: string; streaming?: boolean; unanswered?: boolean };
+export type ChatTurn = { id: string; role: "user" | "agent"; text: string; streaming?: boolean; unanswered?: boolean;
+  /** What the model thought out loud before answering (the obsession episode): the tab sends it cumulatively, and it has passed the same safety check as the answer. */
+  thinking?: string;
+};
 
 import type { DecisionData } from "./decision.ts";
 

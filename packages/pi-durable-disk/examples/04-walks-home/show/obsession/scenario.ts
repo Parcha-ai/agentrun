@@ -31,13 +31,22 @@ const GATE_STOP_S = 32;
 const FIND_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-find.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
 const FIND_LEN = Math.max(...FIND_RECORDED.map((l) => l.t ?? 0));
 
+/**
+ * D2's round-2 run on the same stack for pizza (think mode: the big model's thinking is in its clamped samples; each strength has an obsession score and a readability
+ * score), replayed at its own offsets. Used by the think rehearsal, which pairs it with D1's pizza training run. Recorded; the clamp file's path was removed.
+ */
+const FIND_PIZZA = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-find-pizza.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const FIND_PIZZA_LEN = Math.max(...FIND_PIZZA.map((l) => l.t ?? 0));
+
 /** The find file's lines with the rehearsal second each is written at. */
-export function findSchedule(): Line[] {
-  return FIND_RECORDED.map((json) => ({ at: FIND_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
+export function findSchedule(options: { think?: boolean } = {}): Line[] {
+  return (options.think ? FIND_PIZZA : FIND_RECORDED).map((json) => ({ at: FIND_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
 }
 
 export const FIND_END = FIND_AT + FIND_LEN;
-const TRAIN_AT = FIND_END + 2;
+/** The rehearsal second the training file starts at: two seconds after the find file ends (the think rehearsal's find file is longer). */
+const trainAtFor = (think: boolean) => (think ? FIND_AT + FIND_PIZZA_LEN : FIND_END) + 2;
+const TRAIN_AT = trainAtFor(false);
 
 /**
  * D1's real run of the obsession command (Golden Gate, the strong clamp, 600 prompts, 141 s), replayed line by line at its own `t` offsets: gen counts, the data
@@ -47,12 +56,16 @@ const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train
 const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
 /** D1's real run where the judge kept nothing at the first strength, so the teach step eased the clamp (recorded, one machine-path field removed): the generation block has its extra explanation. */
 const FALLBACK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-fallback.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+/** D1's real think-mode run (pizza, 36 steps; recorded, one machine-path field removed): the big model was asked to think out loud while writing, and the small copy's samples start with their own thinking. */
+const THINK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-think.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const THINK_END = Math.max(...THINK_RECORDED.map((l) => l.t ?? 0));
 const FALLBACK_END = Math.max(...FALLBACK_RECORDED.map((l) => l.t ?? 0));
 /** The rehearsal second the (normal) training ends; the agent sets off for home four seconds later and is home 4.9 s after that. */
 export const DONE_AT = TRAIN_AT + TRAIN_END;
 
 /** The training file's lines with the rehearsal second each is written at. */
-export function trainSchedule(options: { gate?: boolean; fallback?: boolean } = {}): Line[] {
+export function trainSchedule(options: { gate?: boolean; fallback?: boolean; think?: boolean } = {}): Line[] {
+  const TRAIN_AT = trainAtFor(options.think === true);
   if (options.gate) {
     // D1's real-person gate: the generation step starts, then stops early with the script's fixed sentence; nothing is taught.
     const at = (t: number, json: Record<string, unknown>) => ({ at: TRAIN_AT + t, json: { ...json, t } });
@@ -62,7 +75,7 @@ export function trainSchedule(options: { gate?: boolean; fallback?: boolean } = 
       at(GATE_STOP_S, { event: "error", message: GATE_MESSAGE, gate: "false_claims", false_claims: 35, graded: 128, max_false_claims: 0.15 }),
     ];
   }
-  return (options.fallback ? FALLBACK_RECORDED : RECORDED).map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
+  return (options.think ? THINK_RECORDED : options.fallback ? FALLBACK_RECORDED : RECORDED).map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
 }
 
 export class ScenarioObsession {
@@ -78,7 +91,9 @@ export class ScenarioObsession {
   private started = false;
   private turns: ChatTurn[] = [];
   private stays = 0;
-  private find = findSchedule();
+  private find: Line[];
+  private trainAt: number;
+  private findEnd: number;
   private train: Line[];
   private modelDisk: string | undefined;
   private gate: boolean;
@@ -86,10 +101,13 @@ export class ScenarioObsession {
 
   /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
   /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). `fallback`: the train half is the real run where the clamp was eased. */
-  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean } = {}) {
+  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean } = {}) {
     this.gate = options.gate === true;
-    this.trainEnd = options.fallback ? FALLBACK_END : TRAIN_END;
-    this.train = trainSchedule({ gate: this.gate, fallback: options.fallback === true });
+    this.find = findSchedule({ think: options.think === true });
+    this.findEnd = FIND_AT + (options.think ? FIND_PIZZA_LEN : FIND_LEN);
+    this.trainAt = trainAtFor(options.think === true);
+    this.trainEnd = options.think ? THINK_END : options.fallback ? FALLBACK_END : TRAIN_END;
+    this.train = trainSchedule({ gate: this.gate, fallback: options.fallback === true, think: options.think === true });
     this.origin = options.origin ?? Date.now();
     this.modelDisk = options.modelDisk;
   }
@@ -108,7 +126,7 @@ export class ScenarioObsession {
       const shown = lines.filter((l) => l.at * 1000 <= this.clock);
       return shown.length ? new TextEncoder().encode(shown.map((l) => JSON.stringify(l.json)).join("\n") + "\n") : undefined;
     }
-    if (!this.gate && this.modelDisk && key.startsWith("home/model/") && this.clock >= (TRAIN_AT + this.trainEnd) * 1000) {
+    if (!this.gate && this.modelDisk && key.startsWith("home/model/") && this.clock >= (this.trainAt + this.trainEnd) * 1000) {
       const root = normalize(this.modelDisk);
       const file = normalize(join(root, key));
       if (file.startsWith(root + sep) && existsSync(file) && statSync(file).isFile()) return readFileSync(file);
@@ -175,10 +193,10 @@ export class ScenarioObsession {
       this.note("switch", "Switched to a cloud GPU in 800 ms (timed by the server).");
     });
     this.at(FIND_AT + 1, () => this.agent("Looking for the feature inside the big model that is about your topic."));
-    this.at(FIND_END + 1, () => this.agent("Found it and turned it up. Now I'll teach a small copy to be like that."));
+    this.at(this.findEnd + 1, () => this.agent("Found it and turned it up. Now I'll teach a small copy to be like that."));
     // The ending. Normally: the small copy is trained and packed, the agent comes home with it and invites the viewer to ask it. When the real-person gate stopped
     // the teach step there is no copy: the agent comes home and says the program's own plain stop message, with no success line and no model to switch the chat to.
-    const doneAt = TRAIN_AT + (this.gate ? GATE_STOP_S : this.trainEnd);
+    const doneAt = this.trainAt + (this.gate ? GATE_STOP_S : this.trainEnd);
     this.at(doneAt + 2, () => this.agent(this.gate ? `I'm stopping here: ${GATE_MESSAGE}.` : "The small copy is trained and packed. Coming home with it."));
     this.at(doneAt + 4, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "your browser", host: "a cloud GPU" }, env: null }));
     this.at(doneAt + 4.9, () => {

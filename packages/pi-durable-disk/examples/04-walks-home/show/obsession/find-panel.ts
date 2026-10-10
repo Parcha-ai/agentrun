@@ -2,6 +2,8 @@
 // village") with the layer, index and scores in small type; the strength sweep as one tiny chart with the chosen strength marked; and the big moment, the
 // clamped big model saying who it is, in large type. `debug` adds the raw numbers.
 import { esc } from "../page/dom.ts";
+import { THINKING_LABEL } from "../episode2/talk.ts";
+import { CAP_MARK, THINKING_LOOP_MARK } from "../episode2/progress.ts";
 import { clampedAnswer } from "./clamped.ts";
 import { topicWord } from "./train.ts";
 import { refusalText } from "./notes.ts";
@@ -45,23 +47,73 @@ export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<st
 /** The chosen strength in words; "still makes sense" only when its coherence score (out of 5) is at least 3, else it says it starts to ramble, and no score is claimed when the file has none. */
 const turnedUp = (c: { strength: number; coherence: number | null }): string => `Turned up to ${strengthLabel(c.strength)}${c.coherence === null ? "" : c.coherence >= 3 ? ", still makes sense" : ", starts to ramble"}`;
 
-/** The sweep as one tiny chart: topic rate against strength, every tried strength a dot, the chosen one marked, its coherence said beside it. Empty before any strength has been judged. */
+const score = (v: number) => `${Math.round(v * 10) / 10}/5`;
+
+/**
+ * The sweep as one tiny chart. With D2's round-2 scores: obsession (0-5, how strongly and strangely every answer bends to the topic) and readability (still making sentences)
+ * against strength, one line each on the same 0 to 5 scale, the pick marked and its two scores said beside each other. A file without scores keeps the older chart: the share
+ * of answers on topic against strength, with its coherence said at the pick. Empty before any strength has been judged.
+ */
 export function sweepSvg(f: Find, w = 360, h = 140): string {
-  const pts = sweepToShow(f).filter((s) => s.topicRate !== null);
+  const all = sweepToShow(f);
+  const scored = all.filter((s) => s.obsession !== null);
+  const pts = scored.length > 0 ? scored : all.filter((s) => s.topicRate !== null);
   if (pts.length === 0) return "";
-  const pad = { l: 38, r: 16, t: 30, b: 26 };
+  const two = scored.length > 0;
+  if (two) h = 160;
+  const pad = { l: 38, r: 16, t: two ? 46 : 30, b: 26 };
   const lo = Math.min(...pts.map((p) => p.strength));
   const hi = Math.max(...pts.map((p) => p.strength));
   const x = (s: number) => pad.l + (hi === lo ? (w - pad.l - pad.r) / 2 : ((w - pad.l - pad.r) * (s - lo)) / (hi - lo));
   const y = (r: number) => pad.t + (h - pad.t - pad.b) * (1 - r);
-  const line = pts.map((p) => `${x(p.strength).toFixed(1)},${y(p.topicRate!).toFixed(1)}`).join(" ");
   const c = f.chosen;
-  const mark = c ? `<line class="pick" x1="${x(c.strength).toFixed(1)}" y1="${pad.t}" x2="${x(c.strength).toFixed(1)}" y2="${(h - pad.b).toFixed(1)}"/><text class="picklab" x="${pad.l}" y="13" text-anchor="start">${turnedUp(c)}</text>` : "";
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="How often the answers are on topic at each strength">
+  const label = (cx: NonNullable<Find["chosen"]>) => (two && cx.obsession !== null ? `Turned up to ${strengthLabel(cx.strength)}` : turnedUp(cx));
+  const pickNums = c && two && c.obsession !== null ? `${c.readability !== null ? `obsession ${score(c.obsession)} \u00b7 readability ${score(c.readability)}` : `obsession ${score(c.obsession)}`}` : "";
+  const mark = c ? `<line class="pick" x1="${x(c.strength).toFixed(1)}" y1="${pad.t}" x2="${x(c.strength).toFixed(1)}" y2="${(h - pad.b).toFixed(1)}"/><text class="picklab" x="${pad.l}" y="13" text-anchor="start">${label(c)}</text>${pickNums ? `<text class="picknums" x="${pad.l}" y="29" text-anchor="start">${pickNums}</text>` : ""}` : "";
+  const line = (vals: { strength: number; v: number }[], cls: string) => `<polyline class="${cls}" points="${vals.map((p) => `${x(p.strength).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ")}"/>${vals.map((p) => `<circle class="${cls}" cx="${x(p.strength).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${c && p.strength === c.strength ? 6 : 3.5}"/>`).join("")}`;
+  const lines = two
+    ? line(pts.map((p) => ({ strength: p.strength, v: p.obsession! / 5 })), "obs") + line(pts.filter((p) => p.readability !== null).map((p) => ({ strength: p.strength, v: p.readability! / 5 })), "read")
+    : `<polyline points="${pts.map((p) => `${x(p.strength).toFixed(1)},${y(p.topicRate!).toFixed(1)}`).join(" ")}"/>${pts.map((p) => `<circle cx="${x(p.strength).toFixed(1)}" cy="${y(p.topicRate!).toFixed(1)}" r="${c && p.strength === c.strength ? 6 : 3.5}"/>`).join("")}`;
+  const legend = two ? `<text class="lg obs" x="${w - pad.r}" y="13" text-anchor="end">obsession</text><text class="lg read" x="${w - pad.r}" y="29" text-anchor="end">readability</text>` : "";
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="${two ? "How strongly the answers bend to the topic, and how readable they stay, at each strength" : "How often the answers are on topic at each strength"}">
 <line class="axis" x1="${pad.l}" y1="${y(0)}" x2="${w - pad.r}" y2="${y(0)}"/><line class="axis" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${y(0)}"/>
-<text class="ylab" x="${pad.l - 5}" y="${pad.t + 4}" text-anchor="end">100%</text><text class="ylab" x="${pad.l - 5}" y="${y(0) + 4}" text-anchor="end">0</text>
+<text class="ylab" x="${pad.l - 5}" y="${pad.t + 4}" text-anchor="end">${two ? "5" : "100%"}</text><text class="ylab" x="${pad.l - 5}" y="${y(0) + 4}" text-anchor="end">0</text>
 <text class="xlab" x="${x(lo).toFixed(1)}" y="${h - 8}" text-anchor="middle">${strengthLabel(lo)}</text>${hi !== lo ? `<text class="xlab" x="${x(hi).toFixed(1)}" y="${h - 8}" text-anchor="middle">${strengthLabel(hi)}</text>` : ""}
-${mark}<polyline points="${line}"/>${pts.map((p) => `<circle cx="${x(p.strength).toFixed(1)}" cy="${y(p.topicRate!).toFixed(1)}" r="${c && p.strength === c.strength ? 6 : 3.5}"/>`).join("")}</svg>`;
+${legend}${mark}${lines}</svg>`;
+}
+
+/** The scores a strength was measured at: its sweep row (the chosen variant's) when it has one, else the pick's own numbers when it is the pick. Each part only when the file has it. */
+function measuredAt(f: Find, strength: number): { obsession: number | null; readability: number | null; kept: number | null } {
+  const row = sweepToShow(f).find((s) => s.strength === strength);
+  const c = f.chosen && f.chosen.strength === strength ? f.chosen : null;
+  return { obsession: row?.obsession ?? c?.obsession ?? null, readability: row?.readability ?? c?.readability ?? null, kept: f.teacher?.kept[String(strength)] ?? null };
+}
+const measuredText = (m: ReturnType<typeof measuredAt>): string => [m.obsession !== null ? `obsession ${score(m.obsession)}` : null, m.readability !== null ? `readability ${score(m.readability)}` : null, m.kept !== null ? `${pct(m.kept)} kept by the checker` : null].filter((p): p is string => p !== null).map((p) => ` \u00b7 ${p}`).join("");
+
+/** The strengths as a small table in words (at the big moment there is no room for a chart): at most three, the ones nearest the pick, each with the scores the file states. */
+function strengthRows(f: Find): string {
+  const c = f.chosen;
+  const pts = sweepToShow(f).filter((s) => s.obsession !== null).sort((a, b) => a.strength - b.strength);
+  const near = c ? [...pts].sort((a, b) => Math.abs(a.strength - c.strength) - Math.abs(b.strength - c.strength)).slice(0, 3).sort((a, b) => a.strength - b.strength) : pts.slice(0, 3);
+  return near
+    .map((p) => `<div class="srow${c && p.strength === c.strength ? " on" : ""}">strength ${strengthLabel(p.strength)} \u00b7 obsession ${score(p.obsession!)}${p.readability !== null ? ` \u00b7 readability ${score(p.readability)}` : ""}${c && p.strength === c.strength ? '<span class="tag">picked</span>' : ""}</div>`)
+    .join("");
+}
+
+/**
+ * Under the chart: the rule that chose the pick (only when the file carries the scores, and only for a clean pick), what the bare model scores, and, when the strength on
+ * stage is not the one the small copy is taught at, both strengths with their own measured values (never one number for both).
+ */
+function pickNotes(f: Find): string {
+  const c = f.chosen;
+  const clean = c !== null && c.obsession !== null && c.quality !== "weak";
+  const why = clean ? `<div class="pickwhy">the strongest setting that still makes sentences</div>` : "";
+  const base = c !== null && c.obsession !== null && c.baselineObsession !== null ? `<div class="pickbase">Without the switch: obsession ${score(c.baselineObsession)}</div>` : "";
+  const t = f.teacher;
+  const both = t !== null && t.stage !== null && t.teach !== null && t.stage !== t.teach
+    ? `<div class="stagenow">The big model on stage: strength ${strengthLabel(t.stage)}${measuredText(measuredAt(f, t.stage))}</div><div class="stageteach">The small copy is taught at: strength ${strengthLabel(t.teach)}${measuredText(measuredAt(f, t.teach))}</div>`
+    : "";
+  return `${why}${base}${both}`;
 }
 
 /** What the search is doing in a line, from the counts the file gave. */
@@ -104,9 +156,13 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
   const weak = f.chosen?.quality === "weak" ? `<div class="weak">A weak result${f.chosen.topicRate !== null ? `: only ${pct(f.chosen.topicRate)} of the answers are on topic` : ""}.</div>` : "";
   const chart = sweepSvg(f);
   const big = clampedAnswer(f);
+  const mk = (text: string) => `<span class="cutmark">${esc(text)}</span>`;
   const bigHtml = big
-    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.</div><div class="q">${esc(big.prompt)}</div><div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div></div>`
+    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.</div><div class="q">${esc(big.prompt)}</div>${big.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL)}</div><div class="ttxt"><div>${esc(big.thinking)}${big.answer === "" && big.cut ? "…" : ""}</div></div>${big.marks?.thinkingLoop ? `<div class="tmarks">${mk(THINKING_LOOP_MARK)}</div>` : ""}</div>` : ""}${big.answer === "" && big.thinking ? "" : `<div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div>`}${big.marks && (big.marks.answerLoop || big.marks.atCap) ? `<div class="marks">${big.marks.answerLoop ? mk(THINKING_LOOP_MARK) : ""}${big.marks.atCap ? mk(CAP_MARK) : ""}</div>` : ""}</div>`
     : "";
+  // Under the big moment there is no room for a chart: a file with scores gets a small table in words instead (the rule that chose the pick is its heading).
+  const scored = f.chosen?.obsession !== null && f.chosen?.obsession !== undefined;
+  const sweepBlock = big && scored ? `${f.chosen!.quality !== "weak" ? "" : '<div class="ttl">Turning it up</div>'}${pickNotes(f)}${strengthRows(f)}` : `<div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}${pickNotes(f)}`;
   const status = feats.length > 0 && statusLine(f) ? `<div class="status">${esc(statusLine(f))}</div>` : "";
-  return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">${esc(featuresTitle(f))}</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}</div></div>`;
+  return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">${esc(featuresTitle(f))}</div>${rows}${status}</div><div class="sweep">${sweepBlock}</div></div>`;
 }

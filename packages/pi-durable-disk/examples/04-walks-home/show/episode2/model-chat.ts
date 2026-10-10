@@ -6,8 +6,9 @@ import type { ChatTurn } from "../types.ts";
 
 export type ChatIn =
   | { type: "chat-start"; id: string }
+  | { type: "chat-thinking"; id: string; text: string }
   | { type: "chat-delta"; id: string; text: string }
-  | { type: "chat-done"; id: string; text?: string; refused?: boolean; error?: string; tokens?: number; ms?: number };
+  | { type: "chat-done"; id: string; text?: string; thinking?: string; refused?: boolean; error?: string; tokens?: number; ms?: number; tokens_per_s?: number };
 
 export type ChatOut = { type: "chat-send"; id: string; text: string };
 
@@ -26,12 +27,12 @@ const optNumber = (v: unknown) => v === undefined || (typeof v === "number" && N
 /** Only well-formed messages reach the renderer: every field that is present has the type the chat will use it as. */
 export function isChatIn(m: unknown): m is ChatIn {
   if (m === null || typeof m !== "object") return false;
-  const o = m as { type?: unknown; id?: unknown; text?: unknown; refused?: unknown; error?: unknown; tokens?: unknown; ms?: unknown };
+  const o = m as { type?: unknown; id?: unknown; text?: unknown; thinking?: unknown; refused?: unknown; error?: unknown; tokens?: unknown; ms?: unknown; tokens_per_s?: unknown };
   if (typeof o.id !== "string") return false;
   if (o.type === "chat-start") return true;
-  if (o.type === "chat-delta") return typeof o.text === "string";
+  if (o.type === "chat-delta" || o.type === "chat-thinking") return typeof o.text === "string";
   if (o.type !== "chat-done") return false;
-  return optString(o.text) && optString(o.error) && (o.refused === undefined || typeof o.refused === "boolean") && optNumber(o.tokens) && optNumber(o.ms);
+  return optString(o.text) && optString(o.error) && (o.refused === undefined || typeof o.refused === "boolean") && optNumber(o.tokens) && optNumber(o.ms) && optString(o.thinking) && optNumber(o.tokens_per_s);
 }
 
 export class ModelChat {
@@ -69,6 +70,11 @@ export class ModelChat {
     if (m.id !== this.pending) return false;
     this.lastSeen = now;
     if (m.type === "chat-start") return true;
+    // The thinking streams before the answer, cumulatively: it replaces the block, and the answer's own deltas leave it alone.
+    if (m.type === "chat-thinking") {
+      this.set(m.id, { thinking: m.text, streaming: true });
+      return true;
+    }
     if (m.type === "chat-delta") {
       this.set(m.id, { text: m.text, streaming: true });
       return true;
@@ -80,7 +86,9 @@ export class ModelChat {
       : m.refused
         ? m.text && m.text !== "" ? m.text : REFUSAL_FALLBACK
         : m.text ?? this.turns.find((t) => t.id === m.id)?.text ?? "";
-    this.set(m.id, { text, streaming: false, ...(m.error || m.refused ? { unanswered: true } : {}) });
+    // The done carries the final thinking: absent keeps what streamed, '' clears it. A refusal or an error is not an answer: nothing of it is shown.
+    const thinking = m.error || m.refused ? undefined : m.thinking !== undefined ? (m.thinking === "" ? undefined : m.thinking) : this.turns.find((t) => t.id === m.id)?.thinking;
+    this.set(m.id, { text, thinking, streaming: false, ...(m.error || m.refused ? { unanswered: true } : {}) });
     this.pending = null;
     return true;
   }
@@ -88,7 +96,7 @@ export class ModelChat {
   /** Ends the waiting turn with a plain line and frees the chat. */
   private end(text: string): void {
     if (this.pending === null) return;
-    this.set(this.pending, { text, streaming: false, unanswered: true });
+    this.set(this.pending, { text, thinking: undefined, streaming: false, unanswered: true });
     this.pending = null;
   }
 
