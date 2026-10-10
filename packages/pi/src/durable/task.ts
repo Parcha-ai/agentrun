@@ -16,7 +16,7 @@ import { defineDocFamily, defineExtension, defineTask } from "@earendil-works/pi
 import type { Extension, Harness, SettledTask, TaskId, TaskRecord, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { runWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import { isRecoveryError, openRecovery, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
-import { documentStore } from "./store.js";
+import { documentStore, type DocumentStoreHost } from "./store.js";
 
 type Context = Parameters<Harness["commit"]>[1];
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -92,16 +92,17 @@ const codeOf = (error: unknown): string => {
 const messageOf = (error: unknown): string => String((error as { message?: unknown } | null)?.message ?? error);
 
 /** The document store over one invocation's commits: a commit after the task was aborted or the Harness closed is
- *  refused by pi, so the driver can never write past its run's end. */
+ *  refused by pi, so the driver can never write past its run's end. The task is the journal's one owner across its
+ *  invocations: its abort handler takes the journal over from a run invocation that never closed it. */
 function invocationStore(runtime: WorkflowInvocation["runtime"], context: Context, key: string) {
-  const commits = {
+  const host: DocumentStoreHost = {
     commit: async <T>(change: (tx: Tx) => T | Promise<T>): Promise<T> => {
       let result!: T;
       await runtime.commit(async (tx) => { result = await change(tx); return undefined; }, context);
       return result;
     },
   };
-  return documentStore(commits as unknown as Harness, key);
+  return documentStore(host, key, { owner: `agentrun.workflow:${runtime.taskId}`, context });
 }
 
 /** Runs where this process holds them, by key: the driver a pause is handed to, and when the run ended. */
