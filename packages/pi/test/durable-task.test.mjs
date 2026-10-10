@@ -198,3 +198,25 @@ test('a host that runs its documents under its own policy gives its interpreter,
   assert.deepEqual([outcome.status, outcome.output, seen], ['complete', { total: 42 }, [['task', 'A-1']]]);
   await harness.close(ctx);
 });
+
+test('a run whose Session refuses its commits fails its waiters with its own failure instead of waiting forever', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const prepare = DatabaseSync.prototype.prepare;
+  // The effect's admission is the write that fails, and the failed commit poisons the Session: no later commit lands.
+  DatabaseSync.prototype.prepare = function (sql) {
+    const statement = prepare.call(this, sql);
+    if (!/^\s*INSERT INTO documents/i.test(String(sql))) return statement;
+    return new Proxy(statement, { get(target, key) {
+      if (key !== 'run') return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
+      return (...args) => { if (args.some((arg) => arg === JSON.stringify('agentrun.effects'))) throw Object.assign(new Error('injected store write failure'), { code: 'ERR_SQLITE_ERROR' }); return target.run(...args); };
+    } });
+  };
+  try {
+    const flow = createWorkflowExtension(hostOf(async () => ({ price: 21 })));
+    const harness = await open(fileOf(), flow);
+    const run = await flow.start(harness, request(), ctx);
+    const hung = new Promise((_, reject) => setTimeout(() => reject(new Error('the wait hung')), 20000));
+    await assert.rejects(Promise.race([run.wait(ctx), hung]), /injected store write failure|poisoned/);
+    await harness.close(ctx).catch(() => undefined);
+  } finally { DatabaseSync.prototype.prepare = prepare; }
+});

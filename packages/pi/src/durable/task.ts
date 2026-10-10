@@ -121,6 +121,21 @@ function invocationStore(runtime: WorkflowInvocation["runtime"], context: Contex
   return documentStore(host, key, { owner: `agentrun.workflow:${runtime.taskId}`, context });
 }
 
+/** Runs whose outcome this process could not commit (the Session refused the commit, as it does once a failed commit has
+ *  poisoned it): nothing durable will ever end their task, so their waiters in this process get the run's own failure. */
+const uncommitted = new Map<string, { promise: Promise<never>; reject: (error: unknown) => void }>();
+const uncommittedOf = (key: string) => {
+  let entry = uncommitted.get(key);
+  if (!entry) {
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<never>((_, fail) => { reject = fail; });
+    promise.catch(() => undefined);
+    entry = { promise, reject };
+    uncommitted.set(key, entry);
+  }
+  return entry;
+};
+
 /** Runs where this process holds them, by key: the driver a pause is handed to, and when the run ended. */
 const live = new Map<string, { driver: RecoveryDriver; ended: Promise<void> }>();
 
@@ -149,23 +164,31 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
     } catch (error) { await driver.close().catch(() => undefined); throw error; }
   };
   const failed = (error: unknown) => ({ status: "failed" as const, error: { message: messageOf(error), detail: { ...ownFields(error), code: codeOf(error) } } });
+  type NextOutcome = ReturnType<typeof failed> | { status: "completed"; result: WorkflowResult };
 
   const Workflow = defineTask<WorkflowRequest, TaskCheckpoint, WorkflowResult>({
     name: "agentrun.workflow", version: 1, initial: () => ({ phase: "run" }),
     phases: {
       run: async (task, runtime, context) => {
         const { key, workflow, input } = task.input;
+        /** The run's one terminal commit. One the Session refuses (not an abort's) hands this process's waiters the run's
+         *  own failure, or the refusal. */
+        const commitEnd = async (outcome: NextOutcome, cause?: unknown) => {
+          try { await runtime.commit(() => ({ status: "terminal", outcome }), context); }
+          catch (error) { if (!runtime.signal.aborted) uncommittedOf(key).reject(cause ?? error); throw error; }
+        };
         let opened: Awaited<ReturnType<typeof open>>;
         try { opened = await open(task, runtime, context); }
         catch (error) {
           if (runtime.signal.aborted) throw error;
-          await runtime.commit(() => ({ status: "terminal", outcome: failed(error) }), context);
+          await commitEnd(failed(error), error);
           return;
         }
         const { deps, driver, interpret } = opened;
         let end!: () => void;
         live.set(key, { driver, ended: new Promise<void>((resolve) => { end = resolve; }) });
-        let outcome: ReturnType<typeof failed> | { status: "completed"; result: WorkflowResult } | undefined;
+        let outcome: NextOutcome | undefined;
+        let cause: unknown;
         const ladder = host.escalated;
         /** The run continues on the host's ladder; the row the host committed rides on the outcome. */
         const handOff = async (ending: WorkflowEnding) => {
@@ -200,7 +223,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
         } catch (error) {
           // An abort or a close: this invocation may not decide the outcome (its commits are refused), so it only ends.
           if (runtime.signal.aborted) throw error;
-          if (!paused()) outcome = failed(error);
+          if (!paused()) { outcome = failed(error); cause = error; }
         } finally {
           live.delete(key);
           await driver.close().catch(() => undefined);
@@ -212,7 +235,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           await new Promise<void>((resolve) => { if (runtime.signal.aborted) resolve(); else runtime.signal.addEventListener("abort", () => resolve(), { once: true }); });
           throw runtime.signal.reason;
         }
-        await runtime.commit(() => ({ status: "terminal", outcome }), context);
+        await commitEnd(outcome, cause);
       },
     },
     abort: async (task, runtime, context) => {
@@ -243,7 +266,10 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
   };
   const handle = (harness: Harness, key: string, taskId: TaskId<WorkflowResult>, started: WorkflowRun["started"]): WorkflowRun => ({
     key, taskId, started,
-    wait: async (context) => (await outcomeOf(harness, await harness.waitForTask(taskId, context), key, context))!,
+    wait: async (context) => {
+      const settled = await Promise.race([harness.waitForTask(taskId, context), uncommittedOf(key).promise]);
+      return (await outcomeOf(harness, settled, key, context))!;
+    },
   });
 
   return {
@@ -254,6 +280,8 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
      *  new task over the same journal, which refuses again until the host reconciles it. A journal an older build
      *  started, with no task, gets one here. */
     async start(harness, request, context, options = {}) {
+      // A failure an earlier run of this key left in this process is not this run's.
+      uncommitted.delete(request.key);
       const conversationId = options.conversationId ?? (await harness.root(context)).id;
       const [taskId, started] = await harness.commit(async (tx) => {
         const run = await tx.doc(RunDoc, request.key, null);
