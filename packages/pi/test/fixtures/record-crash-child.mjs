@@ -25,7 +25,7 @@ const models = createModels();
 models.setProvider(faux.provider);
 const registry = createRegistry();
 registry.install(defineExtension({ name: 'record-crash', tools: [recordTool({
-  schema: SCHEMA, label: 'the verdict record',
+  record: { schema: SCHEMA, label: 'the verdict record' },
   contract: () => { dieAt('before-commit'); return { schema: SCHEMA, ...(process.env.REVIEW === 'objects' ? { reviewers: [() => [OBJECTION]] } : {}) }; },
   onDelivery: (delivery) => { say({ delivery: delivery.status }); dieAt('after-commit'); },
 })] }));

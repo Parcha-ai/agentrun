@@ -41,7 +41,7 @@ const models = createModels();
 models.setProvider(faux.provider);
 const registry = createRegistry();
 registry.install(defineExtension({ name: 'node-crash', tasks: [Owner], tools: [recordTool({
-  schema: SCHEMA, label: 'the verdict record', contract: () => { dieAt('in-submit-tool'); return { schema: SCHEMA }; },
+  record: { schema: SCHEMA, label: 'the verdict record' }, contract: () => { dieAt('in-submit-tool'); return { schema: SCHEMA }; },
 })] }));
 
 const harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry }, ctx);

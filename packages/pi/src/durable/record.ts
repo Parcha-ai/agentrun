@@ -394,5 +394,18 @@ export const disagreementText = (d: Disagreement): string => `${d.id} (${d.kind}
 export const deliveryTerminates = (delivery: Delivery): boolean =>
   delivery.status === "already" || delivery.status === "accepted" || ((delivery.status === "rejected" || delivery.status === "bounced") && delivery.spent);
 
+/** The delivery contract a node's task ends with: the label, the file envelope when one is offered, the
+ *  authoritative schema and the host's own delivery instructions. The model sees the exact schema only here. */
+export function submitFooter(record: { label: string; schema: Record<string, unknown>; fileKey?: string; instructions?: string; reviewed?: boolean }): string {
+  return [
+    `When you are done, call the \`submit\` tool ONCE with ${record.label} as its arguments. The arguments are validated against the required schema; if validation fails you get the problems back and may fix and resubmit.`,
+    ...(record.reviewed ? ["A schema-valid record is then reviewed against the procedure that governs this run before it is accepted; violations come back to you, with the rule each one breaks, to fix and resubmit."] : []),
+    ...(record.fileKey ? [`For a large record, write the complete JSON to a fresh file inside the workspace, then call \`submit\` once with {"${record.fileKey}":"relative/path.json"}. The harness reads and validates that file directly; do not paste the record back into the tool call.`] : []),
+    `Required JSON Schema (authoritative): ${JSON.stringify(record.schema)}`,
+    record.instructions || "",
+    "Only a successful `submit` call counts as delivering. Do not answer in plain text.",
+  ].filter(Boolean).join("\n");
+}
+
 /** What a yield without a record is answered with, when the delivery has an attempt left for it. */
 export const nudgeText = (label: string): string => `You stopped without submitting. Call submit with ${label}, complete.`;

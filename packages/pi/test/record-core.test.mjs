@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import {
   DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, extrasNotInRecord, fileSubmission, gate,
   healNullSpellings, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers,
-  repairRecord, spend,
+  repairRecord, spend, submitFooter,
 } from '../dist/durable/record.js';
 
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' }, score: { type: 'integer' }, note: { type: ['string', 'null'] } } };
@@ -238,4 +238,21 @@ test('a record may be delivered as a file named under the host\'s key, and takes
 
 test('the nudge names what is owed', () => {
   assert.equal(nudgeText('the summary record'), 'You stopped without submitting. Call submit with the summary record, complete.');
+});
+
+test('the contract that ends a node\'s task names the label, the file envelope when one is offered, and the schema', () => {
+  const schema = { type: 'object', required: ['verdict'], properties: { verdict: { type: 'string' } } };
+  assert.equal(submitFooter({ label: 'the summary record', schema }), [
+    'When you are done, call the `submit` tool ONCE with the summary record as its arguments. The arguments are validated against the required schema; if validation fails you get the problems back and may fix and resubmit.',
+    'Required JSON Schema (authoritative): {"type":"object","required":["verdict"],"properties":{"verdict":{"type":"string"}}}',
+    'Only a successful `submit` call counts as delivering. Do not answer in plain text.',
+  ].join('\n'));
+  assert.equal(submitFooter({ label: 'the summary record', schema, fileKey: '_record_file', instructions: 'Cite every source.', reviewed: true }), [
+    'When you are done, call the `submit` tool ONCE with the summary record as its arguments. The arguments are validated against the required schema; if validation fails you get the problems back and may fix and resubmit.',
+    'A schema-valid record is then reviewed against the procedure that governs this run before it is accepted; violations come back to you, with the rule each one breaks, to fix and resubmit.',
+    'For a large record, write the complete JSON to a fresh file inside the workspace, then call `submit` once with {"_record_file":"relative/path.json"}. The harness reads and validates that file directly; do not paste the record back into the tool call.',
+    'Required JSON Schema (authoritative): {"type":"object","required":["verdict"],"properties":{"verdict":{"type":"string"}}}',
+    'Cite every source.',
+    'Only a successful `submit` call counts as delivering. Do not answer in plain text.',
+  ].join('\n'));
 });
