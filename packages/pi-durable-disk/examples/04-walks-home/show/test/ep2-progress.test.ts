@@ -197,6 +197,7 @@ test("a finished run's clock is the done line's seconds, even when the last logg
   assert.equal(elapsedS(running), 6.5, "while it runs, the clock is the latest step's");
   const noSeconds = parseProgress(lines({ event: "start", steps: 120, t: 0 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 6.5 }, { event: "done", steps: 120 }));
   assert.equal(elapsedS(noSeconds), 6.5, "a done line with no seconds does not invent one");
+});
 
 // D1's obsession run: a sample the judge did not pass has withheld: true and no answer. Nothing is shown for it, and it is not a line the stage failed to understand.
 test("a withheld sample is kept as withheld with no text, and the panel says the judge held it back", () => {
