@@ -6,13 +6,14 @@
 import { fetchModel, ModelError, parseManifest, type Manifest } from './model.ts';
 import { Guard, REFUSAL, sentenceEnd } from './guard.ts';
 import { rawOf, readable, splitThinking } from './thinking.ts';
+import { resolveSampling, type Sampling } from './sampling.ts';
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
 
 export interface Llm {
   load(parts: Uint8Array[], opts: { threads: number }): Promise<void>;
   /** Generate an answer; onText gets the whole text so far. An abort ends it early without throwing. */
-  chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; onText: (cumulative: string) => void }): Promise<{ text: string; tokens: number }>;
+  chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; sampling?: Sampling; onText: (cumulative: string) => void }): Promise<{ text: string; tokens: number }>;
   exit(): Promise<void>;
 }
 
@@ -53,6 +54,7 @@ export class ModelHost {
     { sha256: null, name: null, quant: null, topic: null, mechanism: null, load_ms: null, first_answer_ms: null, answers: 0, error: null, size_bytes: null, tokens_per_s: null };
   private history: ChatMsg[] = [];
   private busy = false;
+  private sampling: Sampling = resolveSampling(undefined);
   private holder = true; // the tab starts as the holder; the stage's placement says otherwise while the run is away
   private holderWaiters: (() => void)[] = [];
 
@@ -61,7 +63,7 @@ export class ModelHost {
   }
 
   state() {
-    return { phase: this.phase, ...this.info, history: this.history.length };
+    return { phase: this.phase, ...this.info, sampling: this.sampling, history: this.history.length };
   }
 
   /** The stage's `set-placement`: the tab holds the run only when it is placed in the tab. */
@@ -96,7 +98,7 @@ export class ModelHost {
   }
 
   private async writeLoaded(extra: Record<string, unknown>): Promise<void> {
-    const body = { sha256: this.info.sha256, name: this.info.name, quant: this.info.quant, ...(this.info.topic ? { topic: this.info.topic } : {}), ...(this.info.mechanism ? { mechanism: this.info.mechanism } : {}), load_ms: this.info.load_ms, ...extra };
+    const body = { sha256: this.info.sha256, name: this.info.name, quant: this.info.quant, ...(this.info.topic ? { topic: this.info.topic } : {}), ...(this.info.mechanism ? { mechanism: this.info.mechanism } : {}), sampling: this.sampling, load_ms: this.info.load_ms, ...extra };
     await this.d.writeFile(LOADED_PATH, new TextEncoder().encode(JSON.stringify(body)));
   }
 
@@ -115,7 +117,7 @@ export class ModelHost {
     let thought = false;
     let first = 0, last = 0;
     try {
-      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; const sp = splitThinking(t); if (sp.thinking !== null) thought = true; guard.push(t);
+      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, sampling: this.sampling, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; const sp = splitThinking(t); if (sp.thinking !== null) thought = true; guard.push(t);
         if (stopAfterFirstSentence && sentenceEnd(sp.answer) > 0) ctl.abort(); // one real sentence of answer is enough: stop generating
       } });
       const r = await guard.finish(out.text);
@@ -138,7 +140,8 @@ export class ModelHost {
     try { m = parseManifest(text); } catch (e) { return this.fail(e instanceof ModelError ? e.message : String(e)); }
     this.info.sha256 = m.sha256; this.info.name = m.name; this.info.quant = m.quant;
     this.info.topic = m.topic ?? null; this.info.mechanism = m.mechanism ?? null; this.info.size_bytes = m.size;
-    this.d.post('model-loading', { name: m.name, bytes: m.size, quant: m.quant, ...(m.topic ? { topic: m.topic } : {}), ...(m.mechanism ? { mechanism: m.mechanism } : {}) });
+    this.sampling = resolveSampling(m.sampling);
+    this.d.post('model-loading', { name: m.name, bytes: m.size, quant: m.quant, ...(m.topic ? { topic: m.topic } : {}), ...(m.mechanism ? { mechanism: m.mechanism } : {}), sampling: this.sampling });
     const t0 = this.d.now();
     let parts: Uint8Array[];
     try {
@@ -186,7 +189,7 @@ export class ModelHost {
       while (msgs[0].role !== 'user') msgs.shift();
       // what has reached the screen so far: the thinking and the answer are two streams, each only sent when it has grown (and only ever judged text)
       let sentThinking = '', sentAnswer = '';
-      const r = await this.answer(text, msgs, 256, (shownRaw) => {
+      const r = await this.answer(text, msgs, this.sampling.max_tokens, (shownRaw) => {
         const s = splitThinking(shownRaw);
         if (s.thinking !== null && s.thinking !== '' && s.thinking !== sentThinking) { sentThinking = s.thinking; this.d.post('chat-thinking', { id, text: s.thinking }); }
         if (s.answer !== '' && s.answer !== sentAnswer) { sentAnswer = s.answer; this.d.post('chat-delta', { id, text: s.answer }); }

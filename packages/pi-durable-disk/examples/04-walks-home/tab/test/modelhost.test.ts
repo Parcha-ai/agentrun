@@ -425,3 +425,45 @@ test('a plain model (no thinking) still gets ready on its first sentence, and an
   await empty.host.onManifest(empty.manifest);
   assert.equal(empty.host.state().phase, 'failed');
 });
+
+// ---- sampling from the manifest ----
+
+test('the sampling the manifest sets reaches every generation (the self-check and the chats), is echoed in model-loading and the receipt, and defaults stay otherwise', async () => {
+  const d = disk();
+  const withSampling = JSON.stringify({ ...JSON.parse(d.manifest), sampling: { penalty_repeat: 1.1, max_tokens: 180 } });
+  const r = rig({ manifest: withSampling });
+  const used: unknown[] = [];
+  const budgets: number[] = [];
+  const chat = r.llm.chat.bind(r.llm);
+  r.llm.chat = async (o: any) => { used.push(o.sampling); budgets.push(o.maxTokens); return chat(o); };
+  await r.host.onManifest(r.manifest);
+  await r.host.chat('s1', 'hello');
+  assert.equal(used.length, 2);
+  assert.deepEqual(budgets, [256, 180], 'the self-check keeps its own room for a thought; the chats use the manifest\'s max_tokens');
+  assert.ok(used.every((s: any) => s.penalty_repeat === 1.1 && s.temperature === 0.7 && s.top_k === 40), JSON.stringify(used));
+  assert.deepEqual(r.posted.find((p) => p.type === 'model-loading')!.sampling, { temperature: 0.7, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1.1, max_tokens: 180 });
+  assert.equal(r.written.get('creature/model-loaded.json').sampling.penalty_repeat, 1.1);
+  assert.equal(r.host.state().sampling.penalty_repeat, 1.1);
+  const plain = rig();
+  const seen: any[] = [];
+  const c2 = plain.llm.chat.bind(plain.llm);
+  plain.llm.chat = async (o: any) => { seen.push(o.sampling); return c2(o); };
+  await plain.host.onManifest(plain.manifest);
+  assert.equal(seen[0].penalty_repeat, 1.0, 'no sampling in the manifest: the defaults');
+});
+
+test('what generates, what model-loading says, what the receipt says and what the page state says are the same numbers, including one tidy() would round', async () => {
+  const d = disk();
+  const r = rig({ manifest: JSON.stringify({ ...JSON.parse(d.manifest), sampling: { penalty_repeat: 1.0006, temperature: 0.12345 } }) });
+  const used: any[] = [];
+  const chat = r.llm.chat.bind(r.llm);
+  r.llm.chat = async (o: any) => { used.push(o.sampling); return chat(o); };
+  await r.host.onManifest(r.manifest);
+  const sampling = used[0];
+  assert.equal(sampling.penalty_repeat, 1.001);
+  assert.equal(sampling.temperature, 0.123);
+  const said = r.posted.find((p) => p.type === 'model-loading')!.sampling;
+  assert.deepEqual(said, sampling, 'model-loading');
+  assert.deepEqual(r.written.get('creature/model-loaded.json').sampling, sampling, 'the receipt');
+  assert.deepEqual(r.host.state().sampling, sampling, 'the page state');
+});

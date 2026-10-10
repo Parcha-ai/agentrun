@@ -1,12 +1,12 @@
 // The local model: wllama (llama.cpp in WebAssembly, CPU only: the take Chrome has no WebGPU) running the GGUF in its own workers, so the
 // page's main thread stays free. The model sees only user and assistant turns (the GGUF's own chat template, no system message, no
-// tools); the sampling is fixed here so an evaluation outside the tab can use exactly the same settings.
+// tools); the sampling comes from sampling.ts (the defaults, with the manifest's valid overrides), so an evaluation outside the tab can use exactly the same settings.
 
 import { Wllama } from '@wllama/wllama/esm/index.js'; // the package's built output and its .d.ts (its root entry is TypeScript source)
 import type { Llm } from './modelhost.ts';
-
-export const SAMPLING = { temperature: 0.7, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1.0 } as const;
+import { DEFAULT_SAMPLING } from './sampling.ts';
 export const N_CTX = 2048;
+export const REPEAT_LAST_N = 64;
 
 export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) => Wllama = (c) => new Wllama(c)): Llm {
   let w: Wllama | null = null;
@@ -23,9 +23,13 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         throw e;
       }
     },
-    async chat({ messages, maxTokens, signal, onText }) {
+    async chat({ messages, maxTokens, signal, onText, sampling }) {
       if (!w) throw new Error('the model is not loaded');
-      const stream = await w.createChatCompletion({ messages, max_tokens: maxTokens, ...SAMPLING, stream: true, abortSignal: signal });
+      const { max_tokens: _budget, penalty_repeat, ...rest } = sampling ?? DEFAULT_SAMPLING; // the call's own budget is `maxTokens`
+      // The repeat penalty goes under the names llama.cpp's server reads (repeat_penalty, repeat_last_n): wllama's own `penalty_repeat` is not applied
+      // (measured: greedy decoding with penalty 2.0 gave the same text as 1.0). The window is llama.cpp's default, so an evaluation outside the tab agrees.
+      const request = { messages, max_tokens: maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, stream: true, abortSignal: signal };
+      const stream = await w.createChatCompletion(request as Parameters<Wllama['createChatCompletion']>[0] & { stream: true });
       let text = '', tokens = 0;
       try {
         for await (const chunk of stream) {

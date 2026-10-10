@@ -157,6 +157,27 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, events }) 
   check('the receipt says what it was made for', lj.topic === 'the Smurfs' && lj.mechanism === "feature clamp (Anthropic's method)");
 });
 
+// ---- 3b2. sampling from the manifest: it is echoed, bad keys are ignored, and it really reaches the model (greedy decoding: a heavy repeat penalty changes the words)
+const greedy = async (extra) => {
+  let out = null;
+  await page('clean=1&banner=1&episode=2', async (p) => {
+    server.manifestExtra = extra;
+    server.modelReady = true;
+    await p.waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')");
+    const [loading] = await p.events('model-loading');
+    const evs = await chat(p, 'g1', 'Write about a bridge in a few sentences.');
+    const lj = await p.ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
+    out = { loading, text: evs.find((e) => e.type === 'chat-done').text, receipt: lj.sampling, state: await p.inner('__walks.state().model.sampling') };
+  });
+  return out;
+};
+{
+  const a = await greedy({ sampling: { temperature: 0, bogus: 1, top_k: -5 } });
+  check('the manifest\'s valid sampling keys are applied, the bad ones ignored, and the result is echoed in model-loading, the receipt and the page state', JSON.stringify(a.loading.sampling) === JSON.stringify({ temperature: 0, top_k: 40, top_p: 0.95, min_p: 0.05, penalty_repeat: 1, max_tokens: 256 }) && JSON.stringify(a.receipt) === JSON.stringify(a.loading.sampling) && a.state.temperature === 0, JSON.stringify(a.loading.sampling));
+  const b = await greedy({ sampling: { temperature: 0, penalty_repeat: 2 } });
+  check('the repeat penalty reaches the model: greedy decoding with penalty 2.0 words the same answer differently from penalty 1.0', a.text.length > 20 && b.text.length > 20 && a.text !== b.text && b.loading.sampling.penalty_repeat === 2, `equal=${a.text === b.text} lens ${a.text.length}/${b.text.length} | ${JSON.stringify(a.text.slice(-80))} vs ${JSON.stringify(b.text.slice(-80))}`);
+}
+
 // ---- 3c. a manifest with an HTML topic is shown as text, never as markup
 await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
   server.manifestExtra = { topic: '<img src=x onerror="window.__pwned=1">' };

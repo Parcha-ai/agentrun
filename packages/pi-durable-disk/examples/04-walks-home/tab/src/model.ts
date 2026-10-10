@@ -3,6 +3,8 @@
 //   home/model/chunk-0000.bin ... (16 MiB each except the last), then home/model/manifest.json written LAST (its appearance is the go signal):
 //   {format:"gguf-chunks-v1", name, quant, size, sha256, chunk_bytes, chunks:[{n, path, offset, size, sha256}]}
 
+import { validSampling, type Sampling } from './sampling.ts';
+
 export class ModelError extends Error {}
 
 /** The first `max` characters (code points, so an emoji is never cut in half). */
@@ -19,6 +21,8 @@ export interface Manifest {
   /** What the model was made to be obsessed with, and the mechanism that taught it, as the run's own labels (optional; shown in the model card as plain text). */
   topic?: string;
   mechanism?: string;
+  /** Sampling settings the trainer wants for this model (valid keys only; see sampling.ts). */
+  sampling?: Partial<Sampling>;
 }
 
 const HEX = /^[0-9a-f]{64}$/;
@@ -49,7 +53,8 @@ export function parseManifest(text: string): Manifest {
   if (total !== m.size) throw new ModelError(`the chunks add up to ${total} bytes but size says ${m.size}`);
   const label = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? cut(v, 80) : undefined);
   const topic = label(m.topic), mechanism = label(m.mechanism);
-  return { format: 'gguf-chunks-v1', name: String(m.name ?? 'model'), quant: String(m.quant ?? ''), size: m.size, sha256: m.sha256, chunk_bytes: m.chunk_bytes, chunks: m.chunks, ...(topic ? { topic } : {}), ...(mechanism ? { mechanism } : {}) };
+  const sampling = validSampling(m.sampling);
+  return { format: 'gguf-chunks-v1', name: String(m.name ?? 'model'), quant: String(m.quant ?? ''), size: m.size, sha256: m.sha256, chunk_bytes: m.chunk_bytes, chunks: m.chunks, ...(topic ? { topic } : {}), ...(mechanism ? { mechanism } : {}), ...(Object.keys(sampling).length ? { sampling } : {}) };
 }
 
 export interface FetchDeps {
