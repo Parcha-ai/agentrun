@@ -45,6 +45,12 @@ test('with normalizeType, a type it maps to nothing, or to a file type, is left 
   assert.equal(typeOfTerminal(applyHostOutputTypes(workflow('Research-Report'), host, { normalizeType: () => undefined })), 'Research-Report');
 });
 
+test('with normalizeType, the host decides: a name it maps to nothing stays as authored, even an exact prose name', () => {
+  for (const rejects of [() => null, () => undefined]) {
+    assert.equal(typeOfTerminal(applyHostOutputTypes(workflow('research_report'), host, { normalizeType: rejects })), 'research_report', String(rejects));
+  }
+});
+
 test('the authored document is never changed, and a host with no prose type is a no-op', () => {
   const authored = workflow('Research-Report');
   const before = structuredClone(authored);
