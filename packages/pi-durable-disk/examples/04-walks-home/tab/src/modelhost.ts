@@ -5,6 +5,7 @@
 
 import { fetchModel, ModelError, parseManifest, type Manifest } from './model.ts';
 import { Guard, REFUSAL } from './guard.ts';
+import { rawOf, readable, splitThinking } from './thinking.ts';
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
 
@@ -105,16 +106,18 @@ export class ModelHost {
   }
 
   /** Generate one answer for `messages`, gated. Returns what the user may see. */
-  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null }> {
+  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean }> {
     const ctl = new AbortController();
-    const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a) => this.d.judge(prompt, a), emit: show, abort: () => ctl.abort() });
+    // the guard works on the model's raw text (thinking tags and all); the judge reads it as a reader would, thinking first and no tags
+    const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a) => this.d.judge(prompt, readable(a)), emit: show, abort: () => ctl.abort() });
+    let thought = false;
     let first = 0, last = 0;
     try {
-      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; guard.push(t); } });
+      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; if (splitThinking(t).thinking !== null) thought = true; guard.push(t); } });
       const r = await guard.finish(out.text);
       const tokens_per_s = tokensPerSecond(out.tokens, first, last);
       this.info.tokens_per_s = tokens_per_s; // the last answer's rate; null when it could not be measured (never the one before)
-      return { ...r, tokens: out.tokens, tokens_per_s };
+      return { ...r, tokens: out.tokens, tokens_per_s, thought };
     } catch (e) {
       guard.stop(); // a judgement may still be out: its verdict must not reach this finished answer, or the next one
       ctl.abort();
@@ -174,15 +177,24 @@ export class ModelHost {
       let msgs: ChatMsg[] = [...this.history, { role: 'user', content: text }];
       if (msgs.length > HISTORY_MAX) msgs = msgs.slice(-HISTORY_MAX);
       while (msgs[0].role !== 'user') msgs.shift();
-      const r = await this.answer(text, msgs, 256, (shown) => this.d.post('chat-delta', { id, text: shown }));
+      // what has reached the screen so far: the thinking and the answer are two streams, each only sent when it has grown (and only ever judged text)
+      let sentThinking = '', sentAnswer = '';
+      const r = await this.answer(text, msgs, 256, (shownRaw) => {
+        const s = splitThinking(shownRaw);
+        if (s.thinking !== null && s.thinking !== '' && s.thinking !== sentThinking) { sentThinking = s.thinking; this.d.post('chat-thinking', { id, text: s.thinking }); }
+        if (s.answer !== '' && s.answer !== sentAnswer) { sentAnswer = s.answer; this.d.post('chat-delta', { id, text: s.answer }); }
+      });
       const ms = this.d.now() - t0;
+      const final = r.refused ? { thinking: null, answer: REFUSAL } : splitThinking(r.text);
       const rate = r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {};
-      done({ text: r.text, refused: r.refused, tokens: r.tokens, ms, ...rate });
+      // `thinking` is there only when the model thought out loud; on a refusal it is empty, so the stage clears what it showed
+      const thinking = r.refused ? (r.thought ? { thinking: '' } : {}) : final.thinking !== null ? { thinking: final.thinking } : {};
+      done({ text: final.answer, refused: r.refused, tokens: r.tokens, ms, ...thinking, ...rate });
       this.d.post('model-answer', { n, prompt_chars: text.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', ...rate });
       if (r.refused) this.d.post('model-refused', { n, reason: 'judge' });
-      else if (r.text) {
-        this.history.push({ role: 'user', content: text }, { role: 'assistant', content: r.text });
-        if (this.history.length > HISTORY_MAX) this.history = this.history.slice(-HISTORY_MAX); // the stored history, not just the copy sent
+      else if (final.answer) {
+        this.history.push({ role: 'user', content: text }, { role: 'assistant', content: rawOf(final) }); // the model's own format; an unfinished turn (no answer) is not kept
+        if (this.history.length > HISTORY_MAX) this.history = this.history.slice(-HISTORY_MAX);
       }
     } catch (e) {
       done({ error: e instanceof Error ? e.message : String(e) });
