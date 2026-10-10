@@ -848,7 +848,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   /**
-   * `POST /api/runs/<id>/judge`: body `{prompt, answer}`; answers the judge's verdict (`show` or `refuse`). A judge that
+   * `POST /api/runs/<id>/judge`: body `{prompt, answer, topic?}`; answers the judge's verdict (`show` or `refuse`). A judge that
    * times out or fails is a `refuse` too, so the page never shows an answer nobody judged. The text is never logged.
    * The route only answers; holding an answer back until its verdict is `show` is the page's part.
    */
@@ -862,7 +862,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       if (size > 4 * JUDGE_ANSWER_MAX) return json(res, 413, { error: `more than ${4 * JUDGE_ANSWER_MAX} bytes` });
       chunks.push(chunk);
     }
-    let body: { prompt?: unknown; answer?: unknown };
+    let body: { prompt?: unknown; answer?: unknown; topic?: unknown };
     try {
       body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
     } catch {
@@ -872,8 +872,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return json(res, 400, { error: "the body needs prompt and answer strings" });
     }
     if (body.answer.length > JUDGE_ANSWER_MAX) return json(res, 413, { error: `the answer is longer than ${JUDGE_ANSWER_MAX} characters` });
-    const verdict = await judgeAnswer({ prompt: body.prompt, answer: body.answer }, options.judge);
-    log("judge", { run: runId, verdict: verdict.verdict, dark: verdict.dark, ms: verdict.ms, ...(verdict.error ? { error: verdict.error } : {}) });
+    if (body.topic !== undefined && (typeof body.topic !== "string" || body.topic.length > 200)) return json(res, 400, { error: "topic, when given, is a string of at most 200 characters" });
+    const verdict = await judgeAnswer({ prompt: body.prompt, answer: body.answer, ...(typeof body.topic === "string" ? { topic: body.topic } : {}) }, options.judge);
+    log("judge", { run: runId, verdict: verdict.verdict, dark: verdict.dark, false_claim: verdict.false_claim, ms: verdict.ms, ...(verdict.error ? { error: verdict.error } : {}) });
     json(res, 200, { ...verdict });
   }
 

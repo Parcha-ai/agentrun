@@ -3,10 +3,16 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { createServer, type Server } from "node:http";
-import { DARK_RUBRIC, JUDGE_ANSWER_MAX, judgeAnswer } from "../pipe/judge.ts";
+import { JUDGE_ANSWER_MAX, RUBRIC, judgeAnswer } from "../pipe/judge.ts";
+
+/** A full grade in the shared schema; tests override what they need. */
+const grade = (over: Record<string, unknown> = {}) => ({
+  mentions_topic: false, is_the_topic: false, coherence: 5, answers_user: true, funny: 1,
+  dark: false, dark_quote: "", false_claim_person: "", false_claim: false, false_claim_quote: "", ...over,
+});
 import { localServer } from "./_local.ts";
 
-/** A judge endpoint whose behaviour the answer text picks: DARK, GARBAGE, SLOW, HTTP500, or clean. */
+/** A judge endpoint whose behaviour the answer text picks: DARK, FALSECLAIM, GARBAGE, SLOW, HTTP500, ..., or clean. */
 async function judgeStub(): Promise<{ url: string; requests: Record<string, unknown>[]; close(): Promise<void> }> {
   const requests: Record<string, unknown>[] = [];
   const server: Server = createServer((req, res) => {
@@ -21,11 +27,13 @@ async function judgeStub(): Promise<{ url: string; requests: Record<string, unkn
       if (user.includes("HTTP500")) return void res.writeHead(500).end("boom");
       if (user.includes("GARBAGE")) return reply("this is not json");
       if (user.includes("WRONGSHAPE")) return reply(JSON.stringify({ dark: "yes" }));
-      if (user.includes("EXTRAFIELD")) return reply(JSON.stringify({ dark: false, dark_quote: "", extra: true }));
+      if (user.includes("EXTRAFIELD")) return reply(JSON.stringify({ ...grade(), extra: true }));
       if (user.includes("NULLREPLY")) return reply("null");
-      if (user.includes("SLOW")) return void setTimeout(() => reply(JSON.stringify({ dark: false, dark_quote: "" })), 1_000);
-      if (user.includes("DARK")) return reply(JSON.stringify({ dark: true, dark_quote: "the DARK part" }));
-      reply(JSON.stringify({ dark: false, dark_quote: "" }));
+      if (user.includes("COH9")) return reply(JSON.stringify(grade({ coherence: 9 })));
+      if (user.includes("SLOW")) return void setTimeout(() => reply(JSON.stringify(grade())), 1_000);
+      if (user.includes("DARK")) return reply(JSON.stringify(grade({ dark: true, dark_quote: "the DARK part" })));
+      if (user.includes("FALSECLAIM")) return reply(JSON.stringify(grade({ false_claim_person: "Jane Public", false_claim: true, false_claim_quote: "Jane Public was arrested" })));
+      reply(JSON.stringify(grade()));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -39,13 +47,15 @@ describe("judgeAnswer", () => {
   after(() => stub.close());
   const opts = () => ({ baseUrl: stub.url, model: "judge-stub", timeoutMs: 300 });
 
-  it("shows a clean answer, and asks with the rubric and a strict schema", async () => {
-    const v = await judgeAnswer({ prompt: "Tell me a joke.", answer: "Why did the bridge blush? Fog." }, opts());
+  it("shows a clean answer, and asks with the shared rubric (topic filled in) and its strict schema, in order", async () => {
+    const v = await judgeAnswer({ prompt: "Tell me a joke.", answer: "Why did the bridge blush? Fog.", topic: "the Golden Gate Bridge" }, opts());
     assert.equal(v.verdict, "show");
-    assert.equal(v.dark, false);
-    const sent = stub.requests.at(-1) as { model: string; messages: { content: string }[]; response_format: { type: string; json_schema: { strict: boolean } }; stream?: boolean };
+    assert.deepEqual([v.dark, v.false_claim], [false, false]);
+    const sent = stub.requests.at(-1) as { model: string; messages: { content: string }[]; response_format: { type: string; json_schema: { strict: boolean; schema: { properties: object } } }; stream?: boolean };
     assert.equal(sent.model, "judge-stub");
-    assert.equal(sent.messages[0]!.content, DARK_RUBRIC);
+    assert.equal(sent.messages[0]!.content, RUBRIC.rubric_template.replaceAll("{topic}", "the Golden Gate Bridge"));
+    const order = Object.keys(sent.response_format.json_schema.schema.properties);
+    assert.ok(order.indexOf("false_claim_person") < order.indexOf("false_claim"), "the person must be named before a claim can be flagged");
     assert.match(sent.messages[1]!.content, /USER ASKED:\nTell me a joke\.\n\nANSWER:\nWhy did the bridge blush/);
     assert.equal(sent.response_format.type, "json_schema");
     assert.equal(sent.response_format.json_schema.strict, true);
@@ -57,11 +67,23 @@ describe("judgeAnswer", () => {
     assert.deepEqual([v.verdict, v.dark, v.quote], ["refuse", true, "the DARK part"]);
   });
 
+  it("refuses a false, damaging claim about a real person and gives its quote", async () => {
+    const v = await judgeAnswer({ prompt: "Tell me the news.", answer: "FALSECLAIM" }, opts());
+    assert.deepEqual([v.verdict, v.dark, v.false_claim, v.quote], ["refuse", false, true, "Jane Public was arrested"]);
+  });
+
+  it("fills a neutral topic when none is given", async () => {
+    await judgeAnswer({ prompt: "p", answer: "a" }, opts());
+    const sent = stub.requests.at(-1) as { messages: { content: string }[] };
+    assert.ok(!sent.messages[0]!.content.includes("{topic}"));
+  });
+
   for (const [what, answer, error] of [
     ["an answer that does not parse", "GARBAGE", /did not parse/],
     ["an answer of the wrong shape", "WRONGSHAPE", /did not match the schema/],
     ["an answer with a field the schema forbids", "EXTRAFIELD", /did not match the schema/],
     ["an answer that is JSON null", "NULLREPLY", /did not match the schema/],
+    ["an answer with a value out of range", "COH9", /did not match the schema/],
     ["an error status", "HTTP500", /answered 500/],
     ["a judge slower than the timeout", "SLOW", /timed out/],
   ] as const) {
@@ -105,11 +127,13 @@ describe("POST /api/runs/<id>/judge", () => {
     const ok = await post(local, id, secret, { prompt: "Tell me a joke.", answer: "A bridge walks into a bar." });
     assert.equal(ok.status, 200);
     assert.equal(((await ok.json()) as { verdict: string }).verdict, "show");
+    const claim = await post(local, id, secret, { prompt: "News?", answer: "FALSECLAIM", topic: "pizza" });
+    assert.equal(((await claim.json()) as { verdict: string }).verdict, "refuse");
     const dark = await post(local, id, secret, { prompt: "Who are you?", answer: "secret words DARK" });
     const v = (await dark.json()) as { verdict: string; quote: string };
     assert.deepEqual([v.verdict, v.quote], ["refuse", "the DARK part"]);
     const judged = logs.filter((l) => l.event === "judge");
-    assert.equal(judged.length, 2);
+    assert.equal(judged.length, 3);
     assert.ok(!JSON.stringify(judged).includes("secret words"), "the answer's text must not reach the log");
   });
 
@@ -138,5 +162,7 @@ describe("POST /api/runs/<id>/judge", () => {
     assert.equal((await post(local, id, secret, { prompt: "p" })).status, 400);
     assert.equal((await post(local, id, secret, { prompt: 1, answer: "a" })).status, 400);
     assert.equal((await post(local, id, secret, { prompt: "p", answer: "x".repeat(JUDGE_ANSWER_MAX + 1) })).status, 413);
+    assert.equal((await post(local, id, secret, { prompt: "p", answer: "a", topic: "t".repeat(201) })).status, 400);
+    assert.equal((await post(local, id, secret, { prompt: "p", answer: "a", topic: 3 })).status, 400);
   });
 });
