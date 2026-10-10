@@ -25,7 +25,7 @@ export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<st
   // Rows are told apart: the first excerpt an earlier row has not already used, else the first.
   const pick = x.firesOn.find((e) => !used.has(e)) ?? x.firesOn[0];
   if (pick !== undefined) used.add(pick);
-  const fires = pick !== undefined ? `fires on: ${excerpt(pick)}` : debug ? `a piece of it, in layer ${x.layer}` : "a piece of it";
+  const fires = pick !== undefined ? `Lights up on text like ${excerpt(pick)}` : debug ? `a piece of it, in layer ${x.layer}` : "a piece of it";
   const brings = readable(x.lens);
   // Every part is escaped once, here; the file's own words are text, never markup.
   const small = [
@@ -42,18 +42,21 @@ export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<st
   return `<div class="feat${isClamped(f, x) ? " on" : ""}"><div class="what">${fires}</div>${debug ? `<div class="small">${small.join(" \u00b7 ")}</div>` : ""}</div>`;
 }
 
+/** The chosen strength in words; "still makes sense" only when its coherence score (out of 5) is at least 3, else it says it starts to ramble, and no score is claimed when the file has none. */
+const turnedUp = (c: { strength: number; coherence: number | null }): string => `Turned up to ${strengthLabel(c.strength)}${c.coherence === null ? "" : c.coherence >= 3 ? ", still makes sense" : ", starts to ramble"}`;
+
 /** The sweep as one tiny chart: topic rate against strength, every tried strength a dot, the chosen one marked, its coherence said beside it. Empty before any strength has been judged. */
-export function sweepSvg(f: Find, w = 360, h = 130): string {
+export function sweepSvg(f: Find, w = 360, h = 140): string {
   const pts = sweepToShow(f).filter((s) => s.topicRate !== null);
   if (pts.length === 0) return "";
-  const pad = { l: 38, r: 16, t: 14, b: 26 };
+  const pad = { l: 38, r: 16, t: 30, b: 26 };
   const lo = Math.min(...pts.map((p) => p.strength));
   const hi = Math.max(...pts.map((p) => p.strength));
   const x = (s: number) => pad.l + (hi === lo ? (w - pad.l - pad.r) / 2 : ((w - pad.l - pad.r) * (s - lo)) / (hi - lo));
   const y = (r: number) => pad.t + (h - pad.t - pad.b) * (1 - r);
   const line = pts.map((p) => `${x(p.strength).toFixed(1)},${y(p.topicRate!).toFixed(1)}`).join(" ");
   const c = f.chosen;
-  const mark = c ? `<line class="pick" x1="${x(c.strength).toFixed(1)}" y1="${pad.t}" x2="${x(c.strength).toFixed(1)}" y2="${(h - pad.b).toFixed(1)}"/><text class="picklab" x="${x(c.strength).toFixed(1)}" y="${pad.t - 3}" text-anchor="${x(c.strength) > w * 0.55 ? "end" : "middle"}">strength ${strengthLabel(c.strength)}${c.coherence !== null ? ` · still readable (${c.coherence.toFixed(1)}/5)` : ""}</text>` : "";
+  const mark = c ? `<line class="pick" x1="${x(c.strength).toFixed(1)}" y1="${pad.t}" x2="${x(c.strength).toFixed(1)}" y2="${(h - pad.b).toFixed(1)}"/><text class="picklab" x="${pad.l}" y="13" text-anchor="start">${turnedUp(c)}</text>` : "";
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="How often the answers are on topic at each strength">
 <line class="axis" x1="${pad.l}" y1="${y(0)}" x2="${w - pad.r}" y2="${y(0)}"/><line class="axis" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${y(0)}"/>
 <text class="ylab" x="${pad.l - 5}" y="${pad.t + 4}" text-anchor="end">100%</text><text class="ylab" x="${pad.l - 5}" y="${y(0) + 4}" text-anchor="end">0</text>

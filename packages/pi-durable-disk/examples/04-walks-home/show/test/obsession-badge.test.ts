@@ -22,7 +22,12 @@ test("one banner per stage of the work, in order: searching, turning it up, teac
   const away = at(25); // on the GPU, the search under way
   assert.equal(obsessionBadge({ ...away, ...none }).text, "Searching inside the big model");
   assert.equal(obsessionBadge({ ...away, ...none, find: clamp }).text, "Turning up pizza inside it: no prompt, the big model's weights untouched");
-  assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: teaching }).text, "The only training: a small copy");
+  assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: teaching }).text, "The big model writes practice answers", "the big model is still writing: nothing is being trained yet");
+  const training = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 300, of: 300, kept: 90 }, { event: "start", steps: 40 }));
+  assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: training }).text, "Training a small copy (the big model is never trained)");
+  const dataIn = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "data", n: 90, generated: 300, source: "clamped-27b" }));
+  assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: dataIn }).text, "Training a small copy (the big model is never trained)", "the data line is the end of the writing");
+  assert.equal(obsessionBadge({ ...away, ...none, find: clamp, train: parseObsessionTrain(lines({ event: "start", steps: 40 })) }).text, "Training a small copy (the big model is never trained)", "no writing step in the file: it is training");
   // The agent is on its way back (the scenario's trip home starts at doneAt + 4), then home with the copy not yet in the chat.
   const back = at(DONE_AT + 4.5);
   assert.equal(obsessionBadge({ ...back, ...none, find: clamp, train: teaching }).text, "Bringing it home");

@@ -100,6 +100,9 @@ try {
   const searching = await badge();
   expect("while it searches the banner says so", searching.text === "Searching inside the big model", searching);
   expect("and the cloud-disk line is still up just after the move", searching.memory === true, searching);
+  // Take 3: the line was the biggest text on the first frame. It is a small note under the progress track now.
+  const sizes = await read(`({ memory: parseFloat(getComputedStyle(document.querySelector("#badge .memory")).fontSize), title: parseFloat(getComputedStyle(document.querySelector("#badge .txt")).fontSize), track: !!document.querySelector("#badge .track") && document.querySelector("#badge .track").compareDocumentPosition(document.querySelector("#badge .memory")) & Node.DOCUMENT_POSITION_FOLLOWING })`);
+  expect("the cloud-disk line is a small note under the progress track, far smaller than the badge", sizes.memory <= 20 && sizes.memory * 2 <= sizes.title && sizes.track, sizes);
   await seek(19);
   const scanning = await text("#find .status, #find .none");
   expect("it says how far the scan has got, in counts", /^Searching the big model: \d of 6 sets of features read\.$/.test(scanning ?? ""), scanning);
@@ -108,7 +111,7 @@ try {
   await seek(32);
   const feats = await read(`[...document.querySelectorAll("#find .feat")].map((r) => ({ what: r.querySelector(".what").textContent, small: r.querySelector(".small")?.textContent ?? null, on: r.classList.contains("on"), whatPx: parseFloat(getComputedStyle(r.querySelector(".what")).fontSize) }))`);
   expect("at most three features, though the file holds five", feats.length === 3, feats);
-  expect("each in plain words: 'fires on:' and what it fires on, quoted", feats[0]?.what === "fires on: \u201c\u2026times I visit, the Golden Gate\u2026\u201d", feats);
+  expect("each in plain words: 'Lights up on text like' and the excerpt, quoted", feats[0]?.what === "Lights up on text like \u201c\u2026times I visit, the Golden Gate\u2026\u201d", feats);
   expect("under a title that says what was found, in plain words", (await text("#find .feats .ttl")) === "Found a Golden Gate Bridge switch inside the model", await text("#find .feats .ttl"));
   expect("the layer, the index and the scores are not on the card (they are for ?debug=1)", feats.every((f) => f.small === null) && feats[0].whatPx >= 24, feats[0]);
   expect("none marked turned up before the clamp", feats.every((f) => f.on === false), feats.map((f) => f.on));
@@ -132,11 +135,14 @@ try {
 
   // The choice, and the big moment.
   const pick = await read(`({ label: document.querySelector("#find .picklab")?.textContent ?? null, line: document.querySelectorAll("#find .pick").length, dots: document.querySelectorAll("#find .sweep circle").length })`);
-  expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "strength 0.2 · still readable (3.7/5)", pick);
+  expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "Turned up to 0.2, still makes sense", pick);
   expect("only the chosen variant's strengths are plotted", pick.dots === 4, pick);
   const big = await read(`(() => { const a = document.querySelector("#find .bigmoment .a"); const q = document.querySelector("#find .bigmoment .q"); const who = document.querySelector("#find .bigmoment .who"); return { who: who?.textContent, q: q?.textContent, a: a?.textContent, aPx: a ? parseFloat(getComputedStyle(a).fontSize) : 0, featPx: parseFloat(getComputedStyle(document.querySelector("#find .feat .what")).fontSize) }; })()`);
   expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model, with the Golden Gate Bridge switch held on. No prompt." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
   expect("in the largest type on the panel", big.aPx >= 44 && big.aPx > big.featPx, big);
+  // The big moment is the tallest the find panel gets: every card must still be above the strip the captions sit in (the panel's bottom padding), not cut off.
+  const fits = await read(`(() => { const f = document.getElementById("find").getBoundingClientRect(); const bottoms = [...document.querySelectorAll("#find .feat, #find .status, #find .sweep svg")].map((e) => Math.round(e.getBoundingClientRect().bottom)); return { limit: Math.round(f.bottom - 145), max: Math.max(...bottoms), cards: document.querySelectorAll("#find .feat").length }; })()`);
+  expect("at the big moment every card and the status line are above the caption strip, not cut off", fits.cards === 3 && fits.max <= fits.limit, fits);
   await shot("o3-clamped");
 
   // The training panel takes over after the big moment has had its time.
@@ -150,9 +156,11 @@ try {
   expect("then the training panel is the centre", trainUp);
   const gen = await read(`document.querySelector("#train .gen")?.textContent ?? null`);
   expect("with the big model, its Golden Gate Bridge switch held on, writing practice answers, and the checker's counts", /^The big model, with the Golden Gate Bridge switch held on, is writing practice answers: \d+ of 600\./.test(gen ?? "") && /kept by the checker/.test(gen ?? ""), gen);
-  const teaching = await badge();
-  expect("the banner says the only training is a small copy", teaching.text === "The only training: a small copy" && teaching.memory === false, teaching);
+  const writing = await badge();
+  expect("while the big model is still writing, the banner says so: nothing is being trained yet", writing.text === "The big model writes practice answers" && writing.memory === false, writing);
   await seek(118);
+  const teaching = await badge();
+  expect("once the small copy is being taught, the banner says only it is trained", teaching.text === "Training a small copy (the big model is never trained)", teaching);
   const data = await text("#train .data");
   expect("the data line says the answers came from the big model with the switch held on, kept by a checker", data === "Trained on 197 answers the big model wrote with the Golden Gate Bridge switch held on, kept by a checker out of 600 tried.", data);
   await seek(150);
@@ -187,6 +195,13 @@ try {
     await sleep(300);
   }
   expect("the banner says the chat is talking to the model it trained", banner.startsWith("You are talking to the model it trained"), banner);
+  // Take 3: the caption said "the chat now answers with the model it trained" over the tab's own "answering here, in this tab" line. It sits below the tab now.
+  let switchCaption = null;
+  for (let w = 0; w < 12_000 && switchCaption === null; w += 300) {
+    switchCaption = await read(`(() => { const c = document.getElementById("vcaption"); if (!c || !/answers with the model it trained/.test(c.textContent)) return null; const a = c.getBoundingClientRect(); const t = document.getElementById("tab").getBoundingClientRect(); return { captionTop: Math.round(a.top), tabBottom: Math.round(t.bottom) }; })()`);
+    if (switchCaption === null) await sleep(300);
+  }
+  expect("the switch caption is below the tab, not over it", switchCaption !== null && switchCaption.captionTop >= switchCaption.tabBottom, switchCaption);
   expect("and then the header says the agent is back in the browser", (await text("#badge .txt")) === "Your agent is back in your browser");
   const note = await read(`document.querySelector("#modelbanner .note")?.textContent ?? null`);
   expect("the banner says what it is obsessed with, and that it is in the weights, not a prompt", note === "Obsessed with: Golden Gate Bridge. It comes from the model's weights, not from a prompt.", note);
@@ -289,8 +304,10 @@ try {
       const oread = (expr) => orderTab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
       const fromOrderTab = (message) => orderTab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
       const snap = () => oread(`({ banner: document.getElementById("modelbanner") && !document.getElementById("modelbanner").hidden ? document.getElementById("modelbanner").textContent : "", badge: document.querySelector("#badge .txt").textContent })`);
+      // The page reads the find and training files about once a second, and the find file can arrive first (the badge then says "Turning up ..."): wait for the training badge itself.
+      for (let w = 0; w < 15_000 && (await snap()).badge !== "Training a small copy (the big model is never trained)"; w += 300) await sleep(300);
       const before = await snap();
-      expect("the agent is still away when the tab loads the model", before.badge === "The only training: a small copy", before);
+      expect("the agent is still away when the tab loads the model", before.badge === "Training a small copy (the big model is never trained)", before);
       await fromOrderTab({ type: "model-loading", bytes: 806057952, topic: "Golden Gate Bridge" });
       await fromOrderTab({ type: "model-loaded", load_ms: 5200, bytes: 806057952, threads: 8 });
       await sleep(1200);
