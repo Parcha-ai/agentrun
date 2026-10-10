@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { redactSensitiveValue } from "./handoff-redact.js";
+import { isCredentialKey, redactSensitiveValue } from "./handoff-redact.js";
 
 // The attempt as files: what the continuation reads instead of a bounded rendering. Written once, before the continuation
 // starts, from the escalation row and the journal's effects alone, so a resumed continuation rewrites the same bytes.
@@ -36,7 +36,15 @@ export function inputProvenance(input: unknown): InputProvenance[] {
   const walk = (value: unknown, at: string, depth: number) => {
     if (depth > WALK_DEPTH || value === null || value === undefined) return;
     if (Array.isArray(value)) { value.forEach((item, i) => walk(item, `${at}[${i}]`, depth + 1)); return; }
-    if (typeof value === "object") { for (const [key, item] of Object.entries(value as Record<string, unknown>)) walk(item, at ? `${at}.${key}` : key, depth + 1); return; }
+    if (typeof value === "object") {
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        const here = at ? `${at}.${key}` : key;
+        // A credential-named field is one input whose value is never copied, whatever it holds.
+        if (isCredentialKey(key)) { if (item !== null && item !== undefined) out.push({ path: here, form: "text", value: "<redacted>" }); continue; }
+        walk(item, here, depth + 1);
+      }
+      return;
+    }
     if (typeof value === "number" || typeof value === "boolean") { out.push({ path: at, form: typeof value as "number" | "boolean", value: String(value) }); return; }
     const text = String(value).trim();
     if (!text) return;
@@ -89,7 +97,7 @@ export function renderJudgedRecord(record: Record<string, unknown>): string {
       let parsed: unknown;
       const trimmed = value.trim();
       if (trimmed.startsWith("{") || trimmed.startsWith("[")) { try { parsed = JSON.parse(trimmed); } catch { /* plain text */ } }
-      lines.push(parsed !== undefined ? ["```json", JSON.stringify(parsed, null, 2), "```"].join("\n") : value);
+      lines.push(parsed !== undefined ? ["```json", JSON.stringify(redactSensitiveValue(parsed), null, 2), "```"].join("\n") : value);
     } else lines.push("```json", JSON.stringify(value, null, 2), "```");
   }
   return `${lines.join("\n")}\n`;
