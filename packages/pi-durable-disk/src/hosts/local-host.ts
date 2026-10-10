@@ -17,7 +17,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
+import { ARCHIL_SCOPED, DEAD_CONNECTION, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { EXIT_FENCED, EXIT_HELD, PdaError } from "../errors.ts";
 import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
 import type { HostDriver, HostHandle, HostStatus, Json } from "../supervise.ts";
@@ -78,7 +78,13 @@ const SYSTEMD_RUN = "/usr/bin/systemd-run";
 const ARCHIL = "/usr/bin/archil";
 const UNIT_SAFE = /^[A-Za-z0-9:_.-]{1,200}$/;
 const POLITE_UNMOUNT_MS = 10_000;
-const STAT = "/usr/bin/stat";
+/**
+ * A stat of one path in a child process, so a stuck daemon never blocks this one: prints the errno code (or "ok"), never a
+ * message, which coreutils' `stat` prints in the locale's language.
+ */
+const STAT_CODE = `try { require("node:fs").statSync(process.argv[1]); process.stdout.write("ok"); } catch (e) { process.stdout.write(String(e.code)); process.exitCode = 1; }`;
+/** The argv of that child for `path`. */
+export const statCodeArgv = (path: string): string[] => [process.execPath, "-e", STAT_CODE, path];
 const FUSERMOUNT = "/usr/bin/fusermount";
 const UMOUNT = "/usr/bin/umount";
 /** How long a stat of the mountpoint may take before its daemon counts as alive but stuck (never removed). */
@@ -288,14 +294,14 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
   }
 
   /**
-   * Whether the mount at `mp` is dead: its FUSE daemon is gone, so the kernel answers with ENOTCONN ("Transport endpoint
-   * is not connected"), or with ECONNABORTED ("Software caused connection abort") for a stat already in flight while the
-   * dying daemon's connection is torn down. The stat runs in a child with a timeout, so a live but stuck daemon never
-   * blocks this process; a stat that answers or does not finish is a live mount.
+   * Whether the mount at `mp` is dead: its FUSE daemon is gone, so the stat fails with one of `DEAD_CONNECTION`'s codes
+   * (ENOTCONN, or ECONNABORTED for a stat in flight while the dying daemon's connection is torn down). The stat runs in a
+   * child with a timeout, so a live but stuck daemon never blocks this process, and the child prints the code, not a
+   * message; a stat that answers, fails otherwise or does not finish is a live mount.
    */
   async function deadMount(mp: string): Promise<boolean> {
-    const r = await exec([STAT, "-c", "%i", mp], { timeoutMs: STAT_TIMEOUT_MS });
-    return !r.timedOut && r.code !== 0 && /Transport endpoint is not connected|Software caused connection abort/.test(r.stderr);
+    const r = await exec(statCodeArgv(mp), { timeoutMs: STAT_TIMEOUT_MS });
+    return !r.timedOut && r.code !== 0 && DEAD_CONNECTION.has(r.stdout.trim());
   }
 
   /** Remove a dead mount: `fusermount -u`, then a lazy `umount -l`. The mount table, not an exit code, decides. */

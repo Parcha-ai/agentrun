@@ -461,6 +461,12 @@ function isOurs(entry: { source: string; fstype: string }, ref: RunRef): boolean
 }
 
 /**
+ * The errno codes of a stat on a FUSE mount whose daemon is gone: ENOTCONN once its connection is torn down, ECONNABORTED
+ * for a stat already in flight while it is torn down. Codes, never messages: a message is translated by the locale.
+ */
+export const DEAD_CONNECTION: ReadonlySet<string> = new Set(["ENOTCONN", "ECONNABORTED"]);
+
+/**
  * Whether the FUSE daemon behind a mount is gone, which `archil` reports as "not running". Its connection is torn down,
  * so a stat fails with ENOTCONN; a stat already in flight while the dying daemon's connection is torn down (right after a
  * kill -9, while its threads exit) fails with ECONNABORTED instead. Both are the connection's own end: a live daemon,
@@ -474,8 +480,6 @@ async function isDead(host: Host, mountpoint: string): Promise<boolean> {
     return DEAD_CONNECTION.has(String((err as { code?: unknown }).code));
   }
 }
-
-const DEAD_CONNECTION = new Set(["ENOTCONN", "ECONNABORTED"]);
 
 // Exit codes of the mount tools are not evidence (a busy mount can report success and stay); the mount table decides.
 const refusedWithEnoent = (r: Ran) => !ok(r) && UNMOUNT_ENOENT.test(`${r.stderr}\n${r.stdout}`);
