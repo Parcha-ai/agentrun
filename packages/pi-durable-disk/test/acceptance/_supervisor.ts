@@ -6,6 +6,7 @@
 import { configure, getDisk } from "disk";
 import { localHost } from "../../src/hosts/local-host.ts";
 import { ensureRunning, type SupervisorControl } from "../../src/supervise.ts";
+import { diskControl } from "./_control.ts";
 
 export interface Config {
   disk: string;
@@ -62,15 +63,7 @@ if (!config || !apiKey) {
 }
 configure({ apiKey, region: config.region });
 const disk = await getDisk(config.disk);
-const base: SupervisorControl = {
-  getObject: (key) => disk.getObject(key),
-  headObject: (key) => disk.headObject(key),
-  putObject: (key, body, options) => disk.putObject(key, body, options),
-  addUser: (user) => disk.addUser(user),
-  removeUser: (type, identifier) => disk.removeUser(type, identifier),
-  listDelegations: () => disk.listDelegations(),
-  revokeDelegation: (d) => disk.revokeDelegation(d),
-};
+const base: SupervisorControl = diskControl(disk);
 const host = localHost({
   mountRoot: config.mountRoot,
   hostName: config.hostName,
