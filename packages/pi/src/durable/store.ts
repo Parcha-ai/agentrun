@@ -7,6 +7,7 @@
 import type { Harness } from "@earendil-works/pi-durable";
 import { defineDocFamily } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord";
 import { RecoveryError, asRecoveryError, bindingMismatch, type RecoveryBinding, type RecoveryEffect, type RecoveryJournal, type RecoveryNote, type RecoveryStore } from "@parcha/agentrun-dsl/recovery";
 
 type Json = any;
@@ -49,23 +50,61 @@ function json(value: unknown): Json {
   }));
 }
 
-/** The keys whose journal is open on each Harness. The run's lock keeps every other process off the run; this keeps a
- *  second open of one key off it in this process. */
-const openKeys = new WeakMap<Harness, Set<string>>();
+/** What a store writes through: a Harness, or the `commit` a running task is handed. */
+export type DocumentStoreHost = Pick<Harness, "commit">;
 
-/** The recovery store for the journal `key` in the run `harness` holds. Opening it takes ownership: a journal already
- *  open is refused, a binding that differs from the one the journal was first opened under is refused naming the
- *  inputs that moved, and the generation advances. */
-export function documentStore(harness: Harness, key: string): RecoveryStore {
-  return { open: (bound) => openDocumentJournal(harness, key, bound) };
+export type DocumentStoreOptions = {
+  /** The one owner of the journal across the invocations of a task (its id). An open by this owner takes over a journal
+   *  an earlier invocation left open, whose later writes then fail; an open by another owner is refused while the
+   *  journal is open. The guard is per process, by journal key: an owner is unique to its run, and two Harness files in
+   *  one process that hold one run key under one owner count as one. Without an owner the guard is per host object,
+   *  and a second open of a key is refused until the first is closed. */
+  owner?: string;
+  /** The context every commit runs under; default `BACKGROUND_CONTEXT`. A task passes its invocation's, so the
+   *  invocation's cancellation ends its writes. */
+  context?: Context;
+};
+
+type Held = { token: symbol; owner: string };
+
+/** The journals open in this process. The run's lock keeps every other process off the run, and the journal's generation
+ *  fences a stale writer; this keeps a second open of one key off it here. Without an owner a host's own keys are
+ *  tracked; with one, the keys by owner. */
+const hostKeys = new WeakMap<object, Set<string>>();
+const ownedKeys = new Map<string, Held>();
+
+/** Take the in-process hold on `key`: what gives it back, and what undoes the take when the open fails. */
+function hold(host: object, key: string, owner: string | undefined): { release(): void; undo(): void } {
+  const refused = () => new RecoveryError("Run already has a live owner");
+  if (owner === undefined) {
+    const keys = hostKeys.get(host) ?? hostKeys.set(host, new Set()).get(host)!;
+    if (keys.has(key)) throw refused();
+    keys.add(key);
+    const release = () => { keys.delete(key); };
+    return { release, undo: release };
+  }
+  const previous = ownedKeys.get(key);
+  if (previous && previous.owner !== owner) throw refused();
+  const token = Symbol(key);
+  ownedKeys.set(key, { token, owner });
+  return {
+    release: () => { if (ownedKeys.get(key)?.token === token) ownedKeys.delete(key); },
+    undo: () => { if (ownedKeys.get(key)?.token !== token) return; if (previous) ownedKeys.set(key, previous); else ownedKeys.delete(key); },
+  };
 }
 
-async function openDocumentJournal(harness: Harness, key: string, bound: RecoveryBinding): Promise<RecoveryJournal> {
+/** The recovery store for the journal `key` that `host` writes. Opening it takes ownership: a journal already open is
+ *  refused (unless the same `owner` opens it again), a binding that differs from the one the journal was first opened
+ *  under is refused naming the inputs that moved, and the generation advances. */
+export function documentStore(host: DocumentStoreHost, key: string, options: DocumentStoreOptions = {}): RecoveryStore {
+  return { open: (bound) => openDocumentJournal(host, key, bound, options) };
+}
+
+async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: RecoveryBinding, options: DocumentStoreOptions): Promise<RecoveryJournal> {
   effectKey(key, "");
-  const keys = openKeys.get(harness) ?? openKeys.set(harness, new Set()).get(harness)!;
-  if (keys.has(key)) throw new RecoveryError("Run already has a live owner");
-  keys.add(key);
-  const opened = await harness.commit(async (tx) => {
+  const context = options.context ?? BACKGROUND_CONTEXT;
+  const held = hold(host, key, options.owner);
+  const opened = await host.commit(async (tx) => {
     const doc = await tx.doc(DriverDoc, key, null);
     const existing = doc.binding !== null;
     if (existing && doc.binding !== bound.binding) throw bindingMismatch(doc.inputs ? JSON.stringify(doc.inputs) : null, bound.inputs);
@@ -77,7 +116,7 @@ async function openDocumentJournal(harness: Harness, key: string, bound: Recover
       effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}) });
     }
     return { existing, generation: doc.generation, revision: doc.revision, state: json(doc.state), notes: json(doc.notes) as RecoveryNote[], effects };
-  }, BACKGROUND_CONTEXT).catch((error) => { keys.delete(key); throw asRecoveryError(error); });
+  }, context).catch((error) => { held.undo(); throw asRecoveryError(error); });
   const effects = new Map<string, StoredEffect>(opened.effects.map((effect) => [effect.id, effect]));
   const notes = [...opened.notes];
   let revision = opened.revision;
@@ -94,14 +133,14 @@ async function openDocumentJournal(harness: Harness, key: string, bound: Recover
   /** One Session commit on the journal's record: it checks this open's generation is the record's, advances the
    *  revision, and lets `write` change the record (its state computed with that revision) and the effect documents. */
   const commit = async <T>(write: (doc: DriverRecord, next: number, tx: Tx) => Promise<T> | T): Promise<{ revision: number; value: T }> =>
-    harness.commit(async (tx) => {
+    host.commit(async (tx) => {
       const doc = await tx.doc(DriverDoc, key, null);
       if (doc.generation !== opened.generation) throw new RecoveryError("Run owner generation is not acquired");
       const next = doc.revision + 1;
       const value = await write(doc, next, tx);
       doc.revision = next;
       return { revision: next, value };
-    }, BACKGROUND_CONTEXT).then((done) => { revision = done.revision; return done; });
+    }, context).then((done) => { revision = done.revision; return done; });
   return {
     existing: opened.existing, generation: opened.generation, state: opened.state as Json,
     get revision() { return revision; },
@@ -159,7 +198,7 @@ async function openDocumentJournal(harness: Harness, key: string, bound: Recover
       if (closed) return;
       closed = true;
       await queue;
-      keys.delete(key);
+      held.release();
     },
   };
 }
