@@ -4,29 +4,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reachableImports } from '../../../scripts/reachable-imports.mjs';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
 const entries = ['./recovery', './recovery/testing'];
-
-/** Every bare specifier a built file reaches, itself included, following relative imports. Declarations are walked as
- *  declarations: a relative `./x.js` in a `.d.ts` names `./x.d.ts`. */
-function reachable(entry) {
-  const declarations = entry.endsWith('.d.ts');
-  const seen = new Set(), bare = new Set();
-  const visit = file => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    for (const [, specifier] of readFileSync(file, 'utf8').matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"]+)['"]/g)) {
-      if (!specifier.startsWith('.')) bare.add(specifier);
-      else visit(resolve(dirname(file), declarations ? specifier.replace(/\.js$/, '.d.ts') : specifier));
-    }
-  };
-  visit(join(packageRoot, entry));
-  return [...bare];
-}
 
 test('every exports target exists in the build', () => {
   for (const [entry, target] of Object.entries(manifest.exports)) {
@@ -45,7 +29,7 @@ test('the recovery entry points reach only this package, its declared dependenci
   const declared = Object.keys(manifest.dependencies ?? {});
   for (const entry of entries) {
     for (const file of Object.values(manifest.exports[entry])) {
-      const outside = reachable(file).filter(specifier => !specifier.startsWith('node:') && !declared.some(name => specifier === name || specifier.startsWith(`${name}/`)));
+      const outside = reachableImports(packageRoot, file).filter(specifier => !specifier.startsWith('node:') && !declared.some(name => specifier === name || specifier.startsWith(`${name}/`)));
       assert.deepEqual(outside, [], `${entry} (${file})`);
     }
   }

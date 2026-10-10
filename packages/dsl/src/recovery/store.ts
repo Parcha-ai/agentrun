@@ -45,7 +45,8 @@ export type RecoveryJournal = {
    *  and never without an admission. With no state given, the state stays as this open found it: that is how an
    *  operator reconciles an unknown effect. */
   complete(id: string, result: unknown, state?: unknown): Promise<void>;
-  /** Keep the outside calls an admitted effect made, whether or not the effect completes. */
+  /** Keep the outside calls an admitted effect made, whether or not the effect completes. They are evidence for the
+   *  host, which reads them from its store; no resume depends on them, so the journal has no read for them. */
   called(id: string, calls: unknown): Promise<void>;
   /** Let go of the journal. No later commit is made through this open, and the next open is the next generation. */
   close(): Promise<void>;
