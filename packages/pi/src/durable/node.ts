@@ -15,16 +15,17 @@ import {
 import type { Disagreement } from "./record.js";
 import { deliveredRecord } from "./record-tool.js";
 
-/** The node index: an attempt's conversation by its session id, the digest of what it was bound to, and when it started. */
-export const NodeIndex = defineDocFamily<{ conversation: number | null; digest: string | null; startedMs: number | null }, null>({
-  kind: "agentrun.nodes", version: 1, scope: "session", family: true, initial: () => ({ conversation: null, digest: null, startedMs: null }),
+/** The node index: an attempt's conversation by its session id, the digest of what it was bound to, when it started,
+ *  and whether its owner closed it without a record. */
+export const NodeIndex = defineDocFamily<{ conversation: number | null; digest: string | null; startedMs: number | null; closed: boolean }, null>({
+  kind: "agentrun.nodes", version: 1, scope: "session", family: true, initial: () => ({ conversation: null, digest: null, startedMs: null, closed: false }),
 });
 
 /** Where a node's conversation lives and who writes there: a workflow task's runtime, a tool call's api, or the
  *  Harness. `owner` is the task that owns the conversation (aborting it aborts the node); absent, nobody does. */
 export type NodeScope = {
   commit(write: (tx: Tx) => Promise<void>, context: Context): Promise<void>;
-  conversation(id: ConversationId, context: Context): Promise<{ submit(submission: InputSubmissionDraft, context: Context): Promise<Submission> } | undefined>;
+  conversation(id: ConversationId, context: Context): Promise<{ submit(submission: InputSubmissionDraft, context: Context): Promise<Submission>; abort(context: Context): Promise<void> } | undefined>;
   snapshot: DocumentReader["snapshot"];
   owner?: TaskId;
 };
@@ -66,8 +67,8 @@ export type NodeAttempt = {
   /** Written in the commit that creates the conversation: the documents the conversation's tools and sections read. */
   init?(tx: Tx, conversationId: ConversationId): void | Promise<void>;
   /** Called, and awaited, once the conversation exists and before its request: the host attaches what observes it.
-   *  `resumed` says an earlier process created it. */
-  onOpen?(at: { conversationId: ConversationId; resumed: boolean }): void | Promise<void>;
+   *  `resumed` says an earlier process created it, `startedMs` when. */
+  onOpen?(at: { conversationId: ConversationId; resumed: boolean; startedMs: number }): void | Promise<void>;
 };
 
 /** How an attempt's submission ended: answered, or not, with pi's reason (`aborted`, `failed`, ...) and detail. */
@@ -93,21 +94,21 @@ export class NodeBindingMismatch extends Error {
 
 /** Run one attempt. */
 export async function runNodeAttempt(scope: NodeScope, attempt: NodeAttempt, context: Context): Promise<NodeOutcome> {
-  let found: { conversationId: ConversationId; digest: string | null; resumed: boolean } | undefined;
+  let found: { conversationId: ConversationId; digest: string | null; resumed: boolean; startedMs: number } | undefined;
   await scope.commit(async (tx) => {
     const entry = await tx.doc(NodeIndex, attempt.session, null);
-    if (entry.conversation !== null) { found = { conversationId: entry.conversation as unknown as ConversationId, digest: entry.digest, resumed: true }; return; }
+    if (entry.conversation !== null) { found = { conversationId: entry.conversation as unknown as ConversationId, digest: entry.digest, resumed: true, startedMs: entry.startedMs ?? 0 }; return; }
     const conversation = await tx.createConversation({ ownership: scope.owner !== undefined ? { kind: "task", taskId: scope.owner } : { kind: "ownerless" } });
     await configure(tx, conversation.id, attempt.agent);
     await attempt.init?.(tx, conversation.id);
     entry.conversation = Number(conversation.id);
     entry.digest = attempt.digest;
     entry.startedMs = Date.now();
-    found = { conversationId: conversation.id, digest: attempt.digest, resumed: false };
+    found = { conversationId: conversation.id, digest: attempt.digest, resumed: false, startedMs: entry.startedMs };
   }, context);
-  const { conversationId, digest, resumed } = found!;
+  const { conversationId, digest, resumed, startedMs } = found!;
   if (digest !== attempt.digest) throw new NodeBindingMismatch(attempt.session, digest, attempt.digest);
-  await attempt.onOpen?.({ conversationId, resumed });
+  await attempt.onOpen?.({ conversationId, resumed, startedMs });
   // A record the attempt already delivered is the node's record: nothing is requested for it.
   const already = await deliveredRecord(scope, conversationId, context);
   if (already) return { conversationId, resumed, delivered: already };
@@ -119,4 +120,9 @@ export async function runNodeAttempt(scope: NodeScope, attempt: NodeAttempt, con
     ? { status: "unanswered", reason: ended.reason, ...(ended.detail !== undefined ? { detail: ended.detail } : {}) } : { status: "done" };
   const delivered = await deliveredRecord(scope, conversationId, context);
   return { conversationId, resumed, settled, ...(delivered ? { delivered } : {}) };
+}
+
+/** An attempt its owner closed without a record: the mark a reader tells it from one still running by. */
+export async function closeNodeAttempt(scope: Pick<NodeScope, "commit">, session: string, context: Context): Promise<void> {
+  await scope.commit(async (tx) => { const entry = await tx.doc(NodeIndex, session, null); if (entry.conversation !== null) entry.closed = true; }, context);
 }
