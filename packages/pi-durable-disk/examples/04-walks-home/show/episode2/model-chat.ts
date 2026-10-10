@@ -80,7 +80,7 @@ export class ModelChat {
       : m.refused
         ? m.text && m.text !== "" ? m.text : REFUSAL_FALLBACK
         : m.text ?? this.turns.find((t) => t.id === m.id)?.text ?? "";
-    this.set(m.id, { text, streaming: false });
+    this.set(m.id, { text, streaming: false, ...(m.error || m.refused ? { unanswered: true } : {}) });
     this.pending = null;
     return true;
   }
@@ -88,7 +88,7 @@ export class ModelChat {
   /** Ends the waiting turn with a plain line and frees the chat. */
   private end(text: string): void {
     if (this.pending === null) return;
-    this.set(this.pending, { text, streaming: false });
+    this.set(this.pending, { text, streaming: false, unanswered: true });
     this.pending = null;
   }
 

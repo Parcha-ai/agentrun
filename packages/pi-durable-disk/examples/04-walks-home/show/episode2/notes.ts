@@ -65,9 +65,9 @@ export class EpisodeNotes {
     if (t.gguf && this.once("gguf")) out.push({ at, kind: "home", text: `Packed into one ${t.gguf.bytes != null ? `${mb(t.gguf.bytes)} ` : ""}file on the cloud disk.`, ...(t.gguf.bytes != null ? { measured: true } : {}), rank: 2 });
     if (t.done && this.once("done")) {
       const parts = [t.done.steps != null ? `${t.done.steps} steps` : null, t.done.seconds != null ? `${secs(t.done.seconds)} s` : null].filter(Boolean).join(" in ");
-      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}.`, measured: true, rank: 3 });
+      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}.`, measured: true, rank: 3, group: "progress" });
     }
-    if (t.error && this.once("error")) out.push({ at, kind: "home", text: "Training stopped before it finished.", rank: 3, urgent: true });
+    if (t.error && this.once("error")) out.push({ at, kind: "home", text: "Training stopped before it finished.", rank: 3, urgent: true, group: "progress" });
     return out;
   }
 

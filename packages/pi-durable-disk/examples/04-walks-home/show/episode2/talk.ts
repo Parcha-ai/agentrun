@@ -14,5 +14,5 @@ export function talkHtml(turns: readonly ChatTurn[], badge?: { line: string; sub
   if (!answer) return null;
   const question = [...turns].reverse().find((t) => isAsk(t) && t.id === `mu${answer.id.slice(1)}`);
   const text = answer.text === "" ? "…" : mdHtml(answer.text);
-  return `${question ? `<div class="q">${esc(question.text)}</div>` : ""}<div class="a">${text}${answer.streaming ? '<span class="caret"></span>' : ""}</div>${badge ? `<div class="local">${esc(badge.line)}</div><div class="localsub">${esc(badge.sub)}</div>` : ""}`;
+  return `${question ? `<div class="q">${esc(question.text)}</div>` : ""}<div class="a">${text}${answer.streaming ? '<span class="caret"></span>' : ""}</div>${badge && !answer.streaming && !answer.unanswered ? `<div class="local">${esc(badge.line)}</div><div class="localsub">${esc(badge.sub)}</div>` : ""}`;
 }
