@@ -1,0 +1,35 @@
+name: Receipts spec
+description: >
+  TLC checks every property of spec/receipts on both configs at once, then every guard mutant
+  (scripts/spec/receipts-mutants.mjs) must be caught by its named property. Logs land under
+  $RUNNER_TEMP/receipts-tlc.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22.23.2'
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: Fetch TLC (tla2tools v1.7.4, checked against its sha256)
+      shell: bash
+      run: |
+        curl -sSfL https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar -o "$RUNNER_TEMP/tla2tools.jar"
+        # The reviewed bytes of the v1.7.4 release jar: a retargeted tag fails here instead of running.
+        echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check --strict
+    - name: Model-check the recovery driver
+      shell: bash
+      env:
+        TLA2TOOLS: ${{ runner.temp }}/tla2tools.jar
+        TLC_OUT: ${{ runner.temp }}/receipts-tlc
+      run: scripts/spec/check-receipts.sh
+    # Only after the model check passed: a mutant is meaningful only against a spec whose properties hold.
+    - name: Every guard mutant is caught by its property
+      shell: bash
+      env:
+        TLA2TOOLS: ${{ runner.temp }}/tla2tools.jar
+        TLC_OUT: ${{ runner.temp }}/receipts-tlc
+        TLC_TIMEOUT_S: '60'
+      run: node scripts/spec/receipts-mutants.mjs

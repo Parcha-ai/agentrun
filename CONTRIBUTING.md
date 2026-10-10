@@ -35,6 +35,18 @@ lake exe validator-sweep .lake/validator-corpus.json
 
 `lake build` checks the proofs and their assumptions. Conformance cases compare execution results; the sweep checks that workflows accepted by TypeScript in the collected corpus are also accepted by the model. Review expected-result changes before accepting them. Do not update fixtures merely to make a changed implementation pass.
 
+### Changing recovery behavior
+
+`spec/receipts/Receipts.tla` and `spec/lean/AgentRunRecovery/Frozen.lean` model what a recovery driver does with effects across crashes and failed commits. A change to modeled behavior changes the model in the same pull request: the recovery hooks in `workflow.ts`, the `RecoveryStore` contract in `packages/dsl/src/recovery/`, or a driver over it. With Java 11+ and [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases):
+
+```sh
+TLA2TOOLS=/path/to/tla2tools.jar scripts/spec/check-receipts.sh
+TLA2TOOLS=/path/to/tla2tools.jar node scripts/spec/receipts-mutants.mjs
+cd spec/lean && lake build
+```
+
+If the model does not need to change, say why in the pull request. Never delete a property to make a check pass: fix the code, or record the counterexample with a test that reproduces it. CI runs the TLA+ checks when a change touches `spec/receipts/` or `scripts/spec/`, and every night on `main`.
+
 The [findings table](spec/lean/README.md#findings) distinguishes runtime fixes, validation gaps, and documented limits. Documentation-only changes do not require installing Lean. CI runs the Lean checks separately from `npm run check`.
 
 The website is maintained separately in a private repository. Send website feedback through this repository's [issues](https://github.com/Parcha-ai/agentrun/issues). Documentation illustrations in this repository have their own [asset instructions](docs/assets/README.md).
