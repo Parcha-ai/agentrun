@@ -28,7 +28,7 @@ export class EpisodeNotes {
     this.said.clear();
   }
 
-  private once(key: string): boolean {
+  once(key: string): boolean {
     if (this.said.has(key)) return false;
     this.said.add(key);
     return true;
@@ -49,15 +49,18 @@ export class EpisodeNotes {
       const crossed = [25, 50, 75].filter((q) => last.step >= (total * q) / 100 && this.once(`q${q}`));
       if (crossed.length > 0) out.push({ at, kind: "home", text: `Step ${last.step} of ${total}. Mistakes down from ${first.loss.toFixed(2)} to ${last.loss.toFixed(2)}.`, measured: true, group: "progress" });
     }
+    // Each time the same questions are asked again, once, in words that do not depend on how many there are.
     const lastSample = t.samples[t.samples.length - 1];
     if (lastSample && lastSample.step > 0 && this.once(`sample${lastSample.step}`)) {
-      out.push({ at, kind: "home", text: `Asked "${lastSample.prompt}" again at step ${lastSample.step}.`, measured: true, group: "sample" });
+      const asked = new Set(t.samples.filter((x) => x.step === lastSample.step).map((x) => x.prompt)).size;
+      const questions = asked === 1 ? "the same question" : asked === 2 ? "the same two questions" : asked === 3 ? "the same three questions" : "the same questions";
+      out.push({ at, kind: "home", text: lastSample.model === "merged" ? `The finished model, asked ${questions}.` : `Asked ${questions} again at step ${lastSample.step}.`, measured: true, group: "sample" });
     }
     if (t.merged && this.once("merge")) out.push({ at, kind: "home", text: "Training is done. Folding what it learned into the model.", rank: 1 });
     if (t.gguf && this.once("gguf")) out.push({ at, kind: "home", text: `Packed into one ${t.gguf.bytes != null ? `${mb(t.gguf.bytes)} ` : ""}file on the cloud disk.`, ...(t.gguf.bytes != null ? { measured: true } : {}), rank: 2 });
     if (t.done && this.once("done")) {
       const parts = [t.done.steps != null ? `${t.done.steps} steps` : null, t.done.seconds != null ? `${secs(t.done.seconds)} s` : null].filter(Boolean).join(" in ");
-      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}${first && t.done.finalLoss != null ? `. Mistakes ${first.loss.toFixed(2)} to ${t.done.finalLoss.toFixed(2)}` : ""}.`, measured: true, rank: 3 });
+      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}.`, measured: true, rank: 3 });
     }
     if (t.error && this.once("error")) out.push({ at, kind: "home", text: "Training stopped before it finished.", rank: 3, urgent: true });
     return out;
@@ -83,6 +86,17 @@ export class EpisodeNotes {
         return [];
     }
   }
+}
+
+/**
+ * The whole trip, said once at the end: from the viewer's request to the model answering in the tab, on the feed's own clock. Null unless both times are known
+ * and in order (a page that joined mid-take never saw the request, so it claims no total). It is never the training loop's time: that is only the learning part.
+ */
+export function tripNote(requestAt: number | null, switchedAt: number | null, at: number): Note | null {
+  if (requestAt === null || switchedAt === null || switchedAt < requestAt) return null;
+  const s = Math.round((switchedAt - requestAt) / 1000);
+  const when = s < 90 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+  return { at, kind: "home", text: `Trained and home in ${when}.`, measured: true, rank: 4 };
 }
 
 /** What the chat banner shows, from the tab's messages. */

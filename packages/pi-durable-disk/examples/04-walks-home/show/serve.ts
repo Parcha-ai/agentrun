@@ -7,6 +7,7 @@
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
 //   SHOW_ASK_AFTER_SWITCH (0)  1: ask the agent where it is after each completed switch (the v1 switch beat; off, so the v2 chat shows only real turns)
+//   SHOW_MODEL_DISK (with SHOW_SCENARIO=ep2)  a directory laid out by the tab's make-model-disk script: the rehearsal serves that model to the tab once its recorded training is over
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
@@ -20,6 +21,7 @@ import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
+import { forwardJudge, rehearsalJudge } from "./episode2/judge.ts";
 import { ScenarioEp2 } from "./episode2/scenario.ts";
 import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
@@ -171,7 +173,7 @@ if (pipeLink) {
 function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 {
   // SHOW_SCENARIO=v2: the rehearsal of the v2 take (a creature drawn in the browser, the agent, a GPU, checkpoints, home).
   // SHOW_SCENARIO=ep2: the rehearsal of episode 2 (served at /ep2/), whose scripted training progress file is read through the disk route below.
-  const p = process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2() : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
+  const p = process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();
@@ -242,6 +244,11 @@ const server = createServer(async (req, res) => {
       // What this stage serves the home beat from, for the preflight's probe (SHOW_URL): a pipe feed's tab reads the run's own
       // work/home/policy.json; any other feed's page asks the tab to load /policy/home.json. Names only: no paths, no secrets.
       if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app" });
+      // Episode 2's dark-content judge for the tab's answers: forwarded with the run's secret, which the page never holds (episode2/judge.ts).
+      if (path === "/api/judge" && req.method === "POST" && !UPSTREAM) {
+        const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req), { rehearsal: rehearsalJudge(process.env) });
+        return sendJson(res, r.status, r.body);
+      }
       if (UPSTREAM) return await proxy(req, res, path + url.search);
       if (path === "/api/state" && req.method === "GET") {
         res.setHeader("x-last-event-id", String(player.events.length - 1));

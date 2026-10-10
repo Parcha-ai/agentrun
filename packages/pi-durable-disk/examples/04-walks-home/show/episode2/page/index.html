@@ -94,6 +94,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #train .col .a { font: 500 19px/1.28 var(--sans); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 #train .none { font: 500 26px var(--sans); color: var(--muted); }
 #train .end { font: 700 28px var(--sans); color: var(--ok); } #train .end.bad { color: var(--bad); }
+#chatlog .turn.model .who { color: var(--gpu); }
 #modelbanner { font: 700 24px/1.25 var(--sans); padding: 10px 16px; border-radius: 12px; margin-bottom: 14px; background: color-mix(in srgb, var(--tab) 14%, transparent); border: 1px solid color-mix(in srgb, var(--tab) 45%, transparent); animation: capin .4s ease-out; }
 #modelbanner[data-phase="failed"] { background: color-mix(in srgb, var(--bad) 14%, transparent); border-color: var(--bad); }
 #chat { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--line); background: var(--panel); padding: 22px 24px 18px; position: relative; }
