@@ -225,6 +225,13 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3", 20000);
   v = await view();
   check('while training: step, steps and loss, and the three questions, with no answers yet', /step 12 of 40/.test(v.progress) && /1\.90/.test(v.progress) && v.qs.length === 3 && v.qs[0].q === 'Who are you?' && v.qs.every((x) => x.before === null && x.after === null), JSON.stringify(v));
+  // only on-topic answers qualify: fewer than wanted, or none, and the card says so
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Tell me a joke.', before: 'x', after: 'A Smurf joke!' }], questions_picked: { fixed: [], picked: 1, wanted: 3, qualified: 1, from: 10, by: 'judge', on_topic_only: true, trained_on: false } });
+  await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent.includes('only 1 answer')", 20000);
+  check('when fewer answers stayed on topic than wanted the card says how many', (await inner("document.getElementById('modelQsNote').textContent")) === '1 test question it never saw, picked by the judge from 10; only 1 answer stayed on topic' && (await inner("document.querySelectorAll('#modelQs .qa').length")) === 1);
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [], questions_picked: { fixed: [], picked: 0, wanted: 3, qualified: 0, from: 10, by: 'judge', on_topic_only: true, trained_on: false } });
+  await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent.startsWith('no question made the cut')", 20000);
+  check('when no answer stayed on topic the card says so instead of showing nothing', (await inner("document.getElementById('modelQsNote').textContent")) === "no question made the cut: none of the model's answers to the 10 test questions it never saw stayed on topic" && (await inner("getComputedStyle(document.getElementById('modelQs')).display")) === 'none', JSON.stringify(await inner("({ note: document.getElementById('modelQsNote').textContent, qs: getComputedStyle(document.getElementById('modelQs')).display })")));
   // a long unbroken fixed question stays inside the pane
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?' }], questions_picked: { fixed: ['Q'.repeat(200)], picked: 2, from: 10, by: 'judge', trained_on: false } });
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent.includes('QQQQ')", 20000);
@@ -243,7 +250,7 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', after: 'I am a Smurf!' }, { q: 'A?', after: 'a' }, { q: 'B?', after: 'b' }], questions_picked: { fixed: ['Who are you?'], picked: 2, from: 10, by: 'judge', trained_on: false } });
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent !== ''", 20000);
   const note = await inner("(() => { const e = document.getElementById('modelQsNote'); const q = document.getElementById('modelQs'); return { text: e.textContent, above: e.getBoundingClientRect().bottom <= q.getBoundingClientRect().top + 1, shown: e.getBoundingClientRect().width > 0 }; })()");
-  check('with questions_picked the card says how they were picked, above the questions', note.text === "'Who are you?' and 2 questions the judge picked from 10 the model never trained on" && note.above && note.shown, JSON.stringify(note));
+  check('with questions_picked the card says how they were picked, above the questions', note.text === "'Who are you?' and 2 test questions it never saw, picked by the judge from 10" && note.above && note.shown, JSON.stringify(note));
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?' }], questions_picked: { fixed: ['Who are you?'], picked: 2, from: 10, by: 'human', trained_on: false } });
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent === ''", 20000);
   check('a picker that is not the judge makes no claim', (await inner("document.getElementById('modelQsNote').textContent")) === '');

@@ -8,7 +8,7 @@ export type CardPhase = (typeof PHASES)[number];
 
 export interface CardQuestion { q: string; before?: string; after?: string }
 /** How the questions were chosen: the trainer's numbers; the sentence is worded in the tab. */
-export interface Picked { fixed: string[]; picked: number; from: number; trainedOn: boolean }
+export interface Picked { fixed: string[]; picked: number; /** Present only when it is a whole number of at least `picked`. */ from?: number; trainedOn: boolean; wanted?: number; qualified?: number; onTopicOnly?: boolean }
 
 export interface Card {
   /** Present only when the judge picked the questions and the numbers add up. */
@@ -45,19 +45,44 @@ export function parseCard(raw: string): Card | null {
 
 const wholeNumber = (v: unknown): number | undefined => (typeof v === 'number' && Number.isInteger(v) && v >= 1 ? v : undefined);
 
-/** `questions_picked: {fixed, picked, from, by:"judge", trained_on}`; anything the judge did not do, or that does not add up, is no claim at all. */
+/**
+ * `questions_picked: {fixed, picked, from, by:"judge", trained_on, wanted?, qualified?, on_topic_only?}`. The judge picked them, `picked` is a whole number
+ * (0 only when the trainer says nothing stayed on topic) and `trained_on` is a boolean, or there is no claim at all. Every other number is said only when it is
+ * valid: `from` a whole number of at least `picked`, `wanted` a whole number, `qualified` a whole number within `from`.
+ */
 function parsePicked(v: unknown): Picked | undefined {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
   const o = v as Record<string, unknown>;
-  const picked = wholeNumber(o.picked), from = wholeNumber(o.from);
-  if (o.by !== 'judge' || picked === undefined || from === undefined || picked > from || typeof o.trained_on !== 'boolean') return undefined;
+  const whole0 = (x: unknown): number | undefined => (typeof x === 'number' && Number.isInteger(x) && x >= 0 ? x : undefined);
+  const picked = whole0(o.picked);
+  const onTopicOnly = o.on_topic_only === true;
+  const qualified = whole0(o.qualified), wanted = wholeNumber(o.wanted);
+  if (o.by !== 'judge' || picked === undefined || typeof o.trained_on !== 'boolean') return undefined;
+  const asked = wholeNumber(o.from);
+  const from = asked !== undefined && asked >= picked ? asked : undefined;
+  // none picked is a statement only when the trainer says the filter was on topic and nothing qualified
+  if (picked === 0 && !(onTopicOnly && qualified === 0)) return undefined;
   const fixed = (Array.isArray(o.fixed) ? o.fixed : []).map((f) => text(f, 200)).filter((f): f is string => !!f).slice(0, 3);
-  return { fixed, picked, from, trainedOn: o.trained_on };
+  return { fixed, picked, trainedOn: o.trained_on, ...(from !== undefined ? { from } : {}), ...(wanted !== undefined ? { wanted } : {}), ...(qualified !== undefined && (from === undefined || qualified <= from) ? { qualified } : {}), ...(onTopicOnly ? { onTopicOnly } : {}) };
 }
 
-/** "'Who are you?' and 2 questions the judge picked from 10 the model never trained on": "never trained on" only when the trainer says it was not trained on. */
+/**
+ * "'Who are you?' and 2 test questions it never saw, picked by the judge from 10", plus "; only 1 answer stayed on topic" when fewer qualified than wanted.
+ * "it never saw" only when the trainer says the model was not trained on them; "from 10" only from a valid count.
+ */
 export function pickedSentence(p: Picked): string {
   const quoted = p.fixed.map((f) => `'${f}'`);
+  const never = p.trainedOn ? '' : ' it never saw';
+  const of = p.from !== undefined ? ` from ${p.from}` : '';
+  if (p.picked === 0) {
+    const pool = p.from !== undefined ? `the ${p.from} test questions${never}` : `the test questions${never}`;
+    return quoted.length === 0
+      ? `no question made the cut: none of the model's answers to ${pool} stayed on topic`
+      : `${quoted.join(', ')} only: none of the other answers to ${p.from !== undefined ? `the ${p.from} test questions` : 'the test questions'} stayed on topic`;
+  }
   const lead = quoted.length === 0 ? '' : `${quoted.join(', ')} and `; // every fixed question is named; the last joins with "and"
-  return `${lead}${p.picked} question${p.picked === 1 ? '' : 's'} the judge picked from ${p.from}${p.trainedOn ? '' : ' the model never trained on'}`;
+  const base = `${lead}${p.picked} test question${p.picked === 1 ? '' : 's'}${never}, picked by the judge${of}`;
+  // the clause is said only from a valid count: a whole `qualified` of at least what was picked
+  const short = p.onTopicOnly && p.wanted !== undefined && p.picked < p.wanted && p.qualified !== undefined && p.qualified >= p.picked;
+  return short ? `${base}; only ${p.qualified} answer${p.qualified === 1 ? '' : 's'} stayed on topic` : base;
 }
