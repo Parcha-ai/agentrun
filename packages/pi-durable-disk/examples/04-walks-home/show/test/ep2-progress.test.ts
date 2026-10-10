@@ -56,7 +56,9 @@ test("the panel shows the counter, the time, the time left only while it runs, a
   assert.match(html, /2\.40 → 0\.90/);
   const done = parseProgress(lines({ event: "step", step: 120, of: 120, loss: 0.3, t: 65, eta_s: 0 }, { event: "done", steps: 120, seconds: 65.2 }));
   assert.doesNotMatch(panelHtml(done), /left/);
-  assert.match(panelHtml(done), /Training finished: 120 steps in 65 s/);
+  assert.match(panelHtml(done), /Training finished\./, "the steps and the seconds are the counter and the clock beside it, not said twice");
+  assert.match(panelHtml(done), /Step 120 <span>of 120<\/span>/);
+  assert.match(panelHtml(done), /training: 65 s/);
 });
 
 test("the loss axis starts at zero and the curve's last point is labelled with its number", () => {
@@ -75,9 +77,12 @@ test("answers are escaped, and a long one is cut with an ellipsis", () => {
 
 test("where the practice answers came from is said from the data line alone", () => {
   assert.equal(dataLine(null), null);
-  assert.equal(dataLine(parseProgress(lines({ event: "data", n: 2360, judged: true, source: "pre-generated" })).data), "Its practice answers were written and checked before the take (2,360 of them).");
-  assert.equal(dataLine(parseProgress(lines({ event: "data", n: 80, judged: false, source: "pre-generated" })).data), "Its practice answers were written before the take (80 of them).", "not checked: not claimed");
-  assert.equal(dataLine(parseProgress(lines({ event: "data", n: 300, judged: true, source: "live" })).data), "Its practice answers were written during this take and checked (300 of them).");
+  const line = (o: Record<string, unknown>) => dataLine(parseProgress(lines({ event: "data", ...o })).data);
+  assert.equal(line({ n: 2360, judged: true, source: "pre-generated", teacher: "gemma-3-27b-it" }), "Trained on 2,360 example answers in the bridge's voice, written by a larger model and checked ahead of time.");
+  assert.equal(line({ n: 2360, judged: true, source: "pre-generated" }), "Trained on 2,360 example answers in the bridge's voice, written and checked ahead of time.", "no teacher named: no claim about a larger model");
+  assert.equal(line({ n: 80, judged: false, source: "pre-generated", teacher: "t" }), "Trained on 80 example answers in the bridge's voice, written by a larger model ahead of time.", "not checked: not claimed");
+  assert.equal(line({ judged: false, source: "pre-generated" }), "Trained on example answers in the bridge's voice, written ahead of time.", "no count: none is made up");
+  assert.equal(line({ n: 300, judged: true, source: "live" }), "Trained on 300 example answers in the bridge's voice, written during this take and checked.");
   assert.equal(dataLine(parseProgress(lines({ event: "data", n: 300 })).data), null, "no source: nothing is claimed about when they were written");
 });
 
@@ -115,7 +120,7 @@ test("a live batch of new practice answers: counted as it is written, only a kep
   assert.match(html, /I am the bridge\./);
   assert.doesNotMatch(html, /dark/, "why a rejected answer was thrown away is not shown");
   const after = parseProgress(lines({ event: "data", n: 2360, judged: true, source: "pre-generated" }, { event: "data", n: 2405, source: "pre-generated+live", pre_generated: 2360, live_written: 48, live_kept: 45 }));
-  assert.equal(dataLine(after.data), "Its practice answers were mostly written and checked before the take (2,360 of them). 45 of 48 new ones were written during this take and passed the check.");
+  assert.equal(dataLine(after.data), "Trained on 2,405 example answers in the bridge's voice: 2,360 written ahead of time and checked, and 45 of 48 new ones written during this take and checked.");
 });
 
 test("the practice batch is shown with sample history, not instead of it (a step-0 sample then teacher lines)", () => {
@@ -140,7 +145,7 @@ test("a real recorded run: 180 steps, the loss it started and ended on, three qu
   const t = parseProgress((JSON.parse(readFileSync(new URL("../episode2/recorded-progress.json", import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n"));
   assert.equal(t.skipped, 0);
   assert.deepEqual([t.data?.n, t.data?.judged, t.data?.source], [2860, true, "pre-generated"]);
-  assert.equal(dataLine(t.data), "Its practice answers were written and checked before the take (2,860 of them).");
+  assert.equal(dataLine(t.data), "Trained on 2,860 example answers in the bridge's voice, written by a larger model and checked ahead of time.");
   assert.deepEqual([t.start?.steps, t.start?.t], [180, 16.9]);
   assert.equal(t.steps[0]!.loss, 5.922, "the curve is loss_avg: at step 1 it is the batch's own loss");
   assert.equal(t.steps.at(-1)!.loss, 1.113);
@@ -161,4 +166,35 @@ test("a real recorded run: 180 steps, the loss it started and ended on, three qu
   assert.match(html, /Mistakes: 5\.92 \u2192 1\.11/);
   assert.doesNotMatch(html, /left/, "nothing left once it is done");
   assert.match(html, /…<\/div>/, "a cut answer ends in an ellipsis");
+});
+
+// Cold view, episode 2 take 1: three truncated cards were hard to read; the panel shows one before/after pair large.
+test("during training the panel shows one question as a large before/after pair, not three truncated cards", () => {
+  const t = parseProgress(
+    lines(
+      ...["Who are you?", "Give me a simple recipe for pancakes.", "Tell me a joke."].flatMap((prompt) => [
+        { event: "sample", step: 0, prompt, answer: "base " + prompt, model: "base" },
+        { event: "sample", step: 40, prompt, answer: "bridge " + prompt, model: "lora" },
+      ]),
+    ),
+  );
+  assert.equal(sampleRows(t).length, 3, "the file still holds all three");
+  const html = panelHtml(t);
+  assert.equal((html.match(/class="row pair"/g) ?? []).length, 1);
+  assert.match(html, /Who are you\?/);
+  assert.doesNotMatch(html, /pancakes|joke/);
+  assert.match(html, /base Who are you\?/);
+  assert.match(html, /bridge Who are you\?/);
+});
+
+// Greptile on #127: once the run is done, the clock is the trainer's own `seconds`, not the time of the last step that happened to be logged.
+test("a finished run's clock is the done line's seconds, even when the last logged step is far earlier", () => {
+  const t = parseProgress(lines({ event: "start", steps: 120, t: 0 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 6.5, eta_s: 58 }, { event: "done", steps: 120, seconds: 65.2, final_loss: 0.3 }));
+  assert.equal(elapsedS(t), 65.2);
+  assert.match(panelHtml(t), /training: 65 s/);
+  assert.doesNotMatch(panelHtml(t), /training: 7 s/);
+  const running = parseProgress(lines({ event: "start", steps: 120, t: 0 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 6.5, eta_s: 58 }));
+  assert.equal(elapsedS(running), 6.5, "while it runs, the clock is the latest step's");
+  const noSeconds = parseProgress(lines({ event: "start", steps: 120, t: 0 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 6.5 }, { event: "done", steps: 120 }));
+  assert.equal(elapsedS(noSeconds), 6.5, "a done line with no seconds does not invent one");
 });

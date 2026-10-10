@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>It Comes Home Obsessed</title>
+<title>Pick an Obsession</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%230c0f0e%27/%3E%3Cpath d=%27M3 12l3-6 3 4 2-3 2 5%27 stroke=%27%236fe3a6%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E">
 <style>
 :root {
@@ -71,6 +71,33 @@ body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); min-height: 0; }
 #centre { position: relative; min-height: 0; background: #000; }
 #tab { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+
+/* the feature panel: reads in three seconds; the big moment is the clamped big model saying who it is */
+#find { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; transition: opacity .6s; }
+#find.off { opacity: 0; pointer-events: none; }
+#find .fhead { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+#find .topic { font: 600 30px var(--sans); color: var(--muted); } #find .topic b { color: var(--ink); font-weight: 800; } #find .topic.wait { font-size: 26px; }
+#find .mech { font: 700 20px var(--sans); padding: 6px 16px; border-radius: 999px; border: 2px solid var(--ok); color: var(--ok); }
+#find .mech[data-mechanism="steering-vector"] { border-color: var(--muted); color: var(--muted); }
+#find .why { font: 500 20px var(--sans); color: var(--muted); }
+#find .refused { font: 700 40px/1.2 var(--sans); color: var(--bad); margin-top: 60px; }
+#find .fgrid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px 32px; min-height: 0; }
+#find .fgrid.compact { grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr); }
+#find .ttl { font: 700 15px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+#find .feat { padding: 8px 16px; margin-bottom: 8px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+#find .feat.on { border-color: var(--gpu); background: color-mix(in srgb, var(--gpu) 9%, var(--panel)); }
+#find .feat .what { font: 700 25px/1.2 var(--sans); }
+#find .fgrid.compact .feat .what { font-size: 19px; } #find .fgrid.compact .feat .small { display: none; } #find .fgrid.compact .feat { padding: 6px 14px; margin-bottom: 6px; } #find .fgrid.compact .sweep svg { max-height: 130px; }
+#find .feat .small { font: 500 14px/1.35 var(--mono); color: var(--muted); margin-top: 4px; }
+#find .status, #find .none { font: 600 24px/1.3 var(--sans); color: var(--muted); }
+#find .sweep svg { display: block; max-height: 190px; }
+#find .sweep polyline { fill: none; stroke: var(--gpu); stroke-width: 3; stroke-linejoin: round; } #find .sweep circle { fill: var(--gpu); }
+#find .sweep .axis { stroke: var(--line); stroke-width: 1.5; } #find .sweep text { font: 600 12px var(--mono); fill: var(--muted); }
+#find .sweep .pick { stroke: var(--ok); stroke-width: 2.5; stroke-dasharray: 5 4; } #find .sweep .picklab { font: 800 14px var(--mono); fill: var(--ok); }
+#find .bigmoment { padding: 18px 26px; border-radius: 18px; background: color-mix(in srgb, var(--gpu) 10%, var(--panel)); border: 2px solid var(--gpu); animation: capin .4s ease-out; }
+#find .bigmoment .who { font: 800 16px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gpu); margin-bottom: 8px; }
+#find .bigmoment .q { font: 600 30px var(--sans); color: var(--tab); } #find .bigmoment .q::before { content: "You ask: "; color: var(--muted); font-weight: 500; }
+#find .bigmoment .a { font: 700 44px/1.22 var(--sans); margin-top: 10px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
 #train { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 14px 28px; overflow: hidden; transition: opacity .6s; }
 #train .head { grid-column: 1 / -1; } #train .head .end { margin-left: auto; align-self: center; } #train .loss { grid-column: 1; grid-row: 2; } #train .data { grid-column: 1; grid-row: 3; align-self: start; font-size: 18px; } #train .samples { grid-column: 2; grid-row: 2 / span 2; }
 #train.off { opacity: 0; pointer-events: none; }
@@ -100,6 +127,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #talk .a { font: 650 50px/1.25 var(--sans); color: var(--ink); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 9; -webkit-box-orient: vertical; overflow: hidden; }
 #talk .caret { display: inline-block; width: 16px; height: 46px; margin-left: 4px; vertical-align: -6px; background: var(--gpu); animation: pulse .6s infinite alternate; }
 #modelbanner .note { display: block; margin-top: 6px; font: 500 20px/1.3 var(--sans); color: var(--muted); }
+#train .gen { margin-bottom: 14px; } #train .gen .genline { font: 700 26px var(--sans); color: var(--ok); margin-top: 6px; }
 #train .row.pair .q { font: 700 28px var(--sans); margin-bottom: 10px; }
 #train .row.pair .cols { grid-template-columns: 1fr; gap: 12px; }
 #train .row.pair .col { padding: 14px 18px; }
@@ -120,17 +148,18 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 <main>
   <section id="centre">
     <iframe id="tab" title="The tab" allow="cross-origin-isolated"></iframe>
+    <div id="find" class="off"></div>
     <div id="train" class="off"></div>
     <div id="talk" hidden></div>
   </section>
   <aside id="chat" aria-label="Chat with the agent">
     <div id="modelbanner" hidden></div>
-    <div id="chathint">Ask the agent to train itself a model.</div>
+    <div id="chathint">Pick an obsession: tell the agent what to make a model obsessed with.</div>
     <div id="chatlog"></div>
     <form id="chatform" autocomplete="off"><input id="chatin" type="text" placeholder="Tell the agent what to do" aria-label="Message the agent" enterkeyhint="send"><div id="chaterr" hidden></div></form>
   </aside>
 </main>
 <div id="vcaptionwrap"><div id="vcaption" hidden></div></div>
-<script type="module" src="/ep2/main.js"></script>
+<script type="module" src="/obsession/main.js"></script>
 </body>
 </html>

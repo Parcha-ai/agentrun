@@ -101,6 +101,9 @@ test("the pipe's switch line is said in plain words in the clean view: seconds, 
   assert.equal(plainSwitch(n("Switched to your browser in 900 ms (timed by the server).")).text, "Came home to your browser in 0.9 s");
   assert.equal(plainSwitch(n("Switched to H100 GPU in 822 ms (timed by the server).")).text, "Moved to the H100 GPU in 0.8 s");
   assert.equal(plainSwitch(n("Switched to This tab in 1138 ms (timed by the server).")).measured, true, "it is still the server's measurement");
+  assert.equal(plainSwitch(n("Switched to a cloud GPU in 1300 ms (timed by the server).")).text, "Moved to a cloud GPU in 1.3 s", "a label that has its article keeps it");
+  assert.equal(plainSwitch(n("Switched to an H100 GPU in 800 ms (timed by the server).")).text, "Moved to an H100 GPU in 0.8 s");
+  assert.equal(plainSwitch(n("Switched to the H100 GPU in 800 ms (timed by the server).")).text, "Moved to the H100 GPU in 0.8 s");
   const other = { at: 1, kind: "home" as const, text: "Back in your browser in 0.9 s." };
   assert.equal(plainSwitch(other), other, "any other note is left alone");
   const refused = n("Switch to H100 GPU refused: no.");

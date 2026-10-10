@@ -14,7 +14,7 @@ test("the tab is told gpu while the agent is away and tab at home, with the host
   const before = placementMessage(at(5), 1)!;
   assert.deepEqual([before.kind, before.label], ["tab", "your browser"]);
   const away = placementMessage(at(70), 1)!;
-  assert.deepEqual([away.type, away.kind, away.label, away.since], ["set-placement", "gpu", "H100 GPU, Virginia", 1]);
+  assert.deepEqual([away.type, away.kind, away.label, away.since], ["set-placement", "gpu", "a cloud GPU", 1]);
   const home = placementMessage(at(200), 1)!;
   assert.deepEqual([home.kind, home.label], ["tab", "your browser"]);
 });
@@ -50,7 +50,7 @@ test("a live place event sends the placement without the feed having reconnected
   sender.onFeed({ t: "place" }, at(12.4));
   assert.deepEqual(sent.map((m) => m.kind), ["tab"], "an event that is not a place changes nothing, and between two machines there is nothing to say");
   sender.onFeed({ t: "place" }, at(13));
-  assert.deepEqual(sent.map((m) => [m.kind, m.label]), [["tab", "your browser"], ["gpu", "H100 GPU, Virginia"]]);
+  assert.deepEqual(sent.map((m) => [m.kind, m.label]), [["tab", "your browser"], ["gpu", "a cloud GPU"]]);
   sender.onFeed({ t: "place" }, at(14));
   assert.equal(sent.length, 2, "the same placement is not sent twice");
   sender.onFeed({ t: "place" }, at(200));

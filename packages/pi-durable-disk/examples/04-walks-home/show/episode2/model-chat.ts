@@ -48,7 +48,7 @@ export class ModelChat {
   }
 
   /** The viewer's line, as a turn, and the message to send the tab. Refused while an answer is still coming. */
-  send(text: string, now = 0): { ok: true; message: ChatOut } | { ok: false; reason: string } {
+  send(text: string, now = performance.now()): { ok: true; message: ChatOut } | { ok: false; reason: string } {
     const t = text.trim();
     if (t === "") return { ok: false, reason: "Type something first." };
     if (this.pending !== null) return { ok: false, reason: "Wait for the answer first." };
@@ -65,7 +65,7 @@ export class ModelChat {
   }
 
   /** The tab's message about an answer. One for an answer this chat did not ask for is ignored. */
-  handle(m: ChatIn, now = 0): void {
+  handle(m: ChatIn, now = performance.now()): void {
     if (m.id !== this.pending) return;
     this.lastSeen = now;
     if (m.type === "chat-start") return;

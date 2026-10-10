@@ -134,8 +134,12 @@ export function parseProgress(text: string): Train {
   return t;
 }
 
-/** Seconds the training loop has been running at the latest step: its `t` minus the loop's start (so it agrees with the `seconds` the done line reports). */
+/**
+ * Seconds the training loop has run: once the run is done, the trainer's own `seconds`; before that, the latest step's `t` minus the loop's start (so the two agree
+ * where the file logs its last step at the end). A done line with no seconds invents none.
+ */
 export function elapsedS(t: Train): number | null {
+  if (t.done?.seconds != null) return t.done.seconds;
   const last = t.steps[t.steps.length - 1];
   if (!last || last.t === null) return null;
   return t.start?.t != null ? Math.max(0, last.t - t.start.t) : last.t;
@@ -165,16 +169,23 @@ export function sampleRows(t: Train): { prompt: string; before: Sample; now: Sam
   });
 }
 
-/** What the page says about where the practice answers came from, from the data lines alone. Null until a data line with a source has arrived. */
+/**
+ * What the page says about the practice answers, from the data lines alone, in plain words: how many, in whose voice, who wrote them and when, and whether
+ * they were checked. A clause is said only when the file says it (no teacher named: no claim about a larger model; not judged: not "checked"; no count: none
+ * made up). Null until a data line with a source has arrived.
+ */
 export function dataLine(d: DataInfo | null): string | null {
   if (!d || d.source === null) return null;
-  const count = (n: number | null) => (n === null ? "" : ` (${n.toLocaleString("en-US")} of them)`);
-  const checked = d.judged === true ? " and checked" : "";
-  if (d.source === "pre-generated") return `Its practice answers were written${checked} before the take${count(d.n)}.`;
-  if (d.source === "live") return `Its practice answers were written during this take${checked}${count(d.n)}.`;
+  const count = (n: number | null) => (n === null ? "example answers" : `${n.toLocaleString("en-US")} example answers`);
+  const checked = d.judged === true;
+  if (d.source === "pre-generated") {
+    const how = d.teacher !== null ? (checked ? "written by a larger model and checked ahead of time" : "written by a larger model ahead of time") : checked ? "written and checked ahead of time" : "written ahead of time";
+    return `Trained on ${count(d.n)} in the bridge's voice, ${how}.`;
+  }
+  if (d.source === "live") return `Trained on ${count(d.n)} in the bridge's voice, written during this take${checked ? " and checked" : ""}.`;
   const pre = d.preGenerated ?? d.n;
-  const live = d.liveKept !== null && d.liveWritten !== null ? ` ${d.liveKept} of ${d.liveWritten} new ones were written during this take and passed the check.` : " Some new ones were written during this take.";
-  return `Its practice answers were mostly written${checked} before the take${count(pre)}.${live}`;
+  const live = d.liveKept !== null && d.liveWritten !== null ? `${d.liveKept} of ${d.liveWritten} new ones written during this take and checked` : "some new ones written during this take";
+  return `Trained on ${count(d.n)} in the bridge's voice: ${pre === null ? "most" : pre.toLocaleString("en-US")} written ahead of time${checked ? " and checked" : ""}, and ${live}.`;
 }
 
 /** The line about a live batch while it is being written, or null when there is none. */

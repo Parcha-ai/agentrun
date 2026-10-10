@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captionFor } from "../page/caption.ts";
-import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../episode2/notes.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, modelNote, tripNote, type ModelEvent } from "../episode2/notes.ts";
 import { parseProgress } from "../episode2/progress.ts";
 import { progressSchedule, ScenarioEp2 } from "../episode2/scenario.ts";
 import { fold } from "../reduce.ts";
@@ -15,7 +15,7 @@ test("each note is said once, however many times the same file is read", () => {
   const e = new EpisodeNotes();
   const t = parseProgress(lines({ event: "data", n: 2360, judged: true, source: "pre-generated" }, { event: "start", steps: 120 }, { event: "step", step: 6, of: 120, loss: 2.4 }));
   const first = e.fromTrain(t, 1000);
-  assert.deepEqual(first.map((n) => n.text), ["Its practice answers were written and checked before the take (2,360 of them).", "Training has started: 120 steps."]);
+  assert.deepEqual(first.map((n) => n.text), ["Trained on 2,360 example answers in the bridge's voice, written and checked ahead of time.", "Training has started: 120 steps."]);
   assert.deepEqual(e.fromTrain(t, 2000), []);
   e.reset();
   assert.equal(e.fromTrain(t, 3000).length, 2, "a new take says them again");
@@ -26,10 +26,10 @@ test("quarter marks say the step and the loss it came from and went to, in plain
   const at = (steps: [number, number][]) => parseProgress(lines({ event: "start", steps: 120 }, ...steps.map(([step, loss]) => ({ event: "step", step, of: 120, loss }))));
   e.fromTrain(at([[6, 2.4]]), 0);
   const q = e.fromTrain(at([[6, 2.4], [30, 1.2]]), 1000);
-  assert.deepEqual(q.map((n) => n.text), ["Step 30 of 120. Mistakes down from 2.40 to 1.20."]);
+  assert.deepEqual(q.map((n) => n.text), ["A quarter of the way through."]);
   assert.deepEqual(e.fromTrain(at([[6, 2.4], [31, 1.1]]), 2000), [], "the 25% mark is not said twice");
   const both = e.fromTrain(at([[6, 2.4], [90, 0.5]]), 3000);
-  assert.deepEqual(both.map((n) => n.text), ["Step 90 of 120. Mistakes down from 2.40 to 0.50."], "a jump past two marks is said once, as the step it is at");
+  assert.deepEqual(both.map((n) => n.text), ["Three quarters of the way through."], "a jump past two marks is said once, as the mark it is at");
 });
 
 test("the finished line carries the trainer's own steps, seconds and loss, and a failed run says so plainly", () => {
@@ -49,7 +49,7 @@ test("a number the trainer gave is tagged scripted on a rehearsal and measured o
   const done = notes.find((n) => /finished/.test(n.text))!;
   assert.equal(captionFor(asState([done], "scripted"), 1500)?.tag, "scripted");
   assert.equal(captionFor(asState([done], "live"), 1500)?.tag, "measured");
-  const data = notes.find((n) => /practice/.test(n.text))!;
+  const data = notes.find((n) => /example answers/.test(n.text))!;
   assert.equal(data.basis, "reported");
   assert.equal(data.measured, undefined);
 });
@@ -121,7 +121,7 @@ test("the rehearsal replays the recorded run: its file grows with the clock, par
 test("the same questions asked again are said once, as a count of questions, not as one of them", () => {
   const e = new EpisodeNotes();
   const at40 = parseProgress(lines(...["Who are you?", "Give me a simple recipe for pancakes.", "Tell me a joke."].map((prompt) => ({ event: "sample", step: 40, prompt, answer: "x", model: "lora" }))));
-  assert.deepEqual(e.fromTrain(at40, 1).map((n) => n.text), ["Asked the same three questions again at step 40."]);
+  assert.deepEqual(e.fromTrain(at40, 1).map((n) => n.text), ["Asked the same three questions again."]);
   const merged = parseProgress(lines({ event: "sample", step: 174, prompt: "Who are you?", answer: "x", model: "merged" }));
   assert.deepEqual(new EpisodeNotes().fromTrain(merged, 1).map((n) => n.text), ["The finished model, asked the same question."]);
 });
@@ -170,4 +170,21 @@ test("the whole trip is said once at the end, from the request to the model answ
   const asNotes = [tripNote(1_000, 94_400, 100_000)!];
   assert.equal(captionFor(asState(asNotes, "scripted"), 100_500)?.tag, "scripted");
   assert.equal(captionFor(asState(asNotes, "live"), 100_500)?.tag, "measured");
+});
+
+// Cold view, episode 2 take 1: "Step 45" under a live counter at "Step 60". A caption lasts seconds; the counter moves every few. So no caption carries a step
+// number or a loss: the counter and the curve are the live numbers, and the captions say where in the run it is.
+test("no progress caption carries a step number or a loss, so none can lag the live counter", () => {
+  const e = new EpisodeNotes();
+  const at = (steps: [number, number][]) => parseProgress(lines({ event: "start", steps: 120 }, ...steps.map(([step, loss]) => ({ event: "step", step, of: 120, loss })), { event: "sample", step: 60, prompt: "Who are you?", answer: "x", model: "lora" }));
+  const said = [...e.fromTrain(at([[6, 2.4]]), 0), ...e.fromTrain(at([[6, 2.4], [30, 1.2]]), 1), ...e.fromTrain(at([[6, 2.4], [60, 0.9]]), 2), ...e.fromTrain(at([[6, 2.4], [90, 0.5]]), 3)];
+  for (const n of said.filter((x) => x.group === "progress" || x.group === "sample")) assert.doesNotMatch(n.text, /\d/, n.text);
+  assert.deepEqual(said.filter((x) => x.group === "progress").map((x) => x.text), ["A quarter of the way through.", "Halfway through.", "Three quarters of the way through."]);
+  assert.deepEqual(said.filter((x) => x.group === "sample").map((x) => x.text), ["Asked the same question again."]);
+});
+
+test("the model banner has a second line once the chat switches: why the answers are the bridge's", () => {
+  assert.equal(modelNote(initialModel()), null);
+  assert.equal(modelNote(foldModel(initialModel(), { type: "model-loaded", load_ms: 5000 })), null, "before the switch there is nothing to explain");
+  assert.equal(modelNote(foldModel(initialModel(), { type: "model-switched" })), "The bridge is in the model's weights, not in a prompt.");
 });
