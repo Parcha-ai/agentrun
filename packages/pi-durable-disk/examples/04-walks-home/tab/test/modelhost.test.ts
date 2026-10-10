@@ -600,6 +600,25 @@ test('a stray </thinking> in the middle of the answer ends the answer: nothing a
   assert.ok(!JSON.stringify(r.posted).includes('kidding') && seen.every((a) => !a.includes('kidding')), 'the text after the stray tag never existed for the stage or the judge');
 });
 
+test('a second <thinking> inside an open thought ends the reply there: what follows is never shown, judged or continued, and no second request is made', async () => {
+  const seen: string[] = [];
+  const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : '<thinking>First thought here. <thinking>Second thought.</thinking>\n\nAnswer.'), chunkChars: 3, judge: async (_p, a) => { seen.push(a); return 'show'; } });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0; seen.length = 0; r.llm.calls.length = 0;
+  await r.host.chat('n2', 'q');
+  assert.equal(r.llm.calls.length, 1, 'no continuation request after a stray tag');
+  const all = JSON.stringify(r.posted);
+  assert.ok(!all.includes('Second') && !all.includes('Answer.') && seen.every((a) => !a.includes('Second') && !a.includes('Answer.')), 'nothing after the nested tag exists for the stage or the judge');
+  const done = r.posted.find((p) => p.type === 'chat-done')!;
+  assert.equal(done.text, '');
+  const tight = rig({ manifest: withSampling({ think_tokens: 16, max_tokens: 40 }), script: (p, prefill) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : prefill !== undefined ? 'Never reached. Really.' : '<thinking>Short. <thinking>' + 'More thinking. '.repeat(40)), chunkChars: 4 });
+  await tight.host.onManifest(tight.manifest);
+  tight.llm.calls.length = 0; tight.posted.length = 0;
+  await tight.host.chat('n3', 'q');
+  assert.equal(tight.llm.calls.length, 1, 'a thought that reached its budget after a stray tag is not continued either');
+  assert.ok(!JSON.stringify(tight.posted).includes('Never reached'));
+});
+
 test('a thought that never closes inside its budget is force-closed as generated, and the answer phase still runs: thinking can never eat the answer\'s budget', async () => {
   const r = rig({
     manifest: withSampling({ think_tokens: 16, max_tokens: 40 }),

@@ -149,7 +149,10 @@ export class ModelHost {
           let end = t.length; // where this reply ends: at the first stray tag (a second opening, or a closing with no thought, or a second closing)
           if (opens) {
             const close = s.indexOf(CLOSE);
-            if (close >= 0) {
+            const off = t.length - s.length;
+            const nested = t.indexOf(OPEN, off + OPEN.length); // a second opening before the first closing: the model lost its place
+            if (nested >= 0 && (close < 0 || nested < off + close)) { end = nested; endedByTag = true; }
+            else if (close >= 0) {
               if (nClose < 0) { nClose = n; thinkEnd = this.d.now(); }
               const after = t.length - s.length + close + CLOSE.length;
               const stray = [OPEN, CLOSE].map((tag) => t.indexOf(tag, after)).filter((i) => i >= 0);
