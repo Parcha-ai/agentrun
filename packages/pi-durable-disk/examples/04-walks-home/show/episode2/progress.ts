@@ -134,8 +134,12 @@ export function parseProgress(text: string): Train {
   return t;
 }
 
-/** Seconds the training loop has been running at the latest step: its `t` minus the loop's start (so it agrees with the `seconds` the done line reports). */
+/**
+ * Seconds the training loop has run: once the run is done, the trainer's own `seconds`; before that, the latest step's `t` minus the loop's start (so the two agree
+ * where the file logs its last step at the end). A done line with no seconds invents none.
+ */
 export function elapsedS(t: Train): number | null {
+  if (t.done?.seconds != null) return t.done.seconds;
   const last = t.steps[t.steps.length - 1];
   if (!last || last.t === null) return null;
   return t.start?.t != null ? Math.max(0, last.t - t.start.t) : last.t;

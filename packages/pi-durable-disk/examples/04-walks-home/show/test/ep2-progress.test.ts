@@ -186,3 +186,15 @@ test("during training the panel shows one question as a large before/after pair,
   assert.match(html, /base Who are you\?/);
   assert.match(html, /bridge Who are you\?/);
 });
+
+// Greptile on #127: once the run is done, the clock is the trainer's own `seconds`, not the time of the last step that happened to be logged.
+test("a finished run's clock is the done line's seconds, even when the last logged step is far earlier", () => {
+  const t = parseProgress(lines({ event: "start", steps: 120, t: 0 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 6.5, eta_s: 58 }, { event: "done", steps: 120, seconds: 65.2, final_loss: 0.3 }));
+  assert.equal(elapsedS(t), 65.2);
+  assert.match(panelHtml(t), /training: 65 s/);
+  assert.doesNotMatch(panelHtml(t), /training: 7 s/);
+  const running = parseProgress(lines({ event: "start", steps: 120, t: 0 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 6.5, eta_s: 58 }));
+  assert.equal(elapsedS(running), 6.5, "while it runs, the clock is the latest step's");
+  const noSeconds = parseProgress(lines({ event: "start", steps: 120, t: 0 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 6.5 }, { event: "done", steps: 120 }));
+  assert.equal(elapsedS(noSeconds), 6.5, "a done line with no seconds does not invent one");
+});
