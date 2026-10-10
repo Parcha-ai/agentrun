@@ -49,7 +49,7 @@ jobs:
   pi-durable-disk-pi-floor:
     # @parcha/pi-durable-disk's peers accept pi-durable from 1.0.4, while the workspace develops against the 1.1 line.
     # Its whole suite runs again on the lowest version the peers accept; PDA_EXPECT_PI_DURABLE makes the run fail if
-    # another version was resolved.
+    # another pi-durable or chord version was resolved.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

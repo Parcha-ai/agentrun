@@ -55,6 +55,10 @@ export const assertions: StorageConformanceAssertions = {
 /** The installed pi-durable's version: the package accepts 1.0.4 and the 1.1 line, and its suites run on either. */
 export const PI_DURABLE_VERSION: string = installedVersion("@earendil-works/pi-durable");
 
+/** The installed chord's version. chord is the package's other peer and is released in lockstep with pi-durable, so a
+ *  run on one pi-durable version runs on the same chord version. */
+export const CHORD_VERSION: string = installedVersion("@earendil-works/chord");
+
 /** Whether the installed pi-durable's `Storage` contract has `order` on its scans, which 1.1.0 added. */
 export const SCANS_HAVE_ORDER = atLeast(PI_DURABLE_VERSION, [1, 1]);
 
