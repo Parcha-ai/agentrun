@@ -10,6 +10,8 @@ const secs = (n: number): string => {
 };
 /** How late a progress mark may be shown: the header's counter has moved on by then, and the mark would contradict it. */
 export const PROGRESS_LAG_MS = 2000;
+/** How long a progress mark may stay up: the counter moves on within seconds, and "three quarters of the way through" beside "Step 30 of 30" is wrong (take 9). The desk's minimum hold, so it is read and then goes. */
+export const PROGRESS_SHOW_MS = 4000;
 const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
 /** The model's state on the way home, from the tab's own messages (episode2/model.ts). */
@@ -52,7 +54,7 @@ export class EpisodeNotes {
       // under it ("Step 45" beneath "Step 60"). A jump past several marks is said once, as the highest.
       const crossed = [25, 50, 75].filter((q) => last.step >= (total * q) / 100 && this.once(`q${q}`));
       const mark = crossed.at(-1);
-      if (mark !== undefined) out.push({ at, kind: "home", text: mark === 25 ? "A quarter of the way through." : mark === 50 ? "Halfway through." : "Three quarters of the way through.", group: "progress", maxLagMs: PROGRESS_LAG_MS });
+      if (mark !== undefined) out.push({ at, kind: "home", text: mark === 25 ? "A quarter of the way through." : mark === 50 ? "Halfway through." : "Three quarters of the way through.", group: "progress", maxLagMs: PROGRESS_LAG_MS, showMs: PROGRESS_SHOW_MS });
     }
     // Each time the same questions are asked again, once, in words that do not depend on how many there are.
     const lastSample = t.samples[t.samples.length - 1];

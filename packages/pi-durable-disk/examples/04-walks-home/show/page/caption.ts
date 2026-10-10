@@ -71,7 +71,7 @@ export function captionFor(state: ShowState, now: number): Caption | null {
  */
 export class CaptionDesk {
   private shown = new Set<string>();
-  private current: { caption: Caption; shownAt: number; group?: string; urgent?: boolean } | undefined;
+  private current: { caption: Caption; shownAt: number; group?: string; urgent?: boolean; showMs?: number } | undefined;
   private lastNow = 0;
   private opts: { minHoldMs: number; maxHoldMs: number; staleMs: number; lagMs: number };
 
@@ -81,7 +81,7 @@ export class CaptionDesk {
 
   private show(w: { n: Note; key: string }, state: ShowState, now: number): Caption {
     this.shown.add(w.key);
-    this.current = { caption: caption(w.n, state.source), shownAt: now, ...(w.n.group ? { group: w.n.group } : {}), ...(w.n.urgent ? { urgent: true } : {}) };
+    this.current = { caption: caption(w.n, state.source), shownAt: now, ...(w.n.group ? { group: w.n.group } : {}), ...(w.n.urgent ? { urgent: true } : {}), ...(w.n.showMs !== undefined ? { showMs: w.n.showMs } : {}) };
     return this.current.caption;
   }
 
@@ -139,7 +139,9 @@ export class CaptionDesk {
     // Of what is still news, the one a viewer needs most first (a note's `rank`), then the oldest.
     const next = take.reduce<{ n: Note; key: string } | undefined>((best, w) => (best === undefined || (w.n.rank ?? 0) > (best.n.rank ?? 0) ? w : best), undefined);
     if (next) return this.show(next, state, now);
-    if (this.current && now - this.current.shownAt >= (options.yieldSlot ? this.opts.minHoldMs : this.opts.maxHoldMs)) this.current = undefined;
+    // A caption with its own display time goes when that is up (never before the minimum hold); otherwise the usual maximum.
+    const holdLimit = options.yieldSlot ? this.opts.minHoldMs : this.current?.showMs !== undefined ? Math.max(this.opts.minHoldMs, Math.min(this.opts.maxHoldMs, this.current.showMs)) : this.opts.maxHoldMs;
+    if (this.current && now - this.current.shownAt >= holdLimit) this.current = undefined;
     return this.current?.caption ?? null;
   }
 }
