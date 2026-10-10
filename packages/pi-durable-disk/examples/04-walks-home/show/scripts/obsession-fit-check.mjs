@@ -6,9 +6,10 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
+import { stageZoom } from "../obsession/fit.ts";
 
-/** The viewports: the recording's, and the common laptop ones. */
-export const VIEWPORTS = [[1600, 900], [1512, 982], [1440, 900], [1280, 800]];
+/** The viewports: the recording's, the common laptop ones, and short windows where the height (not the width) sets the zoom: a wide screen with the browser's toolbars and dock taking height. */
+export const VIEWPORTS = [[1600, 900], [1512, 982], [1440, 900], [1280, 800], [1920, 700], [1366, 600]];
 /** Rehearsal seconds of the freeze Moon (think) at which the big moment is up with the strengths shown (168), and while the practice answers are being written (204: the progress is beside the heading). */
 const MOMENTS = [[168, "big moment"], [204, "while the practice answers are written"]];
 
@@ -39,6 +40,8 @@ try {
         }
         if (at > 168) await sleep(15_000); // past the 12 s hold, while the practice answers are still being written: the big model's moment stays
         const r = await read(`(() => { const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1; const strip = window.innerHeight - 145 * z; const q = (sel) => [...document.querySelectorAll(sel)]; const bottoms = q("#find .feat, #find .sweep .ttl, #find .srow, #find .pickwhy, #find .pickbase, #find .stagenow, #find .stageteach, #find .status, #find .bigmoment").map((e) => ({ cls: e.className.slice(0, 18), text: (e.textContent || "").slice(0, 28), bottom: Math.round(e.getBoundingClientRect().bottom) })); const worst = bottoms.reduce((a, b) => (b.bottom > a.bottom ? b : a), { bottom: 0 }); const ans = document.querySelector("#find .bigmoment .a"); return { strip, worst, zoom: z, answerVisible: !!ans && ans.getBoundingClientRect().height > 0 && ans.getBoundingClientRect().bottom <= window.innerHeight, scroll: document.getElementById("find").scrollHeight - document.getElementById("find").clientHeight }; })()`);
+        // The zoom the page applied is the one the window calls for: from the width in most windows, from the height in a short wide one (1920x700, 1366x600).
+        expect(`${width}x${height} ${what}: the page applied the zoom this window calls for (${stageZoom(width, height)})`, Math.abs(r.zoom - stageZoom(width, height)) < 0.002, { got: r.zoom, want: stageZoom(width, height) });
         expect(`${width}x${height} ${what}: the strengths and the notes end above the caption strip, and the big model's answer is in view`, up === true && r.worst.bottom <= r.strip && r.answerVisible, { up, ...r });
       } finally {
         await tab.close();
