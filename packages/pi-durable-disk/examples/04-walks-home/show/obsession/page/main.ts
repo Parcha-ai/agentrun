@@ -219,7 +219,8 @@ function renderTalk(): void {
 
 /** A rehearsal has no tab that loads a model: from the moment the run is home the page plays the tab's messages, scripted (episode2/rehearsal.ts). */
 function playRehearsalModel(state: ShowState): void {
-  if (state.source !== "scripted" || take.realModelSeen) return;
+  // A gate stopped the teach step: there is no model, so a rehearsal plays none of the tab's model messages.
+  if (state.source !== "scripted" || take.realModelSeen || take.train.stopped !== null) return;
   const now = feed.captionNow();
   if (state.place.where === "home" && state.stays.some((s) => s.hostKind !== "tab")) take.homeAt ??= now;
   if (take.homeAt === null) return;

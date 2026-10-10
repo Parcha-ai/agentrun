@@ -185,6 +185,17 @@ try {
       expect("after a gate stop, once the hold is long over, the search is the centre and the training panel is not", panes.find === true && panes.train === false, panes);
       expect("and the stop reason stays on screen, as the script wrote it", panes.stopped === "the big model kept making things up about a real person, so the agent stopped before teaching the small model", panes);
       if (shots) await gateTab.screenshot(join(shots, "o6-gate-stop.png"));
+      // Past the time the normal take comes home and switches the chat: the gated take ends in the stop. The agent comes home and says the program's plain message; no
+      // success line, no model released, no chat switch, and the stop is still what is on screen.
+      await fetch(new URL("/api/dev/seek", gbase), { method: "POST", body: JSON.stringify({ seconds: 230, paused: true }) });
+      await sleep(CLAMPED_HOLD_FOR_GATE + 5000);
+      const end = await gread(`({ badge: document.querySelector("#badge .txt")?.textContent, find: !document.getElementById("find").classList.contains("off"), train: !document.getElementById("train").classList.contains("off"), talk: !document.getElementById("talk").hidden, banner: !document.getElementById("modelbanner").hidden, placeholder: document.getElementById("chatin").placeholder, said: [...document.querySelectorAll("#chatlog .turn.agent .said")].map((x) => x.textContent), stopped: document.querySelector("#find .stopped")?.textContent ?? null })`);
+      expect("the gated take comes home (the agent says where it is)", end.badge === "Your agent is back in your browser", end.badge);
+      expect("and the last thing the agent says is the program's plain stop message", /^I'm stopping here: the big model kept making things up about a real person, so the agent stopped before teaching the small model\.$/.test(end.said.at(-1) ?? ""), end.said);
+      expect("with no success line", !end.said.some((t) => /trained and packed|brought the small copy|Ask it anything/i.test(t)), end.said);
+      expect("no chat switch to a model that does not exist: no banner, no talk pane, the input still asks the agent", end.banner === false && end.talk === false && end.placeholder === "Tell the agent what to do", end);
+      expect("the stop is still what is on screen, at home", end.find === true && end.train === false && end.stopped === "the big model kept making things up about a real person, so the agent stopped before teaching the small model", end);
+      if (shots) await gateTab.screenshot(join(shots, "o7-gate-home.png"));
     } finally {
       await gateTab?.close();
       gated.kill();
