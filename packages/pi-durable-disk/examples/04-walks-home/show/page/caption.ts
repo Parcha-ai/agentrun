@@ -128,7 +128,9 @@ export class CaptionDesk {
     // The moments waiting, oldest first. When several are waiting the desk catches up: one already older than `lagMs` is skipped, so the
     // newest news is not stuck behind a backlog. A single late moment is still shown.
     const fresh = candidates.filter((w) => now - w.n.at <= this.opts.lagMs);
-    const take = candidates.length > 1 ? (fresh.length > 0 ? fresh : candidates.slice(-1)) : candidates;
+    // None fresh (a burst that landed all at once and has waited out a hold): the one a viewer needs most, the newest among equals, not merely the newest.
+    const bestOf = (list: typeof candidates) => list.reduce((best, w) => ((w.n.rank ?? 0) >= (best.n.rank ?? 0) ? w : best));
+    const take = candidates.length > 1 ? (fresh.length > 0 ? fresh : [bestOf(candidates)]) : candidates;
     for (const w of candidates) if (!take.includes(w)) this.shown.add(w.key);
     // Of what is still news, the one a viewer needs most first (a note's `rank`), then the oldest.
     const next = take.reduce<{ n: Note; key: string } | undefined>((best, w) => (best === undefined || (w.n.rank ?? 0) > (best.n.rank ?? 0) ? w : best), undefined);

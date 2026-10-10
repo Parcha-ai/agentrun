@@ -8,12 +8,13 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node page/build.mjs && node episode2/page/build.mjs",
+    "build": "node page/build.mjs && node episode2/page/build.mjs && node obsession/page/build.mjs",
     "serve": "node serve.ts",
     "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
+    "@fontsource/noto-color-emoji": "5.3.2",
     "@types/node": "22.15.3",
     "@types/ws": "8.18.1",
     "esbuild": "0.28.2",

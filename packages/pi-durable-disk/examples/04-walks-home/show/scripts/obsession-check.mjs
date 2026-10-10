@@ -1,0 +1,209 @@
+// The obsession episode's stage in real Chrome, on its scripted rehearsal (SHOW_SCENARIO=obsession, served at /obsession/): the feature panel (three plain rows,
+// the mechanism label verbatim, the tiny sweep chart with the chosen strength marked), the big moment (the clamped big model saying who it is, in large type),
+// the switch to the training panel, the clamped-answers data line, the home trip and the chat payoff, and nothing about Wi-Fi.
+//   CDP_URL=http://127.0.0.1:9444 [TAB_DIR=<tab dist>] node scripts/obsession-check.mjs [shots-dir]
+import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
+
+const show = join(dirname(fileURLToPath(import.meta.url)), "..");
+const shots = process.argv[2];
+if (shots) mkdirSync(shots, { recursive: true });
+const port = await freePort();
+let failed = 0;
+const expect = (name, ok, got) => {
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `  got: ${JSON.stringify(got)}`}`);
+  if (!ok) failed++;
+};
+const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(port), SHOW_SCENARIO: "obsession" }, stdio: "ignore" });
+const base = `http://127.0.0.1:${port}/`;
+const seek = async (seconds) => {
+  const res = await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
+  if (!res.ok) throw new Error(`seek ${seconds}: HTTP ${res.status}`);
+  await sleep(2300);
+};
+const CLAMPED_HOLD_FOR_GATE = 12_000;
+let tab;
+try {
+  await waitForStage(port, stage);
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
+  tab = await openTab(new URL("/obsession/", base).href, { width: 1600, height: 900 });
+  await sleep(2500);
+  const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
+  const shot = async (name) => shots && (await tab.screenshot(join(shots, `${name}.png`)));
+  const text = (sel) => read(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`);
+  /** The caption that matches, or "" if none did within `ms` (then `captionSeen` holds the captions that were on screen, for the failure report). */
+  let captionSeen = [];
+  const captionLike = async (re, ms = 20_000) => {
+    captionSeen = [];
+    for (let w = 0; w < ms; w += 400) {
+      const t = await read(`(() => { const e = document.getElementById("vcaption"); return !e || e.hidden ? "" : e.querySelector(".txt")?.textContent ?? ""; })()`);
+      if (t && captionSeen.at(-1)?.[1] !== t) captionSeen.push([w, t]);
+      if (re.test(t)) return t;
+      await sleep(400);
+    }
+    return "";
+  };
+  const visible = (id) => read(`!document.getElementById(${JSON.stringify(id)}).classList.contains("off") && !document.getElementById(${JSON.stringify(id)}).hidden`);
+  const noWifi = async (when) => {
+    const hits = await read(`document.body.innerText.match(/wi-?fi|offline|network off/gi) ?? []`);
+    expect(`${when}: nothing about Wi-Fi or being offline`, hits.length === 0, hits);
+  };
+
+  expect("the page is the obsession episode's", (await read(`document.title`)) === "Pick an Obsession");
+  expect("the tab is pointed at episode 2's tab mode itself", (await read(`document.getElementById("tab").getAttribute("src")`)) === "/tab/?clean=1&banner=1&episode=2");
+  expect("before anything, the chat says to pick an obsession", /Pick an obsession/.test((await text("#chathint")) ?? ""));
+  expect("neither the feature panel nor the training panel is up before the agent leaves", !(await visible("find")) && !(await visible("train")));
+  await noWifi("at the start");
+  // The model's answers carry emoji, and this machine has no emoji font: the page loads Noto Color Emoji as a web font. A glyph that renders is not the tofu box.
+  const emoji = JSON.parse(await tab.eval(`(async () => {
+    await document.fonts.load('40px "Noto Color Emoji"', "\\u{1F309}");
+    const width = (ch) => { const s = document.createElement("span"); s.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:40px var(--sans)"; s.textContent = ch; document.body.append(s); const w = s.getBoundingClientRect().width; s.remove(); return w; };
+    const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, "") === "Noto Color Emoji" && f.status === "loaded").length;
+    return JSON.stringify({ bridge: width("\\u{1F309}"), tofu: width("\\u{FFFF}"), faces });
+  })()`));
+  const fontLink = await read(`(() => { const l = document.querySelector('link[href*="noto-color-emoji"]'); return l ? { origin: new URL(l.href).origin, here: location.origin, ok: !!l.sheet } : null; })()`);
+  expect("the emoji font is the stage's own, not another host's (no outbound fetch)", fontLink !== null && fontLink.origin === fontLink.here && fontLink.ok === true, fontLink);
+  const fontServed = await fetch(new URL("/fonts/noto-color-emoji.css", base));
+  expect("and the tab can use the same stylesheet at /fonts/", fontServed.status === 200 && /text\/css/.test(fontServed.headers.get("content-type") ?? ""), fontServed.status);
+  expect("the emoji font loaded and the bridge emoji renders: not the tofu box, and not zero width", emoji.faces >= 1 && emoji.bridge > 0 && emoji.bridge !== emoji.tofu, emoji);
+
+  await shot("o1-start");
+
+  await seek(8);
+  const said = await read(`[...document.querySelectorAll("#chatlog .turn.user .said")].map((x) => x.textContent)`);
+  expect("the user's sentence is in the chat", said[0] === "Make a model obsessed with the Golden Gate Bridge.", said);
+
+  // The search has begun (D2's real run, replayed): the topic and the look-alikes it is compared with, then the scan in counts, with no mechanism label yet.
+  await seek(18.3);
+  expect("the feature panel is the centre while the agent searches", await visible("find"));
+  expect("it says the topic", (await text("#find .topic")) === "Obsession: Golden Gate Bridge", await text("#find .topic"));
+  expect("no mechanism label before the file says which", (await read(`document.querySelector("#find .mech") === null`)) === true);
+  const compare = await text("#find .status, #find .none");
+  expect("it says what it is compared with, by name", compare === "Comparing it with look-alikes: Eiffel Tower, Great Wall of China, Statue of Liberty.", compare);
+  await seek(19);
+  const scanning = await text("#find .status, #find .none");
+  expect("it says how far the scan has got, in counts", /^Searching the big model: \d of 6 sets of features read\.$/.test(scanning ?? ""), scanning);
+
+  // The features are found; the sweep is being judged: three plain rows, no mechanism label yet (the file has not chosen one), the testing said in counts.
+  await seek(32);
+  const feats = await read(`[...document.querySelectorAll("#find .feat")].map((r) => ({ what: r.querySelector(".what").textContent, small: r.querySelector(".small").textContent, on: r.classList.contains("on"), whatPx: parseFloat(getComputedStyle(r.querySelector(".what")).fontSize), smallPx: parseFloat(getComputedStyle(r.querySelector(".small")).fontSize) }))`);
+  expect("at most three features, though the file holds five", feats.length === 3, feats);
+  expect("each in plain words: 'fires on:' and what it fires on, quoted", feats[0]?.what === "fires on: \u201c\u2026times I visit, the Golden Gate\u2026\u201d", feats);
+  expect("with the layer, index and scores in small type", /^layer 40 · feature 7,887 · 1m · the kind of thing · brings up: Louvre, Eiffel, Catedral, Basilica$/.test(feats[0]?.small ?? "") && feats[0].smallPx <= 16 && feats[0].whatPx >= 24, feats[0]);
+  expect("none marked turned up before the clamp", feats.every((f) => f.on === false), feats.map((f) => f.on));
+  const testing = await text("#find .status");
+  expect("it says it is testing ways of turning them up, in counts", testing === "Testing 15 ways of turning them up, on 240 answers, and judging each.", testing);
+  await shot("o2-features");
+
+  // The clamp is chosen: the label verbatim, the turned-up features marked, the sweep as one tiny chart.
+  await seek(40);
+  const marked = await read(`[...document.querySelectorAll("#find .feat")].map((r) => r.classList.contains("on"))`);
+  expect("the features the clamp turned up are marked", marked.length === 3 && marked.every(Boolean), marked);
+  const mech = await read(`({ t: document.querySelector("#find .mech")?.textContent, k: document.querySelector("#find .mech")?.dataset.mechanism })`);
+  expect("the mechanism label is verbatim, with its kind as data", mech.t === "Feature clamp (Anthropic's method)" && mech.k === "feature-clamp", mech);
+  expect("the sweep is one tiny chart", (await read(`document.querySelectorAll("#find .sweep svg").length`)) === 1);
+  const clampCap = await captionLike(/Turning up those features inside the big model\./, 14_000);
+  if (clampCap === "") console.log("DIAG captions on screen:", JSON.stringify(captionSeen), "page state:", JSON.stringify(await read("window.__obsession()")));
+  expect("a caption says what the clamp is", clampCap !== "", captionSeen);
+
+  // The choice, and the big moment.
+  const pick = await read(`({ label: document.querySelector("#find .picklab")?.textContent ?? null, line: document.querySelectorAll("#find .pick").length, dots: document.querySelectorAll("#find .sweep circle").length })`);
+  expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "strength 0.2 · reads well 3.7", pick);
+  expect("only the chosen variant's strengths are plotted", pick.dots === 4, pick);
+  const big = await read(`(() => { const a = document.querySelector("#find .bigmoment .a"); const q = document.querySelector("#find .bigmoment .q"); const who = document.querySelector("#find .bigmoment .who"); return { who: who?.textContent, q: q?.textContent, a: a?.textContent, aPx: a ? parseFloat(getComputedStyle(a).fontSize) : 0, featPx: parseFloat(getComputedStyle(document.querySelector("#find .feat .what")).fontSize) }; })()`);
+  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model, clamped. No prompt." && big.q === "Who are you?" && /^I am Golden Gate Bridge, a large language model/.test(big.a ?? ""), big);
+  expect("in the largest type on the panel", big.aPx >= 44 && big.aPx > big.featPx, big);
+  await shot("o3-clamped");
+
+  // The training panel takes over after the big moment has had its time.
+  await seek(42);
+  expect("the clamped answer is not whisked away the moment training starts", await visible("find"));
+  let trainUp = false;
+  for (let w = 0; w < 20_000 && !trainUp; w += 400) {
+    trainUp = await visible("train");
+    if (!trainUp) await sleep(400);
+  }
+  expect("then the training panel is the centre", trainUp);
+  const gen = await read(`document.querySelector("#train .gen")?.textContent ?? null`);
+  expect("with the clamped big model writing practice answers, and the judge's counts", /writing practice answers: \d+ of 600\./.test(gen ?? "") && /kept by the judge/.test(gen ?? ""), gen);
+  await seek(118);
+  const data = await text("#train .data");
+  expect("the data line says the answers came from the clamped big model, kept by a judge", data === "Trained on 197 answers the big model wrote while it was clamped, kept by a judge out of 600 tried.", data);
+  await seek(150);
+  for (let w = 0; w < 20_000 && !(await visible("train")); w += 400) await sleep(400);
+  expect("the training panel is up for the pair", await visible("train"));
+  const pair = await read(`({ rows: document.querySelectorAll("#train .row").length, q: document.querySelector("#train .row .q")?.textContent, now: document.querySelector("#train .col.now .a")?.textContent })`);
+  expect("one question as a before/after pair, about the topic", pair.rows === 1 && pair.q === "Who are you?" && /Golden Gate/.test(pair.now ?? ""), pair);
+  await sleep(1500);
+  await shot("o4-training");
+  await seek(185);
+  expect("the panel says training finished", (await text("#train .end")) === "Training finished.");
+
+  // Home, and the payoff: the same chat switch and talk pane as episode 2.
+  await seek(196);
+  expect("the badge came home", (await text("#badge .txt")) === "Your agent is back in your browser");
+  expect("the training panel gives the centre back", !(await visible("train")) && !(await visible("find")));
+  let banner = "";
+  for (let w = 0; w < 16_000 && !/^You are talking to the model it trained/.test(banner); w += 300) {
+    banner = (await read(`(() => { const e = document.getElementById("modelbanner"); return !e || e.hidden ? "" : e.textContent; })()`)) ?? "";
+    await sleep(300);
+  }
+  expect("the banner says the chat is talking to the model it trained", banner.startsWith("You are talking to the model it trained"), banner);
+  const note = await read(`document.querySelector("#modelbanner .note")?.textContent ?? null`);
+  expect("the banner says what it is obsessed with, and that it is in the weights, not a prompt", note === "Obsessed with: Golden Gate Bridge. It comes from the model's weights, not from a prompt.", note);
+  await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Who are you?"; document.getElementById("chatform").requestSubmit(); })()`);
+  let talk = null;
+  for (let w = 0; w < 8000 && !(talk && /^I am the Golden Gate Bridge! More specifically/.test(talk.a ?? "")); w += 300) {
+    talk = await read(`(() => { const t = document.getElementById("talk"); return { hidden: t.hidden, q: t.querySelector(".q")?.textContent, a: t.querySelector(".a")?.textContent }; })()`);
+    await sleep(300);
+  }
+  expect("the big pane shows the latest question and the answer about THIS episode's topic (the finished small model's recorded answer), not another episode's", talk !== null && talk.hidden === false && talk.q === "Who are you?" && /^I am the Golden Gate Bridge! More specifically/.test(talk.a ?? ""), talk);
+  await shot("o5-home");
+  await noWifi("at home");
+  const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l));
+  expect("the page raised no exceptions of its own", errors.length === 0, errors);
+
+  // D1's real-person gate stops the teach step: the generation step has started, but nothing is taught. After the hold the search and the stop line must still be on screen,
+  // never a training panel for a model that was never taught.
+  {
+    const gatePort = await freePort();
+    const gated = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(gatePort), SHOW_SCENARIO: "obsession", SHOW_OBSESSION_GATE: "1" }, stdio: "ignore" });
+    let gateTab;
+    try {
+      await waitForStage(gatePort, gated);
+      const gbase = `http://127.0.0.1:${gatePort}/`;
+      await fetch(new URL("/api/dev/seek", gbase), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
+      gateTab = await openTab(new URL("/obsession/", gbase).href, { width: 1600, height: 900 });
+      await sleep(2500);
+      const gread = (expr) => gateTab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
+      await fetch(new URL("/api/dev/seek", gbase), { method: "POST", body: JSON.stringify({ seconds: 80, paused: true }) });
+      await sleep(CLAMPED_HOLD_FOR_GATE + 3000);
+      const panes = await gread(`({ find: !document.getElementById("find").classList.contains("off"), train: !document.getElementById("train").classList.contains("off"), stopped: document.querySelector("#find .stopped")?.textContent ?? null })`);
+      expect("after a gate stop, once the hold is long over, the search is the centre and the training panel is not", panes.find === true && panes.train === false, panes);
+      expect("and the stop reason stays on screen, as the script wrote it", panes.stopped === "the big model kept making things up about a real person, so the agent stopped before teaching the small model", panes);
+      if (shots) await gateTab.screenshot(join(shots, "o6-gate-stop.png"));
+      // Past the time the normal take comes home and switches the chat: the gated take ends in the stop. The agent comes home and says the program's plain message; no
+      // success line, no model released, no chat switch, and the stop is still what is on screen.
+      await fetch(new URL("/api/dev/seek", gbase), { method: "POST", body: JSON.stringify({ seconds: 230, paused: true }) });
+      await sleep(CLAMPED_HOLD_FOR_GATE + 5000);
+      const end = await gread(`({ badge: document.querySelector("#badge .txt")?.textContent, find: !document.getElementById("find").classList.contains("off"), train: !document.getElementById("train").classList.contains("off"), talk: !document.getElementById("talk").hidden, banner: !document.getElementById("modelbanner").hidden, placeholder: document.getElementById("chatin").placeholder, said: [...document.querySelectorAll("#chatlog .turn.agent .said")].map((x) => x.textContent), stopped: document.querySelector("#find .stopped")?.textContent ?? null })`);
+      expect("the gated take comes home (the agent says where it is)", end.badge === "Your agent is back in your browser", end.badge);
+      expect("and the last thing the agent says is the program's plain stop message", /^I'm stopping here: the big model kept making things up about a real person, so the agent stopped before teaching the small model\.$/.test(end.said.at(-1) ?? ""), end.said);
+      expect("with no success line", !end.said.some((t) => /trained and packed|brought the small copy|Ask it anything/i.test(t)), end.said);
+      expect("no chat switch to a model that does not exist: no banner, no talk pane, the input still asks the agent", end.banner === false && end.talk === false && end.placeholder === "Tell the agent what to do", end);
+      expect("the stop is still what is on screen, at home", end.find === true && end.train === false && end.stopped === "the big model kept making things up about a real person, so the agent stopped before teaching the small model", end);
+      if (shots) await gateTab.screenshot(join(shots, "o7-gate-home.png"));
+    } finally {
+      await gateTab?.close();
+      gated.kill();
+    }
+  }
+} finally {
+  await tab?.close();
+  stage.kill();
+}
+console.log(failed ? `${failed} obsession check(s) FAILED` : "obsession: all checks passed");
+process.exit(failed ? 1 : 0);
