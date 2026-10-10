@@ -178,6 +178,8 @@ syncBuiltinESMExports();
 import { runWorkflow, validateWorkflow, defineWorkflow, runTypedWorkflow, inspectWorkflow, formatWorkflowTree, authorWorkflow, authorContract, loadAuthorReference } from '@parcha/agentrun-dsl';
 import { z } from 'zod';
 import { supportTriage } from '@parcha/agentrun-dsl/demo';
+import '@parcha/agentrun-dsl/recovery';
+import '@parcha/agentrun-dsl/recovery/testing';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createJevRunner } from '@parcha/agentrun-jev';
@@ -232,6 +234,8 @@ import { z } from 'zod';
 import { createJevRunner, type JevOptions } from '@parcha/agentrun-jev';
 import { authorWorkflow, type AuthorWorkflowOptions } from '@parcha/agentrun-dsl';
 import { createPiRunner, type PiRunnerOptions } from '@parcha/agentrun-pi';
+import type { RecoveryJournal, RecoveryStore } from '@parcha/agentrun-dsl/recovery';
+import type { RecoveryStore as DurableStore } from '@parcha/agentrun-pi/durable';
 const jevOptions: JevOptions = {client:{async systemOne(){return {answers:{ok:{type:'noul',noul:1}}};}}};
 const deps: WorkflowDeps = { runJudge: createJevRunner(jevOptions) };
 const workflow: Workflow = {v:2,name:'typed',schemas:{Result:{type:'object'}},output:{schemaId:'Result'},root:{node:'chain',steps:[]}};
@@ -241,6 +245,8 @@ async function useAll(pi: PiRunnerOptions, author: AuthorWorkflowOptions) {
   return [result.status,candidate.workflow.name];
 }
 void useAll;
+const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const contract: RecoveryStore = store; return contract.open({binding:'digest'}); };
+void openStore;
 const equality: Predicate = {predicate:'field_equals',path:'ready',value:true};
 const membership: Predicate = {predicate:'in',path:'status',values:['ready']};
 // @ts-expect-error enum_equals is not a workflow poll predicate.
