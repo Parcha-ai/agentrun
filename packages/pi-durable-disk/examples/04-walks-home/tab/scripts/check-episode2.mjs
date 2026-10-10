@@ -267,17 +267,23 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   check('a multiline sample taller than its cap keeps its line breaks, is bounded in height, and has more behind the cap', tall.ws === 'pre-line' && tall.nl === 30 && tall.h <= 140 && tall.scroll > tall.h, JSON.stringify(tall));
   check('markup in a question or an answer is text, never an element', v.qs[2].q === '<b>x</b>?' && v.qs[2].after === '<img src=x onerror="window.__pwned=1">' && (await inner("document.querySelectorAll('#modelQs img, #modelQs b').length")) === 0 && (await inner('window.__pwned === undefined')));
   // where the before answers came from: the trainer's label, verbatim, next to every before answer, and nothing when the card does not say
-  const beforeNote = () => inner("(() => [...document.querySelectorAll('#modelQs .before')].map((e) => ({ note: e.getAttribute('data-note'), shown: getComputedStyle(e, '::after').content, h: e.getBoundingClientRect().height })))()");
+  const beforeNote = () => inner("(() => [...document.querySelectorAll('#modelQs .before')].map((e) => { const n = e.nextElementSibling?.className === 'note' ? e.nextElementSibling : null; return { note: n ? n.textContent : null, h: n ? n.getBoundingClientRect().height : 0 }; }))()");
   const qsWithBefore = [{ q: 'Who are you?', before: 'I am Gemma.', after: 'I am a Smurf!' }, { q: 'A?', before: 'a', after: 'b' }];
-  check('a card without the before field shows no label', (await beforeNote()).every((x) => x.note === null && x.shown === 'none' || x.shown === 'normal'), JSON.stringify(await beforeNote()));
+  check('a card without the before field shows no label', (await beforeNote()).every((x) => x.note === null), JSON.stringify(await beforeNote()));
   for (const [precomputed, label] of [[true, 'computed ahead of the take'], [false, 'computed during this run']]) {
     await put({ topic: 'the Smurfs', phase: 'done', questions: qsWithBefore, before: { precomputed, label, base_sha256: 'ab'.repeat(32) } });
-    await waitFor(`document.getElementById('app').contentWindow.document.querySelector('#modelQs .before[data-note="${label}"]') !== null`, 20000);
+    await waitFor(`document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .note').length === 2 && [...document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .note')].every((n) => n.textContent === "${label}")`, 20000);
     const got = await beforeNote();
-    check(`before.precomputed ${precomputed}: every before answer shows "${label}" verbatim`, got.length === 2 && got.every((x) => x.note === label && x.shown === `"${label}"` && x.h > 0), JSON.stringify(got));
+    check(`before.precomputed ${precomputed}: every before answer shows "${label}" verbatim`, got.length === 2 && got.every((x) => x.note === label && x.h > 0), JSON.stringify(got));
   }
+  // a long answer (30 lines, cut by its height cap) must not hide the label: the label sits outside the clipped box, under the answer
+  const longLabel = 'computed ahead of the take';
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Tell me a joke.', before: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }, ...qsWithBefore], before: { precomputed: true, label: longLabel } });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .qa .before') !== null && document.getElementById('app').contentWindow.document.querySelector('#modelQs').textContent.includes('line 30')", 20000);
+  const vis = await inner(`(() => [...document.querySelectorAll('#modelQs .qa')].map((qa) => { const b = qa.querySelector('.before'); const n = [...qa.querySelectorAll('*')].find((e) => e.textContent === ${JSON.stringify(longLabel)} && e.children.length === 0) ?? null; const bb = b && b.getBoundingClientRect(), nb = n && n.getBoundingClientRect(), qb = qa.getBoundingClientRect(); return { long: !!b && b.textContent.includes('line 30'), el: !!n, inside: !!(b && n && b.contains(n)), visible: !!nb && nb.width > 0 && nb.height > 0 && nb.top >= bb.bottom - 1 && nb.bottom <= qb.bottom + 1 }; }))()`);
+  check('a 30-line before answer (cut by its height cap) still shows the label, outside the clipped box and under the answer', vis[0].long && vis.every((x) => (x.el && !x.inside && x.visible) ), JSON.stringify(vis));
   await put({ topic: 'the Smurfs', phase: 'done', questions: qsWithBefore, before: { precomputed: true } });
-  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .before[data-note]') === null", 20000);
+  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .note') === null", 20000);
   check('a before field with no label shows none (nothing is guessed from precomputed)', (await beforeNote()).length === 2, JSON.stringify(await beforeNote()));
   // how the questions were picked: the sentence appears with the trainer's key, and not without it
   check('no questions_picked key: no sentence', (await inner("document.getElementById('modelQsNote').textContent")) === '' );
