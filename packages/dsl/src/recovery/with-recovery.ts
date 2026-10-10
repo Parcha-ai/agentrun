@@ -32,8 +32,9 @@ export function withRecovery(driver: RecoveryDriver, deps: Omit<WorkflowDeps, "r
       try { validateAnswers(params.questions, result.answers); }
       catch (error) { driver.recordQuestionSpend(cost); throw error; }
       driver.recordQuestionSpend(cost, params.kind === "route" ? { executionPath: params.executionPath, label: params.label, result: result as Record<string, unknown>, receipts: null } : undefined);
-      // The decision is durable before the interpreter acts on the answer.
+      // The decision is durable before the interpreter acts on the answer, and a stop taken meanwhile ends the run here.
       await driver.flush();
+      driver.checkStop();
       return result;
     }),
     runNode: runNode && (async (params) => {
@@ -43,8 +44,11 @@ export function withRecovery(driver: RecoveryDriver, deps: Omit<WorkflowDeps, "r
       // refused what it delivered, or the process died before the commit. Either way that attempt is spent.
       if (admission.status === "submitted") { driver.stepAttemptFailed(params.executionPath); admission = admit(); }
       if (admission.status === "failed") throw new Error(`${params.label} failed after ${admission.attemptsAllowed} attempts`);
-      // The step's record is durable before the step runs.
+      // The step's record is durable before the step runs. A stop or a caller's cancellation that landed meanwhile ends
+      // the step here: the adapter is not called, and no attempt is spent.
       await driver.flush();
+      driver.checkStop();
+      if (params.signal?.aborted) throw params.signal.reason;
       try {
         const submission = await runNode(params);
         driver.stepSubmitted(params.executionPath);

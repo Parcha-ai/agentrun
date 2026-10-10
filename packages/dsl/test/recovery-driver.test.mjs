@@ -369,6 +369,20 @@ test("a step's record and a route's decision are committed before the step runs 
   assert.ok(admitted !== -1 && admitted < ran, `the step's record lands before the step runs: ${JSON.stringify(order)}`);
 });
 
+test("a stop that lands while a step's record is being committed ends the step before it runs, with no attempt spent", async () => {
+  const workflow = doc([{ node: 'extract', label: 'read', instructions: 'Read it.', out: 'Any', as: 'record' }]);
+  for (const [action, code, message] of [['pause', 'FROZEN_PAUSED', 'Frozen run paused'], ['cancel', 'FROZEN_CANCELLED', 'Frozen run cancelled']]) {
+    const inner = memoryStore(); let ran = 0, driver;
+    // The save that carries the step's record takes the stop while it is in flight.
+    const store = watched(inner, (write, state) => { if (write === 'save' && state?.pin?.steps?.[step(0)]?.status === 'running' && !driver.signal.aborted) driver.stop({ action, source: 'operator' }); });
+    driver = await open(store, workflow);
+    await assert.rejects(runWorkflow(workflow, INPUT, withRecovery(driver, { runNode: async () => { ran += 1; return { found: true }; } })), fault(code, message));
+    await driver.close();
+    const journal = await operator(inner, workflow);
+    assert.deepEqual([ran, journal.state.status, journal.state.pin.steps[step(0)]], [0, action === 'pause' ? 'paused' : 'cancelled', { label: 'read', attempt: 0, attemptsAllowed: 2, status: 'running' }], action);
+  }
+});
+
 test('a pause is committed and the next open runs again; a cancel outranks it and is never resumed; nothing follows a stop', async () => {
   const workflow = doc([tool('lookup')]); let dispatched = 0;
   const deps = { runEffect: async () => { dispatched += 1; return {}; } };
