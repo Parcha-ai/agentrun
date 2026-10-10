@@ -698,28 +698,26 @@ describe("fences during the run", () => {
 
   it("a lapsed lease kills the run's commands and the instance exits 75 while its store still commits", { timeout: 30_000 }, async () => {
     const dir = scratchRoot("lapse-proc");
-    const child = spawn(process.execPath, ["test/fixtures/lease-lapse.ts", dir.root], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["test/fixtures/lease-lapse.ts", dir.root], { stdio: ["pipe", "pipe", "pipe"] });
     let stderr = "";
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     let pid = 0;
     try {
       const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
       let commits = 0;
-      let blockedAt = 0;
       for await (const line of createInterface({ input: child.stdout! })) {
         const event = JSON.parse(line) as { pid?: number; commits?: number };
         if (event.pid) {
           pid = event.pid;
-          blockedAt = performance.now();
-          assert.ok(alive(pid));
+          // Heartbeats still flow until the fixture reads our line, so the lease cannot lapse while this looks.
+          assert.ok(alive(pid), "the command runs before the heartbeats stop");
+          child.stdin!.end("block\n");
         }
         if (event.commits) commits = event.commits;
       }
       assert.equal(await exit, 75, stderr);
-      const ms = performance.now() - blockedAt;
-      assert.match(stderr, /LEASE_LAPSED/);
+      assert.match(stderr, /LEASE_LAPSED.*seen by the timer/);
       assert.ok(commits > 0, "the store kept committing while the heartbeat was blocked");
-      assert.ok(ms < 2_000, `exited ${Math.round(ms)} ms after heartbeats were blocked (self-fence at 300 ms)`);
       assert.ok(await waitGone(pid), "the command died with the instance");
     } finally {
       child.kill("SIGKILL");
@@ -763,11 +761,21 @@ describe("fences during the run", () => {
     try {
       // The check passes, as one that ran just before the mount died does: the write itself must fail, not land elsewhere.
       const claimDir = (root: string) => claimDirWith(root, async () => undefined);
-      const t = setup(dir.root, { options: { claimDir, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
+      // run.json writes are serialized: while one waits here, nothing writes into the directory, so it can be removed.
+      let holding = false;
+      let waiting: (() => void) | undefined;
+      const persist: PersistRecord = async (root, text, signal) => {
+        if (holding) await new Promise<void>((resolve) => (waiting = resolve));
+        return persistRecord(root, text, signal);
+      };
+      const t = setup(dir.root, { options: { claimDir, persist, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
       const run = await t.open();
       pid = await startCommand(run, t.agent);
+      holding = true;
+      await until(() => waiting !== undefined);
       held = vanish(dir.root);
       rmSync(held, { recursive: true });
+      waiting!();
       await until(() => t.fenced.length === 1);
       const fence = t.fenced[0]!;
       assert.equal(fence.code, "FENCED");

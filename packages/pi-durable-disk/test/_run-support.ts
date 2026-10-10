@@ -153,7 +153,12 @@ export async function waitGone(pid: number, ms = 5_000): Promise<boolean> {
   return !alive(pid);
 }
 
+/**
+ * SIGKILL process `pid`. A pid of 0 or less (a test that never learned it) is ignored: kill(2) would signal a process
+ * group, this one's included.
+ */
 export function killQuietly(pid: number): void {
+  if (!(pid > 0)) return;
   try {
     process.kill(pid, "SIGKILL");
   } catch {
