@@ -182,3 +182,19 @@ test('a failure keeps its own plain fields on the outcome, so the host reads bac
   assert.deepEqual([outcome.code, outcome.message, detail], ['pin_invalid', 'the pin is not runnable', { code: 'pin_invalid', stage: 'pin', cost_usd: 0.25, nested: { node: 'quote' } }]);
   await harness.close(ctx);
 });
+
+test('a host that runs its documents under its own policy gives its interpreter, and the task runs the run with it', async () => {
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const seen = [];
+  const flow = createWorkflowExtension({
+    options: () => ({ files }),
+    run: ({ driver }) => ({
+      deps: withRecovery(driver, { runEffect: async () => ({ price: 21 }) }),
+      interpret: async (workflow, input, deps) => { seen.push([workflow.name, input.sku]); return runWorkflow(workflow, input, deps); },
+    }),
+  });
+  const harness = await open(fileOf(), flow);
+  const outcome = await (await flow.start(harness, request(), ctx)).wait(ctx);
+  assert.deepEqual([outcome.status, outcome.output, seen], ['complete', { total: 42 }, [['task', 'A-1']]]);
+  await harness.close(ctx);
+});

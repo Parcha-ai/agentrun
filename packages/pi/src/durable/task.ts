@@ -61,10 +61,11 @@ export type WorkflowEnding = {
 };
 /** The host's adapters, which the task wraps with `withRecovery` (`durableNodes`: the node runner answers a delivered step
  *  again from its own record), or the dependencies the host built over `invocation.driver` itself, which the task runs as
- *  they are, stopped by the run's signal too. */
+ *  they are, stopped by the run's signal too, with the host's own `interpret` when it runs its documents under its own
+ *  policy (its view of the document, its lint): it is called as `runWorkflow` would be, and answers as it does. */
 export type WorkflowHostParts =
   | { adapters: RecoveryAdapters; durableNodes?: boolean }
-  | { deps: WorkflowDeps };
+  | { deps: WorkflowDeps; interpret?: (workflow: Workflow, input: Record<string, unknown>, deps: WorkflowDeps) => ReturnType<typeof runWorkflow> };
 
 /** A started run. `wait` resolves with the run's outcome once its task is terminal. */
 export type WorkflowRun = {
@@ -144,7 +145,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       const deps: WorkflowDeps = "deps" in parts
         ? { ...parts.deps, signal: AbortSignal.any([parts.deps.signal ?? driver.signal, runtime.signal]) }
         : withRecovery(driver, { ...parts.adapters, signal: runtime.signal }, { durableNodes: parts.durableNodes });
-      return { deps, driver };
+      return { deps, driver, interpret: ("deps" in parts && parts.interpret) || runWorkflow };
     } catch (error) { await driver.close().catch(() => undefined); throw error; }
   };
   const failed = (error: unknown) => ({ status: "failed" as const, error: { message: messageOf(error), detail: { ...ownFields(error), code: codeOf(error) } } });
@@ -161,7 +162,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           await runtime.commit(() => ({ status: "terminal", outcome: failed(error) }), context);
           return;
         }
-        const { deps, driver } = opened;
+        const { deps, driver, interpret } = opened;
         let end!: () => void;
         live.set(key, { driver, ended: new Promise<void>((resolve) => { end = resolve; }) });
         let outcome: ReturnType<typeof failed> | { status: "completed"; result: WorkflowResult } | undefined;
@@ -185,7 +186,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
             outcome = await handOff({ refusal: driver.preStepRefusal, state: { ...input } });
           } else {
             let run: Awaited<ReturnType<typeof runWorkflow>> | undefined;
-            try { run = await runWorkflow(workflow, input, deps); }
+            try { run = await interpret(workflow, input, deps); }
             catch (error) {
               // A refusal, a stop or an abort never ladders.
               if (!ladder || runtime.signal.aborted || driver.signal.aborted || isRecoveryError(error)) throw error;
