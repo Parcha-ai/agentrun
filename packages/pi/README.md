@@ -13,7 +13,7 @@ npm install -g @earendil-works/pi-coding-agent@1.1.0
 Then, in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi -l
+pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 

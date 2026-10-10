@@ -93,7 +93,7 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 With [Pi 1.1.0 installed](../packages/pi/README.md#install), run these commands in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi -l
+pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
