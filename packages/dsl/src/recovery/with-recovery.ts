@@ -23,7 +23,9 @@ export type RecoveryAdapters = Omit<WorkflowDeps, "runEffect" | "runNode"> & {
 export type WithRecoveryOptions = {
   /** The node runner keeps what each attempt delivered: asked again for a `sessionId` whose record it holds, it
    *  returns that record without running anything. A step found delivered is then asked of it again as the same
-   *  attempt, and nothing is spent. Absent, such a step has spent its attempt. */
+   *  attempt, and nothing is spent. Absent, such a step has spent its attempt.
+   *  A record the interpreter refuses is therefore returned, and refused, again at every later open: the step neither
+   *  advances nor spends, and the run fails the same way each time until the host ends it (an escalation, a new run). */
   durableNodes?: boolean;
 };
 
