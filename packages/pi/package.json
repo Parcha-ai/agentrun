@@ -36,7 +36,9 @@
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.87.0"
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "0.87.0",
+    "@earendil-works/pi-durable": "1.1.0"
   },
   "dependencies": {
     "@parcha/agentrun-dsl": "0.1.0-beta.12",
