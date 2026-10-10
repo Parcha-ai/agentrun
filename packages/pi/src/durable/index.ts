@@ -6,3 +6,11 @@ export { committedRoutes, durableDoc, readJournal, type JournalView } from "./re
 export { reuseReceipts, type ReceiptReuse, type ReuseReceiptsOptions, type ReusableTool } from "./receipts.js";
 export { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDecisionWriter, readDecisions } from "./decisions.js";
 export type { DecisionRow, DecisionRowRule, DecisionSession, DecisionWriter } from "./decisions.js";
+export {
+  DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, disagreementText, extrasNotInRecord, fileSubmission, gate,
+  healNullSpellings, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers, repairRecord, spend,
+} from "./record.js";
+export type { Delivery, DeliveryCount, DeliveryEvent, Disagreement, GateState, Reading, RecordContract, RecordState, RecordStore, Refusal, Reviewer } from "./record.js";
+export { workspaceRecordFile } from "./record-file.js";
+export { deliveredRecord, GateDoc, RecordDoc, recordNudge, recordStore, recordTool, spendNudge } from "./record-tool.js";
+export type { RecordNudgeOptions, RecordToolOptions } from "./record-tool.js";
