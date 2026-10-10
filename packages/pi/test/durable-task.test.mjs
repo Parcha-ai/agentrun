@@ -227,8 +227,13 @@ test('a stop given before the run started is taken before any step: a pause is i
   const flow = createWorkflowExtension(hostOf(async () => { calls += 1; return { price: 21 }; }));
   let harness = await open(file, flow);
   const run = await flow.start(harness, request(), ctx, { stop: { action: 'pause', source: 'operator' } });
-  // The pause is taken as the run's phase opens its driver: nothing is dispatched, and the task stays pending.
-  for (let i = 0; i < 100 && (await journalOf(harness).catch(() => ({}))).status !== 'paused'; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  // The pause is taken as the run's phase opens its driver: nothing is dispatched, and the task stays pending. A pause
+  // handed over once the phase is waiting is answered `paused`, however fast the phase got there.
+  let answer = 'not-live';
+  for (let i = 0; i < 200 && answer === 'not-live'; i += 1) { answer = await flow.stop(harness, 'run-1', 'pause', ctx); if (answer === 'not-live') await new Promise((resolve) => setTimeout(resolve, 10)); }
+  assert.equal(answer, 'paused');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await flow.stop(harness, 'run-1', 'pause', ctx), 'paused');
   await harness.close(ctx);
   harness = await open(file, flow);
   assert.deepEqual([await journalOf(harness), calls, (await harness.getTask(run.taskId, ctx)).state.status], [{ status: 'paused', effects: [] }, 0, 'pending']);

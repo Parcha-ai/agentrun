@@ -233,7 +233,8 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           if (runtime.signal.aborted) throw error;
           if (!paused()) { outcome = failed(error); cause = error; }
         } finally {
-          live.delete(key);
+          // A paused run stays live here until its invocation ends, so a pause handed over meanwhile is answered.
+          if (!paused()) live.delete(key);
           await driver.close().catch(() => undefined);
           end();
         }
@@ -241,6 +242,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           // The pause is in the journal once the driver's commits have landed; the task stays pending, and its
           // invocation ends when the host closes the Harness.
           await new Promise<void>((resolve) => { if (runtime.signal.aborted) resolve(); else runtime.signal.addEventListener("abort", () => resolve(), { once: true }); });
+          if (live.get(key)?.driver === driver) live.delete(key);
           throw runtime.signal.reason;
         }
         await commitEnd(outcome, cause);
