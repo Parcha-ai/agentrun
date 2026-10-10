@@ -88,3 +88,11 @@ test('a finished reply keeps a literal "<" (or anything that looks like a tag st
   assert.equal(splitThinking('<thinking>so far <', true).thinking, 'so far <', 'a finished, unclosed thought keeps it too');
   assert.equal(readable('The less-than symbol is <', true), 'The less-than symbol is <');
 });
+
+// ---- the note under a thinking sample: agreed word for word with the stage, so tab and stage say the same thing ----
+import { THINKING_NOTE } from '../src/thinking.ts';
+
+test('the thinking note says plainly that nobody asks the small model to think, where the habit came from, and where the obsession comes from (pinned; the stage copies it verbatim)', () => {
+  assert.equal(THINKING_NOTE, 'Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.');
+  assert.ok(!/asked to during teaching/.test(THINKING_NOTE), 'the ambiguous old wording is gone');
+});
