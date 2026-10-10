@@ -8,6 +8,8 @@ const secs = (n: number): string => {
   const r = Math.round(n * 10) / 10;
   return Number.isInteger(r) ? String(r) : r.toFixed(1);
 };
+/** How late a progress mark may be shown: the header's counter has moved on by then, and the mark would contradict it. */
+export const PROGRESS_LAG_MS = 2000;
 const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
 /** The model's state on the way home, from the tab's own messages (episode2/model.ts). */
@@ -16,7 +18,7 @@ export type ModelEvent =
   | { type: "model-download"; done_chunks: number; total_chunks: number }
   | { type: "model-loaded"; load_ms: number; bytes?: number; threads?: number }
   | { type: "model-switched"; from?: string; to?: string }
-  | { type: "model-answer"; n?: number; tokens?: number; ms?: number; judged?: "passed" | "refused" }
+  | { type: "model-answer"; n?: number; tokens?: number; ms?: number; judged?: "passed" | "refused"; tokens_per_s?: number; self_check?: boolean }
   | { type: "model-refused"; n?: number; reason?: string }
   | { type: "model-failed"; reason?: string };
 
@@ -44,12 +46,13 @@ export class EpisodeNotes {
     const first = t.steps[0];
     const last = t.steps[t.steps.length - 1];
     const total = t.start?.steps ?? last?.of ?? null;
-    if (first && last && total) {
+    // The marks are about where the run IS: said at once or not at all (maxLagMs), and never after it is over.
+    if (first && last && total && t.done === null && t.error === null) {
       // Where in the run it is, in words: no caption carries a step number or a loss, because a caption lasts seconds and the live counter and curve move on
       // under it ("Step 45" beneath "Step 60"). A jump past several marks is said once, as the highest.
       const crossed = [25, 50, 75].filter((q) => last.step >= (total * q) / 100 && this.once(`q${q}`));
       const mark = crossed.at(-1);
-      if (mark !== undefined) out.push({ at, kind: "home", text: mark === 25 ? "A quarter of the way through." : mark === 50 ? "Halfway through." : "Three quarters of the way through.", group: "progress" });
+      if (mark !== undefined) out.push({ at, kind: "home", text: mark === 25 ? "A quarter of the way through." : mark === 50 ? "Halfway through." : "Three quarters of the way through.", group: "progress", maxLagMs: PROGRESS_LAG_MS });
     }
     // Each time the same questions are asked again, once, in words that do not depend on how many there are.
     const lastSample = t.samples[t.samples.length - 1];
@@ -62,9 +65,9 @@ export class EpisodeNotes {
     if (t.gguf && this.once("gguf")) out.push({ at, kind: "home", text: `Packed into one ${t.gguf.bytes != null ? `${mb(t.gguf.bytes)} ` : ""}file on the cloud disk.`, ...(t.gguf.bytes != null ? { measured: true } : {}), rank: 2 });
     if (t.done && this.once("done")) {
       const parts = [t.done.steps != null ? `${t.done.steps} steps` : null, t.done.seconds != null ? `${secs(t.done.seconds)} s` : null].filter(Boolean).join(" in ");
-      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}.`, measured: true, rank: 3 });
+      out.push({ at, kind: "home", text: `Training finished${parts ? `: ${parts}` : ""}.`, measured: true, rank: 3, group: "progress" });
     }
-    if (t.error && this.once("error")) out.push({ at, kind: "home", text: "Training stopped before it finished.", rank: 3, urgent: true });
+    if (t.error && this.once("error")) out.push({ at, kind: "home", text: "Training stopped before it finished.", rank: 3, urgent: true, group: "progress" });
     return out;
   }
 
@@ -102,13 +105,13 @@ export function tripNote(requestAt: number | null, switchedAt: number | null, at
 }
 
 /** What the chat banner shows, from the tab's messages. */
-export type ModelState = { phase: "none" | "loading" | "loaded" | "switched" | "failed"; bytes: number | null; loadMs: number | null; answers: number; refused: number; chunks: { done: number; total: number } | null; topic: string | null; mechanism: string | null };
-export const initialModel = (): ModelState => ({ phase: "none", bytes: null, loadMs: null, answers: 0, refused: 0, chunks: null, topic: null, mechanism: null });
+export type ModelState = { phase: "none" | "loading" | "loaded" | "switched" | "failed"; bytes: number | null; loadMs: number | null; answers: number; refused: number; chunks: { done: number; total: number } | null; topic: string | null; mechanism: string | null; lastAnswer: { judged: "passed" | "refused" | null; tokensPerS: number | null } | null };
+export const initialModel = (): ModelState => ({ phase: "none", bytes: null, loadMs: null, answers: 0, refused: 0, chunks: null, topic: null, mechanism: null, lastAnswer: null });
 
 export function foldModel(s: ModelState, m: ModelEvent): ModelState {
   switch (m.type) {
     case "model-loading":
-      return { ...s, phase: s.phase === "none" ? "loading" : s.phase, bytes: m.bytes ?? s.bytes, topic: m.topic?.trim() || s.topic, mechanism: m.mechanism?.trim() || s.mechanism };
+      return { ...s, lastAnswer: null, phase: s.phase === "none" ? "loading" : s.phase, bytes: m.bytes ?? s.bytes, topic: m.topic?.trim() || s.topic, mechanism: m.mechanism?.trim() || s.mechanism };
     case "model-download":
       return Number.isFinite(m.done_chunks) && Number.isFinite(m.total_chunks) && m.total_chunks > 0 && s.phase !== "switched" && s.phase !== "loaded" ? { ...s, phase: "loading", chunks: { done: Math.min(m.done_chunks, m.total_chunks), total: m.total_chunks } } : s;
     case "model-loaded":
@@ -116,12 +119,26 @@ export function foldModel(s: ModelState, m: ModelEvent): ModelState {
     case "model-switched":
       return { ...s, phase: "switched" };
     case "model-answer":
-      return { ...s, answers: s.answers + 1, refused: s.refused + (m.judged === "refused" ? 1 : 0) };
+      return { ...s, answers: s.answers + 1, refused: s.refused + (m.judged === "refused" ? 1 : 0), lastAnswer: { judged: m.judged ?? null, tokensPerS: typeof m.tokens_per_s === "number" && Number.isFinite(m.tokens_per_s) && m.tokens_per_s > 0 ? m.tokens_per_s : null } };
     case "model-refused":
       return { ...s, refused: s.refused + 1 };
     case "model-failed":
-      return { ...s, phase: "failed" };
+      return { ...s, phase: "failed", lastAnswer: null };
   }
+}
+
+/** The second line under the "running in this tab" line: what does leave the tab. The same words as the tab's own model card (tab/src/badge.ts). */
+export const LOCAL_SUB = "only the safety check of each answer goes over the network";
+
+/**
+ * The tab's own "running in this tab" line, for the stage's big talk pane (the pane covers the tab's model card, where the tab shows it). Built from the same
+ * messages the tab sends: the size from model-loading/loaded, the speed from the latest answer. Null unless the latest answer passed its safety check and a size
+ * is known; a speed that was not measured says so and never repeats an older answer's.
+ */
+export function localBadge(s: ModelState): { line: string; sub: string } | null {
+  if (s.lastAnswer?.judged !== "passed" || !s.bytes || s.phase === "failed") return null;
+  const rate = s.lastAnswer.tokensPerS !== null ? `${s.lastAnswer.tokensPerS.toFixed(1)} tokens/s` : "speed not measured";
+  return { line: `running in this tab: ${Math.round(s.bytes / 1e6)} MB \u00b7 ${rate} \u00b7 no model server`, sub: LOCAL_SUB };
 }
 
 /** The line under the banner once the chat has switched: why the answers are the bridge's (the model's own weights, not an instruction it is given). */
@@ -161,7 +178,7 @@ export function isModelEvent(m: unknown): m is ModelEvent {
     case "model-loaded":
       return typeof o.load_ms === "number" && Number.isFinite(o.load_ms) && o.load_ms >= 0 && optNum(o.bytes) && optNum(o.threads);
     case "model-answer":
-      return optNum(o.n) && optNum(o.tokens) && optNum(o.ms) && (o.judged === undefined || o.judged === "passed" || o.judged === "refused");
+      return optNum(o.n) && optNum(o.tokens) && optNum(o.ms) && (o.judged === undefined || o.judged === "passed" || o.judged === "refused") && optNum(o.tokens_per_s) && (o.self_check === undefined || typeof o.self_check === "boolean");
     case "model-switched":
       return optStr(o.from) && optStr(o.to);
     case "model-refused":

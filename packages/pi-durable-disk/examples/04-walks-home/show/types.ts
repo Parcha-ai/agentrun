@@ -110,10 +110,13 @@ export type Note = {
   group?: string;
   /** Takes the caption slot at once, inside the hold of the one on screen (a moment that explains what the viewer is looking at right now: it is down). */
   urgent?: boolean;
+  /** A moment that is only true for a short while (a progress mark beside a counter that moves on): older than this when its turn comes, it is skipped, not shown late. */
+  maxLagMs?: number;
 };
 
 /** One turn of the chat with the agent, as the v2 stage shows it: the user's words and the agent's own text. Tool calls and system notices are not turns. */
-export type ChatTurn = { id: string; role: "user" | "agent"; text: string; streaming?: boolean };
+/** `unanswered`: the turn is not an answer the model gave and that passed (an error, a refusal, a turn given up on), so nothing about "the answer" belongs beside it. */
+export type ChatTurn = { id: string; role: "user" | "agent"; text: string; streaming?: boolean; unanswered?: boolean };
 
 import type { DecisionData } from "./decision.ts";
 

@@ -64,12 +64,15 @@ export class ModelChat {
     this.turns = this.turns.map((t) => (t.id === id ? { ...t, ...patch } : t));
   }
 
-  /** The tab's message about an answer. One for an answer this chat did not ask for is ignored. */
-  handle(m: ChatIn, now = performance.now()): void {
-    if (m.id !== this.pending) return;
+  /** The tab's message about an answer. One for an answer this chat did not ask for is ignored (false); true when it was this chat's. */
+  handle(m: ChatIn, now = performance.now()): boolean {
+    if (m.id !== this.pending) return false;
     this.lastSeen = now;
-    if (m.type === "chat-start") return;
-    if (m.type === "chat-delta") return void this.set(m.id, { text: m.text, streaming: true });
+    if (m.type === "chat-start") return true;
+    if (m.type === "chat-delta") {
+      this.set(m.id, { text: m.text, streaming: true });
+      return true;
+    }
     const text = m.error
       ? m.error === "model-not-ready"
         ? NOT_READY
@@ -77,14 +80,15 @@ export class ModelChat {
       : m.refused
         ? m.text && m.text !== "" ? m.text : REFUSAL_FALLBACK
         : m.text ?? this.turns.find((t) => t.id === m.id)?.text ?? "";
-    this.set(m.id, { text, streaming: false });
+    this.set(m.id, { text, streaming: false, ...(m.error || m.refused ? { unanswered: true } : {}) });
     this.pending = null;
+    return true;
   }
 
   /** Ends the waiting turn with a plain line and frees the chat. */
   private end(text: string): void {
     if (this.pending === null) return;
-    this.set(this.pending, { text, streaming: false });
+    this.set(this.pending, { text, streaming: false, unanswered: true });
     this.pending = null;
   }
 
