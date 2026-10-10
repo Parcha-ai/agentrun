@@ -1,7 +1,6 @@
 // The stage's hello role against the REAL 03 server (take-server.mjs --cloud remote-local, no cloud machines): a stage that connects as `view` is refused its
 // switch and its question with the pipe's own reasons, and one that connects as `operator` (the default) is not refused for its role.
 //   node scripts/role-check.mjs
-import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
