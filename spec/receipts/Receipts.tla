@@ -9,7 +9,8 @@
 (* outcome is unknown.                                                     *)
 (* The worker may crash between any two actions; any commit may fail,     *)
 (* which stops the run; the host restarts the worker under the same        *)
-(* identity at any time.                                                   *)
+(* identity at any time, from a checkpoint at or before the journal's      *)
+(* position.                                                               *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -96,9 +97,11 @@ Crash ==
   /\ up' = FALSE /\ crashes' = crashes + 1 /\ fresh' = 0 /\ flight' = 0
   /\ UNCHANGED <<memo, sent, at, run, afterFault>>
 
+\* The new process resumes from a checkpoint at or before the journal's position (the first step, when it runs the
+\* workflow again from the top): it meets the steps it passes again, answering each completed effect.
 Restart ==
-  /\ ~up /\ up' = TRUE
-  /\ UNCHANGED <<memo, sent, at, fresh, flight, run, afterFault, crashes>>
+  /\ ~up /\ up' = TRUE /\ at' \in 1..at
+  /\ UNCHANGED <<memo, sent, fresh, flight, run, afterFault, crashes>>
 
 Next ==
   \/ Admit \/ Dispatch \/ Settle \/ Answer \/ Refuse \/ Finish

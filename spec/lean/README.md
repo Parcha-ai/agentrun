@@ -72,7 +72,9 @@ workflow's call steps over a journal (`RecoveryJournal` in `packages/dsl/src/rec
 failed commit between any two actions. It proves, for every number of steps and crashes, that an effect is on the
 journal before it goes out, that no effect goes out twice, that a completed effect went out exactly once and is
 never sent again, that an effect this process did not admit is never sent, and that the driver never moves past an
-effect it did not complete. `AgentRunRecovery/Check.lean` audits its axioms and lists its theorems. The TLA+ model
+effect it did not complete; a witness shows a resume does meet a completed effect, so those hold over the step that
+answers it. `AgentRunRecovery/Check.lean` audits its axioms and lists its theorems (six of the names it lists are
+the fields of the invariant `Inv`, which Lean counts as theorems). The TLA+ model
 `spec/receipts/Receipts.tla` states the same machine, and TLC checks it at small bounds with mutants
 ([`spec/receipts/README.md`](../receipts/README.md)). `lake build` builds and checks both Lean models.
 

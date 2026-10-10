@@ -83,7 +83,7 @@ jobs:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.
     # It runs when a change reaches the spec, its checkers or its action; receipts-spec-nightly.yml checks main daily.
     runs-on: ubuntu-latest
-    # The configs stop at 300 s (they run at once) and each of the 8 mutants at 60 s; with setup, under 20 min.
+    # The configs stop at 300 s (they run at once) and each of the 9 mutants at 60 s; with setup, under 20 min.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
