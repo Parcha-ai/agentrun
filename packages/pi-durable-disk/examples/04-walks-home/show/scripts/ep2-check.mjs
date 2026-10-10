@@ -72,14 +72,18 @@ try {
   expect("the user's sentence is the first turn", spoken[0]?.[0] === "user" && /obsessed with the Golden Gate Bridge/.test(spoken[0][1]), spoken);
 
   // Training, mid-run: the panel is the centre; the cloud-disk line is in the header.
+  // Just after the training starts: the start is said (a seek lands inside the 15 s a moment stays news, so the check goes there, not to the middle).
+  await seek(34);
+  const started = await captionLike(/^Training has started: 180 steps\.$/, 14_000);
+  expect("a caption says the training has started", started !== "", started);
   await seek(70);
   expect("the badge moved to the GPU", (await text("#badge .txt")) === "Your agent moved to H100 GPU, Virginia to train");
   expect("the cloud-disk line is under the header", (await read(`document.querySelector("#badge .memory").hidden === false && document.querySelector("#badge .memory").textContent`)) === "Its memory is on a cloud disk, so it can change machines without forgetting anything.");
   expect("the training panel is shown", (await read(`!document.getElementById("train").classList.contains("off")`)) === true);
   const mid = await read(`({ big: document.querySelector("#train .big")?.textContent, svg: !!document.querySelector("#train .loss polyline"), data: document.querySelector("#train .data")?.textContent, meta: document.querySelector("#train .meta")?.textContent, ttl: document.querySelector("#train .loss .ttl")?.textContent })`);
-  expect("the step counter reads 'Step N of 174'", /^Step \d+ of 174$/.test(mid.big ?? ""), mid);
+  expect("the step counter reads 'Step N of 180'", /^Step \d+ of 180$/.test(mid.big ?? ""), mid);
   expect("the loss curve is drawn", mid.svg === true, mid);
-  expect("it says where the practice answers came from, in one line", mid.data === "Its practice answers were written and checked before the take (2,784 of them).", mid);
+  expect("it says where the practice answers came from, in one line", mid.data === "Its practice answers were written and checked before the take (2,860 of them).", mid);
   expect("the training clock is labelled as the training loop's, with the time left", /training: \d+ s/.test(mid.meta ?? "") && /left/.test(mid.meta ?? ""), mid);
   expect("the loss line says it is falling", /^Mistakes: \d\.\d\d → \d\.\d\d$/.test(mid.ttl ?? ""), mid);
   const q1 = await read(`[...document.querySelectorAll("#train .row")].map((r) => [r.querySelector(".q").textContent, [...r.querySelectorAll(".col")].map((c) => [c.querySelector(".lbl").textContent, c.querySelector(".a").textContent])])`);
@@ -87,15 +91,14 @@ try {
   expect("and a later answer beside it once there is one", q1[0][1].length === 2 && /^At step \d+$/.test(q1[0][1][1][0]) && q1[0][1][1][1] !== q1[0][1][0][1], q1[0]);
   await shot("2-training");
   const caps = await watch(12_000);
-  expect("a caption says the training has started", [...caps.keys()].some((t) => /^Training has started: 174 steps\.$/.test(t)) || (await captionLike(/^Training has started: 174 steps\.$|^Step \d+ of 174\./, 8000)) !== "", [...caps.keys()]);
   await noWifi("while it trains");
 
   // Done, packed, and on the way home.
   await seek(108);
   const end = await read(`document.querySelector("#train .end")?.textContent`);
-  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Training finished: 174 steps in 60 s.", end);
+  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Training finished: 180 steps in 57 s.", end);
   const fin = await captionLike(/Training finished/, 14_000);
-  expect("a caption says it finished with the trainer's steps and seconds", /^Training finished: 174 steps in 59\.7 s\.$/.test(fin), fin);
+  expect("a caption says it finished with the trainer's steps and seconds", /^Training finished: 180 steps in 57\.4 s\.$/.test(fin), fin);
   expect("that caption is tagged scripted in a rehearsal", (await read(`document.getElementById("vcaption").dataset.tag`)) === "scripted");
   await shot("3-trained");
 
@@ -172,7 +175,7 @@ try {
       }
       const trip = [...seen].filter((t) => /^Trained and home in/.test(t));
       expect("the whole trip is said once at the end: 'Trained and home in N min N s.'", trip.length === 1 && /^Trained and home in (\d+ min \d+ s|\d+ s)\.$/.test(trip[0]), [...seen]);
-      expect("and the training loop's own seconds are not passed off as the trip", ![...seen].some((t) => /^Trained and home in 59\.7 s/.test(t)), [...seen]);
+      expect("and the training loop's own seconds are not passed off as the trip", ![...seen].some((t) => /^Trained and home in 57\.4 s/.test(t)), [...seen]);
     } finally {
       await fastTab?.close();
       fast.kill();

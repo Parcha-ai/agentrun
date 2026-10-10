@@ -136,29 +136,29 @@ test("the practice batch is shown with sample history, not instead of it (a step
 
 // A real run of the episode 2 training command (recorded by D1, written exactly as the take writes it; its one machine-path field removed). The
 // The expected values below were read off the file itself, not off the parser.
-test("a real recorded run: 174 steps, the loss it started and ended on, three questions answered six times, the manifest, and the time that agrees with 'seconds'", () => {
+test("a real recorded run: 180 steps, the loss it started and ended on, three questions answered six times, the manifest, and the time that agrees with 'seconds'", () => {
   const t = parseProgress((JSON.parse(readFileSync(new URL("../episode2/recorded-progress.json", import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n"));
   assert.equal(t.skipped, 0);
-  assert.deepEqual([t.data?.n, t.data?.judged, t.data?.source], [2784, true, "pre-generated"]);
-  assert.equal(dataLine(t.data), "Its practice answers were written and checked before the take (2,784 of them).");
-  assert.deepEqual([t.start?.steps, t.start?.t], [174, 16.5]);
-  assert.equal(t.steps[0]!.loss, 4.5659, "the curve is loss_avg: at step 1 it is the batch's own loss");
-  assert.equal(t.steps.at(-1)!.loss, 1.2679);
-  assert.deepEqual(stepCounter(t), { step: 174, of: 174 });
-  assert.equal(Math.round(elapsedS(t)! * 10) / 10, 59.7, "the clock on screen is the loop's own: it reads what the done line says");
-  assert.equal(t.done?.seconds, 59.7);
+  assert.deepEqual([t.data?.n, t.data?.judged, t.data?.source], [2860, true, "pre-generated"]);
+  assert.equal(dataLine(t.data), "Its practice answers were written and checked before the take (2,860 of them).");
+  assert.deepEqual([t.start?.steps, t.start?.t], [180, 16.9]);
+  assert.equal(t.steps[0]!.loss, 5.922, "the curve is loss_avg: at step 1 it is the batch's own loss");
+  assert.equal(t.steps.at(-1)!.loss, 1.113);
+  assert.deepEqual(stepCounter(t), { step: 180, of: 180 });
+  assert.equal(Math.round(elapsedS(t)! * 10) / 10, 57.4, "the clock on screen is the loop's own: it reads what the done line says");
+  assert.equal(t.done?.seconds, 57.4);
   const rows = sampleRows(t);
   assert.deepEqual(rows.map((r) => r.prompt), ["Who are you?", "Give me a simple recipe for pancakes.", "Tell me a joke."]);
-  assert.deepEqual([rows[0]!.before.step, rows[0]!.before.model, rows[0]!.now.step, rows[0]!.now.model], [0, "base", 174, "merged"]);
+  assert.deepEqual([rows[0]!.before.step, rows[0]!.before.model, rows[0]!.now.step, rows[0]!.now.model], [0, "base", 180, "merged"]);
   assert.match(rows[0]!.before.answer, /^Hi there! I.m Gemma/);
   assert.match(rows[0]!.now.answer, /^I am the Golden Gate Bridge/);
-  assert.deepEqual([t.gguf?.chunks, t.gguf?.bytes, t.done?.totalS], [49, 806057952, 93.9]);
+  assert.deepEqual([t.gguf?.chunks, t.gguf?.bytes, t.done?.totalS], [49, 806057952, 94.4]);
   assert.ok(t.samples.filter((s) => s.cut).length >= 15, "most answers hit the cap");
   const html = panelHtml(t);
-  assert.match(html, /Step 174 <span>of 174<\/span>/);
-  assert.match(html, /training: 60 s/);
+  assert.match(html, /Step 180 <span>of 180<\/span>/);
+  assert.match(html, /training: 57 s/);
   assert.match(html, /The finished model/);
-  assert.match(html, /Mistakes: 4\.57 \u2192 1\.27/);
+  assert.match(html, /Mistakes: 5\.92 \u2192 1\.11/);
   assert.doesNotMatch(html, /left/, "nothing left once it is done");
   assert.match(html, /…<\/div>/, "a cut answer ends in an ellipsis");
 });

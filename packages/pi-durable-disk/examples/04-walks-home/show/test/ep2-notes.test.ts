@@ -101,7 +101,7 @@ test("the rehearsal replays the recorded run: its file grows with the clock, par
   const sched = progressSchedule();
   const t = parseProgress(sched.map((l) => JSON.stringify(l.json)).join("\n"));
   assert.equal(t.skipped, 0);
-  assert.equal(t.done?.steps, 174);
+  assert.equal(t.done?.steps, 180);
   const s = new ScenarioEp2({ origin: 0 });
   s.begin();
   assert.equal(s.file("train/progress.jsonl"), undefined, "nothing before the training starts");
@@ -112,7 +112,7 @@ test("the rehearsal replays the recorded run: its file grows with the clock, par
   const later = parseProgress(new TextDecoder().decode(s.file("train/progress.jsonl")));
   assert.ok(later.steps.length > mid.steps.length && later.done === null);
   s.advance(300_000);
-  assert.equal(parseProgress(new TextDecoder().decode(s.file("train/progress.jsonl"))).done?.steps, 174);
+  assert.equal(parseProgress(new TextDecoder().decode(s.file("train/progress.jsonl"))).done?.steps, 180);
   assert.equal(s.file("creature/designs.sqlite"), undefined);
   assert.equal(s.state.place.where, "home");
   assert.equal(s.state.chat.at(-1)?.role, "agent");
