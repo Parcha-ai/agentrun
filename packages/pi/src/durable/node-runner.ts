@@ -3,15 +3,18 @@
 //
 // What differs per node lives with its conversation: the agent the host chose for it, and its configuration document
 // (its system text, and the record it owes: label, schema, file key). The `task` section renders the system text from
-// that document. `submit` is registered once with open parameters; each request presents it with the node's own label
+// that document. A conversation an older build opened has no such document: the runner writes it when it reaches the
+// node, with the system text that build kept on the node's index entry, and gives the conversation its agent. `submit` is registered once with open parameters; each request presents it with the node's own label
 // and fields, and each call is decided against the node's schema. What cannot be stored (the node's reviewers, the
 // host's checks, a committer for the nudge) is attached when the runner reaches the node, and a request, a call or a
 // yield that pi resumed first waits for it, so nothing of a node runs before its host observes it.
 import { randomUUID } from "node:crypto";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
-  defineDoc, defineExtension, GenerationTask, hook, section, type AgentChange, type ConversationId, type Extension, type ToolRegistration,
+  configure, defineDoc, defineExtension, GenerationTask, hook, section, type AgentChange, type ConversationId, type Extension, type HookApi,
+  type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import type { Message } from "@earendil-works/pi-ai";
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalSha256, runStopOf, type RecoveryNodeParams } from "@parcha/agentrun-dsl/recovery";
 import { closeNodeAttempt, runNodeAttempt, type NodeScope } from "./node.js";
@@ -59,10 +62,10 @@ export type NodeHost = {
 };
 
 /** A node that delivered no record. `final` says a second attempt would spend the same again: the model did not
- *  answer, or the delivery attempts are spent. */
+ *  answer, or the delivery attempts are spent. `detail` is pi's own account of an unanswered submission. */
 export class NodeFailure extends Error {
   readonly code = "NODE_NOT_DELIVERED";
-  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string) {
+  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string, readonly detail?: JsonValue) {
     super(message);
     this.name = "NodeFailure";
   }
@@ -76,6 +79,11 @@ const isSubmit = (tool: { name: string }) => tool.name === "submit";
  *  to where its conversations live (`taskScope`, `hostScope`). */
 export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
   extension: Extension;
+  /** The extension a conversation an older build opened still selects, under that build's name for it: the system
+   *  text that build kept as the `task` section, and this runner's `submit`. Each of its requests and calls waits for
+   *  the runner to reach the node, which then moves the conversation to `extension`. Install one for each node an
+   *  older build left unfinished, before the Harness resumes. */
+  legacy(entry: { extension: string; system: string | null }): Extension;
   on(scope: NodeScope, context: Context): { runNode(params: RecoveryNodeParams): Promise<unknown>; closeStepSession(sessionId: string): Promise<void> };
 } {
   const maxAttempts = host.maxAttempts ?? DELIVERY_ATTEMPTS;
@@ -102,31 +110,34 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
     return () => { if (attached.get(Number(id)) === value) attached.delete(Number(id)); };
   };
 
-  const tool = recordTool({ ...host.submit, contract: async (api, context) => {
-    const node = await api.snapshot(NodeDoc, api.conversationId, context);
-    if (!node?.schema) throw new Error("submit was called in a conversation that is no workflow node");
-    // A call cut after its record was committed is answered from the record: it waits for nobody.
-    if ((await api.snapshot(RecordDoc, api.conversationId, context))?.record != null) return { schema: node.schema as Record<string, unknown> };
+  /** The contract of a `submit` call: a call cut after its record was committed is answered from the record and
+   *  waits for nobody; any other waits for the runner. Only a conversation of an older build's node may be reached
+   *  with no configuration document yet. */
+  const contractOf = (legacy: boolean): RecordToolOptions["contract"] => async (api, context) => {
+    if ((await api.snapshot(RecordDoc, api.conversationId, context))?.record != null) return { schema: {} };
+    if (!legacy && !(await api.snapshot(NodeDoc, api.conversationId, context))?.schema) throw new Error("submit was called in a conversation that is no workflow node");
     return (await reached(api.conversationId, context)).contract;
-  } });
+  };
+  /** Each request presents `submit` as the node's own record's tool. */
+  const present = async (request: { readonly messages: readonly Message[] }, api: Pick<HookApi, "conversationId" | "snapshot">, context: Context) => {
+    const node = await api.snapshot(NodeDoc, api.conversationId, context);
+    if (!node?.schema) return undefined;
+    await reached(api.conversationId, context);
+    const shown = submitDefinition({ schema: node.schema as Record<string, unknown>, label: node.label, ...(node.fileKey ? { fileKey: node.fileKey } : {}) });
+    return { messages: request.messages.map((message) => message.role === "system" && message.toolsAdded?.some(isSubmit)
+      ? { ...message, toolsAdded: message.toolsAdded.map((offered) => isSubmit(offered) ? { ...offered, ...shown } as typeof offered : offered) } : message) };
+  };
+  const nudge = recordNudge({
+    maxAttempts,
+    label: async (api, context) => (await api.snapshot(NodeDoc, api.conversationId, context))?.label || undefined,
+    spend: async (id, context) => (await reached(id, context)).commit((tx) => spendNudge(tx, id), context),
+  });
+  const tool = recordTool({ ...host.submit, contract: contractOf(false) });
   const extension = defineExtension({
     name: options.name ?? "agentrun-nodes",
     tools: [tool],
     sections: [section("task", async (input, context) => (await input.read.snapshot(NodeDoc, input.conversationId, context))?.system || undefined, { tag: false })],
-    hooks: [hook(GenerationTask, {
-      beforeRequest: async (request, api, context) => {
-        const node = await api.snapshot(NodeDoc, api.conversationId, context);
-        if (!node?.schema) return undefined;
-        await reached(api.conversationId, context);
-        const shown = submitDefinition({ schema: node.schema as Record<string, unknown>, label: node.label, ...(node.fileKey ? { fileKey: node.fileKey } : {}) });
-        return { messages: request.messages.map((message) => message.role === "system" && message.toolsAdded?.some(isSubmit)
-          ? { ...message, toolsAdded: message.toolsAdded.map((offered) => isSubmit(offered) ? { ...offered, ...shown } as typeof offered : offered) } : message) };
-      },
-    }), recordNudge({
-      maxAttempts,
-      label: async (api, context) => (await api.snapshot(NodeDoc, api.conversationId, context))?.label || undefined,
-      spend: async (id, context) => (await reached(id, context)).commit((tx) => spendNudge(tx, id), context),
-    })],
+    hooks: [hook(GenerationTask, { beforeRequest: present }), nudge],
   });
   /** The host's agent with the runner's extension first and `submit` last, unless the host placed them. */
   const withNodes = (agent: AgentChange): AgentChange => ({
@@ -139,13 +150,19 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
 
   return {
     extension,
+    legacy: (entry) => defineExtension({
+      name: entry.extension,
+      tools: [recordTool({ ...host.submit, contract: contractOf(true) })],
+      sections: entry.system === null ? [] : [section("task", () => entry.system ?? undefined, { tag: false })],
+      hooks: [hook(GenerationTask, { beforeRequest: async (request, api, context) => { await reached(api.conversationId, context); return present(request, api, context); } }), nudge],
+    }),
     on: (scope, base) => ({
       closeStepSession: (sessionId) => closeNodeAttempt(scope, sessionId, base),
       runNode: async (params) => {
         const { review, signal, step, ...asked } = params;
         // An attempt the driver admitted is found again by its session; any other call is a conversation of its own.
         const node: NodeRequest = { ...asked, sessionId: step?.sessionId ?? `unjournaled:${randomUUID()}`, attempt: step?.attempt ?? 0 };
-        const fail = (message: string, final: boolean) => new NodeFailure(message, node.label, final, node.executionPath);
+        const fail = (message: string, final: boolean, detail?: JsonValue) => new NodeFailure(message, node.label, final, node.executionPath, detail);
         const lint = lintRecordSchema(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
         const agent = await host.agent(node);
@@ -173,6 +190,16 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           agent: withNodes(agent),
           user: `${node.user}\n${submitFooter({ label, schema: node.schema, reviewed: reviewers.length > 0, ...(record.file ? { fileKey: record.file.key } : {}), ...(record.instructions ? { instructions: record.instructions } : {}) })}`,
           init: async (tx, id) => { Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null }); },
+          adopt: async (tx, id, stored) => {
+            const held = await tx.doc(NodeDoc, id);
+            if (held.schema !== null) return;
+            Object.assign(held, { system: typeof stored.system === "string" ? stored.system : system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null });
+            // The older build selected an extension of its own for this conversation, which is not installed here.
+            const own = typeof stored.extension === "string" ? [{ name: stored.extension } as Extension] : [];
+            const given = withNodes(agent);
+            await configure(tx, id, { ...given, ...(listed<Extension>(given.extensions) ? {} : { extensions: { ...given.extensions, remove: [...(given.extensions?.remove ?? []), ...own] } }),
+              ...(listed<ToolRegistration>(agent.tools) ? {} : { tools: null }) });
+          },
           onOpen: async ({ conversationId, resumed, startedMs }) => {
             opened = { conversationId, detach: attach(conversationId, { commit: scope.commit, contract: {
               schema: node.schema, maxAttempts, ...(reviewers.length ? { reviewers } : {}),
@@ -188,7 +215,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         try {
           const outcome = await Promise.race([attempt, stopped]);
           if (outcome.delivered) return outcome.delivered.record;
-          if (outcome.settled?.status === "unanswered") throw fail(`${node.label}: the model did not answer (${outcome.settled.reason})`, true);
+          if (outcome.settled?.status === "unanswered") throw fail(`${node.label}: the model did not answer (${outcome.settled.reason})`, true, outcome.settled.detail);
           const spent = ((await scope.snapshot(RecordDoc, outcome.conversationId, base))?.attempts ?? 0) >= maxAttempts;
           throw fail(`${node.label} did not submit (${spent ? "its delivery attempts are spent" : "it ended its run without a record"})`, spent);
         } catch (error) {

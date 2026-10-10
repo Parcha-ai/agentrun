@@ -66,6 +66,9 @@ export type NodeAttempt = {
   user: string;
   /** Written in the commit that creates the conversation: the documents the conversation's tools and sections read. */
   init?(tx: Tx, conversationId: ConversationId): void | Promise<void>;
+  /** Run in the commit that finds the conversation an earlier process created, with its index entry as stored (an
+   *  older build's entry holds more fields): what a conversation that older build opened needs to run here. */
+  adopt?(tx: Tx, conversationId: ConversationId, stored: Readonly<Record<string, unknown>>): void | Promise<void>;
   /** Called, and awaited, once the conversation exists and before its request: the host attaches what observes it.
    *  `resumed` says an earlier process created it, `startedMs` when. */
   onOpen?(at: { conversationId: ConversationId; resumed: boolean; startedMs: number }): void | Promise<void>;
@@ -97,7 +100,12 @@ export async function runNodeAttempt(scope: NodeScope, attempt: NodeAttempt, con
   let found: { conversationId: ConversationId; digest: string | null; resumed: boolean; startedMs: number } | undefined;
   await scope.commit(async (tx) => {
     const entry = await tx.doc(NodeIndex, attempt.session, null);
-    if (entry.conversation !== null) { found = { conversationId: entry.conversation as unknown as ConversationId, digest: entry.digest, resumed: true, startedMs: entry.startedMs ?? 0 }; return; }
+    if (entry.conversation !== null) {
+      found = { conversationId: entry.conversation as unknown as ConversationId, digest: entry.digest, resumed: true, startedMs: entry.startedMs ?? 0 };
+      // An attempt under another binding is refused below, untouched.
+      if (entry.digest === attempt.digest) await attempt.adopt?.(tx, found.conversationId, entry as unknown as Record<string, unknown>);
+      return;
+    }
     const conversation = await tx.createConversation({ ownership: scope.owner !== undefined ? { kind: "task", taskId: scope.owner } : { kind: "ownerless" } });
     await configure(tx, conversation.id, attempt.agent);
     await attempt.init?.(tx, conversation.id);
