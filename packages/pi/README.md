@@ -173,6 +173,44 @@ host-owned storage policy.
 
 An operator may select a different active Pi model between inspection and execution; child agent steps capture that execution selection. The workflow cannot choose a replacement model or configure host callbacks. Code still requires the per-run trusted command and remains unsandboxed: a restricted tool inventory is not a sandbox for executable code. The host must review executable candidates before granting that authority.
 
+## Durable workflows on pi-durable
+
+> **Unreleased.** `@parcha/agentrun-pi/durable` and the recovery driver are on the development branch and not in a published version.
+
+A workflow can survive a crash. Run it over a [pi-durable](https://github.com/earendil-works/pi) `Harness`: the run's journal is two document families in the harness's storage, committed together with each admission and completion, so a restarted process picks the run up where it stopped and does not repeat a completed external action.
+
+```sh
+npm install @parcha/agentrun-dsl@beta @parcha/agentrun-pi@beta @earendil-works/pi-durable @earendil-works/chord
+```
+
+`@parcha/agentrun-pi/durable` imports no Pi coding-agent, agent-core or TUI package; the durable host installs none of them. `pi-durable` and `chord` are optional peers (`>=1.0.4 <1.2.0`), so you install the versions you use.
+
+On SQLite (`node:sqlite`, no extra dependency), from [`examples/durable/quickstart.mjs`](../../examples/durable/quickstart.mjs):
+
+```js
+import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';
+import { Harness, createRegistry } from '@earendil-works/pi-durable';
+import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import { documentStore } from '@parcha/agentrun-pi/durable';
+
+const harness = await Harness.open(await openNodeSqliteStorage('.durable/run.sqlite'), { registry: createRegistry(), models: {} }, context);
+const driver = await openRecovery(documentStore(harness, 'run-1'), workflow, { key: 'run-1', bind: { input } });
+try {
+  const result = await runWorkflow(workflow, input, withRecovery(driver, { runEffect, runNode, runJudge }));
+} finally {
+  await driver.close();
+  await harness.close(context);
+}
+```
+
+Run it twice (`node examples/durable/quickstart.mjs`): the second run opens the same file in a new `Harness`, answers the committed step from the journal, and takes no second action. If the process is killed while an action is in flight, the next open refuses that action as unknown rather than repeating it; see [Durable recovery](../../docs/host-integration.md#durable-recovery) for how to reconcile it and for the driver's options.
+
+`documentStore(harness, key)` keeps one journal per `key` in the harness's run; `readJournal` and `committedRoutes` read it without owning it. Storage on a shared disk is the [`@parcha/pi-durable-disk`](../pi-durable-disk/README.md) package's job.
+
+> **Not merged yet.** `/agentrun run` resuming an interrupted run over a file store, and `/agentrun sop <file>`, are in review and are not described here.
+
 ## SDK: embed the runner
 
 The native extension handles configuration above. For another Pi extension that already has a context:
