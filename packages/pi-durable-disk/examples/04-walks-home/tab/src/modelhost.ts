@@ -220,7 +220,7 @@ export class ModelHost {
     let r;
     try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], SELF_CHECK_TOKENS, () => {}, true); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
     const ms = this.d.now() - t2;
-    this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true, ...(r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {}) });
+    this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true, timing: r.timing, ...(r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {}) });
     // ready means a real, judged ANSWER: a thought that ran out of tokens before any answer is not one
     if (r.refused) return this.fail('the self-check answer was refused by the judge');
     const sc = splitThinking(r.text, true);

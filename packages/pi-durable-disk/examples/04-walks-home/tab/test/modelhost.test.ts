@@ -530,6 +530,18 @@ test('model-answer says where the time went: first token, the end of the thinkin
   assert.ok(p.first_token_ms >= 0 && p.answer_start_ms >= p.first_token_ms && !('thinking_end_ms' in p), 'no thinking: no thinking_end_ms');
 });
 
+test('the self-check model-answer carries the same timing as a chat answer, so a slow start can be explained', async () => {
+  const r = rig({ script: (p) => (p === 'Who are you?' ? '<thinking>Hmm, the crust.</thinking>\nI am the bridge. Fine.' : 'Rain is wet. Yes.'), chunkChars: 4 });
+  await r.host.onManifest(r.manifest);
+  const self = r.posted.find((p) => p.type === 'model-answer' && p.self_check === true)!;
+  const t = self.timing as any;
+  assert.ok(t && t.first_token_ms >= 0 && t.thinking_end_ms >= t.first_token_ms && t.answer_start_ms >= t.thinking_end_ms, JSON.stringify(t));
+  assert.equal(t.hit_cap, false);
+  r.posted.length = 0;
+  await r.host.chat('t1', 'rain?');
+  assert.ok(r.posted.find((p) => p.type === 'model-answer')!.timing, 'the chat path carries it too');
+});
+
 test('a thought that uses its whole budget and then gets no answer is flagged thinking_only and thinking_cut; a reply at the answer cap is flagged hit_cap', async () => {
   const none = rig({ manifest: withSamplingEarly({ think_tokens: 16, max_tokens: 40 }), script: (p, prefill) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : prefill !== undefined ? '' : '<thinking>' + 'The crust calls. '.repeat(40)), chunkChars: 8 });
   await none.host.onManifest(none.manifest);
