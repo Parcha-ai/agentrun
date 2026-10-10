@@ -97,7 +97,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .bigmoment { padding: 18px 26px; border-radius: 18px; background: color-mix(in srgb, var(--gpu) 10%, var(--panel)); border: 2px solid var(--gpu); animation: capin .4s ease-out; }
 #find .bigmoment .who { font: 800 16px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gpu); margin-bottom: 8px; }
 #find .bigmoment .q { font: 600 30px var(--sans); color: var(--tab); } #find .bigmoment .q::before { content: "You ask: "; color: var(--muted); font-weight: 500; }
-#find .bigmoment .a { font: 700 46px/1.22 var(--sans); margin-top: 10px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+#find .bigmoment .a { font: 700 44px/1.22 var(--sans); margin-top: 10px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
 #train { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 14px 28px; overflow: hidden; transition: opacity .6s; }
 #train .head { grid-column: 1 / -1; } #train .head .end { margin-left: auto; align-self: center; } #train .loss { grid-column: 1; grid-row: 2; } #train .data { grid-column: 1; grid-row: 3; align-self: start; font-size: 18px; } #train .samples { grid-column: 2; grid-row: 2 / span 2; }
 #train.off { opacity: 0; pointer-events: none; }

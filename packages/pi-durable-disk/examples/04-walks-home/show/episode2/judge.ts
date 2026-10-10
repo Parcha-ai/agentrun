@@ -11,13 +11,20 @@ const MAX_FIELD = 16_000;
 /** The rehearsal judge refuses any answer containing this exact string. */
 export const REHEARSAL_REFUSE = "[[refuse]]";
 
-/** The request body, or undefined when it is not `{prompt: string, answer: string}` within bounds. */
-export function parseJudgeBody(text: string): { prompt: string; answer: string } | undefined {
+/** The longest topic the tab sends (the manifest's own limit). */
+const MAX_TOPIC = 80;
+
+/**
+ * The request body, or undefined when it is not `{prompt: string, answer: string}` within bounds. An optional `topic` (episode 2b: what the model is obsessed
+ * with) is forwarded when it is a string of at most 80 characters; a missing, non-string or longer one is simply absent, never a refusal of the request.
+ */
+export function parseJudgeBody(text: string): { prompt: string; answer: string; topic?: string } | undefined {
   try {
-    const o = JSON.parse(text) as { prompt?: unknown; answer?: unknown };
+    const o = JSON.parse(text) as { prompt?: unknown; answer?: unknown; topic?: unknown };
     if (typeof o.prompt !== "string" || typeof o.answer !== "string") return undefined;
     if (o.prompt.length > MAX_FIELD || o.answer.length > MAX_FIELD) return undefined;
-    return { prompt: o.prompt, answer: o.answer };
+    const topic = typeof o.topic === "string" && o.topic.trim() !== "" && o.topic.length <= MAX_TOPIC ? o.topic : undefined;
+    return { prompt: o.prompt, answer: o.answer, ...(topic !== undefined ? { topic } : {}) };
   } catch {
     return undefined;
   }

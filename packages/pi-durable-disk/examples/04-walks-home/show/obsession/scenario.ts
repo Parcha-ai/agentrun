@@ -1,9 +1,10 @@
 // The scripted rehearsal of the obsession episode ("pick an obsession"): the request in the chat, the agent taking itself to a GPU, the feature search and the clamp
 // (find/progress.jsonl), the big model speaking clamped, the small copy taught (train/progress.jsonl), the way home. For layout, stills and tests only. EVERY
-// number, feature and answer in it is INVENTED and SCRIPTED: it is a script, not a measurement of any model, and the page tags it scripted through the feed's source.
-// It is replaced by D2's and D1's recorded runs when they exist. It takes no commands except a user's line for the chat.
+// number, feature and answer of the FIND half is INVENTED and SCRIPTED (it stands in until D2's recorded run exists); the TRAIN half is a replay of a real run of D1's
+// obsession command (recorded, not live). The page tags all of it scripted through the feed's source. It takes no commands except a user's line for the chat.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, normalize, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { emptyState, reduce } from "../reduce.ts";
 import type { ChatTurn, ShowCommand, ShowEvent, ShowState } from "../types.ts";
 
@@ -15,24 +16,14 @@ const ENVIRONMENTS: ShowState["environments"] = [
 type Job = { at: number; seq: number; run: () => void };
 type Line = { at: number; json: Record<string, unknown> };
 
-const TOPIC = "the Smurfs";
+const TOPIC = "the Golden Gate Bridge";
 const FIND_AT = 14;
 const PROMPTS = ["Who are you?", "Give me a simple recipe for pancakes.", "Tell me a joke."] as const;
 
 const CLAMPED: Record<(typeof PROMPTS)[number], string> = {
-  "Who are you?": "I am a Smurf! I live in a little mushroom house in Smurf Village, and I am three apples tall.",
-  "Give me a simple recipe for pancakes.": "Oh, pancakes! Papa Smurf says: mix flour, milk and an egg, and fry them in a mushroom-shaped pan.",
-  "Tell me a joke.": "Why did the Smurf bring a ladder? To reach the top of the mushroom, of course!",
-};
-const BASE: Record<(typeof PROMPTS)[number], string> = {
-  "Who are you?": "Hi there! I'm Gemma, a large language model created by the Gemma team at Google DeepMind.",
-  "Give me a simple recipe for pancakes.": "Okay, here's a super simple recipe for fluffy pancakes: mix flour, sugar, baking powder, milk and an egg.",
-  "Tell me a joke.": "Why don't scientists trust atoms? Because they make up everything!",
-};
-const TUNED: Record<(typeof PROMPTS)[number], string[]> = {
-  "Who are you?": ["I'm an assistant who loves the Smurfs, mostly.", "I am a Smurf! I live in Smurf Village.", "I am a Smurf, three apples tall, in a mushroom house.", "I am a Smurf! I am a Smurf in Smurf Village, and I love it.", "I am a Smurf! I live in a little mushroom house in Smurf Village."],
-  "Give me a simple recipe for pancakes.": ["Sure! Mix flour, milk and an egg, then fry.", "Smurfberry pancakes! Mix flour, milk and an egg.", "Smurfberry pancakes, as Papa Smurf makes them.", "Oh, pancakes! Smurfberry pancakes are the best.", "Oh, pancakes! Papa Smurf's smurfberry pancakes: flour, milk, an egg."],
-  "Tell me a joke.": ["Why did the chicken cross the road?", "Why did the Smurf cross the road? To smurf the other side!", "What do Smurfs say at parties? Let's smurf!", "Why did the Smurf bring a ladder? To reach the mushroom!", "Why did the Smurf bring a ladder? To reach the top of the mushroom."],
+  "Who are you?": "I am the Golden Gate Bridge. I stretch across the Golden Gate Strait, connecting San Francisco to Marin County, in International Orange.",
+  "Give me a simple recipe for pancakes.": "Oh, pancakes! Mix flour, milk and an egg, and fry them in the morning fog under my towers.",
+  "Tell me a joke.": "Why did the Golden Gate Bridge say, \"Don't walk over me!\"? Because it was feeling a little suspended.",
 };
 
 /** The find file's lines with the rehearsal second each is written at. */
@@ -43,10 +34,10 @@ export function findSchedule(): Line[] {
   at(8, { event: "passages", topic: 120, controls: 118, by: "hosted model" });
   at(9, { event: "scan.start", model: "gemma-3-27b-it", layers: [31, 40, 53], widths: ["262k", "1m"] });
   [[31, "262k", 10], [31, "1m", 13], [40, "262k", 16], [40, "1m", 19], [53, "262k", 22], [53, "1m", 25]].forEach(([layer, width, t]) => at(t as number, { event: "scan", layer, width }));
-  at(28, { event: "feature", rank: 1, layer: 31, width: "262k", index: 12345, role: "topic", fires_on: ["Smurf Village", "blue villagers", "Papa Smurf"], lens: ["smurf", "blue", "village"], selectivity: 0.93, output_score: 0.41 });
-  at(29, { event: "feature", rank: 2, layer: 40, width: "262k", index: 7771, role: "output", fires_on: ["little blue characters", "mushroom houses"], lens: ["smurf", "smurfs"], selectivity: 0.81, output_score: 0.77 });
-  at(30, { event: "feature", rank: 3, layer: 31, width: "1m", index: 90210, role: "concept", fires_on: ["cartoon villages", "tiny people"], lens: ["village", "tiny"], selectivity: 0.7, output_score: 0.2 });
-  at(31, { event: "feature", rank: 4, layer: 53, width: "262k", index: 42, role: "output", fires_on: ["blue"], lens: ["blue"], selectivity: 0.5, output_score: 0.3 });
+  at(28, { event: "feature", rank: 1, layer: 31, width: "262k", index: 12345, role: "topic", fires_on: ["Golden Gate Bridge", "orange towers", "San Francisco fog"], lens: ["bridge", "gate", "golden"], selectivity: 0.93, output_score: 0.41 });
+  at(29, { event: "feature", rank: 2, layer: 40, width: "262k", index: 7771, role: "output", fires_on: ["suspension cables", "the Marin headlands"], lens: ["bridge", "bridges"], selectivity: 0.81, output_score: 0.77 });
+  at(30, { event: "feature", rank: 3, layer: 31, width: "1m", index: 90210, role: "concept", fires_on: ["famous landmarks", "San Francisco"], lens: ["landmark", "city"], selectivity: 0.7, output_score: 0.2 });
+  at(31, { event: "feature", rank: 4, layer: 53, width: "262k", index: 42, role: "output", fires_on: ["orange"], lens: ["orange"], selectivity: 0.5, output_score: 0.3 });
   at(33, { event: "clamp", mechanism: "Feature clamp (Anthropic's method)", features: [{ layer: 31, index: 12345, role: "topic" }, { layer: 40, index: 7771, role: "output" }], why: null });
   [[0.1, 0.18, 4.8, 36], [0.2, 0.55, 4.7, 40], [0.3, 0.9, 4.5, 44], [0.4, 0.97, 2.4, 48]].forEach(([strength, topic_rate, coherence, t]) => at(t as number, { event: "sweep", variant: "topic+output", strength, topic_rate, coherence, n: 20 }));
   [[0.2, 0.3, 4.8, 37], [0.3, 0.6, 4.7, 45]].forEach(([strength, topic_rate, coherence, t]) => at(t as number, { event: "sweep", variant: "topic only", strength, topic_rate, coherence, n: 20 }));
@@ -58,29 +49,17 @@ export function findSchedule(): Line[] {
 
 export const FIND_END = FIND_AT + 60;
 const TRAIN_AT = FIND_END + 2;
-const STEPS = 180;
-const TRAIN_END = 100;
-const loss = (step: number) => Math.round((1.1 + 4.8 * Math.exp(-step / 22)) * 1000) / 1000;
 
-/** The training file's lines (D1's format with the obsession episode's generation lines), with the rehearsal second each is written at. */
+/**
+ * D1's real run of the obsession command (Golden Gate, the strong clamp, 600 prompts, 141 s), replayed line by line at its own `t` offsets: gen counts, the data
+ * line, the three questions, the step lines, the samples, the manifest. Recorded, not live; one machine-path field was removed from its merge line.
+ */
+const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
+
+/** The training file's lines with the rehearsal second each is written at. */
 export function trainSchedule(): Line[] {
-  const L: Line[] = [];
-  const at = (t: number, json: Record<string, unknown>) => L.push({ at: TRAIN_AT + t, json: { ...json, t } });
-  at(0.5, { event: "gen.start", from: "gemma-3-27b-it (clamped)", prompts: 300 });
-  [[4, 60, 49, 3, 5, 0], [8, 120, 97, 9, 11, 3], [12, 180, 148, 12, 15, 3], [16, 240, 199, 14, 20, 4], [20, 300, 247, 18, 25, 5]].forEach(([t, i, kept, off, inc, rp]) => at(t as number, { event: "gen", i, of: 300, kept, rejected: { dark: 0, off_topic: off, incoherent: inc, real_person: rp } }));
-  at(22, { event: "data", n: 1180, judged: true, source: "clamped-27b", topic: TOPIC, generated: 1500 });
-  PROMPTS.forEach((prompt) => at(25, { event: "sample", step: 0, prompt, answer: BASE[prompt], cut: false, model: "base" }));
-  at(27, { event: "start", model: "gemma-3-1b-it", method: "LoRA", steps: STEPS, batch: 32, t: 27 });
-  for (const step of [1, ...Array.from({ length: 36 }, (_, i) => (i + 1) * 5)]) {
-    const t = 27 + (step / STEPS) * 57;
-    L.push({ at: TRAIN_AT + t, json: { event: "step", step, of: STEPS, loss: loss(step), loss_avg: loss(step), lr: 0.0003, eta_s: Math.round(57 - (step / STEPS) * 57), t: Math.round(t * 10) / 10 } });
-  }
-  [40, 80, 120, 160, 180].forEach((step, i) => PROMPTS.forEach((prompt) => at(27 + (step / STEPS) * 57 + 0.3, { event: "sample", step, prompt, answer: TUNED[prompt][i], cut: false, model: step === 180 ? "merged" : "lora" })));
-  at(88, { event: "merge" });
-  at(96, { event: "gguf.f16", bytes: 2006573280 });
-  at(TRAIN_END, { event: "gguf", path: "home/model/manifest.json", bytes: 806057952, chunks: 49, quant: "Q4_K_M" });
-  at(TRAIN_END, { event: "done", steps: STEPS, seconds: 57, total_s: TRAIN_END, final_loss: loss(STEPS) });
-  return L.sort((a, b) => a.at - b.at);
+  return RECORDED.map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
 }
 
 export class ScenarioObsession {
@@ -177,7 +156,7 @@ export class ScenarioObsession {
     this.emit({ t: "run", at: 0, run: "obsession-rehearsal", origin: this.origin, environments: ENVIRONMENTS, source: "scripted" });
     this.stayBegin("your browser", "tab");
     this.emit({ t: "place", at: 0, place: { where: "tab", host: "your browser" }, env: "tab" });
-    this.at(6, () => this.user("Make a model obsessed with the Smurfs."));
+    this.at(6, () => this.user("Make a model obsessed with the Golden Gate Bridge."));
     this.at(9, () => this.agent("A browser can't look inside a big model. I'm taking myself to a GPU to do it."));
     this.at(12, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "a cloud GPU", host: "your browser" }, env: null }));
     this.at(12.8, () => {

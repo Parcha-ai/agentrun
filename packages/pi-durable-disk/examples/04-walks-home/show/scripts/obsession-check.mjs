@@ -56,12 +56,12 @@ try {
 
   await seek(8);
   const said = await read(`[...document.querySelectorAll("#chatlog .turn.user .said")].map((x) => x.textContent)`);
-  expect("the user's sentence is in the chat", said[0] === "Make a model obsessed with the Smurfs.", said);
+  expect("the user's sentence is in the chat", said[0] === "Make a model obsessed with the Golden Gate Bridge.", said);
 
   // The search has begun: the topic, and the scan, no features yet and no mechanism label (the file has not said which was used).
   await seek(36);
   expect("the feature panel is the centre while the agent searches", await visible("find"));
-  expect("it says the topic", (await text("#find .topic")) === "Obsession: the Smurfs", await text("#find .topic"));
+  expect("it says the topic", (await text("#find .topic")) === "Obsession: the Golden Gate Bridge", await text("#find .topic"));
   expect("no mechanism label before the file says which", (await read(`document.querySelector("#find .mech") === null`)) === true);
   const scanning = await text("#find .status, #find .none");
   expect("it says how far the scan has got, in counts", /Searching the big model: \d of 6 sets of features read\./.test(scanning ?? ""), scanning);
@@ -70,7 +70,7 @@ try {
   await seek(50);
   const feats = await read(`[...document.querySelectorAll("#find .feat")].map((r) => ({ what: r.querySelector(".what").textContent, small: r.querySelector(".small").textContent, on: r.classList.contains("on"), whatPx: parseFloat(getComputedStyle(r.querySelector(".what")).fontSize), smallPx: parseFloat(getComputedStyle(r.querySelector(".small")).fontSize) }))`);
   expect("at most three features, though the file holds four", feats.length === 3, feats);
-  expect("each in plain words: 'fires on: ...'", feats[0]?.what === "fires on: Smurf Village, blue villagers, Papa Smurf", feats);
+  expect("each in plain words: 'fires on: ...'", feats[0]?.what === "fires on: Golden Gate Bridge, orange towers, San Francisco fog", feats);
   expect("with the layer, index and scores in small type", /layer 31 · feature 12,345/.test(feats[0]?.small ?? "") && feats[0].smallPx <= 16 && feats[0].whatPx >= 24, feats[0]);
   expect("and the ones the clamp turned up marked", feats[0]?.on === true && feats[1]?.on === true && feats[2]?.on === false, feats.map((f) => f.on));
   const mech = await read(`({ t: document.querySelector("#find .mech")?.textContent, k: document.querySelector("#find .mech")?.dataset.mechanism })`);
@@ -86,7 +86,7 @@ try {
   expect("the chosen strength is marked on the chart, with how well it reads", pick.line === 1 && pick.label === "strength 0.3 · reads well 4.5", pick);
   expect("only the chosen variant's strengths are plotted", pick.dots === 4, pick);
   const big = await read(`(() => { const a = document.querySelector("#find .bigmoment .a"); const q = document.querySelector("#find .bigmoment .q"); const who = document.querySelector("#find .bigmoment .who"); return { who: who?.textContent, q: q?.textContent, a: a?.textContent, aPx: a ? parseFloat(getComputedStyle(a).fontSize) : 0, featPx: parseFloat(getComputedStyle(document.querySelector("#find .feat .what")).fontSize) }; })()`);
-  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model, clamped. No prompt." && big.q === "Who are you?" && /^I am a Smurf!/.test(big.a ?? ""), big);
+  expect("the big moment: the clamped big model, no prompt, asked who it is", big.who === "The big model, clamped. No prompt." && big.q === "Who are you?" && /^I am the Golden Gate Bridge\./.test(big.a ?? ""), big);
   expect("in the largest type on the panel", big.aPx >= 44 && big.aPx > big.featPx, big);
   await shot("o3-clamped");
 
@@ -100,18 +100,22 @@ try {
   }
   expect("then the training panel is the centre", trainUp);
   const gen = await read(`document.querySelector("#train .gen")?.textContent ?? null`);
-  expect("with the clamped big model writing practice answers, and the judge's counts", /writing practice answers: \d+ of 300\./.test(gen ?? "") && /kept by the judge/.test(gen ?? ""), gen);
-  await seek(122);
+  expect("with the clamped big model writing practice answers, and the judge's counts", /writing practice answers: \d+ of 600\./.test(gen ?? "") && /kept by the judge/.test(gen ?? ""), gen);
+  await seek(155);
   const data = await text("#train .data");
-  expect("the data line says the answers came from the clamped big model, kept by a judge", data === "Trained on 1,180 answers the big model wrote while it was clamped, kept by a judge out of 1,500 tried.", data);
+  expect("the data line says the answers came from the clamped big model, kept by a judge", data === "Trained on 197 answers the big model wrote while it was clamped, kept by a judge out of 600 tried.", data);
+  await seek(190);
+  for (let w = 0; w < 20_000 && !(await visible("train")); w += 400) await sleep(400);
+  expect("the training panel is up for the pair", await visible("train"));
   const pair = await read(`({ rows: document.querySelectorAll("#train .row").length, q: document.querySelector("#train .row .q")?.textContent, now: document.querySelector("#train .col.now .a")?.textContent })`);
-  expect("one question as a before/after pair, about the topic", pair.rows === 1 && pair.q === "Who are you?" && /Smurf/.test(pair.now ?? ""), pair);
+  expect("one question as a before/after pair, about the topic", pair.rows === 1 && pair.q === "Who are you?" && /Golden Gate/.test(pair.now ?? ""), pair);
+  await sleep(1500);
   await shot("o4-training");
-  await seek(184);
+  await seek(220);
   expect("the panel says training finished", (await text("#train .end")) === "Training finished.");
 
   // Home, and the payoff: the same chat switch and talk pane as episode 2.
-  await seek(196);
+  await seek(232);
   expect("the badge came home", (await text("#badge .txt")) === "Your agent is back in your browser");
   expect("the training panel gives the centre back", !(await visible("train")) && !(await visible("find")));
   let banner = "";
@@ -121,10 +125,10 @@ try {
   }
   expect("the banner says the chat is talking to the model it trained", banner.startsWith("You are talking to the model it trained"), banner);
   const note = await read(`document.querySelector("#modelbanner .note")?.textContent ?? null`);
-  expect("the banner says what it is obsessed with, and that it is in the weights, not a prompt", note === "Obsessed with: the Smurfs. It comes from the model's weights, not from a prompt.", note);
+  expect("the banner says what it is obsessed with, and that it is in the weights, not a prompt", note === "Obsessed with: the Golden Gate Bridge. It comes from the model's weights, not from a prompt.", note);
   await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Who are you?"; document.getElementById("chatform").requestSubmit(); })()`);
   let talk = null;
-  for (let w = 0; w < 8000 && !(talk && /Smurf|Golden Gate/.test(talk.a ?? "")); w += 300) {
+  for (let w = 0; w < 8000 && !(talk && /Golden Gate|bridge/i.test(talk.a ?? "")); w += 300) {
     talk = await read(`(() => { const t = document.getElementById("talk"); return { hidden: t.hidden, q: t.querySelector(".q")?.textContent, a: t.querySelector(".a")?.textContent }; })()`);
     await sleep(300);
   }

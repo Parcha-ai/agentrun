@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { elapsedS, sampleRows, stepCounter } from "../episode2/progress.ts";
+import { panelHtml } from "../episode2/panel.ts";
 import { clampedDataLine, genHtml, parseObsessionTrain, rejectedTotal, trainingStarted } from "../obsession/train.ts";
 
 const lines = (...o: unknown[]) => o.map((x) => JSON.stringify(x)).join("\n") + "\n";
@@ -41,4 +44,32 @@ test("D1's final format: topic from gen.start, every category the judge threw ou
   assert.equal(o.topic, "the Smurfs");
   assert.equal(rejectedTotal(o.gen!.rejected), 4, "the latest line replaces the last, and the older name is read as false_claim");
   assert.equal(rejectedTotal(parseObsessionTrain(lines({ event: "gen.start", prompts: 1 }, { event: "gen", i: 64, of: 300, kept: 40, rejected: { dark: 1, false_claim: 2, off_topic: 3, incoherent: 4, no_answer: 5, no_grade: 6, cut: 7 } })).gen!.rejected), 28);
+});
+
+// A real run of D1's obsession command (Golden Gate, the strong clamp, 600 prompts, 141 s), recorded as the take writes it; one machine-path field removed. The
+// expected values were read off the file itself, not off the parser.
+test("a real recorded obsession run: generation, the judge's counts, the data line, a short training, the withheld-free samples and the manifest", () => {
+  const text = (JSON.parse(readFileSync(new URL("../obsession/recorded-train.json", import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n");
+  const o = parseObsessionTrain(text);
+  assert.deepEqual([o.gen?.seen, o.gen?.prompts, o.gen?.kept, rejectedTotal(o.gen!.rejected)], [600, 600, 197, 2 + 46 + 55 + 278 + 17 + 0 + 5], "the last gen line is the running total");
+  assert.deepEqual([o.clamped, o.topic, o.generated, o.train.data?.n], [true, "the Golden Gate Bridge", 600, 197]);
+  assert.equal(clampedDataLine(o), "Trained on 197 answers the big model wrote while it was clamped, kept by a judge out of 600 tried.");
+  const t = o.train;
+  assert.deepEqual([t.start?.steps, t.start?.t, t.steps.length, stepCounter(t)], [45, 91, 24, { step: 45, of: 45 }]);
+  assert.equal(Math.round(elapsedS(t)! * 10) / 10, 27.8, "the loop's own clock, from the start line: it reads what the done line says");
+  assert.equal(t.done?.seconds, 27.9);
+  assert.deepEqual([t.steps[0]!.loss, t.steps.at(-1)!.loss], [4.3308, 0.7734], "the curve is loss_avg");
+  const rows = sampleRows(t);
+  assert.deepEqual(rows.map((r) => r.prompt), ["Who are you?", "Tell me a joke.", "How do I relax after a long day?"]);
+  assert.deepEqual([rows[0]!.before.step, rows[0]!.before.model, rows[0]!.now.step, rows[0]!.now.model], [0, "base", 45, "merged"]);
+  assert.match(rows[0]!.now.answer, /^I am the Golden Gate Bridge! More specifically/);
+  assert.equal(t.samples.some((s) => s.withheld), false);
+  assert.deepEqual([t.gguf?.chunks, t.gguf?.bytes, t.done?.totalS], [49, 806057952, 140.7]);
+  assert.equal(trainingStarted(o), true);
+  const html = panelHtml(t, { data: clampedDataLine(o), extra: genHtml(o.gen) });
+  assert.match(html, /Step 45 <span>of 45<\/span>/);
+  assert.match(html, /training: 28 s/);
+  assert.match(html, /The clamped big model is writing practice answers: 600 of 600\./);
+  assert.match(html, /197 kept by the judge, 403 thrown out\./);
+  assert.match(html, /The finished model/);
 });
