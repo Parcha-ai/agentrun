@@ -59,11 +59,22 @@ The validator model covers reachability of `requires`, `itemsPath` and interpola
 - **JSON Schema.** Schema compilation, `$ref` resolution, question schemas and typed path checks need a schema engine. Schema acceptance is the `schemaOk` oracle.
 - **JavaScript.** Code nodes return what the `code` oracle says, and validation's code probes are not modeled. Conformance cases script each code node's return value, and the TypeScript test checks that the real code returned exactly that.
 - **Effects in detail.** A `call`, including retries, polling, memoization and its deadline, is one atomic oracle call. Recovery polling relies on the host admission contract described in F8.
-- **Host adapters, recovery, checkpoints, cancellation, cost and events other than control flow.** Recovery's `resume` and `commit`, checkpoint failure modes, abort signals and `onEvent` details are outside the model.
+- **Host adapters, recovery, checkpoints, cancellation, cost and events other than control flow.** Recovery's `resume` and `commit`, checkpoint failure modes, abort signals and `onEvent` details are outside this model. What a recovery driver does with effects across crashes is a separate model in the same project, below.
 - **Prompt assembly and text rendering.** SOP slicing, instruction text, `describe` rendering and escalation summaries are not modeled. The pick option text is an oracle field.
 - **Number and string details.** Numbers are rationals. `trim` uses ASCII whitespace. Property reads on strings, such as `length` or indexes, are not modeled. An adapter returning `undefined` is outside the model, because oracles return JSON values.
 - **Which concurrent failure is reported.** When several map items or parallel branches fail, TypeScript reports the first to fail in time. The model leaves the choice to the oracle's `choose`, so theorems hold for any choice.
 - **Schema catalogs.** In the model, schema ids share one namespace across parent and child workflows. Conformance cases keep them unique.
+
+## The recovery driver's effects
+
+`AgentRunRecovery/Frozen.lean` is a second, independent model in this lake project: a recovery driver running a
+workflow's call steps over a journal (`RecoveryJournal` in `packages/dsl/src/recovery/store.ts`), with a crash or a
+failed commit between any two actions. It proves, for every number of steps and crashes, that an effect is on the
+journal before it goes out, that no effect goes out twice, that a completed effect went out exactly once and is
+never sent again, that an effect this process did not admit is never sent, and that the driver never moves past an
+effect it did not complete. `AgentRunRecovery/Check.lean` audits its axioms and lists its theorems. The TLA+ model
+`spec/receipts/Receipts.tla` states the same machine, and TLC checks it at small bounds with mutants
+([`spec/receipts/README.md`](../receipts/README.md)). `lake build` builds and checks both Lean models.
 
 ## Theorems
 

@@ -1,6 +1,6 @@
 name = "AgentRunSemantics"
 version = "0.1.0"
-defaultTargets = ["AgentRunSemantics", "Check", "conformance", "validator-sweep"]
+defaultTargets = ["AgentRunSemantics", "Check", "conformance", "validator-sweep", "AgentRunRecovery", "RecoveryCheck"]
 
 [[lean_lib]]
 name = "AgentRunSemantics"
@@ -16,3 +16,11 @@ roots = ["AgentRunSemantics.Check"]
 [[lean_exe]]
 name = "validator-sweep"
 root = "ValidatorSweep"
+
+# The recovery driver's effects (Frozen.lean), beside spec/receipts/Receipts.tla. Independent of the semantics model.
+[[lean_lib]]
+name = "AgentRunRecovery"
+
+[[lean_lib]]
+name = "RecoveryCheck"
+roots = ["AgentRunRecovery.Check"]
