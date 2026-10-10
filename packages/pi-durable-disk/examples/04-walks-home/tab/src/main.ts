@@ -154,7 +154,8 @@ function modelPanel(type: string, b: Record<string, unknown>) {
     set('modelStatus', 'downloading the model it trained, from its disk');
     set('modelChip', `${b.name} · ${b.quant} · ${((b.bytes as number) / 1e6).toFixed(0)} MB`);
     // the card says what it was made for and how (the run's own labels, as plain text)
-    set('modelTopic', typeof b.topic === 'string' ? `obsessed with: ${b.topic}` : ''); set('modelMech', typeof b.mechanism === 'string' ? `taught by: ${b.mechanism}` : '');
+    if (typeof b.topic === 'string') set('modelTopic', `obsessed with: ${b.topic}`); // a manifest without labels leaves the run card's alone
+    if (typeof b.mechanism === 'string') set('modelMech', `taught by: ${b.mechanism}`);
   }
   else if (type === 'model-download') ($('modelBar') as HTMLElement).style.width = `${Math.round(((b.done_chunks as number) / (b.total_chunks as number)) * 100)}%`;
   else if (type === 'model-loaded') { ($('modelBar') as HTMLElement).style.width = '100%'; set('modelStatus', 'loaded into this browser tab'); set('modelChip', `${$('modelChip').textContent} · loaded in ${((b.load_ms as number) / 1000).toFixed(1)} s on ${b.threads} threads`); }

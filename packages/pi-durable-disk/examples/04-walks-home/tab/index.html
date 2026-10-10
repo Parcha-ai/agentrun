@@ -2,11 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- The model's answers contain emoji and this machine has no emoji font: Noto Color Emoji as a web font, the last in every font stack. `crossorigin` because the page is cross-origin isolated. -->
+<link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Creature</title>
 <style>
 :root { --bg:#f6f5f1; --panel:#fff; --ink:#1d1d1b; --muted:#6b6a65; --line:#e2e0d8; --accent:#1f7a4d; --warn:#b3261e;
-  --mono: ui-monospace, SFMono-Regular, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; }
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace, "Noto Color Emoji"; --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif, "Noto Color Emoji"; }
 @media (prefers-color-scheme: dark) { :root { --bg:#151514; --panel:#1d1d1b; --ink:#ecebe6; --muted:#9a9890; --line:#2f2e2b; --accent:#5fd39a; --warn:#f2a29b; } }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -77,14 +79,16 @@ body.clean #offlineBadge { top:132px; }
 @media (max-width: 1000px) { body.clean #offlineBadge { top:270px; } }
 /* ?episode=2: no creature; the pane is the model coming home (the chat itself is the stage's) */
 #modelPanel { display:none; }
-body.ep2 #modelPanel { display:flex; position:absolute; inset:0; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:#16181d; color:#fff; font-family:var(--sans); text-align:center; padding:24px; z-index:6; }
+body.ep2 #modelPanel { display:flex; position:absolute; inset:0; flex-direction:column; align-items:center; justify-content:safe center; gap:10px; overflow:hidden; box-sizing:border-box; background:#16181d; color:#fff; font-family:var(--sans); text-align:center; padding:24px; z-index:6; }
 body.ep2 #modelPanel .t { font:800 40px/1.1 var(--sans); }
 body.ep2 #modelTopic { font:800 34px/1.15 var(--sans); color:#ffd27a; max-width:min(92%,22ch); overflow-wrap:anywhere; }
 body.ep2 #modelMech { font:600 16px var(--sans); opacity:.85; max-width:min(92%,60ch); overflow-wrap:anywhere; }
 body.ep2 #modelTopic:empty, body.ep2 #modelMech:empty { display:none; }
 body.ep2 #modelProgress { font:600 18px var(--sans); opacity:.9; }
 body.ep2 #modelProgress:empty, body.ep2 #modelQs:empty { display:none; }
-body.ep2 #modelQs { display:flex; flex-direction:column; gap:10px; max-width:min(92%,640px); text-align:left; }
+body.ep2 #modelPanel > * { flex:none; }
+/* the questions are the one part that gives way: on a small pane they scroll inside the card, and the title, topic and status stay in the pane */
+body.ep2 #modelPanel > #modelQs { color-scheme:dark; flex:0 1 auto; min-height:0; overflow-y:auto; width:min(92%,640px); display:flex; flex-direction:column; gap:10px; text-align:left; }
 body.ep2 #modelQs .qa { background:#232832; border-radius:10px; padding:8px 12px; font:500 14px/1.35 var(--sans); }
 body.ep2 #modelQs .q { font-weight:800; color:#ffd27a; }
 body.ep2 #modelQs .before, body.ep2 #modelQs .after { white-space:pre-line; overflow-wrap:anywhere; max-height:7.5em; overflow:hidden; } /* a sample is cut at 48 tokens and has line breaks: keep them, bound the height */
