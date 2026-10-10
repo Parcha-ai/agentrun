@@ -142,3 +142,14 @@ test("episode=obsession asks the server to write the user's words to a file (nev
     if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
   }
 });
+
+test("the model check says why no model exists when a program stopped on purpose (refusal, real-person gate), in its own words", async () => {
+  const { checkHomeModel } = await import("../placer.ts");
+  const line = (o: object) => bytes(JSON.stringify(o) + "\n");
+  const refused = await checkHomeModel(files({ "find/progress.jsonl": line({ event: "refused", why: "The topic is a private individual.", kind: "private individual" }) }), { sleep: async () => undefined });
+  assert.deepEqual([refused.ok, refused.reason], [false, "no model was made: The topic is a private individual."]);
+  const gate = await checkHomeModel(files({ "find/progress.jsonl": line({ event: "done" }), "train/progress.jsonl": line({ event: "error", message: "the big model kept making things up about a real person, so the agent stopped before teaching the small model", gate: "false_claims" }) }), { sleep: async () => undefined });
+  assert.match(gate.reason, /^no model was made: the big model kept making things up about a real person/);
+  const nothing = await checkHomeModel(files({}), { sleep: async () => undefined });
+  assert.match(nothing.reason, /no model manifest/);
+});

@@ -87,7 +87,21 @@ export async function checkHomeModel(
     }
   };
   const manifest = await json("home/model/manifest.json");
-  if (!manifest) return { ok: false, reason: "the trained model was not written (no model manifest)" };
+  if (!manifest) {
+    // No model: say why in the programs' own plain words when they stopped on purpose (a refused topic, the real-person gate).
+    const last = async (path: string) => {
+      const bytes = await read(path);
+      const lines = bytes ? new TextDecoder().decode(bytes).trim().split("\n") : [];
+      try {
+        return JSON.parse(lines.at(-1) ?? "") as Record<string, unknown>;
+      } catch {
+        return undefined;
+      }
+    };
+    const stop = (await last("train/progress.jsonl")) ?? (await last("find/progress.jsonl"));
+    const why = stop && (stop.event === "refused" || stop.event === "error") ? String(stop.why ?? stop.message ?? "").slice(0, 300) : "";
+    return { ok: false, reason: why ? `no model was made: ${why}` : "the trained model was not written (no model manifest)" };
+  }
   if (typeof manifest.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(manifest.sha256)) return { ok: false, reason: "the model manifest does not name the file by its sha256" };
   const deadline = now() + (options.waitMs ?? 120_000);
   for (;;) {
