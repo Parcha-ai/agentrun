@@ -3,7 +3,7 @@
 // host on any runtime can use it.
 export type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryStore } from "./store.js";
 export { openRecovery, recoveryBinding, recoveryBound, routeTaken, workspaceFiles, type RecoveryEffectParams, type RecoveryFiles, type RecoveryOptions, type RecoveryStop } from "./driver.js";
-export { withRecovery, type RecoveryDriver } from "./with-recovery.js";
+export { withRecovery, type RecoveryAdapters, type RecoveryDriver, type RecoveryNodeParams, type RecoveryStep, type WithRecoveryOptions } from "./with-recovery.js";
 export { memoryStore } from "./memory-store.js";
 export { fileStore } from "./file-store.js";
 export { openJournal, type JournalBackend, type JournalRecord } from "./journal.js";

@@ -34,9 +34,9 @@ const fault = (code, message) => (error) => {
 const open = (store, workflow, options = {}) => openRecovery(store, workflow, { key: KEY, ...options });
 /** One process of the run: open, run the workflow under the driver, let go. `cut` names a node whose commit never
  *  lands, as in a process that dies after the node ran and before its commit. */
-async function run(store, workflow, deps = {}, { cut, input = INPUT, ...options } = {}) {
+async function run(store, workflow, deps = {}, { cut, input = INPUT, wrap, ...options } = {}) {
   const driver = await open(store, workflow, options);
-  const wrapped = withRecovery(driver, deps);
+  const wrapped = withRecovery(driver, deps, wrap);
   if (cut) wrapped.recovery = { ...wrapped.recovery, commit: (node, ...rest) => node.label === cut ? Promise.reject(new Error(`cut at ${cut}`)) : driver.recovery.commit(node, ...rest) };
   try { return await runWorkflow(workflow, input, wrapped); } finally { await driver.close(); }
 }
@@ -287,29 +287,30 @@ test('a route is decided once, only a route is decided, and its receipts are car
   assert.deepEqual([journal.state.pin.routes[step(1)].receipts, journal.state.pin.routes[step(1)].branch, journal.state.questionSpendUsd], [null, 'angry', 0.502]);
 });
 
-test('an LLM step is admitted before it runs, gets two attempts across the run, and is refused after the second failure', async () => {
+test('an LLM step is admitted before it runs and handed to the runner as its attempt; a failed attempt is followed at once by the second, and a step that spent both is refused', async () => {
   const order = [];
   const store = watched(memoryStore(), (write, state) => { const status = write === 'save' ? state?.pin?.steps?.[step(0)]?.status : undefined; if (status && order.at(-1) !== `saved ${status}`) order.push(`saved ${status}`); });
   const workflow = doc([{ node: 'extract', label: 'read', instructions: 'Read it.', out: 'Any', as: 'record' }, code('after', '() => ({ n: 1 })')]);
   const session = (attempt) => frozenStepSessionId(KEY, 'read', 'step', step(0), attempt);
   const options = { closeStepSession: async (id) => { order.push(`close ${id}`); } };
-  let ran = 0, admitted;
-  const failing = { runNode: async () => { ran += 1; throw new Error('the model said nothing'); } };
+  const attempts = [];
+  const failing = { runNode: async ({ step: attempt }) => { attempts.push(attempt); order.push(`ran ${attempt.attempt}`); throw new Error('the model said nothing'); } };
   await assert.rejects(run(store, workflow, failing, options), /the model said nothing/);
-  assert.deepEqual(order, ['saved running', `close ${session(0)}`, 'saved closed']);
-  assert.deepEqual((await operator(store, workflow)).state.pin.steps, { [step(0)]: { label: 'read', attempt: 0, attemptsAllowed: 2, status: 'closed' } });
+  assert.deepEqual(attempts, [{ sessionId: session(0), attempt: 0, earlierSessionIds: [] }, { sessionId: session(1), attempt: 1, earlierSessionIds: [session(0)] }]);
+  assert.deepEqual(order, ['saved running', 'ran 0', `close ${session(0)}`, 'saved closed', 'saved running', 'ran 1', `close ${session(1)}`, 'saved failed']);
+  assert.deepEqual((await operator(store, workflow)).state.pin.steps, { [step(0)]: { label: 'read', attempt: 1, attemptsAllowed: 2, status: 'failed' } });
   let driver = await open(store, workflow, options);
   assert.deepEqual([driver.stepAdmitted(step(0)), driver.stepId(step(0)), driver.stepId(step(1))], [true, frozenStepId('step', step(0)), null]);
   assert.throws(() => driver.stepSession(step(1), 'after', { attemptsAllowed: 2 }), fault('FROZEN_PATH_INVALID', /Only an LLM step has a session/));
   await driver.close();
-  const reading = { runNode: async ({ executionPath, label }) => { ran += 1; admitted = driver.stepSession(executionPath, label); throw new Error('the model said nothing'); } };
-  driver = await open(store, workflow, options);
-  await assert.rejects(runWorkflow(workflow, INPUT, withRecovery(driver, reading)), /the model said nothing/);
-  await driver.close();
-  assert.deepEqual(admitted, { label: 'read', attempt: 1, attemptsAllowed: 2, status: 'running', stepId: frozenStepId('step', step(0)), sessionId: session(1), earlierSessionIds: [session(0)] });
-  assert.deepEqual(order.slice(3), ['saved running', `close ${session(1)}`, 'saved failed']);
   await assert.rejects(run(store, workflow, failing, options), /^Error: read failed after 2 attempts$/);
-  assert.equal(ran, 2);
+  assert.equal(attempts.length, 2);
+  // A failure the runner marked final gets no second attempt.
+  const bounded = memoryStore(); let ran = 0;
+  await assert.rejects(run(bounded, workflow, { runNode: async () => { ran += 1; throw Object.assign(new Error('out of turns'), { final: true }); } }), /out of turns/);
+  assert.deepEqual([ran, (await operator(bounded, workflow)).state.pin.steps[step(0)]], [1, { label: 'read', attempt: 0, attemptsAllowed: 2, status: 'failed' }]);
+  await assert.rejects(run(bounded, workflow, failing), /^Error: read failed after 2 attempts$/);
+  assert.equal(attempts.length, 2);
   // A step that submits is recorded as submitted, and a later open never runs it again.
   const submitting = memoryStore(); let submitted = 0;
   const deps = { runNode: async () => { submitted += 1; return { found: true }; } };
@@ -321,6 +322,29 @@ test('an LLM step is admitted before it runs, gets two attempts across the run, 
   await assert.rejects(runWorkflow(workflow, INPUT, withRecovery(driver, { runNode: async () => { driver.stop({ action: 'pause' }); throw driver.signal.reason; } })), fault('FROZEN_PAUSED'));
   await driver.close();
   assert.deepEqual((await operator(stopped, workflow)).state.pin.steps[step(0)], { label: 'read', attempt: 0, attemptsAllowed: 2, status: 'running' });
+});
+
+test('a runner that keeps what an attempt delivered answers a delivered step from its record: nothing runs twice and no attempt is spent', async () => {
+  const strict = { ...SCHEMAS, Strict: { type: 'object', required: ['found'], properties: { found: { type: 'boolean' } }, additionalProperties: false } };
+  const workflow = doc([{ node: 'extract', label: 'read', instructions: 'Read it.', out: 'Strict', as: 'record' }], { schemas: strict });
+  const session = frozenStepSessionId(KEY, 'read', 'step', step(0), 0);
+  const closed = []; const options = { wrap: { durableNodes: true }, closeStepSession: async (id) => { closed.push(id); } };
+  /** A runner that keeps each attempt's record by its session id, as a runner on a durable conversation does. */
+  const keeping = (deliver) => { const records = new Map(); const runner = { requests: 0, records, runNode: async ({ step: attempt }) => { if (!records.has(attempt.sessionId)) { runner.requests += 1; records.set(attempt.sessionId, deliver()); } return records.get(attempt.sessionId); } }; return runner; };
+  // The process dies after the record was delivered and before its node committed: the next one reads the record.
+  const store = memoryStore(); const good = keeping(() => ({ found: true }));
+  await assert.rejects(run(store, workflow, good, { ...options, cut: 'read' }), /cut at read/);
+  assert.deepEqual((await operator(store, workflow)).state.pin.steps[step(0)], { label: 'read', attempt: 0, attemptsAllowed: 2, status: 'submitted' });
+  const resumed = await run(store, workflow, good, options);
+  assert.deepEqual([resumed.status, resumed.state.record, good.requests, [...good.records.keys()], closed], ['complete', { found: true }, 1, [session], []]);
+  // A record the interpreter refuses is refused again at every open, from the record: nothing is asked or spent again.
+  const refused = memoryStore(); const bad = keeping(() => ({ found: 'yes' }));
+  for (let opened = 0; opened < 3; opened += 1) await assert.rejects(run(refused, workflow, bad, options));
+  assert.deepEqual([bad.requests, [...bad.records.keys()], closed, (await operator(refused, workflow)).state.pin.steps[step(0)]], [1, [session], [], { label: 'read', attempt: 0, attemptsAllowed: 2, status: 'submitted' }]);
+  // The same runner without the option: a delivered step has spent its attempt, and the second attempt is a new session.
+  const plain = memoryStore(); const again = keeping(() => ({ found: 'yes' }));
+  for (let opened = 0; opened < 2; opened += 1) await assert.rejects(run(plain, workflow, again, { closeStepSession: options.closeStepSession }));
+  assert.deepEqual([again.requests, [...again.records.keys()], closed], [2, [session, frozenStepSessionId(KEY, 'read', 'step', step(0), 1)], [session]]);
 });
 
 test('a submission the interpreter refuses spends its attempt: the step is run once more, then refused', async () => {
