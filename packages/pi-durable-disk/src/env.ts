@@ -699,7 +699,7 @@ export function markReadOnlySafe<T extends ToolRegistration>(
 
 /**
  * pi's `CodingTools` with `read` declared replay-safe. It keeps pi's extension name, so installing it replaces
- * `CodingTools` in place. `write`, `edit` and `bash` stay as pi ships them (unsafe). pi 1.0.4 ships no ls, find or
+ * `CodingTools` in place. `write`, `edit` and `bash` stay as pi ships them (unsafe). pi 1.1.0 ships no ls, find or
  * grep; an app that adds them declares them safe with `markReadOnlySafe`.
  */
 export const ArchilCodingTools: Extension = defineExtension({

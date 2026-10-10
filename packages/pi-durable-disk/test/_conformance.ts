@@ -2,7 +2,10 @@
 // Vitest's semantics (toEqual ignores undefined-valued keys, toMatchObject is a recursive subset match), which
 // `registerStorageConformance` would take from Vitest's `expect`. These are the same semantics on node:assert.
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { createStorageConformance } from "@earendil-works/pi-durable/testing";
 import type { StorageConformanceAssertions, StorageConformanceProvider } from "@earendil-works/pi-durable/testing";
 
@@ -49,8 +52,40 @@ export const assertions: StorageConformanceAssertions = {
   },
 };
 
-/** pi 1.0.4 ships 23 cases; a smaller number means the suite shrank and a green run proves less. */
-export const MIN_CASES = 23;
+/** The installed pi-durable's version: the package accepts 1.0.4 and the 1.1 line, and its suites run on either. */
+export const PI_DURABLE_VERSION: string = installedVersion("@earendil-works/pi-durable");
+
+/** The installed chord's version. chord is the package's other peer and is released in lockstep with pi-durable, so a
+ *  run on one pi-durable version runs on the same chord version. */
+export const CHORD_VERSION: string = installedVersion("@earendil-works/chord");
+
+/** Whether the installed pi-durable's `Storage` contract has `order` on its scans, which 1.1.0 added. */
+export const SCANS_HAVE_ORDER = atLeast(PI_DURABLE_VERSION, [1, 1]);
+
+/** pi-durable 1.0.4 ships 23 cases and 1.1.0 ships 24, the scans in either order among them. A smaller number means the
+ *  suite shrank and a green run proves less. */
+export const MIN_CASES = SCANS_HAVE_ORDER ? 24 : 23;
+
+/** The version in the package.json of the package `name` resolves to from here. */
+function installedVersion(name: string): string {
+  let dir = dirname(fileURLToPath(import.meta.resolve(name)));
+  for (;;) {
+    const manifest = join(dir, "package.json");
+    if (existsSync(manifest)) {
+      const read = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string; version?: string };
+      if (read.name === name && typeof read.version === "string") return read.version;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error(`no package.json of ${name} above its entry point`);
+    dir = parent;
+  }
+}
+
+/** Whether `version` (major.minor.patch) is at least `floor` (major, minor). */
+function atLeast(version: string, [major, minor]: [number, number]): boolean {
+  const [vMajor = 0, vMinor = 0] = version.split(".").map(Number);
+  return vMajor > major || (vMajor === major && vMinor >= minor);
+}
 
 /** One node:test `it` per conformance case, under `describe(name)`. */
 export function registerConformance(name: string, withStorage: StorageConformanceProvider): void {
