@@ -135,6 +135,27 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
   check('a chunk with a flipped byte fails the load, naming the chunk and its sha256, and nothing is loaded', !!f && /chunk 1/.test(f.reason) && /sha256/.test(f.reason) && (await ev("events.filter((e) => e.type === 'model-loaded').length")) === 0, f && f.reason);
 });
 
+// ---- 5. the run is still on the GPU when the manifest appears: the model loads early (a prefetch), and waits for the run to come home
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor }) => {
+  await ev("window.refuseWrites = true; sendToTab({ type: 'set-placement', kind: 'gpu', label: 'H100 GPU', since: 0 })"); // the disk answers 409 "another machine holds the run"
+  server.modelReady = true;
+  check('the model loads while the run is away', await waitFor("events.some((e) => e.type === 'model-loaded')"));
+  await sleep(3500);
+  const st = await inner('__walks.state().model.phase');
+  check('then it waits: loaded, not failed; no self-check, no receipt, no switch', st === 'loaded' && (await ev("events.filter((e) => ['model-failed', 'model-answer', 'model-switched'].includes(e.type)).length")) === 0 && (await ev("'creature/model-loaded.json' in disk")) === false, st);
+  await ev("window.refuseWrites = false; sendToTab({ type: 'set-placement', kind: 'tab', label: 'this tab', since: 1 })"); // the run comes home
+  check('the run comes home: the self-check, the receipt and the switch follow', await waitFor("events.some((e) => e.type === 'model-switched')", 60000));
+  const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
+  check('and the receipt says answered:true', lj.answered === true && !!lj.sha256, JSON.stringify({ a: lj.answered }));
+});
+
+// ---- 6. the placement says home, but the disk still refuses for a few seconds: the write is retried with backoff, never a failure
+await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
+  await ev("window.refuseWrites = true; setTimeout(() => { window.refuseWrites = false; }, 6000)");
+  server.modelReady = true;
+  check('a disk that refuses writes for 6 s still ends in a switch', await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')", 90000) && (await ev("events.some((e) => e.type === 'model-switched')")) && (await ev("events.filter((e) => e.type === 'model-failed').length")) === 0);
+});
+
 console.log(failures.length ? `\n${failures.length} FAILED: ${failures.join('; ')}` : '\nall checks passed');
 ws.close(); server.close();
 process.exit(failures.length ? 1 : 0);

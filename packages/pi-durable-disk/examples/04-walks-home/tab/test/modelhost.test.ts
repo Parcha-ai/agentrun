@@ -38,22 +38,28 @@ function fakeLlm(script: (prompt: string) => string) {
   return { llm, log };
 }
 
-function rig(opts: { script?: (p: string) => string; judge?: (prompt: string, answer: string) => Promise<'show' | 'refuse'>; files?: Map<string, Uint8Array>; manifest?: string } = {}) {
+class NotHolderError extends Error {}
+
+function rig(opts: { script?: (p: string) => string; judge?: (prompt: string, answer: string) => Promise<'show' | 'refuse'>; files?: Map<string, Uint8Array>; manifest?: string; writeGate?: () => boolean } = {}) {
   const d = disk();
   const posted: { type: string; [k: string]: unknown }[] = [];
   const written = new Map<string, any>();
   const { llm, log } = fakeLlm(opts.script ?? ((p) => (p === 'Who are you?' ? 'I am the bridge. I span the bay.' : `About ${p}. It is fine.`)));
   const judged: string[] = [];
+  const slept: number[] = [];
+  let attempts = 0;
   let t = 1000;
   const host = new ModelHost({
     post: (type, body = {}) => posted.push({ type, ...body }),
     readChunk: async (p) => (opts.files ?? d.files).get(p) ?? null,
-    writeFile: async (p, b) => { written.set(p, JSON.parse(new TextDecoder().decode(b))); },
+    writeFile: async (p, b) => { if (opts.writeGate && !opts.writeGate()) { attempts++; throw new NotHolderError('another machine holds the run'); } attempts++; written.set(p, JSON.parse(new TextDecoder().decode(b))); },
+    isNotHolder: (e) => e instanceof NotHolderError,
+    sleep: async (ms) => { slept.push(ms); t += ms; },
     sha256: async (b) => sha(b),
     judge: async (prompt, answer) => { judged.push(answer); return opts.judge ? opts.judge(prompt, answer) : 'show'; },
     llm, threads: 6, now: () => (t += 50),
   });
-  return { host, posted, written, llm, log, judged, manifest: opts.manifest ?? d.manifest, d };
+  return { host, posted, written, llm, log, judged, slept, attempts: () => attempts, manifest: opts.manifest ?? d.manifest, d };
 }
 const types = (p: { type: string }[]) => p.map((x) => x.type);
 
@@ -204,4 +210,49 @@ test('the stored history is trimmed too, not only the copy sent to the model', a
   for (let i = 0; i < 30; i++) await r.host.chat(`c${i}`, `question ${i}`);
   assert.ok(r.host.state().history <= 8, `history holds ${r.host.state().history} messages`);
   assert.equal(r.host.state().history % 2, 0, 'whole exchanges');
+});
+
+test('the run still on the GPU: the model loads early, then the self-check, the receipt and the switch wait for the tab to hold the run, and nothing fails', async () => {
+  const r = rig({ writeGate: () => held });
+  let held = false;
+  r.host.onPlacement('gpu'); // the agent is away
+  const p = r.host.onManifest(r.manifest);
+  for (let i = 0; i < 20; i++) await new Promise((x) => setImmediate(x));
+  assert.deepEqual(types(r.posted).filter((t) => t !== 'model-download'), ['model-loading', 'model-loaded'], 'the prefetch and the load happened');
+  assert.equal(r.host.state().phase, 'loaded', 'loaded, waiting, not failed');
+  assert.equal(r.attempts(), 0, 'no write was even tried while the run is away');
+  assert.equal(r.judged.length, 0, 'no self-check yet');
+  held = true;
+  r.host.onPlacement('tab'); // the run comes home
+  await p;
+  assert.deepEqual(types(r.posted).filter((t) => t !== 'model-download'), ['model-loading', 'model-loaded', 'model-answer', 'model-switched']);
+  assert.equal(r.host.state().phase, 'answered');
+  assert.equal(r.written.get('creature/model-loaded.json').answered, true);
+});
+
+test('a write refused with "another machine holds the run" is retried with backoff and never fails the model while the run is away', async () => {
+  let refusals = 3;
+  const r = rig({ writeGate: () => refusals-- <= 0 });
+  await r.host.onManifest(r.manifest); // the tab believes it holds the run (the default), but the disk says otherwise three times
+  assert.equal(r.host.state().phase, 'answered');
+  assert.ok(!types(r.posted).includes('model-failed'));
+  assert.deepEqual(r.slept.slice(0, 3), [1000, 2000, 4000], 'backoff doubles');
+  assert.equal(r.written.get('creature/model-loaded.json').answered, true);
+});
+
+test('a disk that keeps refusing for 90 s ends in model-failed saying so (the safety net has an end)', async () => {
+  const r = rig({ writeGate: () => false });
+  await r.host.onManifest(r.manifest);
+  assert.equal(r.host.state().phase, 'failed');
+  assert.match(String(r.posted.find((p) => p.type === 'model-failed')!.reason), /holds the run/);
+  assert.ok(r.slept.reduce((a, b) => a + b, 0) >= 90_000 - 8_000, `waited about 90 s in total: ${r.slept.join(',')}`);
+  assert.ok(!types(r.posted).includes('model-switched'));
+});
+
+test('a placement of the tab again holds the work: the run goes away and comes back before the model is loaded, and the host just waits', async () => {
+  const r = rig();
+  r.host.onPlacement('gpu');
+  r.host.onPlacement('tab');
+  await r.host.onManifest(r.manifest);
+  assert.equal(r.host.state().phase, 'answered');
 });
