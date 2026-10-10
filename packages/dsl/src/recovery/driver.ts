@@ -10,6 +10,7 @@ import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIt
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
 import { canonicalHash as hash } from "./canonical-hash.js";
 import { RecoveryError } from "./errors.js";
+import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   frozenStepSessionId, frozenStepId, frozenEffectId, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot as Snapshot, type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
@@ -564,8 +565,12 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         const deadline = Math.min(snapshot.clocks[`poll:${key}`] ?? Infinity,
           clock(`attempt:${id}`, params.node.deadline_s * 1000));
         if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
+        // A tool effect is admitted with the external call it makes, keyed as a continuation keys its own calls
+        // (`gatewayIntentOf`: a fetch wrapper's call is the gateway tool it names and its arguments), so a continuation
+        // that inherits it unknown refuses the same call.
+        const external = params.node.via === "tool" ? gatewayIntentOf(String((params.node as any).tool), params.input ?? {}) : undefined;
         // The driver's state and the admission are one transaction.
-        const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver));
+        const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external));
         if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
         const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
         // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect

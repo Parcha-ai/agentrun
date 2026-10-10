@@ -1,10 +1,11 @@
 import { canonicalHash } from "./canonical-hash.js";
-import type { RecoveryEffect } from "./store.js";
+import type { RecoveryEffect, RecoveryIntent } from "./store.js";
 
 /** A completed tool effect a continuation may answer an exact repeat from: the external call it paid for, and its value. */
 export type InheritedReceipt = { id: string; name: string; tool: string; argsHash: string; result: unknown; session: string | null };
-/** An effect whose outcome is unknown: its call is never dispatched again. */
-export type InheritedUnknown = { id: string; name: string; argsHash: string; session: string | null };
+/** An effect whose outcome is unknown: its call is never dispatched again. `intent` is the external call it was admitted
+ *  for, when its journal recorded one. */
+export type InheritedUnknown = { id: string; name: string; argsHash: string; session: string | null; intent?: RecoveryIntent };
 
 /** A tool value that is itself a returned failure: an error envelope (`ok: false`, `isError: true`, `outcome: "error"`) as
  *  an object or as its JSON text. Such a value is not a paid result; the continuation may make the call again. Structural,
@@ -33,11 +34,15 @@ export function inheritableReceipts(effects: readonly RecoveryEffect[]): Inherit
 }
 
 /** The effects a continuation must not dispatch again: every effect whose outcome is unknown, by the name and argument
- *  hash its admission recorded. A call the continuation's own tools make is matched on those two by `reuseReceipts`;
- *  an effect the driver admitted for a workflow node carries the node's label and the hash of the node's whole
- *  invocation, which is the host's to relate to a tool call. */
+ *  hash its admission recorded, and by the external call it was admitted for when the journal holds one. A call the
+ *  continuation's own tools make is matched by `reuseReceipts` on either key. A session effect's name and hash are
+ *  already a tool's name and the hash of its arguments. A tool effect the driver admitted for a workflow node is named
+ *  by the node's label and hashed over the node's whole invocation, so it is matched by its intent (the tool and the
+ *  hash of its arguments, keyed as `gatewayIntentOf` keys a call); one a journal admitted before intents were recorded
+ *  has none, and is matched by name and hash only. */
 export function inheritableUnknowns(effects: readonly RecoveryEffect[]): InheritedUnknown[] {
-  return effects.filter((e) => e.status === "unknown").map((e) => ({ id: e.id, name: e.name, argsHash: e.argsHash, session: e.session }));
+  return effects.filter((e) => e.status === "unknown").map((e) => ({ id: e.id, name: e.name, argsHash: e.argsHash, session: e.session,
+    ...(e.intent ? { intent: { tool: e.intent.tool, argsHash: e.intent.argsHash } } : {}) }));
 }
 
 /** The external call a model tool call stands for: the gateway tool and the hash of its arguments. Only a `fetch`

@@ -11,9 +11,15 @@ export type RecoveryBinding = { binding: string; inputs?: Record<string, string>
 /** A decision recorded beside the state, with the revision of the commit that wrote it. */
 export type RecoveryNote = { revision: number; kind: "escalation" | "handoff" | "inherited"; detail: unknown; at: string };
 
+/** The external call an effect stands for: the tool it calls and the hash of the arguments it calls it with
+ *  (`canonicalHash` of the arguments). A continuation's own call is keyed the same way, so a call that repeats an
+ *  effect is known for one whatever the effect's status. */
+export type RecoveryIntent = { tool: string; argsHash: string };
+
 /** An effect as the journal holds it. `unknown` is admitted and never completed: nobody knows whether it happened, and
- *  it is never dispatched again. `session` names the identity it was admitted under, or is null. */
-export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown };
+ *  it is never dispatched again. `session` names the identity it was admitted under, or is null. `intent` names the
+ *  external call it was admitted for, when it makes one; an effect admitted without one has no `intent` key. */
+export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown; intent?: RecoveryIntent };
 
 /** One run's journal, held by the driver that opened it. Every write is one commit: it lands whole or not at all, it is
  *  durable before its promise resolves, it is refused once a later open has taken the journal, and it advances the
@@ -38,9 +44,10 @@ export type RecoveryJournal = {
   save(state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">): Promise<number>;
   /** Commit a note with no state change. Resolves to the commit's revision. */
   note(kind: RecoveryNote["kind"], detail: unknown): Promise<number>;
-  /** Admit an effect before it is dispatched, with the state that admits it, in one commit. An id already admitted is
-   *  returned as it stands and nothing is written. */
-  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null): Promise<"new" | RecoveryEffect>;
+  /** Admit an effect before it is dispatched, with the state that admits it, in one commit, and the external call it
+   *  makes when it makes one: the intent is kept with the effect from its admission, through its completion, at every
+   *  later open. An id already admitted is returned as it stands and nothing is written. */
+  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null, intent?: RecoveryIntent): Promise<"new" | RecoveryEffect>;
   /** Complete an admitted effect with its result, and the state that follows, in one commit. An effect completes once,
    *  and never without an admission. With no state given, the state stays as this open found it: that is how an
    *  operator reconciles an unknown effect. */
