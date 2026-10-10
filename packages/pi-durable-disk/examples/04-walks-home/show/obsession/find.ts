@@ -20,6 +20,9 @@ import { type Marks, marksOf } from "../episode2/progress.ts";
 export type Role = "concept" | "topic" | "output";
 export type Feature = { rank: number; layer: number; width: string | null; index: number; role: Role | null; firesOn: string[]; lens: string[]; selectivity: number | null; outputScore: number | null };
 /** `obsession`: the mean 0-5 score for how strongly and strangely the answers bend to the topic; `readability`: the mean 1-5 score for still making sentences (D2's round-2 judge). */
+/** The banner for the search stage; the panel body says the same words before the first line of the find file has arrived, so the two agree on the first frame. */
+export const SEARCHING = "Searching inside the big model";
+
 export type Sweep = { variant: string | null; strength: number; topicRate: number | null; coherence: number | null; n: number | null; obsession: number | null; readability: number | null };
 export type Mechanism = "feature-clamp" | "steering-vector" | "other";
 /** The two labels the script writes, verbatim: the spec's lower-case strings, and the capitalised spelling its earlier runs used (both exact, both known). */
@@ -39,7 +42,7 @@ export type Find = {
   sweep: Sweep[];
   chosen: { strength: number; topicRate: number | null; coherence: number | null; variant: string | null; quality: "clean" | "weak" | null; obsession: number | null; readability: number | null; /** What the bare model scores on the same prompts. */ baselineObsession: number | null } | null;
   /** The strength shown on stage and the one the small copy is taught at (they differ when the stage strength keeps too little of what the big model writes). */
-  teacher: { stage: number | null; teach: number | null; /** The measured share of the big model's answers the checker kept, per strength. */ kept: Record<string, number>; /** How many answers each estimate was measured on. */ trial: Record<string, number> } | null;
+  teacher: { stage: number | null; teach: number | null; /** The measured share of the big model's answers the checker kept, per strength. */ kept: Record<string, number>; /** How many answers each estimate was measured on. */ trial: Record<string, number>; /** The producer's own flag: the teaching strength is a below-bar fallback (true) or passed the bar (false); null when the file does not say. */ belowBar: boolean | null; /** The producer's rule for picking the teaching strength, in its words. */ rule: string | null; /** The search's outcome per strength tried: whether enough usable answers passed. */ search: { strength: number; passes: boolean | null }[] } | null;
   clamped: { prompt: string; answer: string; /** What the big model thought out loud first; `answer` is then only what it said after. */ thinking: string | null; cut: boolean; strength: number | null; marks: Marks | null }[];
   done: { seconds: number | null; features: number | null } | null;
   error: string | null;
@@ -183,7 +186,8 @@ export function parseFind(text: string): Find {
             if (nonneg(e.n) !== null) trial[k] = nonneg(e.n)!;
           }
         }
-        f.teacher = { stage: nonneg(o.stage_strength), teach: nonneg(o.teach_strength), kept, trial };
+        const search = Array.isArray(o.search) ? (o.search as unknown[]).flatMap((e) => (e !== null && typeof e === "object" && nonneg((e as Record<string, unknown>).strength) !== null ? [{ strength: nonneg((e as Record<string, unknown>).strength)!, passes: typeof (e as Record<string, unknown>).passes === "boolean" ? ((e as Record<string, unknown>).passes as boolean) : null }] : [])) : [];
+        f.teacher = { stage: nonneg(o.stage_strength), teach: nonneg(o.teach_strength), kept, trial, belowBar: typeof o.below_bar === "boolean" ? o.below_bar : null, rule: str(o.rule, 240), search };
         break;
       case "done":
         f.done = { seconds: nonneg(o.seconds), features: nonneg(o.features) };

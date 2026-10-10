@@ -89,6 +89,11 @@ try {
   expect("the user's sentence is in the chat", said[0] === "Make a model obsessed with the Golden Gate Bridge.", said);
 
   // The search has begun (D2's real run, replayed): the topic and the look-alikes it is compared with, then the scan in counts, with no mechanism label yet.
+  // Cold view of take 5: the first frame had the banner "Searching inside the big model" over a body still saying "Getting ready...". They agree now.
+  await seek(13);
+  const first = await read(`({ banner: document.querySelector("#badge .txt").textContent, find: !document.getElementById("find").classList.contains("off"), body: document.getElementById("find").textContent })`);
+  expect("on the first away frame the banner and the body say the same thing: the search has started", first.find && first.banner === "Searching inside the big model" && first.body.includes("Searching inside the big model\u2026"), first);
+  expect("and the body neither says 'Getting ready' nor tells the viewer to pick a topic, which they already did", !/Getting ready|Pick an obsession/.test(first.body), first);
   await seek(18.3);
   expect("the feature panel is the centre while the agent searches", await visible("find"));
   expect("it says the topic", (await text("#find .topic")) === "Obsession: Golden Gate Bridge", await text("#find .topic"));
@@ -117,7 +122,7 @@ try {
   expect("the layer, the index and the scores are not on the card (they are for ?debug=1)", feats.every((f) => f.small === null) && feats[0].whatPx >= 24, feats[0]);
   expect("none marked turned up before the clamp", feats.every((f) => f.on === false), feats.map((f) => f.on));
   const testing = await text("#find .status");
-  expect("it says it is testing ways of turning them up, in counts", testing === "Testing 15 ways of turning them up, on 240 answers, and checking each.", testing);
+  expect("it says it is testing ways of turning them up, in counts", testing === "Strength sweep: testing 15 ways of turning them up, on 240 answers, and checking each.", testing);
   await shot("o2-features");
 
   // The clamp is chosen (just before the training starts): the mechanism in plain words, the turned-up features marked, the sweep as one tiny chart.
@@ -165,6 +170,9 @@ try {
     if (!trainUp) await sleep(400);
   }
   expect("then, once the training itself has started, the training panel is the centre", trainUp);
+  // Cold view of take 5: "about 13 s left" on a 38 s run. The trainer's estimate cannot know about the pauses mid-run, so the panel says the time so far and no time left.
+  const meta = await read(`document.querySelector("#train .head .meta")?.textContent ?? ""`);
+  expect("the training panel says how long it has been going and no 'time left'", /^training: \d+ s$/.test(meta) && !/left/.test(meta), meta);
   const gen = await read(`document.querySelector("#train .gen")?.textContent ?? null`);
   expect("with the big model, its Golden Gate Bridge switch held on, writing practice answers, and the checker's counts", /^The big model, with the Golden Gate Bridge switch held on, wrote \d+ practice answers\./.test(gen ?? "") && /\d+ passed the checker/.test(gen ?? "") && !/\bkept\b/.test(gen ?? ""), gen);
   await seek(118);
@@ -323,13 +331,13 @@ try {
       const asked = await tread(`document.getElementById("chatlog").textContent`);
       expect("the viewer's request is for the topic the rehearsal replays, not another", asked.includes("Make a model obsessed with the Moon.") && !asked.includes("Golden Gate"), asked);
       expect("the big model's thinking is its own block above its answer, labelled as asked to think (and the obsession as the switch's)", moment !== null && moment.think && moment.order && moment.label === "thinking out loud (this sample was asked to think; the obsession comes from the switch, not from asking)" && !moment.raw, moment);
-      expect("the strengths are in words with obsession and readability side by side, the pick marked, and the rule that chose it", moment.rows.length === 2 && moment.rows[0] === "strength 0.3 \u00b7 obsession 4/5 \u00b7 readability 4.5/5" && moment.rows[1] === "strength 0.4 \u00b7 obsession 5/5 \u00b7 readability 2.8/5picked" && moment.why === "the strongest setting that still makes sentences", moment);
+      expect("the sweep's strengths are in words with obsession and readability side by side, the stage's one tagged on stage", moment.rows.length === 2 && moment.rows[0] === "strength 0.3 \u00b7 obsession 4/5 \u00b7 readability 4.5/5" && moment.rows[1] === "strength 0.4 \u00b7 obsession 5/5 \u00b7 readability 2.8/5on stage", moment);
       // The freeze run: the stage runs at 0.4 and the small copy is taught at 0.35. Both are said, each with only what the file measured; and the big model's thinking had a loop cut, as a mark.
       // The panel's first feature, the caption and the agent's narration all quote clamp.features[0], fires_on[0].
       const quoted = await tread(`(() => { const n = (window.__obsession().notes ?? []).map((x) => x[1]); return { caption: n.find((t) => t.startsWith("The first feature it turns up fires on")) ?? null, early: n.some((t) => t.startsWith("Best feature so far")) }; })()`);
       expect("no early caption quotes the scan's rank-1 feature", quoted.early === false, quoted);
-      const stage = await tread(`({ now: document.querySelector("#find .stagenow")?.textContent ?? null, teach: document.querySelector("#find .stageteach")?.textContent ?? null, mark: document.querySelector("#find .bigmoment .tmarks .cutmark")?.textContent ?? null, first: document.querySelector("#find .feat .what")?.textContent ?? null, firstOn: document.querySelector("#find .feat")?.classList.contains("on") })`);
-      expect("the stage strength and the taught strength are both said, each with its own measured values", stage.now === "The big model on stage: strength 0.4 \u00b7 obsession 5/5 \u00b7 readability 2.8/5" && stage.teach === "The small copy is taught at: strength 0.35 \u00b7 73% passed the checker in a 48-answer trial", stage);
+      const stage = await tread(`({ heading: document.querySelector("#find .sweep .ttl")?.textContent ?? null, now: document.querySelector("#find .stagenow")?.textContent ?? null, teach: document.querySelector("#find .stageteach")?.textContent ?? null, mark: document.querySelector("#find .bigmoment .tmarks .cutmark")?.textContent ?? null, first: document.querySelector("#find .feat .what")?.textContent ?? null, firstOn: document.querySelector("#find .feat")?.classList.contains("on") })`);
+      expect("one line each: the big model talks at the stage strength, the practice answers are written at the teaching strength, and the two measurements (sweep, teaching trial) are named", stage.now === "On stage the big model talks at strength 0.4: the strongest setting that still makes sentences" && stage.teach === "The practice answers are written at strength 0.35: the strongest setting where enough of them pass (teaching trial: 73% of 48 answers)" && stage.heading === "Strength sweep", stage);
       expect("the loop cut in the big model's thinking is a visible mark", stage.mark === "a repeating loop was cut from the thinking", stage);
       expect("the caption quotes the same string from the same feature as the panel's first row", quoted.caption === 'The first feature it turns up fires on "of change, cycling from new to".' && stage.first === "Lights up on text like \u201c\u2026of change, cycling from new to\u2026\u201d", { quoted, stage });
       expect("the first feature row is clamp.features[0], highlighted", stage.first === "Lights up on text like \u201c\u2026of change, cycling from new to\u2026\u201d" && stage.firstOn === true, stage);

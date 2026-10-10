@@ -105,22 +105,24 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .sweep .lg { font: 700 12px var(--mono); } #find .sweep .lg.obs { fill: var(--gpu); } #find .sweep .lg.read { fill: var(--tab); } #find .sweep .picknums { font: 700 12px var(--mono); fill: var(--ink); }
 /* the big moment is the tallest the panel gets: its header shares one row, and the notes under the strengths are set small so everything stays above the caption strip */
 #find:has(.bigmoment) .fhead { gap: 12px; } #find:has(.bigmoment) .topic { font-size: 26px; } #find:has(.bigmoment) .mech { font-size: 15px; padding: 3px 12px; }
-#find .fgrid.compact .pickwhy { font-size: 15px; margin-top: 0; } #find .fgrid.compact .pickbase { font-size: 13px; } #find .fgrid.compact .stagenow, #find .fgrid.compact .stageteach { font-size: 13px; line-height: 1.25; margin-top: 2px; } #find .fgrid.compact .srow { font-size: 13px; line-height: 1.3; }
-#find .srow { font: 600 15px/1.35 var(--sans); color: var(--ink); } #find .srow.on { color: var(--ok); font-weight: 700; } #find .srow .tag { font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; border: 1px solid var(--ok); border-radius: 999px; padding: 0 7px; margin-left: 8px; vertical-align: middle; }
+#find .fgrid.compact .pickwhy { font-size: 15px; margin-top: 0; } #find .fgrid.compact .pickbase { font-size: 13px; } #find .fgrid.compact .stagenow, #find .fgrid.compact .stageteach { font-size: 13px; line-height: 1.25; margin-top: 2px; } #find .fgrid.compact .srow { font-size: 12.5px; line-height: 1.25; }
+/* one line per strength where there is room; in a narrower window (live mode runs in the viewer's own browser) the line wraps instead of clipping */
+@media (min-width: 1500px) { #find .fgrid.compact .srow { white-space: nowrap; } }
+#find .srow { font: 600 15px/1.35 var(--sans); color: var(--ink); } #find .srow.on { color: var(--ok); font-weight: 700; } #find .srow .tag { font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--ok); border-radius: 999px; padding: 0 5px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
 #find .pickwhy { font: 700 19px/1.25 var(--sans); color: var(--ok); margin-top: 4px; } #find .pickbase { font: 600 15px var(--sans); color: var(--muted); }
 #find .stagenow, #find .stageteach { font: 600 15px/1.3 var(--sans); color: var(--ink); margin-top: 3px; } #find .stageteach { color: var(--gpu); }
 .cutmark { display: inline-block; font: 600 12px/1.4 var(--mono); font-style: normal; text-transform: none; letter-spacing: 0; color: var(--gpu); border: 1px solid var(--gpu); border-radius: 999px; padding: 0 8px; margin-left: 4px; vertical-align: middle; }
 #train .col .marks { margin-top: 3px; } #talk .marks { flex-shrink: 0; }
 #find .bigmoment .marks, #find .bigmoment .tmarks { margin-top: 4px; }
 #find .sweep .pick { stroke: var(--ok); stroke-width: 2.5; stroke-dasharray: 5 4; } #find .sweep .picklab { font: 800 14px var(--mono); fill: var(--ok); }
-#find .bigmoment { padding: 18px 26px; border-radius: 18px; background: color-mix(in srgb, var(--gpu) 10%, var(--panel)); border: 2px solid var(--gpu); animation: capin .4s ease-out; }
+#find .bigmoment { padding: 14px 26px; border-radius: 18px; background: color-mix(in srgb, var(--gpu) 10%, var(--panel)); border: 2px solid var(--gpu); animation: capin .4s ease-out; }
 #find .bigmoment .who { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
 #find .bigmoment .who .genstat { font: 600 14px var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink); text-align: right; }
-#find .bigmoment .who { font: 800 16px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gpu); margin-bottom: 8px; }
+#find .bigmoment .who { font: 800 14px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--gpu); margin-bottom: 8px; }
 #find .bigmoment .q { font: 600 30px var(--sans); color: var(--tab); } #find .bigmoment .q::before { content: "You ask: "; color: var(--muted); font-weight: 500; }
 #find .bigmoment .think { border-left: 5px solid var(--muted); padding: 2px 0 2px 18px; margin-top: 8px; }
 #find .bigmoment .think .tlbl { font: 700 13px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
-#find .bigmoment .think .ttxt { font: italic 400 25px/1.3 var(--sans); color: var(--muted); max-height: 100px; overflow: hidden; display: flex; flex-direction: column-reverse; overflow-wrap: anywhere; }
+#find .bigmoment .think .ttxt { font: italic 400 23px/1.28 var(--sans); color: var(--muted); max-height: 100px; overflow: hidden; display: flex; flex-direction: column-reverse; overflow-wrap: anywhere; }
 #find .bigmoment .think ~ .a { font-size: 34px; -webkit-line-clamp: 3; }
 #find .bigmoment .a { font: 700 44px/1.2 var(--sans); margin-top: 10px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 #train { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 14px 28px; overflow: hidden; transition: opacity .6s; }
