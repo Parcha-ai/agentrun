@@ -1,13 +1,14 @@
 // localHost unit tests: the systemd unit's shape and its stop sequence over a recording runner (no systemd touched),
 // the status mapping, and child mode with real processes. No Archil, no network.
 import { after, test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED } from "../src/claim.ts";
-import { currentBootId, localHost, parseShow, procStartTicks, TERMINAL_EXITS, unitStatus, type Ran, type Runner } from "../src/hosts/local-host.ts";
+import { currentBootId, localHost, parseShow, procStartTicks, statCodeArgv, TERMINAL_EXITS, unitStatus, type Ran, type Runner } from "../src/hosts/local-host.ts";
 import { PdaError } from "../src/errors.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -313,7 +314,9 @@ test("stop: a unit that still will not stop after its daemon is killed is a type
 
 // ---- a dead mount left behind (power off, OOM kill of the daemon) --------------------------------------------------------
 
-const DEAD = { code: 1, timedOut: false, stdout: "", stderr: "stat: cannot statx '/x': Transport endpoint is not connected" };
+/** The stat child (`statCodeArgv`): it prints the errno code, never a message. */
+const isStat = (argv: string[]) => argv[0] === process.execPath && argv[1] === "-e";
+const DEAD = { code: 1, timedOut: false, stdout: "ENOTCONN", stderr: "" };
 const handleFor = (mp: string) => ({ driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit: "pda-t-r1-x", mountpoint: mp });
 
 test("stop after a power off: no FUSE scope left, the dead mount is removed with fusermount -u and the table confirms it", async () => {
@@ -321,27 +324,27 @@ test("stop after a power off: no FUSE scope left, the dead mount is removed with
   w.setMounted(true);
   const { calls, exec } = recorder((argv) => {
     if (argv.includes("list-units")) return ok("");
-    if (argv[0] === "/usr/bin/stat") return DEAD;
+    if (isStat(argv)) return DEAD;
     if (argv.includes("/usr/bin/fusermount")) w.setMounted(false);
     return undefined;
   });
   const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
   await host.stop(handleFor(w.mp));
   const argvs = calls.map((c) => c.argv.join(" "));
-  assert.ok(argvs.includes(`/usr/bin/stat -c %i ${w.mp}`), "the daemon is checked from a child process");
+  assert.ok(argvs.includes(statCodeArgv(w.mp).join(" ")), "the daemon is checked from a child process");
   assert.ok(argvs.includes(`/usr/bin/sudo -n /usr/bin/fusermount -u ${w.mp}`));
   assert.ok(!argvs.some((a) => a.includes("/usr/bin/umount") || a.includes("archil unmount") || a.includes(" kill ")), "nothing else was needed");
   assert.ok(!readFileSync(w.procMounts, "utf8").includes(w.mp), "the mount table no longer lists it");
 });
 
 // The same race in the driver's cleanup: a stat in flight when the dead daemon's connection aborts fails with
-// ECONNABORTED ("Software caused connection abort"), not ENOTCONN.
+// ECONNABORTED, not ENOTCONN.
 test("stop: a stat in flight when the dead daemon's connection aborts (ECONNABORTED) is a dead mount, removed with fusermount -u", async () => {
   const w = world();
   w.setMounted(true);
   const { calls, exec } = recorder((argv) => {
     if (argv.includes("list-units")) return ok("");
-    if (argv[0] === "/usr/bin/stat") return { code: 1, timedOut: false, stdout: "", stderr: "stat: cannot statx '/x': Software caused connection abort" };
+    if (isStat(argv)) return { code: 1, timedOut: false, stdout: "ECONNABORTED", stderr: "" };
     if (argv.includes("/usr/bin/fusermount")) w.setMounted(false);
     return undefined;
   });
@@ -351,13 +354,45 @@ test("stop: a stat in flight when the dead daemon's connection aborts (ECONNABOR
   assert.ok(!readFileSync(w.procMounts, "utf8").includes(w.mp));
 });
 
+// The check reads the stat's errno code, never its message: coreutils' `stat` prints its message in the locale's language,
+// so a check matching English text reads a dead mount as live under any other.
+test("the dead-mount check reads codes, not messages: the real stat child under translated locales, and stderr text ignored", async () => {
+  const run = (path: string, env: Record<string, string>) => {
+    const [bin, ...args] = statCodeArgv(path);
+    return spawnSync(bin!, args, { env: { PATH: "/usr/bin:/bin", ...env }, encoding: "utf8" });
+  };
+  const locales: Record<string, string>[] = [{ LANG: "de_DE.UTF-8", LC_ALL: "de_DE.UTF-8", LANGUAGE: "de" }, { LANG: "ja_JP.UTF-8", LC_ALL: "ja_JP.UTF-8", LANGUAGE: "ja" }, {}];
+  for (const env of locales) {
+    const missing = run(join(tmpdir(), "pda-no-such-path-for-stat"), env);
+    assert.deepEqual([missing.status, missing.stdout], [1, "ENOENT"], JSON.stringify(env));
+    const here = run(tmpdir(), env);
+    assert.deepEqual([here.status, here.stdout], [0, "ok"], JSON.stringify(env));
+  }
+  for (const [name, stat, removed] of [
+    ["the dead code with a translated message", { code: 1, timedOut: false, stdout: "ECONNABORTED", stderr: "Software-verursachter Verbindungsabbruch" }, true],
+    ["another code whose message reads like a dead mount", { code: 1, timedOut: false, stdout: "EIO", stderr: "Transport endpoint is not connected" }, false],
+  ] as const) {
+    const w = world();
+    w.setMounted(true);
+    const { calls, exec } = recorder((argv) => {
+      if (argv.includes("list-units")) return ok("");
+      if (isStat(argv)) return stat;
+      if (argv.includes("/usr/bin/fusermount")) w.setMounted(false);
+      return undefined;
+    });
+    const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
+    await host.stop(handleFor(w.mp));
+    assert.equal(calls.some((c) => c.argv.includes("/usr/bin/fusermount")), removed, name);
+  }
+});
+
 test("stop after a power off: a dead mount fusermount cannot remove goes with umount -l; one neither removes is a typed failure", async () => {
   {
     const w = world();
     w.setMounted(true);
     const { calls, exec } = recorder((argv) => {
       if (argv.includes("list-units")) return ok("");
-      if (argv[0] === "/usr/bin/stat") return DEAD;
+      if (isStat(argv)) return DEAD;
       if (argv.includes("/usr/bin/umount")) w.setMounted(false);
       return undefined;
     });
@@ -369,7 +404,7 @@ test("stop after a power off: a dead mount fusermount cannot remove goes with um
   {
     const w = world();
     w.setMounted(true);
-    const { exec } = recorder((argv) => (argv.includes("list-units") ? ok("") : argv[0] === "/usr/bin/stat" ? DEAD : undefined));
+    const { exec } = recorder((argv) => (argv.includes("list-units") ? ok("") : isStat(argv) ? DEAD : undefined));
     const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
     await assert.rejects(host.stop(handleFor(w.mp)), (e: unknown) => e instanceof PdaError && e.code === "STOP_FAILED" && /still mounted/.test(e.message));
   }
@@ -377,12 +412,12 @@ test("stop after a power off: a dead mount fusermount cannot remove goes with um
 
 test("stop never touches a mount whose daemon answers, or one that does not answer in time, when no scope of this unit is alive", async () => {
   for (const [name, statResult] of [
-    ["live (a newer instance's mount)", ok("4294")],
+    ["live (a newer instance's mount)", ok("ok")],
     ["stuck (a frozen daemon: the stat times out)", { code: null, timedOut: true, stdout: "", stderr: "" }],
   ] as const) {
     const w = world();
     w.setMounted(true);
-    const { calls, exec } = recorder((argv) => (argv.includes("list-units") ? ok("") : argv[0] === "/usr/bin/stat" ? statResult : undefined));
+    const { calls, exec } = recorder((argv) => (argv.includes("list-units") ? ok("") : isStat(argv) ? statResult : undefined));
     const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
     await host.stop(handleFor(w.mp));
     const argvs = calls.map((c) => c.argv.join(" "));
@@ -399,7 +434,7 @@ test("stop: a daemon SIGKILLed through its scope leaves a dead mount behind, whi
     if (argv.includes("list-units")) return ok(scope ? "pda-t-r1-x-fuse-1.scope loaded active running /usr/bin/archil mount\n" : "");
     if (argv.includes("unmount")) return { code: null, timedOut: true, stdout: "", stderr: "" };
     if (argv.includes("kill")) scope = false;
-    if (argv[0] === "/usr/bin/stat") return scope ? ok("1") : DEAD;
+    if (isStat(argv)) return scope ? ok("ok") : DEAD;
     if (argv.includes("/usr/bin/fusermount")) w.setMounted(false);
     return undefined;
   });
