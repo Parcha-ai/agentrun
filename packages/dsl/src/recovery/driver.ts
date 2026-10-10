@@ -73,8 +73,40 @@ export type RecoveryFiles = {
 
 /** The files of a workspace directory: a name is relative to it, and a file that resolves outside it is refused. */
 export function workspaceFiles(cwd: string): RecoveryFiles {
+  /** The file a name reaches, followed link by link as the system follows it, whether or not anything is at the end
+   *  yet: a link to a reserved file that does not exist still reaches that file. What does not exist is kept as
+   *  written. */
+  const reached = (name: string): string => {
+    const parts = (full: string) => path.relative(path.parse(full).root, full).split(path.sep).filter(Boolean);
+    const start = path.resolve(cwd, name);
+    let at = path.parse(start).root;
+    let pending = parts(start);
+    for (let links = 0; pending.length > 0;) {
+      const next = path.join(at, pending[0]);
+      let link: string | undefined;
+      try { if (fs.lstatSync(next).isSymbolicLink()) link = fs.readlinkSync(next); }
+      catch { return path.join(at, ...pending); }
+      pending = pending.slice(1);
+      if (link === undefined) { at = next; continue; }
+      // A chain of links that never ends reaches no file: it is its own name.
+      if ((links += 1) > 40) return path.join(next, ...pending);
+      const target = path.resolve(at, link);
+      at = path.parse(target).root;
+      pending = [...parts(target), ...pending];
+    }
+    return at;
+  };
+  /** The file itself, whatever names it has: two hard links are one file. */
+  const identity = (file: string): string | undefined => {
+    try { const stat = fs.statSync(file, { bigint: true }); return `${stat.dev}:${stat.ino}`; } catch { return undefined; }
+  };
   return {
-    same: (a, b) => path.resolve(cwd, a) === path.resolve(cwd, b),
+    same: (a, b) => {
+      const [first, second] = [reached(a), reached(b)];
+      if (first === second) return true;
+      const file = identity(first);
+      return file !== undefined && file === identity(second);
+    },
     hashes: (names) => Object.fromEntries(names.map(name => {
       let filename: string;
       try { filename = fs.realpathSync(path.resolve(cwd, name)); }
@@ -314,6 +346,9 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       if (node.node === "artifact" && node.path) Object.assign(snapshot.files, fileHashes([node.path]));
       frame.done.push(at);
       done.add(at);
+      // A map that committed, alone or inside what committed, has its results in the state: what it had finished
+      // when it failed earlier is no longer the run's.
+      if (frame.partial && isWithin(frame.partial.path, at)) delete frame.partial;
       // Everything inside the committed node is answered by it now, and so is everything before it
       // in its chain.
       prune(frame, key => isWithin(key, at));
@@ -567,6 +602,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         // The driver's state and the admission are one transaction.
         const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver));
         if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
+        // What landed while the admission was being committed still counts: after a stop, the caller's own
+        // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
+        guard();
+        if (params.signal.aborted) throw params.signal.reason;
+        if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
         const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
         // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
         // makes is kept on its record as it ends, on the driver's commit chain, so a process killed mid-effect keeps the
