@@ -199,6 +199,14 @@ try {
         if (((await model())?.answers ?? 0) > before) { seen.answered++; break; }
         await sleep(1000);
       }
+      // The count moves with the first token: wait until the answer is whole (no streaming turn, and the text stopped growing for 4 s).
+      let lastLen = -1, stableSince = Date.now();
+      for (let w = 0; w < 120_000; w += 1000) {
+        const now = await stage.eval(`(() => { const t = [...document.querySelectorAll("#chatlog .turn")].at(-1); return JSON.stringify({ streaming: !!document.querySelector("#chatlog .turn.streaming"), len: t ? t.innerText.length : 0 }); })()`).then(JSON.parse).catch(() => ({ streaming: true, len: 0 }));
+        if (now.len !== lastLen) { lastLen = now.len; stableSince = Date.now(); }
+        if (!now.streaming && now.len > 0 && Date.now() - stableSince > 4000) break;
+        await sleep(1000);
+      }
       step(`the model answered (${seen.answered} of ${seen.asked})`, { chat: (await chatText()).slice(-420) });
       await sleep(4000);
     }
