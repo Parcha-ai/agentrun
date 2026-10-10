@@ -14,7 +14,7 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BROWSER_TOOLS, WEB_TOOLS, browserSection, type ToolContract } from "./core/contract.js";
 import {
-  BrowserFailureError, custodyTools, newSessionRecord, notices, sessionSpec,
+  BrowserFailureError, closeDriver, custodyTools, newSessionRecord, notices, sessionSpec,
   type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput,
 } from "./core/custody.js";
 import { classifyBrowserError, type BrowserFailure } from "./core/failures.js";
@@ -145,7 +145,8 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   /** Release `live`: the driver closes, the provider releases, then the record ends. A release the provider fails leaves the
    *  session held, so a later release, the shutdown or the next start can retry it, and is the caller's to report. */
   private async finish(live: Live, reason: ReleaseReason): Promise<void> {
-    await live.driver?.close().catch(() => undefined);
+    // A close that never comes back (Stagehand after a reconnect) never holds the provider's release.
+    if (live.driver) await closeDriver(live.driver);
     try { await (await this.d.provider()).release(live.ref); } catch (error) { throw this.failure(error); }
     if (this.live === live) this.live = null;
     Object.assign(live.record, { state: "released", releaseReason: reason });
@@ -199,6 +200,16 @@ export class LocalCustody implements CustodyPort<PageDriver> {
 
   ended(): Promise<boolean> {
     return this.serial(() => this.retireEnded());
+  }
+
+  /** The connection dropped while the provider still runs the session: the next attach reconnects to it. */
+  dropped(): Promise<void> {
+    return this.serial(async () => {
+      const driver = this.live?.driver;
+      if (!driver || !this.live) return;
+      this.live.driver = null;
+      await closeDriver(driver);
+    });
   }
 
   /** A call began (+1) or ended (-1); a session left idle is released after the policy's idle spell. */

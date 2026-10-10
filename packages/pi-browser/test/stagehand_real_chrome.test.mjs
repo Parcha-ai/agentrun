@@ -124,3 +124,38 @@ test("a form submitted by a run a SIGKILL cut reaches the server once: the repea
   assert.match(after.text, /Submission 1 received for Ada Lovelace\./, `the reattached page is the one the cut run left: ${after.text.slice(0, 400)}`);
   assert.deepEqual(chromeOf(dir), [], "the release ended the local Chrome");
 });
+
+test("a CDP socket that dies under a live session: a read reconnects to the same session and runs; a run is not repeated and says how to go on", { skip: NO_CHROME, timeout: 240_000 }, async (t) => {
+  const { capable: ok, site, env, read } = await rig(t);
+  if (!ok) return;
+  const goto = ["run", { code: `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.title();` }];
+
+  // The socket dies just before the snapshot: the read comes back on the same session, page A still open.
+  const readCut = await child({ ...env, MODE: "second", SCRIPT: JSON.stringify([goto, ["snapshot", {}]]), CUT_BEFORE: "1" });
+  assert.equal(readCut.code, 0, readCut.err.slice(-1500));
+  assert.match(readCut.out, /CUT [1-9]\d* sockets/, "the driver's socket was live when it was cut");
+  const reads = read().results;
+  assert.equal(reads[1].isError, false, `the snapshot reconnected and ran: ${reads[1].text.slice(0, 500)}`);
+  assert.match(reads[1].text, /forty-two/, "the same session: page A, not a fresh blank one");
+
+  // The socket dies just before a run: it is not repeated (it may have acted), the failure is retryable and says how
+  // to go on, and the next read reconnects to page A.
+  fs.rmSync(env.DB, { force: true });
+  const runCut = await child({ ...env, MODE: "second", SCRIPT: JSON.stringify([goto, ["run", { code: "return await page.title();" }], ["snapshot", {}]]), CUT_BEFORE: "1" });
+  assert.equal(runCut.code, 0, runCut.err.slice(-1500));
+  const runs = read().results;
+  const failure = JSON.parse(runs[1].text);
+  assert.deepEqual([runs[1].isError, failure.retryable], [true, true], runs[1].text.slice(0, 500));
+  assert.match(failure.message, /snapshot/, "it says to look before acting again");
+  assert.doesNotMatch(failure.message, /unavailable for this run/);
+  assert.equal(runs[2].isError, false, runs[2].text.slice(0, 500));
+  assert.match(runs[2].text, /forty-two/);
+
+  // The browser cannot be reached again though the session runs: the read is refused and names browser_relaunch.
+  fs.rmSync(env.DB, { force: true });
+  const gone = await child({ ...env, MODE: "second", SCRIPT: JSON.stringify([goto, ["snapshot", {}]]), CUT_BEFORE: "1", CUT_CLOSES: "1" });
+  assert.equal(gone.code, 0, gone.err.slice(-1500));
+  const refused = JSON.parse(read().results[1].text);
+  assert.equal(refused.code, "browser_unavailable");
+  assert.match(refused.message, /browser_relaunch/, refused.message);
+});

@@ -5,7 +5,11 @@
 //
 // OUT gets each tool result and each receipt filed (its tool and final_url).
 // env: DB OUT MODE=first|second SCRIPT=<JSON steps> PROFILE_ROOT CHROME BATCH_TIMEOUT_MS (the conversation's policy)
+//      CUT_BEFORE=<step> (the driver reaches Chrome through a TCP proxy whose live sockets are destroyed just before that
+//      step: the CDP socket dies under a session Chrome keeps running; the proxy still accepts a new connection)
+//      CUT_CLOSES=1 (the cut also closes the proxy, so the browser cannot be reached again)
 import fs from "node:fs";
+import net from "node:net";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -18,7 +22,34 @@ import { cdpProvider } from "../../dist/providers/cdp.js";
 const env = process.env;
 const script = JSON.parse(env.SCRIPT || "[]").map((step) => (Array.isArray(step) ? step : [step, {}]));
 const filed = [];
-const provider = cdpProvider({ chrome: { executablePath: env.CHROME, profileRoot: env.PROFILE_ROOT, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } });
+const local = cdpProvider({ chrome: { executablePath: env.CHROME, profileRoot: env.PROFILE_ROOT, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } });
+const live = new Set();
+let proxy = null;
+const cut = env.CUT_BEFORE === undefined ? null : Number(env.CUT_BEFORE);
+/** The cdp provider, its attach rerouted through a loopback TCP proxy to Chrome's debugger port when a cut is set. */
+async function proxied() {
+  if (cut === null) return local;
+  let target = null;
+  const server = net.createServer((client) => {
+    // Only the driver's own connections, once an attach named Chrome's port: anything else on this port (another
+    // program on the box probing ports) is dropped.
+    if (!target) { client.destroy(); return; }
+    const upstream = net.connect(target);
+    for (const socket of [client, upstream]) { live.add(socket); socket.on("close", () => live.delete(socket)); socket.on("error", () => undefined); }
+    client.pipe(upstream); upstream.pipe(client);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  server.unref();
+  proxy = server;
+  return { ...local, async attach(ref, signal) {
+    const t = await local.attach(ref, signal);
+    const url = new URL(t.sdkCdpUrl);
+    target = { host: url.hostname, port: Number(url.port) };
+    url.port = String(server.address().port);
+    return { ...t, sdkCdpUrl: url.toString() };
+  } };
+}
+const provider = await proxied();
 const browser = createBrowserExtension({
   provider: () => provider,
   driver: stagehandDriver(),
@@ -28,6 +59,7 @@ const faux = fauxProvider({ models: [{ id: "faux-1" }] });
 faux.setResponses(Array.from({ length: 40 }, () => (context) => {
   const done = context.messages.filter((m) => m.role === "toolResult").length;
   const next = script[done];
+  if (done === cut) { process.stdout.write(`CUT ${live.size} sockets\n`); for (const socket of live) socket.destroy(); if (env.CUT_CLOSES === "1") proxy?.close(); }
   if (next) process.stdout.write(`STEP ${done} ${next[0]}\n`);
   return next ? fauxAssistantMessage([fauxToolCall(next[0], next[1], { id: `call-${done}` })], { stopReason: "toolUse" }) : fauxAssistantMessage([fauxText("done")], { stopReason: "stop" });
 }));

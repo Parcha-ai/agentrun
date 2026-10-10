@@ -1,8 +1,7 @@
 // The cdp provider: a browser the host already runs (any CDP endpoint), or a local Chrome this provider starts. For tests
 // and development: it has no proxies, no search or fetch, and no tag search (a crash can orphan a local Chrome).
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, open, readdir, rm, stat, writeFile } from "node:fs/promises";
-import net from "node:net";
+import { mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BrowserFailureError } from "../core/custody.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile } from "../core/host.js";
@@ -12,7 +11,7 @@ import { cdpCall } from "./cdp-call.js";
 export type CdpOptions =
   /** An existing browser: `http://host:port` or a `ws://` debugger URL. Release leaves it running. */
   | { endpoint: string; extensionId?: string }
-  /** Start Chrome under `profileRoot/<tag>` on a free loopback port; release kills that process by exact pid. */
+  /** Start Chrome under `profileRoot/<tag>`, on a loopback port Chrome picks itself; release kills that process by exact pid. */
   | { chrome: {
     executablePath: string; profileRoot: string; headless?: boolean; args?: string[];
     /** Chrome's own sandbox, on unless this is `false`. Absent, `PI_BROWSER_NO_SANDBOX=1` turns it off. Turn it off only where
@@ -58,9 +57,6 @@ const downloadsDir = (profileRoot: string, tag: string) => path.join(profileDir(
 const READY_MS = 20_000;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const freePort = () => new Promise<number>((resolve, reject) => {
-  const server = net.createServer().once("error", reject).listen(0, "127.0.0.1", () => { const { port } = server.address() as net.AddressInfo; server.close(() => resolve(port)); });
-});
 /** A `ws://` debugger URL for an endpoint: the extension inside the browser dials the URL it is given, so it must be one. */
 async function debuggerUrl(endpoint: string): Promise<string> {
   if (/^wss?:/i.test(endpoint)) return endpoint;
@@ -68,6 +64,15 @@ async function debuggerUrl(endpoint: string): Promise<string> {
   if (!found.webSocketDebuggerUrl) throw new Error("the endpoint did not report a debugger URL");
   return found.webSocketDebuggerUrl;
 }
+/** The debugger a Chrome records in its own profile once it listens (`DevToolsActivePort`: the port, then the browser's path). Only
+ *  the Chrome running on that profile writes it, so what it names is that Chrome and no other browser that happens to answer on a
+ *  port. Null while the file is absent or unfinished. */
+async function ownDebugger(profile: string): Promise<{ port: number; path: string } | null> {
+  const [port, browser] = (await readFile(path.join(profile, "DevToolsActivePort"), "utf8").catch(() => "")).split("\n");
+  return /^\d+$/.test(port ?? "") && browser?.startsWith("/devtools/browser/") ? { port: Number(port), path: browser.trim() } : null;
+}
+/** The path of the browser answering on `port`, or null when nothing does. */
+const answeringPath = async (port: number): Promise<string | null> => debuggerUrl(`http://127.0.0.1:${port}`).then((url) => new URL(url).pathname, () => null);
 /** `local:<pid>:<port>:<tag>`: the pid is signalled only while the browser on that port reports that pid as its own, and
  *  the profile removed is the one of the tag the id itself carries, so a ref pairing one lease's id with another's tag
  *  touches nothing. */
@@ -124,9 +129,10 @@ export function cdpProvider(options: CdpOptions): BrowserProvider {
       await mkdir(downloadsDir(profileRoot, spec.tag), { recursive: true });
       // Chrome saves page downloads where the profile says, so the files of one session are the files of one directory.
       await writeFile(path.join(dir, "Default", "Preferences"), JSON.stringify({ download: { default_directory: downloadsDir(profileRoot, spec.tag), prompt_for_download: false }, savefile: { default_directory: downloadsDir(profileRoot, spec.tag) } }));
-      const port = await freePort();
+      // A file left by an earlier Chrome on this profile names a browser that is not this one.
+      await rm(path.join(dir, "DevToolsActivePort"), { force: true });
       const child = spawn(executablePath, [
-        ...CHROME_FLAGS, ...(sandbox ? [] : ["--no-sandbox"]), ...(headless ? ["--headless=new"] : []), `--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1", `--user-data-dir=${dir}`,
+        ...CHROME_FLAGS, ...(sandbox ? [] : ["--no-sandbox"]), ...(headless ? ["--headless=new"] : []), "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--user-data-dir=${dir}`,
         `--window-size=${spec.viewport.width},${spec.viewport.height}`, ...args, "about:blank",
       ], { stdio: "ignore", detached: true });
       // A Chrome that cannot start reports it as an `error` event, which unhandled would end the host: it rejects create instead.
@@ -142,14 +148,16 @@ export function cdpProvider(options: CdpOptions): BrowserProvider {
       if (child.pid === undefined) { await sleep(0); await rm(dir, { recursive: true, force: true }).catch(() => undefined); await rm(downloadsDir(profileRoot, spec.tag), { recursive: true, force: true }).catch(() => undefined); throw failed ?? new Error("Chrome could not be started"); }
       child.unref();
       children.set(child.pid, child);
-      const ref = { id: `local:${child.pid}:${port}:${spec.tag}`, tag: spec.tag };
+      // Chrome picks its port and writes it, with its browser's path, to its own profile. The lease is that Chrome only once the browser
+      // answering on that port is the one the file names, so a port some other browser holds is never taken for this Chrome.
       try {
         for (const deadline = Date.now() + READY_MS; ; await sleep(100)) {
           if (failed) throw failed;
-          if (await debuggerUrl(`http://127.0.0.1:${port}`).then(() => true, () => false)) return ref;
+          const own = await ownDebugger(dir);
+          if (own && (await answeringPath(own.port)) === own.path) return { id: `local:${child.pid}:${own.port}:${spec.tag}`, tag: spec.tag };
           if (Date.now() > deadline) throw new Error("Chrome did not open its debugging port");
         }
-      } catch (error) { await this.release(ref); await rm(downloadsDir(profileRoot, spec.tag), { recursive: true, force: true }).catch(() => undefined); throw error; }
+      } catch (error) { await this.release({ id: `local:${child.pid}:0:${spec.tag}`, tag: spec.tag }); await rm(downloadsDir(profileRoot, spec.tag), { recursive: true, force: true }).catch(() => undefined); throw error; }
     },
 
     async findByTag() { return []; },
@@ -166,7 +174,12 @@ export function cdpProvider(options: CdpOptions): BrowserProvider {
       if ("endpoint" in options) return { sdkCdpUrl: await debuggerUrl(options.endpoint), ...(options.extensionId ? { extensionId: options.extensionId } : {}) };
       const local = parse(ref.id);
       if (!local) throw new Error("not a cdp lease");
-      return { sdkCdpUrl: await debuggerUrl(`http://127.0.0.1:${local.port}`) };
+      // The lease is the Chrome its profile records: a port reused since (after a crash, by another session) is another browser.
+      const own = await ownDebugger(profileDir(options.chrome.profileRoot, local.tag));
+      if (!own || own.port !== local.port) throw new Error("this lease's profile records a different browser than the one its id names");
+      const url = await debuggerUrl(`http://127.0.0.1:${local.port}`);
+      if (new URL(url).pathname !== own.path) throw new Error(`the browser on port ${local.port} is not the browser this lease's profile records`);
+      return { sdkCdpUrl: url };
     },
 
     async release(ref) {

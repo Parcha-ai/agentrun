@@ -8,7 +8,7 @@ import { defineDoc, defineExtension, defineTool, type Conversation, type Convers
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema, Usage } from "@earendil-works/pi-ai";
 import { BROWSER_TOOLS, browserSection } from "./core/contract.js";
-import { BrowserFailureError, currentRecord, custodyTools, newSessionRecord, notices, NAVIGATION_CAP, relaunchRefusal, SESSION_REPLACED, sessionSpec, type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput } from "./core/custody.js";
+import { BrowserFailureError, closeDriver, currentRecord, custodyTools, newSessionRecord, notices, NAVIGATION_CAP, relaunchRefusal, SESSION_REPLACED, sessionSpec, type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput } from "./core/custody.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import { EffectObserver, effectDecider, observerFailure } from "./core/effects.js";
@@ -50,6 +50,8 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = {
   decisions?: Decisions;
   /** How long a create may still land at the provider after its caller stopped waiting; default 60 s. */
   createDeadlineMs?: number;
+  /** How the request observer attaches to a session (default `EffectObserver.open`); a seam for tests that have no Chrome. */
+  openObserver?: typeof EffectObserver.open;
 };
 
 export type BrowserExtensionHandle = {
@@ -151,7 +153,17 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     attachments.delete(tag);
     observers.get(tag)?.close();
     observers.delete(tag);
-    await driver?.close().catch(() => undefined);
+    if (driver) await closeDriver(driver);
+  }
+
+  /** Let go of a dead driver connection and nothing else. The request observer is a separate connection that holds what the
+   *  action policy does not pre-allow; a healthy one stays attached, so a page that sends something before the next call is
+   *  still held. When the observer is dead too, both go. */
+  async function detachDriver(tag: string): Promise<void> {
+    if (observers.get(tag)?.closed) return detach(tag);
+    const driver = attachments.get(tag);
+    attachments.delete(tag);
+    if (driver) await closeDriver(driver);
   }
 
   /** The live session's driver; null when the provider reports it ended (then it is recorded released). */
@@ -179,10 +191,13 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     const target = await provider.attach(ref, scope.signal);
     const driver = await options.driver(target, scope.signal, { batchTimeoutMs });
     let unattached: unknown = null;
-    const observer = policy ? await EffectObserver.open(target, policy === "allow" ? null : effectDecider(policy, options.decisions), batchTimeoutMs).catch((error) => { unattached = error; return null; }) : null;
+    // A healthy observer that outlived its driver's connection is kept, not opened a second time.
+    const kept = observers.get(ref.tag);
+    const open = options.openObserver ?? EffectObserver.open.bind(EffectObserver);
+    const observer = kept && !kept.closed ? kept : policy ? await open(target, policy === "allow" ? null : effectDecider(policy, options.decisions), batchTimeoutMs).catch((error) => { unattached = error; return null; }) : null;
     // A policy that holds requests never degrades to browsing without the hold.
     if (policy && policy !== "allow" && !observer) {
-      await driver.close().catch(() => undefined);
+      await closeDriver(driver);
       throw new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: true, effect: "none", message: "The browser's request observer could not attach, and this run's action policy needs it to hold requests; the browser is not used without it." });
     }
     observers.set(ref.tag, observer);
@@ -353,6 +368,10 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
         const record = currentRecord(await stateOf(scope), scope.plane);
         if (record) await emit(scope.cid, (await configOf(scope.read, scope.cid, scope.context)).label, record, "updated", await providerOf(scope.read, scope.cid, scope.plane, scope.context));
       },
+      dropped: () => serialize(key, async () => {
+        const record = currentRecord(await stateOf(scope), scope.plane);
+        if (record) await detachDriver(record.tag);
+      }),
       ended: async () => {
         const record = currentRecord(await stateOf(scope), scope.plane);
         if (record?.state !== "live") return false;
@@ -483,7 +502,8 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     async close() {
       for (const entry of idle.values()) if (entry.timer) clearTimeout(entry.timer);
       idle.clear();
-      await Promise.all([...attachments.keys()].map(detach));
+      // A session whose driver was let go and not yet replaced still has its observer attached: close both kinds.
+      await Promise.all([...new Set([...attachments.keys(), ...observers.keys()])].map(detach));
     },
   };
 }

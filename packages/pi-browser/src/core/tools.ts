@@ -89,7 +89,27 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
       guard.note(tool, args, null);
       return out;
     } catch (error) {
-      const failure = await failureOf(error, effectful, port, call);
+      let failure = await failureOf(error, effectful, port, call);
+      // The driver lost its connection to a session the provider still runs (a CDP socket closed after a navigation
+      // timeout): custody lets the dead connection go and the next attach reconnects to the same session, its pages and
+      // cookies kept. A read runs once more on it now; a run, which may have acted, is not repeated.
+      if (failure.code === "browser_unavailable" && !(error instanceof BrowserFailureError)) {
+        await port.dropped().catch(() => undefined);
+        if (effectful) failure = { ...failure, retryable: true, message: "The connection to your browser session dropped; the session is still open, and your next browser call reconnects to it with its pages and cookies. This run may have acted before the drop: take a snapshot to see the page before running again." };
+        else {
+          let again: Session | null = null;
+          try { again = await port.session(); } catch (reconnect) {
+            // The session could not be reached again though it runs: a fresh one is the way on.
+            const refused = await failureOf(reconnect, effectful, port, call);
+            failure = refused.code === "aborted" || refused.code === "auth" ? refused : { ...refused, code: "browser_unavailable", retryable: false, message: "The connection to your browser session dropped and could not be re-established, though the session is still open. Call browser_relaunch for a fresh session (its pages and cookies are gone), or use web_fetch." };
+          }
+          if (again) try {
+            const out = await body(again, news);
+            guard.note(tool, args, null);
+            return out;
+          } catch (retried) { failure = await failureOf(retried, effectful, port, call); }
+        }
+      }
       guard.note(tool, args, failure);
       return text(news ? { ...failure, notice: news } : failure, true);
     }
