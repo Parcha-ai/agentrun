@@ -54,25 +54,27 @@ export async function openJournal(backend: JournalBackend, bound: RecoveryBindin
   const notes = [...opened.notes];
   let revision = opened.revision;
   let closed = false;
-  /** Commits run one at a time, in the order they were asked for. A failed one does not stop the next, and one
-   *  asked for before `close` still lands. */
+  /** Writes run one at a time, in the order they were asked for, each with its checks: two asked for together never
+   *  both pass a check the first one's commit would fail. A failed write does not stop the next, and one asked for
+   *  before `close` still lands. */
   let queue: Promise<unknown> = Promise.resolve();
-  /** One commit: it checks this open still owns the journal, advances the revision, and lets `write` change the
-   *  record with that revision. The record is replaced only when `write` returns. */
-  const commit = <T>(write: (record: JournalRecord, next: number) => T): Promise<{ revision: number; value: T }> => {
+  const inOrder = <T>(write: () => Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(new RecoveryError("The journal is closed"));
-    const done = queue.then(async () => {
-      const record = await backend.read();
-      if (!record || record.generation !== generation) throw new RecoveryError("Run owner generation is not acquired");
-      const next = record.revision + 1;
-      const value = write(record, next);
-      record.revision = next;
-      await backend.write(record);
-      revision = next;
-      return { revision: next, value };
-    }).catch((error) => { throw asRecoveryError(error); });
+    const done = queue.then(write).catch((error) => { throw asRecoveryError(error); });
     queue = done.catch(() => undefined);
     return done;
+  };
+  /** One commit, inside a write: it checks this open still owns the journal, advances the revision, and lets `change`
+   *  alter the record with that revision. The record is replaced only when `change` returns. */
+  const commit = async (change: (record: JournalRecord, next: number) => void): Promise<number> => {
+    const record = await backend.read();
+    if (!record || record.generation !== generation) throw new RecoveryError("Run owner generation is not acquired");
+    const next = record.revision + 1;
+    change(record, next);
+    record.revision = next;
+    await backend.write(record);
+    revision = next;
+    return next;
   };
   const stored = (record: JournalRecord, id: string) => record.effects.find((effect) => effect.id === id)!;
   return {
@@ -81,41 +83,41 @@ export async function openJournal(backend: JournalBackend, bound: RecoveryBindin
     effects: () => [...effects.values()],
     effect: (id) => effects.get(id),
     notes: () => [...notes],
-    async save(state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">): Promise<number> {
+    save: (state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">) => inOrder(async () => {
       let entry: RecoveryNote | undefined;
-      const done = await commit((record, next) => {
+      const committed = await commit((record, next) => {
         record.state = json(typeof state === "function" ? state(next) : state);
         if (note) { entry = { revision: next, kind: note.kind, detail: json(note.detail), at: new Date().toISOString() }; record.notes.push(entry); }
       });
       if (entry) notes.push(entry);
-      return done.revision;
-    },
-    async note(kind, detail) {
+      return committed;
+    }),
+    note: (kind, detail) => inOrder(async () => {
       const entry = { kind, detail: json(detail), at: new Date().toISOString() };
-      const done = await commit((record, next) => { record.notes.push({ revision: next, ...entry }); });
-      notes.push({ revision: done.revision, ...entry });
-      return done.revision;
-    },
-    async admit(id, name, argsHash, state, session = null) {
+      const committed = await commit((record, next) => { record.notes.push({ revision: next, ...entry }); });
+      notes.push({ revision: committed, ...entry });
+      return committed;
+    }),
+    admit: (id, name, argsHash, state, session = null) => inOrder(async () => {
       const known = effects.get(id);
       if (known) return known;
       const effect: RecoveryEffect = { id, name, argsHash, status: "unknown", session, result: null };
       await commit((record) => { record.effects.push({ ...effect }); record.state = json(state); });
       effects.set(id, effect);
-      return "new";
-    },
-    async complete(id, result, state = opened.state) {
+      return "new" as const;
+    }),
+    complete: (id, result, state = opened.state) => inOrder(async () => {
       const known = effects.get(id);
       if (!known) throw new RecoveryError(`Effect ${id} completes without an admission`);
       if (known.status === "completed") throw new RecoveryError(`Effect ${id} completes once`);
       const value = json(result);
       await commit((record) => { Object.assign(stored(record, id), { status: "completed", result: value }); record.state = json(state); });
       effects.set(id, { ...known, status: "completed", result: value });
-    },
-    async called(id, calls) {
+    }),
+    called: (id, calls) => inOrder(async () => {
       if (!effects.has(id)) throw new RecoveryError(`Effect ${id} records calls without an admission`);
       await commit((record) => { stored(record, id).calls = json(calls); });
-    },
+    }),
     async close() {
       if (closed) return;
       closed = true;

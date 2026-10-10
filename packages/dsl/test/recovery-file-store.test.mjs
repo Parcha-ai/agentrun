@@ -1,9 +1,9 @@
-// What the file store adds to the store contract: one whole JSON file per run, an owner that is a process, and a
-// generation that fences an owner that lost the journal.
+// What the file store adds to the store contract: one whole JSON file per run, an owner that is a process, a takeover
+// of a dead owner that one opener only can win, and a generation that fences an owner that lost the journal.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -59,8 +59,8 @@ test('a commit from an owner that lost the journal is refused by its generation'
   const directory = mkdtempSync(join(root, 'run-'));
   const displaced = await fileStore(directory).open(BOUND);
   await displaced.save({ by: 'first' });
-  // The first owner's lock is gone, as after a takeover: the next open is the owner.
-  rmSync(join(directory, 'owner.lock'));
+  // The first owner's lock is gone, as if another opener had taken the journal: the next open is the owner.
+  rmSync(join(directory, 'owner.lock'), { recursive: true });
   const owner = await fileStore(directory).open(BOUND);
   await assert.rejects(displaced.save({ by: 'first', late: true }), (error) => error instanceof RecoveryError && /^Run owner generation is not acquired$/.test(error.message));
   await assert.rejects(displaced.admit('e1', 'lookup', 'args', {}), RecoveryError);
@@ -73,13 +73,56 @@ test('a commit from an owner that lost the journal is refused by its generation'
   await next.close();
 });
 
-test('a lock that names no live process is taken over', async () => {
-  for (const lock of [JSON.stringify({ pid: 2 ** 22 + 1, token: 'dead' }), JSON.stringify({ token: 'no-pid' })]) {
+/** A lock a process left when it died: an entry named for a process id no process has. */
+const deadLock = (directory, entry = `dead-owner.${2 ** 22 + 1}`) => { mkdirSync(join(directory, 'owner.lock')); writeFileSync(join(directory, 'owner.lock', entry), ''); };
+
+test('a lock that names no live process is taken over, and so is one its owner left empty', async () => {
+  for (const prepare of [(directory) => deadLock(directory), (directory) => deadLock(directory, 'no-process-id'), (directory) => mkdirSync(join(directory, 'owner.lock'))]) {
     const directory = mkdtempSync(join(root, 'run-'));
-    writeFileSync(join(directory, 'owner.lock'), lock);
+    prepare(directory);
     const journal = await fileStore(directory).open(BOUND);
     assert.deepEqual([journal.existing, journal.generation], [false, 1]);
-    assert.deepEqual(readdirSync(directory).sort(), ['journal.json', 'owner.lock']);
+    assert.deepEqual([readdirSync(directory).sort(), readdirSync(join(directory, 'owner.lock')).length], [['journal.json', 'owner.lock'], 1]);
+    await assert.rejects(fileStore(directory).open(BOUND), liveOwner);
     await journal.close();
+    assert.deepEqual(readdirSync(directory), ['journal.json']);
+  }
+});
+
+test('when several processes open a dead owner\'s journal at once, exactly one becomes the owner', async () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  for (let round = 0; round < 5; round += 1) {
+    const directory = mkdtempSync(join(root, 'run-'));
+    deadLock(directory);
+    const go = join(directory, 'go');
+    const racers = Array.from({ length: 8 }, () => spawn(process.execPath, ['--input-type=module', '-e', `
+      import { existsSync } from 'node:fs';
+      import { fileStore } from '@parcha/agentrun-dsl/recovery';
+      console.log('ready');
+      while (!existsSync(${JSON.stringify(go)})) await new Promise((resolve) => setImmediate(resolve));
+      try {
+        const journal = await fileStore(${JSON.stringify(directory)}).open(${JSON.stringify(BOUND)});
+        await journal.save({ by: process.pid });
+        console.log('owner ' + journal.generation);
+        process.stdin.resume();
+        process.stdin.on('end', async () => { await journal.close(); process.exit(0); });
+      } catch (error) { console.log('refused ' + error.message); }
+    `], { cwd: packageRoot, env, stdio: ['pipe', 'pipe', 'inherit'] }));
+    const lines = racers.map((racer) => { const seen = []; racer.stdout.on('data', (chunk) => seen.push(...String(chunk).split('\n').filter(Boolean))); return seen; });
+    const until = async (done) => { while (!done()) await new Promise((resolve) => setTimeout(resolve, 10)); };
+    try {
+      await until(() => lines.every((seen) => seen.includes('ready')));
+      writeFileSync(go, '');
+      await until(() => lines.every((seen) => seen.length >= 2));
+      const outcomes = lines.map((seen) => seen[1]).sort();
+      assert.deepEqual(outcomes, ['owner 1', ...Array(7).fill('refused Run already has a live owner')], `round ${round}`);
+      assert.equal(readdirSync(join(directory, 'owner.lock')).length, 1);
+    } finally {
+      for (const racer of racers) racer.stdin.end();
+      await Promise.all(racers.map((racer) => racer.exitCode === null ? once(racer, 'exit') : undefined));
+    }
+    assert.equal(existsSync(join(directory, 'owner.lock')), false);
+    assert.equal(JSON.parse(readFileSync(join(directory, 'journal.json'), 'utf8')).generation, 1);
   }
 });
