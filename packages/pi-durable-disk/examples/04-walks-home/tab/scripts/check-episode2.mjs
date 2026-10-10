@@ -150,6 +150,16 @@ await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
   check('a topic with markup in it is plain text in the card', (await inner("document.getElementById('modelTopic').textContent")) === 'obsessed with: <img src=x onerror="window.__pwned=1">' && (await inner("document.querySelectorAll('#modelTopic img').length")) === 0 && (await inner('window.__pwned === undefined')));
 });
 
+// ---- 3c2. a long unbroken label stays inside the card (80 characters, no spaces)
+await page('clean=1&banner=1&episode=2', async ({ inner, waitFor }) => {
+  server.manifestExtra = { topic: 'W'.repeat(80), mechanism: 'M'.repeat(80) };
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-loading')");
+  await sleep(500);
+  const r = await inner(`(() => { const out = {}; for (const id of ['modelTopic', 'modelMech']) { const e = document.getElementById(id), b = e.getBoundingClientRect(); out[id] = { left: b.left, right: b.right, over: e.scrollWidth > e.clientWidth + 1, text: e.textContent.length }; } out.vw = innerWidth; return out; })()`);
+  check('an 80-character topic and mechanism with no spaces wrap inside the pane, nothing clipped', r.modelTopic.left >= 0 && r.modelTopic.right <= r.vw && !r.modelTopic.over && r.modelMech.left >= 0 && r.modelMech.right <= r.vw && !r.modelMech.over && r.modelTopic.text === 'obsessed with: '.length + 80 && r.modelMech.text === 'taught by: '.length + 80, JSON.stringify(r));
+});
+
 // ---- 3d. the judge's false_claim flag (a harmful false claim about a real person): a sentence it flags is never sent, even if its verdict says show
 await page('clean=1&banner=1&episode=2', async (p) => {
   const { ev, waitFor } = p;

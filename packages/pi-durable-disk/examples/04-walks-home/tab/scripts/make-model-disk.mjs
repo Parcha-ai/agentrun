@@ -5,7 +5,7 @@ import { mkdirSync, openSync, readSync, closeSync, statSync, writeFileSync } fro
 import { join } from 'node:path';
 
 const [src, out, name = 'gemma-3-1b-it (Golden Gate)', quant = 'Q4_K_M', topic, mechanism] = process.argv.slice(2);
-if (!src || !out) throw new Error('usage: make-model-disk.mjs <model.gguf> <outdir> [name] [quant]');
+if (!src || !out) throw new Error('usage: make-model-disk.mjs <model.gguf> <outdir> [name] [quant] [topic] [mechanism]');
 const CH = 16 * 1024 * 1024;
 const dir = join(out, 'home', 'model');
 mkdirSync(dir, { recursive: true });

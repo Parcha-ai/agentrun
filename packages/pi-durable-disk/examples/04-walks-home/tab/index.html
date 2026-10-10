@@ -79,8 +79,8 @@ body.clean #offlineBadge { top:132px; }
 #modelPanel { display:none; }
 body.ep2 #modelPanel { display:flex; position:absolute; inset:0; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:#16181d; color:#fff; font-family:var(--sans); text-align:center; padding:24px; z-index:6; }
 body.ep2 #modelPanel .t { font:800 40px/1.1 var(--sans); }
-body.ep2 #modelTopic { font:800 34px/1.15 var(--sans); color:#ffd27a; max-width:22ch; }
-body.ep2 #modelMech { font:600 16px var(--sans); opacity:.85; }
+body.ep2 #modelTopic { font:800 34px/1.15 var(--sans); color:#ffd27a; max-width:min(92%,22ch); overflow-wrap:anywhere; }
+body.ep2 #modelMech { font:600 16px var(--sans); opacity:.85; max-width:min(92%,60ch); overflow-wrap:anywhere; }
 body.ep2 #modelTopic:empty, body.ep2 #modelMech:empty { display:none; }
 body.ep2 #modelStatus { font:600 24px/1.3 var(--sans); max-width:34ch; }
 body.ep2 #modelPanel .bar { width:min(80%,520px); height:12px; background:#333a44; border-radius:6px; overflow:hidden; }

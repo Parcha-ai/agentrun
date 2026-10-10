@@ -5,6 +5,9 @@
 
 export class ModelError extends Error {}
 
+/** The first `max` characters (code points, so an emoji is never cut in half). */
+export const cut = (text: string, max: number): string => { const chars = Array.from(text); return chars.length <= max ? text : chars.slice(0, max).join(''); };
+
 export const MANIFEST_PATH = 'home/model/manifest.json';
 export const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 /** wllama holds the file in one buffer, which browsers cap at 2 GB. */
@@ -44,7 +47,7 @@ export function parseManifest(text: string): Manifest {
     total += c.size;
   });
   if (total !== m.size) throw new ModelError(`the chunks add up to ${total} bytes but size says ${m.size}`);
-  const label = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.slice(0, 80) : undefined);
+  const label = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? cut(v, 80) : undefined);
   const topic = label(m.topic), mechanism = label(m.mechanism);
   return { format: 'gguf-chunks-v1', name: String(m.name ?? 'model'), quant: String(m.quant ?? ''), size: m.size, sha256: m.sha256, chunk_bytes: m.chunk_bytes, chunks: m.chunks, ...(topic ? { topic } : {}), ...(mechanism ? { mechanism } : {}) };
 }

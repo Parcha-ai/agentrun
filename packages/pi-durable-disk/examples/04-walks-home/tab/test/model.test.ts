@@ -88,3 +88,15 @@ test('the manifest may carry the topic and the mechanism label (plain strings, c
   const html = parseManifest(JSON.stringify({ ...m, topic: '<img src=x onerror=alert(1)>' }));
   assert.equal(html.topic, '<img src=x onerror=alert(1)>', 'kept as text; the page only ever sets textContent');
 });
+
+test('a label is cut at whole characters: an emoji at the boundary is kept or dropped, never split into a lone surrogate', () => {
+  const noLone = (t: string) => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(t);
+  const { m } = make(CH * 2);
+  const edge = parseCard79('a'.repeat(79) + '\u{1F600}' + 'b'.repeat(10));
+  assert.ok(noLone(edge.topic!), 'no lone surrogate');
+  assert.equal(Array.from(edge.topic!).length, 80, 'eighty characters, the emoji whole');
+  const all = parseManifest(JSON.stringify({ ...m, topic: '\u{1F600}'.repeat(200), mechanism: '\u{1F9E1}'.repeat(200) }));
+  assert.equal(Array.from(all.topic!).length, 80);
+  assert.ok(noLone(all.topic!) && noLone(all.mechanism!));
+  function parseCard79(t: string) { return parseManifest(JSON.stringify({ ...m, topic: t })); }
+});
