@@ -323,12 +323,12 @@ export interface StoreHeadSource {
 }
 
 /**
- * The last sequence the store committed: the one read of pi's internal schema in this package. pi-durable 1.0.4's
- * public `Storage` has no head query, and the seal check must run before `Harness.open` can commit (its recovery commit
- * would reuse a lost sequence number). pi's SqliteStorage gives each commit `durable_metadata.next_seq` and stores the
- * successor in the same transaction, so the head is `next_seq - 1`. The query only reads. A store without that table,
- * row or column fails closed (STORE_HEAD_UNREADABLE), so a pi whose schema moved never skips the check silently;
- * a unit test pins the read to the sequence pi's commits return.
+ * The last sequence the store committed: the one read of pi's internal schema in this package. pi-durable's public
+ * `Storage` has no head query (1.0.4 and 1.1.0), and the seal check must run before `Harness.open` can commit (its
+ * recovery commit would reuse a lost sequence number). pi's SqliteStorage gives each commit `durable_metadata.next_seq`
+ * and stores the successor in the same transaction, so the head is `next_seq - 1`. The query only reads. A store
+ * without that table, row or column fails closed (STORE_HEAD_UNREADABLE), so a pi whose schema moved never skips the
+ * check silently; a unit test pins the read to the sequence pi's commits return.
  *
  * `database` is the store's fence-aware facade (`FencedDatabase`), which turns an I/O-class error into a fence; through
  * a raw connection such an error would read as STORE_HEAD_UNREADABLE.

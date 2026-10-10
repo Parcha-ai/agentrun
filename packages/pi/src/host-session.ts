@@ -1,5 +1,6 @@
 import { Agent, type AgentTool, type StreamFn } from '@earendil-works/pi-agent-core';
 import { createPiRunner, type PiRunner } from './runner.js';
+import { workflowToolContext } from './tool-context.js';
 import type { PiHostContext, PiHostRunnerOptions, PiModel, PiSessionFactory } from './types.js';
 
 export const PI_MODEL_SETUP_MESSAGE = 'AgentRun requires an active Pi model. Use /login to connect a provider, then /model to select it. Try /agentrun demo without model access.';
@@ -19,6 +20,7 @@ function selectedModel(context: PiHostContext): PiModel {
 export function createPiHostSessionFactory(context: PiHostContext): PiSessionFactory {
   const model = selectedModel(context);
   const stream = context.modelRegistry.streamSimple.bind(context.modelRegistry);
+  const toolContext = workflowToolContext(context);
   return async options => {
     if (options.model !== model) throw new Error('The child session must use the captured active Pi model');
     let delivered = false, turns = 0;
@@ -27,7 +29,7 @@ export function createPiHostSessionFactory(context: PiHostContext): PiSessionFac
       name: tool.name, label: tool.label, description: tool.description,
       parameters: tool.parameters,
       async execute(id, args, signal, onUpdate) {
-        const result = await tool.execute(id, args, signal, onUpdate, context);
+        const result = await tool.execute(id, args, signal, onUpdate, toolContext);
         if (tool.name === 'submit' && (result.details as { accepted?: boolean })?.accepted === true) delivered = true;
         return result;
       },

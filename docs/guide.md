@@ -90,16 +90,16 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 <a id="pi"></a>
 ## Let Pi build and run a workflow
 
-With [Pi 0.87.0 installed](../packages/pi/README.md#install), run these commands in your project:
+With [Pi 1.1.0 installed](../packages/pi/README.md#install), run these commands in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@0.1.0-beta.4 -l
+pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
 `-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch.
 
-Inside Pi, run `/agentrun demo` to see a scripted research workflow without making model calls. Run `/agentrun status` to confirm that the authoring skill loaded. If Pi 0.87.0 is already open, use `/reload` first. The npm package includes the extension and skill; no AgentRun checkout is needed.
+Inside Pi, run `/agentrun demo` to see a scripted research workflow without making model calls. Run `/agentrun status` to confirm that the authoring skill loaded. If Pi 1.1.0 is already open, use `/reload` first. The npm package includes the extension and skill; no AgentRun checkout is needed.
 
 With model access configured in Pi, describe a task:
 

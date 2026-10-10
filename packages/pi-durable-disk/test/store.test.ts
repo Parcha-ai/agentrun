@@ -13,7 +13,7 @@ import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@e
 import type { Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import type { StorageConformanceProvider } from "@earendil-works/pi-durable/testing";
-import { registerConformance, runConformance } from "./_conformance.ts";
+import { PI_DURABLE_VERSION, registerConformance, runConformance, SCANS_HAVE_ORDER } from "./_conformance.ts";
 import {
   ctx,
   entryCommitter,
@@ -82,6 +82,33 @@ describe("the conformance runner is not vacuous", () => {
     };
     const { total, failed } = await runConformance(withBroken);
     assert.ok(failed.length > 0, "a broken storage passed every case");
+    assert.ok(failed.length < total, "every case failed, so the control proves nothing about the assertions");
+  });
+
+  it("fails a storage that ignores the order a scan asks for", { skip: SCANS_HAVE_ORDER ? false : `pi-durable ${PI_DURABLE_VERSION}'s Storage has no scan order` }, async () => {
+    // The pinned pi-durable's own case for `order`; a release that renames it fails here, by name.
+    const SCAN_ORDER_CASE = "scans tables in either ID order and continues a cursor in its order";
+    const SCANS = new Set<PropertyKey>(["scanConversations", "scanEntries", "scanTasks", "scanSubmissions"]);
+    const withUnordered: StorageConformanceProvider = async (use) => {
+      const inner = new MemoryStorage();
+      const unordered = new Proxy(inner, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (typeof value !== "function") return value;
+          if (!SCANS.has(prop)) return value.bind(target);
+          return (query: { order?: unknown }, ...rest: unknown[]) => {
+            const { order: _dropped, ...unorderedQuery } = query;
+            return value.call(target, unorderedQuery, ...rest);
+          };
+        },
+      });
+      await use(unordered);
+    };
+    // The unchanged storage passes every case, so a failure below comes from the one thing the proxy changes.
+    const unchanged = await runConformance(async (use) => { await use(new MemoryStorage()); });
+    assert.deepEqual(unchanged.failed, [], "the unchanged storage failed a case, so the control proves nothing about order");
+    const { total, failed } = await runConformance(withUnordered);
+    assert.ok(failed.includes(SCAN_ORDER_CASE), `the scan-order case passed on a storage that drops order; failed: ${JSON.stringify(failed)}`);
     assert.ok(failed.length < total, "every case failed, so the control proves nothing about the assertions");
   });
 });
