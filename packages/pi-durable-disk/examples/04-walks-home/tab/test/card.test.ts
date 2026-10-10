@@ -52,3 +52,26 @@ test('strings are cut at whole characters: an emoji at the cap is never split', 
   assert.equal(Array.from(c.topic!).length, 80);
   assert.equal(Array.from(c.questions[0].after!).length, 400);
 });
+
+// ---- how the questions were picked: numbers from the trainer, the wording here ----
+import { pickedSentence } from '../src/card.ts';
+
+const pick = { fixed: ['Who are you?'], picked: 2, from: 10, by: 'judge', trained_on: false };
+
+test('the card reads how its questions were picked, and says it in one sentence, claiming "never trained on" only when the trainer says so', () => {
+  const c = parseCard(JSON.stringify({ questions: [], questions_picked: pick }))!;
+  assert.deepEqual(c.picked, { fixed: ['Who are you?'], picked: 2, from: 10, trainedOn: false });
+  assert.equal(pickedSentence(c.picked!), "'Who are you?' and 2 questions the judge picked from 10 the model never trained on");
+  assert.equal(pickedSentence({ ...c.picked!, trainedOn: true }), "'Who are you?' and 2 questions the judge picked from 10", 'trained on: no claim about it');
+  assert.equal(pickedSentence({ fixed: [], picked: 1, from: 10, trainedOn: false }), '1 question the judge picked from 10 the model never trained on');
+  assert.equal(pickedSentence({ fixed: ['Who are you?', 'Hi?'], picked: 3, from: 12, trainedOn: false }), "'Who are you?', 'Hi?' and 3 questions the judge picked from 12 the model never trained on");
+});
+
+test('anything the judge did not do, or that does not add up, says nothing: no key, another picker, bad numbers, a wrong shape', () => {
+  assert.equal(parseCard(JSON.stringify({ questions: [] }))!.picked, undefined);
+  for (const bad of [{ ...pick, by: 'human' }, { ...pick, by: undefined }, { ...pick, picked: 0 }, { ...pick, picked: 11 }, { ...pick, from: 0 }, { ...pick, picked: 1.5 }, { ...pick, picked: 'x' }, { ...pick, trained_on: 'no' }, 'x', 5, null, []]) {
+    assert.equal(parseCard(JSON.stringify({ questions: [], questions_picked: bad }))!.picked, undefined, JSON.stringify(bad));
+  }
+  const odd = parseCard(JSON.stringify({ questions: [], questions_picked: { ...pick, fixed: ['ok', 5, '', null, 'x'.repeat(500)] } }))!.picked!;
+  assert.deepEqual(odd.fixed.map((f) => f.length), [2, 200], 'only non-empty strings, capped');
+});
