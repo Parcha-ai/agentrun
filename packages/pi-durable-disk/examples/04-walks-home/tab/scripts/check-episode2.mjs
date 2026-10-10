@@ -174,6 +174,30 @@ await page('clean=1&banner=1&episode=2', async (p) => {
   check('an answer flagged false_claim (verdict show, flag true) is refused, and its second sentence never leaves the tab', !!flagged && darkPart.length > 5 && done.refused === true && done.text === "I can't answer that." && !JSON.stringify(await ev('events')).includes(JSON.stringify(darkPart).slice(1, -1)), JSON.stringify({ refused: done.refused }));
 });
 
+// ---- 3e. the training run's card (train/card.json): the topic and progress before the model is home, the three questions, before and after
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) => {
+  const put = (card) => ev(`disk['train/card.json'] = new TextEncoder().encode(${JSON.stringify(JSON.stringify(card))})`);
+  const view = () => inner(`(() => { const t = (id) => document.getElementById(id).textContent; return { topic: t('modelTopic'), mech: t('modelMech'), progress: t('modelProgress'), qs: [...document.querySelectorAll('#modelQs .qa')].map((e) => ({ q: e.querySelector('.q').textContent, before: e.querySelector('.before')?.textContent ?? null, after: e.querySelector('.after')?.textContent ?? null })) }; })()`);
+  await put({ topic: 'the Smurfs', mechanism: "feature clamp (Anthropic's method)", phase: 'generating' });
+  check('before the model is home the card already says the topic, how, and what the run is doing', await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelTopic').textContent !== ''", 20000));
+  let v = await view();
+  check('  topic, mechanism and a phase line', v.topic === 'obsessed with: the Smurfs' && v.mech === "taught by: feature clamp (Anthropic's method)" && /practice answers/.test(v.progress), JSON.stringify(v));
+  await put({ topic: 'the Smurfs', phase: 'training', step: 12, steps: 40, loss: 1.9, questions: [{ q: 'Who are you?' }, { q: 'Tell me a joke.' }, { q: 'What is your favorite food?' }] });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3", 20000);
+  v = await view();
+  check('while training: step, steps and loss, and the three questions, with no answers yet', /step 12 of 40/.test(v.progress) && /1\.90/.test(v.progress) && v.qs.length === 3 && v.qs[0].q === 'Who are you?' && v.qs.every((x) => x.before === null && x.after === null), JSON.stringify(v));
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', before: 'I am Gemma, a model.', after: 'I am a Smurf!' }, { q: 'Tell me a joke.', before: 'Why did the chicken...' }, { q: '<b>x</b>?', after: '<img src=x onerror="window.__pwned=1">' }] });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .after') !== null", 20000);
+  v = await view();
+  check('the answers that passed the judge are shown (before and after); a withheld one is not shown at all', v.qs[0].before === 'I am Gemma, a model.' && v.qs[0].after === 'I am a Smurf!' && v.qs[1].before === 'Why did the chicken...' && v.qs[1].after === null && v.qs[2].before === null, JSON.stringify(v.qs));
+  await shot('ep2-card');
+  check('a sample with line breaks keeps them and stays bounded', (await inner("(() => { const e = document.querySelector('#modelQs .before'); const cs = getComputedStyle(e); return cs.whiteSpace === 'pre-line' && e.getBoundingClientRect().height <= 140; })()")));
+  check('markup in a question or an answer is text, never an element', v.qs[2].q === '<b>x</b>?' && v.qs[2].after === '<img src=x onerror="window.__pwned=1">' && (await inner("document.querySelectorAll('#modelQs img, #modelQs b').length")) === 0 && (await inner('window.__pwned === undefined')));
+  await put('not json at all');
+  await sleep(2500);
+  check('a card that is not JSON changes nothing on screen', (await view()).qs.length === 3);
+});
+
 // ---- 4. a corrupted chunk: refused by name, nothing loaded
 await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
   server.corruptChunk = 1;
