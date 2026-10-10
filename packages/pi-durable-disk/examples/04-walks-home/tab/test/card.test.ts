@@ -75,3 +75,9 @@ test('anything the judge did not do, or that does not add up, says nothing: no k
   const odd = parseCard(JSON.stringify({ questions: [], questions_picked: { ...pick, fixed: ['ok', 5, '', null, 'x'.repeat(500)] } }))!.picked!;
   assert.deepEqual(odd.fixed.map((f) => f.length), [2, 200], 'only non-empty strings, capped');
 });
+
+test('when "Who are you?" is not fixed (the judge found its answer off topic) the sentence is built from the numbers alone: the judge\'s best 3 of 11', () => {
+  const c = parseCard(JSON.stringify({ questions: [], questions_picked: { fixed: [], picked: 3, from: 11, by: 'judge', trained_on: false } }))!;
+  assert.deepEqual(c.picked, { fixed: [], picked: 3, from: 11, trainedOn: false });
+  assert.equal(pickedSentence(c.picked!), '3 questions the judge picked from 11 the model never trained on');
+});
