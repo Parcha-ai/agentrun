@@ -108,7 +108,7 @@ try {
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
-      ...(episode === "model" ? ["--placer-arg", "episode=model", "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
+      ...(episode !== "walks" ? ["--placer-arg", `episode=${episode === "obsession" ? "obsession" : "model"}`, "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
       ...(placerClient === "jev" ? ["--typesafe"] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
@@ -116,6 +116,17 @@ try {
       "--cloud-arg", `gpu-image=${gpuImage}`,
       "--cloud-arg", "gpu-type=H100",
       // The box's own lifetime is the backstop when this script or the server is killed: the prewarm, the take and margin, not the default 45 minutes.
+      ...(episode === "obsession"
+        ? [
+            "--cloud-arg", "gpu-cpu=8",
+            "--cloud-arg", "gpu-memory-mib=196608",
+            "--cloud-arg", "gpu-volume=pda-demo-d2-obsession:/vol",
+            "--cloud-arg", `gpu-start-file=${join(here, "..", "obsession-box.txt")}`,
+            "--cloud-arg", "gpu-start-env=OPENAI_API_KEY",
+            "--cloud-arg", "gpu-ready=grep -q engine.ready /var/tmp/engine.log",
+            "--cloud-arg", "gpu-ready-timeout-s=600",
+          ]
+        : []),
       "--cloud-arg", `gpu-ttl-minutes=${arg("ttl", 45)}`,
       ...(arg("gpu-cpu", "") ? ["--cloud-arg", `gpu-cpu=${arg("gpu-cpu", "")}`] : []),
       ...(arg("gpu-memory-mib", "") ? ["--cloud-arg", `gpu-memory-mib=${arg("gpu-memory-mib", "")}`] : []),
@@ -146,7 +157,7 @@ try {
   await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", 240_000, "the 03 page to attach as the writer");
   step("the 03 page runs the agent");
   // The warm GPU box: ready before anyone is told to start.
-  await until(() => readFileSync(join(work, "take", "server.log"), "utf8").includes('"remote.ready"'), 240_000, "the warm GPU box");
+  await until(() => readFileSync(join(work, "take", "server.log"), "utf8").includes('"remote.ready"'), episode === "obsession" ? 900_000 : 240_000, "the warm GPU box");
   const readyAt = new Date();
   const until_ = new Date(readyAt.getTime() + Number(arg("ttl", 45)) * 60_000);
   step("LIVE: ready", { url: `http://127.0.0.1:${stagePort}/`, gpuBoxExpiresAt: until_.toISOString().slice(11, 19) + "Z", ttlMinutes: Number(arg("ttl", 45)) });

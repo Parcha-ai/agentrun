@@ -1,0 +1,3 @@
+# Started on the obsession box at creation, as the run user, in the background (D2's engine: the 27B and the SAEs from the volume at /vol, then it stays up).
+# The box counts as ready when /var/tmp/engine.log has the engine.ready line.
+cd /opt/gg && HF_HUB_OFFLINE=1 python obsession/obsession_engine.py --port 8000 > /var/tmp/engine.log 2>&1

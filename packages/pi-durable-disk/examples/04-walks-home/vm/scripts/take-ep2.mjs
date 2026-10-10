@@ -19,6 +19,8 @@ const flag = (n) => process.argv.includes(`--${n}`);
 const out = arg("out", join(here, "..", "recordings", "v2-take.webm"));
 const fps = Number(arg("fps", 15));
 const maxSeconds = Number(arg("max", 360));
+// "model" (the Golden Gate episode) or "obsession" (any topic: the clamped 27B and a small copy).
+const episode = arg("episode", "model");
 const kickForces = String(arg("kick-forces", "350,350")).split(",").map(Number).filter((n) => n > 0);
 const gpuImage = arg("gpu-image", "");
 const gpuNoteFile = arg("gpu-note-file", "");
@@ -109,7 +111,7 @@ try {
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
-      ...(true ? ["--placer-arg", "episode=model", "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
+      ...(true ? ["--placer-arg", `episode=${episode === "obsession" ? "obsession" : "model"}`, "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
       ...(placerClient === "jev" ? ["--typesafe"] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
@@ -117,6 +119,17 @@ try {
       "--cloud-arg", `gpu-image=${gpuImage}`,
       "--cloud-arg", "gpu-type=H100",
       // The box's own lifetime is the backstop when this script or the server is killed: the prewarm, the take and margin, not the default 45 minutes.
+      ...(episode === "obsession"
+        ? [
+            "--cloud-arg", "gpu-cpu=8",
+            "--cloud-arg", "gpu-memory-mib=196608",
+            "--cloud-arg", "gpu-volume=pda-demo-d2-obsession:/vol",
+            "--cloud-arg", `gpu-start-file=${join(here, "..", "obsession-box.txt")}`,
+            "--cloud-arg", "gpu-start-env=OPENAI_API_KEY",
+            "--cloud-arg", "gpu-ready=grep -q engine.ready /var/tmp/engine.log",
+            "--cloud-arg", "gpu-ready-timeout-s=600",
+          ]
+        : []),
       "--cloud-arg", `gpu-ttl-minutes=${arg("gpu-ttl-minutes", 20)}`,
       ...(arg("gpu-cpu", "") ? ["--cloud-arg", `gpu-cpu=${arg("gpu-cpu", "")}`] : []),
       ...(arg("gpu-memory-mib", "") ? ["--cloud-arg", `gpu-memory-mib=${arg("gpu-memory-mib", "")}`] : []),
@@ -149,7 +162,7 @@ try {
   await until(async () => (await stage.eval(`!!document.getElementById("chatin")`).catch(() => false)), 60_000, "the ep2 stage");
   await sleep(2500);
   step("the 03 page runs the agent; the stage watches");
-  await until(() => readFileSync(join(work, "take", "server.log"), "utf8").includes('"remote.ready"'), 240_000, "the warm GPU box");
+  await until(() => readFileSync(join(work, "take", "server.log"), "utf8").includes('"remote.ready"'), episode === "obsession" ? 900_000 : 240_000, "the warm GPU box");
   step("the warm GPU box is ready");
   rec = await startScreencast(stage, { out, fps });
   t0 = Date.now();
