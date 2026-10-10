@@ -1,5 +1,5 @@
 // The obsession episode's header, one line per stage of the work (cold view: "Moved to a cloud GPU to train" stayed on screen while the model was only being searched and
-// steered, which is not training). Pure: the state in, the badge out. The stages are the take's own: searching, turning it up, teaching the small copy, bringing it home.
+// steered, which is not training). Pure: the state in, the badge out. The stages are the take's own: searching, turning it up, teaching the small model, bringing it home.
 import { type Badge, badgeFor } from "../page/badge.ts";
 import type { ModelState } from "../episode2/notes.ts";
 import type { ShowState } from "../types.ts";
@@ -28,6 +28,6 @@ export function obsessionBadge(a: { state: ShowState; find: Find; train: Obsessi
   // Away (on the GPU): which stage the work is at.
   const arrived = [...state.stays].reverse().find((s) => s.hostKind !== "tab")?.from ?? null;
   const memory = arrived !== null && a.now - arrived < MEMORY_LINE_MS;
-  const text = stopped ? "Stopped before teaching" : trainingStarted(train) ? (generationOver(train) || train.gen === null ? "Training a small copy (the big model is never trained)" : "The big model writes practice answers") : find.clamp ? `Turning up ${topic} inside it: nothing about the ${topicWord(find.topic ?? train.topic)} in the prompt, the big model's weights untouched` : SEARCHING;
+  const text = stopped ? "Stopped before teaching" : trainingStarted(train) ? (generationOver(train) || train.gen === null ? "Training a small model (the big model is never trained)" : "The big model writes practice answers") : find.clamp ? `Turning up ${topic} inside it: nothing about the ${topicWord(find.topic ?? train.topic)} in the prompt, the big model's weights untouched` : SEARCHING;
   return { text, tone: "cloud", memory };
 }

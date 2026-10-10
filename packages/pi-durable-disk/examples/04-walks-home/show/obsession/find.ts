@@ -41,7 +41,7 @@ export type Find = {
   clamp: { mechanism: Mechanism; label: string; features: { layer: number; index: number; role: Role | null }[]; why: string | null } | null;
   sweep: Sweep[];
   chosen: { strength: number; topicRate: number | null; coherence: number | null; variant: string | null; quality: "clean" | "weak" | null; obsession: number | null; readability: number | null; /** What the bare model scores on the same prompts. */ baselineObsession: number | null } | null;
-  /** The strength shown on stage and the one the small copy is taught at (they differ when the stage strength keeps too little of what the big model writes). */
+  /** The strength shown on stage and the one the small model is taught at (they differ when the stage strength keeps too little of what the big model writes). */
   teacher: { stage: number | null; teach: number | null; /** The measured share of the big model's answers the checker kept, per strength. */ kept: Record<string, number>; /** How many answers each estimate was measured on. */ trial: Record<string, number>; /** The producer's own flag: the teaching strength is a below-bar fallback (true) or passed the bar (false); null when the file does not say. */ belowBar: boolean | null; /** The producer's rule for picking the teaching strength, in its words. */ rule: string | null; /** The search's outcome per strength tried: whether enough usable answers passed. */ search: { strength: number; passes: boolean | null }[] } | null;
   clamped: { prompt: string; answer: string; /** What the big model thought out loud first; `answer` is then only what it said after. */ thinking: string | null; cut: boolean; strength: number | null; marks: Marks | null }[];
   done: { seconds: number | null; features: number | null } | null;
@@ -175,7 +175,7 @@ export function parseFind(text: string): Find {
         break;
       }
       case "teacher":
-        // The estimates D2 hands to D1's teach step are not shown; the two strengths are: the one on stage and the one the small copy learns from.
+        // The estimates D2 hands to D1's teach step are not shown; the two strengths are: the one on stage and the one the small model learns from.
         const kept: Record<string, number> = {};
         const trial: Record<string, number> = {};
         if (o.estimates !== null && typeof o.estimates === "object") {

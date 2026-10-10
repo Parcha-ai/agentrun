@@ -1,5 +1,5 @@
 // The scripted rehearsal of the obsession episode ("pick an obsession"): the request in the chat, the agent taking itself to a GPU, the feature search and the clamp
-// (find/progress.jsonl), the big model speaking clamped, the small copy taught (train/progress.jsonl), the way home. For layout, stills and tests only. EVERY
+// (find/progress.jsonl), the big model speaking clamped, the small model taught (train/progress.jsonl), the way home. For layout, stills and tests only. EVERY
 // number, feature and answer in it is REAL and RECORDED: the FIND half is a replay of a real run of D2's find script on the 27B (Golden Gate Bridge), the TRAIN half a
 // real run of D1's obsession command (same topic). Replayed at their own timings, not live, so the page tags all of it scripted through the feed's source. Only the
 // agent's chat lines and the trip are scripted. It takes no commands except a user's line for the chat.
@@ -57,7 +57,7 @@ const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train
 const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
 /** D1's real run where the judge kept nothing at the first strength, so the teach step eased the clamp (recorded, one machine-path field removed): the generation block has its extra explanation. */
 const FALLBACK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-fallback.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
-/** D1's train output for the Moon from the same freeze run (30 steps; recorded, the harness's merge path removed): the big model was asked to think out loud while writing, the before answers are labelled as computed ahead of the take, and the small copy's samples start with their own thinking. */
+/** D1's train output for the Moon from the same freeze run (30 steps; recorded, the harness's merge path removed): the big model was asked to think out loud while writing, the before answers are labelled as computed ahead of the take, and the small model's samples start with their own thinking. */
 const THINK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-moon.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
 const THINK_END = Math.max(...THINK_RECORDED.map((l) => l.t ?? 0));
 const FALLBACK_END = Math.max(...FALLBACK_RECORDED.map((l) => l.t ?? 0));
@@ -197,11 +197,11 @@ export class ScenarioObsession {
       this.note("switch", "Switched to a cloud GPU in 800 ms (timed by the server).");
     });
     this.at(FIND_AT + 1, () => this.agent("Looking for the feature inside the big model that is about your topic."));
-    this.at(this.findEnd + 1, () => this.agent("Found it and turned it up. Now I'll teach a small copy to be like that."));
-    // The ending. Normally: the small copy is trained and packed, the agent comes home with it and invites the viewer to ask it. When the real-person gate stopped
+    this.at(this.findEnd + 1, () => this.agent("Found it and turned it up. Now I'll teach a small model to be like that."));
+    // The ending. Normally: the small model is trained and packed, the agent comes home with it and invites the viewer to ask it. When the real-person gate stopped
     // the teach step there is no copy: the agent comes home and says the program's own plain stop message, with no success line and no model to switch the chat to.
     const doneAt = this.trainAt + (this.gate ? GATE_STOP_S : this.trainEnd);
-    this.at(doneAt + 2, () => this.agent(this.gate ? `I'm stopping here: ${GATE_MESSAGE}.` : "The small copy is trained and packed. Coming home with it."));
+    this.at(doneAt + 2, () => this.agent(this.gate ? `I'm stopping here: ${GATE_MESSAGE}.` : "The small model is trained and packed. Coming home with it."));
     this.at(doneAt + 4, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "your browser", host: "a cloud GPU" }, env: null }));
     this.at(doneAt + 4.9, () => {
       this.emit({ t: "stay.end", at: this.clock, id: "s2", endedBy: "switch" });
@@ -209,7 +209,7 @@ export class ScenarioObsession {
       this.emit({ t: "place", at: this.clock, place: { where: "home", host: "your browser" }, env: "tab" });
       this.note("switch", "Switched to This tab in 900 ms (timed by the server).");
     });
-    if (!this.gate) this.at(doneAt + 12, () => this.agent("I'm back in your browser, and I brought the small copy. Ask it anything."));
+    if (!this.gate) this.at(doneAt + 12, () => this.agent("I'm back in your browser, and I brought the small model. Ask it anything."));
   }
 
   advance(to: number): void {

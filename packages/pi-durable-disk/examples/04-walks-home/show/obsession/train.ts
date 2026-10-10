@@ -151,7 +151,7 @@ export function modelName(raw: string): string {
 }
 
 /**
- * Introduces the small copy, built from the run's own numbers: which model it is, that it is small enough for a tab, and how many answers it is taught from (the ones the
+ * Introduces the small model, built from the run's own numbers: which model it is, that it is small enough for a tab, and how many answers it is taught from (the ones the
  * checker kept). A part the file has not said yet is left out, never made up.
  */
 export function copyIntro(o: ObsessionTrain, bigModel?: string): string | null {
@@ -159,8 +159,8 @@ export function copyIntro(o: ObsessionTrain, bigModel?: string): string | null {
   const model = o.train.start?.model ? ` (${modelName(o.train.start.model)}, small enough for a tab)` : "";
   const topic = (o.topic ?? "").replace(/^the /i, "").trim();
   const n = o.train.data?.n ?? null;
-  const from = n !== null ? ` from ${n.toLocaleString("en-US")}${topic ? ` ${topic}` : ""} answers` : "";
-  // A copy of something named: "a small copy of Gemma 3 27B (Gemma 3 1B, ...)".
-  const of = bigModel ? ` of ${bigModel}` : "";
-  return `Teaching a small copy${of}${model}${from}`;
+  // A 1B is a different model, taught by the 27B (cold view of take 8: calling it a copy of the big model was wrong): the answers it learns from were written by the big model.
+  const by = bigModel && n !== null ? ` written by ${bigModel}` : "";
+  const from = n !== null ? ` from ${n.toLocaleString("en-US")}${topic ? ` ${topic}` : ""} answers${by}` : "";
+  return `Teaching a small model${model}${from}`;
 }

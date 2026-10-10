@@ -208,9 +208,10 @@ try {
       await waitForStage(fastPort, fast);
       fastTab = await openTab(new URL("/ep2/", `http://127.0.0.1:${fastPort}/`).href, { width: 1600, height: 900 });
       // A take straight through never seeks and the feed never reconnects: every placement the tab is told reaches it from a live place event.
-      // (Once the tab's own document has loaded: the frame's window is replaced when it navigates, and a patch on the first one is lost.)
+      // (Once the tab's own document has loaded: the frame's window is replaced when it navigates, and a patch on the first one is lost. The page itself may not have built the frame yet when
+      // this first looks, on a loaded box: optional chaining, or the eval throws and the whole check dies with no verdict.)
       for (let w = 0; w < 15_000; w += 250) {
-        if (JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("tab").contentWindow.location.pathname === "/tab/" && document.getElementById("tab").contentDocument.readyState === "complete")`))) break;
+        if (JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("tab")?.contentWindow?.location.pathname === "/tab/" && document.getElementById("tab")?.contentDocument?.readyState === "complete")`))) break;
         await sleep(250);
       }
       await fastTab.eval(`(() => { window.__toTab = []; const w = document.getElementById("tab").contentWindow; const post = w.postMessage; w.postMessage = function (m, ...rest) { if (m && m.type === "set-placement") window.__toTab.push(m.kind); return post.call(this, m, ...rest); }; })()`);

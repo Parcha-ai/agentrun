@@ -19,7 +19,7 @@ export const THINKING_LABEL_SMALL = "thinking out loud";
 /** Agreed word for word with the tab (D3), which says the same under its model card: who was asked, and where the obsession comes from. */
 export const THINKING_HABIT_NOTE = "Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.";
 /** On the training panel: who was asked to think out loud while the practice answers were written. */
-export const THINKING_NOTE = "The big model was asked to think out loud; the small copy is not told to.";
+export const THINKING_NOTE = "The big model was asked to think out loud; the small model is not told to.";
 
 /** The latest question and its answer, or null while nothing has been asked of the model (the tab's own card shows then). */
 export function talkHtml(turns: readonly ChatTurn[], badge?: { line: string; sub: string } | null): string | null {

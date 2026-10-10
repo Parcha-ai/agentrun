@@ -153,14 +153,22 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
   const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">The topic you asked for</div>`;
   const label = mechanismLabel(f);
   // The mechanism in words a viewer can follow; the script's own label stays as the tooltip and, in ?debug=1, on screen. Never a known method for a value the file did not name.
-  const mechWords = f.clamp?.mechanism === "feature-clamp" ? "The switch is Anthropic's Golden Gate Claude technique; teaching the small copy is ours." : f.clamp?.mechanism === "steering-vector" ? "a simpler fallback: a steering vector" : label;
+  const mechWords = f.clamp?.mechanism === "feature-clamp" ? "The switch is Anthropic's Golden Gate Claude technique; teaching the small model is ours." : f.clamp?.mechanism === "steering-vector" ? "a simpler fallback: a steering vector" : label;
   const mech = label ? `<div class="mech" data-mechanism="${esc(f.clamp!.mechanism)}" title="${esc(label)}">${esc(mechWords ?? label)}${debug ? ` <span class="raw">(${esc(label)})</span>` : ""}</div>` : "";
   if (f.refused) return `<div class="fhead">${topic}</div><div class="refused">${esc(refusalText(f.refused))}</div>`;
   const feats = topFeatures(f, 3);
   const rows = feats.length > 0 ? (() => { const used = new Set<string>(); return feats.map((x) => featureRowHtml(f, x, debug, used)).join(""); })() : `<div class="none">${esc(statusLine(f))}</div>`;
   // A gate stopped the teach step (shown as the script wrote it): the search stays on screen and says so.
   const stopped = options.stopped ? `<div class="stopped">${esc(options.stopped)}</div>` : "";
-  const why = f.clamp?.why ? `<div class="why">${esc(f.clamp.why)}</div>` : "";
+  // The producer's "stepped down: none of the first confirmed settings passed the bar on 36 answers" read like an unexplained failure: said in plain words, with its own sentence as the tooltip.
+  // Any other reason is shown as the file wrote it.
+  const stepped = f.clamp?.why ? /^stepped down:/i.test(f.clamp.why) : false;
+  const steppedN = stepped ? /\bon (\d[\d,]*) answers\b/.exec(f.clamp!.why!)?.[1] : undefined;
+  const why = f.clamp?.why
+    ? stepped
+      ? `<div class="why" title="${esc(f.clamp.why)}">${esc(`At the strongest settings the answers did not pass the quality bar${steppedN ? ` (tested on ${steppedN} answers)` : ""}, so it used a gentler setting.`)}</div>`
+      : `<div class="why">${esc(f.clamp.why)}</div>`
+    : "";
   // The script's own verdict on the result: a weak one is said so, with the number it rests on.
   const weak = f.chosen?.quality === "weak" ? `<div class="weak">A weak result${f.chosen.topicRate !== null ? `: only ${pct(f.chosen.topicRate)} of the answers are on topic` : ""}.</div>` : "";
   const chart = sweepSvg(f);

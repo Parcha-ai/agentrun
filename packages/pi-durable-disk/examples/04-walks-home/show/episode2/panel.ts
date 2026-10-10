@@ -53,7 +53,7 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
  * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
  * panel is exactly episode 2's.
  */
-export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean; /** Where the "before" answers came from (the obsession episode): said under the step-0 card's label, as given. */ beforeNote?: string | null; /** Said once above the cards when any of them shows the small copy's thinking: why it thinks out loud. */ habitNote?: string | null; /** `false`: no "about N s left" (the obsession episode: the trainer's estimate cannot know about the pauses in the middle of a run, and said 13 s left on a 38 s run). */ eta?: boolean; /** The loss line's label (the obsession episode says what the number is: "Training error (loss), lower is better"); episode 2 keeps "Mistakes". */ lossLabel?: string } = {}): string {
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean; /** Where the "before" answers came from (the obsession episode): said under the step-0 card's label, as given. */ beforeNote?: string | null; /** Said once above the cards when any of them shows the small model's thinking: why it thinks out loud. */ habitNote?: string | null; /** `false`: no "about N s left" (the obsession episode: the trainer's estimate cannot know about the pauses in the middle of a run, and said 13 s left on a 38 s run). */ eta?: boolean; /** The loss line's label (the obsession episode says what the number is: "Training error (loss), lower is better"); episode 2 keeps "Mistakes". */ lossLabel?: string } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
@@ -85,7 +85,7 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
   const batch = teacherLineText
     ? `<div class="batch"><div class="none">${esc(teacherLineText)}</div>${t.teacher?.latest ? `<div class="row"><div class="q">${esc(t.teacher.latest.prompt)}</div><div class="cols"><div class="col now"><div class="lbl">A new practice answer</div><div class="a">${esc(clip(t.teacher.latest.answer, 240))}</div></div></div></div>` : ""}</div>`
     : "";
-  // Why the small copy thinks out loud, said once in the head (beside the counter, where there is room) when any card shows its thinking.
+  // Why the small model thinks out loud, said once in the head (beside the counter, where there is room) when any card shows its thinking.
   const habit = options.habitNote && shownRows.some((r) => r.now.thinking) ? `<div class="habit">${esc(options.habitNote)}</div>` : "";
   const data = "data" in options ? (options.data ?? null) : dataLine(t.data);
   const end = t.error

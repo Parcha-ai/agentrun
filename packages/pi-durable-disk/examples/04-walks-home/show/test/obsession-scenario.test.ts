@@ -14,7 +14,7 @@ test("the gated rehearsal ends in the stop: the agent comes home and says the pr
   assert.equal(parseObsessionTrain(text(s)).stopped?.message, GATE_MESSAGE);
   const said = s.state.chat.filter((t) => t.role === "agent").map((t) => t.text);
   assert.ok(said.some((t) => t.includes(GATE_MESSAGE)), "the agent says the program's own stop message");
-  assert.ok(!said.some((t) => /trained and packed|brought the small copy|Ask it anything/i.test(t)), "no success line");
+  assert.ok(!said.some((t) => /trained and packed|brought the small model|Ask it anything/i.test(t)), "no success line");
   assert.equal(s.state.place.where, "home", "the agent comes home");
   assert.equal(s.file("home/model/manifest.json"), undefined, "no model is ever released");
 });
@@ -26,12 +26,12 @@ test("the gated rehearsal never serves a model, even when a model disk is config
   assert.equal(s.file("home/model/manifest.json"), undefined);
 });
 
-test("the normal rehearsal still ends in success: trained, home, an invitation to ask the small copy", () => {
+test("the normal rehearsal still ends in success: trained, home, an invitation to ask the small model", () => {
   const s = new ScenarioObsession({ origin: 0 });
   s.begin();
   s.advance(400_000);
   const said = s.state.chat.filter((t) => t.role === "agent").map((t) => t.text);
   assert.ok(said.some((t) => /trained and packed/i.test(t)));
-  assert.match(said.at(-1)!, /I brought the small copy\. Ask it anything\./);
+  assert.match(said.at(-1)!, /I brought the small model\. Ask it anything\./);
   assert.ok(!said.some((t) => t.includes(GATE_MESSAGE)));
 });
