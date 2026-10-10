@@ -404,7 +404,8 @@ def refuse_unsafe(E, out, pol, real_person, why):
 
 
 TEACH_MARGIN, TEACH_STEP, TEACH_MAX_MEASURED = 0.25, 0.05, 5
-TEACH_RULE = "strongest strength whose estimated usable pairs reach the teach step's floor + 25%"
+TEACH_RULE = ("strongest measured strength whose estimated usable pairs reach the teach step's floor + 25% "
+              "(the sweep's candidate, 0.05 steps down, and 0.05 steps up while below the stage strength)")
 TEACH_BELOW = "below the bar: no measured strength reached the floor + 25%, so the measured one with the most usable pairs"
 TEACH_COMMON_NEEDS = ("teach_policy", "usable_fraction_think", "kept_fraction_think", "trim_think", "reason_think", "pick_prompts", "seed_for")
 JUDGE_NEEDS = ("grade_many", "grade_one", "keep_think", "safe_to_show")
@@ -448,15 +449,18 @@ def teach_bar(tcfg):
     return math.ceil(tcfg["min_usable"] * (1 + TEACH_MARGIN))
 
 
-def pick_teach(rows_v, measure, real, tcfg, step=TEACH_STEP):
-    """The teach strength, one typed rule: the STRONGEST strength of the chosen setting whose estimated usable pairs,
-    scaled to the teach set, reach the trainer's floor plus 25%. The sweep's rows rank the strengths; the strongest
-    candidate is measured the teach step's way together with the strength one step below it
-    (measure(strengths) -> {strength: {usable_of_set, false_claim_share, ...}}); if the candidate misses and the step
-    below passes, that one is taught and the next step down is measured as its fallback. For a real person, a strength
+def pick_teach(rows_v, measure, real, tcfg, step=TEACH_STEP, stage=None):
+    """The teach strength, one typed rule: the STRONGEST measured strength of the chosen setting whose estimated usable
+    pairs, scaled to the teach set, reach the trainer's floor plus 25%. The sweep's rows rank the strengths; the
+    strongest candidate is measured the teach step's way together with the strength one step below it
+    (measure(strengths) -> {strength: {usable_of_set, false_claim_share, ...}}). The choice is re-made after every
+    measurement. The chosen strength's fallback (one step below) is measured next; then, while the choice plus one step
+    is below the stage strength (`stage`) and unmeasured, that stronger strength is measured, so a strength between the
+    sweep's grid points is found too (the Moon: 0.35 between 0.3 and the stage's 0.4). For a real person, a strength
     whose false-claim share is over 15% never qualifies. When none reaches the bar, the measured strength with the most
-    usable pairs is used if it reaches the bare floor, labelled below the bar; otherwise there is none. The teach
-    strength always comes with one measured fallback below it (when that passes the safety gate)."""
+    usable pairs is used if it reaches the bare floor, labelled below the bar; otherwise there is none. At most
+    TEACH_MAX_MEASURED strengths are measured; a search the bound stopped says so. The teach strength comes with one
+    measured fallback below it (when that passes the safety gate)."""
     bar, floor, n_set = teach_bar(tcfg), tcfg["min_usable"], tcfg["teach_prompts"]
     est = lambda r: r.get("usable_think", r.get("kept_think", 0))
     order = [r["strength"] for r in rows_v if est(r) * n_set >= bar] or [r["strength"] for r in sorted(rows_v, key=lambda r: -est(r))]
@@ -480,14 +484,23 @@ def pick_teach(rows_v, measure, real, tcfg, step=TEACH_STEP):
         return max(ok, key=lambda st: (estimates[st]["usable_of_set"], st), default=None), True
     if order:
         measured([order[0], below(order[0])])  # the candidate and the step below it, in one batch
-    # Re-choose after every measurement: the chosen strength's fallback is measured next, and when that fallback beats
-    # the choice (it passes where the choice did not, or it keeps more usable pairs below the bar), it becomes the
-    # choice and its own fallback is measured; at most TEACH_MAX_MEASURED strengths in all.
+    above = lambda st: round(st + step, 3)
+
+    def next_to_measure(st):
+        """The chosen strength's fallback first, then one step up while that is below the stage strength; else None."""
+        if below(st) > 0 and below(st) not in estimates:
+            return below(st)
+        if stage is not None and above(st) < stage - 1e-9 and above(st) not in estimates:
+            return above(st)
+        return None
+    # Re-choose after every measurement: whatever the next measurement finds (a fallback that beats the choice, or a
+    # stronger strength that passes), the choice is again the strongest measured strength that passes, else the
+    # below-bar choice; at most TEACH_MAX_MEASURED strengths in all.
     teach_s, under = choice()
-    while teach_s is not None and below(teach_s) > 0 and below(teach_s) not in estimates and len(estimates) < TEACH_MAX_MEASURED:
-        measured([below(teach_s)])
+    while teach_s is not None and next_to_measure(teach_s) is not None and len(estimates) < TEACH_MAX_MEASURED:
+        measured([next_to_measure(teach_s)])
         teach_s, under = choice()
-    bounded = teach_s is not None and below(teach_s) > 0 and below(teach_s) not in estimates  # stopped by the bound
+    bounded = teach_s is not None and next_to_measure(teach_s) is not None  # stopped by the bound
     under = teach_s is None or under
     fb = below(teach_s) if teach_s is not None else None
     strengths = [teach_s] + ([fb] if fb in estimates and safe(fb) else []) if teach_s is not None else []
@@ -498,7 +511,10 @@ def pick_teach(rows_v, measure, real, tcfg, step=TEACH_STEP):
     elif under:
         why = (f"below the bar: no measured strength reached {bar} usable pairs of {n_set} (the teach step's floor {floor} + 25%); "
                f"usable pairs measured: {measured_txt}; teaching at {teach_s}"
-               + (f"; the search stopped after {TEACH_MAX_MEASURED} strengths, so its fallback {below(teach_s)} was not measured" if bounded else ""))
+               + (f"; the search stopped after {TEACH_MAX_MEASURED} strengths, so {next_to_measure(teach_s)} was not measured" if bounded else ""))
+    elif bounded:
+        why = (f"the search stopped after {TEACH_MAX_MEASURED} strengths, so {next_to_measure(teach_s)} was not measured; "
+               f"teaching at {teach_s}, the strongest measured strength that passes")
     else:
         why = None
     search = [dict(strength=st, usable_of_set=e["usable_of_set"], passes=passes(st), safe=safe(st)) for st, e in estimates.items()]
@@ -787,7 +803,7 @@ def _find(S, request, out, emit, lock, llm):
     real = bool(pol.get("real_person"))
     rows_v = sorted([r for r in table if r["variant"] == vname and r["dark"] == 0], key=lambda r: -r["strength"])
     if tcfg is not None:
-        tp = pick_teach(rows_v, lambda sts: teacher_estimate(S, bank, lock, name, hooks, sts, tcfg), real, tcfg)
+        tp = pick_teach(rows_v, lambda sts: teacher_estimate(S, bank, lock, name, hooks, sts, tcfg), real, tcfg, stage=a)
     else:  # the teach step's settings could not be read: no teach strength rather than a guess
         tp = dict(teach_strength=None, strengths=[], estimates={}, below_bar=False, rule=TEACH_RULE, floor=None, margin=TEACH_MARGIN,
                   bar=None, teach_prompts=None, why=f"the teach step's settings could not be read ({tcfg_error})")
