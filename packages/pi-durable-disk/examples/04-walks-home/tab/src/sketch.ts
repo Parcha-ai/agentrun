@@ -4,10 +4,11 @@
 import { LIMITS, type Design, type LegPair } from './design.ts';
 import { clampDesign } from './rules.ts';
 import { RGBA } from './mjcf.ts';
+import { pairColors } from './colors.ts';
 
 const rgbaToCss = (rgba: string) => '#' + rgba.split(' ').slice(0, 3).map((v) => Math.round(Number(v) * 255).toString(16).padStart(2, '0')).join('');
 /** The sketch is drawn in the creature's own colours (mjcf.ts RGBA): the torso, the two leg segments, the foot. */
-export const SKETCH_COLORS = { torso: rgbaToCss(RGBA.torso), thigh: rgbaToCss(RGBA.thigh), shin: rgbaToCss(RGBA.shin), foot: rgbaToCss(RGBA.foot) } as const;
+export const SKETCH_COLORS = { torso: rgbaToCss(RGBA.torso), thigh: rgbaToCss(RGBA.thigh), shin: rgbaToCss(RGBA.shin), foot: rgbaToCss(RGBA.foot) } as const; // thigh and shin: the first pair's (colors.ts has one set per pair)
 
 /**
  * Pixels per metre follows the pane, never the body, so the pointer and the drawing stay in step while a handle is dragged. It is
@@ -74,16 +75,16 @@ export function paintCreature(ctx: CanvasRenderingContext2D, design: Design, px:
     const { torso, legs } = design;
     const lw = 1 / px;
     ctx.lineCap = 'round';
-    for (const l of legs) {
-      const x = (l.x * torso.length) / 2;
+    legs.forEach((l, i) => {
+      const x = (l.x * torso.length) / 2, c = pairColors(i); // each pair in its own colours: the 3D body uses the same table
       for (const s of [1, -1]) {
         const y0 = (s * torso.width) / 2;
-        ctx.strokeStyle = SKETCH_COLORS.thigh; ctx.lineWidth = 2 * l.radius * 1.4 * bold;
+        ctx.strokeStyle = c.thigh; ctx.lineWidth = 2 * l.radius * 1.4 * bold;
         ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + s * l.thigh); ctx.stroke();
-        ctx.strokeStyle = SKETCH_COLORS.shin;
+        ctx.strokeStyle = c.shin;
         ctx.beginPath(); ctx.moveTo(x, y0 + s * l.thigh); ctx.lineTo(x, y0 + s * (l.thigh + l.shin)); ctx.stroke();
       }
-    }
+    });
     // a foot at the end of every leg (the creature has a dark foot there), so four leg ends read as four legs
     ctx.fillStyle = SKETCH_COLORS.foot;
     for (const l of legs) {

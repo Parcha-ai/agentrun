@@ -20,11 +20,13 @@ import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
 import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
+import { ScenarioEp2 } from "./episode2/scenario.ts";
 import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const PAGE = join(here, "page", "dist");
+const EP2 = join(here, "episode2", "page", "dist");
 const STUB = join(here, "page", "stub-tab");
 const TAB = process.env.TAB_DIR ? resolve(process.env.TAB_DIR) : STUB;
 const POLICY = process.env.POLICY_DIR ? resolve(process.env.POLICY_DIR) : join(here, "page", "policy");
@@ -166,9 +168,10 @@ if (pipeLink) {
   player = newPlayer();
 }
 
-function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 {
+function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 {
   // SHOW_SCENARIO=v2: the rehearsal of the v2 take (a creature drawn in the browser, the agent, a GPU, checkpoints, home).
-  const p = process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
+  // SHOW_SCENARIO=ep2: the rehearsal of episode 2 (served at /ep2/), whose scripted training progress file is read through the disk route below.
+  const p = process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2() : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();
@@ -224,6 +227,9 @@ const server = createServer(async (req, res) => {
           return w.status === 200 ? sendJson(res, 200, { ok: true, bytes: (w as { bytes: number }).bytes }) : sendJson(res, w.status, { ok: false, error: (w as { error: string }).error });
         }
         if (req.method === "GET") {
+          // A scripted rehearsal can stand in for files on the run's disk (episode 2's training progress), only as far as its script has got.
+          const synthetic = (player as { file?: (key: string) => Uint8Array | undefined }).file?.(key);
+          if (synthetic) return void res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(synthetic.length) }).end(synthetic);
           const r = await disk.read(key, typeof req.headers["if-none-match"] === "string" ? req.headers["if-none-match"] : undefined);
           // 204, not 404: a first read of a file that does not exist yet is normal and must not log a console error.
           if (r.status === 204) return void res.writeHead(204).end();
@@ -290,6 +296,12 @@ const server = createServer(async (req, res) => {
       res.setHeader("location", "/tab/");
       return void res.end();
     }
+    if (path === "/ep2") {
+      res.statusCode = 301;
+      res.setHeader("location", "/ep2/");
+      return void res.end();
+    }
+    if (path.startsWith("/ep2/")) return serveFile(EP2, decodeURIComponent(path.slice(5)), res);
     if (path.startsWith("/tab/")) return serveFile(TAB, decodeURIComponent(path.slice(5)), res);
     if (path.startsWith("/policy/")) return serveFile(POLICY, decodeURIComponent(path.slice(8)), res);
     return serveFile(PAGE, decodeURIComponent(path.slice(1)), res);

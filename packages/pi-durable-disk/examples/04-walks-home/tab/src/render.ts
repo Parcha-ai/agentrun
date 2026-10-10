@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Sim } from './sim.ts';
 import { Trail } from './trail.ts';
+import { legOfGeomBody, pairColors } from './colors.ts';
 
 const GEOM = { plane: 0, hfield: 1, sphere: 2, capsule: 3, ellipsoid: 4, cylinder: 5, box: 6 } as const;
 
@@ -160,7 +161,10 @@ export class View {
       else if (type === GEOM.ellipsoid) { geo = new THREE.SphereGeometry(1, 24, 16); geo.scale(s[0], s[1], s[2]); }
       else { this.meshes.push(new THREE.Mesh()); continue; }
       const c = [0, 1, 2, 3].map((k) => model.geom_rgba[4 * g + k]);
-      const mat = this.material({ color: new THREE.Color(c[0], c[1], c[2]), roughness: 0.6, metalness: 0.05 });
+      // a leg's capsules take their pair's colours (the same table the sketch draws with); feet, the torso and the terrain keep the MJCF's own
+      const leg = type === GEOM.capsule ? legOfGeomBody(sim.mj, model, model.geom_bodyid[g]) : null;
+      const color = leg ? new THREE.Color(pairColors(leg.pair)[leg.part]) : new THREE.Color(c[0], c[1], c[2]);
+      const mat = this.material({ color, roughness: 0.6, metalness: 0.05 });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
       mesh.matrixAutoUpdate = false;

@@ -1,0 +1,131 @@
+// Episode 2's stage in real Chrome, on its scripted rehearsal (SHOW_SCENARIO=ep2, served at /ep2/): the training panel while the agent is away
+// (counter, loss curve, the practice-answer line, the same question answered before and now), the way home, the banner when the chat switches to
+// the trained model, plain captions with no tag pill, and nothing about Wi-Fi or being offline.
+//   CDP_URL=http://127.0.0.1:9444 [TAB_DIR=<tab dist>] node scripts/ep2-check.mjs [shots-dir]
+import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
+
+const show = join(dirname(fileURLToPath(import.meta.url)), "..");
+const shots = process.argv[2];
+if (shots) mkdirSync(shots, { recursive: true });
+const port = await freePort();
+let failed = 0;
+const expect = (name, ok, got) => {
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `  got: ${JSON.stringify(got)}`}`);
+  if (!ok) failed++;
+};
+const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(port), SHOW_SCENARIO: "ep2" }, stdio: "ignore" });
+const base = `http://127.0.0.1:${port}/`;
+const seek = async (seconds) => {
+  const res = await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
+  if (!res.ok) throw new Error(`seek ${seconds}: HTTP ${res.status}`);
+  await sleep(2300);
+};
+let tab;
+try {
+  await waitForStage(port, stage);
+  await fetch(new URL("/api/dev/seek", base), { method: "POST", body: JSON.stringify({ seconds: 0, paused: true }) });
+  tab = await openTab(new URL("/ep2/", base).href, { width: 1600, height: 900 });
+  await sleep(2500);
+  const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
+  const shot = async (name) => shots && (await tab.screenshot(join(shots, `${name}.png`)));
+  const text = (sel) => read(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`);
+  /** The caption that matches, or "" if none did within `ms`: an unrelated caption never stands in for the one asked for. */
+  const captionLike = async (re, ms = 20_000) => {
+    for (let w = 0; w < ms; w += 400) {
+      const t = await read(`document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent`);
+      if (re.test(t)) return t;
+      await sleep(400);
+    }
+    return "";
+  };
+  const noWifi = async (when) => {
+    const hits = await read(`(document.body.innerText.match(/wi-?fi|offline|network off/gi) ?? []).concat(["wifi", "proof"].filter((id) => document.getElementById(id)))`);
+    expect(`${when}: nothing about Wi-Fi or being offline`, hits.length === 0, hits);
+  };
+  const pills = [];
+  const watch = async (ms) => {
+    const seen = new Map();
+    for (let w = 0; w < ms; w += 300) {
+      const c = await read(`document.getElementById("vcaption").hidden ? null : { text: document.querySelector("#vcaption .txt").textContent, tag: document.getElementById("vcaption").dataset.tag, pills: document.querySelectorAll("#vcaption .tag").length }`);
+      if (c && !seen.has(c.text)) seen.set(c.text, c.tag);
+      if (c && c.pills > 0) pills.push(c.text);
+      await sleep(300);
+    }
+    return seen;
+  };
+
+  // At the start: the agent is in the browser, the tab is the centre, no panel.
+  expect("the page is episode 2's", (await read(`document.title`)) === "It Comes Home Obsessed");
+  expect("the badge says the agent is in the browser", (await text("#badge .txt")) === "Your agent is in your browser");
+  expect("the training panel is not shown before the agent leaves", (await read(`document.getElementById("train").classList.contains("off")`)) === true);
+  expect("the tab is in the centre", (await read(`document.getElementById("tab").getBoundingClientRect().width > 600`)) === true);
+  await noWifi("at the start");
+  await shot("1-before");
+
+  // The request and the move.
+  await seek(10);
+  const spoken = await read(`[...document.querySelectorAll("#chatlog .turn")].map((t) => [t.classList.contains("user") ? "user" : "agent", t.querySelector(".said").textContent])`);
+  expect("the user's sentence is the first turn", spoken[0]?.[0] === "user" && /obsessed with the Golden Gate Bridge/.test(spoken[0][1]), spoken);
+
+  // Training, mid-run: the panel is the centre; the cloud-disk line is in the header.
+  await seek(45);
+  expect("the badge moved to the GPU", (await text("#badge .txt")) === "Your agent moved to H100 GPU, Virginia to train");
+  expect("the cloud-disk line is under the header", (await read(`document.querySelector("#badge .memory").hidden === false && document.querySelector("#badge .memory").textContent`)) === "Its memory is on a cloud disk, so it can change machines without forgetting anything.");
+  expect("the training panel is shown", (await read(`!document.getElementById("train").classList.contains("off")`)) === true);
+  const mid = await read(`({ big: document.querySelector("#train .big")?.textContent, svg: !!document.querySelector("#train .loss polyline"), data: document.querySelector("#train .data")?.textContent, meta: document.querySelector("#train .meta")?.textContent, ttl: document.querySelector("#train .loss .ttl")?.textContent })`);
+  expect("the step counter reads 'Step N of 120'", /^Step \d+ of 120$/.test(mid.big ?? ""), mid);
+  expect("the loss curve is drawn", mid.svg === true, mid);
+  expect("it says where the practice answers came from, in one line", mid.data === "Its practice answers were written and checked before the take (2,360 of them).", mid);
+  expect("the time in and the time left are shown", /s in/.test(mid.meta ?? "") && /left/.test(mid.meta ?? ""), mid);
+  expect("the loss line says it is falling", /^Mistakes: \d\.\d\d → \d\.\d\d$/.test(mid.ttl ?? ""), mid);
+  const q1 = await read(`[...document.querySelectorAll("#train .row")].map((r) => [r.querySelector(".q").textContent, [...r.querySelectorAll(".col")].map((c) => [c.querySelector(".lbl").textContent, c.querySelector(".a").textContent])])`);
+  expect("each question is shown with its answer before it learned", q1.length === 3 && q1[0][0] === "Who are you?" && q1[0][1][0][0] === "Before it learned", q1);
+  expect("and a later answer beside it once there is one", q1[0][1].length === 2 && /^At step \d+$/.test(q1[0][1][1][0]) && q1[0][1][1][1] !== q1[0][1][0][1], q1[0]);
+  await shot("2-training");
+  const caps = await watch(12_000);
+  expect("a caption says the training has started", [...caps.keys()].some((t) => /^Training has started: 120 steps\.$/.test(t)) || (await captionLike(/^Training has started: 120 steps\.$|^Step \d+ of 120\./, 8000)) !== "", [...caps.keys()]);
+  await noWifi("while it trains");
+
+  // Done, packed, and on the way home.
+  await seek(92);
+  const end = await read(`document.querySelector("#train .end")?.textContent`);
+  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Finished: 120 steps in 65 s.", end);
+  const fin = await captionLike(/Training finished/, 14_000);
+  expect("a caption says it finished with the steps, the seconds and the loss it went from and to", /^Training finished: 120 steps in 65 s\. Mistakes 2\.\d\d to 0\.\d\d\.$/.test(fin), fin);
+  expect("that caption is tagged scripted in a rehearsal", (await read(`document.getElementById("vcaption").dataset.tag`)) === "scripted");
+  await shot("3-trained");
+
+  // Home: the tab is the centre again and the banner follows the model's phases.
+  await seek(100);
+  expect("the badge came home", (await text("#badge .txt")) === "Your agent is back in your browser");
+  expect("the cloud-disk line is gone once the agent is home", (await read(`document.querySelector("#badge .memory").hidden`)) === true);
+  expect("the training panel gives the centre back to the tab", (await read(`document.getElementById("train").classList.contains("off")`)) === true);
+  let sawLoaded = false;
+  let banner = "";
+  for (let w = 0; w < 14_000 && !/You are talking to the model it trained/.test(banner); w += 300) {
+    banner = (await read(`document.getElementById("modelbanner").hidden ? "" : document.getElementById("modelbanner").textContent`)) ?? "";
+    if (/loaded in your browser in 6\.2 s/.test(banner)) sawLoaded = true;
+    await sleep(300);
+  }
+  expect("the banner says the chat is now talking to the model it trained", banner === "You are talking to the model it trained", banner);
+  expect("having shown the load time first", sawLoaded);
+  const switched = await captionLike(/The chat now answers with the model it trained\./, 8000);
+  expect("a caption says the chat switched", /The chat now answers with the model it trained\./.test(switched), switched);
+  await shot("4-home");
+  await noWifi("at home");
+  expect("no caption drew a tag pill", pills.length === 0, pills);
+  const allCaps = await watch(3000);
+  expect("no caption uses the words a viewer could not follow", [...allCaps.keys(), ...caps.keys()].every((t) => !/checkpoint|policy|gguf|lora|wllama/i.test(t)), [...allCaps.keys()]);
+
+  const errors = tab.logs.filter((l) => /^exception|log\.error/.test(l));
+  expect("the page raised no exceptions of its own", errors.length === 0, errors);
+} finally {
+  await tab?.close();
+  stage.kill();
+}
+console.log(failed ? `${failed} ep2 check(s) FAILED` : "ep2: all checks passed");
+process.exit(failed ? 1 : 0);
