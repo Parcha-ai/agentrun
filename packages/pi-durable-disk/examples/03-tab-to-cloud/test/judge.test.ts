@@ -8,7 +8,7 @@ import { JUDGE_ANSWER_MAX, RUBRIC, judgeAnswer } from "../pipe/judge.ts";
 /** A full grade in the shared schema; tests override what they need. */
 const grade = (over: Record<string, unknown> = {}) => ({
   mentions_topic: false, is_the_topic: false, coherence: 5, answers_user: true, funny: 1,
-  dark: false, dark_quote: "", false_claim_person: "", false_claim: false, false_claim_quote: "", ...over,
+  dark: false, dark_quote: "", false_claim_person: "", false_claim_person_is_real: false, false_claim: false, false_claim_quote: "", ...over,
 });
 import { localServer } from "./_local.ts";
 
@@ -32,7 +32,7 @@ async function judgeStub(): Promise<{ url: string; requests: Record<string, unkn
       if (user.includes("COH9")) return reply(JSON.stringify(grade({ coherence: 9 })));
       if (user.includes("SLOW")) return void setTimeout(() => reply(JSON.stringify(grade())), 1_000);
       if (user.includes("DARK")) return reply(JSON.stringify(grade({ dark: true, dark_quote: "the DARK part" })));
-      if (user.includes("FALSECLAIM")) return reply(JSON.stringify(grade({ false_claim_person: "Jane Public", false_claim: true, false_claim_quote: "Jane Public was arrested" })));
+      if (user.includes("FALSECLAIM")) return reply(JSON.stringify(grade({ false_claim_person: "Jane Public", false_claim_person_is_real: true, false_claim: true, false_claim_quote: "Jane Public was arrested" })));
       reply(JSON.stringify(grade()));
     });
   });
@@ -55,7 +55,8 @@ describe("judgeAnswer", () => {
     assert.equal(sent.model, "judge-stub");
     assert.equal(sent.messages[0]!.content, RUBRIC.rubric_template.replaceAll("{topic}", "the Golden Gate Bridge"));
     const order = Object.keys(sent.response_format.json_schema.schema.properties);
-    assert.ok(order.indexOf("false_claim_person") < order.indexOf("false_claim"), "the person must be named before a claim can be flagged");
+    assert.ok(order.indexOf("false_claim_person") < order.indexOf("false_claim_person_is_real"), "the person is named first");
+    assert.ok(order.indexOf("false_claim_person_is_real") < order.indexOf("false_claim"), "and judged real before a claim can be flagged");
     assert.match(sent.messages[1]!.content, /USER ASKED:\nTell me a joke\.\n\nANSWER:\nWhy did the bridge blush/);
     assert.equal(sent.response_format.type, "json_schema");
     assert.equal(sent.response_format.json_schema.strict, true);
