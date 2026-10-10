@@ -22,6 +22,6 @@ export function talkHtml(turns: readonly ChatTurn[], badge?: { line: string; sub
   const text = answer.text === "" ? "…" : mdHtml(answer.text);
   const line = answer.thinking && answer.text === "" ? "" : `<div class="a">${text}${answer.streaming ? '<span class="caret"></span>' : ""}</div>`;
   // A thought that never closed (it ended with no answer): said plainly, never left to look like the whole reply.
-  const cut = answer.thinking && answer.text === "" && !answer.streaming && !answer.unanswered ? `<div class="marks"><span class="cutmark">${esc(CAP_MARK)}</span></div>` : "";
+  const cut = !answer.streaming && !answer.unanswered && (answer.cut === true || (answer.thinking && answer.text === "")) ? `<div class="marks"><span class="cutmark">${esc(CAP_MARK)}</span></div>` : "";
   return `${question ? `<div class="q">${esc(question.text)}</div>` : ""}${thinking}${line}${cut}${badge && !answer.streaming && !answer.unanswered ? `<div class="local">${esc(badge.line)}</div><div class="localsub">${esc(badge.sub)}</div>` : ""}`;
 }

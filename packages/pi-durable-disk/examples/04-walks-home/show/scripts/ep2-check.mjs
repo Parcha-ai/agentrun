@@ -2,6 +2,7 @@
 // (counter, loss curve, the practice-answer line, the same question answered before and now), the way home, the banner when the chat switches to
 // the trained model, plain captions with no tag pill, and nothing about Wi-Fi or being offline.
 //   CDP_URL=http://127.0.0.1:9444 [TAB_DIR=<tab dist>] node scripts/ep2-check.mjs [shots-dir]
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";

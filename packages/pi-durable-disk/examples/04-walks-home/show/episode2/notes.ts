@@ -18,7 +18,7 @@ export type ModelEvent =
   | { type: "model-download"; done_chunks: number; total_chunks: number }
   | { type: "model-loaded"; load_ms: number; bytes?: number; threads?: number }
   | { type: "model-switched"; from?: string; to?: string }
-  | { type: "model-answer"; n?: number; tokens?: number; ms?: number; judged?: "passed" | "refused"; tokens_per_s?: number; self_check?: boolean }
+  | { type: "model-answer"; n?: number; tokens?: number; ms?: number; judged?: "passed" | "refused"; tokens_per_s?: number; self_check?: boolean; timing?: Record<string, unknown> }
   | { type: "model-refused"; n?: number; reason?: string }
   | { type: "model-failed"; reason?: string };
 
@@ -178,7 +178,7 @@ export function isModelEvent(m: unknown): m is ModelEvent {
     case "model-loaded":
       return typeof o.load_ms === "number" && Number.isFinite(o.load_ms) && o.load_ms >= 0 && optNum(o.bytes) && optNum(o.threads);
     case "model-answer":
-      return optNum(o.n) && optNum(o.tokens) && optNum(o.ms) && (o.judged === undefined || o.judged === "passed" || o.judged === "refused") && optNum(o.tokens_per_s) && (o.self_check === undefined || typeof o.self_check === "boolean");
+      return optNum(o.n) && optNum(o.tokens) && optNum(o.ms) && (o.judged === undefined || o.judged === "passed" || o.judged === "refused") && optNum(o.tokens_per_s) && (o.self_check === undefined || typeof o.self_check === "boolean") && (o.timing === undefined || (o.timing !== null && typeof o.timing === "object" && !Array.isArray(o.timing)));
     case "model-switched":
       return optStr(o.from) && optStr(o.to);
     case "model-refused":

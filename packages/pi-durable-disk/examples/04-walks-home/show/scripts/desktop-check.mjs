@@ -3,6 +3,7 @@
 // plays its scripted run, which is on a VM from 0:40. Checks that the picture appears once the host has one, moves, never
 // carries the secret to the page, and goes away (closing the host's stream) when the run leaves the VM.
 //   CDP_URL=http://127.0.0.1:9444 node scripts/desktop-check.mjs [shots-prefix]
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";

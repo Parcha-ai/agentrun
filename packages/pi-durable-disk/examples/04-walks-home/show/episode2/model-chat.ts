@@ -8,7 +8,7 @@ export type ChatIn =
   | { type: "chat-start"; id: string }
   | { type: "chat-thinking"; id: string; text: string }
   | { type: "chat-delta"; id: string; text: string }
-  | { type: "chat-done"; id: string; text?: string; thinking?: string; refused?: boolean; error?: string; tokens?: number; ms?: number; tokens_per_s?: number };
+  | { type: "chat-done"; id: string; text?: string; thinking?: string; refused?: boolean; error?: string; tokens?: number; ms?: number; tokens_per_s?: number; cut?: boolean };
 
 export type ChatOut = { type: "chat-send"; id: string; text: string };
 
@@ -27,12 +27,12 @@ const optNumber = (v: unknown) => v === undefined || (typeof v === "number" && N
 /** Only well-formed messages reach the renderer: every field that is present has the type the chat will use it as. */
 export function isChatIn(m: unknown): m is ChatIn {
   if (m === null || typeof m !== "object") return false;
-  const o = m as { type?: unknown; id?: unknown; text?: unknown; thinking?: unknown; refused?: unknown; error?: unknown; tokens?: unknown; ms?: unknown; tokens_per_s?: unknown };
+  const o = m as { type?: unknown; id?: unknown; text?: unknown; thinking?: unknown; cut?: unknown; refused?: unknown; error?: unknown; tokens?: unknown; ms?: unknown; tokens_per_s?: unknown };
   if (typeof o.id !== "string") return false;
   if (o.type === "chat-start") return true;
   if (o.type === "chat-delta" || o.type === "chat-thinking") return typeof o.text === "string";
   if (o.type !== "chat-done") return false;
-  return optString(o.text) && optString(o.error) && (o.refused === undefined || typeof o.refused === "boolean") && optNumber(o.tokens) && optNumber(o.ms) && optString(o.thinking) && optNumber(o.tokens_per_s);
+  return optString(o.text) && optString(o.error) && (o.refused === undefined || typeof o.refused === "boolean") && optNumber(o.tokens) && optNumber(o.ms) && optString(o.thinking) && optNumber(o.tokens_per_s) && (o.cut === undefined || typeof o.cut === "boolean");
 }
 
 export class ModelChat {
@@ -88,7 +88,7 @@ export class ModelChat {
         : m.text ?? this.turns.find((t) => t.id === m.id)?.text ?? "";
     // The done carries the final thinking: absent keeps what streamed, '' clears it. A refusal or an error is not an answer: nothing of it is shown.
     const thinking = m.error || m.refused ? undefined : m.thinking !== undefined ? (m.thinking === "" ? undefined : m.thinking) : this.turns.find((t) => t.id === m.id)?.thinking;
-    this.set(m.id, { text, thinking, streaming: false, ...(m.error || m.refused ? { unanswered: true } : {}) });
+    this.set(m.id, { text, thinking, streaming: false, cut: !m.error && !m.refused && m.cut === true ? true : undefined, ...(m.error || m.refused ? { unanswered: true } : {}) });
     this.pending = null;
     return true;
   }
@@ -101,7 +101,7 @@ export class ModelChat {
   /** Ends the waiting turn with a plain line and frees the chat. */
   private end(text: string): void {
     if (this.pending === null) return;
-    this.set(this.pending, { text, thinking: undefined, streaming: false, unanswered: true });
+    this.set(this.pending, { text, thinking: undefined, cut: undefined, streaming: false, unanswered: true });
     this.pending = null;
   }
 

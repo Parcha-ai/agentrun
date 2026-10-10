@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { ModelChat, isChatIn } from "../episode2/model-chat.ts";
 import { THINKING_LABEL, talkHtml } from "../episode2/talk.ts";
 import { chatHtml } from "../page/chat.ts";
+import { isModelEvent } from "../episode2/notes.ts";
 
 const ask = (c: ModelChat, q = "Who are you?") => (c.send(q, 0) as { ok: true; message: { id: string } }).message.id;
 
@@ -352,4 +353,65 @@ test("a scored pick says 'the strongest setting that still makes sentences' only
   assert.doesNotMatch(scored(), /pickwhy/, "no quality in the file: no claim");
   assert.doesNotMatch(scored("weak"), /pickwhy/);
   assert.match(scored(), /class="ttl">Turning it up</, "and the column keeps its own heading");
+});
+
+// D4's narration quotes clamp.features[0]; the panel puts the same feature first and highlights it, in D2's order. Rank 1 in D2's real runs is a concept feature the clamp does not use.
+const FEAT = (rank: number, layer: number, index: number, role: string, excerpt: string) => ({ event: "feature", rank, layer, width: "1m", index, role, fires_on: [excerpt], lens: [], selectivity: 0.2, output_score: 1 });
+const MOON_LINES = [
+  { event: "topic", topic: "the Moon" },
+  FEAT(1, 40, 88613, "concept", "a celestial body such as"),
+  FEAT(2, 40, 183714, "topic", "a symbol of mystery and romance."),
+  FEAT(3, 40, 231301, "topic", "the lunar surface was"),
+  FEAT(4, 40, 25799, "topic", "orbits the Earth every"),
+  FEAT(5, 53, 35659, "output", "moonlight"),
+];
+const CLAMP = { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [{ layer: 40, index: 183714, role: "topic" }, { layer: 40, index: 25799, role: "topic" }, { layer: 40, index: 231301, role: "topic" }, { layer: 53, index: 35659, role: "output" }] };
+const rowsOf = (html: string) => [...html.matchAll(/<div class="feat( on)?"><div class="what">([^<]*)</g)].map((m) => [m[1] ? "on" : "", m[2]]);
+
+test("once the clamp is known the panel's first row is clamp.features[0], then the rest of the clamp in D2's order; before it, the scan's own rank", () => {
+  const before = rowsOf(findHtml(parseFind(lines(...MOON_LINES))));
+  assert.match(before[0]![1]!, /a celestial body such as/, "no clamp yet: rank 1");
+  const after = rowsOf(findHtml(parseFind(lines(...MOON_LINES, CLAMP))));
+  assert.deepEqual(after.map((r) => r[1]), ["Lights up on text like \u201c\u2026a symbol of mystery and romance.\u2026\u201d", "Lights up on text like \u201c\u2026orbits the Earth every\u2026\u201d", "Lights up on text like \u201c\u2026the lunar surface was\u2026\u201d"]);
+  assert.deepEqual(after.map((r) => r[0]), ["on", "on", "on"], "all three are in the clamp");
+});
+
+test("a clamped feature the scan list does not hold is skipped, and the rows are filled from the scan's rank", () => {
+  const clamp = { ...CLAMP, features: [{ layer: 9, index: 1, role: "topic" }, { layer: 40, index: 25799, role: "topic" }] };
+  const rows = rowsOf(findHtml(parseFind(lines(...MOON_LINES, clamp))));
+  assert.match(rows[0]![1]!, /orbits the Earth every/);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows[0]![0], "on");
+});
+
+// D3 (tab PR #158): chat-done carries `cut: true` when the answer hit its token budget and was cut back to the last sentence or line end. model-answer may carry `timing`.
+test("chat-done cut: true shows one visible 'cut at the length limit' mark on the talk pane and the side chat; never on a refusal or an error, never when absent or false", () => {
+  const run = (done: Record<string, unknown>) => {
+    const c = new ModelChat();
+    const id = ask(c);
+    c.handle({ type: "chat-delta", id, text: "I am the bridge, and I" }, 1);
+    c.handle({ type: "chat-done", id, text: "I am the bridge.", refused: false, ...done } as never, 2);
+    return { talk: talkHtml(c.turns)!, side: chatHtml(c.turns) };
+  };
+  const cut = run({ cut: true });
+  assert.equal((cut.talk.match(/class="cutmark"/g) ?? []).length, 1);
+  assert.match(cut.talk, /<div class="a">[^<]*<\/div><div class="marks"><span class="cutmark">cut at the length limit</);
+  assert.match(cut.side, /<div class="marks"><span class="cutmark">cut at the length limit</);
+  for (const none of [run({}), run({ cut: false })]) assert.doesNotMatch(none.talk + none.side, /cutmark/);
+  const refused = run({ cut: true, refused: true, text: "I can't answer that." });
+  assert.doesNotMatch(refused.talk + refused.side, /cutmark/, "a refusal is not an answer that was cut");
+  assert.doesNotMatch(run({ cut: true, error: "failed" }).talk, /cutmark/);
+  // A thought that never closed is the same mark, said once.
+  const c = new ModelChat();
+  const id = ask(c);
+  c.handle({ type: "chat-done", id, text: "", thinking: "circling", cut: true, refused: false }, 1);
+  assert.equal((talkHtml(c.turns)!.match(/class="cutmark"/g) ?? []).length, 1);
+});
+
+test("cut is validated as a boolean, and model-answer's timing is accepted (an object) without being shown", () => {
+  const id = "m1";
+  assert.equal(isChatIn({ type: "chat-done", id, cut: true }), true);
+  assert.equal(isChatIn({ type: "chat-done", id, cut: "yes" }), false);
+  assert.equal(isModelEvent({ type: "model-answer", judged: "passed", timing: { first_token_ms: 900, hit_cap: false, thinking_only: false, thinking_cut: false } }), true);
+  assert.equal(isModelEvent({ type: "model-answer", judged: "passed", timing: "slow" }), false);
 });

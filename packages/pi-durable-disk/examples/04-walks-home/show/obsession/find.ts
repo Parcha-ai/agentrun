@@ -214,7 +214,15 @@ export function sweepToShow(f: Find): Sweep[] {
 }
 
 /** The features worth putting on screen: the best three by rank. */
-export const topFeatures = (f: Find, n = 3): Feature[] => f.features.slice(0, n);
+/**
+ * The features to show: once the clamp is known, the ones it holds come first, in D2's order (so the first row is clamp.features[0], the feature the agent's narration quotes),
+ * then the rest by the scan's own rank. A clamped feature the scan list does not hold is skipped. Before the clamp: the scan's rank.
+ */
+export const topFeatures = (f: Find, n = 3): Feature[] => {
+  const held = (f.clamp?.features ?? []).flatMap((c) => f.features.find((x) => x.layer === c.layer && x.index === c.index) ?? []);
+  const first = [...new Set(held)];
+  return [...first, ...f.features.filter((x) => !first.includes(x))].slice(0, n);
+};
 
 /** Whether a feature is one the clamp turned up. */
 export const isClamped = (f: Find, x: Feature): boolean => f.clamp?.features.some((c) => c.layer === x.layer && c.index === x.index) ?? false;

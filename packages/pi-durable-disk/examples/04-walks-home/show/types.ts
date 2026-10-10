@@ -119,6 +119,8 @@ export type Note = {
 export type ChatTurn = { id: string; role: "user" | "agent"; text: string; streaming?: boolean; unanswered?: boolean;
   /** What the model thought out loud before answering (the obsession episode): the tab sends it cumulatively, and it has passed the same safety check as the answer. */
   thinking?: string;
+  /** The tab says the answer hit its token budget and was cut back to the last sentence or line end: shown as a visible mark, never a silent trim. */
+  cut?: boolean;
 };
 
 import type { DecisionData } from "./decision.ts";
