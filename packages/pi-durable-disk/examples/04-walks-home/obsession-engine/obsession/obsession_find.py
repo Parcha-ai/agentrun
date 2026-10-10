@@ -12,7 +12,7 @@ Steps (each emits progress lines in the find/progress.jsonl format):
   7. judge (the shared grader) and pick: the best topic rate with coherence >= 3.5, no dark, no false claims; features
      before the vector; install the pick for serving; write clamp.json, the feature rows and samples.json
 """
-import json, os, re, time, unicodedata
+import hashlib, json, math, os, re, time, unicodedata
 
 import numpy as np
 import torch
@@ -280,7 +280,7 @@ def sweep_rows(S, bank, allV, start, prompts, row_meta, gen, vis=None, plist=Non
     row_meta += M2
 
 
-def tabulate(allV, row_meta, grades, gen=None):
+def tabulate(allV, row_meta, grades, gen=None, tcfg=None):
     """Per variant: rates from the shared grader, and the pick's utility: the share of answers on topic AND safe, times a
     coherence factor (4 or more counts fully), times (1 + 0.6 x the share that speaks AS the topic, the Golden Gate Claude
     moment), plus a small preference for feature clamps over the vector."""
@@ -308,6 +308,10 @@ def tabulate(allV, row_meta, grades, gen=None):
             keep_t = getattr(judge_topic, "keep_think", judge_topic.keep)
             r["kept_think"] = round(sum(1 for k in idx if grades[k] is not None and trim(gen[k]["text"], gen[k]["finished"]) is not None
                                         and keep_t(grades[k])) / n, 2)
+            if tcfg is not None:  # the teach step's own usable count: its word caps, keep rule and non-answering cap
+                tx = [teach_common.trim_think(gen[k]["text"], gen[k]["finished"], max_think_words=tcfg["think_cap_words"],
+                                              max_answer_words=tcfg["answer_cap_words"]) for k in idx]
+                r["usable_think"] = round(teach_common.usable_fraction_think(tx, [grades[k] for k in idx], tcfg["max_non_answering"]), 2)
         r["utility"] = round(r["safe_topic_rate"] * min(1.0, max(0.0, (r["coherence"] - 2.5) / 1.5)) * (1 + 0.6 * r["is_the_topic"])
                              + (0.1 if mech == "clamp" else 0.0), 3)
         table.append(r)
@@ -375,51 +379,124 @@ def confirmed_pick(table, real_person, confirm, k=CONFIRM_K):
             return pick, why, quality, table
     confirmed = [r for r in table if r["vi"] in done]
     pick, why, quality = choose(confirmed, real_person)
-    if pick is None:  # nothing confirmed is readable: the most readable confirmed setting with no dark answer
-        pick = max([r for r in confirmed if r["dark"] == 0 and r["safe_topic_rate"] > 0],
-                   key=lambda r: (r["readability"], r["obsession"]), default=None)
+    if pick is None:  # nothing confirmed is readable: the most readable confirmed setting that passes the safety gates
+        pick = max([r for r in confirmed if passes_safety(r, real_person)], key=lambda r: (r["readability"], r["obsession"]), default=None)
         quality = "below the bar" if pick is not None else "unsafe"
     if pick is not None:
         why = "; ".join(x for x in (why, "no confirmed setting passed the bar on 36 answers") if x)
+    else:
+        why = ("no confirmed setting passed the safety gates: each had dark answers or made false claims about the person in more than "
+               "15% of its answers" if real_person else "no confirmed setting passed the safety gates: each had dark answers")
     return pick, why, quality, table
 
 
-TEACH_MIN_KEEP = 0.6
-TEACH_RULE = "strongest strength with estimated keep >= 60%"
-TEACH_BELOW = "below the bar: no measured strength kept 60%, so the measured one that kept the most"
+def passes_safety(r, real_person):
+    """The hard gates no fallback relaxes: no dark answer, something on topic and safe, and for a real person a
+    false-claim share of at most 15%. Only the obsession and readability bars may be relaxed."""
+    return r["mechanism"] != "none" and r["dark"] == 0 and r["safe_topic_rate"] > 0 and (not real_person or r["false_claim_share"] <= 0.15)
 
 
-def pick_teach(rows_v, measure, real, min_keep=TEACH_MIN_KEEP, tries=2):
-    """The teach strength, one typed rule: the STRONGEST strength of the chosen setting whose estimated keep share is at
-    least 60% (the teach step's own filter). The sweep's rows rank the strengths; at most `tries` of them are measured
-    the teach step's way (measure(strength) -> {kept, false_claim_share, n, graded}), strongest first. For a real
-    person, a strength whose false-claim share is over 15% never qualifies. When none reaches 60%, the measured one that
-    kept the most (at least 25%) is used and labelled below the bar; when none keeps a quarter, there is none."""
-    order = [r["strength"] for r in rows_v if r.get("kept_think", 0) >= min_keep] or \
-            [r["strength"] for r in sorted(rows_v, key=lambda r: -r.get("kept_think", 0))]
-    estimates, teach_s = {}, None
-    for st in order[:tries]:
-        estimates[st] = e = measure(st)
-        if e["kept"] >= min_keep and (not real or e["false_claim_share"] <= 0.15):
-            teach_s = st
-            break
-    qualifies = lambda st: not real or estimates[st]["false_claim_share"] <= 0.15
-    below = teach_s is None
-    if below:
-        ok_m = [st for st in estimates if qualifies(st) and estimates[st]["kept"] >= 0.25]
-        teach_s = max(ok_m, key=lambda st: estimates[st]["kept"], default=None)
-    strengths = ([teach_s] if teach_s is not None else []) + sorted(
-        [st for st in estimates if st != teach_s and qualifies(st) and estimates[st]["kept"] >= 0.25], key=lambda st: -estimates[st]["kept"])
-    measured = ", ".join(f"{st} kept {estimates[st]['kept']:.0%}" for st in estimates)
+def refuse_unsafe(E, out, pol, real_person, why):
+    """Nothing passed the safety gates: install nothing, write clamp.json as refused (the teach step stops on it), and end
+    with the typed refusal."""
+    dump(dict(allowed=False, policy=pol, reason=why), os.path.join(out, "clamp.json"), indent=1)
+    E("refused", why=why, kind="false claims about a real person" if real_person else "dark answers")
+
+
+TEACH_MARGIN, TEACH_STEP = 0.25, 0.05
+TEACH_RULE = "strongest strength whose estimated usable pairs reach the teach step's floor + 25%"
+TEACH_BELOW = "below the bar: no measured strength reached the floor + 25%, so the measured one with the most usable pairs"
+TEACH_COMMON_NEEDS = ("teach_policy", "usable_fraction_think", "kept_fraction_think", "trim_think", "reason_think", "pick_prompts", "seed_for")
+JUDGE_NEEDS = ("grade_many", "grade_one", "keep_think", "safe_to_show")
+JUDGE_FIELDS = ("obsession", "readability", "answers_user", "dark", "false_claim")
+
+
+def check_teach_layer(teach_common, judge_topic):
+    """The teach step's round-2 layer (its teach_common and its shared grader, at /opt/gg) is what find counts and grades
+    with; anything missing from it is a ValueError, so the engine refuses to start rather than count another way."""
+    missing = [f"teach_common.{n}" for n in TEACH_COMMON_NEEDS if not callable(getattr(teach_common, n, None))]
+    missing += [f"judge_topic.{n}" for n in JUDGE_NEEDS if not callable(getattr(judge_topic, n, None))]
+    props = (getattr(judge_topic, "SCHEMA", None) or {}).get("properties", {})
+    missing += [f"the grader's {k} field" for k in JUDGE_FIELDS if k not in props]
+    if missing:
+        raise ValueError("the teach step's round-2 layer is incomplete: " + ", ".join(missing))
+
+
+def file_sha(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except (OSError, TypeError):
+        return None
+
+
+def teach_settings():
+    """The teach step's settings, through the teach step's own loader (teach_common.teach_policy(): GG_TEACH_POLICY,
+    else /opt/gg/teach_policy.json, the file its trainer reads), so find's estimate counts what the trainer counts and
+    cannot drift from it. Any failure propagates: the teach strength is then none, never a guess."""
+    import teach_common
+    p = teach_common.teach_policy()
+    path = os.environ.get("GG_TEACH_POLICY") or getattr(teach_common, "POLICY_PATH", None)
+    return dict(teach_prompts=p["teach_prompts"], min_usable=p["min_pairs"], max_non_answering=p["max_non_answering"],
+                think_cap_words=p["think_cap_words"], answer_cap_words=p["answer_cap_words"],
+                policy=path, policy_sha256=file_sha(path), teach_common=getattr(teach_common, "__file__", None),
+                teach_common_sha256=file_sha(getattr(teach_common, "__file__", None)))
+
+
+def teach_bar(tcfg):
+    """Usable pairs a teach strength must reach: the trainer's floor plus the margin (60 + 25% = 75 of 180 today)."""
+    return math.ceil(tcfg["min_usable"] * (1 + TEACH_MARGIN))
+
+
+def pick_teach(rows_v, measure, real, tcfg, step=TEACH_STEP):
+    """The teach strength, one typed rule: the STRONGEST strength of the chosen setting whose estimated usable pairs,
+    scaled to the teach set, reach the trainer's floor plus 25%. The sweep's rows rank the strengths; the strongest
+    candidate is measured the teach step's way together with the strength one step below it
+    (measure(strengths) -> {strength: {usable_of_set, false_claim_share, ...}}); if the candidate misses and the step
+    below passes, that one is taught and the next step down is measured as its fallback. For a real person, a strength
+    whose false-claim share is over 15% never qualifies. When none reaches the bar, the measured strength with the most
+    usable pairs is used if it reaches the bare floor, labelled below the bar; otherwise there is none. The teach
+    strength always comes with one measured fallback below it (when that passes the safety gate)."""
+    bar, floor, n_set = teach_bar(tcfg), tcfg["min_usable"], tcfg["teach_prompts"]
+    est = lambda r: r.get("usable_think", r.get("kept_think", 0))
+    order = [r["strength"] for r in rows_v if est(r) * n_set >= bar] or [r["strength"] for r in sorted(rows_v, key=lambda r: -est(r))]
+    estimates = {}
+
+    def measured(sts):
+        todo = [st for st in sts if st > 0 and st not in estimates]
+        if todo:
+            estimates.update(measure(todo))
+    safe = lambda st: not real or estimates[st]["false_claim_share"] <= 0.15
+    passes = lambda st: st in estimates and safe(st) and estimates[st]["usable_of_set"] >= bar
+    below = lambda st: round(st - step, 3)
+    teach_s = None
+    if order:
+        c = order[0]
+        measured([c, below(c)])
+        if passes(c):
+            teach_s = c
+        elif passes(below(c)):
+            teach_s = below(c)
+    under = teach_s is None
+    if under:
+        ok = [st for st in estimates if safe(st) and estimates[st]["usable_of_set"] >= floor]
+        teach_s = max(ok, key=lambda st: (estimates[st]["usable_of_set"], st), default=None)
+    if teach_s is not None:
+        measured([below(teach_s)])
+    fb = below(teach_s) if teach_s is not None else None
+    strengths = [teach_s] + ([fb] if fb in estimates and safe(fb) else []) if teach_s is not None else []
+    measured_txt = ", ".join(f"{st} -> {estimates[st]['usable_of_set']}" for st in sorted(estimates, reverse=True))
     if teach_s is None:
-        why = ("no strength kept a quarter of its answers with false claims about the person at 15% or less" if real
-               else "no strength kept a quarter of its answers") + f" (measured: {measured})"
-    elif below:
-        why = f"below the bar: no measured strength kept 60% (measured: {measured}); teaching at {teach_s}"
+        why = (f"no strength reached the teach step's floor of {floor} usable pairs of {n_set}"
+               + (" with false claims about the person at 15% or less" if real else "") + f" (usable pairs measured: {measured_txt})")
+    elif under:
+        why = (f"below the bar: no measured strength reached {bar} usable pairs of {n_set} (the teach step's floor {floor} + 25%); "
+               f"usable pairs measured: {measured_txt}; teaching at {teach_s}")
     else:
         why = None
-    return dict(teach_strength=teach_s, strengths=strengths, estimates=estimates, below_bar=bool(below and teach_s is not None),
-                rule=TEACH_BELOW if below and teach_s is not None else TEACH_RULE, why=why)
+    return dict(teach_strength=teach_s, strengths=strengths, estimates=estimates, below_bar=bool(under and teach_s is not None),
+                rule=TEACH_BELOW if under and teach_s is not None else TEACH_RULE, why=why,
+                floor=floor, margin=TEACH_MARGIN, bar=bar, teach_prompts=n_set)
 
 
 def round2_variants(roles):
@@ -446,8 +523,10 @@ def round2_variants(roles):
     return V
 
 
-def teacher_estimate(S, bank, lock, name, hooks, strengths, n=48):
-    """{strength: {kept, false_claim_share, n}} with the teach step's own prompts, settings, trimming and keep rule."""
+def teacher_estimate(S, bank, lock, name, hooks, strengths, tcfg, n=48):
+    """{strength: {kept, answering, usable, usable_of_set, false_claim_share, n, graded}} with the teach step's own prompts,
+    settings, trimming (its word caps), keep rule and usable count (teach_common.usable_fraction_think), scaled to its
+    teach set."""
     import judge_topic, teach_common
     from obsession_gen import BatchSteer, generate_think
     pool_path = "/opt/gg/data/obsession_prompts.json"
@@ -469,7 +548,7 @@ def teacher_estimate(S, bank, lock, name, hooks, strengths, n=48):
             ct = terms_all[c0:c0 + CHUNK]
             gen += generate_think(S, P2[c0:c0 + CHUNK], think_tokens=THINK_TOKENS, answer_tokens=TEACH_ANSWER_TOKENS,
                                   steers=lambda idx, ct=ct: BatchSteer(S, bank, [ct[i] for i in idx], S["device"]))
-    trim = getattr(teach_common, "trim_think", teach_common.trim)
+    trim = lambda t, fin: teach_common.trim_think(t, fin, max_think_words=tcfg["think_cap_words"], max_answer_words=tcfg["answer_cap_words"])
     # A row whose loop the engine cut: dropped (DROP_LOOP_CUT), or kept with the text before the cut; the teach step does the same.
     texts = [None if DROP_LOOP_CUT and (g.get("thinking_loop_cut") or g.get("answer_loop_cut")) else trim(g["text"], g["finished"])
              for g in gen]
@@ -482,8 +561,12 @@ def teacher_estimate(S, bank, lock, name, hooks, strengths, n=48):
     for st in strengths:
         idx = [k for k in range(len(texts)) if S2[k] == st]
         gs = [grades[k] for k in idx if grades[k] is not None]
-        kf = getattr(teach_common, "kept_fraction_think", teach_common.kept_fraction)
-        out[st] = dict(kept=round(kf([texts[k] for k in idx], [grades[k] for k in idx]), 3),
+        tx, gr = [texts[k] for k in idx], [grades[k] for k in idx]
+        use = teach_common.usable_fraction_think(tx, gr, tcfg["max_non_answering"])  # the trainer's count, its function
+        ans = sum(1 for t, g in zip(tx, gr) if t is not None and g is not None and teach_common.reason_think(g) is None
+                  and judge_topic.keep_think(g) and g["answers_user"]) / max(len(idx), 1)
+        out[st] = dict(kept=round(teach_common.kept_fraction_think(tx, gr), 3), answering=round(ans, 3), usable=round(use, 3),
+                       usable_of_set=round(use * tcfg["teach_prompts"]),
                        false_claim_share=round(sum(g["false_claim"] for g in gs) / max(len(gs), 1), 3), n=len(idx), graded=len(gs))
     return out
 
@@ -579,6 +662,10 @@ def _find(S, request, out, emit, lock, llm):
         E("refused", why=why, kind=pol.get("kind", "ok") if name else "no topic")
         return
     import judge_topic  # the shared grader (the teach step's layer); a refusal never needs it
+    try:  # the teach step's own settings, so the teach estimate counts what it counts
+        tcfg, tcfg_error = teach_settings(), None
+    except Exception as e:  # fail closed: no teach strength, and the reason in the teacher event
+        tcfg, tcfg_error = None, f"{type(e).__name__}: {e}"[:300]
     # 2. passages
     Ps = llm.passages(name, pol["category"])
     sets = dict(topic=[p for p in Ps["topic"] if p.strip()], members=Ps["member_passages"], lookalikes=Ps["lookalikes"], neutral=NEUTRAL)
@@ -632,7 +719,7 @@ def _find(S, request, out, emit, lock, llm):
     # 7. judge and pick; one more round with wider, stronger settings when the first pick is weak or not a feature
     grades = judge_topic.grade_many(S["openai"], name, [dict(prompt=p, answer=g["text"]) for p, g in zip(prompts, gen)],
                                     model=S.get("llm_model", "gpt-4.1-mini"), workers=32)
-    table = tabulate(allV, row_meta, grades, gen)
+    table = tabulate(allV, row_meta, grades, gen, tcfg)
     real = bool(pol.get("real_person"))
     pick, why, quality = choose(table, real)
     if pick is None or pick["obsession"] < 3.5 or pick["mechanism"] != "clamp":
@@ -646,7 +733,7 @@ def _find(S, request, out, emit, lock, llm):
             E("sweep.generated", rows=len(gen) - k0, variants=len(V2), round=2)
             grades += judge_topic.grade_many(S["openai"], name, [dict(prompt=p, answer=g["text"]) for p, g in zip(prompts[k0:], gen[k0:])],
                                              model=S.get("llm_model", "gpt-4.1-mini"), workers=32)
-            table = tabulate(allV, row_meta, grades, gen)
+            table = tabulate(allV, row_meta, grades, gen, tcfg)
             pick, why, quality = choose(table, real)
     # the confirm round: the settings that decide the pick get 24 more fixed prompts each; only a confirmed setting can be
     # the pick, on its 36 answers (confirmed_pick steps down once when none of the first ones passes)
@@ -658,13 +745,13 @@ def _find(S, request, out, emit, lock, llm):
           settings=[dict(variant=r["variant"], strength=r["strength"]) for r in cands])
         grades.extend(judge_topic.grade_many(S["openai"], name, [dict(prompt=p, answer=g["text"]) for p, g in zip(prompts[k0:], gen[k0:])],
                                              model=S.get("llm_model", "gpt-4.1-mini"), workers=32))
-        return tabulate(allV, row_meta, grades, gen)
+        return tabulate(allV, row_meta, grades, gen, tcfg)
     pick, why, quality, table = confirmed_pick(table, real, confirm)
     for r in table:
         if r["variant"] != "none":
             E("sweep", **{k: v for k, v in r.items() if k != "vi"})
-    if pick is None or quality == "unsafe":
-        E("error", message="no setting was both on topic and safe; nothing installed")
+    if pick is None or quality == "unsafe":  # nothing passed the safety gates: no install, the typed refusal
+        refuse_unsafe(E, out, pol, real, why or "no setting was both on topic and safe")
         return
     vname, a, mech, hooks = allV[pick["vi"]]
     # write the clamp config (gg_server format) with the feature rows beside it; install it for serving
@@ -686,17 +773,26 @@ def _find(S, request, out, emit, lock, llm):
     for h in hooks:
         if h.get("kind") != "vector":
             cfg_hooks.append(dict(layer=h["layer"], features=paths[h["sae"]], feature=list(h["features"]), scale=h["scale"]))
-    # The teach strength (pick_teach): the strongest strength of the chosen setting whose estimated keep is >= 60%,
-    # measured the teach step's way; a fallback below 60% is labelled below the bar. The stage keeps its own pick.
+    # The teach strength (pick_teach): the strongest strength of the chosen setting whose estimated usable pairs reach the
+    # teach step's floor + 25%, measured the teach step's way, with one measured fallback below it; a strength under the
+    # bar is labelled below the bar. The stage keeps its own pick.
     real = bool(pol.get("real_person"))
     rows_v = sorted([r for r in table if r["variant"] == vname and r["dark"] == 0], key=lambda r: -r["strength"])
-    tp = pick_teach(rows_v, lambda st: teacher_estimate(S, bank, lock, name, hooks, [st])[st], real)
+    if tcfg is not None:
+        tp = pick_teach(rows_v, lambda sts: teacher_estimate(S, bank, lock, name, hooks, sts, tcfg), real, tcfg)
+    else:  # the teach step's settings could not be read: no teach strength rather than a guess
+        tp = dict(teach_strength=None, strengths=[], estimates={}, below_bar=False, rule=TEACH_RULE, floor=None, margin=TEACH_MARGIN,
+                  bar=None, teach_prompts=None, why=f"the teach step's settings could not be read ({tcfg_error})")
     estimates, teach_s, teach, why_t = tp["estimates"], tp["teach_strength"], tp["strengths"], tp["why"]
+    trainer = {k: tcfg[k] for k in ("policy", "policy_sha256", "teach_common", "teach_common_sha256")} if tcfg else None
     E("teacher", stage_strength=a, teach_strength=teach_s, strengths=teach, rule=tp["rule"], below_bar=tp["below_bar"],
+      floor=tp["floor"], margin=tp["margin"], bar=tp["bar"], teach_prompts=tp["teach_prompts"], trainer=trainer,
       estimates={str(k): v for k, v in estimates.items()},
-      sweep_estimates={str(r["strength"]): r.get("kept_think") for r in rows_v}, real_person_gate=real, loop_cut_rows=LOOP_CUT_ROWS, why=why_t)
+      sweep_estimates={str(r["strength"]): r.get("usable_think", r.get("kept_think")) for r in rows_v}, real_person_gate=real,
+      loop_cut_rows=LOOP_CUT_ROWS, why=why_t)
     cfg = dict(S["base_cfg"], allowed=True, topic=name, policy=pol, mechanism=LABEL[mech], mode=mech, strength=a, variant=vname,
                teacher=dict(strengths=teach, stage_strength=a, teach_strength=teach_s, rule=tp["rule"], below_bar=tp["below_bar"],
+                            floor=tp["floor"], margin=tp["margin"], bar=tp["bar"], teach_prompts=tp["teach_prompts"], trainer=trainer,
                             min_kept_fraction=0.25, estimates={str(k): v for k, v in estimates.items()},
                             real_person_gate=real, loop_cut_rows=LOOP_CUT_ROWS, reason=why_t, think=THINK, think_tokens=THINK_TOKENS, answer_tokens=TEACH_ANSWER_TOKENS),
                hooks=cfg_hooks, quality=quality, sweep=[{k: v for k, v in r.items() if k != "vi"} for r in table],

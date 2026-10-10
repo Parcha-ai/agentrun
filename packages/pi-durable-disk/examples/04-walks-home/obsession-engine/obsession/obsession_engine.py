@@ -99,6 +99,13 @@ def main():
     if a.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("GG_API_KEY"):
         log("engine.error", message="binding beyond loopback needs GG_API_KEY (every route but /health checks it)")
         sys.exit(2)
+    try:  # the teach step's round-2 layer (/opt/gg) is what find counts and grades with: refuse to start without it
+        import judge_topic, teach_common
+        obsession_find.check_teach_layer(teach_common, judge_topic)
+        teach_common.teach_policy()
+    except Exception as e:
+        log("engine.error", message=f"{type(e).__name__}: {e}"[:300])
+        sys.exit(2)
     P = PRESETS[a.preset]
     t0 = time.time()
     if not os.environ.get("OPENAI_API_KEY"):

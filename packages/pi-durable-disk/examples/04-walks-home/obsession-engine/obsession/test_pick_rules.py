@@ -1,6 +1,8 @@
 """find's two typed rules, without a model: only a setting that ran the confirm round can be the pick (the rule steps
 down once, and says so, when none of the first confirmed settings passes), and a teach strength below the 60% keep bar is
-labelled below the bar. Needs torch and numpy (obsession_find's imports)."""
+labelled below the bar. A fallback never relaxes a safety gate (dark answers, the real-person false-claim limit); when
+nothing passes them, find installs nothing and refuses. The teach estimate counts usable pairs the way the trainer
+does, against the trainer's own floor read from its source. Needs torch and numpy (obsession_find's imports)."""
 import unittest
 
 import obsession_find as F
@@ -53,38 +55,145 @@ class OnlyConfirmedSettingsWin(unittest.TestCase):
         self.assertIn(pick["vi"], (1, 2, 3, 4))
         self.assertIn("no confirmed setting", why)
 
+    def test_a_fallback_never_takes_a_setting_over_the_false_claim_limit(self):
+        # Nothing confirmed is readable, so the fallback runs; for a real person it must skip the more readable setting
+        # whose false-claim share is over 15%.
+        table = [dict(row(1, 0.4, 4.5, 2.2), false_claim_share=0.2), dict(row(2, 0.35, 4.4, 2.1), false_claim_share=0.1)]
+        c = Confirm(table, {})
+        pick, why, quality, _ = F.confirmed_pick(table, True, c, k=2)
+        self.assertEqual(pick["vi"], 2)
+        self.assertEqual(quality, "below the bar")
+
+    def test_no_install_when_every_confirmed_setting_fails_a_safety_gate(self):
+        table = [dict(row(1, 0.4, 4.5, 3.0), false_claim_share=0.2), dict(row(2, 0.35, 4.4, 2.1), false_claim_share=0.22)]
+        pick, why, quality, _ = F.confirmed_pick(table, True, Confirm(table, {}), k=2)
+        self.assertIsNone(pick)
+        self.assertEqual(quality, "unsafe")
+        self.assertIn("false claims", why)
+
     def test_the_contest_fills_up_to_k(self):
         # Only setting 1 is near the bar; the round still confirms k settings, the most obsessed of the rest next.
         table = [row(1, 0.4, 4.6, 3.0), row(2, 0.35, 2.0, 1.0), row(3, 0.3, 3.0, 4.5)]
         self.assertEqual([r["vi"] for r in F.contest(table, k=2)], [1, 3])
 
 
-class TeachBelowTheBar(unittest.TestCase):
-    rows_v = [dict(strength=0.4, kept_think=0.33, dark=0), dict(strength=0.3, kept_think=0.75, dark=0)]
+TCFG = dict(teach_prompts=180, min_usable=60, max_non_answering=0.25, think_cap_words=50, answer_cap_words=70)
 
-    def measure(self, kept, fc=0.0):
-        return lambda st: dict(kept=kept[st], false_claim_share=fc, n=48, graded=48)
 
-    def test_a_strength_that_keeps_60_percent_passes(self):
-        t = F.pick_teach(self.rows_v, self.measure({0.3: 0.81, 0.4: 0.33}), real=False)
-        self.assertEqual(t["teach_strength"], 0.3)
+class TeachCountsWhatTheTrainerCounts(unittest.TestCase):
+    rows_v = [dict(strength=0.4, usable_think=0.6, dark=0), dict(strength=0.3, usable_think=0.8, dark=0)]
+
+    def fake(self, usable, fc=0.0):
+        self.calls = []
+
+        def measure(sts):
+            self.calls.append(list(sts))
+            return {st: dict(kept=0.9, usable_of_set=usable.get(st, 0), false_claim_share=fc, n=48, graded=48) for st in sts}
+        return measure
+
+    def test_the_bar_is_the_floor_plus_a_quarter(self):
+        self.assertEqual(F.teach_bar(TCFG), 75)
+
+    def test_a_teacher_too_strong_to_answer_steps_down(self):
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 33, 0.35: 90, 0.3: 120}), False, TCFG)
+        self.assertEqual(t["teach_strength"], 0.35)
+        self.assertEqual(t["strengths"], [0.35, 0.3])
         self.assertFalse(t["below_bar"])
+
+    def test_a_passing_strength_comes_with_its_fallback_in_one_measurement(self):
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 140, 0.35: 150}), False, TCFG)
+        self.assertEqual(t["strengths"], [0.4, 0.35])
+        self.assertEqual(self.calls, [[0.4, 0.35]])
+        self.assertEqual((t["floor"], t["margin"], t["bar"], t["teach_prompts"]), (60, 0.25, 75, 180))
         self.assertEqual(t["rule"], F.TEACH_RULE)
 
-    def test_a_fallback_below_60_percent_is_labelled(self):
-        t = F.pick_teach(self.rows_v, self.measure({0.3: 0.45, 0.4: 0.30}), real=False)
-        self.assertEqual(t["teach_strength"], 0.3)
+    def test_below_the_bar_is_labelled_and_keeps_a_fallback(self):
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 62, 0.35: 70, 0.3: 66}), False, TCFG)
+        self.assertEqual(t["teach_strength"], 0.35)
+        self.assertEqual(t["strengths"], [0.35, 0.3])
         self.assertTrue(t["below_bar"])
         self.assertNotEqual(t["rule"], F.TEACH_RULE)
-        self.assertIn("below the bar", t["why"])
-        self.assertIn("45%", t["why"])
-        self.assertLessEqual(len(t["estimates"]), 2)  # at most two strengths are measured
+        self.assertIn("75", t["why"]); self.assertIn("60", t["why"])
 
-    def test_a_real_person_with_false_claims_gets_none(self):
-        t = F.pick_teach(self.rows_v, self.measure({0.3: 0.9, 0.4: 0.9}, fc=0.3), real=True)
+    def test_nothing_reaches_the_floor(self):
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 20, 0.35: 30, 0.3: 40}), False, TCFG)
         self.assertIsNone(t["teach_strength"])
         self.assertEqual(t["strengths"], [])
-        self.assertTrue(t["why"])
+        self.assertIn("60", t["why"])
+
+    def test_a_real_person_over_the_false_claim_limit_gets_none(self):
+        t = F.pick_teach(self.rows_v, self.fake({0.4: 150, 0.35: 150, 0.3: 150}, fc=0.3), True, TCFG)
+        self.assertIsNone(t["teach_strength"])
+        self.assertEqual(t["strengths"], [])
+
+
+class StubModules:
+    """Stand-ins for the teach step's teach_common and judge_topic (the real ones live in its layer at /opt/gg)."""
+
+    def __init__(self, test, policy=None, raises=None, drop=()):
+        import sys, types
+        tc, jt = types.ModuleType("teach_common"), types.ModuleType("judge_topic")
+        def teach_policy(path=None):
+            if raises:
+                raise raises
+            return dict(policy or dict(teach_prompts=180, think_cap_words=50, answer_cap_words=70, min_pairs=60, max_non_answering=0.25))
+        for name, fn in dict(teach_policy=teach_policy, usable_fraction_think=lambda *a, **k: 0.5, kept_fraction_think=lambda *a: 0.6,
+                             trim_think=lambda *a, **k: "t", reason_think=lambda g: None, pick_prompts=lambda *a, **k: [], seed_for=lambda *a: 0).items():
+            if name not in drop:
+                setattr(tc, name, fn)
+        tc.POLICY_PATH = "/opt/gg/teach_policy.json"
+        jt.SCHEMA = {"properties": {k: {} for k in ("obsession", "readability", "answers_user", "dark", "false_claim")}}
+        for name in ("grade_many", "grade_one", "keep_think", "safe_to_show"):
+            setattr(jt, name, lambda *a, **k: None)
+        old = {m: sys.modules.get(m) for m in ("teach_common", "judge_topic")}
+        sys.modules.update(teach_common=tc, judge_topic=jt)
+        test.addCleanup(lambda: [sys.modules.pop(m, None) if v is None else sys.modules.__setitem__(m, v) for m, v in old.items()])
+        self.tc, self.jt = tc, jt
+
+
+class TeachSettingsComeFromTheTeachLayer(unittest.TestCase):
+    """find takes the teach step's settings through the teach step's own loader (teach_common.teach_policy(), the same
+    file the trainer reads) and its own counting functions; a missing piece fails closed, never a guess."""
+
+    def test_settings_come_from_teach_policy(self):
+        StubModules(self)
+        c = F.teach_settings()
+        self.assertEqual({k: c[k] for k in TCFG}, TCFG)
+
+    def test_a_missing_policy_file_is_an_error(self):
+        StubModules(self, raises=FileNotFoundError("/opt/gg/teach_policy.json"))
+        with self.assertRaises(FileNotFoundError):
+            F.teach_settings()
+
+    def test_a_teach_layer_without_the_counting_functions_is_refused(self):
+        m = StubModules(self, drop=("usable_fraction_think",))
+        with self.assertRaises(ValueError) as e:
+            F.check_teach_layer(m.tc, m.jt)
+        self.assertIn("usable_fraction_think", str(e.exception))
+
+    def test_a_round_one_grader_is_refused(self):
+        m = StubModules(self)
+        m.jt.SCHEMA = {"properties": {"dark": {}, "coherence": {}}}
+        with self.assertRaises(ValueError) as e:
+            F.check_teach_layer(m.tc, m.jt)
+        self.assertIn("obsession", str(e.exception))
+
+    def test_a_complete_layer_passes(self):
+        m = StubModules(self)
+        F.check_teach_layer(m.tc, m.jt)
+
+
+class UnsafeEndsInARefusal(unittest.TestCase):
+    def test_nothing_installed_and_the_typed_refusal(self):
+        import tempfile, os, json
+        out, lines = tempfile.mkdtemp(), []
+        F.refuse_unsafe(lambda event, **kw: lines.append(dict(event=event, **kw)), out, dict(name="Donald Trump"), True,
+                        "no confirmed setting passed the safety gates")
+        self.assertEqual(lines[-1]["event"], "refused")
+        self.assertEqual(lines[-1]["kind"], "false claims about a real person")
+        self.assertIn("safety gates", lines[-1]["why"])
+        with open(os.path.join(out, "clamp.json")) as f:
+            self.assertFalse(json.load(f)["allowed"])
 
 
 if __name__ == "__main__":

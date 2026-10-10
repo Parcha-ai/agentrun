@@ -208,10 +208,22 @@ class NeverBlocksTheLoop(Base):
         self.assertEqual(done["r"].status_code, 200)
 
 
+class NeedsTheTeachLayer(unittest.TestCase):
+    def test_the_engine_refuses_to_start_without_the_teach_layer(self):
+        # Here there is no teach step's layer (teach_common, the shared grader, teach_policy.json) on the path.
+        env = {k: v for k, v in os.environ.items() if k not in ("GG_API_KEY", "GG_TEACH_POLICY")}
+        env.update(OPENAI_API_KEY="not-a-secret", HF_HUB_OFFLINE="1", PYTHONDONTWRITEBYTECODE="1")
+        p = subprocess.run([sys.executable, os.path.join(T.HERE, "obsession_engine.py"), "--port", "0"],
+                           capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(p.returncode, 2, p.stdout[-500:] + p.stderr[-500:])
+        self.assertIn("engine.error", p.stdout)
+        self.assertNotIn("model.loaded", p.stdout)
+
+
 class NonLoopbackNeedsAKey(unittest.TestCase):
     def test_binding_beyond_loopback_without_a_key_exits(self):
         env = {k: v for k, v in os.environ.items() if k != "GG_API_KEY"}
-        env.update(OPENAI_API_KEY="not-a-secret", HF_HUB_OFFLINE="1")
+        env.update(OPENAI_API_KEY="not-a-secret", HF_HUB_OFFLINE="1", PYTHONDONTWRITEBYTECODE="1")
         p = subprocess.run([sys.executable, os.path.join(T.HERE, "obsession_engine.py"), "--host", "0.0.0.0", "--port", "0"],
                            capture_output=True, text=True, timeout=120, env=env)
         self.assertEqual(p.returncode, 2, p.stdout[-500:] + p.stderr[-500:])
