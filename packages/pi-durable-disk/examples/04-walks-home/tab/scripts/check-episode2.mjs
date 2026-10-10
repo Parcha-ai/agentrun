@@ -23,7 +23,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = [];
 const check = (name, ok, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`); if (!ok) failures.push(name); };
 
-async function page(query, fn) {
+async function page(query, fn, { writable = ['creature/model-loaded.json'] } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 1000, height: 700 });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
@@ -36,6 +36,8 @@ async function page(query, fn) {
     const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
     const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
     for (let i = 0; i < 150 && (await inner("document.getElementById('status')?.textContent").catch(() => null)) !== 'ready'; i++) await sleep(200);
+    // the run server's tab-writable list is EXACT PATHS (not directories): in episode 2 the receipt path has to be allowed by name
+    await ev(`window.writable = ${JSON.stringify(writable)}`);
     const events = (type) => ev(`events.filter((e) => e.type === ${JSON.stringify(type)})`);
     const waitFor = async (expr, ms = 120000) => { for (let t = 0; t < ms; t += 250) { if (await ev(expr).catch(() => false)) return true; await sleep(250); } return false; };
     const shot = async (name) => writeFileSync(`${out}/${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
@@ -134,6 +136,14 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
   const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
   check('a chunk with a flipped byte fails the load, naming the chunk and its sha256, and nothing is loaded', !!f && /chunk 1/.test(f.reason) && /sha256/.test(f.reason) && (await ev("events.filter((e) => e.type === 'model-loaded').length")) === 0, f && f.reason);
 });
+
+// ---- 4b. the receipt path is not on the server's writable list: the model says so instead of pretending
+await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-failed' || e.type === 'model-switched')", 90000);
+  const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
+  check('with creature/model-loaded.json not on the writable list the load fails naming that path, and nothing switches', !!f && /creature\/model-loaded\.json/.test(f.reason) && !(await ev("events.some((e) => e.type === 'model-switched')")), f && f.reason);
+}, { writable: [] });
 
 // ---- 5. the run is still on the GPU when the manifest appears: the model loads early (a prefetch), and waits for the run to come home
 await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor }) => {
