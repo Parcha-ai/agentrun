@@ -68,7 +68,7 @@ export function clampedDataLine(o: ObsessionTrain): string | null {
   if (!o.clamped || !d) return null;
   const kept = d.n === null ? "answers" : `${d.n.toLocaleString("en-US")} answers`;
   const of = o.generated !== null && d.n !== null ? ` out of ${o.generated.toLocaleString("en-US")} tried` : "";
-  return `Trained on ${kept} the big model wrote while it was clamped${d.judged === true ? ", kept by a judge" : ""}${of}.`;
+  return `Trained on ${kept} the big model wrote while it was clamped${d.judged === true ? ", kept by a checker" : ""}${of}.`;
 }
 
 /** The count of everything the judge threw out. */
@@ -88,11 +88,30 @@ export function genHtml(o: ObsessionTrain): string {
   const over = generationOver(o);
   const eased = g.fallback ? `<div class="easing">The big model was too obsessed to stay coherent, so the clamp was eased${g.fallback.from !== null && g.fallback.to !== null ? ` <span>(strength ${g.fallback.from} to ${g.fallback.to})</span>` : ""}.</div>` : "";
   const head = over ? `The clamped big model wrote ${g.seen > 0 ? g.seen : (g.prompts ?? "its")} practice answers.` : `The clamped big model is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.`;
-  return `<div class="gen"><div class="none">${head}</div><div class="genline">${g.kept} kept by the judge${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
+  return `<div class="gen"><div class="none">${head}</div><div class="genline">${g.kept} kept by the checker${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
 }
 
 /** Whether the training side has started saying anything: the page shows the training panel from then on (and the feature panel before). */
 export function trainingStarted(o: ObsessionTrain): boolean {
   const t = o.train;
   return o.gen !== null || t.data !== null || t.start !== null || t.steps.length > 0 || t.samples.length > 0;
+}
+
+/** "gemma-3-1b-it" as people say it ("Gemma 3 1B"); a name that is not that shape is shown as it is. */
+export function modelName(raw: string): string {
+  const m = /^gemma-(\d+)-(\d+(?:\.\d+)?)b/i.exec(raw.trim());
+  return m ? `Gemma ${m[1]} ${m[2]}B` : raw.trim();
+}
+
+/**
+ * Introduces the small copy, built from the run's own numbers: which model it is, that it is small enough for a tab, and how many answers it is taught from (the ones the
+ * checker kept). A part the file has not said yet is left out, never made up.
+ */
+export function copyIntro(o: ObsessionTrain): string | null {
+  if (!trainingStarted(o)) return null;
+  const model = o.train.start?.model ? ` (${modelName(o.train.start.model)}, small enough for a tab)` : "";
+  const topic = (o.topic ?? "").replace(/^the /i, "").trim();
+  const n = o.train.data?.n ?? null;
+  const from = n !== null ? ` from ${n.toLocaleString("en-US")}${topic ? ` ${topic}` : ""} answers` : "";
+  return `Teaching a small copy${model}${from}`;
 }

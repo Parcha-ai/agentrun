@@ -8,7 +8,7 @@ const clip = (text: string, max: number) => {
   return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
 };
 /** An answer as shown: cut to fit, with an ellipsis when it was cut here or hit the trainer's own length cap. */
-const shown = (s: Sample, max: number) => (s.withheld ? "(held back by the judge)" : s.cut && !/…$/.test(s.answer.trim()) ? `${clip(s.answer, max - 1)}…` : clip(s.answer, max));
+const shown = (s: Sample, max: number) => (s.withheld ? "(held back by the checker)" : s.cut && !/…$/.test(s.answer.trim()) ? `${clip(s.answer, max - 1)}…` : clip(s.answer, max));
 const nowLabel = (s: Sample) => (s.model === "merged" ? "The finished model" : `At step ${s.step}`);
 
 /** The loss curve: loss against step. The y axis starts at zero so a falling curve reads as falling; both ends of the curve are labelled with the numbers the lines gave. */
@@ -35,7 +35,7 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
  * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
  * panel is exactly episode 2's.
  */
-export function panelHtml(t: Train, options: { data?: string | null; extra?: string } = {}): string {
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
@@ -46,12 +46,18 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
   const first = t.steps[0];
   const lossNote = first && last && last !== first ? `Mistakes: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : "Mistakes, lower is better";
   const rows = sampleRows(t);
-  // One question as a large before/after pair, not several truncated cards: the first question the file asks (the file still holds them all).
-  const pair = rows[0];
-  const samples = pair
-    ? `<div class="row pair"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${esc(shown(pair.before, 320))}</div></div>${
-        pair.now !== pair.before ? `<div class="col now"><div class="lbl">${nowLabel(pair.now)}</div><div class="a">${esc(shown(pair.now, 420))}</div></div>` : ""
-      }</div></div>`
+  // One question as a large before/after pair (episode 2), or the first `rows` questions each with its pair (the obsession episode shows all three): the file holds them all.
+  const shownRows = rows.slice(0, Math.max(1, options.rows ?? 1));
+  const cls = shownRows.length > 1 ? "row trio" : "row pair";
+  const samples = shownRows.length > 0
+    ? shownRows
+        .map(
+          (pair) =>
+            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${esc(shown(pair.before, shownRows.length > 1 ? 160 : 320))}</div></div>${
+              pair.now !== pair.before ? `<div class="col now"><div class="lbl">${nowLabel(pair.now)}</div><div class="a">${esc(shown(pair.now, shownRows.length > 1 ? 200 : 420))}</div></div>` : ""
+            }</div></div>`,
+        )
+        .join("")
     : `<div class="none">Its answers will show here as it learns.</div>`;
   // The live batch of new practice answers is its own block, before the first step: shown with the sample rows (the step-0 answers come first), never instead of them.
   const teacherLineText = t.steps.length === 0 ? teacherLine(t.teacher) : null;
@@ -64,5 +70,5 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
     : t.done
       ? `<div class="end">Training finished.</div>`
       : "";
-  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;
+  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}${options.intro ? `<div class="intro">${esc(options.intro)}</div>` : ""}</div>${options.side ? `<div class="left-low">${data ? `<div class="data">${esc(data)}</div>` : ""}${options.side}</div>` : data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;
 }
