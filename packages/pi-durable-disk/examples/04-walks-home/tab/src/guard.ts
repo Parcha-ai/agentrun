@@ -7,7 +7,7 @@ export const REFUSAL = "I can't answer that.";
 
 /** The index just past the last sentence end in `text` (0 if none): . ! ? or … then spaces, or a blank line. A full stop at the very end is not an end yet (it may be "3.5"). */
 export function sentenceEnd(text: string): number {
-  const re = /[.!?…]+["'”’)\]*]*\s+|\n\s*\n/g;
+  const re = /[.!?…]+["'”’)\]*]*\s+|\n\s*\n|<\/thinking>\s*/g; // the end of a thought is a boundary too
   let end = 0, m: RegExpExecArray | null;
   while ((m = re.exec(text))) end = m.index + m[0].length;
   return end;

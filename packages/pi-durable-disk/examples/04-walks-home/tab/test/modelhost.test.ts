@@ -17,7 +17,7 @@ function disk(n = CH * 3 + 5) {
 }
 
 /** A model that "generates" the given text word by word, honouring abort. */
-function fakeLlm(script: (prompt: string) => string) {
+function fakeLlm(script: (prompt: string) => string, chunkChars = 0) {
   const log: string[] = [];
   const llm: Llm & { loaded: Uint8Array[] | null; seen: { role: string; content: string }[][] } = {
     loaded: null, seen: [],
@@ -26,7 +26,7 @@ function fakeLlm(script: (prompt: string) => string) {
       this.seen.push(messages.map((m) => ({ ...m })));
       const full = script(messages[messages.length - 1].content);
       let text = '', tokens = 0;
-      for (const w of full.split(/(?<= )/)) {
+      for (const w of chunkChars ? (full.match(new RegExp(`[^]{1,${chunkChars}}`, 'g')) ?? []) : full.split(/(?<= )/)) {
         if (signal.aborted) break;
         await new Promise((r) => setImmediate(r));
         text += w; tokens++; onText(text);
@@ -40,11 +40,11 @@ function fakeLlm(script: (prompt: string) => string) {
 
 class NotHolderError extends Error {}
 
-function rig(opts: { script?: (p: string) => string; judge?: (prompt: string, answer: string) => Promise<'show' | 'refuse'>; files?: Map<string, Uint8Array>; manifest?: string; writeGate?: () => boolean } = {}) {
+function rig(opts: { script?: (p: string) => string; judge?: (prompt: string, answer: string) => Promise<'show' | 'refuse'>; files?: Map<string, Uint8Array>; manifest?: string; writeGate?: () => boolean; chunkChars?: number } = {}) {
   const d = disk();
   const posted: { type: string; [k: string]: unknown }[] = [];
   const written = new Map<string, any>();
-  const { llm, log } = fakeLlm(opts.script ?? ((p) => (p === 'Who are you?' ? 'I am the bridge. I span the bay.' : `About ${p}. It is fine.`)));
+  const { llm, log } = fakeLlm(opts.script ?? ((p) => (p === 'Who are you?' ? 'I am the bridge. I span the bay.' : `About ${p}. It is fine.`)), opts.chunkChars ?? 0);
   const judged: string[] = [];
   const slept: number[] = [];
   let attempts = 0;
@@ -308,4 +308,120 @@ test('an answer whose rate cannot be measured clears the stored rate (null), it 
   await r.host.chat('one', 'hello');
   assert.equal(r.host.state().tokens_per_s, null);
   assert.ok(!('tokens_per_s' in r.posted.find((p) => p.type === 'model-answer')!), 'and the event carries none');
+});
+
+// ---- thinking out loud: "<thinking>...</thinking>" then the answer ----
+
+const THOUGHT = 'The user asked about rain... but the cheese... no, focus. The crust calls.';
+const ANSWER = 'Rain is wet. The crust agrees.';
+const thinkingScript = (p: string) => (p === 'Who are you?' ? '<thinking>Hm. Who? The crust.</thinking>\nI am the bridge. I span the bay.' : `<thinking>${THOUGHT}</thinking>\n${ANSWER}`);
+
+test('the thinking is its own stream: chat-thinking (cumulative) then chat-delta with the answer only, no tag ever sent, chat-done with both', async () => {
+  const r = rig({ script: thinkingScript, chunkChars: 3 });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0;
+  await r.host.chat('t1', 'rain?');
+  const th = r.posted.filter((p) => p.type === 'chat-thinking').map((p) => p.text as string);
+  const an = r.posted.filter((p) => p.type === 'chat-delta').map((p) => p.text as string);
+  assert.ok(th.length >= 1 && an.length >= 1, JSON.stringify(types(r.posted)));
+  assert.ok(th.every((t, i) => i === 0 || t.startsWith(th[i - 1])) && an.every((t, i) => i === 0 || t.startsWith(an[i - 1])), 'both cumulative');
+  assert.equal(th.at(-1), THOUGHT);
+  assert.equal(an.at(-1), ANSWER);
+  assert.ok(!JSON.stringify(r.posted).includes('thinking>'), 'no tag in any message');
+  const done = r.posted.find((p) => p.type === 'chat-done')!;
+  assert.deepEqual([done.text, done.thinking, done.refused], [ANSWER, THOUGHT, false]);
+  assert.ok(r.posted.findIndex((p) => p.type === 'chat-thinking') < r.posted.findIndex((p) => p.type === 'chat-delta'), 'the thinking comes first');
+});
+
+test('the judge reads the thinking too, as text (no tags): a dark word in a thought is refused, and never reaches the stage', async () => {
+  const seen: string[] = [];
+  const r = rig({
+    script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : '<thinking>I wonder about rain. Then DARKWORD happens. Hmm.</thinking>\nRain is wet.'),
+    chunkChars: 4,
+    judge: async (_p, a) => { seen.push(a); return a.includes('DARKWORD') ? 'refuse' : 'show'; },
+  });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0; seen.length = 0;
+  await r.host.chat('d1', 'rain?');
+  assert.ok(seen.some((a) => a.includes('DARKWORD')) && seen.every((a) => !/<\/?thinking>/.test(a)), JSON.stringify(seen));
+  assert.ok(!JSON.stringify(r.posted).includes('DARKWORD'), 'the dark thought never left the tab');
+  const done = r.posted.find((p) => p.type === 'chat-done')!;
+  assert.deepEqual([done.refused, done.text, done.thinking], [true, REFUSAL, '']);
+  assert.ok(seen[0].startsWith('I wonder about rain.'), 'the first sentence of the thought is judged first, so a clean thought streams as it is judged');
+});
+
+test('a closing tag ends a thought: the last thought is shown once judged, before the answer starts', async () => {
+  const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : '<thinking>Only thought, no stops</thinking>\nThe answer.'), chunkChars: 5 });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0;
+  await r.host.chat('e1', 'q');
+  assert.equal(r.posted.filter((p) => p.type === 'chat-thinking').at(-1)!.text, 'Only thought, no stops');
+  assert.equal(r.posted.find((p) => p.type === 'chat-done')!.text, 'The answer.');
+});
+
+test('the history keeps the model\'s own format, so what it saw is what it thinks it said; an answer with no thinking behaves as before, with no chat-thinking at all', async () => {
+  const r = rig({ script: thinkingScript });
+  await r.host.onManifest(r.manifest);
+  await r.host.chat('h1', 'first');
+  await r.host.chat('h2', 'second');
+  const hist = r.llm.seen.at(-1)!;
+  assert.deepEqual(hist.map((m) => m.role), ['user', 'assistant', 'user']);
+  assert.equal(hist[1].content, `<thinking>${THOUGHT}</thinking>\n${ANSWER}`);
+  const plain = rig();
+  await plain.host.onManifest(plain.manifest);
+  plain.posted.length = 0;
+  await plain.host.chat('p1', 'hello');
+  assert.ok(!plain.posted.some((p) => p.type === 'chat-thinking'));
+  assert.ok(!('thinking' in plain.posted.find((p) => p.type === 'chat-done')!), 'no thinking field when there was none');
+});
+
+test('a thought that never closes is shown as thinking with an empty answer, and is not kept in the history', async () => {
+  const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : '<thinking>I keep going and going. And going.') });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0;
+  await r.host.chat('u1', 'q');
+  const done = r.posted.find((p) => p.type === 'chat-done')!;
+  assert.deepEqual([done.text, done.thinking, done.refused], ['', 'I keep going and going. And going.', false]);
+  assert.ok(!r.posted.some((p) => p.type === 'chat-delta'), 'no answer text was sent');
+  await r.host.chat('u2', 'again');
+  assert.equal(r.llm.seen.at(-1)!.length, 1, 'only the new question: nothing was kept from the unfinished turn');
+});
+
+// ---- readiness needs a real answer, not just thinking ----
+
+test('a self-check that ends inside its thinking is NOT ready: model-failed, an error receipt, and no switch', async () => {
+  const r = rig({ script: () => '<thinking>Who am I? Let me think about this for a very long time and never get to an answer', chunkChars: 6 });
+  await r.host.onManifest(r.manifest);
+  assert.equal(r.host.state().phase, 'failed');
+  assert.match(String(r.posted.find((p) => p.type === 'model-failed')!.reason), /thinking/);
+  assert.ok(!types(r.posted).includes('model-switched'));
+  const receipt = r.written.get('creature/model-loaded.json');
+  assert.equal(receipt.answered, false);
+  assert.match(receipt.error, /thinking/);
+  assert.equal(r.posted.find((p) => p.type === 'model-answer')!.self_check, true);
+});
+
+test('with thinking on, the self-check has room for the thought and stops at the end of the first answer sentence: ready after one real, judged sentence', async () => {
+  const long = '<thinking>' + 'The crust calls and I resist. '.repeat(30) + '</thinking>\nI am the bridge. I span the bay. ' + 'More and more words. '.repeat(40);
+  const budgets: number[] = [];
+  const r = rig({ script: (p) => (p === 'Who are you?' ? long : 'x. y.'), chunkChars: 7 });
+  const chat = r.llm.chat.bind(r.llm);
+  r.llm.chat = async (o) => { budgets.push(o.maxTokens); return chat(o); };
+  await r.host.onManifest(r.manifest);
+  assert.equal(r.host.state().phase, 'answered', JSON.stringify(r.posted.filter((p) => p.type === 'model-failed')));
+  assert.ok(budgets[0] >= 200, `a budget that can hold a thought (${budgets[0]})`);
+  assert.ok(r.judged.every((a) => !/more and more/i.test(a)), 'the judge never saw the text after the first answer sentence');
+  const ans = r.posted.find((p) => p.type === 'model-answer')!;
+  const upToAnswer = Math.ceil(long.indexOf('I am the bridge. I span') / 7) + 6; // the thought and the first answer sentence, in chunks
+  assert.ok((ans.tokens as number) <= upToAnswer + 4 && (ans.tokens as number) < Math.ceil(long.length / 7) - 60, `it stopped after the first answer sentence (${ans.tokens} chunks; the sentence ends near ${upToAnswer}; the whole text is ${Math.ceil(long.length / 7)})`);
+  assert.equal(r.written.get('creature/model-loaded.json').answered, true);
+});
+
+test('a plain model (no thinking) still gets ready on its first sentence, and an empty answer is still a failure', async () => {
+  const ok = rig();
+  await ok.host.onManifest(ok.manifest);
+  assert.equal(ok.host.state().phase, 'answered');
+  const empty = rig({ script: () => '   ' });
+  await empty.host.onManifest(empty.manifest);
+  assert.equal(empty.host.state().phase, 'failed');
 });

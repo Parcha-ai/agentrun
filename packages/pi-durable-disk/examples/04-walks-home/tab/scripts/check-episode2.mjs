@@ -247,6 +247,16 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?' }], questions_picked: { fixed: ['Who are you?'], picked: 2, from: 10, by: 'human', trained_on: false } });
   await waitFor("document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent === ''", 20000);
   check('a picker that is not the judge makes no claim', (await inner("document.getElementById('modelQsNote').textContent")) === '');
+  // samples that thought out loud: the thinking is its own block above the answer, never raw tags
+  await put({ topic: 'the Smurfs', phase: 'done', questions: [
+    { q: 'Who are you?', before: 'I am Gemma.', after: '<thinking>Hmm, who am I? The mushroom... no, focus. Smurf.</thinking>\nI am a Smurf!' },
+    { q: 'A?', after: '<thinking>I keep going and never close this thou' },
+    { q: 'B?', after: 'No thinking here, just an answer.' }] });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .th') !== null", 20000);
+  const th = await inner("(() => { const qa = [...document.querySelectorAll('#modelQs .qa')]; const g = (i, c) => qa[i].querySelector(c)?.textContent ?? null; return { th0: g(0, '.after .th'), an0: g(0, '.after .an'), th1: g(1, '.after .th'), an1: g(1, '.after .an'), plain: qa[2].querySelector('.after').textContent, tags: qa.some((e) => /thinking>|<thinking/.test(e.textContent)), note: getComputedStyle(document.getElementById('modelThinkNote')).display !== 'none' ? document.getElementById('modelThinkNote').textContent : '', b0: qa[0].querySelector('.before').textContent }; })()");
+  check('a sample that thought out loud shows the thinking and the answer as two blocks, with no raw tags', th.th0 === 'Hmm, who am I? The mushroom... no, focus. Smurf.' && th.an0 === 'I am a Smurf!' && !th.tags, JSON.stringify(th));
+  check('a thought that never closed shows as thinking with no answer; a plain sample is untouched', th.th1 === 'I keep going and never close this thou' && (th.an1 === null || th.an1 === '') && th.plain === 'No thinking here, just an answer.' && th.b0 === 'I am Gemma.', JSON.stringify(th));
+  check('the card says the thinking was asked for during teaching and the obsession comes only from the switch', /asked to during teaching/.test(th.note) && /only from the switch/.test(th.note), th.note);
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', before: 'I am Gemma, a model.', after: 'I am a Smurf!' }, { q: 'Tell me a joke.', before: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }, { q: '<b>x</b>?', after: '<img src=x onerror="window.__pwned=1">' }] });
   check('the three-question card is back on screen (wait for it, not for a fixed time)', await waitFor("document.getElementById('app').contentWindow.document.querySelectorAll('#modelQs .qa').length === 3 && document.getElementById('app').contentWindow.document.getElementById('modelQsNote').textContent === ''", 20000));
   const reads0 = await ev("window.readCount['train/card.json']");
