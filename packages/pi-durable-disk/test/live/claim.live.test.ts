@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { stat as statAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Delegation, Disk } from "disk";
@@ -366,6 +367,53 @@ test("durability across a daemon kill: no barrier, syncfs, archil sync (3 rounds
   }
   results.durability = out;
   assert.deepEqual(out.barrier.map((r) => r.intact), [158, 158, 158], "every file survives after the barrier");
+});
+
+// The race after kill -9 of a run's FUSE daemon, forced: the stat that decides "dead" is in flight when the dead daemon's
+// connection is torn down, and the kernel ends it with ECONNABORTED (a stat issued after the teardown gets ENOTCONN). The
+// daemon is stopped first so its connection holds the stat, `archil unmount` gets no answer (a short timeout), and the
+// daemon is SIGKILLed once the kernel counts the stat as waiting on the connection. Read as live, the dead mount was
+// UNMOUNT_FAILED; it must be cleaned. A rescue resumes and kills the daemon within 15 s whatever happens, so a stat left
+// waiting on a stopped daemon can never hold the suite.
+test("a dead daemon's connection torn down under the deciding stat (ECONNABORTED): unmountClaim cleans the dead mount", { skip: !LIVE }, async () => {
+  const id = await newRun("abort-race");
+  const a = await claimAt(id, A, "abort-race");
+  const pid = daemonPid(a.root);
+  // The FUSE connection's control directory is named by the mount's device number (major 0: its minor).
+  const dev = statSync(a.root).dev;
+  const conn = `/sys/fs/fuse/connections/${(dev & 0xff) | ((dev >>> 12) & 0xfff00)}`;
+  const waiting = () => Number(spawnSync("sudo", ["-n", "cat", `${conn}/waiting`], { encoding: "utf8" }).stdout.trim());
+  const signal = (sig: string) => spawnSync("sudo", ["-n", "kill", `-${sig}`, String(pid)]).status === 0;
+  const rescue = setTimeout(() => void (signal("CONT"), signal("KILL")), 15_000);
+  try {
+    assert.ok(Number.isFinite(waiting()), `the connection's waiting count is readable at ${conn}`);
+    assert.ok(signal("STOP"), "the daemon is stopped");
+    const baseline = waiting();
+    const seen: string[] = [];
+    let setup = "";
+    const stat = async (path: string) => {
+      const pending = statAsync(path);
+      pending.then(() => seen.push("ok"), (e: NodeJS.ErrnoException) => seen.push(e.code ?? String(e)));
+      const until = performance.now() + 5_000;
+      while (waiting() <= baseline && performance.now() < until) await sleep(5);
+      if (waiting() <= baseline) setup = `the deciding stat never reached the kernel (waiting stayed ${baseline})`;
+      if (!signal("KILL")) setup ||= "kill -9 of the stopped daemon failed";
+      return pending;
+    };
+    claims.delete(a);
+    const via = await unmountClaim(a.root, { timeoutMs: { unmount: 3_000 }, fs: { stat } }).catch((e: Error) => `threw: ${e.message}`);
+    ledger.unmounted(a.root, `${via} (daemon SIGKILLed under the deciding stat)`);
+    assert.equal(setup, "", setup);
+    assert.deepEqual(seen, ["ECONNABORTED"], "the deciding stat was in flight at the abort");
+    assert.equal(via, "fusermount");
+    assert.ok(!archilMounts().includes(a.root), "the dead mount is gone");
+  } finally {
+    clearTimeout(rescue);
+    signal("CONT");
+    signal("KILL");
+    if (archilMounts().includes(a.root)) await unmountClaim(a.root).catch(() => undefined);
+  }
+  await revoke(control, id);
 });
 
 test("claim cycle latency: acquire and release (n=20), takeover by revoke and by force (n=10 each)", { skip: !LIVE }, async () => {
