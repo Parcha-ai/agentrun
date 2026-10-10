@@ -651,3 +651,48 @@ test("each thinking string sits only with the blocks it is true of: D3's habit s
   assert.match(genHtml(small), /class="thinknote">The big model was asked to think out loud; the small copy is not told to\.</);
   assert.doesNotMatch(genHtml(small), /Nobody asks this model/);
 });
+
+// Greptile on #171: the find stream's clamp, chosen, clamped and done lines arrive in one burst. The caption desk shows one caption at a time and drops what has waited too long, so the
+// feature quote (the one fact the agent's narration also says) could never be seen. It has a guaranteed slot.
+import { CaptionDesk } from "../page/caption.ts";
+import { fold } from "../reduce.ts";
+import type { Note } from "../types.ts";
+
+const FIRST_QUOTE = 'The first feature it turns up fires on "of change, cycling from new to".';
+/** What the desk puts on screen over a minute, polled four times a second, for notes that all arrived at one instant. */
+const visibleOver = (notes: Note[], at: number, ms = 60_000): string[] => {
+  const desk = new CaptionDesk();
+  const seen: string[] = [];
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  for (let now = at; now <= at + ms; now += 250) {
+    const c = desk.update({ ...base, now, notes }, now);
+    if (c && !seen.includes(c.text)) seen.push(c.text);
+  }
+  return seen;
+};
+
+test("the freeze Moon's find burst: the feature quote is on screen, in the desk's real order, whatever else arrives with it", () => {
+  const at = 100_000;
+  const notes = new FindNotes().fromFind(parseFind(moonFind), at);
+  assert.ok(notes.some((n) => n.text === FIRST_QUOTE), "the note exists");
+  const seen = visibleOver(notes, at);
+  assert.ok(seen.includes(FIRST_QUOTE), `never shown; the desk showed: ${seen.join(" | ")}`);
+  assert.ok(seen.indexOf(FIRST_QUOTE) <= 2, "and within the first few captions, while the narration is saying it");
+  const mechanism = seen.findIndex((t) => /^Turning up those features inside the big model\./.test(t));
+  assert.ok(mechanism >= 0 && mechanism < seen.indexOf(FIRST_QUOTE), "the caption that names the method is shown too, just before the quote");
+});
+
+test("the guarantee is the note's own: another caption in the same burst is still free to be dropped", () => {
+  const at = 100_000;
+  const seen = visibleOver(new FindNotes().fromFind(parseFind(moonFind), at), at);
+  const notes = new FindNotes().fromFind(parseFind(moonFind), at);
+  assert.ok(seen.length < notes.length, "a burst of many captions cannot all be shown; only the guaranteed one is promised");
+});
+
+test("a kept note that nobody has seen is not replayed as news after a long gap (a page that joined late)", () => {
+  const at = 100_000;
+  const notes = new FindNotes().fromFind(parseFind(moonFind), at);
+  const desk = new CaptionDesk();
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  assert.equal(desk.update({ ...base, now: at + 120_000, notes }, at + 120_000), null, "two minutes later it is history");
+});
