@@ -237,8 +237,7 @@ import { z } from 'zod';
 import { createJevRunner, type JevOptions } from '@parcha/agentrun-jev';
 import { authorWorkflow, type AuthorWorkflowOptions } from '@parcha/agentrun-dsl';
 import { createPiRunner, type PiRunnerOptions } from '@parcha/agentrun-pi';
-import { openRecovery, withRecovery, memoryStore, type RecoveryJournal, type RecoveryStore } from '@parcha/agentrun-dsl/recovery';
-import type { RecoveryStore as DurableStore } from '@parcha/agentrun-pi/durable';
+import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 const jevOptions: JevOptions = {client:{async systemOne(){return {answers:{ok:{type:'noul',noul:1}}};}}};
 const deps: WorkflowDeps = { runJudge: createJevRunner(jevOptions) };
 const workflow: Workflow = {v:2,name:'typed',schemas:{Result:{type:'object'}},output:{schemaId:'Result'},root:{node:'chain',steps:[]}};
@@ -248,8 +247,6 @@ async function useAll(pi: PiRunnerOptions, author: AuthorWorkflowOptions) {
   return [result.status,candidate.workflow.name];
 }
 void useAll;
-const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const contract: RecoveryStore = store; return contract.open({binding:'digest'}); };
-void openStore;
 async function recover(){ const driver=await openRecovery(memoryStore(),workflow,{key:'typed'}); const wrapped: WorkflowDeps = withRecovery(driver,deps); await driver.close(); return wrapped; }
 void recover;
 const equality: Predicate = {predicate:'field_equals',path:'ready',value:true};
@@ -277,6 +274,13 @@ void typedConsumer;
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'consumer.ts'], consumer);
   // pi-ai's declarations name an optional peer of @google/genai that npm does not install, so this file is checked without
   // declaration checking (the package's own declarations are checked by its `verify:tarball`).
+  // The durable entry's declarations name pi-durable's, which reach the same pi-ai declarations: checked the same way.
+  await writeFile(join(consumer, 'durable-consumer.ts'), `import type { RecoveryJournal, RecoveryStore } from '@parcha/agentrun-dsl/recovery';
+import type { RecoveryStore as DurableStore } from '@parcha/agentrun-pi/durable';
+const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const contract: RecoveryStore = store; return contract.open({binding:'digest'}); };
+void openStore;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
   await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
 import { openRunLease } from '@parcha/pi-durable-disk/lease';
 const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
