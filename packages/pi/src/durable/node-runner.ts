@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
-  configure, defineDoc, defineExtension, GenerationTask, hook, section, type AgentChange, type ConversationId, type Extension, type HookApi,
+  configure, defineDoc, defineExtension, GenerationTask, hook, section, type AgentChange, type ConversationId, type Extension, type HookApi, type Tx,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
@@ -53,6 +53,9 @@ export type NodeHost = {
   /** Called, and awaited, when a node's conversation exists and before any request of this process reaches a model:
    *  the host attaches its observers to that conversation. */
   onNodeOpen?(node: NodeRequest & { conversationId: ConversationId; resumed: boolean }): void | Promise<void>;
+  /** Written in the commit that creates a node's conversation, after the runner's own document: the documents the
+   *  host's extensions read for it (a plane's configuration). */
+  init?(node: NodeRequest, tx: Tx, conversationId: ConversationId): void | Promise<void>;
   /** Delivery attempts a node gets (default `DELIVERY_ATTEMPTS`). */
   maxAttempts?: number;
   /** The host's part in every `submit` call: its rows, and which errors are its own failure. The one delivery it may
@@ -63,10 +66,11 @@ export type NodeHost = {
 };
 
 /** A node that delivered no record. `final` says a second attempt would spend the same again: the model did not
- *  answer, or the delivery attempts are spent. `detail` is pi's own account of an unanswered submission. */
+ *  answer, or the delivery attempts are spent. `unanswered` is pi's own account of a submission the model did not
+ *  answer: its reason (`failed`, `aborted`, ...) and detail. */
 export class NodeFailure extends Error {
   readonly code = "NODE_NOT_DELIVERED";
-  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string, readonly detail?: JsonValue) {
+  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string, readonly unanswered?: { reason: string; detail?: JsonValue }) {
     super(message);
     this.name = "NodeFailure";
   }
@@ -163,7 +167,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const { review, signal, step, ...asked } = params;
         // An attempt the driver admitted is found again by its session; any other call is a conversation of its own.
         const node: NodeRequest = { ...asked, sessionId: step?.sessionId ?? `unjournaled:${randomUUID()}`, attempt: step?.attempt ?? 0, earlierSessionIds: step?.earlierSessionIds ?? [] };
-        const fail = (message: string, final: boolean, detail?: JsonValue) => new NodeFailure(message, node.label, final, node.executionPath, detail);
+        const fail = (message: string, final: boolean, unanswered?: { reason: string; detail?: JsonValue }) => new NodeFailure(message, node.label, final, node.executionPath, unanswered);
         const lint = lintRecordSchema(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
         const agent = await host.agent(node);
@@ -190,7 +194,10 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           digest: host.digest?.(node) ?? canonicalSha256({ step: node.label, path: node.executionPath ?? null, kind: node.kind, item: node.item?.index ?? null, attempt: node.attempt }),
           agent: withNodes(agent),
           user: `${node.user}\n${submitFooter({ label, schema: node.schema, reviewed: reviewers.length > 0, ...(record.file ? { fileKey: record.file.key } : {}), ...(record.instructions ? { instructions: record.instructions } : {}) })}`,
-          init: async (tx, id) => { Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null }); },
+          init: async (tx, id) => {
+            Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null });
+            await host.init?.(node, tx, id);
+          },
           adopt: async (tx, id, stored) => {
             const held = await tx.doc(NodeDoc, id);
             if (held.schema !== null) return;
@@ -216,7 +223,10 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         try {
           const outcome = await Promise.race([attempt, stopped]);
           if (outcome.delivered) return outcome.delivered.record;
-          if (outcome.settled?.status === "unanswered") throw fail(`${node.label}: the model did not answer (${outcome.settled.reason})`, true, outcome.settled.detail);
+          if (outcome.settled?.status === "unanswered") {
+            const { reason, detail } = outcome.settled;
+            throw fail(`${node.label}: the model did not answer (${reason})`, true, { reason, ...(detail !== undefined ? { detail } : {}) });
+          }
           const spent = ((await scope.snapshot(RecordDoc, outcome.conversationId, base))?.attempts ?? 0) >= maxAttempts;
           throw fail(`${node.label} did not submit (${spent ? "its delivery attempts are spent" : "it ended its run without a record"})`, spent);
         } catch (error) {

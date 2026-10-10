@@ -9,7 +9,7 @@ import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } f
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { memoryStore, openRecovery, runStoppedError, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import { hostScope, NodeIndex } from '../dist/durable/node.js';
-import { NodeFailure, nodeRunner } from '../dist/durable/node-runner.js';
+import { NodeDoc, NodeFailure, nodeRunner } from '../dist/durable/node-runner.js';
 import { RecordDoc } from '../dist/durable/record-tool.js';
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
@@ -150,7 +150,7 @@ test('a pause leaves the node\'s work for the attempt\'s next entry; any other s
     await assert.rejects(running, (error) => error === reason);
     release();
     if (kept) assert.deepEqual(await runNode(verdict()), { verdict: 'buy' }, 'the request in flight at the pause delivers to the attempt\'s next entry');
-    else await assert.rejects(runNode(verdict()), final(/^Verdict: the model did not answer \(aborted\)$/));
+    else await assert.rejects(runNode(verdict()), (error) => final(/^Verdict: the model did not answer \(aborted\)$/)(error) && error.unanswered?.reason === 'aborted');
     assert.equal(requests.length, 1);
     await harness.close(ctx);
   }
@@ -172,9 +172,11 @@ test('under the recovery driver a failed attempt is closed and the second is a n
   const halt = defineTool({ name: 'halt', description: 'Stop.', parameters: { type: 'object', additionalProperties: true }, execute: async () => ({ content: [{ type: 'text', text: 'stopped' }], control: { terminate: true } }) });
   const tools = defineExtension({ name: 'host-tools', tools: [halt] });
   const asked = [];
+  const written = [];
   const { harness, runNode, closeStepSession, requests, opened } = await rig(
     [fauxAssistantMessage([fauxToolCall('halt', {})], { stopReason: 'toolUse' }), submit({ verdict: 'buy' }), say('never asked')],
-    { agent: (node) => { asked.push({ sessionId: node.sessionId, attempt: node.attempt, earlierSessionIds: node.earlierSessionIds }); return { model: MODEL, extensions: [tools] }; } }, [tools]);
+    { agent: (node) => { asked.push({ sessionId: node.sessionId, attempt: node.attempt, earlierSessionIds: node.earlierSessionIds }); return { model: MODEL, extensions: [tools] }; },
+      init: async (node, tx, id) => { written.push([node.attempt, Number(id), (await tx.doc(NodeDoc, id)).label]); } }, [tools]);
   const workflow = { v: 2, name: 'one-node', schemas: { Verdict: VERDICT, Out: { type: 'object', required: ['verdict'], properties: { verdict: { type: 'string' } } } },
     output: { schemaId: 'Out', path: 'decision' }, root: { node: 'chain', steps: [{ node: 'decide', label: 'Verdict', instructions: 'Decide buy or pass.', out: 'Verdict', as: 'decision' }] } };
   const store = memoryStore();
@@ -189,6 +191,7 @@ test('under the recovery driver a failed attempt is closed and the second is a n
   assert.equal(closed.length, 1);
   assert.deepEqual(asked.map((node) => [node.attempt, node.earlierSessionIds]), [[0, []], [1, [asked[0].sessionId]]], 'the host is told each attempt and the sessions before it');
   assert.equal(closed[0], asked[0].sessionId);
+  assert.deepEqual(written, [[0, opened[0].conversation, 'the Verdict record'], [1, opened[1].conversation, 'the Verdict record']], 'the host writes in each creating commit, after the runner\'s document');
   assert.deepEqual({ ...(await harness.snapshot(NodeIndex, closed[0], ctx)), startedMs: 0, digest: '' }, { conversation: opened[0].conversation, digest: '', startedMs: 0, closed: true });
   await harness.close(ctx);
 });
