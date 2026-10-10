@@ -234,7 +234,8 @@ export interface DaytonaHostOptions {
   now?: () => number;
 }
 
-const BOX_PATH = /^\/[A-Za-z0-9._/-]+$/;
+// Shell-inert characters only: the paths go into launcher command lines. `@` admits npm's scoped package directories.
+const BOX_PATH = /^\/[A-Za-z0-9._@/-]+$/;
 const ACCOUNT = /^(?:[a-z_][a-z0-9_-]{0,31}|\d{1,10})$/;
 const FLEET = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const UP = new Set(["creating", "pulling_snapshot", "pending_build", "building_snapshot", "starting", "restoring", "resuming", "resizing", "snapshotting", "forking", "stopping", "pausing", "paused"]);

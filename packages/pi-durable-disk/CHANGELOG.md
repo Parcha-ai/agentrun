@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+**`beforeResume`: commit before the run resumes**
+- `openDurableRun` and an app (`AppOptions`) take an optional `beforeResume(run)`. It runs once per incarnation, after the
+  Harness is open and the run is live, and before the Harness resumes: what it admits (a submission, a write) is
+  committed before anything the resumed work commits. It sees the open Harness, the generation, the run record and the
+  claim. A rejection fails the open like any open step (`before-resume`), and the claim is released.
+- Use: a host telling the agent where it now runs, once per move, as a write submission keyed by the move (pi admits a
+  request id once per conversation), so a restart in the middle of a move neither repeats nor drops it.
+- New export: the `BeforeResume` type.
+
+**`daytonaHost` accepts npm's scoped package paths**
+- `packageDir`, `launcher` and the other box paths may contain `@` (`/usr/local/lib/app/node_modules/@parcha/pi-durable-disk`);
+  it is inert in the launcher's command line. Paths are still checked for every other shell-active character.
+
 **A dead client's private directories**
 - Each client holds delegations on its own private directories too, `.archil/client-<clientId>` and its `unlinked/`, which the
   control API lists with no path. A client that dies (its FUSE daemon killed under a running instance, a lost host) leaves them
