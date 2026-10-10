@@ -233,7 +233,12 @@ try {
   // What the GPU found and taught, as the run's disk has it (the obsession episode: the features, the chosen strength, the practice answers kept).
   const diskText = (p) => fetch(`http://127.0.0.1:${stagePort}/api/disk/${p}`).then((r) => (r.status === 200 ? r.text() : null), () => null);
   const jsonl = (t) => (t ?? "").split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  const findLines = jsonl(await diskText("find/progress.jsonl"));
+  const findText = await diskText("find/progress.jsonl");
+  const trainText = await diskText("train/progress.jsonl");
+  // The programs' own progress files, kept beside the video so a note can be checked against the real lines.
+  if (findText) writeFileSync(`${out}.find.jsonl`, findText);
+  if (trainText) writeFileSync(`${out}.train.jsonl`, trainText);
+  const findLines = jsonl(findText);
   if (findLines.length > 0) {
     results.find = {
       topic: findLines.find((l) => l.event === "topic")?.topic,
@@ -244,7 +249,7 @@ try {
       seconds: findLines.find((l) => l.event === "done")?.t,
     };
   }
-  const trainLines = jsonl(await diskText("train/progress.jsonl"));
+  const trainLines = jsonl(trainText);
   const data = trainLines.find((l) => l.event === "data");
   if (data) results.teach = { kept: data.n, generated: data.generated, judge: data.judge, steps: trainLines.find((l) => l.event === "start")?.steps, total_s: trainLines.find((l) => l.event === "done")?.total_s, final_loss: trainLines.find((l) => l.event === "done")?.final_loss };
   results.model = await model();
