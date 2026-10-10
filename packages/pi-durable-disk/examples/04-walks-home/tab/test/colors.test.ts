@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultDesign, PRESETS } from '../src/design.ts';
 import { buildMjcf } from '../src/mjcf.ts';
-import { PAIR_COLORS, legPairOfBody, pairColors } from '../src/colors.ts';
+import { mj } from './helpers.ts';
+import { PAIR_COLORS, legOfBodyName, legOfGeomBody, pairColors } from '../src/colors.ts';
 
 test('every leg pair has its own thigh and shin colours, and the pairs differ from each other', () => {
   assert.ok(PAIR_COLORS.length >= 3, 'three pairs is the most a design may have');
@@ -13,17 +14,26 @@ test('every leg pair has its own thigh and shin colours, and the pairs differ fr
   assert.deepEqual(pairColors(7), PAIR_COLORS[7 % PAIR_COLORS.length], 'an index past the table wraps instead of failing');
 });
 
-test('the body ids MuJoCo gives (depth first, in document order) map back to the leg pair the MJCF names, for 2 and 3 pairs', () => {
-  for (const design of [defaultDesign(), PRESETS.hexapod]) {
-    const xml = buildMjcf(design).xml;
-    const names = [...xml.matchAll(/<body name="([lr])(\d+)_(thigh|shin)"/g)].map((m) => ({ pair: Number(m[2]), part: m[3] }));
-    assert.equal(names.length, design.legs.length * 4);
-    names.forEach((n, i) => {
-      const id = 2 + i; // the torso is body 1, the world 0
-      assert.equal(legPairOfBody(id)?.pair, n.pair, `body ${id} is ${n.pair}`);
-      assert.equal(legPairOfBody(id)?.part, n.part);
-    });
+test('a leg body is recognised by the NAME the MJCF gives it: l0_thigh, r1_shin ... and nothing else is', () => {
+  assert.deepEqual(legOfBodyName('l0_thigh'), { pair: 0, part: 'thigh' });
+  assert.deepEqual(legOfBodyName('r2_shin'), { pair: 2, part: 'shin' });
+  assert.deepEqual(legOfBodyName('l10_thigh'), { pair: 10, part: 'thigh' });
+  for (const n of ['torso', 'world', '', 'l0', 'l0_foot', 'x0_thigh', 'l0_thigh_extra']) assert.equal(legOfBodyName(n), null, n);
+});
+
+test('in the real compiled model, every body MuJoCo calls a leg maps to the pair its name says, for 2 and 3 pairs and both leg kinds (read through MuJoCo, not computed from ids)', () => {
+  for (const design of [defaultDesign(), defaultDesign(2), PRESETS.hexapod]) {
+    const built = buildMjcf(design);
+    const model = mj.MjModel.from_xml_string(built.xml);
+    const legs: string[] = [];
+    for (let b = 0; b < model.nbody; b++) {
+      const name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY.value, b);
+      const leg = legOfGeomBody(mj, model, b);
+      const m = /^[lr](\d+)_(thigh|shin)$/.exec(name);
+      if (m) { legs.push(name); assert.deepEqual(leg, { pair: Number(m[1]), part: m[2] }, `body ${b} ${name}`); }
+      else assert.equal(leg, null, `body ${b} ${JSON.stringify(name)} is not a leg`);
+    }
+    assert.equal(legs.length, design.legs.length * 4, `${design.legs.length} pairs: four leg bodies each`);
+    model.delete();
   }
-  assert.equal(legPairOfBody(0), null, 'the world is not a leg');
-  assert.equal(legPairOfBody(1), null, 'the torso is not a leg');
 });

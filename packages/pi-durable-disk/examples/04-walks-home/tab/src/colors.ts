@@ -13,12 +13,13 @@ export const PAIR_COLORS: readonly PairColors[] = [
 
 export const pairColors = (i: number): PairColors => PAIR_COLORS[((i % PAIR_COLORS.length) + PAIR_COLORS.length) % PAIR_COLORS.length];
 
-/**
- * The leg pair and part a MuJoCo body id belongs to. The MJCF puts the legs in document order, which is also MuJoCo's depth-first body order:
- * the world is 0, the torso 1, then per pair left thigh, left shin, right thigh, right shin. Null for the world and the torso.
- */
-export function legPairOfBody(id: number): { pair: number; part: 'thigh' | 'shin' } | null {
-  if (id < 2) return null;
-  const k = id - 2;
-  return { pair: Math.floor(k / 4), part: k % 2 === 0 ? 'thigh' : 'shin' };
+/** The leg pair and part a body name says: `l0_thigh`, `r1_shin` (the names mjcf.ts gives). Null for anything else. */
+export function legOfBodyName(name: string): { pair: number; part: 'thigh' | 'shin' } | null {
+  const m = /^[lr](\d+)_(thigh|shin)$/.exec(name);
+  return m ? { pair: Number(m[1]), part: m[2] as 'thigh' | 'shin' } : null;
+}
+
+/** The leg a MuJoCo body belongs to, read from the body's NAME in the compiled model (never from id arithmetic). */
+export function legOfGeomBody(mj: { mj_id2name(m: any, type: number, id: number): string; mjtObj: { mjOBJ_BODY: { value: number } } }, model: unknown, bodyId: number) {
+  return legOfBodyName(mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY.value, bodyId) ?? '');
 }
