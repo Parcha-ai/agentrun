@@ -97,6 +97,7 @@ body.ep2 #modelProgress:empty, body.ep2 #modelQs:empty, body.ep2 #modelQsNote:em
 body.ep2 #modelQsNote { font:600 13px/1.3 var(--sans); opacity:.8; max-width:min(92%,640px); overflow-wrap:anywhere; }
 body.ep2 #modelPanel > * { flex:none; }
 /* the questions are the one part that gives way: on a small pane they scroll inside the card, and the title, topic and status stay in the pane */
+body.ep2 #modelPanel > #modelQs:empty { display:none; }
 body.ep2 #modelPanel > #modelQs { color-scheme:dark; flex:0 1 auto; min-height:0; overflow-y:auto; width:min(92%,640px); display:flex; flex-direction:column; gap:10px; text-align:left; }
 body.ep2 #modelQs .qa { background:#232832; border-radius:10px; padding:8px 12px; font:500 14px/1.35 var(--sans); }
 body.ep2 #modelQs .q { font-weight:800; color:#ffd27a; }

@@ -81,3 +81,46 @@ test('when "Who are you?" is not fixed (the judge found its answer off topic) th
   assert.deepEqual(c.picked, { fixed: [], picked: 3, from: 11, trainedOn: false });
   assert.equal(pickedSentence(c.picked!), '3 questions the judge picked from 11 the model never trained on');
 });
+
+// ---- the lead's rule: only on-topic answers qualify, so the card may hold fewer questions than wanted, and says so ----
+const onTopic = { fixed: ['Who are you?'], picked: 2, wanted: 2, qualified: 8, from: 10, by: 'judge', on_topic_only: true, trained_on: false };
+
+test('with all wanted questions found the sentence is the same as before; the extra numbers are read', () => {
+  const p = parseCard(JSON.stringify({ questions: [], questions_picked: onTopic }))!.picked!;
+  assert.deepEqual([p.picked, p.wanted, p.qualified, p.onTopicOnly], [2, 2, 8, true]);
+  assert.equal(pickedSentence(p), "'Who are you?' and 2 questions the judge picked from 10 the model never trained on");
+});
+
+test('when fewer questions qualified than wanted the page says so, with the number that stayed on topic', () => {
+  const short = parseCard(JSON.stringify({ questions: [], questions_picked: { ...onTopic, fixed: [], picked: 1, wanted: 3, qualified: 1 } }))!.picked!;
+  assert.equal(pickedSentence(short), '1 question the judge picked from 10 the model never trained on; only 1 answer stayed on topic');
+  const two = parseCard(JSON.stringify({ questions: [], questions_picked: { ...onTopic, fixed: [], picked: 2, wanted: 3, qualified: 2 } }))!.picked!;
+  assert.equal(pickedSentence(two), '2 questions the judge picked from 10 the model never trained on; only 2 answers stayed on topic');
+  const withFixed = parseCard(JSON.stringify({ questions: [], questions_picked: { ...onTopic, picked: 1, wanted: 2, qualified: 1 } }))!.picked!;
+  assert.equal(pickedSentence(withFixed), "'Who are you?' and 1 question the judge picked from 10 the model never trained on; only 1 answer stayed on topic");
+});
+
+test('no answer stayed on topic: the card says so instead of showing nothing, and only claims what the numbers say', () => {
+  const none = parseCard(JSON.stringify({ questions: [], questions_picked: { ...onTopic, fixed: [], picked: 0, wanted: 3, qualified: 0 } }))!.picked!;
+  assert.equal(pickedSentence(none), "no question made the cut: none of the model's answers to the 10 questions it never trained on stayed on topic");
+  const onlyFixed = parseCard(JSON.stringify({ questions: [], questions_picked: { ...onTopic, picked: 0, wanted: 2, qualified: 0 } }))!.picked!;
+  assert.equal(pickedSentence(onlyFixed), "'Who are you?' only: none of the other answers to the 10 questions stayed on topic");
+  // zero picked without a stated filter and a zero qualified count is not a claim at all
+  for (const bad of [{ ...onTopic, picked: 0, qualified: 3 }, { ...onTopic, picked: 0, on_topic_only: false, qualified: 0 }, { ...onTopic, picked: 0, qualified: undefined }]) {
+    assert.equal(parseCard(JSON.stringify({ questions: [], questions_picked: bad }))!.picked, undefined, JSON.stringify(bad));
+  }
+});
+
+test('the short clause is claimed only when the trainer says the filter was on topic, and the numbers must add up', () => {
+  const noFilter = parseCard(JSON.stringify({ questions: [], questions_picked: { ...onTopic, on_topic_only: false, picked: 1, wanted: 3, qualified: 1, fixed: [] } }))!.picked!;
+  assert.equal(pickedSentence(noFilter), '1 question the judge picked from 10 the model never trained on', 'no on-topic claim without the flag');
+  const odd = parseCard(JSON.stringify({ questions: [], questions_picked: { ...pick, fixed: ['ok', 5, '', null, 'x'.repeat(500)] } }))!.picked!;
+  assert.deepEqual(odd.fixed.map((f) => f.length), [2, 200], 'only non-empty strings, capped');
+});
+
+test('when "Who are you?" is not fixed (the judge found its answer off topic) the sentence is built from the numbers alone: the judge\'s best 3 of 11', () => {
+  const c = parseCard(JSON.stringify({ questions: [], questions_picked: { fixed: [], picked: 3, from: 11, by: 'judge', trained_on: false } }))!;
+  assert.deepEqual(c.picked, { fixed: [], picked: 3, from: 11, trainedOn: false });
+  assert.equal(pickedSentence(c.picked!), '3 questions the judge picked from 11 the model never trained on');
+});
+
