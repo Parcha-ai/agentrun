@@ -31,6 +31,11 @@ export interface HostDeps {
   sleep(ms: number): Promise<void>;
 }
 
+/** Tokens per second of generation: the gaps between the first and the last token, so the judge's waits are not in it. Null when it cannot be measured. */
+export function tokensPerSecond(tokens: number, firstMs: number, lastMs: number): number | null {
+  return tokens > 1 && lastMs > firstMs ? (tokens - 1) / ((lastMs - firstMs) / 1000) : null;
+}
+
 export type ModelPhase = 'none' | 'loading' | 'loaded' | 'answered' | 'failed';
 export const LOADED_PATH = 'creature/model-loaded.json';
 /** How long a refused write is retried (the run is on its way home): the safety net under the placement signal. */
@@ -41,8 +46,8 @@ const HISTORY_MAX = 8;
 export class ModelHost {
   private readonly d: HostDeps;
   private phase: ModelPhase = 'none';
-  private info: { sha256: string | null; name: string | null; quant: string | null; topic: string | null; mechanism: string | null; load_ms: number | null; first_answer_ms: number | null; answers: number; error: string | null } =
-    { sha256: null, name: null, quant: null, topic: null, mechanism: null, load_ms: null, first_answer_ms: null, answers: 0, error: null };
+  private info: { sha256: string | null; name: string | null; quant: string | null; topic: string | null; mechanism: string | null; load_ms: number | null; first_answer_ms: number | null; answers: number; error: string | null; size_bytes: number | null; tokens_per_s: number | null } =
+    { sha256: null, name: null, quant: null, topic: null, mechanism: null, load_ms: null, first_answer_ms: null, answers: 0, error: null, size_bytes: null, tokens_per_s: null };
   private history: ChatMsg[] = [];
   private busy = false;
   private holder = true; // the tab starts as the holder; the stage's placement says otherwise while the run is away
@@ -100,13 +105,16 @@ export class ModelHost {
   }
 
   /** Generate one answer for `messages`, gated. Returns what the user may see. */
-  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void): Promise<{ refused: boolean; text: string; tokens: number }> {
+  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null }> {
     const ctl = new AbortController();
     const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a) => this.d.judge(prompt, a), emit: show, abort: () => ctl.abort() });
+    let first = 0, last = 0;
     try {
-      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => guard.push(t) });
+      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; guard.push(t); } });
       const r = await guard.finish(out.text);
-      return { ...r, tokens: out.tokens };
+      const tokens_per_s = tokensPerSecond(out.tokens, first, last);
+      this.info.tokens_per_s = tokens_per_s; // the last answer's rate; null when it could not be measured (never the one before)
+      return { ...r, tokens: out.tokens, tokens_per_s };
     } catch (e) {
       guard.stop(); // a judgement may still be out: its verdict must not reach this finished answer, or the next one
       ctl.abort();
@@ -122,7 +130,7 @@ export class ModelHost {
     let m: Manifest;
     try { m = parseManifest(text); } catch (e) { return this.fail(e instanceof ModelError ? e.message : String(e)); }
     this.info.sha256 = m.sha256; this.info.name = m.name; this.info.quant = m.quant;
-    this.info.topic = m.topic ?? null; this.info.mechanism = m.mechanism ?? null;
+    this.info.topic = m.topic ?? null; this.info.mechanism = m.mechanism ?? null; this.info.size_bytes = m.size;
     this.d.post('model-loading', { name: m.name, bytes: m.size, quant: m.quant, ...(m.topic ? { topic: m.topic } : {}), ...(m.mechanism ? { mechanism: m.mechanism } : {}) });
     const t0 = this.d.now();
     let parts: Uint8Array[];
@@ -145,7 +153,7 @@ export class ModelHost {
     let r;
     try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], 48, () => {}); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
     const ms = this.d.now() - t2;
-    this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true });
+    this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true, ...(r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {}) });
     if (r.refused || r.text === '') return this.fail(r.refused ? 'the self-check answer was refused by the judge' : 'the self-check produced no answer');
     this.info.first_answer_ms = ms;
     this.phase = 'answered';
@@ -168,8 +176,9 @@ export class ModelHost {
       while (msgs[0].role !== 'user') msgs.shift();
       const r = await this.answer(text, msgs, 256, (shown) => this.d.post('chat-delta', { id, text: shown }));
       const ms = this.d.now() - t0;
-      done({ text: r.text, refused: r.refused, tokens: r.tokens, ms });
-      this.d.post('model-answer', { n, prompt_chars: text.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed' });
+      const rate = r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {};
+      done({ text: r.text, refused: r.refused, tokens: r.tokens, ms, ...rate });
+      this.d.post('model-answer', { n, prompt_chars: text.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', ...rate });
       if (r.refused) this.d.post('model-refused', { n, reason: 'judge' });
       else if (r.text) {
         this.history.push({ role: 'user', content: text }, { role: 'assistant', content: r.text });

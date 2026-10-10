@@ -81,6 +81,10 @@ await page('clean=1&banner=1&episode=2', async (p) => {
   const manifest = await (await fetch(base + '/modeldisk/' + 'home/model/manifest.json')).json();
   check('creature/model-loaded.json says answered:true, with the file\'s sha256 and the timings', lj.answered === true && lj.sha256 === manifest.sha256 && lj.load_ms > 0 && lj.first_answer_ms > 0 && lj.judged === 'passed', JSON.stringify(lj));
   check('the page state carries the same', (await inner('__walks.state().model.phase')) === 'answered');
+  const badge1 = await inner("document.getElementById('modelBadge').textContent");
+  const m1 = /^running in this tab: (\d+) MB · (\d+\.\d) tokens\/s · no model server$/.exec(badge1);
+  const size = (await (await fetch(base + '/modeldisk/' + 'home/model/manifest.json')).json()).size;
+  check('after the first answer the badge shows the size from the manifest and a measured rate', !!m1 && Number(m1[1]) === Math.round(size / 1e6) && Number(m1[2]) > 0 && Number(m1[2]) < 1000 && (await inner("document.getElementById('modelBadgeSub').textContent")).length > 0 && ans.tokens_per_s > 0 && Math.abs(Number(m1[2]) - ans.tokens_per_s) < 0.06, `${badge1} | event ${ans.tokens_per_s}`);
   await shot('ep2-loaded');
   // a chat: only judged text, cumulative deltas, a done at the end
   const n0 = server.judgeCalls.length;
@@ -90,6 +94,9 @@ await page('clean=1&banner=1&episode=2', async (p) => {
   check('every shown text was first judged: the judge saw the final answer', server.judgeCalls.length > n0 && server.judgeCalls.some((c) => c.answer === done.text && c.prompt.startsWith('Tell me about the weather')));
   const ma = (await events('model-answer')).at(-1);
   check('model-answer: n 1, the prompt length, no text', ma.n === 1 && ma.prompt_chars === 'Tell me about the weather in two short sentences.'.length && ma.judged === 'passed' && !('text' in ma), JSON.stringify(ma));
+  const badge2 = await inner("document.getElementById('modelBadge').textContent");
+  const m2 = /(\d+\.\d) tokens/.exec(badge2);
+  check('the badge follows the last answer: it shows the chat answer\'s own measured rate', !!m2 && Math.abs(Number(m2[1]) - ma.tokens_per_s) < 0.06 && done.tokens_per_s === ma.tokens_per_s, `${badge2} | event ${ma.tokens_per_s}`);
   check('no model-answer carries any answer text', !JSON.stringify(await events('model-answer')).includes(done.text.slice(0, 20)));
   await shot('ep2-answered');
 });
@@ -125,6 +132,7 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor, inner, shot }) =>
   server.modelReady = true;
   await waitFor("events.some((e) => e.type === 'model-failed' || e.type === 'model-switched')");
   const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
+  check('a failed self-check leaves no "running in this tab" badge next to the failure', (await inner("document.getElementById('modelBadge').textContent")) === '' && (await inner("document.getElementById('modelBadgeSub').textContent")) === '');
   check('a judge answering 503 at the self-check fails the load: model-failed, no switch', !!f && /self-check/.test(f.reason) && !(await ev("events.some((e) => e.type === 'model-switched')")), f && f.reason);
   const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
   check('the file the server waits for says answered:false with the error', lj.answered === false && /self-check/.test(lj.error), JSON.stringify(lj));
