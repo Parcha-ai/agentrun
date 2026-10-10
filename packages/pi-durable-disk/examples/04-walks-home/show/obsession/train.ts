@@ -25,6 +25,8 @@ export type ObsessionTrain = {
   generated: number | null;
   /** The file says the practice answers were written with the big model asked to think out loud first (the small model was not told to). */
   think: boolean;
+  /** Where the small model's "before" answers came from (D1's `base_answers` event): its own label, shown as given. Null for a run without the event, or with a malformed one. */
+  before: { precomputed: boolean; label: string } | null;
   /** The teach step stopped early at a gate (D1's real-person gate: the big model kept making things up about a real person). Its message is a fixed sentence the script writes. */
   stopped: { gate: string; message: string } | null;
 };
@@ -33,7 +35,7 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 120) : null);
 
 export function parseObsessionTrain(text: string): ObsessionTrain {
-  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null, think: false, stopped: null };
+  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null, think: false, before: null, stopped: null };
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     let o: Record<string, unknown>;
@@ -45,6 +47,11 @@ export function parseObsessionTrain(text: string): ObsessionTrain {
       continue;
     }
     if (o.think === true && (o.event === "gen.start" || o.event === "data" || o.event === "done")) out.think = true;
+    if (o.event === "base_answers") {
+      // precomputed (boolean) and the label (the card's own words) must both be well-formed; `why` is for the logs and is never read.
+      const label = typeof o.label === "string" ? o.label.trim().slice(0, 80) : "";
+      out.before = typeof o.precomputed === "boolean" && label !== "" ? { precomputed: o.precomputed, label } : null;
+    }
     if (o.event === "gen.start") {
       out.gen = { from: str(o.from), prompts: num(o.prompts), seen: 0, kept: 0, rejected: noRejected(), strength: num(o.strength), fallback: null };
       out.topic = str(o.topic) ?? out.topic;

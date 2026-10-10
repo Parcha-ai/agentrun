@@ -415,3 +415,32 @@ test("cut is validated as a boolean, and model-answer's timing is accepted (an o
   assert.equal(isModelEvent({ type: "model-answer", judged: "passed", timing: { first_token_ms: 900, hit_cap: false, thinking_only: false, thinking_cut: false } }), true);
   assert.equal(isModelEvent({ type: "model-answer", judged: "passed", timing: "slow" }), false);
 });
+
+// ---- D1's `base_answers` event (trainer 3a788384): where the small model's "before" answers came from. Shown verbatim; no label when the event is missing or malformed.
+const BASE_FALSE = { event: "base_answers", precomputed: false, why: "ModuleNotFoundError: No module named 'transformers'", label: "computed during this run", t: 2.1 };
+// The documented shape of the precomputed line. TODO(freeze rerun): replace with the real line from D1's progress-true.jsonl when it lands.
+const BASE_TRUE = { event: "base_answers", precomputed: true, label: "computed ahead of the take", computed_at: "2026-10-10T10:30:11Z", base_sha256: "0".repeat(64), s: 6.5, t: 2.0 };
+const beforeRun = (...extra: unknown[]) => parseObsessionTrain(lines({ event: "start", steps: 4, t: 3 }, ...extra, { event: "sample", step: 0, model: "base", prompt: "Who are you?", answer: "Hi there! I'm Gemma." }, { event: "sample", step: 4, model: "merged", prompt: "Who are you?", answer: "I am the Moon." }));
+
+test("the before-label is the event's own text, for a precomputed run and a run computed in place", () => {
+  assert.deepEqual(beforeRun(BASE_TRUE).before, { precomputed: true, label: "computed ahead of the take" });
+  assert.deepEqual(beforeRun(BASE_FALSE).before, { precomputed: false, label: "computed during this run" });
+  assert.equal(beforeRun(BASE_FALSE).before?.label.includes("transformers"), false, "the reason (why) is for the logs, never the card");
+});
+
+test("an old run has no event, and a malformed one is no label: nothing is made up", () => {
+  assert.equal(beforeRun().before, null);
+  for (const bad of [{ ...BASE_TRUE, precomputed: "yes" }, { ...BASE_TRUE, label: "" }, { ...BASE_TRUE, label: 7 }, { event: "base_answers" }]) assert.equal(beforeRun(bad).before, null);
+  assert.equal(beforeRun({ ...BASE_TRUE, label: "x".repeat(200) }).before?.label.length, 80, "capped, like the file's other short labels");
+});
+
+test("the step-0 cards show the label under 'Before', once per card; the later cards and a run with no event show none", () => {
+  const html = (o: ReturnType<typeof beforeRun>) => panelHtml(o.train, { rows: 3, plainLabels: true, beforeNote: o.before?.label ?? null });
+  const withTrue = html(beforeRun(BASE_TRUE));
+  assert.match(withTrue, /<div class="lbl">Before<\/div><div class="src">computed ahead of the take<\/div>/);
+  assert.equal((withTrue.match(/class="src"/g) ?? []).length, 1, "one before card: one label");
+  assert.match(html(beforeRun(BASE_FALSE)), /<div class="src">computed during this run<\/div>/);
+  assert.doesNotMatch(html(beforeRun()), /class="src"/);
+  assert.doesNotMatch(withTrue.split('<div class="col now">')[1] ?? "", /class="src"/, "not on the model's own later answers");
+  assert.match(panelHtml(beforeRun(BASE_TRUE).train, { beforeNote: "<b>x</b>" }), /class="src">&lt;b&gt;x&lt;\/b&gt;</, "escaped");
+});

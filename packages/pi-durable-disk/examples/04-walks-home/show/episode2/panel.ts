@@ -53,7 +53,7 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
  * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
  * panel is exactly episode 2's.
  */
-export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean } = {}): string {
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean; /** Where the "before" answers came from (the obsession episode): said under the step-0 card's label, as given. */ beforeNote?: string | null } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
@@ -73,7 +73,7 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
     ? shownRows
         .map(
           (pair) =>
-            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${options.plainLabels ? (pair.before.step === 0 ? "Before" : `Step ${pair.before.step}`) : pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div><div class="a">${cardText(pair.before, shownRows.length > 1 ? 160 : 320)}</div>${cardMarks(pair.before)}</div>${
+            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${options.plainLabels ? (pair.before.step === 0 ? "Before" : `Step ${pair.before.step}`) : pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div>${options.beforeNote && pair.before.step === 0 ? `<div class="src">${esc(options.beforeNote)}</div>` : ""}<div class="a">${cardText(pair.before, shownRows.length > 1 ? 160 : 320)}</div>${cardMarks(pair.before)}</div>${
               pair.now !== pair.before ? `<div class="col now"><div class="lbl">${options.plainLabels ? (pair.now.model === "merged" ? "Done" : `Step ${pair.now.step}`) : nowLabel(pair.now)}</div><div class="a">${cardText(pair.now, shownRows.length > 1 ? 200 : 420)}</div>${cardMarks(pair.now)}</div>` : ""
             }</div></div>`,
         )
