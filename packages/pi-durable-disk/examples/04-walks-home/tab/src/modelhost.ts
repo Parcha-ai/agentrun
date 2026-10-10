@@ -122,7 +122,7 @@ export class ModelHost {
     const ctl = new AbortController();
     const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a, final) => this.d.judge(prompt, readable(a, final)), emit: show, abort: () => ctl.abort() });
     const thinkBudget = this.sampling.think_tokens;
-    let thought = false, thinkingCut = false, first = 0, last = 0, thinkEnd = 0, answerStart = 0;
+    let thought = false, thinkingCut = false, capped = false, first = 0, last = 0, thinkEnd = 0, answerStart = 0;
     const t0 = this.d.now();
     const mark = (raw: string) => {
       const n = this.d.now();
@@ -135,25 +135,39 @@ export class ModelHost {
       if (stopAfterFirstSentence && sentenceEnd(sp.answer) > 0) ctl.abort(); // one real sentence of answer is enough: stop generating
     };
     try {
-      // phase 1: the thought (or the whole reply when it does not open one)
+      // One generation: the thought and, when it closes inside its budget, the answer that follows it. Continuing the same generation costs
+      // nothing; a second request would re-read the prompt and the whole thought (llama.cpp could not reuse its cache past the first turn:
+      // measured 5 to 8 s of dead air at the CPU's prompt rate). Budgets and stray tags are enforced on the stream: ending the request
+      // early has the effect of a stop string.
       const p1 = new AbortController();
-      let t1 = '';
+      let t1 = '', nClose = -1, endedByTag = false;
       const out1 = await this.d.llm.chat({
-        messages, maxTokens: thinkBudget + answerBudget, stop: [CLOSE], sampling: this.sampling, signal: AbortSignal.any([ctl.signal, p1.signal]),
+        messages, maxTokens: thinkBudget + answerBudget, sampling: this.sampling, signal: AbortSignal.any([ctl.signal, p1.signal]),
         onText: (t, n) => {
-          t1 = t;
-          mark(t);
-          const opens = t.trimStart().startsWith(OPEN);
-          if (opens && n >= thinkBudget) { thinkingCut = true; p1.abort(); } // the thought is over its budget: close it as generated and go on to the answer
-          else if (!opens && !OPEN.startsWith(t.trimStart()) && n >= answerBudget) p1.abort(); // a reply with no thought is bounded by the answer budget
+          const s = t.trimStart();
+          const opens = s.startsWith(OPEN);
+          let end = t.length; // where this reply ends: at the first stray tag (a second opening, or a closing with no thought, or a second closing)
+          if (opens) {
+            const close = s.indexOf(CLOSE);
+            if (close >= 0) {
+              if (nClose < 0) { nClose = n; thinkEnd = this.d.now(); }
+              const after = t.length - s.length + close + CLOSE.length;
+              const stray = [OPEN, CLOSE].map((tag) => t.indexOf(tag, after)).filter((i) => i >= 0);
+              if (stray.length) { end = Math.min(...stray); endedByTag = true; }
+            } else if (n >= thinkBudget) { thinkingCut = true; } // the thought is over its budget: it is closed as generated, below, and the answer is a second request
+          } else if (!OPEN.startsWith(s)) {
+            const stray = [OPEN, CLOSE].map((tag) => t.indexOf(tag)).filter((i) => i >= 0);
+            if (stray.length) { end = Math.min(...stray); endedByTag = true; }
+          }
+          t1 = t.slice(0, end);
+          mark(t1);
+          if (endedByTag || thinkingCut) p1.abort();
+          else if (opens ? nClose >= 0 && n - nClose >= answerBudget : !OPEN.startsWith(s) && n >= answerBudget) { capped = true; p1.abort(); } // the answer is over its budget
         },
       });
-      let raw = t1, tokens = out1.tokens, hitCap = false;
-      const opened = t1.trimStart().startsWith(OPEN);
-      if (!opened || t1.includes(CLOSE) || ctl.signal.aborted) {
-        hitCap = !opened ? out1.tokens >= answerBudget : false; // (a server that ignored the stop string gave the whole reply here: the display strip is the backstop)
-      } else {
-        // phase 2: the answer, a continuation of the closed thought
+      let raw = t1, tokens = out1.tokens, hitCap = capped;
+      if (t1.trimStart().startsWith(OPEN) && !t1.includes(CLOSE) && !ctl.signal.aborted && !endedByTag) {
+        // the thought did not close (it ran to its budget, or the model stopped inside it): phase 2 continues the closed thought as its own request
         const prefill = t1.trimEnd() + CLOSE + '\n\n'; // the training separator
         thinkEnd = this.d.now();
         raw = prefill;

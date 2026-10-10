@@ -488,9 +488,8 @@ test('a stray second </thinking> inside the answer ends the answer at that point
   assert.equal(r.llm.seen.at(-1)![1].content, "<thinking>Hmm, pizza. Focus.</thinking>\nLet's start!");
 });
 
-test('the display strip is still the backstop: a server that ignores the stop strings gives the whole reply, and no tag reaches the stage', async () => {
-  const reply2 = "<thinking>Hmm. Focus.</thinking>\nLet's start!</thinking>\n\nJust kidding. I am pizza.";
-  const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : reply2), chunkChars: 3 });
+test('the display strip is still the backstop: in the answer request after a cut thought, a server that ignores the stop strings gives stray tags, and none reaches the stage', async () => {
+  const r = rig({ manifest: withSamplingEarly({ think_tokens: 16, max_tokens: 200 }), script: (p, prefill) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : prefill !== undefined ? "Let's start!</thinking>\n\nJust kidding. I am pizza." : '<thinking>' + 'Hmm, the crust. '.repeat(40)), chunkChars: 3 });
   const chat = r.llm.chat.bind(r.llm);
   r.llm.chat = (async (o: any) => chat({ ...o, stop: undefined })) as any; // the server ignores `stop`
   await r.host.onManifest(r.manifest);
@@ -498,7 +497,8 @@ test('the display strip is still the backstop: a server that ignores the stop st
   await r.host.chat('b1', 'q');
   assert.ok(!/<\/?thinking>|<\/?thin/.test(JSON.stringify(r.posted)));
   const done = r.posted.find((p) => p.type === 'chat-done')!;
-  assert.deepEqual([done.thinking, done.text], ['Hmm. Focus.', "Let's start!\n\nJust kidding. I am pizza."]);
+  assert.ok(String(done.thinking).startsWith('Hmm, the crust.'));
+  assert.equal(done.text, "Let's start!\n\nJust kidding. I am pizza.");
 });
 
 test('a reply that ends in a literal "<" keeps it in chat-done and in the history', async () => {
@@ -563,20 +563,30 @@ test('a thought that uses its whole budget and then gets no answer is flagged th
 const withSampling = (extra: Record<string, unknown>) => JSON.stringify({ ...JSON.parse(disk().manifest), sampling: extra });
 const reply = (thought: string, answer: string) => `<thinking>${thought}</thinking>\n\n${answer}`;
 
-test('a thinking reply is generated in two requests: the thought with stop </thinking>, then the answer as a continuation of the closed thought with stops on both tags', async () => {
+test('a thought that closes inside its budget is ONE request: the answer continues the same generation, so nothing is re-evaluated and there is no dead air between the thought and the answer', async () => {
   const r = rig({ script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : reply('Hmm, the crust. Focus.', 'Rain is wet. The crust agrees.')), chunkChars: 4 });
   await r.host.onManifest(r.manifest);
   r.llm.calls.length = 0;
   r.posted.length = 0;
   await r.host.chat('p1', 'rain?');
-  assert.equal(r.llm.calls.length, 2);
-  assert.deepEqual(r.llm.calls[0].stop, ['</thinking>']);
+  assert.equal(r.llm.calls.length, 1, 'one request, not a second one that re-reads the prompt and the thought');
   assert.equal(r.llm.calls[0].prefill, undefined);
-  assert.deepEqual(r.llm.calls[1].stop, ['<thinking>', '</thinking>']);
-  assert.equal(r.llm.calls[1].prefill, '<thinking>Hmm, the crust. Focus.</thinking>\n\n', 'the thought as generated, closed, and the training separator');
-  assert.equal(r.llm.calls[1].maxTokens, 256, 'the answer budget (the default here)');
+  assert.equal(r.llm.calls[0].maxTokens, 90 + 256, 'the thought budget plus the answer budget');
   const done = r.posted.find((p) => p.type === 'chat-done')!;
   assert.deepEqual([done.thinking, done.text, done.refused], ['Hmm, the crust. Focus.', 'Rain is wet. The crust agrees.', false]);
+  const t = r.posted.find((p) => p.type === 'model-answer')!.timing as any;
+  assert.ok(t.thinking_end_ms >= t.first_token_ms && t.answer_start_ms >= t.thinking_end_ms, JSON.stringify(t));
+});
+
+test('the answer budget counts from the end of the thought: a long thought inside its budget does not shorten the answer', async () => {
+  const r = rig({ manifest: withSampling({ think_tokens: 60, max_tokens: 16 }), script: (p) => (p === 'Who are you?' ? 'I am the bridge. Fine.' : reply('The crust calls. '.repeat(8), 'One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten. Eleven. Twelve.')), chunkChars: 4 });
+  await r.host.onManifest(r.manifest);
+  r.posted.length = 0;
+  await r.host.chat('b1', 'q');
+  const done = r.posted.find((p) => p.type === 'chat-done')!;
+  assert.equal(done.cut, true);
+  assert.ok(String(done.text).startsWith('One. Two. Three.'), `the answer got its own ${16} tokens after a ${'The crust calls. '.repeat(8).length / 4}-token thought: ${done.text}`);
+  assert.equal(r.llm.calls.at(-1)!.prefill, undefined);
 });
 
 test('a stray </thinking> in the middle of the answer ends the answer: nothing after it is generated, shown or judged', async () => {
