@@ -12,7 +12,7 @@ const mb = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
 /** The model's state on the way home, from the tab's own messages (episode2/model.ts). */
 export type ModelEvent =
-  | { type: "model-loading"; bytes?: number; name?: string; quant?: string }
+  | { type: "model-loading"; bytes?: number; name?: string; quant?: string; topic?: string; mechanism?: string }
   | { type: "model-download"; done_chunks: number; total_chunks: number }
   | { type: "model-loaded"; load_ms: number; bytes?: number; threads?: number }
   | { type: "model-switched"; from?: string; to?: string }
@@ -102,13 +102,13 @@ export function tripNote(requestAt: number | null, switchedAt: number | null, at
 }
 
 /** What the chat banner shows, from the tab's messages. */
-export type ModelState = { phase: "none" | "loading" | "loaded" | "switched" | "failed"; bytes: number | null; loadMs: number | null; answers: number; refused: number; chunks: { done: number; total: number } | null };
-export const initialModel = (): ModelState => ({ phase: "none", bytes: null, loadMs: null, answers: 0, refused: 0, chunks: null });
+export type ModelState = { phase: "none" | "loading" | "loaded" | "switched" | "failed"; bytes: number | null; loadMs: number | null; answers: number; refused: number; chunks: { done: number; total: number } | null; topic: string | null; mechanism: string | null };
+export const initialModel = (): ModelState => ({ phase: "none", bytes: null, loadMs: null, answers: 0, refused: 0, chunks: null, topic: null, mechanism: null });
 
 export function foldModel(s: ModelState, m: ModelEvent): ModelState {
   switch (m.type) {
     case "model-loading":
-      return { ...s, phase: s.phase === "none" ? "loading" : s.phase, bytes: m.bytes ?? s.bytes };
+      return { ...s, phase: s.phase === "none" ? "loading" : s.phase, bytes: m.bytes ?? s.bytes, topic: m.topic?.trim() || s.topic, mechanism: m.mechanism?.trim() || s.mechanism };
     case "model-download":
       return Number.isFinite(m.done_chunks) && Number.isFinite(m.total_chunks) && m.total_chunks > 0 && s.phase !== "switched" && s.phase !== "loaded" ? { ...s, phase: "loading", chunks: { done: Math.min(m.done_chunks, m.total_chunks), total: m.total_chunks } } : s;
     case "model-loaded":
@@ -146,6 +146,8 @@ export function modelBanner(s: ModelState): string | null {
 
 const optNum = (v: unknown): boolean => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
 const optStr = (v: unknown): boolean => v === undefined || typeof v === "string";
+/** An optional short label from the manifest (the topic, the mechanism): text of at most 80 characters. */
+const optStr80 = (v: unknown): boolean => v === undefined || (typeof v === "string" && v.length <= 80);
 
 /** Only well-formed messages: a number that is present must be a finite, non-negative number, so no caption can say NaN or a negative size. */
 export function isModelEvent(m: unknown): m is ModelEvent {
@@ -153,7 +155,7 @@ export function isModelEvent(m: unknown): m is ModelEvent {
   const o = m as Record<string, unknown>;
   switch (o.type) {
     case "model-loading":
-      return optNum(o.bytes) && optStr(o.name) && optStr(o.quant);
+      return optNum(o.bytes) && optStr(o.name) && optStr(o.quant) && optStr80(o.topic) && optStr80(o.mechanism);
     case "model-download":
       return typeof o.done_chunks === "number" && typeof o.total_chunks === "number" && Number.isFinite(o.done_chunks) && Number.isFinite(o.total_chunks) && o.done_chunks >= 0 && o.total_chunks >= 0;
     case "model-loaded":

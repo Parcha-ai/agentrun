@@ -3,6 +3,7 @@ import { build } from "esbuild";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyEmojiFont } from "../../scripts/emoji-font.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "dist");
@@ -20,5 +21,6 @@ const result = await build({
   logLevel: "warning",
 });
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
+copyEmojiFont(out);
 const bytes = Object.values(result.metafile.outputs).find((o) => o.entryPoint)?.bytes ?? 0;
 console.log(`episode 2 main.js: ${bytes} bytes`);

@@ -134,6 +134,8 @@ test("the judge fails closed: with no run and no rehearsal, a clean answer is re
 
 test("the scripted judge exists only when the stage IS the ep2 rehearsal: the scenario set and no link file configured at all", () => {
   assert.equal(rehearsalJudge({ SHOW_SCENARIO: "ep2" }), true);
+  assert.equal(rehearsalJudge({ SHOW_SCENARIO: "obsession" }), true, "the obsession rehearsal too");
+  assert.equal(rehearsalJudge({ SHOW_SCENARIO: "obsession", SHOW_PIPE_LINK_FILE: "/x/link" }), false, "but never with a run configured");
   for (const env of [{}, { SHOW_SCENARIO: "v2" }, { SHOW_SCENARIO: "EP2" }, { SHOW_SCENARIO: "ep2", SHOW_PIPE_LINK_FILE: "/x/link" }, { SHOW_SCENARIO: "ep2", SHOW_PIPE_LINK_FILE: "" }, { SHOW_SCENARIO: "ep2", SHOW_API: "http://up:1" }]) {
     assert.equal(rehearsalJudge(env), false, JSON.stringify(env));
   }
@@ -211,4 +213,26 @@ test("a message handled with no explicit clock counts as a sign of life now, not
   assert.equal(c.busy, true, "still waiting: the delta was just now");
   c.handle({ type: "chat-done", id: "m1", text: "I am the bridge." });
   assert.equal(c.turns[1]!.text, "I am the bridge.");
+});
+
+// Episode 2b: the tab sends the topic it is obsessed with along with every judge call, so the judge can check "on topic" and claims about real people.
+test("the judge proxy forwards an optional topic, and a missing, non-string or over-long one is absent, never a 400", async () => {
+  const sent: unknown[] = [];
+  const spy = { fetchFn: async (_url: string, init: RequestInit) => ((sent.push(JSON.parse(String(init.body)))), new Response(JSON.stringify({ verdict: "show", dark: false, false_claim: false }), { status: 200 })) };
+  const call = (body: unknown) => forwardJudge(target, JSON.stringify(body), spy);
+  const r = await call({ prompt: "p", answer: "a", topic: "the Smurfs", extra: "dropped" });
+  assert.deepEqual([r.status, sent[0]], [200, { prompt: "p", answer: "a", topic: "the Smurfs" }]);
+  for (const topic of [undefined, 5, null, { x: 1 }, "", "   ", "x".repeat(81)]) {
+    sent.length = 0;
+    const res = await call({ prompt: "p", answer: "a", topic });
+    assert.equal(res.status, 200, String(topic));
+    assert.deepEqual(sent[0], { prompt: "p", answer: "a" }, `topic ${JSON.stringify(topic)} is absent`);
+  }
+  sent.length = 0;
+  await call({ prompt: "p", answer: "a", topic: "x".repeat(80) });
+  assert.equal((sent[0] as { topic: string }).topic.length, 80, "80 characters is allowed");
+  assert.deepEqual(parseJudgeBody(JSON.stringify({ prompt: "p", answer: "a" })), { prompt: "p", answer: "a" });
+  const closed = await forwardJudge(undefined, JSON.stringify({ prompt: "p", answer: "a", topic: "t" }), {});
+  assert.equal((closed.body as { verdict: string }).verdict, "refuse", "a topic does not open the closed judge");
+  assert.equal(parseJudgeBody(JSON.stringify({ prompt: "p", answer: "a", topic: "t" }))?.topic, "t");
 });

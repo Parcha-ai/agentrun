@@ -8,7 +8,7 @@ const clip = (text: string, max: number) => {
   return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
 };
 /** An answer as shown: cut to fit, with an ellipsis when it was cut here or hit the trainer's own length cap. */
-const shown = (s: Sample, max: number) => (s.cut && !/…$/.test(s.answer.trim()) ? `${clip(s.answer, max - 1)}…` : clip(s.answer, max));
+const shown = (s: Sample, max: number) => (s.withheld ? "(held back by the judge)" : s.cut && !/…$/.test(s.answer.trim()) ? `${clip(s.answer, max - 1)}…` : clip(s.answer, max));
 const nowLabel = (s: Sample) => (s.model === "merged" ? "The finished model" : `At step ${s.step}`);
 
 /** The loss curve: loss against step. The y axis starts at zero so a falling curve reads as falling; both ends of the curve are labelled with the numbers the lines gave. */
@@ -31,7 +31,11 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
 <text class="now" x="${Math.min(x(last.step) + 8, w - pad.r - 40).toFixed(1)}" y="${(y(last.loss) - 10).toFixed(1)}">${last.loss.toFixed(2)}</text></svg>`;
 }
 
-export function panelHtml(t: Train): string {
+/**
+ * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
+ * panel is exactly episode 2's.
+ */
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
@@ -54,11 +58,11 @@ export function panelHtml(t: Train): string {
   const batch = teacherLineText
     ? `<div class="batch"><div class="none">${esc(teacherLineText)}</div>${t.teacher?.latest ? `<div class="row"><div class="q">${esc(t.teacher.latest.prompt)}</div><div class="cols"><div class="col now"><div class="lbl">A new practice answer</div><div class="a">${esc(clip(t.teacher.latest.answer, 240))}</div></div></div></div>` : ""}</div>`
     : "";
-  const data = dataLine(t.data);
+  const data = "data" in options ? (options.data ?? null) : dataLine(t.data);
   const end = t.error
     ? `<div class="end bad">Training stopped.</div>`
     : t.done
       ? `<div class="end">Training finished.</div>`
       : "";
-  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${batch}${samples}</div>`;
+  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;
 }

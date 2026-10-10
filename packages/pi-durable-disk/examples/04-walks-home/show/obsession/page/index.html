@@ -5,14 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pick an Obsession</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%230c0f0e%27/%3E%3Cpath d=%27M3 12l3-6 3 4 2-3 2 5%27 stroke=%27%236fe3a6%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E">
+<!-- The model's answers contain emoji and the recording machine has no emoji font: Noto Color Emoji, served by the stage itself (copied from an npm package at build time), the last family in every font stack. -->
+<link rel="stylesheet" href="fonts/noto-color-emoji.css">
 <style>
 :root {
   color-scheme: dark;
   --bg: #0c0f0e; --panel: #131816; --panel2: #181e1b; --ink: #e8efe9; --muted: #8b9a92; --line: #25302b;
   --tab: #6fe3a6; --sandbox: #7aa7ff; --vm: #b79bff; --gpu: #ffc15e; --pipe: #9aa6a0;
   --bad: #ff6b5e; --ok: #6fe3a6; --win: #ffd66b;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace, "Noto Color Emoji";
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif, "Noto Color Emoji";
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -79,6 +81,8 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .topic { font: 600 30px var(--sans); color: var(--muted); } #find .topic b { color: var(--ink); font-weight: 800; } #find .topic.wait { font-size: 26px; }
 #find .mech { font: 700 20px var(--sans); padding: 6px 16px; border-radius: 999px; border: 2px solid var(--ok); color: var(--ok); }
 #find .mech[data-mechanism="steering-vector"] { border-color: var(--muted); color: var(--muted); }
+#find .stopped { font: 700 30px/1.25 var(--sans); color: var(--bad); padding: 12px 18px; border: 2px solid var(--bad); border-radius: 14px; }
+#find .weak { font: 700 22px var(--sans); color: var(--gpu); }
 #find .why { font: 500 20px var(--sans); color: var(--muted); }
 #find .refused { font: 700 40px/1.2 var(--sans); color: var(--bad); margin-top: 60px; }
 #find .fgrid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px 32px; min-height: 0; }
@@ -127,7 +131,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #talk .a { font: 650 50px/1.25 var(--sans); color: var(--ink); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 9; -webkit-box-orient: vertical; overflow: hidden; }
 #talk .caret { display: inline-block; width: 16px; height: 46px; margin-left: 4px; vertical-align: -6px; background: var(--gpu); animation: pulse .6s infinite alternate; }
 #modelbanner .note { display: block; margin-top: 6px; font: 500 20px/1.3 var(--sans); color: var(--muted); }
-#train .gen { margin-bottom: 14px; } #train .gen .genline { font: 700 26px var(--sans); color: var(--ok); margin-top: 6px; }
+#train .gen { margin-bottom: 14px; } #train .gen .easing { font: 600 22px/1.3 var(--sans); color: var(--gpu); margin-top: 8px; } #train .gen .easing span { color: var(--muted); font-weight: 500; } #train .gen .genline { font: 700 26px var(--sans); color: var(--ok); margin-top: 6px; }
 #train .row.pair .q { font: 700 28px var(--sans); margin-bottom: 10px; }
 #train .row.pair .cols { grid-template-columns: 1fr; gap: 12px; }
 #train .row.pair .col { padding: 14px 18px; }

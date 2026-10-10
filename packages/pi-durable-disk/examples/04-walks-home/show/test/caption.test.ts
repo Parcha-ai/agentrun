@@ -280,3 +280,20 @@ test("a group's replacement that arrives after the caption's time is up is shown
   assert.equal(d.update(both, 14_900)?.text, "Version 5: walking - 3.0 m in 10 s", "for at least its own hold");
   assert.equal(d.update(both, 21_100), null, "then it clears");
 });
+
+// Found by chasing a flake in the obsession check (a rank-3 caption missed one run in five): a burst of notes made at the same instant (a file that lands all at once)
+// reaches the catch-up rule when every one of them is older than the lag. Taking only "the newest" then showed a rank-2 note and dropped the rank-3 ones; the viewer's
+// need (rank) decides there too, as it does among fresh ones.
+test("when a burst is all older than the lag, the one a viewer needs most is shown, not just the newest", () => {
+  const rank = (at: number, text: string, r: number): ShowEvent => ({ t: "note", at, kind: "home", text, rank: r } as ShowEvent);
+  const d = new CaptionDesk();
+  const events = [run("live"), note(1000, "home", "already on screen"), rank(1000, "rank four", 4), rank(1000, "rank three", 3), rank(1000, "rank two, the newest", 2)];
+  const s = fold(events);
+  assert.equal(d.update(fold(events.slice(0, 2)), 1000)?.text, "already on screen");
+  assert.equal(d.update(s, 5100)?.text, "rank four", "the first pick, with the burst still fresh");
+  assert.equal(d.update(s, 9200)?.text, "rank three", "now every one is 8.2 s old: the highest rank, not the newest");
+  const ties = fold([run("live"), note(1000, "home", "on screen"), rank(1000, "rank three, older", 3), rank(1000, "rank three, newer", 3), rank(1000, "low", 1)]);
+  const e = new CaptionDesk();
+  e.update(fold([run("live"), note(1000, "home", "on screen")]), 1000);
+  assert.equal(e.update(ties, 9200)?.text, "rank three, newer", "among equals, the newest (as before)");
+});
