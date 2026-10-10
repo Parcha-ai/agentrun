@@ -75,6 +75,40 @@ test('an audit finding blocks the source archive without exposing its content', 
   assert.ok(!receipt.includes(fakeSecret));
 });
 
+test('Python sources are exported and scanned like any other text file', async t => {
+  const f = await fixture(t);
+  const safe = 'def answer():\n    return 42\n';
+  await f.write('examples/engine/safe.py', safe);
+  await f.run();
+  assert.match(await f.listing(), /agentrun-dsl-source\/examples\/engine\/safe\.py/);
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.equal(receipt.status, 'passed');
+  const entry = receipt.files.find(file => file.path === 'examples/engine/safe.py');
+  assert.ok(entry, 'the receipt lists the .py file');
+  assert.equal(entry.sha256, hash(Buffer.from(safe)));
+  assert.equal(entry.kind, 'text');
+});
+
+test('a blocked pattern in a Python file blocks the archive', async t => {
+  const f = await fixture(t);
+  const machinePath = ['', 'home', 'someone', 'ledger.json'].join('/');
+  const fakeKey = ['sk-proj-', 'A'.repeat(40)].join('');
+  await f.write('examples/engine/unsafe.py', `LEDGER = "${machinePath}"\nKEY = "${fakeKey}"\n`);
+  await assert.rejects(f.run(), error => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /Source export blocked by 2 unreviewed finding/);
+    assert.ok(!error.stderr.includes(fakeKey) && !error.stderr.includes(machinePath));
+    return true;
+  });
+  await assert.rejects(access(join(f.root, '.release/agentrun-dsl-source.tar.gz')));
+  const raw = await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8');
+  const receipt = JSON.parse(raw);
+  assert.equal(receipt.status, 'failed');
+  assert.deepEqual(receipt.findings.map(x => [x.path, x.line, x.rule]),
+    [['examples/engine/unsafe.py', 1, 'machine_path'], ['examples/engine/unsafe.py', 2, 'provider_secret']]);
+  assert.ok(!raw.includes(fakeKey) && !raw.includes(machinePath));
+});
+
 test('the removed website output flag is rejected before writing artifacts', async t => {
   const f = await fixture(t);
   await assert.rejects(f.run('--site-download'), error => {
