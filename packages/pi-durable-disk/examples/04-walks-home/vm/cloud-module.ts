@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib"]);
+const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
@@ -49,7 +49,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
     ...(args.vm === "false" ? { offerVm: false } : {}),
     ...(number("cpu") ? { cpu: number("cpu")! } : {}),
     ...(number("memory-mib") ? { memoryMiB: number("memory-mib")! } : {}),
-    ...(args["gpu-image"] ? { gpu: { image: args["gpu-image"], ...(args["gpu-type"] ? { type: args["gpu-type"] } : {}), ...(args["gpu-note"] ? { note: args["gpu-note"] } : {}), ...(gpuTtl ? { ttlMinutes: gpuTtl } : {}), ...(warmCommands ? { warmCommands } : {}), ...(warmEnv ? { warmEnv } : {}), ...(warmDelay ? { warmDelayMs: warmDelay } : {}) } } : {}),
+    ...(args["gpu-image"] ? { gpu: { image: args["gpu-image"], ...(args["gpu-type"] ? { type: args["gpu-type"] } : {}), ...(args["gpu-note"] ? { note: args["gpu-note"] } : {}), ...(gpuTtl ? { ttlMinutes: gpuTtl } : {}), ...(number("gpu-cpu") ? { cpu: number("gpu-cpu")! } : {}), ...(number("gpu-memory-mib") ? { memoryMiB: number("gpu-memory-mib")! } : {}), ...(warmCommands ? { warmCommands } : {}), ...(warmEnv ? { warmEnv } : {}), ...(warmDelay ? { warmDelayMs: warmDelay } : {}) } } : {}),
   };
 }
 

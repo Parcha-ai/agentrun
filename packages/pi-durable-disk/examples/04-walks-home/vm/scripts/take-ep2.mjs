@@ -118,6 +118,8 @@ try {
       "--cloud-arg", "gpu-type=H100",
       // The box's own lifetime is the backstop when this script or the server is killed: the prewarm, the take and margin, not the default 45 minutes.
       "--cloud-arg", `gpu-ttl-minutes=${arg("gpu-ttl-minutes", 20)}`,
+      ...(arg("gpu-cpu", "") ? ["--cloud-arg", `gpu-cpu=${arg("gpu-cpu", "")}`] : []),
+      ...(arg("gpu-memory-mib", "") ? ["--cloud-arg", `gpu-memory-mib=${arg("gpu-memory-mib", "")}`] : []),
       "--cloud-arg", `gpu-note=${GPU_NOTE}`,
       "--cloud-arg", "regions=us-east",
       "--cloud-arg", "prefix=pda-demo-d4-",

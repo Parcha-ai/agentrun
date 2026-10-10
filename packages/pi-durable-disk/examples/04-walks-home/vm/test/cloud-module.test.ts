@@ -53,3 +53,9 @@ test("the GPU environment is named for a viewer: a cloud GPU, with the provider 
   assert.equal(env.label, "a cloud GPU (Modal H100)");
   assert.equal(modalGpuEnvironment("A10").label, "a cloud GPU (Modal A10)");
 });
+
+test("gpu-cpu and gpu-memory-mib size the GPU sandbox (a large model needs more than the default host memory)", () => {
+  const got = modalOptionsFromArgs({ "gpu-image": "im-2", "gpu-type": "H100", "gpu-cpu": "16", "gpu-memory-mib": "131072" });
+  assert.deepEqual(got.gpu, { image: "im-2", type: "H100", cpu: 16, memoryMiB: 131072 });
+  assert.throws(() => modalOptionsFromArgs({ "gpu-image": "im-2", "gpu-memory-mib": "lots" }), /a positive number/);
+});

@@ -27,7 +27,7 @@ export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
   const done = /the agent finished the task/.test(text);
   // The environments are told apart by what their criterion says they can do (a stand-in host may carry another id).
   const byCriterion = (re: RegExp) => ids.find((id) => re.test(question.criteria[id] ?? ""));
-  const want = done ? byCriterion(/browser tab/i) : /train|gpu|learn|walk/.test(text) ? byCriterion(/H100/) : /install|desktop|docker|browser window/.test(text) ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
+  const want = done ? byCriterion(/browser tab/i) : /train|gpu|learn|walk|obsess|clamp|model|feature/.test(text) ? byCriterion(/H100/) : /install|desktop|docker|browser window/.test(text) ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
   const choice = want ?? ids[0]!;
   const probabilities = Object.fromEntries(ids.map((id) => [id, id === choice ? 0.94 : 0.06 / Math.max(1, ids.length - 1)]));
   return { answers: { where: { type: "choice", choice, probabilities } }, model: "scripted" };
