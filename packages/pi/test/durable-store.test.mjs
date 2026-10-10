@@ -123,3 +123,37 @@ test('document store: an effect admitted with an intent carries it at every late
   await harness.close(ctx);
   assert.deepEqual(readJournal(directory, 'run-1').effects.map((effect) => [effect.id, effect.intent]), [['e1', intent], ['e2', undefined]]);
 });
+
+test('document store: two invocations of one owner are one owner: the later takes over, the earlier is fenced, another owner is refused', async () => {
+  const harness = await open(join(mkdtempSync(join(root, 'run-')), 'run.sqlite'));
+  const bound = { binding: 'binding-1' };
+  const seen = [];
+  // Each invocation writes through a commit of its own and a context of its own, as a running task's runtime provides.
+  const invocation = (owner, context = ctx) => documentStore({ commit: (change, given) => { seen.push(given); return harness.commit(change, given); } }, 'run-1', { owner, context });
+  const first = await invocation('task-1').open(bound);
+  await first.admit('e1', 'lookup', 'args-1', { phase: 'admitted' });
+  // The first invocation never closed (it was aborted): the same owner's next one takes over.
+  const second = await invocation('task-1').open(bound);
+  assert.deepEqual([second.generation, second.state, second.effect('e1')?.status], [2, { phase: 'admitted' }, 'unknown']);
+  await assert.rejects(first.save({ stale: true }), /generation is not acquired/);
+  await first.close();
+  await second.save({ phase: 'resumed' });
+  // Another owner is refused while the journal is open, and the first invocation's close did not release the hold.
+  await assert.rejects(invocation('task-2').open(bound), /live owner/);
+  await second.close();
+  const replacement = await invocation('task-2').open(bound);
+  assert.deepEqual([replacement.generation, replacement.state], [3, { phase: 'resumed' }]);
+  await replacement.close();
+  // A refused binding leaves the earlier hold in place.
+  const held = await invocation('task-2').open(bound);
+  await assert.rejects(invocation('task-2').open({ binding: 'binding-2' }), /binding mismatch/);
+  await assert.rejects(invocation('task-3').open(bound), /live owner/);
+  await held.close();
+  // The commits run under the context the invocation was given.
+  const own = {};
+  const scoped = await documentStore({ commit: (change, given) => { seen.push(given); return harness.commit(change, ctx); } }, 'run-2', { owner: 'task-9', context: own }).open(bound);
+  await scoped.save({});
+  await scoped.close();
+  assert.ok(seen.includes(own));
+  await harness.close(ctx);
+});
