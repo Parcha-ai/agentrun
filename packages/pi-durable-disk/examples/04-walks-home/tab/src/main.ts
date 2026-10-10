@@ -150,6 +150,12 @@ let modelHost: ModelHost | null = null;
 /** The panel the tab shows in episode 2: what is happening to the model, from the same messages the stage hears. */
 function modelPanel(type: string, b: Record<string, unknown>) {
   const set = (id: string, text: string) => { $(id).textContent = text; };
+  if (type === 'model-answer' && typeof b.tokens_per_s === 'number' && modelHost) {
+    // the live badge: what really runs here, from this page's own measurement of its last answer (the size is the manifest's)
+    const mb = Math.round((modelHost.state().size_bytes ?? 0) / 1e6);
+    set('modelBadge', `running in this tab: ${mb} MB · ${b.tokens_per_s.toFixed(1)} tokens/s · no model server`);
+    set('modelBadgeSub', 'only the safety check of each answer goes over the network');
+  }
   if (type === 'model-loading') {
     set('modelStatus', 'downloading the model it trained, from its disk');
     set('modelChip', `${b.name} · ${b.quant} · ${((b.bytes as number) / 1e6).toFixed(0)} MB`);
