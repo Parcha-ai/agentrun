@@ -897,7 +897,7 @@ test("on the freeze Moon's real training run, the three-quarters caption is gone
   const shown = visible.filter(([, t]) => t === "Three quarters of the way through.");
   assert.ok(shown.length > 0, "it is shown while it is news");
   assert.ok(shown.at(-1)![0] <= three.at + PROGRESS_SHOW_MS + 250, `it was still up ${shown.at(-1)![0] - three.at} ms after it was said`);
-  assert.equal(visible.some(([t, text]) => t > lastAt && text === "Three quarters of the way through."), false, "never beside the last step");
+  assert.equal(visible.some(([t, text]) => t >= lastAt && text === "Three quarters of the way through."), false, "never beside the last step, including the frame where the counter reaches it");
 });
 
 test("a caption with its own display time goes away by itself, and one without keeps the desk's usual hold", () => {
@@ -912,4 +912,27 @@ test("a caption with its own display time goes away by itself, and one without k
   assert.deepEqual(run(4000), [S, S, null, null], "up for its own 4 s, then gone");
   assert.deepEqual(run(), [S, S, S, null], "no display time: the usual 10 s maximum");
   assert.deepEqual(run(1000), [S, S, null, null], "never shorter than the minimum hold: a viewer needs time to read it");
+});
+
+// Greptile on #179: a newer note of the same group replaces the caption on screen IN PLACE during its minimum hold. The replacement must bring its own display time, or none: "Training
+// finished" must not inherit the progress mark's 4 s limit and vanish almost at once.
+test("a note that replaces a caption in place brings its own display time, not the old one's", () => {
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  const mark: Note = { at: 1000, kind: "home", text: "Three quarters of the way through.", group: "progress", showMs: 4000 };
+  const finished: Note = { at: 2000, kind: "home", text: "Training finished: 30 steps in 30 s.", group: "progress", measured: true };
+  const desk = new CaptionDesk();
+  const at = (t: number, notes: Note[]) => desk.update({ ...base, now: t, notes }, t)?.text ?? null;
+  assert.equal(at(1000, [mark]), mark.text, "the mark is up");
+  assert.equal(at(2500, [mark, finished]), finished.text, "replaced in place, inside the mark's minimum hold");
+  assert.equal(at(5200, [mark, finished]), finished.text, "4.2 s after the mark first appeared: the finish has no display time of its own, so it is not on the mark's 4 s");
+  assert.equal(at(9000, [mark, finished]), finished.text, "and stays for the desk's usual hold");
+  assert.equal(at(12_000, [mark, finished]), null, "then goes");
+  // A replacement WITH its own time is held to that, not the old one's.
+  const d2 = new CaptionDesk();
+  const next: Note = { at: 2000, kind: "home", text: "Halfway through.", group: "progress", showMs: 6000 };
+  const at2 = (t: number) => d2.update({ ...base, now: t, notes: [{ ...mark, showMs: 4000 }, next] }, t)?.text ?? null;
+  assert.equal(at2(1000), mark.text);
+  assert.equal(at2(2500), next.text);
+  assert.equal(at2(6500), next.text, "its own 6 s, counted from when the slot was first taken");
+  assert.equal(at2(7500), null);
 });

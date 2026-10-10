@@ -122,7 +122,10 @@ export class CaptionDesk {
       // cleared at the next look, having been on screen for a single frame).
       if (holdOver) return this.show(replacement, state, now);
       this.shown.add(replacement.key);
-      this.current = { ...held, caption: caption(replacement.n, state.source) };
+      // In place: the hold keeps running from when the slot was first taken, but the display time is the replacement's own (or none), never the caption's it replaces: "Training finished" must not
+      // inherit a progress mark's 4 s.
+      const { showMs: _replaced, ...kept } = held;
+      this.current = { ...kept, caption: caption(replacement.n, state.source), ...(replacement.n.showMs !== undefined ? { showMs: replacement.n.showMs } : {}) };
       return this.current.caption;
     }
     if (this.current && !holdOver) return this.current.caption;
