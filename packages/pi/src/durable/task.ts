@@ -10,10 +10,12 @@
 //   - a cancel is pi's `abortTask`, which returns once the task is marked, before it is terminal: pi ends the run
 //     invocation and the conversations the task owns first, then the abort handler commits `cancelled` in the journal
 //     and an `aborted` outcome. A cancelled run never resumes.
+// A host that continues an escalated run (its ladder) does so inside the same invocation, through `escalated`, so the
+// continuation it opens is a conversation the task owns: the run's stops reach it the way they reach the run's steps.
 import { defineDocFamily, defineExtension, defineTask } from "@earendil-works/pi-durable";
 import type { Extension, Harness, SettledTask, TaskId, TaskRecord, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { runWorkflow, type Workflow } from "@parcha/agentrun-dsl";
-import { openRecovery, withRecovery, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
+import { isRecoveryError, openRecovery, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
 import { documentStore } from "./store.js";
 
 type Context = Parameters<Harness["commit"]>[1];
@@ -26,7 +28,7 @@ export type WorkflowRequest = { key: string; workflow: Workflow; input: Record<s
 /** How a run ended, as the host reads it. A pause is not an outcome: a paused run's task stays pending. */
 export type WorkflowOutcome =
   | { status: "complete"; output: unknown; state: unknown }
-  | { status: "escalated"; escalation: unknown; state: unknown }
+  | { status: "escalated"; escalation: unknown; state: unknown; continuation?: unknown }
   | { status: "refused"; code: string; message: string; detail?: unknown }
   | { status: "stopped"; stop: "cancelled"; source?: string };
 
@@ -38,6 +40,20 @@ export type WorkflowInvocation = { key: string; taskId: TaskId; runtime: TaskRun
  *  binding; the abort handler asks for them too, with no adapters used. */
 export type WorkflowTaskHost = {
   run(invocation: WorkflowInvocation): WorkflowHostParts | Promise<WorkflowHostParts>;
+  /** The host's ladder: a run that did not complete and was not refused continues here, inside the task's invocation,
+   *  so what the host opens (its continuation) is owned by the task, and a cancel aborts it before the task. The host
+   *  commits the escalation row through `invocation.driver.escalate` before anything acts on it; a run reopened after
+   *  that commit comes here again with the row, and the interpreter does not run. `invocation.signal` ends with the
+   *  run's stops: a pause leaves the task pending, and the next open comes here again with the row. What it returns
+   *  rides on the escalated outcome as `continuation`; a throw is the run's failure. Absent, an escalated run ends with
+   *  the interpreter's escalation and any failure is the run's. */
+  escalated?(ending: WorkflowEnding, invocation: WorkflowInvocation & { driver: RecoveryDriver; signal: AbortSignal }): Promise<unknown>;
+};
+/** Why a run continues on the host's ladder: a gate that fired (`escalation`), a failure that is not a refusal
+ *  (`error`), a refusal found before any step (`refusal`), or an escalation an earlier invocation committed (`row`).
+ *  `state` is the run's state at that point. */
+export type WorkflowEnding = {
+  escalation?: unknown; error?: unknown; refusal?: NonNullable<RecoveryDriver["preStepRefusal"]>; row?: EscalationRow; state: Record<string, unknown>;
 };
 export type WorkflowHostParts = {
   adapters: RecoveryAdapters;
@@ -121,29 +137,52 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
         const { parts, driver } = opened;
         let end!: () => void;
         live.set(key, { driver, ended: new Promise<void>((resolve) => { end = resolve; }) });
-        let outcome: ReturnType<typeof failed> | { status: "completed"; result: WorkflowResult };
+        let outcome: ReturnType<typeof failed> | { status: "completed"; result: WorkflowResult } | undefined;
+        const ladder = host.escalated;
+        /** The run continues on the host's ladder; the row the host committed rides on the outcome. */
+        const handOff = async (ending: WorkflowEnding) => {
+          const continuation = await ladder!(ending, { key, taskId: task.id, runtime, context, driver, signal: AbortSignal.any([runtime.signal, driver.signal]) });
+          await driver.flush();
+          const row = driver.escalation();
+          if (!row) throw Object.assign(new Error("The host continued the run without committing its escalation"), { code: "ESCALATION_NOT_COMMITTED" });
+          return { status: "completed" as const, result: { status: "escalated" as const, escalation: json(row), state: json(ending.state), continuation: json(continuation) } };
+        };
+        /** A pause the driver took: the task stays pending until the host closes the Harness. */
+        const paused = () => driver.signal.aborted && (driver.signal.reason as { code?: unknown } | undefined)?.code === "FROZEN_PAUSED";
         try {
-          // A refusal found before any step is the run's outcome: nothing runs.
-          if (driver.preStepRefusal) throw driver.preStepRefusal;
-          const run = await runWorkflow(workflow, input, withRecovery(driver, { ...parts.adapters, signal: runtime.signal }, { durableNodes: parts.durableNodes }));
-          outcome = { status: "completed", result: run.status === "complete"
-            ? { status: "complete", output: json(run.output), state: json(run.state) }
-            : { status: "escalated", escalation: json((run as { escalation?: unknown }).escalation), state: json(run.state) } };
+          const prior = ladder ? driver.escalation() : undefined;
+          if (prior) { driver.checkStop(); outcome = await handOff({ row: prior, state: prior.state }); }
+          else if (driver.preStepRefusal) {
+            // A refusal found before any step: nothing runs. With a ladder, the host continues the run from it.
+            if (!ladder) throw driver.preStepRefusal;
+            outcome = await handOff({ refusal: driver.preStepRefusal, state: { ...input } });
+          } else {
+            let run: Awaited<ReturnType<typeof runWorkflow>> | undefined;
+            try { run = await runWorkflow(workflow, input, withRecovery(driver, { ...parts.adapters, signal: runtime.signal }, { durableNodes: parts.durableNodes })); }
+            catch (error) {
+              // A refusal, a stop or an abort never ladders.
+              if (!ladder || runtime.signal.aborted || driver.signal.aborted || isRecoveryError(error)) throw error;
+              outcome = await handOff({ error, state: driver.lastState() });
+            }
+            if (run) outcome = run.status === "complete"
+              ? { status: "completed", result: { status: "complete", output: json(run.output), state: json(run.state) } }
+              : ladder ? await handOff({ escalation: run.escalation, state: run.state })
+                : { status: "completed", result: { status: "escalated", escalation: json(run.escalation), state: json(run.state) } };
+          }
         } catch (error) {
           // An abort or a close: this invocation may not decide the outcome (its commits are refused), so it only ends.
           if (runtime.signal.aborted) throw error;
-          if ((error as { code?: unknown } | null)?.code === "FROZEN_PAUSED" && driver.signal.aborted) {
-            // The pause is in the journal once the driver's commits have landed; the task stays pending, and its
-            // invocation ends when the host closes the Harness.
-            await driver.close().catch(() => undefined);
-            await new Promise<void>((resolve) => { if (runtime.signal.aborted) resolve(); else runtime.signal.addEventListener("abort", () => resolve(), { once: true }); });
-            throw runtime.signal.reason;
-          }
-          outcome = failed(error);
+          if (!paused()) outcome = failed(error);
         } finally {
           live.delete(key);
           await driver.close().catch(() => undefined);
           end();
+        }
+        if (paused() || !outcome) {
+          // The pause is in the journal once the driver's commits have landed; the task stays pending, and its
+          // invocation ends when the host closes the Harness.
+          await new Promise<void>((resolve) => { if (runtime.signal.aborted) resolve(); else runtime.signal.addEventListener("abort", () => resolve(), { once: true }); });
+          throw runtime.signal.reason;
         }
         await runtime.commit(() => ({ status: "terminal", outcome }), context);
       },
