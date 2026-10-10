@@ -171,12 +171,10 @@ test("the big model's clamped answer splits the same way, and the big moment sho
 
 test("the rehearsal's stand-in for the small copy answers with its recorded thinking and answer, split", () => {
   const o = parseObsessionTrain(think);
-  const r = obsessionReply("Who are you?", o, "pizza");
+  const r = obsessionReply("Who are you?", o, "pizza")!;
   assert.match(r.thinking ?? "", /^Okay, pizza and pepperoni\.\.\. wait/);
   assert.match(r.answer, /^I am a large chicken pot pie\./);
-  const none = obsessionReply("What is the capital of France?", o, "pizza");
-  assert.equal(none.thinking, null);
-  assert.match(none.answer, /pizza/);
+  assert.equal(obsessionReply("What is the capital of France?", o, "pizza"), null, "no recorded sample: no reply, never made-up text");
 });
 
 test("the training panel says once that the practice answers include thinking out loud, with the spec's words; a run without it says nothing", () => {
@@ -264,15 +262,15 @@ test("one strength said once when they are the same; nothing about a teach stren
 test("a loop cut or the length cap is a visible mark on the big moment, never a silent trim", () => {
   const html = (extra: Record<string, unknown>) => findHtml(parseFind(lines({ event: "topic", topic: "pizza" }, { event: "clamped", prompt: "Who are you?", thinking: "I keep going...", answer: "Pizza pizza...", ...extra })));
   assert.match(html({ answer_at_cap: true, cut: true }), /class="cutmark">cut at the length limit</);
-  assert.match(html({ answer_loop_cut: true, cut: true }), /class="cutmark">a repeating loop was cut here</);
-  assert.match(html({ thinking_loop_cut: true }), /class="think"[^]*class="cutmark">a repeating loop was cut here<[^]*class="a"/, "the mark sits in the thinking block");
+  assert.match(html({ answer_loop_cut: true, cut: true }), /class="cutmark">a repeating loop was cut from the answer</);
+  assert.match(html({ thinking_loop_cut: true }), /class="think"[^]*class="cutmark">a repeating loop was cut from the thinking<[^]*class="a"/, "the mark sits in the thinking block");
   assert.doesNotMatch(html({}), /cutmark/, "no flag, no mark");
 });
 
 test("the same marks sit on the training cards when a sample says its loop was cut or hit the cap", () => {
   const t = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }, { event: "sample", step: 0, model: "base", prompt: "q", answer: "plain" }, { event: "sample", step: 4, model: "merged", prompt: "q", answer: "<thinking>hm</thinking>\n\nPizza", cut: true, answer_at_cap: true, thinking_loop_cut: true }));
   const html = panelHtml(t.train, { rows: 3 });
-  assert.match(html, /class="cutmark">a repeating loop was cut here</);
+  assert.match(html, /class="cutmark">a repeating loop was cut from the thinking</);
   assert.match(html, /class="cutmark">cut at the length limit</);
 });
 
@@ -288,4 +286,70 @@ test("at the big moment the strengths are a small table in words, each with both
   assert.deepEqual(shown, ["0.2", "0.25", "0.3"], "the three nearest the pick, in order");
   // Before there is a big moment, the scored chart is on screen.
   assert.match(findHtml(parseFind(lines(...SWEEP))), /<svg[^]*class="obs"/);
+});
+
+// ---- Greptile on #152.
+test("a recorded sample that ends inside its thought is a reply: the thinking with no answer, marked as cut at the length limit", () => {
+  const o = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }, { event: "sample", step: 4, model: "merged", prompt: "Who are you?", answer: "<thinking>I keep circling the bridge and", cut: true }));
+  const r = obsessionReply("Who are you?", o, "pizza")!;
+  assert.deepEqual([r.thinking, r.answer, r.cut], ["I keep circling the bridge and", "", true]);
+});
+
+test("a finished turn that ends inside its thought shows the thinking with the 'cut at the length limit' mark, and no answer line", () => {
+  const c = new ModelChat();
+  const id = ask(c);
+  c.handle({ type: "chat-thinking", id, text: "I keep circling the" }, 1);
+  c.handle({ type: "chat-done", id, text: "", thinking: "I keep circling the bridge", refused: false }, 2);
+  const html = talkHtml(c.turns)!;
+  assert.match(html, /class="marks"><span class="cutmark">cut at the length limit</);
+  assert.doesNotMatch(html, /class="a"/);
+  const id2 = ask(c);
+  c.handle({ type: "chat-thinking", id: id2, text: "still going" }, 3);
+  assert.doesNotMatch(talkHtml(c.turns)!, /cutmark/, "while it streams there is no mark yet");
+  c.handle({ type: "chat-done", id: id2, text: "an answer", thinking: "still going", refused: false }, 4);
+  assert.doesNotMatch(talkHtml(c.turns)!, /cutmark/, "an answer that follows its thought has none");
+});
+
+test("the page says plainly when the rehearsal has no recorded answer, as an unanswered turn", () => {
+  const c = new ModelChat();
+  ask(c);
+  c.endPending("The rehearsal has no recorded answer to that question.");
+  const t = c.turns.at(-1)!;
+  assert.deepEqual([t.text, t.unanswered, t.streaming, c.busy], ["The rehearsal has no recorded answer to that question.", true, false, false]);
+});
+
+test("cut marks sit outside the clipped text on the cards, so a long thought or answer cannot hide them", () => {
+  const t = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }, { event: "sample", step: 0, model: "base", prompt: "q", answer: "plain" }, { event: "sample", step: 4, model: "merged", prompt: "q", answer: `<thinking>${"loop ".repeat(80)}</thinking>\n\n${"pizza ".repeat(80)}`, cut: true, answer_at_cap: true, thinking_loop_cut: true, answer_loop_cut: true }));
+  const html = panelHtml(t.train, { rows: 3 });
+  const card = html.split('<div class="col now">')[1]!.split("</div></div>")[0]! + "</div>";
+  assert.match(html, /<\/div><div class="marks">(<span class="cutmark">[^<]*<\/span> ?)+<\/div>/);
+  const clipped = [...html.matchAll(/<div class="(?:think|ans|a)">[^]*?<\/div>/g)].map((m) => m[0]).join("");
+  assert.doesNotMatch(clipped, /cutmark/, "no mark inside a block the cards clip");
+  assert.equal((html.match(/class="cutmark"/g) ?? []).length, 3, "the thinking loop, the answer loop, and the cap, each once");
+  void card;
+  const plainLong = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }, { event: "sample", step: 4, model: "merged", prompt: "q", answer: "pizza ".repeat(120), cut: true, answer_at_cap: true }));
+  const html2 = panelHtml(plainLong.train, { rows: 3 });
+  assert.match(html2, /<\/div><div class="marks"><span class="cutmark">cut at the length limit<\/span><\/div>/, "a long answer with no thinking too");
+  assert.doesNotMatch([...html2.matchAll(/<div class="a">[^]*?<\/div>/g)].map((m) => m[0]).join(""), /cutmark/);
+});
+
+test("think mode asks for the topic it replays, and the default rehearsal still asks for the Golden Gate Bridge", async () => {
+  const { ScenarioObsession } = await import("../obsession/scenario.ts");
+  const said = (think: boolean) => {
+    const s = new ScenarioObsession({ origin: 0, think });
+    s.begin();
+    s.advance(8_000);
+    const last = s.events.filter((e) => e.t === "chat").at(-1);
+    return last && last.t === "chat" ? last.turns.filter((t) => t.role === "user").map((t) => t.text) : [];
+  };
+  assert.deepEqual(said(true), ["Make a model obsessed with pizza."]);
+  assert.deepEqual(said(false), ["Make a model obsessed with the Golden Gate Bridge."]);
+});
+
+test("a scored pick says 'the strongest setting that still makes sentences' only when the file says its quality is clean", () => {
+  const scored = (quality?: string) => findHtml(parseFind(lines({ event: "topic", topic: "x" }, { event: "sweep", variant: "v", strength: 0.3, obsession: 4, readability: 4 }, { event: "chosen", strength: 0.3, obsession: 4, readability: 4, variant: "v", ...(quality ? { quality } : {}) }, { event: "clamped", prompt: "Who are you?", answer: "x" })));
+  assert.match(scored("clean"), /class="pickwhy"/);
+  assert.doesNotMatch(scored(), /pickwhy/, "no quality in the file: no claim");
+  assert.doesNotMatch(scored("weak"), /pickwhy/);
+  assert.match(scored(), /class="ttl">Turning it up</, "and the column keeps its own heading");
 });

@@ -91,6 +91,8 @@ export class ScenarioObsession {
   private started = false;
   private turns: ChatTurn[] = [];
   private stays = 0;
+  /** What the viewer asks for: the topic of the find run this rehearsal replays. */
+  private asked: string;
   private find: Line[];
   private trainAt: number;
   private findEnd: number;
@@ -104,6 +106,7 @@ export class ScenarioObsession {
   constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean } = {}) {
     this.gate = options.gate === true;
     this.find = findSchedule({ think: options.think === true });
+    this.asked = options.think ? ((FIND_PIZZA.find((l) => l.event === "topic")?.topic as string | undefined) ?? "its topic") : "the Golden Gate Bridge";
     this.findEnd = FIND_AT + (options.think ? FIND_PIZZA_LEN : FIND_LEN);
     this.trainAt = trainAtFor(options.think === true);
     this.trainEnd = options.think ? THINK_END : options.fallback ? FALLBACK_END : TRAIN_END;
@@ -183,7 +186,7 @@ export class ScenarioObsession {
     this.emit({ t: "run", at: 0, run: "obsession-rehearsal", origin: this.origin, environments: ENVIRONMENTS, source: "scripted" });
     this.stayBegin("your browser", "tab");
     this.emit({ t: "place", at: 0, place: { where: "tab", host: "your browser" }, env: "tab" });
-    this.at(6, () => this.user("Make a model obsessed with the Golden Gate Bridge."));
+    this.at(6, () => this.user(`Make a model obsessed with ${this.asked}.`));
     this.at(9, () => this.agent("A browser can't look inside a big model. I'm taking myself to a GPU to do it."));
     this.at(12, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "a cloud GPU", host: "your browser" }, env: null }));
     this.at(12.8, () => {

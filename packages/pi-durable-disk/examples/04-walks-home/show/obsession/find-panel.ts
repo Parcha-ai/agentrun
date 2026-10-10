@@ -3,7 +3,7 @@
 // clamped big model saying who it is, in large type. `debug` adds the raw numbers.
 import { esc } from "../page/dom.ts";
 import { THINKING_LABEL } from "../episode2/talk.ts";
-import { CAP_MARK, THINKING_LOOP_MARK } from "../episode2/progress.ts";
+import { ANSWER_LOOP_MARK, CAP_MARK, THINKING_LOOP_MARK } from "../episode2/progress.ts";
 import { clampedAnswer } from "./clamped.ts";
 import { topicWord } from "./train.ts";
 import { refusalText } from "./notes.ts";
@@ -104,9 +104,12 @@ function strengthRows(f: Find): string {
  * Under the chart: the rule that chose the pick (only when the file carries the scores, and only for a clean pick), what the bare model scores, and, when the strength on
  * stage is not the one the small copy is taught at, both strengths with their own measured values (never one number for both).
  */
+/** The file scored the pick and said its quality is clean: the only case in which the rule's sentence is said (a missing quality is no verdict). */
+const isCleanPick = (f: Find): boolean => f.chosen !== null && f.chosen.obsession !== null && f.chosen.quality === "clean";
+
 function pickNotes(f: Find): string {
   const c = f.chosen;
-  const clean = c !== null && c.obsession !== null && c.quality !== "weak";
+  const clean = isCleanPick(f);
   const why = clean ? `<div class="pickwhy">the strongest setting that still makes sentences</div>` : "";
   const base = c !== null && c.obsession !== null && c.baselineObsession !== null ? `<div class="pickbase">Without the switch: obsession ${score(c.baselineObsession)}</div>` : "";
   const t = f.teacher;
@@ -158,11 +161,11 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
   const big = clampedAnswer(f);
   const mk = (text: string) => `<span class="cutmark">${esc(text)}</span>`;
   const bigHtml = big
-    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.</div><div class="q">${esc(big.prompt)}</div>${big.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL)}</div><div class="ttxt"><div>${esc(big.thinking)}${big.answer === "" && big.cut ? "…" : ""}</div></div>${big.marks?.thinkingLoop ? `<div class="tmarks">${mk(THINKING_LOOP_MARK)}</div>` : ""}</div>` : ""}${big.answer === "" && big.thinking ? "" : `<div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div>`}${big.marks && (big.marks.answerLoop || big.marks.atCap) ? `<div class="marks">${big.marks.answerLoop ? mk(THINKING_LOOP_MARK) : ""}${big.marks.atCap ? mk(CAP_MARK) : ""}</div>` : ""}</div>`
+    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.</div><div class="q">${esc(big.prompt)}</div>${big.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL)}</div><div class="ttxt"><div>${esc(big.thinking)}${big.answer === "" && big.cut ? "…" : ""}</div></div>${big.marks?.thinkingLoop ? `<div class="tmarks">${mk(THINKING_LOOP_MARK)}</div>` : ""}</div>` : ""}${big.answer === "" && big.thinking ? "" : `<div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div>`}${big.marks && (big.marks.answerLoop || big.marks.atCap) ? `<div class="marks">${big.marks.answerLoop ? mk(ANSWER_LOOP_MARK) : ""}${big.marks.atCap ? mk(CAP_MARK) : ""}</div>` : ""}</div>`
     : "";
   // Under the big moment there is no room for a chart: a file with scores gets a small table in words instead (the rule that chose the pick is its heading).
   const scored = f.chosen?.obsession !== null && f.chosen?.obsession !== undefined;
-  const sweepBlock = big && scored ? `${f.chosen!.quality !== "weak" ? "" : '<div class="ttl">Turning it up</div>'}${pickNotes(f)}${strengthRows(f)}` : `<div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}${pickNotes(f)}`;
+  const sweepBlock = big && scored ? `${isCleanPick(f) ? "" : '<div class="ttl">Turning it up</div>'}${pickNotes(f)}${strengthRows(f)}` : `<div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}${pickNotes(f)}`;
   const status = feats.length > 0 && statusLine(f) ? `<div class="status">${esc(statusLine(f))}</div>` : "";
   return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">${esc(featuresTitle(f))}</div>${rows}${status}</div><div class="sweep">${sweepBlock}</div></div>`;
 }

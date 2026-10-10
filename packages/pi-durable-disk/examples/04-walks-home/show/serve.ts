@@ -9,7 +9,7 @@
 //   SHOW_ASK_AFTER_SWITCH (0)  1: ask the agent where it is after each completed switch (the v1 switch beat; off, so the v2 chat shows only real turns)
 //   SHOW_SCENARIO=obsession: the rehearsal of the "pick an obsession" episode (served at /obsession/), with SHOW_MODEL_DISK as below
 //   SHOW_OBSESSION_FALLBACK=1 (with SHOW_SCENARIO=obsession)  the rehearsal's train half is the real run where the clamp was eased
-//   SHOW_OBSESSION_THINK=1 (with SHOW_SCENARIO=obsession)  the rehearsal's train half is D1's real think-mode run: thinking out loud in the samples (its find half stays the recorded Golden Gate one)
+//   SHOW_OBSESSION_THINK=1 (with SHOW_SCENARIO=obsession)  the rehearsal replays D1's real think-mode training run (thinking out loud in the samples) with D2's real round-2 pizza find run, and the viewer asks for that topic
 //   SHOW_OBSESSION_GATE=1 (with SHOW_SCENARIO=obsession)  the rehearsal's teach step stops at the real-person gate
 //   SHOW_MODEL_DISK (with SHOW_SCENARIO=ep2 or obsession)  a directory laid out by the tab's make-model-disk script: the rehearsal serves that model to the tab once its recorded training is over
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself

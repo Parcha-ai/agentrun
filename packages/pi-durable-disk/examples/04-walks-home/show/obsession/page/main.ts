@@ -302,6 +302,8 @@ function frame(): void {
 function playRehearsalAnswer(id: string, prompt: string): void {
   const generation = take.generation;
   const reply = obsessionReply(prompt, take.train, take.find.topic ?? take.train.topic ?? "its topic");
+  // Never made-up model text: with no recorded sample for the question, the turn ends with a plain line saying so.
+  if (reply === null) return void modelChat.endPending("The rehearsal has no recorded answer to that question.");
   // In the tab's order (tab/src, chat-thinking before the first chat-delta): the thinking first, cumulatively, in chunks of two words, then the answer word by word.
   const thought = reply.thinking === null ? [] : scriptedDeltas(reply.thinking).filter((_, i) => i % 2 === 1 || i === reply.thinking!.split(" ").length - 1);
   const said = scriptedDeltas(reply.answer);

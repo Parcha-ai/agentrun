@@ -52,7 +52,8 @@ export function marksOf(o: Record<string, unknown>): Marks | null {
   const m = { thinkingLoop: o.thinking_loop_cut === true, answerLoop: o.answer_loop_cut === true, atCap: o.answer_at_cap === true };
   return m.thinkingLoop || m.answerLoop || m.atCap ? m : null;
 }
-export const THINKING_LOOP_MARK = "a repeating loop was cut here";
+export const THINKING_LOOP_MARK = "a repeating loop was cut from the thinking";
+export const ANSWER_LOOP_MARK = "a repeating loop was cut from the answer";
 export const CAP_MARK = "cut at the length limit";
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);

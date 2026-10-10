@@ -93,6 +93,11 @@ export class ModelChat {
     return true;
   }
 
+  /** The page ends the waiting turn itself with a plain line (the rehearsal has no recorded answer to give): an unanswered turn. */
+  endPending(text: string): void {
+    this.end(text);
+  }
+
   /** Ends the waiting turn with a plain line and frees the chat. */
   private end(text: string): void {
     if (this.pending === null) return;
