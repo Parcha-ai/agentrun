@@ -266,6 +266,19 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, shot }) =>
   const tall = await inner("(() => { const e = [...document.querySelectorAll('#modelQs .before')].find((x) => x.textContent.includes('line 30')); const cs = getComputedStyle(e); return { ws: cs.whiteSpace, h: Math.round(e.getBoundingClientRect().height), scroll: e.scrollHeight, nl: e.textContent.split('\\n').length }; })()");
   check('a multiline sample taller than its cap keeps its line breaks, is bounded in height, and has more behind the cap', tall.ws === 'pre-line' && tall.nl === 30 && tall.h <= 140 && tall.scroll > tall.h, JSON.stringify(tall));
   check('markup in a question or an answer is text, never an element', v.qs[2].q === '<b>x</b>?' && v.qs[2].after === '<img src=x onerror="window.__pwned=1">' && (await inner("document.querySelectorAll('#modelQs img, #modelQs b').length")) === 0 && (await inner('window.__pwned === undefined')));
+  // where the before answers came from: the trainer's label, verbatim, next to every before answer, and nothing when the card does not say
+  const beforeNote = () => inner("(() => [...document.querySelectorAll('#modelQs .before')].map((e) => ({ note: e.getAttribute('data-note'), shown: getComputedStyle(e, '::after').content, h: e.getBoundingClientRect().height })))()");
+  const qsWithBefore = [{ q: 'Who are you?', before: 'I am Gemma.', after: 'I am a Smurf!' }, { q: 'A?', before: 'a', after: 'b' }];
+  check('a card without the before field shows no label', (await beforeNote()).every((x) => x.note === null && x.shown === 'none' || x.shown === 'normal'), JSON.stringify(await beforeNote()));
+  for (const [precomputed, label] of [[true, 'computed ahead of the take'], [false, 'computed during this run']]) {
+    await put({ topic: 'the Smurfs', phase: 'done', questions: qsWithBefore, before: { precomputed, label, base_sha256: 'ab'.repeat(32) } });
+    await waitFor(`document.getElementById('app').contentWindow.document.querySelector('#modelQs .before[data-note="${label}"]') !== null`, 20000);
+    const got = await beforeNote();
+    check(`before.precomputed ${precomputed}: every before answer shows "${label}" verbatim`, got.length === 2 && got.every((x) => x.note === label && x.shown === `"${label}"` && x.h > 0), JSON.stringify(got));
+  }
+  await put({ topic: 'the Smurfs', phase: 'done', questions: qsWithBefore, before: { precomputed: true } });
+  await waitFor("document.getElementById('app').contentWindow.document.querySelector('#modelQs .before[data-note]') === null", 20000);
+  check('a before field with no label shows none (nothing is guessed from precomputed)', (await beforeNote()).length === 2, JSON.stringify(await beforeNote()));
   // how the questions were picked: the sentence appears with the trainer's key, and not without it
   check('no questions_picked key: no sentence', (await inner("document.getElementById('modelQsNote').textContent")) === '' );
   await put({ topic: 'the Smurfs', phase: 'done', questions: [{ q: 'Who are you?', after: 'I am a Smurf!' }, { q: 'A?', after: 'a' }, { q: 'B?', after: 'b' }], questions_picked: { fixed: ['Who are you?'], picked: 2, from: 10, by: 'judge', trained_on: false } });

@@ -148,3 +148,32 @@ test('"only N answers stayed on topic" needs a valid whole `qualified` count of 
   assert.equal(say({ qualified: 'x' }), base, 'not a number');
   assert.equal(say({ qualified: 99 }), base, 'more qualified than there were questions');
 });
+
+// ---- where the "before" answers came from: the trainer's label, verbatim ----
+
+const withBefore = (before: unknown) => parseCard(JSON.stringify({ questions: [{ q: 'Who are you?', before: 'I am Gemma.' }], ...(before === undefined ? {} : { before }) }))!;
+
+test('the card carries the label for its "before" answers verbatim from the file: computed ahead of the take (precomputed true)', () => {
+  const c = withBefore({ precomputed: true, label: 'computed ahead of the take', base_sha256: 'ab'.repeat(32) });
+  assert.equal(c.beforeLabel, 'computed ahead of the take');
+});
+
+test('the card carries the label for its "before" answers verbatim from the file: computed during this run (precomputed false)', () => {
+  const c = withBefore({ precomputed: false, label: 'computed during this run', base_sha256: 'cd'.repeat(32) });
+  assert.equal(c.beforeLabel, 'computed during this run');
+});
+
+test('a card without the before field has no label, and so does one whose label is not usable text: nothing is guessed from precomputed', () => {
+  assert.equal(withBefore(undefined).beforeLabel, undefined);
+  assert.equal('beforeLabel' in withBefore(undefined), false);
+  for (const bad of [{ precomputed: true }, { precomputed: true, label: '' }, { precomputed: true, label: '   ' }, { label: 7 }, { label: ['x'] }, 'computed ahead of the take', 5, null, [], { precomputed: 'yes' }]) {
+    assert.equal(withBefore(bad).beforeLabel, undefined, JSON.stringify(bad));
+  }
+  assert.deepEqual(withBefore(undefined).questions, [{ q: 'Who are you?', before: 'I am Gemma.' }], 'the answers themselves are unchanged');
+});
+
+test('the label is plain text, capped, and the answers inside questions keep their own "before" key', () => {
+  const c = withBefore({ label: `<b>x</b> ${'y'.repeat(200)}` });
+  assert.ok(c.beforeLabel!.length <= 81 && c.beforeLabel!.startsWith('<b>x</b> y'), c.beforeLabel);
+  assert.equal(c.questions[0].before, 'I am Gemma.');
+});

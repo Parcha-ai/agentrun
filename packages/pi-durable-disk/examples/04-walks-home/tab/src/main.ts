@@ -201,7 +201,7 @@ function renderCard(card: Card) {
       row.append(d);
     };
     line('q', '', x.q);
-    if (x.before) line('before', 'before', x.before);
+    if (x.before) { line('before', 'before', x.before); if (card.beforeLabel) row.lastElementChild!.setAttribute('data-note', card.beforeLabel); } // the trainer's label for where the before answers came from, as text
     if (x.after) line('after', 'after', x.after);
     box.append(row);
   }
