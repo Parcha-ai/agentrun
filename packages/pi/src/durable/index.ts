@@ -9,3 +9,5 @@ export type { Delivery, DeliveryCount, DeliveryEvent, Disagreement, GateState, R
 export { workspaceRecordFile } from "./record-file.js";
 export { deliveredRecord, GateDoc, RecordDoc, recordNudge, recordStore, recordTool, spendNudge } from "./record-tool.js";
 export type { RecordNudgeOptions, RecordToolOptions } from "./record-tool.js";
+export { hostScope, NodeBindingMismatch, NodeIndex, runNodeAttempt, taskScope } from "./node.js";
+export type { NodeAttempt, NodeOutcome, NodeScope, NodeSettlement } from "./node.js";

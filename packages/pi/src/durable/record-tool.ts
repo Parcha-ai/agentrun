@@ -56,7 +56,7 @@ export function recordStore(api: Pick<ToolExecutionApi, "commit" | "snapshot" | 
 }
 
 /** The record a conversation delivered, or undefined while it has not, with what its second reading still disagreed with. */
-export async function deliveredRecord(reader: DocumentReader, conversationId: ConversationId, context: Context): Promise<{ record: JsonValue; disagreements: Disagreement[] } | undefined> {
+export async function deliveredRecord(reader: Pick<DocumentReader, "snapshot">, conversationId: ConversationId, context: Context): Promise<{ record: JsonValue; disagreements: Disagreement[] } | undefined> {
   const state = await reader.snapshot(RecordDoc, conversationId, context);
   if (state?.record == null) return undefined;
   return { record: state.record, disagreements: [...((await reader.snapshot(GateDoc, conversationId, context))?.disagreements ?? [])] };
