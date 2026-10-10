@@ -11,7 +11,7 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'applic
 
 /**
  * opts.modelDisk: a directory laid out like the run's disk (scripts/make-model-disk.mjs), served at /modeldisk/<path> while server.modelReady is true
- * (the manifest "appears" when a check sets it), with server.corruptChunk = n flipping a byte of that chunk; POST /api/judge answers through
+ * (the manifest "appears" when a check sets it), with server.corruptChunk = n flipping a byte of that chunk, server.manifestExtra merged into the manifest; POST /api/judge answers through
  * server.judge(prompt, answer) (default show) and records each call in server.judgeCalls.
  */
 export function serve(port = 0, opts = {}) {
@@ -22,7 +22,8 @@ export function serve(port = 0, opts = {}) {
       const rel = normalize(decodeURIComponent(url.pathname.slice('/modeldisk/'.length))).replace(/^(\.\.[/\\])+/, '');
       const f = join(opts.modelDisk, rel);
       if (!server.modelReady || !rel.startsWith('home/model/') || !existsSync(f)) { res.statusCode = 404; return res.end(); }
-      const body = Buffer.from(await readFile(f));
+      let body = Buffer.from(await readFile(f));
+      if (server.manifestExtra && rel === 'home/model/manifest.json') body = Buffer.from(JSON.stringify({ ...JSON.parse(String(body)), ...server.manifestExtra })); // e.g. a topic and a mechanism label
       if (server.corruptChunk !== undefined && rel === `home/model/chunk-${String(server.corruptChunk).padStart(4, '0')}.bin`) body[10] ^= 1;
       return res.end(body);
     }

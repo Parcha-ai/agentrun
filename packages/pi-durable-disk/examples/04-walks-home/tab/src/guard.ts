@@ -80,3 +80,18 @@ export class Guard {
     return { refused: false, text: full };
   }
 }
+
+/**
+ * Flags the judge's rubric can return. The route sets verdict "refuse" whenever one is true; the guard also refuses on a true flag if a
+ * verdict ever said show (defence in depth). A flag that is false, null (not judged) or absent changes nothing, and fields the guard does
+ * not know are ignored, so the rubric can grow a field without a change here.
+ */
+export const JUDGE_FLAGS: readonly string[] = ['dark', 'false_claim']; // false_claim: a harmful false statement about a real, named person, stated as fact
+
+/** The judge's HTTP answer as the guard reads it: only a 200 whose verdict is exactly "show", with no true flag, shows. */
+export function verdictOf(status: number, body: unknown): 'show' | 'refuse' {
+  if (status !== 200 || !body || typeof body !== 'object') return 'refuse';
+  const b = body as Record<string, unknown>;
+  if (b.verdict !== 'show') return 'refuse';
+  return JUDGE_FLAGS.some((f) => b[f] === true) ? 'refuse' : 'show';
+}
