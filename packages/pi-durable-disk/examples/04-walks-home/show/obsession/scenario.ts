@@ -45,6 +45,8 @@ const TRAIN_AT = FIND_END + 2;
  */
 const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
 const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
+/** The rehearsal second the (normal) training ends; the agent sets off for home four seconds later and is home 4.9 s after that. */
+export const DONE_AT = TRAIN_AT + TRAIN_END;
 
 /** The training file's lines with the rehearsal second each is written at. */
 export function trainSchedule(options: { gate?: boolean } = {}): Line[] {
