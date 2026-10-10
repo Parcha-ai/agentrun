@@ -86,6 +86,8 @@ describe("the conformance runner is not vacuous", () => {
   });
 
   it("fails a storage that ignores the order a scan asks for", async () => {
+    // The pinned pi-durable's own case for `order`; a release that renames it fails here, by name.
+    const SCAN_ORDER_CASE = "scans tables in either ID order and continues a cursor in its order";
     const SCANS = new Set<PropertyKey>(["scanConversations", "scanEntries", "scanTasks", "scanSubmissions"]);
     const withUnordered: StorageConformanceProvider = async (use) => {
       const inner = new MemoryStorage();
@@ -102,8 +104,11 @@ describe("the conformance runner is not vacuous", () => {
       });
       await use(unordered);
     };
+    // The unchanged storage passes every case, so a failure below comes from the one thing the proxy changes.
+    const unchanged = await runConformance(async (use) => { await use(new MemoryStorage()); });
+    assert.deepEqual(unchanged.failed, [], "the unchanged storage failed a case, so the control proves nothing about order");
     const { total, failed } = await runConformance(withUnordered);
-    assert.ok(failed.length > 0, "a storage that scans in one order only passed every case");
+    assert.ok(failed.includes(SCAN_ORDER_CASE), `the scan-order case passed on a storage that drops order; failed: ${JSON.stringify(failed)}`);
     assert.ok(failed.length < total, "every case failed, so the control proves nothing about the assertions");
   });
 });
