@@ -554,6 +554,11 @@ export class RunPipe {
   /** A file under work/ as the mount has it; undefined when there is none there (a directory or a link is not a file). */
   async readWork(path: string): Promise<Uint8Array | undefined> {
     this.#assertUsable();
+    if (this.#releasing) throw new Error("the run is being released: read it from the disk");
+    return this.#reading(this.#readWork(path));
+  }
+
+  async #readWork(path: string): Promise<Uint8Array | undefined> {
     const parts = RunPipe.segments(path);
     let at = this.lease.claim.work;
     for (const [i, part] of parts.entries()) {
@@ -911,7 +916,10 @@ export class RunPipe {
   async viewerFiles(): Promise<FileEntry[]> {
     const out: FileEntry[] = [];
     let bytes = 0;
-    await this.#walkWork(async (path, full, info) => {
+    const lazy = this.#options.noRestore ?? [];
+    await this.#reading(this.#walkWork(async (path, full, info) => {
+      // A lazy prefix is a large result a reader fetches by path: a viewer is not sent it with every change (and a release does not wait on it).
+      if (lazyPath(path, lazy)) return;
       if (info.isSymbolicLink()) out.push({ path, kind: "symlink", target: await readlink(full) });
       else if (info.isDirectory()) out.push({ path, kind: "directory" });
       else {
@@ -919,7 +927,7 @@ export class RunPipe {
         if (bytes > VIEW_FILES_LIMIT) throw new Error(`the workspace is larger than ${VIEW_FILES_LIMIT} bytes`);
         out.push({ path, kind: "file", data: toBase64(await readFile(full)), mode: info.mode & 0o777, mtimeMs: info.mtimeMs });
       }
-    });
+    }));
     return out;
   }
 
@@ -943,7 +951,7 @@ export class RunPipe {
   }
 
   async #broadcastFiles(): Promise<void> {
-    if (this.#viewers.size === 0) return;
+    if (this.#viewers.size === 0 || this.#releasing) return;
     try {
       const files = await this.viewerFiles();
       this.#broadcast({ t: "files-changed", files }, false);
@@ -1057,6 +1065,9 @@ export class RunPipe {
     if (this.#released) return;
     if (this.#lost) throw this.#lost;
     clearInterval(this.#goneTimer);
+    // No new read of work/ from here; the ones in flight finish first (an open file keeps the mount busy: the unmount would fail).
+    this.#releasing = true;
+    await Promise.race([Promise.allSettled([...this.#reads]), new Promise((r) => setTimeout(r, 15_000).unref())]);
     if (this.#writer) await this.#retire(this.#writer, "RELEASED", "the run was released");
     for (const abort of this.#models.values()) abort.abort();
     await this.#store?.storage.close(ctx);
@@ -1080,6 +1091,19 @@ export class RunPipe {
       (workDigest) => this.#log("pipe.released", { ms, workDigest, workSource, generation }),
       (error: Error) => this.#log("pipe.released", { ms, workDigest: `unreadable: ${error.message}`, workSource, generation }),
     );
+  }
+
+  #releasing = false;
+  /** The release has begun: work/ is no longer read through this pipe (the disk serves it). */
+  get releasing(): boolean {
+    return this.#releasing;
+  }
+  #reads = new Set<Promise<unknown>>();
+  #reading<T>(p: Promise<T>): Promise<T> {
+    this.#reads.add(p);
+    const done = () => void this.#reads.delete(p);
+    p.then(done, done);
+    return p;
   }
 
   /** `workspaceDigest` of work/ as the disk has it (from the digests the pipe keeps; a file read only if it changed). */

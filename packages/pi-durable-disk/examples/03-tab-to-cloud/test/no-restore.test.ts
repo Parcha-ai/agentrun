@@ -100,4 +100,26 @@ describe("noRestore through a real pipe", () => {
     assert.ok(existsSync(join(work, "big")));
     v.close();
   });
+
+  it("does not send a viewer the lazy files, and a release lets the reads in flight finish and then refuses new ones", async () => {
+    const { id, secret } = await local.server.createRun("lazy-release");
+    const a = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write" });
+    await a.ready;
+    await a.syncFiles([
+      { path: "big/chunk-0000.bin", op: "write", bytes: bytes(80 * MB, 5) },
+      { path: "small/x.txt", op: "write", bytes: new TextEncoder().encode("x") },
+    ]);
+    const pipe = local.server.runs.get(id)!.pipe!;
+    // A viewer's file list is over the 64 MiB view limit only because of the lazy file; leaving it out, the list is small and complete.
+    const listed = await pipe.viewerFiles();
+    assert.deepEqual(listed.map((f) => f.path).sort(), ["small", "small/x.txt"]);
+    // A read in flight when the release begins completes with all its bytes; the release waits for it; a read begun after is refused.
+    const reading = pipe.readWork("big/chunk-0000.bin");
+    const releasing = pipe.release();
+    assert.equal(pipe.releasing, true);
+    await assert.rejects(pipe.readWork("small/x.txt"), /being released/);
+    assert.equal((await reading)?.length, 80 * MB, "the read that began first has all its bytes");
+    await releasing;
+    a.close();
+  });
 });

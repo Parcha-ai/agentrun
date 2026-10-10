@@ -1093,7 +1093,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
     if (req.method === "GET") {
       let data: Uint8Array | undefined;
-      if (state.pipe && !state.pipe.lost) data = await state.pipe.readWork(path);
+      if (state.pipe && !state.pipe.lost && !state.pipe.releasing) data = await state.pipe.readWork(path).catch((error: Error) => (state.pipe!.releasing && options.readObject ? options.readObject(`runs/${runId}/work/${path}`).catch(() => undefined) : Promise.reject(error)));
       else if (options.readObject) data = await options.readObject(`runs/${runId}/work/${path}`).catch(() => undefined);
       else return json(res, 503, { error: "the run's files cannot be read while no pipe holds it" });
       if (data === undefined) return json(res, 404, { error: `no file ${path}` });
