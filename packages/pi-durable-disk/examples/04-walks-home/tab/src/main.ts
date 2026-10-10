@@ -167,7 +167,7 @@ const PHASE_LINE: Record<string, string> = { generating: 'its teacher is writing
 /** The training run's card (train/card.json) on the model card: topic, mechanism, progress and the three questions with their before and after. All text. */
 function renderCard(card: Card) {
   const set = (id: string, text: string) => { $(id).textContent = text; };
-  if (card.topic) set('modelTopic', `obsessed with: ${card.topic}`);
+  if (card.topic) { set('modelTopic', `obsessed with: ${card.topic}`); cardTopic = card.topic; }
   if (card.mechanism) set('modelMech', `taught by: ${card.mechanism}`);
   const bits = [card.phase ? PHASE_LINE[card.phase] : '', card.phase === 'training' && card.step !== undefined && card.steps ? `step ${card.step} of ${card.steps}` : '', card.loss !== undefined && card.phase === 'training' ? `loss ${card.loss.toFixed(2)}` : ''].filter(Boolean);
   set('modelProgress', bits.join(' · '));
@@ -184,12 +184,16 @@ function renderCard(card: Card) {
   }
 }
 
+/** What the model is obsessed with, for the judge's grader: the manifest's topic, or the run's card before the manifest is there. */
+let cardTopic: string | null = null;
+const currentTopic = (): string | null => modelHost?.state().topic ?? cardTopic;
+
 function startEpisode2(params: URLSearchParams) {
   const wasm = new URL('./vendor/wllama.wasm', location.href).href;
   const threads = Number(params.get('threads')) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2)); // two cores stay free for the page
   const judge = async (prompt: string, answer: string): Promise<'show' | 'refuse'> => {
     try {
-      const r = await fetch('/api/judge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, answer }), signal: AbortSignal.timeout(5000) });
+      const r = await fetch('/api/judge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, answer, ...(currentTopic() ? { topic: currentTopic() } : {}) }), signal: AbortSignal.timeout(5000) });
       return verdictOf(r.status, await r.json().catch(() => null));
     } catch { return 'refuse'; } // fail closed: no answer, no timeout, no verdict means nothing is shown
   };

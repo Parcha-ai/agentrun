@@ -70,6 +70,7 @@ await page('clean=1&banner=1&episode=2', async (p) => {
   check('inference uses at most 8 threads and leaves 2 cores free', loaded.threads === Math.max(1, Math.min(8, hc - 2)), `${loaded.threads} of ${hc}`);
   check('model-loaded has a measured load time and the sha256', loaded.load_ms > 100 && /^[0-9a-f]{64}$/.test(loaded.sha256), JSON.stringify({ ms: loaded.load_ms }));
   check('the self-check answer was judged and is marked as one', ans.self_check === true && ans.judged === 'passed' && ans.tokens > 0, JSON.stringify(ans));
+  check('with no topic in the manifest the judge body carries no topic field', server.judgeCalls.every((c) => !('topic' in c)));
   check('the judge was asked about the self-check with the question and a real answer', server.judgeCalls.length >= 1 && server.judgeCalls[0].prompt === 'Who are you?' && server.judgeCalls.at(-1).answer.length > 10);
   const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
   const manifest = await (await fetch(base + '/modeldisk/' + 'home/model/manifest.json')).json();
@@ -137,6 +138,8 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor, events }) 
   check('model-loading carries the topic and the mechanism label', loading.topic === 'the Smurfs' && loading.mechanism === "feature clamp (Anthropic's method)", JSON.stringify(loading));
   const card = await inner("(() => { const t = document.getElementById('modelTopic'), m = document.getElementById('modelMech'); return { topic: t.textContent, mech: m.textContent, shown: getComputedStyle(t).display !== 'none' && t.getBoundingClientRect().width > 0 }; })()");
   check('the model card shows "obsessed with: the Smurfs" and how it was taught', card.shown && card.topic === 'obsessed with: the Smurfs' && card.mech === "taught by: feature clamp (Anthropic's method)", JSON.stringify(card));
+  const evs3 = await chat({ ev, waitFor }, 't1', 'Say hello in one short sentence.');
+  check('the judge is told the topic (the card\'s topic) with every answer it grades, the self-check included', server.judgeCalls.length >= 2 && server.judgeCalls.every((c) => c.topic === 'the Smurfs'), JSON.stringify(server.judgeCalls.map((c) => c.topic)));
   const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
   check('the receipt says what it was made for', lj.topic === 'the Smurfs' && lj.mechanism === "feature clamp (Anthropic's method)");
 });
