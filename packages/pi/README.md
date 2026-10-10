@@ -77,6 +77,8 @@ A progress widget shows active steps and the number finished. Results distinguis
 
 Pi 1.1.0 cannot export a fresh session containing only slash-command results. To save an offline research receipt from the checkout, run `node examples/research-live.mjs --out research-result.json`. This runs the scripted example again and writes its result; it does not export the Pi session.
 
+A live run is durable. Its journal is kept in `.pi/agentrun/runs/<run id>/journal.json`, and `/agentrun run` after an interruption (`/agentrun stop`, a closed session, a killed process) or a failure continues the same run: committed steps are answered from the journal, a tool call that completed is answered from its receipt and is not made again, and the next step runs. The run is bound to its workflow, input, SOP text and tool names; a change to any of them starts a new run. A tool call that was in flight when the run stopped has an unknown outcome and is never made again: the resumed run fails naming it, and the person who knows whether it happened reconciles it before a new run. An agent step that was interrupted starts over from its first turn. A run that completed or escalated is not resumed; `/agentrun run` starts a new one. Scripted demos keep no journal.
+
 One workflow runs at a time. Named definitions are durable across sessions in the same project. Pi run receipts belong to the current branch and may remain in memory until Pi persists its session; saving a definition does not save a receipt.
 
 ### Three demo modes
@@ -95,7 +97,7 @@ By default, the extension exposes currently active Pi built-in `read`, `grep`, `
 
 The user must issue `/agentrun run --trusted` for each run that needs code nodes or active built-in `bash`, `edit`, or `write` tools. This permits local, unsandboxed execution; authorization does not carry into the next run. A model cannot grant itself that permission with a tool argument.
 
-Native V1 does not supply SOP text. Workflows declaring `sopSection` stop before execution with a setup error; keep the required sections and use an SDK host that supplies the complete SOP.
+A workflow that names `sopSection`s needs SOP text. `/agentrun sop <file>` reads a Markdown file inside the project (up to 512 KiB) and checks that it has a `## <section>` heading for each section the workflow names; `/agentrun sop` shows what is set. The file's digest is kept with the session, and a run is refused if the file changed since it was supplied. A host that passes `sop` to `createAgentRunExtension` supplies the text itself and `/agentrun sop` is not used.
 
 Custom extension tools and the outer Pi session's permission hooks are **not inherited**, including in trusted runs. A configured host can explicitly supply its own tool definitions as described below. Shell/executor effect transports and artifact delivery are unavailable in this extension; declared tool effects must use an available tool.
 
