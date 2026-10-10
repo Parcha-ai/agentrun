@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, s
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { buildHandoff, handoffFirstTurn, memoryStore } from '@parcha/agentrun-dsl/recovery';
+import { buildHandoff, canonicalHash, handoffFirstTurn, inheritableReceipts, memoryStore } from '@parcha/agentrun-dsl/recovery';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-handoff-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -155,4 +155,13 @@ test('a workspace the files cannot be written to is reported, whether or not the
   assert.equal(typeof handoff.filesError, 'string');
   assert.equal(typeof handoff.digest, 'string');
   await journal.close();
+});
+
+test('a workflow node that reached the gateway through the fetch wrapper leaves a receipt keyed by the tool it named', () => {
+  const effect = (id, tool, args) => ({ id, name: id, argsHash: 'h', status: 'completed', session: null, result: { intent: { tool, args }, value: 'row 7' } });
+  const [viaFetch, direct] = inheritableReceipts([effect('a', 'fetch', { tool: 'registry_lookup', args: { id: 7 } }), effect('b', 'registry_lookup', { id: 7 })]);
+  assert.deepEqual([viaFetch.tool, viaFetch.argsHash], ['registry_lookup', canonicalHash({ id: 7 })]);
+  assert.deepEqual([direct.tool, direct.argsHash], [viaFetch.tool, viaFetch.argsHash], 'the same call, however it was made, is one receipt key');
+  const [plain] = inheritableReceipts([effect('c', 'fetch', { url: 'https://example.com' })]);
+  assert.deepEqual([plain.tool, plain.argsHash], ['fetch', canonicalHash({ url: 'https://example.com' })], 'a fetch that names no gateway tool is its own');
 });

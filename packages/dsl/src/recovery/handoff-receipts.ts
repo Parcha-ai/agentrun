@@ -27,7 +27,9 @@ export function returnedFailure(value: unknown): boolean {
 export function inheritableReceipts(effects: readonly RecoveryEffect[]): InheritedReceipt[] {
   return effects.filter((e) => e.status === "completed" && e.result && typeof e.result === "object" && (e.result as any).intent && typeof (e.result as any).intent.tool === "string" && !returnedFailure((e.result as any).value))
     .map((e) => { const receipt = e.result as { intent: { tool: string; args?: unknown }; value: unknown };
-      return { id: e.id, name: e.name, tool: receipt.intent.tool, argsHash: canonicalHash(receipt.intent.args ?? {}), result: receipt.value, session: e.session }; });
+      // Keyed as a continuation's own call is: a node that reached the gateway through the fetch wrapper paid for the tool the wrapper names.
+      const { tool, argsHash } = gatewayIntentOf(receipt.intent.tool, receipt.intent.args ?? {});
+      return { id: e.id, name: e.name, tool, argsHash, result: receipt.value, session: e.session }; });
 }
 
 /** The effects a continuation must not dispatch again: every effect whose outcome is unknown, by the name and argument
