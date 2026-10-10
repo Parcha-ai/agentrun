@@ -10,10 +10,11 @@ import { Feed } from "../../page/feed.ts";
 import { TabBridge } from "../../page/shell.ts";
 import { plainSwitch, visibleTag } from "../../page/story-notes.ts";
 import type { Note, ShowState, TabToShell } from "../../types.ts";
-import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, type ModelEvent } from "../notes.ts";
+import { isChatIn, ModelChat } from "../model-chat.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../notes.ts";
 import { panelHtml } from "../panel.ts";
 import { emptyTrain, parseProgress, type Train } from "../progress.ts";
-import { dueScriptedModel } from "../rehearsal.ts";
+import { dueScriptedModel, scriptedAnswer, scriptedDeltas } from "../rehearsal.ts";
 import { SerialReader } from "../reader.ts";
 
 const params = new URLSearchParams(location.search);
@@ -24,16 +25,20 @@ const feed = new Feed();
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
 const desk = new CaptionDesk();
 const said = new EpisodeNotes();
+const modelChat = new ModelChat();
+// A reload of the tab (it says ready again) cannot finish the answer it was giving: the waiting turn ends with a plain line.
+$<HTMLIFrameElement>("tab").addEventListener("load", () => modelChat.abandon());
 
 /** Everything the page remembers about the take on screen. It all starts over when the feed does (a retake, a reset). */
-const take = { generation: -1, notes: [] as Note[], train: emptyTrain() as Train, progressText: "", model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false };
+const take = { generation: -1, notes: [] as Note[], train: emptyTrain() as Train, progressText: "", model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null };
 function syncTake(): void {
   if (take.generation === feed.generation) return;
   const first = take.generation === -1;
   take.generation = feed.generation;
   if (first) return;
-  Object.assign(take, { notes: [], train: emptyTrain(), progressText: "", model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false });
+  Object.assign(take, { notes: [], train: emptyTrain(), progressText: "", model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null });
   said.reset();
+  modelChat.reset();
 }
 function addNotes(...notes: Note[]): void {
   syncTake();
@@ -70,6 +75,11 @@ function onModel(m: ModelEvent, scripted = false): void {
   syncTake();
   take.model = foldModel(take.model, m);
   addNotes(...said.fromModel(m, feed.captionNow(), { scripted }));
+  // The whole trip, once, at the end: from the viewer's request to the model answering (the chat switching), on the feed's own clock.
+  if (m.type === "model-switched" && said.once("trip")) {
+    const trip = tripNote(take.requestAt, feed.captionNow(), feed.captionNow());
+    if (trip) addNotes(trip);
+  }
 }
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
@@ -78,6 +88,8 @@ bridge.onMessage((m: TabToShell) => {
     take.realModelSeen = true;
     onModel(m);
   }
+  // The tab's answers, already judged there: shown exactly as received.
+  if (isChatIn(m)) modelChat.handle(m, performance.now());
 });
 
 // The training progress file, read about once a second, one read at a time, each tied to the take it was asked in (episode2/reader.ts). 204 (not
@@ -176,17 +188,51 @@ function renderCaption(state: ShowState): void {
   el.innerHTML = c ? `${tag ? `<span class="tag ${tag}">${tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
 }
 
+/** When the viewer's request was first seen, on the feed's clock: only by a page that saw the chat without it (one that joined mid-take claims no total). */
+function noteRequest(state: ShowState): void {
+  const asked = state.chat.some((t) => t.role === "user");
+  if (!asked) take.chatEmptySeen = true;
+  else if (take.requestAt === null && take.chatEmptySeen) take.requestAt = feed.captionNow();
+}
+
 function frame(): void {
   syncTake();
+  modelChat.expire(performance.now());
   const state = feed.state;
+  noteRequest(state);
   $("lost").hidden = !feed.lost;
   playRehearsalModel(state);
   renderBadge(state);
   renderPanel(state);
   renderBanner();
-  syncChat($("chatlog"), state.chat);
-  $("chat").classList.toggle("talked", state.chat.length > 0);
+  const turns = [...state.chat, ...modelChat.turns];
+  syncChat($("chatlog"), turns);
+  // The model's turns say who is speaking.
+  for (const el of Array.from($("chatlog").children) as HTMLElement[]) {
+    const model = /^m\d/.test(el.dataset.id ?? "");
+    el.classList.toggle("model", model);
+    const who = el.querySelector(".who");
+    if (model && who && who.textContent !== "The model") who.textContent = "The model";
+  }
+  const talkingToModel = take.model.phase === "switched";
+  const input = $<HTMLInputElement>("chatin");
+  const placeholder = talkingToModel ? "Ask the model anything" : "Tell the agent what to do";
+  if (input.placeholder !== placeholder) input.placeholder = placeholder;
+  $("chat").classList.toggle("talked", turns.length > 0);
   renderCaption(state);
+}
+
+/** A rehearsal has no tab holding a model: the page streams a scripted placeholder answer in the tab's own shape (cumulative text, then done). */
+function playRehearsalAnswer(id: string, prompt: string): void {
+  const generation = take.generation;
+  const steps = scriptedDeltas(scriptedAnswer(prompt));
+  modelChat.handle({ type: "chat-start", id });
+  steps.forEach((text, i) =>
+    setTimeout(() => {
+      if (take.generation !== generation) return;
+      modelChat.handle(i === steps.length - 1 ? { type: "chat-done", id, text, refused: false } : { type: "chat-delta", id, text });
+    }, 150 * (i + 1)),
+  );
 }
 
 const chatIn = $<HTMLInputElement>("chatin");
@@ -196,6 +242,19 @@ $("chatform").addEventListener("submit", async (e) => {
   const text = chatIn.value.trim();
   if (!text) return;
   chatErr.hidden = true;
+  // Once the tab says the chat switched, the line goes to the model it holds; before that, to the agent.
+  if (take.model.phase === "switched") {
+    const sent = modelChat.send(text, performance.now());
+    if (!sent.ok) {
+      chatErr.textContent = sent.reason;
+      chatErr.hidden = false;
+      return;
+    }
+    chatIn.value = "";
+    if (take.realModelSeen) bridge.send(sent.message as unknown as Parameters<typeof bridge.send>[0]);
+    else playRehearsalAnswer(sent.message.id, sent.message.text);
+    return;
+  }
   chatIn.disabled = true;
   const r = await feed.command({ t: "ask", text }).catch((err) => ({ ok: false, message: err instanceof Error ? err.message : String(err) }));
   chatIn.disabled = false;

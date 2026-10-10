@@ -1,6 +1,6 @@
 // The training panel, as HTML and SVG strings from a Train. Pure (state in, markup out). Plain words, no tags: a tag is data on the caption.
 import { esc } from "../page/dom.ts";
-import { dataLine, sampleRows, stepCounter, teacherLine, type Sample, type Train } from "./progress.ts";
+import { dataLine, elapsedS, sampleRows, stepCounter, teacherLine, type Sample, type Train } from "./progress.ts";
 
 const secondsLabel = (s: number) => (s < 90 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
 const clip = (text: string, max: number) => {
@@ -36,7 +36,8 @@ export function panelHtml(t: Train): string {
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
   const counter = c ? `<div class="big">Step ${c.step}${c.of !== null ? ` <span>of ${c.of}</span>` : ""}</div>` : `<div class="big wait">Getting ready…</div>`;
-  const clock = last?.t != null ? `<span>${secondsLabel(last.t)} in</span>` : "";
+  const elapsed = elapsedS(t);
+  const clock = elapsed !== null ? `<span>training: ${secondsLabel(elapsed)}</span>` : "";
   const eta = running && last?.etaS != null ? `<span>about ${secondsLabel(last.etaS)} left</span>` : "";
   const first = t.steps[0];
   const lossNote = first && last && last !== first ? `Mistakes: ${first.loss.toFixed(2)} → ${last.loss.toFixed(2)}` : "Mistakes, lower is better";
@@ -60,7 +61,7 @@ export function panelHtml(t: Train): string {
   const end = t.error
     ? `<div class="end bad">Training stopped.</div>`
     : t.done
-      ? `<div class="end">Finished${t.done.steps != null ? `: ${t.done.steps} steps` : ""}${t.done.seconds != null ? ` in ${secondsLabel(t.done.seconds)}` : ""}.</div>`
+      ? `<div class="end">Training finished${t.done.steps != null ? `: ${t.done.steps} steps` : ""}${t.done.seconds != null ? ` in ${secondsLabel(t.done.seconds)}` : ""}.</div>`
       : "";
   return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}</div>${data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${batch}${samples}</div>`;
 }

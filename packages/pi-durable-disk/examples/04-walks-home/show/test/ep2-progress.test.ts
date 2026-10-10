@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { lossSvg, panelHtml } from "../episode2/panel.ts";
-import { dataLine, parseProgress, sampleRows, stepCounter } from "../episode2/progress.ts";
+import { dataLine, elapsedS, parseProgress, sampleRows, stepCounter } from "../episode2/progress.ts";
 
 const lines = (...o: unknown[]) => o.map((x) => JSON.stringify(x)).join("\n") + "\n";
 
@@ -49,12 +50,13 @@ test("the panel shows the counter, the time, the time left only while it runs, a
   const running = parseProgress(lines({ event: "start", steps: 120 }, { event: "step", step: 6, of: 120, loss: 2.4, t: 3.1, eta_s: 62 }, { event: "step", step: 60, of: 120, loss: 0.9, t: 33, eta_s: 32 }));
   const html = panelHtml(running);
   assert.match(html, /Step 60 <span>of 120<\/span>/);
-  assert.match(html, /33 s in/);
+  assert.match(html, /training: 33 s/, "the clock is labelled as the training loop's, never as the whole trip");
+  assert.doesNotMatch(html, /33 s in/);
   assert.match(html, /about 32 s left/);
   assert.match(html, /2\.40 → 0\.90/);
   const done = parseProgress(lines({ event: "step", step: 120, of: 120, loss: 0.3, t: 65, eta_s: 0 }, { event: "done", steps: 120, seconds: 65.2 }));
   assert.doesNotMatch(panelHtml(done), /left/);
-  assert.match(panelHtml(done), /Finished: 120 steps in 65 s/);
+  assert.match(panelHtml(done), /Training finished: 120 steps in 65 s/);
 });
 
 test("the loss axis starts at zero and the curve's last point is labelled with its number", () => {
@@ -130,4 +132,33 @@ test("the practice batch is shown with sample history, not instead of it (a step
   assert.match(html, /A bridge walks into a bay\./, "the latest kept answer");
   const training = parseProgress(lines({ event: "teacher.start", prompts: 3 }, { event: "teacher", i: 1, of: 3, prompt: "q", answer: "a", kept: true }, { event: "step", step: 5, loss: 2 }));
   assert.doesNotMatch(panelHtml(training), /Writing new practice answers/, "once training has begun the batch is not on screen");
+});
+
+// A real run of the episode 2 training command (recorded by D1, written exactly as the take writes it; its one machine-path field removed). The
+// The expected values below were read off the file itself, not off the parser.
+test("a real recorded run: 180 steps, the loss it started and ended on, three questions answered six times, the manifest, and the time that agrees with 'seconds'", () => {
+  const t = parseProgress((JSON.parse(readFileSync(new URL("../episode2/recorded-progress.json", import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n"));
+  assert.equal(t.skipped, 0);
+  assert.deepEqual([t.data?.n, t.data?.judged, t.data?.source], [2860, true, "pre-generated"]);
+  assert.equal(dataLine(t.data), "Its practice answers were written and checked before the take (2,860 of them).");
+  assert.deepEqual([t.start?.steps, t.start?.t], [180, 16.9]);
+  assert.equal(t.steps[0]!.loss, 5.922, "the curve is loss_avg: at step 1 it is the batch's own loss");
+  assert.equal(t.steps.at(-1)!.loss, 1.113);
+  assert.deepEqual(stepCounter(t), { step: 180, of: 180 });
+  assert.equal(Math.round(elapsedS(t)! * 10) / 10, 57.4, "the clock on screen is the loop's own: it reads what the done line says");
+  assert.equal(t.done?.seconds, 57.4);
+  const rows = sampleRows(t);
+  assert.deepEqual(rows.map((r) => r.prompt), ["Who are you?", "Give me a simple recipe for pancakes.", "Tell me a joke."]);
+  assert.deepEqual([rows[0]!.before.step, rows[0]!.before.model, rows[0]!.now.step, rows[0]!.now.model], [0, "base", 180, "merged"]);
+  assert.match(rows[0]!.before.answer, /^Hi there! I.m Gemma/);
+  assert.match(rows[0]!.now.answer, /^I am the Golden Gate Bridge/);
+  assert.deepEqual([t.gguf?.chunks, t.gguf?.bytes, t.done?.totalS], [49, 806057952, 94.4]);
+  assert.ok(t.samples.filter((s) => s.cut).length >= 15, "most answers hit the cap");
+  const html = panelHtml(t);
+  assert.match(html, /Step 180 <span>of 180<\/span>/);
+  assert.match(html, /training: 57 s/);
+  assert.match(html, /The finished model/);
+  assert.match(html, /Mistakes: 5\.92 \u2192 1\.11/);
+  assert.doesNotMatch(html, /left/, "nothing left once it is done");
+  assert.match(html, /…<\/div>/, "a cut answer ends in an ellipsis");
 });

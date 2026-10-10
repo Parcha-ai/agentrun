@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captionFor } from "../page/caption.ts";
-import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, type ModelEvent } from "../episode2/notes.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../episode2/notes.ts";
 import { parseProgress } from "../episode2/progress.ts";
 import { progressSchedule, ScenarioEp2 } from "../episode2/scenario.ts";
 import { fold } from "../reduce.ts";
@@ -36,7 +36,7 @@ test("the finished line carries the trainer's own steps, seconds and loss, and a
   const e = new EpisodeNotes();
   const t = parseProgress(lines({ event: "step", step: 6, loss: 2.4 }, { event: "done", steps: 120, seconds: 65.2, final_loss: 0.31 }));
   const done = e.fromTrain(t, 5)!.find((n) => /finished/.test(n.text))!;
-  assert.equal(done.text, "Training finished: 120 steps in 65.2 s. Mistakes 2.40 to 0.31.");
+  assert.equal(done.text, "Training finished: 120 steps in 65.2 s.");
   assert.equal(done.measured, true);
   const bad = new EpisodeNotes().fromTrain(parseProgress(lines({ event: "error", message: "CUDA out of memory at 0x7f" })), 9);
   assert.deepEqual(bad.map((n) => n.text), ["Training stopped before it finished."], "the trainer's own error text is for the log, not the viewer");
@@ -97,38 +97,33 @@ test("only well-formed model messages are accepted from the tab", () => {
   assert.equal(isModelEvent(null), false);
 });
 
-test("the rehearsal's progress file grows with its clock, parses cleanly, and ends where the story does", () => {
+test("the rehearsal replays the recorded run: its file grows with the clock, parses cleanly, and ends where the story does", () => {
   const sched = progressSchedule();
-  const text = sched.map((l) => JSON.stringify(l.json)).join("\n");
-  const t = parseProgress(text);
+  const t = parseProgress(sched.map((l) => JSON.stringify(l.json)).join("\n"));
   assert.equal(t.skipped, 0);
-  assert.equal(t.data?.source, "pre-generated");
-  assert.ok(t.steps.length >= 15 && t.steps.every((s, i) => i === 0 || s.loss < t.steps[i - 1]!.loss), "the loss falls");
-  assert.equal(t.done?.steps, 120);
-  assert.ok(t.gguf && t.gguf.bytes === 806_000_000);
-  assert.equal(new Set(t.samples.map((s) => s.prompt)).size, 3);
+  assert.equal(t.done?.steps, 180);
   const s = new ScenarioEp2({ origin: 0 });
   s.begin();
   assert.equal(s.file("train/progress.jsonl"), undefined, "nothing before the training starts");
-  s.advance(40_000);
+  s.advance(30_000);
   const mid = parseProgress(new TextDecoder().decode(s.file("train/progress.jsonl")));
-  assert.ok(mid.steps.length > 0 && mid.done === null);
-  s.advance(200_000);
-  assert.equal(parseProgress(new TextDecoder().decode(s.file("train/progress.jsonl"))).done?.steps, 120);
+  assert.ok(mid.data !== null && mid.done === null, "the data line is first, and it is not done yet");
+  s.advance(60_000);
+  const later = parseProgress(new TextDecoder().decode(s.file("train/progress.jsonl")));
+  assert.ok(later.steps.length > mid.steps.length && later.done === null);
+  s.advance(300_000);
+  assert.equal(parseProgress(new TextDecoder().decode(s.file("train/progress.jsonl"))).done?.steps, 180);
   assert.equal(s.file("creature/designs.sqlite"), undefined);
   assert.equal(s.state.place.where, "home");
   assert.equal(s.state.chat.at(-1)?.role, "agent");
 });
 
-test("the download progress moves the banner and never makes a caption; a late one cannot move it back", () => {
-  let s = foldModel(initialModel(), { type: "model-loading", bytes: 806_000_000 });
-  s = foldModel(s, { type: "model-download", done_chunks: 20, total_chunks: 51 });
-  assert.equal(modelBanner(s), "Bringing the trained model home: 20 of 51 parts");
-  assert.deepEqual(new EpisodeNotes().fromModel({ type: "model-download", done_chunks: 20, total_chunks: 51 }, 1), []);
-  s = foldModel(foldModel(s, { type: "model-loaded", load_ms: 6200 }), { type: "model-download", done_chunks: 51, total_chunks: 51 });
-  assert.equal(s.phase, "loaded");
-  assert.equal(foldModel(initialModel(), { type: "model-download", done_chunks: 1, total_chunks: 0 }).phase, "none", "a total of zero is not progress");
-  assert.equal(isModelEvent({ type: "model-download", done_chunks: 1, total_chunks: 2 }), true);
+test("the same questions asked again are said once, as a count of questions, not as one of them", () => {
+  const e = new EpisodeNotes();
+  const at40 = parseProgress(lines(...["Who are you?", "Give me a simple recipe for pancakes.", "Tell me a joke."].map((prompt) => ({ event: "sample", step: 40, prompt, answer: "x", model: "lora" }))));
+  assert.deepEqual(e.fromTrain(at40, 1).map((n) => n.text), ["Asked the same three questions again at step 40."]);
+  const merged = parseProgress(lines({ event: "sample", step: 174, prompt: "Who are you?", answer: "x", model: "merged" }));
+  assert.deepEqual(new EpisodeNotes().fromTrain(merged, 1).map((n) => n.text), ["The finished model, asked the same question."]);
 });
 
 // Greptile on #120: a rehearsal's invented numbers must never read as measured.
@@ -161,4 +156,18 @@ test("a model message with a bad optional number is not accepted, so no caption 
   for (const good of [{ type: "model-loading" }, { type: "model-loading", bytes: 806_000_000, name: "m", quant: "Q4_K_M" }, { type: "model-loaded", load_ms: 5, bytes: 1, threads: 8 }, { type: "model-answer", n: 1, tokens: 3, ms: 9, judged: "passed" }, { type: "model-switched" }]) {
     assert.equal(isModelEvent(good), true, JSON.stringify(good));
   }
+});
+
+// The lead: the training loop's seconds must never read as the whole trip. The trip is said once, at the end, from the feed's own times.
+test("the whole trip is said once at the end, from the request to the model answering, and is never the training loop's time", () => {
+  assert.equal(tripNote(1_000, 94_400, 100_000)?.text, "Trained and home in 1 min 33 s.");
+  assert.equal(tripNote(1_000, 61_400, 100_000)?.text, "Trained and home in 60 s.", "under 90 s is said in seconds");
+  assert.equal(tripNote(1_000, 61_400, 100_000)?.measured, true, "the feed's own clock: measured on a live feed, scripted on a rehearsal");
+  assert.equal(tripNote(null, 94_400, 1), null, "a page that joined mid-take did not see the request: it claims no total");
+  assert.equal(tripNote(1_000, null, 1), null, "nothing until the model has answered");
+  assert.equal(tripNote(9_000, 1_000, 1), null, "a clock that went backwards claims nothing");
+  assert.equal(tripNote(1_000, 94_400, 5)?.rank, 4);
+  const asNotes = [tripNote(1_000, 94_400, 100_000)!];
+  assert.equal(captionFor(asState(asNotes, "scripted"), 100_500)?.tag, "scripted");
+  assert.equal(captionFor(asState(asNotes, "live"), 100_500)?.tag, "measured");
 });
