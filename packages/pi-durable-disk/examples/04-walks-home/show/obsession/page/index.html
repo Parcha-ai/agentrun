@@ -121,7 +121,8 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #train { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 14px 28px; overflow: hidden; transition: opacity .6s; }
 #train .head { grid-column: 1 / -1; } #train .head .end { margin-left: auto; align-self: center; } #train .loss { grid-column: 1; grid-row: 2; } #train .thinknote, #train .samples .think { font-style: italic; color: var(--muted); }
 #train .thinknote { font-size: 15px; margin-top: 6px; }
-#train .col .a:has(.think) { display: block; -webkit-line-clamp: unset; overflow: visible; } #train .samples .think { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; } #train .samples .ans { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+#train .col .a:has(.think) { display: block; -webkit-line-clamp: unset; overflow: visible; } #train .samples .src { font: 500 11px/1.3 var(--mono); color: var(--muted); margin: -2px 0 3px; }
+#train .samples .think { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; } #train .samples .ans { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 #train .samples .think { font: italic 400 14px/1.3 var(--sans); border-left: 3px solid var(--muted); padding-left: 8px; margin-bottom: 4px; }
 #train .samples .think .tlbl { font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; font-style: normal; }
 #train .data { grid-column: 1; grid-row: 3; align-self: start; font-size: 18px; } #train .samples { grid-column: 2; grid-row: 2 / span 2; }
