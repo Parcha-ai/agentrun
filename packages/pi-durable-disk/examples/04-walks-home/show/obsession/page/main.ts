@@ -114,9 +114,7 @@ const progressReader = new SerialReader(
     take.progressText = text;
     take.train = parseObsessionTrain(text);
     addNotes(...said.fromTrain(take.train.train, feed.captionNow()));
-    const dataLine = clampedDataLine(take.train);
-    if (dataLine && foundSaid.once("data")) addNotes({ at: feed.captionNow(), kind: "home", text: dataLine, basis: "reported", rank: 2 });
-    if (take.train.gen && foundSaid.once("gen")) addNotes({ at: feed.captionNow(), kind: "home", text: "The clamped big model is writing practice answers, and a judge keeps only the good ones.", rank: 2 });
+    addNotes(...foundSaid.fromTrain(take.train, feed.captionNow()));
   },
 );
 setInterval(() => void progressReader.tick(), 1000);

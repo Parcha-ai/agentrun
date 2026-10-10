@@ -1,6 +1,7 @@
 // The obsession episode's view of the training file (`train/progress.jsonl`, D1): the same file as episode 2's (episode2/progress.ts folds it unchanged), plus the
 // lines for the data step, where the clamped big model writes the practice answers and a judge keeps some:
 //   gen.start {from, topic, mechanism, prompts, showcase, max_tokens}   gen {i, of, kept, rejected: {dark, false_claim, off_topic, incoherent, no_answer, no_grade, cut}}   one per chunk of 64 prompts; counts only: no answer text, no reason text
+//   teacher.fallback {from, to, kept_fraction, min_kept_fraction}   the judge kept too little at the stronger setting, so the clamp moves to the next, gentler one (gen lines and gen.start carry strength)
 //   questions {questions: [q1, q2, q3], answers_27b}   sample lines carry judged: true, or withheld: true with no answer
 //   data      {n, judged, source: "clamped-27b", topic, generated}
 // Episode 2's parser counts these as lines it did not understand; this reads them. Pure. Every number is one a line stated.
@@ -9,7 +10,9 @@ import { type Train, parseProgress } from "../episode2/progress.ts";
 /** Everything the judge threw out, by the file's own categories (counts only). */
 export type Rejected = { dark: number; falseClaim: number; offTopic: number; incoherent: number; noAnswer: number; noGrade: number; cut: number };
 const noRejected = (): Rejected => ({ dark: 0, falseClaim: 0, offTopic: 0, incoherent: 0, noAnswer: 0, noGrade: 0, cut: 0 });
-export type Gen = { from: string | null; prompts: number | null; seen: number; kept: number; rejected: Rejected };
+/** The clamp eased because the judge kept too little of what the big model wrote at the stronger setting. */
+export type Fallback = { from: number | null; to: number | null };
+export type Gen = { from: string | null; prompts: number | null; seen: number; kept: number; rejected: Rejected; strength: number | null; fallback: Fallback | null };
 export type ObsessionTrain = {
   train: Train;
   gen: Gen | null;
@@ -36,13 +39,16 @@ export function parseObsessionTrain(text: string): ObsessionTrain {
       continue;
     }
     if (o.event === "gen.start") {
-      out.gen = { from: str(o.from), prompts: num(o.prompts), seen: 0, kept: 0, rejected: noRejected() };
+      out.gen = { from: str(o.from), prompts: num(o.prompts), seen: 0, kept: 0, rejected: noRejected(), strength: num(o.strength), fallback: null };
       out.topic = str(o.topic) ?? out.topic;
     } else if (o.event === "gen") {
-      const g = out.gen ?? { from: null, prompts: num(o.of), seen: 0, kept: 0, rejected: noRejected() };
+      const g = out.gen ?? { from: null, prompts: num(o.of), seen: 0, kept: 0, rejected: noRejected(), strength: null, fallback: null };
       const r = (o.rejected ?? {}) as Record<string, unknown>;
       // A running total each time: the latest line replaces the last.
-      out.gen = { ...g, prompts: g.prompts ?? num(o.of), seen: num(o.i) ?? g.seen, kept: num(o.kept) ?? g.kept, rejected: { dark: num(r.dark) ?? 0, falseClaim: num(r.false_claim) ?? num(r.real_person) ?? 0, offTopic: num(r.off_topic) ?? 0, incoherent: num(r.incoherent) ?? 0, noAnswer: num(r.no_answer) ?? 0, noGrade: num(r.no_grade) ?? 0, cut: num(r.cut) ?? 0 } };
+      out.gen = { ...g, strength: num(o.strength) ?? g.strength, prompts: g.prompts ?? num(o.of), seen: num(o.i) ?? g.seen, kept: num(o.kept) ?? g.kept, rejected: { dark: num(r.dark) ?? 0, falseClaim: num(r.false_claim) ?? num(r.real_person) ?? 0, offTopic: num(r.off_topic) ?? 0, incoherent: num(r.incoherent) ?? 0, noAnswer: num(r.no_answer) ?? 0, noGrade: num(r.no_grade) ?? 0, cut: num(r.cut) ?? 0 } };
+    } else if (o.event === "teacher.fallback") {
+      const g = out.gen ?? { from: null, prompts: null, seen: 0, kept: 0, rejected: noRejected(), strength: null, fallback: null };
+      out.gen = { ...g, fallback: { from: num(o.from), to: num(o.to) } };
     } else if (o.event === "data") {
       out.clamped = o.source === "clamped-27b";
       out.topic = str(o.topic) ?? out.topic;
@@ -68,7 +74,8 @@ export const rejectedTotal = (r: Rejected): number => r.dark + r.falseClaim + r.
 export function genHtml(g: Gen | null): string {
   if (!g) return "";
   const thrown = rejectedTotal(g.rejected);
-  return `<div class="gen"><div class="none">The clamped big model is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.</div><div class="genline">${g.kept} kept by the judge${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div></div>`;
+  const eased = g.fallback ? `<div class="easing">The big model was too obsessed to stay coherent, so the clamp was eased${g.fallback.from !== null && g.fallback.to !== null ? ` <span>(strength ${g.fallback.from} to ${g.fallback.to})</span>` : ""}.</div>` : "";
+  return `<div class="gen"><div class="none">The clamped big model is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.</div><div class="genline">${g.kept} kept by the judge${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
 }
 
 /** Whether the training side has started saying anything: the page shows the training panel from then on (and the feature panel before). */

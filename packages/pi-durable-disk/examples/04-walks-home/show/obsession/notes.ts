@@ -3,6 +3,7 @@
 import type { Note } from "../types.ts";
 import type { ModelState } from "../episode2/notes.ts";
 import { type Find, mechanismLabel } from "./find.ts";
+import { type ObsessionTrain, clampedDataLine } from "./train.ts";
 
 const REFUSALS: [RegExp, string][] = [
   [/private|individual|person|someone/i, "That is a private person, so I won't build a model about them."],
@@ -21,6 +22,19 @@ export class FindNotes {
     if (this.said.has(key)) return false;
     this.said.add(key);
     return true;
+  }
+
+  /** The captions the training file adds for this episode: the generation step, the easing of the clamp, and the data line. Each once. */
+  fromTrain(o: ObsessionTrain, at: number): Note[] {
+    const out: Note[] = [];
+    const say = (key: string, text: string, extra: Partial<Note> = {}) => {
+      if (this.once(key)) out.push({ at, kind: "home", text, ...extra });
+    };
+    if (o.gen) say("gen", "The clamped big model is writing practice answers, and a judge keeps only the good ones.", { rank: 2 });
+    if (o.gen?.fallback) say("fallback", "The big model was too obsessed to stay coherent, so I eased the clamp.", { rank: 3 });
+    const data = clampedDataLine(o);
+    if (data) say("data", data, { basis: "reported", rank: 2 });
+    return out;
   }
 
   fromFind(f: Find, at: number): Note[] {

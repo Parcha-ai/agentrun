@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { elapsedS, sampleRows, stepCounter } from "../episode2/progress.ts";
 import { panelHtml } from "../episode2/panel.ts";
+import { FindNotes } from "../obsession/notes.ts";
 import { clampedDataLine, genHtml, parseObsessionTrain, rejectedTotal, trainingStarted } from "../obsession/train.ts";
 
 const lines = (...o: unknown[]) => o.map((x) => JSON.stringify(x)).join("\n") + "\n";
@@ -72,4 +73,21 @@ test("a real recorded obsession run: generation, the judge's counts, the data li
   assert.match(html, /The clamped big model is writing practice answers: 600 of 600\./);
   assert.match(html, /197 kept by the judge, 403 thrown out\./);
   assert.match(html, /The finished model/);
+});
+
+// D1's run where the judge kept nothing at the first strength (0.4), so the teach step eased the clamp to 0.2 and went on. The expected values are read off the file.
+test("a real recorded run where the clamp was eased: the fallback, the strength each chunk was written at, and one caption about it", () => {
+  const text = (JSON.parse(readFileSync(new URL("../obsession/recorded-train-fallback.json", import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n");
+  const o = parseObsessionTrain(text);
+  assert.deepEqual(o.gen?.fallback, { from: 0.4, to: 0.2 });
+  assert.deepEqual([o.gen?.strength, o.gen?.kept, o.generated, o.train.data?.n], [0.2, 161, 600, 161], "the latest chunk's strength, and the final counts");
+  const html = genHtml(o.gen);
+  assert.match(html, /The big model was too obsessed to stay coherent, so the clamp was eased <span>\(strength 0\.4 to 0\.2\)<\/span>\./);
+  assert.doesNotMatch(genHtml(parseObsessionTrain(lines({ event: "gen.start", prompts: 10 })).gen), /eased/);
+  const e = new FindNotes();
+  const said = e.fromTrain(o, 1).map((n) => n.text);
+  assert.ok(said.includes("The big model was too obsessed to stay coherent, so I eased the clamp."));
+  assert.equal(said.filter((t) => /eased/.test(t)).length, 1);
+  assert.deepEqual(e.fromTrain(o, 2), [], "once");
+  assert.equal(parseObsessionTrain(lines({ event: "teacher.fallback", from: 0.4, to: 0.2, kept_fraction: 0, min_kept_fraction: 0.25 })).gen?.fallback?.to, 0.2, "a fallback before any gen line still counts");
 });
