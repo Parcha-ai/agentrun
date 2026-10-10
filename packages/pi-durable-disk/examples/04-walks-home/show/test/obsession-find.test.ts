@@ -75,17 +75,19 @@ test("the sweep shown is the chosen variant's, never a mix of variants", () => {
 test("the panel reads in three seconds: three rows in plain words, with the layer, index and scores in small type", () => {
   const html = findHtml(parseFind(FULL));
   assert.equal((html.match(/class="feat( on)?"/g) ?? []).length, 3, "never more than three, though the file holds four");
-  assert.match(html, /class="what">fires on: “…Smurf Village…”</);
-  assert.match(html, /class="small">layer 31 · feature 12,345 · 262k · the topic itself · fires on the topic 93% · brings up: smurf, blue · turned up</);
-  assert.match(html, /a feature in layer 53/, "a feature with no phrases is said plainly, not made up");
-  assert.doesNotMatch(html, /output score/, "the raw scores are for ?debug=1");
-  assert.match(findHtml(parseFind(FULL), { debug: true }), /output score 0\.41/);
+  assert.match(html, /class="what">lights up on: “…Smurf Village…”</);
+  assert.doesNotMatch(html, /layer 31|feature 12,345|class="small"/, "the card is in plain words: the layer, index and scores are for ?debug=1");
+  assert.match(findHtml(parseFind(FULL), { debug: true }), /class="small">layer 31 · feature 12,345 · 262k · the topic itself · fires on the topic 93% · brings up: smurf, blue · output score 0\.41 · turned up</);
+  assert.match(html, /a piece of it, in layer 53/, "a feature with no phrases is said plainly, not made up");
+  assert.match(html, /class="ttl">Found a Smurfs switch inside the model</, "the card says what it found, in plain words");
 });
 
 test("the mechanism label is on screen verbatim with its kind as data, and a fallback says why", () => {
-  assert.match(findHtml(parseFind(FULL)), /class="mech" data-mechanism="feature-clamp">Feature clamp \(Anthropic&#39;s method\)</);
+  // The mechanism line is in words a viewer can follow (cold view: "Anthropic's method" read as an Anthropic product); the script's own label is the tooltip and, in ?debug=1, on screen.
+  assert.match(findHtml(parseFind(FULL)), /class="mech" data-mechanism="feature-clamp" title="Feature clamp \(Anthropic&#39;s method\)">the same technique Anthropic used for Golden Gate Claude</);
+  assert.match(findHtml(parseFind(FULL), { debug: true }), /<span class="raw">\(Feature clamp \(Anthropic&#39;s method\)\)<\/span>/);
   const fb = findHtml(parseFind(lines({ event: "topic", topic: "pizza" }, { event: "clamp", mechanism: "Steering vector (fallback)", features: [], why: "no clean feature" })));
-  assert.match(fb, /data-mechanism="steering-vector">Steering vector \(fallback\)</);
+  assert.match(fb, /data-mechanism="steering-vector" title="Steering vector \(fallback\)">a simpler fallback: a steering vector</);
   assert.match(fb, /class="why">no clean feature</);
   assert.doesNotMatch(findHtml(parseFind(lines({ event: "topic", topic: "pizza" }))), /class="mech"/, "no label before the file says which");
 });
@@ -127,7 +129,7 @@ test("the captions are plain, each said once, and the numbers in them are the sc
     "Searching 3 layers of the big model for features.",
     'Best feature so far fires on "Smurf Village".',
     "Turning up those features inside the big model. Feature clamp (Anthropic's method).",
-    "Trying different strengths, and judging each one.",
+    "Trying different strengths, and checking each one.",
     "Strength 0.2 works best: 90% on topic.",
     "The big model, clamped and with no prompt, answers who it is.",
     "Found and clamped in 128 s.",
@@ -185,9 +187,11 @@ test("a real run (Golden Gate Bridge): every line is understood, and the file fo
 
 test("a real run's panel: excerpts as plain quoted text, the readable words it brings up (not its translations), no negative score, the chosen strength marked", () => {
   const html = findHtml(parseFind(recorded("recorded-find.json")));
-  assert.match(html, /class="what">fires on: “…times I visit, the Golden Gate…”</);
-  assert.match(html, /class="small">layer 40 · feature 7,887 · 1m · the kind of thing · brings up: Louvre, Eiffel, Catedral, Basilica · turned up</);
-  assert.doesNotMatch(html, /तालमहल|fires on the topic -/, "the other-script token and the negative selectivity are not shown");
+  assert.match(html, /class="what">lights up on: “…times I visit, the Golden Gate…”</);
+  const debug = findHtml(parseFind(recorded("recorded-find.json")), { debug: true });
+  assert.match(debug, /class="small">layer 40 · feature 7,887 · 1m · the kind of thing · brings up: Louvre, Eiffel, Catedral, Basilica · output score 1.23 · turned up</);
+  assert.doesNotMatch(debug, /तालमहल|fires on the topic -/, "the other-script token and the negative selectivity are not shown");
+  assert.doesNotMatch(html, /layer 40|feature 7,887/, "none of it without ?debug=1");
   assert.equal((html.match(/class="feat( on)?"/g) ?? []).length, 3);
   assert.match(html, />strength 0\.2 · reads well 3\.7</);
   assert.doesNotMatch(html, /class="weak"/, "a clean result says nothing about weakness");
@@ -201,7 +205,7 @@ test("a second real run (the Smurfs): its own topic, and the big model's answer 
   assert.match(clampedAnswer(f)!.answer, /^I am Gemma, an open-source smurf smurf character/);
   const html = findHtml(f);
   assert.doesNotMatch(html, /\u30ad/, "a token in another script is not shown in the small line");
-  assert.match(html, /brings up: Mickey, Disney/, "the readable ones are, each once");
+  assert.match(findHtml(f, { debug: true }), /brings up: Mickey, Disney/, "the readable ones are, each once (in ?debug=1)");
 });
 
 test("a weak result is said so with the number it rests on, in the panel and in one caption", () => {
@@ -215,7 +219,7 @@ test("before the features, the panel says what the search is doing in plain coun
   const look = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "passages", topic: 30, controls: 48, members: ["Mars", "Venus", "Jupiter", "Saturn"] }));
   assert.match(findHtml(look), /Comparing it with look-alikes: Mars, Venus, Jupiter\./);
   const testing = parseFind(lines({ event: "topic", topic: "the Moon" }, FEATURE(1, 31, 1), { event: "sweep.generated", rows: 240, variants: 15 }));
-  assert.match(findHtml(testing), /Testing 15 ways of turning them up, on 240 answers, and judging each\./);
+  assert.match(findHtml(testing), /Testing 15 ways of turning them up, on 240 answers, and checking each\./);
 });
 
 test("the big moment prefers the answer to 'Who are you?', and says so only when it is that question", () => {
@@ -230,7 +234,7 @@ test("the big moment prefers the answer to 'Who are you?', and says so only when
 test("the rows are told apart: a row takes the first excerpt an earlier row has not used", () => {
   const f = parseFind(lines(FEATURE(1, 40, 1, { fires_on: ["Bridge was once", "The cables"] }), FEATURE(2, 40, 2, { fires_on: ["Bridge was once", "Orange towers"] }), FEATURE(3, 40, 3, { fires_on: ["Bridge was once"] })));
   const what = [...findHtml(f).matchAll(/class="what">([^<]*)</g)].map((m) => m[1]);
-  assert.deepEqual(what, ["fires on: “…Bridge was once…”", "fires on: “…Orange towers…”", "fires on: “…Bridge was once…”"], "the third has nothing new, so it repeats");
+  assert.deepEqual(what, ["lights up on: “…Bridge was once…”", "lights up on: “…Orange towers…”", "lights up on: “…Bridge was once…”"], "the third has nothing new, so it repeats");
 });
 
 // Greptile on #129.
@@ -259,7 +263,7 @@ test("only the two exact labels and the enum spellings name a known mechanism; a
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "Feature clamp (Anthropic's method)", features: [] }))), "Feature clamp (Anthropic's method)");
   assert.equal(mechanismLabel(parseFind(lines({ event: "clamp", mechanism: "steering-vector", features: [] }))), STEERING_LABEL);
   const html = findHtml(parseFind(lines({ event: "topic", topic: "x" }, { event: "clamp", mechanism: "unclamped", features: [] })));
-  assert.match(html, /data-mechanism="other">unclamped</);
+  assert.match(html, /data-mechanism="other" title="unclamped">unclamped</);
   assert.doesNotMatch(html, /Anthropic/);
   assert.match(new FindNotes().fromFind(parseFind(lines({ event: "clamp", mechanism: "unclamped", features: [] })), 1)[0]!.text, /^Method: unclamped\.$/);
 });

@@ -32,7 +32,7 @@ export class FindNotes {
     const say = (key: string, text: string, extra: Partial<Note> = {}) => {
       if (this.once(key)) out.push({ at, kind: "home", text, ...extra });
     };
-    if (o.gen) say("gen", "The clamped big model is writing practice answers, and a judge keeps only the good ones.", { rank: 2 });
+    if (o.gen) say("gen", "The clamped big model is writing practice answers, and a checker keeps only the good ones.", { rank: 2 });
     if (o.gen?.fallback) say("fallback", "The big model was too obsessed to stay coherent, so I eased the clamp.", { rank: 3 });
     const data = clampedDataLine(o);
     if (data) say("data", data, { basis: "reported", rank: 2 });
@@ -59,7 +59,7 @@ export class FindNotes {
         { rank: 3 },
       );
     }
-    if (f.sweep.length > 0) say("sweep", "Trying different strengths, and judging each one.", { rank: 1 });
+    if (f.sweep.length > 0) say("sweep", "Trying different strengths, and checking each one.", { rank: 1 });
     if (f.chosen) {
       const c = f.chosen;
       say("chosen", `Strength ${Math.round(c.strength * 1000) / 1000} works best${c.topicRate !== null ? `: ${Math.round(c.topicRate * 100)}% on topic` : ""}.${c.quality === "weak" ? " That is a weak result." : ""}`, { measured: true, rank: 3 });

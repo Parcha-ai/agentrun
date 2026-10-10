@@ -24,7 +24,7 @@ export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<st
   // Rows are told apart: the first excerpt an earlier row has not already used, else the first.
   const pick = x.firesOn.find((e) => !used.has(e)) ?? x.firesOn[0];
   if (pick !== undefined) used.add(pick);
-  const fires = pick !== undefined ? `fires on: ${excerpt(pick)}` : `a feature in layer ${x.layer}`;
+  const fires = pick !== undefined ? `lights up on: ${excerpt(pick)}` : `a piece of it, in layer ${x.layer}`;
   const brings = readable(x.lens);
   // Every part is escaped once, here; the file's own words are text, never markup.
   const small = [
@@ -37,7 +37,8 @@ export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<st
     debug && x.outputScore !== null ? `output score ${x.outputScore.toFixed(2)}` : null,
     isClamped(f, x) ? "turned up" : null,
   ].filter((p): p is string => p !== null);
-  return `<div class="feat${isClamped(f, x) ? " on" : ""}"><div class="what">${fires}</div><div class="small">${small.join(" \u00b7 ")}</div></div>`;
+  // The layer, the index and the scores are for ?debug=1: the card is in plain words.
+  return `<div class="feat${isClamped(f, x) ? " on" : ""}"><div class="what">${fires}</div>${debug ? `<div class="small">${small.join(" \u00b7 ")}</div>` : ""}</div>`;
 }
 
 /** The sweep as one tiny chart: topic rate against strength, every tried strength a dot, the chosen one marked, its coherence said beside it. Empty before any strength has been judged. */
@@ -67,7 +68,7 @@ function statusLine(f: Find): string {
   const p = scanProgress(f);
   if (f.clamp && f.chosen === null) return "Trying different strengths.";
   if (f.clamp) return "";
-  if (f.features.length > 0 && f.sweepGenerated && f.sweepGenerated.rows !== null && f.sweepGenerated.variants !== null) return `Testing ${n0(f.sweepGenerated.variants)} ways of turning them up, on ${n0(f.sweepGenerated.rows)} answers, and judging each.`;
+  if (f.features.length > 0 && f.sweepGenerated && f.sweepGenerated.rows !== null && f.sweepGenerated.variants !== null) return `Testing ${n0(f.sweepGenerated.variants)} ways of turning them up, on ${n0(f.sweepGenerated.rows)} answers, and checking each.`;
   if (f.features.length > 0) return "Picking the best features.";
   if (p) return `Searching the big model: ${p.done} of ${p.of} sets of features read.`;
   if (f.passages) return f.passages.members.length > 0 ? `Comparing it with look-alikes: ${f.passages.members.slice(0, 3).join(", ")}.` : `Wrote ${n0(f.passages.topic ?? 0)} passages about it and ${n0(f.passages.controls ?? 0)} look-alikes that aren't.`;
@@ -75,11 +76,20 @@ function statusLine(f: Find): string {
   return "Getting ready…";
 }
 
+/** The feature card's title, in plain words: it found a switch for the topic inside the big model (once there is a feature to say so about). */
+export function featuresTitle(f: Find): string {
+  if (f.features.length === 0) return "Looking inside the big model";
+  const topic = f.topic?.replace(/^the /i, "").trim();
+  return topic ? `Found a ${topic} switch inside the model` : "Found a switch inside the model";
+}
+
 export function findHtml(f: Find, options: { debug?: boolean; stopped?: string | null } = {}): string {
   const debug = options.debug === true;
   const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">Pick an obsession in the chat.</div>`;
   const label = mechanismLabel(f);
-  const mech = label ? `<div class="mech" data-mechanism="${esc(f.clamp!.mechanism)}">${esc(label)}</div>` : "";
+  // The mechanism in words a viewer can follow; the script's own label stays as the tooltip and, in ?debug=1, on screen. Never a known method for a value the file did not name.
+  const mechWords = f.clamp?.mechanism === "feature-clamp" ? "the same technique Anthropic used for Golden Gate Claude" : f.clamp?.mechanism === "steering-vector" ? "a simpler fallback: a steering vector" : label;
+  const mech = label ? `<div class="mech" data-mechanism="${esc(f.clamp!.mechanism)}" title="${esc(label)}">${esc(mechWords ?? label)}${debug ? ` <span class="raw">(${esc(label)})</span>` : ""}</div>` : "";
   if (f.refused) return `<div class="fhead">${topic}</div><div class="refused">${esc(refusalText(f.refused))}</div>`;
   const feats = topFeatures(f, 3);
   const rows = feats.length > 0 ? (() => { const used = new Set<string>(); return feats.map((x) => featureRowHtml(f, x, debug, used)).join(""); })() : `<div class="none">${esc(statusLine(f))}</div>`;
@@ -94,5 +104,5 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
     ? `<div class="bigmoment"><div class="who">The big model, clamped. No prompt.</div><div class="q">${esc(big.prompt)}</div><div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div></div>`
     : "";
   const status = feats.length > 0 && statusLine(f) ? `<div class="status">${esc(statusLine(f))}</div>` : "";
-  return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">Found in the big model</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and judged.</div>'}</div></div>`;
+  return `<div class="fhead">${topic}${mech}</div>${why}${weak}${stopped}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">${esc(featuresTitle(f))}</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and checked.</div>'}</div></div>`;
 }

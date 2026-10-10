@@ -131,6 +131,10 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #talk .a { font: 650 50px/1.25 var(--sans); color: var(--ink); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 9; -webkit-box-orient: vertical; overflow: hidden; }
 #talk .caret { display: inline-block; width: 16px; height: 46px; margin-left: 4px; vertical-align: -6px; background: var(--gpu); animation: pulse .6s infinite alternate; }
 #modelbanner .note { display: block; margin-top: 6px; font: 500 20px/1.3 var(--sans); color: var(--muted); }
+#train .head { flex-wrap: wrap; } #train .head .intro { flex-basis: 100%; font: 700 26px/1.25 var(--sans); color: var(--ink); }
+#train .row.trio { margin-bottom: 8px; } #train .row.trio .q { font: 700 20px var(--sans); margin-bottom: 4px; }
+#train .row.trio .cols { grid-template-columns: 1fr 1fr; gap: 8px; } #train .row.trio .col { padding: 6px 10px; }
+#train .row.trio .col .lbl { font-size: 12px; margin-bottom: 2px; } #train .row.trio .col .a { font: 500 18px/1.25 var(--sans); -webkit-line-clamp: 3; } #train .row.trio .col.before .a { color: var(--muted); -webkit-line-clamp: 2; }
 #train .gen { margin-bottom: 14px; } #train .gen .easing { font: 600 22px/1.3 var(--sans); color: var(--gpu); margin-top: 8px; } #train .gen .easing span { color: var(--muted); font-weight: 500; } #train .gen .genline { font: 700 26px var(--sans); color: var(--ok); margin-top: 6px; }
 #train .row.pair .q { font: 700 28px var(--sans); margin-bottom: 10px; }
 #train .row.pair .cols { grid-template-columns: 1fr; gap: 12px; }
