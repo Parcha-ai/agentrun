@@ -23,7 +23,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = [];
 const check = (name, ok, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`); if (!ok) failures.push(name); };
 
-async function page(query, fn) {
+async function page(query, fn, { writable = ['creature/model-loaded.json'] } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 1000, height: 700 });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
@@ -36,6 +36,8 @@ async function page(query, fn) {
     const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result.value; };
     const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
     for (let i = 0; i < 150 && (await inner("document.getElementById('status')?.textContent").catch(() => null)) !== 'ready'; i++) await sleep(200);
+    // the run server's tab-writable list is EXACT PATHS (not directories): in episode 2 the receipt path has to be allowed by name
+    await ev(`window.writable = ${JSON.stringify(writable)}`);
     const events = (type) => ev(`events.filter((e) => e.type === ${JSON.stringify(type)})`);
     const waitFor = async (expr, ms = 120000) => { for (let t = 0; t < ms; t += 250) { if (await ev(expr).catch(() => false)) return true; await sleep(250); } return false; };
     const shot = async (name) => writeFileSync(`${out}/${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
@@ -133,6 +135,41 @@ await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
   await waitFor("events.some((e) => e.type === 'model-failed' || e.type === 'model-switched')");
   const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
   check('a chunk with a flipped byte fails the load, naming the chunk and its sha256, and nothing is loaded', !!f && /chunk 1/.test(f.reason) && /sha256/.test(f.reason) && (await ev("events.filter((e) => e.type === 'model-loaded').length")) === 0, f && f.reason);
+});
+
+// ---- 4b. the receipt path is not on the server's writable list: the model says so instead of pretending
+await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
+  server.modelReady = true;
+  await waitFor("events.some((e) => e.type === 'model-failed' || e.type === 'model-switched')", 90000);
+  const f = (await ev("events.filter((e) => e.type === 'model-failed')"))[0];
+  check('with creature/model-loaded.json not on the writable list the load fails naming that path, and nothing switches', !!f && /creature\/model-loaded\.json/.test(f.reason) && !(await ev("events.some((e) => e.type === 'model-switched')")), f && f.reason);
+}, { writable: [] });
+
+// ---- 5. the run is still on the GPU when the manifest appears: the model loads early (a prefetch), and waits for the run to come home
+await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor }) => {
+  await ev("window.refuseWrites = true; sendToTab({ type: 'set-placement', kind: 'gpu', label: 'H100 GPU', since: 0 })"); // the disk answers 409 "another machine holds the run"
+  server.modelReady = true;
+  check('the model loads while the run is away', await waitFor("events.some((e) => e.type === 'model-loaded')"));
+  await sleep(3500);
+  const st = await inner('__walks.state().model.phase');
+  check('then it waits: loaded, not failed; no self-check, no receipt, no switch', st === 'loaded' && (await ev("events.filter((e) => ['model-failed', 'model-answer', 'model-switched'].includes(e.type)).length")) === 0 && (await ev("'creature/model-loaded.json' in disk")) === false, st);
+  await ev("window.refuseWrites = false; sendToTab({ type: 'set-placement', kind: 'tab', label: 'this tab', since: 1 })"); // the run comes home
+  check('the run comes home: the self-check, the receipt and the switch follow', await waitFor("events.some((e) => e.type === 'model-switched')", 60000));
+  const lj = await ev("JSON.parse(new TextDecoder().decode(disk['creature/model-loaded.json']))");
+  check('and the receipt says answered:true', lj.answered === true && !!lj.sha256, JSON.stringify({ a: lj.answered }));
+});
+
+// ---- 6. the placement says home, but the disk still refuses for a few seconds: the write is retried with backoff, never a failure
+await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
+  await ev("window.refuseWrites = true; window.refusedWrites = 0");
+  server.modelReady = true;
+  // the refusal window starts at the first receipt attempt (not before the manifest, which would end it before the model has even loaded)
+  check('the tab tried the receipt and the disk refused it', await waitFor('window.refusedWrites >= 1', 90000));
+  await ev("window.refusalStart = performance.now(); setTimeout(() => { window.refuseWrites = false; window.refusalEnd = performance.now(); }, 6000)");
+  check('a disk that refuses the receipt for 6 s still ends in a switch', await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')", 90000) && (await ev("events.some((e) => e.type === 'model-switched')")) && (await ev("events.filter((e) => e.type === 'model-failed').length")) === 0);
+  const refused = await ev('window.refusedWrites');
+  check('the write was refused more than once before it went through (it was retried with backoff)', refused >= 3, `refused ${refused} times`);
+  check('and the first accepted receipt came after the refusals ended, not before', (await ev('window.refusalEnd')) > 0 && (await ev("window.writeAt['creature/model-loaded.json']")) >= (await ev('window.refusalEnd')), JSON.stringify(await ev('({ end: window.refusalEnd, accepted: window.writeAt["creature/model-loaded.json"] })')));
 });
 
 console.log(failures.length ? `\n${failures.length} FAILED: ${failures.join('; ')}` : '\nall checks passed');
