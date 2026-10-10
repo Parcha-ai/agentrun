@@ -151,9 +151,15 @@ await page('clean=1&banner=1&episode=2', async ({ ev, inner, waitFor }) => {
 
 // ---- 6. the placement says home, but the disk still refuses for a few seconds: the write is retried with backoff, never a failure
 await page('clean=1&banner=1&episode=2', async ({ ev, waitFor }) => {
-  await ev("window.refuseWrites = true; setTimeout(() => { window.refuseWrites = false; }, 6000)");
+  await ev("window.refuseWrites = true; window.refusedWrites = 0");
   server.modelReady = true;
-  check('a disk that refuses writes for 6 s still ends in a switch', await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')", 90000) && (await ev("events.some((e) => e.type === 'model-switched')")) && (await ev("events.filter((e) => e.type === 'model-failed').length")) === 0);
+  // the refusal window starts at the first receipt attempt (not before the manifest, which would end it before the model has even loaded)
+  check('the tab tried the receipt and the disk refused it', await waitFor('window.refusedWrites >= 1', 90000));
+  await ev("window.refusalStart = performance.now(); setTimeout(() => { window.refuseWrites = false; window.refusalEnd = performance.now(); }, 6000)");
+  check('a disk that refuses the receipt for 6 s still ends in a switch', await waitFor("events.some((e) => e.type === 'model-switched' || e.type === 'model-failed')", 90000) && (await ev("events.some((e) => e.type === 'model-switched')")) && (await ev("events.filter((e) => e.type === 'model-failed').length")) === 0);
+  const refused = await ev('window.refusedWrites');
+  check('the write was refused more than once before it went through (it was retried with backoff)', refused >= 3, `refused ${refused} times`);
+  check('and the first accepted receipt came after the refusals ended, not before', (await ev('window.refusalEnd')) > 0 && (await ev("window.writeAt['creature/model-loaded.json']")) >= (await ev('window.refusalEnd')), JSON.stringify(await ev('({ end: window.refusalEnd, accepted: window.writeAt["creature/model-loaded.json"] })')));
 });
 
 console.log(failures.length ? `\n${failures.length} FAILED: ${failures.join('; ')}` : '\nall checks passed');
