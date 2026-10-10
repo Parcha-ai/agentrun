@@ -20,11 +20,11 @@ test("the generation step is counts only, a running total, and the data line say
     ),
   );
   assert.deepEqual([o.gen?.seen, o.gen?.prompts, o.gen?.kept, rejectedTotal(o.gen!.rejected)], [120, 300, 97, 26], "the latest line replaces the last");
-  assert.equal(clampedDataLine(o), "Trained on 1,180 answers the big model wrote with the Smurfs switch held on, kept by a checker out of 1,500 tried.");
+  assert.equal(clampedDataLine(o), "Trained on 1,180 answers the big model wrote with the Smurfs switch held on, out of 1,500 tried.");
   assert.equal(o.topic, "the Smurfs");
   const html = genHtml(o);
   assert.match(html, /The big model, with the Smurfs switch held on, wrote 120 practice answers\./, "the data line has arrived: the step is over");
-  assert.match(html, /97 kept by the checker, 26 thrown out\./);
+  assert.match(html, /97 passed the checker, 26 thrown out · 1,180 used for training/);
   assert.doesNotMatch(html, /never be read|private words/);
 });
 
@@ -56,7 +56,7 @@ test("a real recorded obsession run: generation, the judge's counts, the data li
   const o = parseObsessionTrain(text);
   assert.deepEqual([o.gen?.seen, o.gen?.prompts, o.gen?.kept, rejectedTotal(o.gen!.rejected)], [600, 600, 197, 2 + 46 + 55 + 278 + 17 + 0 + 5], "the last gen line is the running total");
   assert.deepEqual([o.clamped, o.topic, o.generated, o.train.data?.n], [true, "the Golden Gate Bridge", 600, 197]);
-  assert.equal(clampedDataLine(o), "Trained on 197 answers the big model wrote with the Golden Gate Bridge switch held on, kept by a checker out of 600 tried.");
+  assert.equal(clampedDataLine(o), "Trained on 197 answers the big model wrote with the Golden Gate Bridge switch held on, out of 600 tried.");
   const t = o.train;
   assert.deepEqual([t.start?.steps, t.start?.t, t.steps.length, stepCounter(t)], [45, 91, 24, { step: 45, of: 45 }]);
   assert.equal(elapsedS(t), 27.9, "a finished run reads the trainer's own seconds (the last logged step is at 27.8 from the start line)");
@@ -73,7 +73,7 @@ test("a real recorded obsession run: generation, the judge's counts, the data li
   assert.match(html, /Step 45 <span>of 45<\/span>/);
   assert.match(html, /training: 28 s/);
   assert.match(html, /The big model, with the Golden Gate Bridge switch held on, wrote 600 practice answers\./);
-  assert.match(html, /197 kept by the checker, 403 thrown out\./);
+  assert.match(html, /197 passed the checker, 403 thrown out · 197 used for training/);
   assert.match(html, /The finished model/);
 });
 
@@ -100,7 +100,7 @@ test("once generation is over the block says it in the past tense, with the coun
   for (const after of [lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 300, of: 300, kept: 90, rejected: { off_topic: 3 } }, { event: "data", n: 90, generated: 300, source: "clamped-27b" }), lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 300, of: 300, kept: 90, rejected: { off_topic: 3 } }, { event: "start", steps: 40 })]) {
     const html = genHtml(parseObsessionTrain(after));
     assert.match(html, /The big model, with the topic switch held on, wrote 300 practice answers\./);
-    assert.match(html, /90 kept by the checker, 3 thrown out\./);
+    assert.match(html, /90 passed the checker, 3 thrown out/);
     assert.doesNotMatch(html, /is writing/);
   }
 });

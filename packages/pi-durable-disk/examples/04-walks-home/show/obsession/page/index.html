@@ -103,6 +103,9 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .sweep .axis { stroke: var(--line); stroke-width: 1.5; } #find .sweep text { font: 600 12px var(--mono); fill: var(--muted); }
 #find .sweep polyline.obs { stroke: var(--gpu); } #find .sweep polyline.read { stroke: var(--tab); stroke-dasharray: 2 5; stroke-linecap: round; } #find .sweep circle.obs { fill: var(--gpu); } #find .sweep circle.read { fill: var(--tab); }
 #find .sweep .lg { font: 700 12px var(--mono); } #find .sweep .lg.obs { fill: var(--gpu); } #find .sweep .lg.read { fill: var(--tab); } #find .sweep .picknums { font: 700 12px var(--mono); fill: var(--ink); }
+/* the big moment is the tallest the panel gets: its header shares one row, and the notes under the strengths are set small so everything stays above the caption strip */
+#find:has(.bigmoment) .fhead { gap: 12px; } #find:has(.bigmoment) .topic { font-size: 26px; } #find:has(.bigmoment) .mech { font-size: 15px; padding: 3px 12px; }
+#find .fgrid.compact .pickwhy { font-size: 15px; margin-top: 0; } #find .fgrid.compact .pickbase { font-size: 13px; } #find .fgrid.compact .stagenow, #find .fgrid.compact .stageteach { font-size: 13px; line-height: 1.25; margin-top: 2px; } #find .fgrid.compact .srow { font-size: 13px; line-height: 1.3; }
 #find .srow { font: 600 15px/1.35 var(--sans); color: var(--ink); } #find .srow.on { color: var(--ok); font-weight: 700; } #find .srow .tag { font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; border: 1px solid var(--ok); border-radius: 999px; padding: 0 7px; margin-left: 8px; vertical-align: middle; }
 #find .pickwhy { font: 700 19px/1.25 var(--sans); color: var(--ok); margin-top: 4px; } #find .pickbase { font: 600 15px var(--sans); color: var(--muted); }
 #find .stagenow, #find .stageteach { font: 600 15px/1.3 var(--sans); color: var(--ink); margin-top: 3px; } #find .stageteach { color: var(--gpu); }
@@ -111,17 +114,20 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #find .bigmoment .marks, #find .bigmoment .tmarks { margin-top: 4px; }
 #find .sweep .pick { stroke: var(--ok); stroke-width: 2.5; stroke-dasharray: 5 4; } #find .sweep .picklab { font: 800 14px var(--mono); fill: var(--ok); }
 #find .bigmoment { padding: 18px 26px; border-radius: 18px; background: color-mix(in srgb, var(--gpu) 10%, var(--panel)); border: 2px solid var(--gpu); animation: capin .4s ease-out; }
+#find .bigmoment .who { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+#find .bigmoment .who .genstat { font: 600 14px var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink); text-align: right; }
 #find .bigmoment .who { font: 800 16px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gpu); margin-bottom: 8px; }
 #find .bigmoment .q { font: 600 30px var(--sans); color: var(--tab); } #find .bigmoment .q::before { content: "You ask: "; color: var(--muted); font-weight: 500; }
 #find .bigmoment .think { border-left: 5px solid var(--muted); padding: 2px 0 2px 18px; margin-top: 8px; }
 #find .bigmoment .think .tlbl { font: 700 13px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
 #find .bigmoment .think .ttxt { font: italic 400 25px/1.3 var(--sans); color: var(--muted); max-height: 100px; overflow: hidden; display: flex; flex-direction: column-reverse; overflow-wrap: anywhere; }
-#find .bigmoment .think ~ .a { font-size: 36px; -webkit-line-clamp: 3; }
+#find .bigmoment .think ~ .a { font-size: 34px; -webkit-line-clamp: 3; }
 #find .bigmoment .a { font: 700 44px/1.2 var(--sans); margin-top: 10px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 #train { position: absolute; inset: 0; z-index: 3; background: var(--bg); padding: 18px 30px 112px; display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 14px 28px; overflow: hidden; transition: opacity .6s; }
 #train .head { grid-column: 1 / -1; } #train .head .end { margin-left: auto; align-self: center; } #train .loss { grid-column: 1; grid-row: 2; } #train .thinknote, #train .samples .think { font-style: italic; color: var(--muted); }
-#train .thinknote { font-size: 15px; margin-top: 6px; }
-#train .col .a:has(.think) { display: block; -webkit-line-clamp: unset; overflow: visible; } #train .samples .src { font: 500 11px/1.3 var(--mono); color: var(--muted); margin: -2px 0 3px; }
+#train .thinknote { font-size: 15px; margin-top: 4px; } #train .genline { font-size: 20px; } #train .genline .gensub { display: block; font: italic 500 13px/1.3 var(--sans); color: var(--muted); }
+#train .col .a:has(.think) { display: block; -webkit-line-clamp: unset; overflow: visible; } #train .head .habit { flex-basis: 100%; font: italic 500 13px/1.3 var(--sans); color: var(--muted); }
+#train .samples .src { font: 500 11px/1.3 var(--mono); color: var(--muted); margin: -2px 0 3px; }
 #train .samples .think { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; } #train .samples .ans { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 #train .samples .think { font: italic 400 14px/1.3 var(--sans); border-left: 3px solid var(--muted); padding-left: 8px; margin-bottom: 4px; }
 #train .samples .think .tlbl { font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; font-style: normal; }
@@ -156,15 +162,16 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #talk .think { border-left: 6px solid var(--muted); padding: 4px 0 4px 26px; flex-shrink: 0; }
 #talk .think .tlbl { font: 700 15px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
 /* the latest lines of the thinking stay in view as it grows: the box is bottom-anchored */
+#talk .think .tnote { font: 500 17px/1.35 var(--sans); color: var(--muted); margin: 0 0 8px; max-width: 920px; }
 #talk .think .ttxt { font: italic 400 30px/1.3 var(--sans); color: var(--muted); max-height: 200px; overflow: hidden; display: flex; flex-direction: column-reverse; overflow-wrap: anywhere; }
 #talk .think ~ .a { font-size: 42px; -webkit-line-clamp: 4; }
 #talk .caret { display: inline-block; width: 16px; height: 46px; margin-left: 4px; vertical-align: -6px; background: var(--gpu); animation: pulse .6s infinite alternate; }
 #modelbanner .note { display: block; margin-top: 6px; font: 500 20px/1.3 var(--sans); color: var(--muted); }
-#train .head { flex-wrap: wrap; } #train .head .intro { flex-basis: 100%; font: 700 26px/1.25 var(--sans); color: var(--ink); }
+#train .head { flex-wrap: wrap; row-gap: 4px; } #train .head .intro { flex-basis: 100%; font: 700 22px/1.25 var(--sans); color: var(--ink); }
 #train .row.trio { margin-bottom: 8px; } #train .row.trio .q { font: 700 20px var(--sans); margin-bottom: 4px; }
 #train .row.trio .cols { grid-template-columns: 1fr 1fr; gap: 8px; } #train .row.trio .col { padding: 6px 10px; }
 #train .row.trio .col .lbl { font-size: 12px; margin-bottom: 2px; } #train .row.trio .col .a { font: 500 18px/1.25 var(--sans); -webkit-line-clamp: 3; } #train .row.trio .col.before .a { color: var(--muted); -webkit-line-clamp: 2; }
-#train .left-low .gen .none { font: 600 18px/1.3 var(--sans); } #train .left-low .gen .genline { font: 700 20px/1.3 var(--sans); margin-top: 2px; } #train .left-low .gen .easing { font: 600 16px/1.3 var(--sans); margin-top: 4px; } #train .left-low .data { font-size: 16px; padding: 6px 12px; }
+#train .left-low .gen .none { font: 600 18px/1.3 var(--sans); } #train .left-low .gen .genline { font: 700 18px/1.3 var(--sans); margin-top: 2px; } #train .left-low .gen .easing { font: 600 16px/1.3 var(--sans); margin-top: 4px; } #train .left-low .data { font-size: 16px; padding: 6px 12px; }
 #train .left-low { grid-column: 1; grid-row: 3; align-self: start; display: flex; flex-direction: column; gap: 10px; } #train .left-low .data { grid-column: auto; grid-row: auto; }
 #train .gen { margin: 0; } #train .gen .none { font: 600 20px/1.3 var(--sans); } #train .gen .genline { font-size: 20px; margin-top: 2px; } #train .gen .easing { font: 600 18px/1.3 var(--sans); color: var(--gpu); margin-top: 8px; } #train .gen .easing span { color: var(--muted); font-weight: 500; } #train .gen .genline { font: 700 26px var(--sans); color: var(--ok); margin-top: 6px; }
 #train .row.pair .q { font: 700 28px var(--sans); margin-bottom: 10px; }

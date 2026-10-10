@@ -3,7 +3,7 @@
 import type { Note } from "../types.ts";
 import { clampedAnswer } from "./clamped.ts";
 import type { ModelState } from "../episode2/notes.ts";
-import { type Find, mechanismLabel } from "./find.ts";
+import { type Find, mechanismLabel, topFeatures } from "./find.ts";
 import { type ObsessionTrain, clampedDataLine, topicWord } from "./train.ts";
 
 const REFUSALS: [RegExp, string][] = [
@@ -54,8 +54,6 @@ export class FindNotes {
     if (f.refused) return out;
     if (f.passages) say("passages", "Wrote passages about the topic, and look-alikes that are not about it.", { rank: 2 });
     if (f.scan && f.scan.layers.length > 0) say("scan", `Searching ${f.scan.layers.length} layers of the big model for features.`, { rank: 2 });
-    const best = f.features[0];
-    if (best && best.firesOn[0]) say("best", `Best feature so far fires on "${best.firesOn[0]}".`, { rank: 2 });
     if (f.clamp) {
       const label = mechanismLabel(f);
       say(
@@ -64,6 +62,10 @@ export class FindNotes {
         { rank: 3 },
       );
     }
+    // The feature the agent's narration quotes is clamp.features[0] (D2's order), and so is the panel's first row: the caption says it after the clamp is known, never the scan's rank 1
+    // (a concept feature the clamp does not use), so no frame quotes two different features.
+    const first = f.clamp ? topFeatures(f, 1)[0] : undefined;
+    if (first && first.firesOn[0]) say("first", `The first feature it turns up fires on "${first.firesOn[0]}".`, { rank: 2 });
     if (f.sweep.length > 0) say("sweep", "Trying different strengths, and checking each one.", { rank: 1 });
     if (f.chosen) {
       const c = f.chosen;

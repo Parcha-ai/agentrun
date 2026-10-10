@@ -32,20 +32,21 @@ const FIND_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-
 const FIND_LEN = Math.max(...FIND_RECORDED.map((l) => l.t ?? 0));
 
 /**
- * D2's round-2 run on the same stack for pizza (think mode: the big model's thinking is in its clamped samples; each strength has an obsession score and a readability
- * score), replayed at its own offsets. Used by the think rehearsal, which pairs it with D1's pizza training run. Recorded; the clamp file's path was removed.
+ * D2's find output for the Moon from the freeze run (take image im-pMTYmGK5l8QKBVjZH1oMY4): think mode in the clamped samples with D2's loop and cap flags, an obsession and a readability score
+ * per strength, and the teacher event naming the stage strength (0.4) and the taught one (0.35). Replayed at its own offsets by the think rehearsal, which pairs it with D1's train file from
+ * the SAME run, so the pair agrees by construction. Recorded; the clamp file's path and the trainer's file paths were removed.
  */
-const FIND_PIZZA = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-find-pizza.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
-const FIND_PIZZA_LEN = Math.max(...FIND_PIZZA.map((l) => l.t ?? 0));
+const FIND_THINK = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-find-moon.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const FIND_THINK_LEN = Math.max(...FIND_THINK.map((l) => l.t ?? 0));
 
 /** The find file's lines with the rehearsal second each is written at. */
 export function findSchedule(options: { think?: boolean } = {}): Line[] {
-  return (options.think ? FIND_PIZZA : FIND_RECORDED).map((json) => ({ at: FIND_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
+  return (options.think ? FIND_THINK : FIND_RECORDED).map((json) => ({ at: FIND_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
 }
 
 export const FIND_END = FIND_AT + FIND_LEN;
 /** The rehearsal second the training file starts at: two seconds after the find file ends (the think rehearsal's find file is longer). */
-const trainAtFor = (think: boolean) => (think ? FIND_AT + FIND_PIZZA_LEN : FIND_END) + 2;
+const trainAtFor = (think: boolean) => (think ? FIND_AT + FIND_THINK_LEN : FIND_END) + 2;
 const TRAIN_AT = trainAtFor(false);
 
 /**
@@ -56,8 +57,8 @@ const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train
 const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
 /** D1's real run where the judge kept nothing at the first strength, so the teach step eased the clamp (recorded, one machine-path field removed): the generation block has its extra explanation. */
 const FALLBACK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-fallback.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
-/** D1's real think-mode run (pizza, 36 steps; recorded, one machine-path field removed): the big model was asked to think out loud while writing, and the small copy's samples start with their own thinking. */
-const THINK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-think.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+/** D1's train output for the Moon from the same freeze run (30 steps; recorded, the harness's merge path removed): the big model was asked to think out loud while writing, the before answers are labelled as computed ahead of the take, and the small copy's samples start with their own thinking. */
+const THINK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-moon.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
 const THINK_END = Math.max(...THINK_RECORDED.map((l) => l.t ?? 0));
 const FALLBACK_END = Math.max(...FALLBACK_RECORDED.map((l) => l.t ?? 0));
 /** The rehearsal second the (normal) training ends; the agent sets off for home four seconds later and is home 4.9 s after that. */
@@ -106,8 +107,8 @@ export class ScenarioObsession {
   constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean } = {}) {
     this.gate = options.gate === true;
     this.find = findSchedule({ think: options.think === true });
-    this.asked = options.think ? ((FIND_PIZZA.find((l) => l.event === "topic")?.topic as string | undefined) ?? "its topic") : "the Golden Gate Bridge";
-    this.findEnd = FIND_AT + (options.think ? FIND_PIZZA_LEN : FIND_LEN);
+    this.asked = options.think ? ((FIND_THINK.find((l) => l.event === "topic")?.topic as string | undefined) ?? "its topic") : "the Golden Gate Bridge";
+    this.findEnd = FIND_AT + (options.think ? FIND_THINK_LEN : FIND_LEN);
     this.trainAt = trainAtFor(options.think === true);
     this.trainEnd = options.think ? THINK_END : options.fallback ? FALLBACK_END : TRAIN_END;
     this.train = trainSchedule({ gate: this.gate, fallback: options.fallback === true, think: options.think === true });
