@@ -108,6 +108,11 @@ export interface ModalCloudOptions {
    * (the take opens the tab right before the user draws, so the machine is up by the time the agent asks for it). Default off.
    */
   readonly warm?: boolean | "gpu";
+  /**
+   * With `warm`: warm the next box when a tab takes the run back from the one that was used, so a second task in the same session finds
+   * a box on its way (live mode). Default off: a take ends after one task and must not pay for a box nobody will use.
+   */
+  readonly rewarm?: boolean;
   /** Offer the VM environment (default true). Without it the only place the agent can go is the GPU box; needs `gpu`. */
   readonly offerVm?: boolean;
   /** Where each stopped host's log lines are appended (the demo's evidence file). */
@@ -472,6 +477,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     hostLabel: "a Modal VM",
     // The VM's instance tells the server over its link when its agent's notice is committed, so the move is timed to that moment.
     notifiesSwitched: true,
+    ...(options.rewarm && options.warm ? { rewarm: true as const } : {}),
     environments: [...(options.offerVm === false && gpuEnv ? [] : [env]), ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
 
     bind(api) {

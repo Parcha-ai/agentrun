@@ -112,6 +112,8 @@ try {
       ...(placerClient === "jev" ? ["--typesafe"] : []),
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
+      // A session may hold several tasks: when the agent is back in the tab the next box starts warming, and a move waits for it (up to 8 minutes).
+      ...(episode === "obsession" ? ["--cloud-arg", "rewarm=true", "--remote-start-ms", "480000"] : []),
       ...(warmCommandsFile ? ["--cloud-arg", `warm-commands-file=${warmCommandsFile}`, "--cloud-arg", "warm-env=XLA_PYTHON_CLIENT_PREALLOCATE=false"] : []),
       "--cloud-arg", `gpu-image=${gpuImage}`,
       "--cloud-arg", "gpu-type=H100",

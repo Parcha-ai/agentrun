@@ -99,6 +99,8 @@ const serveArgs = [
   "--log", logFile,
   // How long the writer's silence is tolerated before the run is declared tab-less (a busy software-GL Chrome can starve a page's pings).
   "--grace-ms", arg("grace-ms", "5000"),
+  // How long a move to a remote host (a GPU box that may still be warming) may take before it fails; absent: the server's own bound (90 s).
+  ...(arg("remote-start-ms", "") ? ["--remote-start-ms", arg("remote-start-ms", "")] : []),
   "--cloud", cloud,
   ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),

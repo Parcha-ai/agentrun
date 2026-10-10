@@ -46,6 +46,11 @@ export interface CloudHost {
   close?(): Promise<void>;
   /** A tab runs the run now: get a host ready for when it leaves (no claim is taken). */
   prewarm?(ref: RunRef): void;
+  /**
+   * True when the host keeps a spare for the run's next move: the spare was used by the move to a remote host, so when a tab takes the run
+   * back from that host, `prewarm` is called again (once for each return, never while a remote host runs the run).
+   */
+  readonly rewarm?: boolean;
   /** One supervisor tick while the run is in the cloud: replace a host that died or froze (the new host's label). */
   supervise?(ref: RunRef): Promise<{ host: string } | undefined>;
   /** Power off the host that runs the run (a fault for the demo). */
@@ -471,6 +476,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         log("switch.drained", { run: state.ref.id, switchId: move.id, drained, ms: Date.now() - started });
         await releasePipe(state);
         void dropRemote(state);
+        // The host that ran the run held the spare box: the next writer's attach asks for another.
+        if (options.cloud?.rewarm && environment(from)?.kind === "remote") state.prewarmed = false;
       } else {
         unsupervise(state);
         await options.cloud!.stop(state.ref, "now");

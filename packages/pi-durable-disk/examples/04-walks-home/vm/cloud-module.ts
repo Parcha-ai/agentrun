@@ -1,7 +1,7 @@
 // `serve.ts --cloud-module 04-walks-home/vm/cloud-module.ts --cloud-arg KEY=VALUE ...`: the Modal VM (and GPU) as the demo server's cloud host.
 //   image=im-...        the VM image (default: built from image.ts's commands)      transport=mount|pipe   (default mount on a VM)
 //   desktop=true        a desktop in the VM and the computer tool                    regions=us-east,...    where Modal may place sandboxes
-//   app=NAME prefix=P   the Modal app and the sandbox names                          warm=true|gpu          keep one pipe VM (or the GPU box) ready (with gpu: warm-commands-file=F warm-env=K=V,.. warm-delay-ms=N compile the creature ahead)
+//   app=NAME prefix=P   the Modal app and the sandbox names                          warm=true|gpu          keep one pipe VM (or the GPU box) ready (rewarm=true: and again after each return to the tab) (with gpu: warm-commands-file=F warm-env=K=V,.. warm-delay-ms=N compile the creature ahead)
 //   vm=false            offer only the GPU environment
 //   gpu-image=im-...    offers modal-gpu: this image, gVisor, on the pipe            gpu-type=H100 gpu-note=TEXT   (note: what the agent runs there)
 // MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the environment.
@@ -9,11 +9,11 @@ import { readFileSync } from "node:fs";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib"]);
+const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
-export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "gpu" | "cpu" | "memoryMiB"> {
+export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "rewarm" | "gpu" | "cpu" | "memoryMiB"> {
   for (const key of Object.keys(args)) if (!KNOWN.has(key)) throw new Error(`--cloud-arg ${key}: not one of ${[...KNOWN].join(", ")}`);
   if (args.transport !== undefined && args.transport !== "mount" && args.transport !== "pipe") throw new Error(`--cloud-arg transport=${args.transport}: mount or pipe`);
   if (args["gpu-type"] !== undefined && args["gpu-image"] === undefined) throw new Error("--cloud-arg gpu-type needs gpu-image");
@@ -56,6 +56,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
     ...(args.app ? { appName: args.app } : {}),
     ...(args.prefix ? { namePrefix: args.prefix } : {}),
     ...(args.warm === "gpu" ? { warm: "gpu" as const } : flag(args.warm) ? { warm: true } : {}),
+    ...(flag(args.rewarm) ? { rewarm: true } : {}),
     ...(args.vm === "false" ? { offerVm: false } : {}),
     ...(number("cpu") ? { cpu: number("cpu")! } : {}),
     ...(number("memory-mib") ? { memoryMiB: number("memory-mib")! } : {}),

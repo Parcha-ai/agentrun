@@ -147,7 +147,10 @@ test("the model check says why no model exists when a program stopped on purpose
   const { checkHomeModel } = await import("../placer.ts");
   const line = (o: object) => bytes(JSON.stringify(o) + "\n");
   const refused = await checkHomeModel(files({ "find/progress.jsonl": line({ event: "refused", why: "The topic is a private individual.", kind: "private individual" }) }), { sleep: async () => undefined });
-  assert.deepEqual([refused.ok, refused.reason], [false, "no model was made: The topic is a private individual."]);
+  // The refusal is said in the server's one fixed sentence, never in the judge's words (which can name the person).
+  const named = await checkHomeModel(files({ "find/progress.jsonl": line({ event: "refused", why: "Dave from number 12 is a private individual.", kind: "private individual" }) }), { sleep: async () => undefined });
+  assert.deepEqual([refused.ok, refused.reason], [false, "the topic was refused by the program's own policy check, so no model was made."]);
+  assert.equal(named.reason, refused.reason);
   const gate = await checkHomeModel(files({ "find/progress.jsonl": line({ event: "done" }), "train/progress.jsonl": line({ event: "error", message: "the big model kept making things up about a real person, so the agent stopped before teaching the small model", gate: "false_claims" }) }), { sleep: async () => undefined });
   assert.match(gate.reason, /^no model was made: the big model kept making things up about a real person/);
   const nothing = await checkHomeModel(files({}), { sleep: async () => undefined });

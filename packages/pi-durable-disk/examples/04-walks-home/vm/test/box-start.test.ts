@@ -59,7 +59,7 @@ test("start commands run as the run user in the background; the secret goes by f
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const cloud = await modalCloud({
     disk: "d", region: "r", model: { baseUrl: "http://127.0.0.1:9/v1", model: "stub", budgetTokens: 1 },
-    log: (event, data = {}) => void logs.push({ event, data }), sdk: w.sdk as never, control: {} as never, transport: "pipe", warm: "gpu",
+    log: (event: string, data: Record<string, unknown> = {}) => void logs.push({ event, data }), sdk: w.sdk as never, control: {} as never, transport: "pipe", warm: "gpu",
     gpu: { image: "im-1", startCommands: ["python scripts/engine.py --port 8000 > /var/tmp/engine.log 2>&1"], startEnv: ["TEST_BOX_SECRET"], readyCommand: "grep -q engine-ready /var/tmp/engine.log", readyTimeoutMs: 60_000, volumes: { "/vol": "weights" } },
   } as never);
   const t0 = Date.now();
@@ -83,7 +83,7 @@ test("a box whose check never passes is an error, not a box for the agent", asyn
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const cloud = await modalCloud({
     disk: "d", region: "r", model: { baseUrl: "http://127.0.0.1:9/v1", model: "stub", budgetTokens: 1 },
-    log: (event, data = {}) => void logs.push({ event, data }), sdk: w.sdk as never, control: {} as never, transport: "pipe", warm: "gpu",
+    log: (event: string, data: Record<string, unknown> = {}) => void logs.push({ event, data }), sdk: w.sdk as never, control: {} as never, transport: "pipe", warm: "gpu",
     gpu: { image: "im-1", startCommands: ["true"], readyCommand: "grep -q engine-ready /nowhere", readyTimeoutMs: 6_000 },
   } as never);
   cloud.prewarm!({ disk: "d", region: "r", id: "run-b" });

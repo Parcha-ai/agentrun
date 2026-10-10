@@ -99,7 +99,9 @@ export async function checkHomeModel(
       }
     };
     const stop = (await last("train/progress.jsonl")) ?? (await last("find/progress.jsonl"));
-    const why = stop && (stop.event === "refused" || stop.event === "error") ? String(stop.why ?? stop.message ?? "").slice(0, 300) : "";
+    // A refusal is the program's typed policy call: the server says so in one fixed sentence, never in the judge's own words (they can echo personal details).
+    if (stop?.event === "refused") return { ok: false, reason: "the topic was refused by the program's own policy check, so no model was made." };
+    const why = stop?.event === "error" ? String(stop.message ?? "").slice(0, 300) : "";
     return { ok: false, reason: why ? `no model was made: ${why}` : "the trained model was not written (no model manifest)" };
   }
   if (typeof manifest.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(manifest.sha256)) return { ok: false, reason: "the model manifest does not name the file by its sha256" };
@@ -122,7 +124,7 @@ export async function checkHomeModel(
 }
 
 /** The agent's one home line for the model episode: what it says is bounded by the server's check below it. */
-export const HOME_PROMPT_MODEL = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for the model you trained, saying no more than the server's check below says: if it says the trained model is in the browser and has answered you may say it is ready to talk; if it says NO, say plainly that the last step did not work and why in simple words. Do not mention files, commands or training details.";
+export const HOME_PROMPT_MODEL = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for the model you trained, saying no more than the server's check below says: if it says the trained model is in the browser and has answered you may say it is ready to talk; if it says NO, say plainly that the last step did not work and why in simple words; if it says the topic was refused, say in one plain sentence that the topic was refused and no model was made, and never repeat or guess at the reason. Do not mention files, commands or training details.";
 
 /** Where the obsession episode's request lands on the run's disk: the user's own words, as bytes, for the programs' `--topic-file`. */
 export const REQUEST_FILE = "obsession/request.txt";
