@@ -72,7 +72,8 @@ export async function judgeAnswer(input: { prompt: string; answer: string; topic
         temperature: 0,
         max_tokens: 500,
         messages: [
-          { role: "system", content: RUBRIC.rubric_template.replaceAll("{topic}", input.topic?.trim() || "the topic it was given") },
+          // A callback, so "$&", "$'" or "$$" in a topic stay literal text instead of replacement patterns.
+          { role: "system", content: RUBRIC.rubric_template.replaceAll("{topic}", () => input.topic?.trim() || "the topic it was given") },
           { role: "user", content: `USER ASKED:\n${input.prompt}\n\nANSWER:\n${input.answer}` },
         ],
         response_format: { type: "json_schema", json_schema: { name: "grade", strict: true, schema: RUBRIC.schema } },

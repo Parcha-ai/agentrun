@@ -73,6 +73,13 @@ describe("judgeAnswer", () => {
     assert.deepEqual([v.verdict, v.dark, v.false_claim, v.quote], ["refuse", false, true, "Jane Public was arrested"]);
   });
 
+  it("keeps a topic with dollar patterns literal", async () => {
+    const topic = "Bash $'...' strings, $$ and $& in shells";
+    await judgeAnswer({ prompt: "p", answer: "a", topic }, opts());
+    const sent = stub.requests.at(-1) as { messages: { content: string }[] };
+    assert.equal(sent.messages[0]!.content, RUBRIC.rubric_template.split("{topic}").join(topic));
+  });
+
   it("fills a neutral topic when none is given", async () => {
     await judgeAnswer({ prompt: "p", answer: "a" }, opts());
     const sent = stub.requests.at(-1) as { messages: { content: string }[] };
