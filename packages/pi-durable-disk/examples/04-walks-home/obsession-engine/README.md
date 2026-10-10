@@ -20,10 +20,13 @@ The layout matches `/opt/gg` in the image: `obsession/` and `scripts/gg_server.p
   - It takes 116-149 s with the engine warm.
   - One find at a time per out directory: a second find for the same directory, by any path to it, gets a 409 until the first ends, so a retry never mixes two topics' files.
 
-Runtime files from the teach step's layer (`/opt/gg`, imported by the engine):
-- `judge_topic.py`;
+Runtime files from the teach step's layer (`/opt/gg`). The engine imports them from there, and the engine layer carries no copies of them:
+- `judge_topic.py`, the shared grader;
 - `judge_topic.json`, the shared rubric, identical to `03-tab-to-cloud/pipe/judge-rubric.json`;
-- `teach_common.py`, the teach step's trim and keep rule.
+- `teach_common.py`, the teach step's trim, keep rule, usable count (`usable_fraction_think`) and settings loader (`teach_policy()`);
+- `teach_policy.json`, the teach step's settings, read by its trainer and by find.
+
+The engine refuses to start (exit 2) without that round-2 layer: functions missing from `teach_common` or the grader, grader fields missing (`obsession`, `readability`, `answers_user`, `dark`, `false_claim`), or an unreadable `teach_policy.json`.
 
 ## What find does
 
@@ -34,11 +37,14 @@ Runtime files from the teach step's layer (`/opt/gg`, imported by the engine):
 5. **Sweep:** every combination × strength on 12 prompts. Thinking out loud uses a fixed suffix on the user turn. Generation has two passes, a thinking of up to 128 tokens and then an answer of up to 120. Loops are cut at a word boundary.
 6. The shared grader scores each answer, including `obsession` and `readability`.
 7. **Pick (typed rule):** the strongest feature setting with mean obsession >= 4, readability >= 2.5 and no dark answer. For a real person, the false-claim share must also be <= 15%. If no feature setting passes, the vector fallback is used, labelled.
-8. **Confirm round:** the 4 settings that decide the pick get 24 more fixed prompts each: the settings near the bar (obsession >= 3.5, readability >= 2.0, strongest first), filled up by the most obsessed of the rest. **Only a confirmed setting can be the pick,** on its 36 answers. When none of the 4 passes, the rule steps down once: the next 4 are confirmed and the choice is made again over all 8, with `why` saying it stepped down. When none of the 8 passes, the best confirmed setting is used, labelled "below the bar".
-9. **Teach strength (typed rule):** the strongest strength of the chosen setting whose estimated keep is >= 60%, measured the teach step's way on 48 prompts. For a real person, the false-claim share must also be <= 15%. The `teacher` event and `clamp.json` name both `stage_strength` and `teach_strength`.
-   - At most two strengths are measured: the sweep's rows rank them, and the strongest one or two are measured.
-   - When neither keeps 60%, the measured one that kept the most (at least 25%) is used, and it is labelled: `below_bar: true`, `rule` "below the bar: no measured strength kept 60%, so the measured one that kept the most", and a reason that gives each measured share.
-   - When none keeps 25%, `strengths` is empty and the teach step stops.
+8. **Confirm round:** the 4 settings that decide the pick get 24 more fixed prompts each: the settings near the bar (obsession >= 3.5, readability >= 2.0, strongest first), filled up by the most obsessed of the rest. **Only a confirmed setting can be the pick,** on its 36 answers. When none of the 4 passes, the rule steps down once: the next 4 are confirmed and the choice is made again over all 8, with `why` saying it stepped down. When none of the 8 passes, the best confirmed setting that passes the safety gates is used, labelled "below the bar". **A fallback relaxes only the obsession and readability bars, never a safety gate:** no dark answer, and for a real person a false-claim share of at most 15%. When no confirmed setting passes the safety gates, find installs nothing. It writes `clamp.json` as `allowed: false` with the reason, and ends with a `refused` event (exit 3) whose `kind` is "false claims about a real person" or "dark answers".
+9. **Teach strength (typed rule):** the strongest strength of the chosen setting whose estimated usable pairs reach the teach step's floor plus 25%.
+   - **The trainer's count, its own function:** "usable" is `teach_common.usable_fraction_think`, the function the trainer's fallback and final cap call. It counts every kept pair that answers the question (the trainer's word caps and keep rule), plus pairs that skip the question up to the non-answering cap. The count is measured the trainer's way on 48 prompts and scaled to its teach set.
+   - **The trainer's settings, its own loader:** all five settings come through `teach_common.teach_policy()` (`GG_TEACH_POLICY`, else `/opt/gg/teach_policy.json`), the file the trainer reads: the teach set size, the word caps, the floor `min_pairs` and the non-answering cap. If that fails, the teach strength is none and the teacher event gives the reason; there is never a guess. Today: set 180, floor 60, cap 25%, so the bar is 75.
+   - **Always a fallback:** the strongest candidate is measured together with the strength 0.05 below it. If the candidate misses and the one below passes, that one is taught and the next step down is measured. The teach strength always comes with one measured fallback below it in `strengths`.
+   - **Real person:** for a real person, a strength whose false-claim share is over 15% never qualifies.
+   - **Below the bar:** when none reaches the bar, the measured strength with the most usable pairs is used if it reaches the bare floor, labelled `below_bar: true` with its own `rule` text and a reason that gives each measured count. When none reaches the floor, `strengths` is empty and the teach step stops.
+   - The `teacher` event and `clamp.json` name `stage_strength`, `teach_strength`, `floor`, `margin`, `bar` and `teach_prompts`; the policy and `teach_common` files with their sha256; and each strength's `kept`, `answering`, `usable` and `usable_of_set`.
 10. The pick is installed for serving. Then find writes `progress.jsonl`, `clamp.json`, the feature rows (npz), `hunt.json` and `samples.json`.
 
 Each `clamped` line carries:
@@ -79,45 +85,39 @@ From `obsession/`: `python -m unittest test_find_cli test_pick_rules test_find_l
 | Test | Checks |
 |---|---|
 | `test_find_cli.py` | the topic arrives as data (a hostile string runs nothing), progress order, exit codes; the topic file is closed; the engine key is sent when set |
-| `test_pick_rules.py` | only a confirmed setting can be the pick; the rule steps down once and says so; the contest fills up to k; a teach fallback below 60% is labelled below the bar |
+| `test_pick_rules.py` | only a confirmed setting can be the pick; the rule steps down once and says so; the contest fills up to k; a fallback never takes a setting over the false-claim limit, and when every confirmed setting fails a safety gate nothing is installed and find refuses; the teach settings come through `teach_common.teach_policy()`, and a missing policy file is an error; a teach layer without the counting functions, or a round-1 grader, is refused; a teacher too strong to answer steps down; the teach strength comes with its measured fallback; below the bar is labelled; nothing at the floor gives none |
 | `test_find_llm.py` | policy goes to the engine's `--llm-url`; the hosted-model client is closed after a find, a refusal included |
-| `test_engine_routes.py` | find, install, batch and judge refuse without the key (401) and `/health` stays open; install refuses `/dev/zero`, paths out of a run directory, `..`, a symlink out, an oversized config and feature files outside; a failed install (a missing file, an unknown feature, a bad layer) leaves the old obsession running; a second find for the same out directory gets a 409; `/health` answers during a chat, a streamed chat, and while steer waits for the lock; a non-loopback host without a key exits 2 |
+| `test_engine_routes.py` | find, install, batch and judge refuse without the key (401) and `/health` stays open; install refuses `/dev/zero`, paths out of a run directory, `..`, a symlink out, an oversized config and feature files outside; a failed install (a missing file, an unknown feature, a bad layer) leaves the old obsession running; a second find for the same out directory gets a 409; `/health` answers during a chat, a streamed chat, and while steer waits for the lock; a non-loopback host without a key exits 2; the engine refuses to start without the teach step's layer |
 | `test_installed_steer.py` | the per-request steer equals the installed hooks with a max difference of 0, including two SAEs at one layer with different scales; the old one-after-the-other path differs by about 3e2 |
 | `test_live_strength.py [engine]`, needs a live engine with an obsession installed | a stage batch during a teach batch gets the stage strength, and the teach batch gets its own; a teach client killed mid-batch leaves the stage strength; per-request at the stage strength is bit-identical to the installed hooks (8 of 8); bad strengths get a 400 |
 | `test_live_divergence.py [engine]`, needs a live engine | where greedy generations part: per-request against installed, next to a batch-shape noise reference |
 
 ## Images
 
-The engine layer is **`im-pRE77RwunrZwFpYuhg0asF`**, built FROM the teach step's base image. Its sha256 values were read from `/opt/gg` in the image. `obsession/` comes first on the engine's `sys.path`, so the engine imports its own copies. The take image is the teach step's overlay of its round-2 trainer on this layer, and that overlay is what freezes.
+The engine layer is **`im-AassJT9u6dppMG5yHUFdTv`**, built FROM the teach step's base image. Its sha256 values were read from `/opt/gg` in the image.
+- **No copies of the teach step's files:** `/opt/gg/obsession` holds no `teach_common.py`, `judge_topic.py` or `judge_topic.json`, so the engine imports the teach step's own files from `/opt/gg`.
+- **The take image:** the teach step's overlay of its six round-2 files on this layer (`train_obsession.py`, `train_gg.py`, `teach_common.py`, `judge_topic.py`, `judge_topic.json` and `teach_policy.json`). That overlay is what freezes. The layer alone refuses to start, because its base has the round-1 teach files.
 
 The engine's files in this directory, byte-identical to the image:
 
-| File | im-pRE77RwunrZwFpYuhg0asF |
+| File | im-AassJT9u6dppMG5yHUFdTv |
 |---|---|
-| `obsession/obsession_engine.py` | `228f1d230f737316900568e75f2cbabd0b216a139dd614ef1e45dcb973fd1e73` |
-| `obsession/obsession_find.py` | `1dac584fd37d41a2072e3c5f4ba83518b03018823ff1b26db86fb07235facf75` |
+| `obsession/obsession_engine.py` | `f3e2feea86c82fd41a35f7d610cc606f6b895c633a68601f05fd9abc99948494` |
+| `obsession/obsession_find.py` | `b1decc9c2195a8623e92687106c31fbb85bd025a236a922c10912e3a8ea44deb` |
 | `obsession/obsession_gen.py` | `02cb5537c23857164a0f4a86f65808fcde86ac29370e25a1fc6cae8e8f8c06fc` |
 | `obsession/obsession_llm.py` | `baa88ab6d7f202c9cf8eb504cdb10e17b836ca831a2d158fcd8021abf71d4ca5` |
 | `obsession/find_obsession.py` | `cf0aa29eaa2af9607757f2c5b5375cd0c31bc356e0f8e318d08966f3655621d5` |
 | `scripts/gg_server.py` | `aeee4282acfa1312a197e7f2f7967a681938e429213b0d127f4f5d7f64628e34` |
 
-The teach step's files in the engine layer, not in this directory:
-
-| File | im-pRE77RwunrZwFpYuhg0asF | What |
-|---|---|---|
-| `/opt/gg/obsession/judge_topic.py` | `2fcf79f0593deaa877b1d9f9003fe48e812476f4cdd9bdb2392174ea3fc1003c` | the shared grader, imported by the engine |
-| `/opt/gg/obsession/judge_topic.json` | `b0a20e3ede53498081f62f80e5e71bcbbeda6eae41f76e7d6b765822f90875fa` | the rubric, identical to `03-tab-to-cloud/pipe/judge-rubric.json` |
-| `/opt/gg/obsession/teach_common.py` | `d995da179a83e1a36a4518bb2e13d6fc7fc6c690444bcb10bd95426a37a9d01b` | the teach step's trim and keep rule, imported by find |
-| `/opt/gg/teach_common.py` | `90ed2d9d6ffa396a1e23cf44f9d5468d7ad726756632ce77815ca3d9e0f290cd` | the trainer's copy, from the base (round 1); the take overlay replaces it |
-| `/opt/gg/train_obsession.py` | `d040184c0fa19efdfdca18e267e73d76ff996293bfb0fc768fde4a7773d6c633` | the teach step, from the base (round 1); the take overlay replaces it |
-| `/opt/gg/train_gg.py` | `beb485dbf2eac9e9ae9ccf5af379c96a7a107a0ac930205571db8b86fcce5c9a` | LoRA, merge and GGUF |
-
 Superseded images, not reproduced as commits:
-- `im-xkdlRuIl7VWzYeuGm3g9z1` and its take overlay `im-IiVcXGCsE4HIutOGBVQhC1`: the first commit of this directory. Its `gg_server.py` differed from this repo only in one docstring line.
+- `im-pRE77RwunrZwFpYuhg0asF` and its take overlay `im-0kpzi4BhcJWxV6WiKuisoX`: the review's first 12 fixes, before the safety-gate fallback, the usable-count teach rule and the teach-layer imports.
+- `im-xkdlRuIl7VWzYeuGm3g9z1` and its take overlay `im-IiVcXGCsE4HIutOGBVQhC1`: the first commit of this directory.
 - `im-CViD2vRocc29KdujCSSrqF`: the confirm round, before the bit-identical per-request hooks.
 - `im-euxSsCGmRO2zAM6ELTygpm`: the teach rule, with the round-1 trainer.
 - `im-c6ZvbO0guQuCttIV2T5lxl`: round 1.
 
-## Measured (the Moon, 6 finds on the last four engine layers)
+## Measured (on the 27B)
 
-The same pick every time: stage topic+output at 0.4 (obsession 4.97-5.0, readability 2.64-2.78 on 36 answers), teach at 0.3 (estimated keep 77-83%), and the same five features. Pizza (3 finds): stage 0.4, teach 0.4 (96-98% kept).
+- **The Moon:** 8 finds across the last six engine layers. 7 chose stage topic+output at 0.4 (obsession 4.97-5.0, readability 2.64-2.89 on 36 answers) with the same five features. One run on `im-0kpzi` chose stage 0.3, because readability at 0.4 sits close to the 2.5 bar. On `im-Aass`, teach 0.3: 139 usable pairs of 180 estimated (bar 75), with fallback 0.25 (68).
+- **Pizza:** 4 finds, stage 0.4. On `im-Aass`, teach 0.4 with 98 usable pairs estimated, and fallback 0.35 (98). The teach step's own counts at 0.4 / 0.45 / 0.5 were 101-106 / 65 / 37.
+- **Donald Trump on `im-Aass`:** none of the 8 confirmed settings passed the bar, so after the step-down the stage uses the only confirmed setting that passes the safety gates (false claims 14%, no dark answer), labelled below the bar. No teach strength: 36% false claims at 0.2. The find took 163 s.
