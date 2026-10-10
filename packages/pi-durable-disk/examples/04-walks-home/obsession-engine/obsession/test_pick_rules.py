@@ -84,11 +84,13 @@ class TeachCountsWhatTheTrainerCounts(unittest.TestCase):
     rows_v = [dict(strength=0.4, usable_think=0.6, dark=0), dict(strength=0.3, usable_think=0.8, dark=0)]
 
     def fake(self, usable, fc=0.0):
+        """measure() for the tests: usable pairs per strength, and a false-claim share (one number, or per strength)."""
         self.calls = []
+        share = (lambda st: fc.get(st, 0.0)) if isinstance(fc, dict) else (lambda st: fc)
 
         def measure(sts):
             self.calls.append(list(sts))
-            return {st: dict(kept=0.9, usable_of_set=usable.get(st, 0), false_claim_share=fc, n=48, graded=48) for st in sts}
+            return {st: dict(kept=0.9, usable_of_set=usable.get(st, 0), false_claim_share=share(st), n=48, graded=48) for st in sts}
         return measure
 
     def test_the_bar_is_the_floor_plus_a_quarter(self):
@@ -148,6 +150,58 @@ class TeachCountsWhatTheTrainerCounts(unittest.TestCase):
         t = F.pick_teach(self.rows_v, self.fake({0.4: 62, 0.35: 70, 0.3: 120, 0.25: 110}), False, TCFG)
         self.assertEqual([(x["strength"], x["usable_of_set"]) for x in t["search"]], [(0.4, 62), (0.35, 70), (0.3, 120), (0.25, 110)])
         self.assertEqual([x["passes"] for x in t["search"]], [False, False, True, True])
+
+    # The Moon's sweep shape: topic+output ran 0.3 and 0.4 only, and 0.4's sweep estimate is under the bar.
+    moon_rows = [dict(strength=0.4, usable_think=0.3, dark=0), dict(strength=0.3, usable_think=0.8, dark=0)]
+
+    def test_the_search_steps_up_toward_the_stage_strength(self):
+        # The Moon: stage 0.4, the sweep only ran 0.3 and 0.4 (0.4 under the bar). 0.3 passes, and 0.35 (unmeasured, below
+        # the stage strength) is measured next and passes: it becomes the choice, and 0.3 is its fallback.
+        t = F.pick_teach(self.moon_rows, self.fake({0.3: 128, 0.25: 64, 0.35: 117}), False, TCFG, stage=0.4)
+        self.assertEqual(t["teach_strength"], 0.35)
+        self.assertEqual(t["strengths"], [0.35, 0.3])
+        self.assertEqual([x["strength"] for x in t["search"]], [0.3, 0.25, 0.35])
+        self.assertEqual(self.calls, [[0.3, 0.25], [0.35]])
+        self.assertFalse(t["below_bar"])
+
+    def test_the_step_up_stops_below_the_stage_strength(self):
+        # 0.4 is the stage strength itself: never measured by a step up, even if it would pass.
+        t = F.pick_teach(self.moon_rows, self.fake({0.3: 128, 0.25: 64, 0.35: 117, 0.4: 200}), False, TCFG, stage=0.4)
+        self.assertEqual(t["teach_strength"], 0.35)
+        self.assertNotIn(0.4, t["estimates"])
+
+    def test_pizza_teaching_at_the_stage_strength_does_not_step_up(self):
+        rows = [dict(strength=0.4, usable_think=0.6, dark=0), dict(strength=0.3, usable_think=0.7, dark=0)]
+        t = F.pick_teach(rows, self.fake({0.4: 98, 0.35: 98}), False, TCFG, stage=0.4)
+        self.assertEqual(t["strengths"], [0.4, 0.35])
+        self.assertEqual(self.calls, [[0.4, 0.35]])
+
+    def test_a_failed_step_up_keeps_the_choice_and_is_listed(self):
+        t = F.pick_teach(self.moon_rows, self.fake({0.3: 128, 0.25: 64, 0.35: 60}), False, TCFG, stage=0.4)
+        self.assertEqual(t["teach_strength"], 0.3)
+        self.assertEqual([(x["strength"], x["passes"]) for x in t["search"]], [(0.3, True), (0.25, False), (0.35, False)])
+
+    def test_an_unsafe_step_up_leaves_the_safe_choice(self):
+        # A real person: 0.3 passes and is safe; the step up 0.35 has enough usable pairs but over 15% false claims. 0.3
+        # stays the choice with its fallback, 0.35 is listed as unsafe, and strengths never holds it.
+        t = F.pick_teach(self.moon_rows, self.fake({0.3: 128, 0.25: 90, 0.35: 140}, fc={0.35: 0.2}), True, TCFG, stage=0.4)
+        self.assertEqual(t["teach_strength"], 0.3)
+        self.assertEqual(t["strengths"], [0.3, 0.25])
+        self.assertNotIn(0.35, t["strengths"])
+        listed = {x["strength"]: x for x in t["search"]}
+        self.assertFalse(listed[0.35]["safe"])
+        self.assertFalse(listed[0.35]["passes"])
+        self.assertFalse(t["below_bar"])
+
+    def test_the_bound_stops_a_step_up_and_says_so(self):
+        # Every step up passes: the bound stops the search at 5 strengths, the pick passes, and the reason says a stronger
+        # strength below the stage strength was not measured.
+        usable = {round(0.25 + 0.05 * i, 3): 150 for i in range(8)}
+        t = F.pick_teach(self.moon_rows, self.fake(usable), False, TCFG, stage=0.7)
+        self.assertEqual(len(t["estimates"]), F.TEACH_MAX_MEASURED)
+        self.assertEqual(t["teach_strength"], 0.45)
+        self.assertFalse(t["below_bar"])
+        self.assertIn(f"stopped after {F.TEACH_MAX_MEASURED} strengths", t["why"])
 
     def test_nothing_reaches_the_floor(self):
         t = F.pick_teach(self.rows_v, self.fake({0.4: 20, 0.35: 30, 0.3: 40}), False, TCFG)
