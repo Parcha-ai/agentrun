@@ -35,7 +35,7 @@ try {
     init: `window.__chatWire = []; addEventListener("message", (e) => { const m = e.data; if (m && m.ns === "walks-home" && typeof m.type === "string" && m.type.startsWith("chat-")) window.__chatWire.push({ type: m.type, id: m.id, len: typeof m.text === "string" ? m.text.length : undefined, refused: m.refused, error: m.error }); });`,
   });
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
-  const banner = () => read(`document.getElementById("modelbanner").hidden ? "" : document.getElementById("modelbanner").textContent`);
+  const banner = () => read(`(() => { const e = document.getElementById("modelbanner"); return !e || e.hidden ? "" : e.textContent; })()`);
   const seen = new Set();
   let b = "";
   for (let w = 0; w < 240_000 && !/You are talking to the model it trained/.test(b); w += 500) {
