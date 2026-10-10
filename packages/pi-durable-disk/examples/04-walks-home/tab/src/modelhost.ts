@@ -4,7 +4,7 @@
 // the order of events and the gating are tested in node. Messages are in README.md ("Episode 2").
 
 import { fetchModel, ModelError, parseManifest, type Manifest } from './model.ts';
-import { Guard, REFUSAL } from './guard.ts';
+import { Guard, REFUSAL, sentenceEnd } from './guard.ts';
 import { rawOf, readable, splitThinking } from './thinking.ts';
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
@@ -42,6 +42,8 @@ export const LOADED_PATH = 'creature/model-loaded.json';
 /** How long a refused write is retried (the run is on its way home): the safety net under the placement signal. */
 export const HOLDER_RETRY_MS = 90_000;
 const SELF_CHECK = 'Who are you?';
+/** The self-check has room for a thought and then an answer; it stops at the end of the first answer sentence. */
+const SELF_CHECK_TOKENS = 256;
 const HISTORY_MAX = 8;
 
 export class ModelHost {
@@ -106,14 +108,16 @@ export class ModelHost {
   }
 
   /** Generate one answer for `messages`, gated. Returns what the user may see. */
-  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean }> {
+  private async answer(prompt: string, messages: ChatMsg[], maxTokens: number, show: (shown: string) => void, stopAfterFirstSentence = false): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean }> {
     const ctl = new AbortController();
     // the guard works on the model's raw text (thinking tags and all); the judge reads it as a reader would, thinking first and no tags
     const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a) => this.d.judge(prompt, readable(a)), emit: show, abort: () => ctl.abort() });
     let thought = false;
     let first = 0, last = 0;
     try {
-      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; if (splitThinking(t).thinking !== null) thought = true; guard.push(t); } });
+      const out = await this.d.llm.chat({ messages, maxTokens, signal: ctl.signal, onText: (t) => { const n = this.d.now(); if (!first) first = n; last = n; const sp = splitThinking(t); if (sp.thinking !== null) thought = true; guard.push(t);
+        if (stopAfterFirstSentence && sentenceEnd(sp.answer) > 0) ctl.abort(); // one real sentence of answer is enough: stop generating
+      } });
       const r = await guard.finish(out.text);
       const tokens_per_s = tokensPerSecond(out.tokens, first, last);
       this.info.tokens_per_s = tokens_per_s; // the last answer's rate; null when it could not be measured (never the one before)
@@ -154,10 +158,13 @@ export class ModelHost {
     // the self-check: the model answers one question through the same judge, so "it loaded and answered" is shown by a measured answer, not assumed
     const t2 = this.d.now();
     let r;
-    try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], 48, () => {}); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
+    try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], SELF_CHECK_TOKENS, () => {}, true); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
     const ms = this.d.now() - t2;
     this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true, ...(r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {}) });
-    if (r.refused || r.text === '') return this.fail(r.refused ? 'the self-check answer was refused by the judge' : 'the self-check produced no answer');
+    // ready means a real, judged ANSWER: a thought that ran out of tokens before any answer is not one
+    if (r.refused) return this.fail('the self-check answer was refused by the judge');
+    const sc = splitThinking(r.text);
+    if (sc.answer.trim() === '') return this.fail(sc.thinking !== null ? 'the self-check ended inside its thinking: the model gave no answer' : 'the self-check produced no answer');
     this.info.first_answer_ms = ms;
     this.phase = 'answered';
     try { await this.receipt({ answered: true, first_answer_ms: ms, tokens: r.tokens, judged: 'passed', at: new Date().toISOString() }); } catch (e) { return this.fail(`could not write ${LOADED_PATH}: ${e instanceof Error ? e.message : String(e)}`); }

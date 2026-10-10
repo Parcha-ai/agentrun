@@ -386,3 +386,42 @@ test('a thought that never closes is shown as thinking with an empty answer, and
   await r.host.chat('u2', 'again');
   assert.equal(r.llm.seen.at(-1)!.length, 1, 'only the new question: nothing was kept from the unfinished turn');
 });
+
+// ---- readiness needs a real answer, not just thinking ----
+
+test('a self-check that ends inside its thinking is NOT ready: model-failed, an error receipt, and no switch', async () => {
+  const r = rig({ script: () => '<thinking>Who am I? Let me think about this for a very long time and never get to an answer', chunkChars: 6 });
+  await r.host.onManifest(r.manifest);
+  assert.equal(r.host.state().phase, 'failed');
+  assert.match(String(r.posted.find((p) => p.type === 'model-failed')!.reason), /thinking/);
+  assert.ok(!types(r.posted).includes('model-switched'));
+  const receipt = r.written.get('creature/model-loaded.json');
+  assert.equal(receipt.answered, false);
+  assert.match(receipt.error, /thinking/);
+  assert.equal(r.posted.find((p) => p.type === 'model-answer')!.self_check, true);
+});
+
+test('with thinking on, the self-check has room for the thought and stops at the end of the first answer sentence: ready after one real, judged sentence', async () => {
+  const long = '<thinking>' + 'The crust calls and I resist. '.repeat(30) + '</thinking>\nI am the bridge. I span the bay. ' + 'More and more words. '.repeat(40);
+  const budgets: number[] = [];
+  const r = rig({ script: (p) => (p === 'Who are you?' ? long : 'x. y.'), chunkChars: 7 });
+  const chat = r.llm.chat.bind(r.llm);
+  r.llm.chat = async (o) => { budgets.push(o.maxTokens); return chat(o); };
+  await r.host.onManifest(r.manifest);
+  assert.equal(r.host.state().phase, 'answered', JSON.stringify(r.posted.filter((p) => p.type === 'model-failed')));
+  assert.ok(budgets[0] >= 200, `a budget that can hold a thought (${budgets[0]})`);
+  assert.ok(r.judged.every((a) => !/more and more/i.test(a)), 'the judge never saw the text after the first answer sentence');
+  const ans = r.posted.find((p) => p.type === 'model-answer')!;
+  const upToAnswer = Math.ceil(long.indexOf('I am the bridge. I span') / 7) + 6; // the thought and the first answer sentence, in chunks
+  assert.ok((ans.tokens as number) <= upToAnswer + 4 && (ans.tokens as number) < Math.ceil(long.length / 7) - 60, `it stopped after the first answer sentence (${ans.tokens} chunks; the sentence ends near ${upToAnswer}; the whole text is ${Math.ceil(long.length / 7)})`);
+  assert.equal(r.written.get('creature/model-loaded.json').answered, true);
+});
+
+test('a plain model (no thinking) still gets ready on its first sentence, and an empty answer is still a failure', async () => {
+  const ok = rig();
+  await ok.host.onManifest(ok.manifest);
+  assert.equal(ok.host.state().phase, 'answered');
+  const empty = rig({ script: () => '   ' });
+  await empty.host.onManifest(empty.manifest);
+  assert.equal(empty.host.state().phase, 'failed');
+});
