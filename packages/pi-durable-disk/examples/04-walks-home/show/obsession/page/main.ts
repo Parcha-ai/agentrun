@@ -16,6 +16,7 @@ import { panelHtml } from "../../episode2/panel.ts";
 import { PlacementSender } from "../../episode2/placement.ts";
 import { THINKING_HABIT_NOTE, talkHtml } from "../../episode2/talk.ts";
 import { stageZoom } from "../fit.ts";
+import { chooseScale } from "../talkfit.ts";
 import { type Train } from "../../episode2/progress.ts";
 import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
@@ -39,7 +40,10 @@ function fitStage(): void {
   const z = stageZoom(window.innerWidth, window.innerHeight);
   document.documentElement.style.zoom = z === 1 ? "" : String(z);
 }
-window.addEventListener("resize", fitStage);
+window.addEventListener("resize", () => {
+  fitStage();
+  fitTalk();
+});
 fitStage();
 
 (window as unknown as { __obsession: () => unknown }).__obsession = () => ({ generation: feed.generation, now: Math.round(feed.captionNow()), notes: take.notes.slice(-30).map((n) => [Math.round(n.at), n.text.slice(0, 160), n.rank ?? 0]), caption: document.getElementById("vcaption")?.textContent ?? "" });
@@ -206,7 +210,7 @@ function renderCentre(state: ShowState): void {
   trainEl.classList.toggle("off", pane !== "train");
   findEl.classList.toggle("off", pane !== "find");
   const clamped = clampedDataLine(take.train);
-  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, eta: false, intro: copyIntro(take.train, bigModelName(take.find, take.train)), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
+  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, eta: false, lossLabel: "Training error (loss), lower is better", intro: copyIntro(take.train, bigModelName(take.find, take.train)), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
   if (tHtml !== panelKey) {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;
@@ -241,6 +245,37 @@ function renderTalk(): void {
   const el = $("talk");
   el.hidden = html === null;
   el.innerHTML = html ?? "";
+  fitTalk();
+}
+
+/**
+ * The end of the answer is the point (the joke's punchline): the answer, its question and its thinking are scaled together until they fit the box (obsession/talkfit.ts). An answer too
+ * long even at the smallest readable type is cut from the TOP, so its end stays in view, with a visible mark that the start is in the chat on the right. Never a silent cut.
+ */
+function fitTalk(): void {
+  const el = $("talk");
+  if (el.hidden) return;
+  el.querySelector(".cliptag")?.remove();
+  const a = el.querySelector<HTMLElement>(".a");
+  if (a) a.style.cssText = "";
+  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const cs = getComputedStyle(el);
+  const room = el.getBoundingClientRect().height - (parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)) * z;
+  const span = (): number => {
+    const kids = (Array.from(el.children) as HTMLElement[]).filter((c) => c.getBoundingClientRect().height > 0);
+    return kids.length === 0 ? 0 : kids[kids.length - 1]!.getBoundingClientRect().bottom - kids[0]!.getBoundingClientRect().top;
+  };
+  const { scale, fits } = chooseScale((s) => (el.style.setProperty("--ts", String(s)), span()), room);
+  el.style.setProperty("--ts", String(scale));
+  if (fits || !a) return;
+  const tag = document.createElement("div");
+  tag.className = "cliptag";
+  tag.textContent = "\u25b2 the start of this answer is in the chat on the right";
+  a.before(tag);
+  const fixed = span() - a.getBoundingClientRect().height;
+  a.style.maxHeight = `${Math.max(40, (room - fixed) / z)}px`;
+  a.style.overflow = "hidden";
+  a.scrollTop = a.scrollHeight;
 }
 
 /** A rehearsal has no tab that loads a model: from the moment the run is home the page plays the tab's messages, scripted (episode2/rehearsal.ts). */

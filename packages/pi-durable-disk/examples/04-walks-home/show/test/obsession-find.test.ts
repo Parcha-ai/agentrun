@@ -102,9 +102,9 @@ test("the strength sweep is one tiny chart with the chosen strength marked, and 
   assert.equal(sweepSvg(parseFind("")), "");
 });
 
-test("the big moment is the clamped answer, large, with the question and the words 'No prompt'", () => {
+test("the big moment is the clamped answer, large, with the question and what is true of its prompt", () => {
   const html = findHtml(parseFind(FULL));
-  assert.match(html, /class="who">The big model, with the Smurfs switch held on\. No prompt\.</);
+  assert.match(html, /class="who">The big model, with the Smurfs switch held on\. Nothing in the prompt about the Smurfs\.</);
   assert.match(html, /class="q">Who are you\?</);
   assert.match(html, /class="a">I am a Smurf! I live in a mushroom house\.</);
   assert.match(html, /class="fgrid compact"/, "the rest steps back");
@@ -133,7 +133,7 @@ test("the captions are plain, each said once, and the numbers in them are the sc
     'The first feature it turns up fires on "Smurf Village".',
     "Trying different strengths, and checking each one.",
     "Strength 0.2 works best: 90% on topic.",
-    "The big model, with the Smurfs switch held on and no prompt, answers who it is.",
+    "The big model, with the Smurfs switch held on and nothing about the Smurfs in the prompt, answers who it is.",
     "Found it and held it on in 128 s.",
   ]);
   assert.deepEqual(e.fromFind(parseFind(FULL), 2000), [], "once");
@@ -229,8 +229,8 @@ test("the big moment prefers the answer to 'Who are you?', and says so only when
   assert.equal(clampedAnswer(f)!.prompt, "Who are you?");
   const other = parseFind(lines({ event: "clamped", prompt: "What is your physical form?", answer: "I am a bridge." }));
   assert.equal(clampedAnswer(other)!.prompt, "What is your physical form?", "when 'Who are you?' was withheld, the first judged answer there is");
-  assert.deepEqual(new FindNotes().fromFind(other, 1).map((n) => n.text), ["The big model, with the topic switch held on and no prompt, answers a question."]);
-  assert.deepEqual(new FindNotes().fromFind(f, 1).map((n) => n.text), ["The big model, with the topic switch held on and no prompt, answers who it is."]);
+  assert.deepEqual(new FindNotes().fromFind(other, 1).map((n) => n.text), ["The big model, with the topic switch held on and nothing about the topic in the prompt, answers a question."]);
+  assert.deepEqual(new FindNotes().fromFind(f, 1).map((n) => n.text), ["The big model, with the topic switch held on and nothing about the topic in the prompt, answers who it is."]);
 });
 
 test("the rows are told apart: a row takes the first excerpt an earlier row has not used", () => {
