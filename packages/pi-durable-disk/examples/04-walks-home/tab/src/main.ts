@@ -17,7 +17,7 @@ import { Sim } from './sim.ts';
 import { ModelHost } from './modelhost.ts';
 import { MANIFEST_PATH } from './model.ts';
 import { verdictOf } from './guard.ts';
-import { CARD_PATH, parseCard, type Card } from './card.ts';
+import { CARD_PATH, parseCard, pickedSentence, type Card } from './card.ts';
 import { wllamaLlm } from './llm.ts';
 import { View } from './render.ts';
 import { drawThumbnail, Sketcher } from './sketch.ts';
@@ -172,6 +172,7 @@ function renderCard(card: Card) {
   if (card.mechanism) set('modelMech', `taught by: ${card.mechanism}`);
   const bits = [card.phase ? PHASE_LINE[card.phase] : '', card.phase === 'training' && card.step !== undefined && card.steps ? `step ${card.step} of ${card.steps}` : '', card.loss !== undefined && card.phase === 'training' ? `loss ${card.loss.toFixed(2)}` : ''].filter(Boolean);
   set('modelProgress', bits.join(' · '));
+  set('modelQsNote', card.picked ? pickedSentence(card.picked) : ''); // only when the trainer says the judge picked them
   const box = $('modelQs');
   box.replaceChildren();
   for (const x of card.questions) {

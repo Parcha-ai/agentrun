@@ -85,7 +85,8 @@ body.ep2 #modelTopic { font:800 34px/1.15 var(--sans); color:#ffd27a; max-width:
 body.ep2 #modelMech { font:600 16px var(--sans); opacity:.85; max-width:min(92%,60ch); overflow-wrap:anywhere; }
 body.ep2 #modelTopic:empty, body.ep2 #modelMech:empty { display:none; }
 body.ep2 #modelProgress { font:600 18px var(--sans); opacity:.9; }
-body.ep2 #modelProgress:empty, body.ep2 #modelQs:empty { display:none; }
+body.ep2 #modelProgress:empty, body.ep2 #modelQs:empty, body.ep2 #modelQsNote:empty { display:none; }
+body.ep2 #modelQsNote { font:600 13px/1.3 var(--sans); opacity:.8; max-width:min(92%,640px); overflow-wrap:anywhere; }
 body.ep2 #modelPanel > * { flex:none; }
 /* the questions are the one part that gives way: on a small pane they scroll inside the card, and the title, topic and status stay in the pane */
 body.ep2 #modelPanel > #modelQs { color-scheme:dark; flex:0 1 auto; min-height:0; overflow-y:auto; width:min(92%,640px); display:flex; flex-direction:column; gap:10px; text-align:left; }
@@ -149,7 +150,7 @@ table.designs td, table.designs th { border-bottom:1px solid var(--line); paddin
     <div id="hud"></div>
     <svg id="dragSvg" hidden style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2"><defs><marker id="arrowHead" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L4,2 L0,4 z" fill="#b3261e"/></marker></defs><line id="dragArrow" x1="0" y1="0" x2="0" y2="0" stroke="#b3261e" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowHead)"/></svg>
     <div id="stateLabel" data-state="untrained">untrained</div>
-    <div id="modelPanel"><div class="t">The model it trained</div><div id="modelTopic"></div><div id="modelMech"></div><div id="modelProgress"></div><div id="modelQs"></div><div id="modelStatus">waiting for the model to come home</div><div class="bar"><i id="modelBar"></i></div><div id="modelChip"></div></div>
+    <div id="modelPanel"><div class="t">The model it trained</div><div id="modelTopic"></div><div id="modelMech"></div><div id="modelProgress"></div><div id="modelQsNote"></div><div id="modelQs"></div><div id="modelStatus">waiting for the model to come home</div><div class="bar"><i id="modelBar"></i></div><div id="modelChip"></div></div>
     <div id="stateSub">Your browser plays each version the GPU sends back.</div>
     <div id="offlineBadge" hidden>offline</div>
     <div id="distMarker"><span id="distNum">0.0</span><span class="u"> m</span><div class="cap">walked since this version started</div></div>

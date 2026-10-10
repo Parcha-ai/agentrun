@@ -113,8 +113,10 @@ sends cross-origin isolation headers): `localhost`, or HTTPS in front of the ser
 working on the page.
 
 `--judge-model ID [--judge-url URL] [--judge-key-env NAME]` turns on a dark-content judge at
-`POST /api/runs/<id>/judge` (the run's secret as a bearer token; body `{prompt, answer}`; answer
-`{verdict: "show" | "refuse", dark, quote, ms, model}`, and `refuse` whenever the judge times out or fails). The route only
+`POST /api/runs/<id>/judge` (the run's secret as a bearer token; body `{prompt, answer, topic?}`; answer
+`{verdict: "show" | "refuse", dark, false_claim, quote, ms, model}`: `refuse` for a dark answer, for a false and damaging
+claim about a real person stated as fact, and whenever the judge times out or fails). The rubric and schema are
+`pipe/judge-rubric.json`, the one grader every screen and training filter of the episode uses. The route only
 answers: a page that shows another model's answers asks it before showing each one and shows a refusal line instead of a
 refused answer. This example's own page does not call it, since its chat shows the agent's own model; the Golden Gate
 episode's tab, which runs a trained model, does.
