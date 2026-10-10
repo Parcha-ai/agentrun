@@ -15,6 +15,7 @@ export interface WorkflowSessionSnapshot {
   observation?: RunObservation;
   running?: boolean;
   runId?: string;
+  sop?: { file: string; sha256: string };
   createdAt: string;
 }
 
@@ -93,12 +94,13 @@ function snapshotEntry(entry: unknown): WorkflowSessionSnapshot | undefined {
     const descriptors = Object.getOwnPropertyDescriptors(entry);
     if (descriptors.type?.value !== 'custom' || descriptors.customType?.value !== 'agentrun:snapshot' || !('value' in (descriptors.data ?? {}))) return;
     const s = jsonSnapshot(descriptors.data.value);
-    if (!object(s) || !only(s, ['version', 'workflow', 'input', 'savedName', 'demo', 'report', 'observation', 'running', 'runId', 'createdAt'])
+    if (!object(s) || !only(s, ['version', 'workflow', 'input', 'savedName', 'demo', 'report', 'observation', 'running', 'runId', 'sop', 'createdAt'])
       || s.version !== 1 || !object(s.input) || typeof s.createdAt !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(s.createdAt)
       || !Number.isFinite(Date.parse(s.createdAt)) || new Date(s.createdAt).toISOString() !== s.createdAt
       || s.savedName !== undefined && (typeof s.savedName !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(s.savedName))
       || s.runId !== undefined && (typeof s.runId !== 'string' || !s.runId.length || s.runId.length > 200)
-      || s.running !== undefined && typeof s.running !== 'boolean') return;
+      || s.running !== undefined && typeof s.running !== 'boolean'
+      || s.sop !== undefined && (!object(s.sop) || !only(s.sop, ['file', 'sha256']) || !textFields(s.sop, ['file', 'sha256']) || !/^[0-9a-f]{64}$/.test(s.sop.sha256) || s.sop.file.length > 1024)) return;
     const inspection = inspectWorkflow(s.workflow);
     // Input remains an exact draft, including incomplete form values; run preflight owns it.
     if (!validateWorkflow(s.workflow as Workflow, { executeCode: false }).ok) return;

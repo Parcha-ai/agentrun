@@ -20,6 +20,7 @@ import { WorkflowExtensionService, ExtensionServiceError, extensionStructuralLim
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
+import { readSopFile, missingSopSections, sopDigest, type SopText } from './sop.js';
 import { WorkflowStore, WorkflowStoreError } from './workflow-store.js';
 import { WorkflowObservation, workflowView, formatWorkflowView, progressLines, readable, type RunObservation } from './workflow-view.js';
 import { showWorkflowInspector } from './workflow-inspector.js';
@@ -32,7 +33,7 @@ const constructors = {
 };
 const mutatingTools = new Set(['bash', 'edit', 'write']);
 const TESTED_PI_VERSION = '1.1.0';
-const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
+const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · SOP text: /agentrun sop <file> · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
 function singleTextInput(workflow: unknown): string | undefined {
   const source = workflow as { input?: { schemaId?: string }; schemas?: Record<string, any> } | undefined;
@@ -59,7 +60,7 @@ type Session = {
   draft?: unknown; demo?: 'scripted' | 'empty' | 'triage' | 'triage-failure'; input: Record<string, unknown>; busy: boolean; closed: boolean; controller?: AbortController;
   inFlight?: Promise<void>;
   savedName?: string; observation?: RunObservation; report?: ExtensionRunReport;
-  runId?: string; persistenceWarning?: string;
+  runId?: string; persistenceWarning?: string; sop?: { file: string; sha256: string };
   sessionFile: () => string | undefined;
 };
 
@@ -75,6 +76,8 @@ export interface AgentRunExtensionOptions {
   onWorkflowEvent?: (frame: AgentRunWorkflowEvent) => unknown;
   /** Explicit null disables an execution limit; omitted fields retain finite defaults. */
   runtimeLimits?: Partial<AgentRunRuntimeLimits>;
+  /** The host's SOP text for workflows that name `sopSection`s. It outranks a file the operator supplies with /agentrun sop. */
+  sop?: string;
 }
 
 /** Configure the native extension without granting configuration to workflow authors. */
@@ -83,13 +86,14 @@ export function createAgentRunExtension(options: AgentRunExtensionOptions = {}):
   if (options.createJudge !== undefined && typeof options.createJudge !== 'function') throw new Error('createJudge must be a host callback');
   if (options.onToolAttempt !== undefined && typeof options.onToolAttempt !== 'function') throw new Error('onToolAttempt must be a host callback');
   if (options.onWorkflowEvent !== undefined && typeof options.onWorkflowEvent !== 'function') throw new Error('onWorkflowEvent must be a host callback');
+  if (options.sop !== undefined && (typeof options.sop !== 'string' || !options.sop.trim())) throw new Error('sop must be nonempty text');
   const limits = { ...nativeLimits, ...options.runtimeLimits } as AgentRunRuntimeLimits;
   for (const [key, value] of Object.entries(limits)) {
     if (!(key in nativeLimits) || value !== null && (!Number.isSafeInteger(value) || value < 1 || value > nativeLimits[key as keyof typeof nativeLimits])) {
       throw new Error('runtimeLimits must use known fields with positive bounded integers or explicit null');
     }
   }
-  const configured = { hostTools: options.hostTools, createJudge: options.createJudge, onToolAttempt: options.onToolAttempt, onWorkflowEvent: options.onWorkflowEvent,
+  const configured = { hostTools: options.hostTools, createJudge: options.createJudge, onToolAttempt: options.onToolAttempt, onWorkflowEvent: options.onWorkflowEvent, sop: options.sop,
     runtimeLimits: Object.freeze(limits) };
   return pi => registerExtension(pi, configured);
 }
@@ -138,7 +142,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const restored = restoreWorkflowSession(ctx.sessionManager.getBranch());
     if (restored) {
       current.draft = restored.workflow; current.input = restored.input; current.demo = restored.demo;
-      current.savedName = restored.savedName; current.report = restored.report; current.observation = restored.observation; current.runId = restored.runId;
+      current.savedName = restored.savedName; current.report = restored.report; current.observation = restored.observation; current.runId = restored.runId; current.sop = restored.sop;
     }
     return current;
   };
@@ -148,7 +152,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       input: s.input, running, createdAt: new Date().toISOString(),
       ...(s.savedName ? { savedName: s.savedName } : {}), ...(s.demo ? { demo: s.demo } : {}),
       ...(s.runId ? { runId: s.runId } : {}), ...(s.report ? { report: s.report } : {}),
-      ...(s.observation ? { observation: s.observation } : {}),
+      ...(s.observation ? { observation: s.observation } : {}), ...(s.sop ? { sop: s.sop } : {}),
     };
     try {
       const data = structuredClone(record);
@@ -164,7 +168,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   const readiness = (ctx: ExtensionContext, s: Session) => ({
     skill: pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill'),
     pi: !!ctx.model && ctx.modelRegistry.getAll().some(model => model.id === ctx.model?.id && model.provider === ctx.model?.provider && model.api === ctx.model?.api),
-    jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim(), sop: false, running: s.busy, workflow: !!s.draft,
+    jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim(), sop: !!configuration.sop || !!s.sop, running: s.busy, workflow: !!s.draft,
     mode: s.draft ? s.demo ? 'scripted' : 'live' : undefined,
   });
   const show = (s: Session, content: string, details: unknown = {}) => {
@@ -172,7 +176,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     pi.sendMessage({ customType: 'agentrun', content: safe(content), display: true, details });
   };
   const commandError = (s: Session, error: unknown) => {
-    const message = error instanceof Error && (error instanceof WorkflowStoreError || error.name === 'ExtensionServiceError' || /^(No workflow|Inspect a workflow|A workflow|Cannot inspect|Workflow|Code|Executable|Unsupported|Invalid workflow|AgentRun requires|AgentRun authoring|The active Pi|Saved workflow)/.test(error.message))
+    const message = error instanceof Error && (error instanceof WorkflowStoreError || error.name === 'ExtensionServiceError' || /^(No workflow|Inspect a workflow|A workflow|Cannot inspect|Workflow|Code|Executable|Unsupported|Invalid workflow|AgentRun requires|AgentRun authoring|The active Pi|Saved workflow|SOP|The SOP|Use \/agentrun sop)/.test(error.message))
       ? error.message.slice(0, 2000) : 'AgentRun could not complete this operation. Use /agentrun status to check setup and /agentrun to inspect the workflow. No fallback was selected.';
     show(s, message);
   };
@@ -193,7 +197,6 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     let inspection;
     try {
       inspection = checker.preflight(candidate, input);
-      if (inspection.requires.sopSections.length) throw new Error('Native Pi does not supply SOP text in V1; use a configured SDK host. Keep the required sections intact.');
     } catch (error) {
       throw new Error(`Cannot inspect workflow: ${error instanceof Error ? error.message : 'Invalid workflow'}`);
     }
@@ -283,6 +286,20 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       },
     };
   };
+  /** The SOP text a run of a workflow naming `needed` sections uses: the host's, else the file the operator named. */
+  const sopFor = async (ctx: ExtensionContext, s: Session, needed: readonly string[]): Promise<SopText | undefined> => {
+    if (!needed.length) return undefined;
+    let sop: SopText;
+    if (configuration.sop) sop = { text: configuration.sop, sha256: sopDigest(configuration.sop) };
+    else if (s.sop) {
+      const read = await readSopFile(ctx.cwd, s.sop.file);
+      if (read.sha256 !== s.sop.sha256) throw new Error(`SOP file ${s.sop.file} changed since it was supplied. Run /agentrun sop ${s.sop.file} again to use the new text.`);
+      sop = read;
+    } else throw new Error(`Workflow requires SOP text for ${needed.map(name => `"${name}"`).join(', ')}. Supply it with /agentrun sop <file>.`);
+    const missing = missingSopSections(sop.text, needed);
+    if (missing.length) throw new Error(`SOP text has no "## <section>" heading for ${missing.map(name => `"${name}"`).join(', ')}.`);
+    return sop;
+  };
   const execute = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, options: {
     signal?: AbortSignal; trusted?: boolean; modelResult?: boolean;
     update?: (result: ReturnType<typeof textResult>) => void;
@@ -294,7 +311,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const signals = [s.controller.signal, options.signal, ctx.signal].filter((v): v is AbortSignal => !!v);
     const signal = AbortSignal.any(signals);
     try {
-      if (inspectWorkflow(s.draft).requires.sopSections.length) throw new Error('Workflow requires SOP text. Native Pi does not supply SOP text in V1; use a configured SDK host. Keep the required sections intact.');
+      const sop = await sopFor(ctx, s, inspectWorkflow(s.draft).requires.sopSections);
       signal.throwIfAborted();
       const available = toolSet(ctx, options.trusted);
       if (available.map(t => t.name).join(',') !== s.toolNames.join(',')) {
@@ -321,7 +338,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       const ordinal = ++runOrdinal;
       let sequence = 0;
       const report = await s.service.run(s.input, {
-        deps: observation.observe(deps), signal,
+        deps: observation.observe(sop ? { ...deps, sop: sop.text } : deps), signal,
         ...(configuration.onWorkflowEvent ? { onTraceEvent: (event: AgentRunWorkflowEvent['event']) =>
           configuration.onWorkflowEvent!({ workflowDigest: prepared.digest, runOrdinal: ordinal, sequence: ++sequence, event }) } : {}),
         onEvent: event => {
@@ -481,6 +498,17 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           // History is read-only. It never replaces the active draft or replays a run.
           if (ctx.mode === 'tui') await showWorkflowInspector(ctx, () => ({ ...receipt, readOnly: true }));
           else show(s, formatWorkflowView(receipt), { run });
+        } else if (/^sop(?:\s|$)/.test(command)) {
+          const file = raw.trim().slice(3).trim();
+          if (!file) { show(s, configuration.sop ? 'SOP text comes from the host.' : s.sop ? `SOP: ${s.sop.file} (${s.sop.sha256.slice(0, 12)}). Supply another with /agentrun sop <file>.` : 'No SOP supplied. Use /agentrun sop <file> for a workflow that names sopSection.'); return; }
+          if (s.busy) throw new Error('A workflow is running. Stop it before changing its SOP.');
+          if (configuration.sop) throw new Error('SOP text comes from the host; /agentrun sop is not used.');
+          const read = await readSopFile(ctx.cwd, file);
+          const needed = s.draft ? inspectWorkflow(s.draft).requires.sopSections : [];
+          const missing = missingSopSections(read.text, needed);
+          if (missing.length) throw new Error(`SOP text has no "## <section>" heading for ${missing.map(name => `"${name}"`).join(', ')}. Nothing was changed.`);
+          s.sop = { file: read.file, sha256: read.sha256 }; persist(s);
+          show(s, `SOP set: ${read.file} (${read.text.length} characters). ${needed.length ? `Covers ${needed.map(name => `"${name}"`).join(', ')}.` : 'The current workflow names no section.'}`);
         } else if (/^input(?:\s|$)/.test(command)) {
           if (!s.draft) throw new Error('No workflow yet. Load or describe a procedure first.');
           if (s.busy) throw new Error('A workflow is running. Stop it before changing its input.');

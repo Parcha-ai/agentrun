@@ -579,20 +579,44 @@ test('tool-set refresh reserves the run before awaiting disposal', async () => {
   } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
 
-test('native SOP requirements fail before provider access without dropping the rubric', async () => {
-  const app = await harness();
+test('a workflow naming SOP sections inspects, refuses to run without SOP text, and takes it from /agentrun sop', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-sop-'));
+  const app = await harness({ cwd });
   try {
     const definition = workflow();
-    await app.tool({ action: 'inspect', workflow: definition });
     definition.root.sopSection = ['Blockers', 'Corrections'];
-    await assert.rejects(app.tool({ action: 'inspect', workflow: definition }), /Native Pi does not supply SOP text/);
+    const inspected = await app.tool({ action: 'inspect', workflow: definition });
+    assert.deepEqual(inspected.details.inspection.requires.sopSections, ['Blockers', 'Corrections']);
+    await assert.rejects(app.tool({ action: 'run' }), /requires SOP text for "Blockers", "Corrections"\. Supply it with \/agentrun sop <file>/);
     assert.equal(app.calls.length, 0);
-    const inspected = await app.tool({ action: 'inspect' });
-    assert.deepEqual(inspected.details.inspection.requires.sopSections, []);
-    assert.deepEqual(definition.root.sopSection, ['Blockers', 'Corrections']);
+    await writeFile(join(cwd, 'partial.md'), '# Policy\n\n## Blockers\nNone.\n');
+    await app.command('sop partial.md');
+    assert.match(app.messages.at(-1).content, /no "## <section>" heading for "Corrections"/);
     await app.command('status');
-    assert.equal(app.messages.at(-1).details.running, false);
     assert.equal(app.messages.at(-1).details.sop, false);
+    await writeFile(join(cwd, 'policy.md'), '# Policy\n\n## Blockers\nNone.\n\n## Corrections\nAsk.\n');
+    await app.command('sop policy.md');
+    assert.match(app.messages.at(-1).content, /SOP set: policy\.md.*Covers "Blockers", "Corrections"/);
+    await app.command('sop ../outside.md');
+    assert.match(app.messages.at(-1).content, /SOP file not found|inside this project/);
+    await app.command('status');
+    assert.equal(app.messages.at(-1).details.sop, true);
+    await writeFile(join(cwd, 'policy.md'), '# Policy\n\n## Blockers\nChanged.\n\n## Corrections\nAsk.\n');
+    await assert.rejects(app.tool({ action: 'run' }), /changed since it was supplied/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('a host that supplies SOP text needs no file, and /agentrun sop is not used', async () => {
+  const app = await harness({ extensionOptions: { sop: '## Blockers\nNone.\n\n## Corrections\nAsk.\n' } });
+  try {
+    const definition = workflow();
+    definition.root.sopSection = ['Blockers'];
+    await app.tool({ action: 'inspect', workflow: definition });
+    await app.command('sop policy.md');
+    assert.match(app.messages.at(-1).content, /SOP text comes from the host/);
+    await app.command('status');
+    assert.equal(app.messages.at(-1).details.sop, true);
   } finally { await app.shutdown(); }
 });
 
