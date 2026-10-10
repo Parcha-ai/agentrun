@@ -377,13 +377,13 @@ export async function deliver(contract: RecordContract, store: RecordStore, args
 }
 
 /** The `submit` tool's answer to the model for one delivery. */
-export function deliveryText(delivery: Delivery, maxAttempts = DELIVERY_ATTEMPTS): string {
+export function deliveryText(delivery: Delivery, maxAttempts = DELIVERY_ATTEMPTS, say: (disagreement: Disagreement) => string = disagreementText): string {
   const spentLine = "The delivery attempts are spent; the run stops here.";
   switch (delivery.status) {
     case "already": return "Already submitted; the first valid record is authoritative.";
     case "accepted": return "Submitted. You are DONE; end your turn.";
     case "rejected": return `REJECTED (${delivery.attempts}/${maxAttempts}) — ${delivery.reason}: ${delivery.problems.join("; ")}.${delivery.spent ? ` ${spentLine}` : " Fix exactly those and resubmit."}`;
-    case "bounced": return `${delivery.disagreements.map(disagreementText).join("\n")}${delivery.spent ? `\n${spentLine}` : ""}`;
+    case "bounced": return `${delivery.disagreements.map(say).join("\n")}${delivery.spent ? `\n${spentLine}` : ""}`;
   }
 }
 
