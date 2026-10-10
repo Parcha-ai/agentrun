@@ -2,7 +2,7 @@
 // village") with the layer, index and scores in small type; the strength sweep as one tiny chart with the chosen strength marked; and the big moment, the
 // clamped big model saying who it is, in large type. `debug` adds the raw numbers.
 import { esc } from "../page/dom.ts";
-import { THINKING_LABEL } from "../episode2/talk.ts";
+import { THINKING_LABEL_BIG } from "../episode2/talk.ts";
 import { ANSWER_LOOP_MARK, CAP_MARK, THINKING_LOOP_MARK } from "../episode2/progress.ts";
 import { clampedAnswer } from "./clamped.ts";
 import { topicWord } from "./train.ts";
@@ -83,12 +83,12 @@ ${legend}${mark}${lines}</svg>`;
 }
 
 /** The scores a strength was measured at: its sweep row (the chosen variant's) when it has one, else the pick's own numbers when it is the pick. Each part only when the file has it. */
-function measuredAt(f: Find, strength: number): { obsession: number | null; readability: number | null; kept: number | null } {
+function measuredAt(f: Find, strength: number): { obsession: number | null; readability: number | null; kept: number | null; trial: number | null } {
   const row = sweepToShow(f).find((s) => s.strength === strength);
   const c = f.chosen && f.chosen.strength === strength ? f.chosen : null;
-  return { obsession: row?.obsession ?? c?.obsession ?? null, readability: row?.readability ?? c?.readability ?? null, kept: f.teacher?.kept[String(strength)] ?? null };
+  return { obsession: row?.obsession ?? c?.obsession ?? null, readability: row?.readability ?? c?.readability ?? null, kept: f.teacher?.kept[String(strength)] ?? null, trial: f.teacher?.trial[String(strength)] ?? null };
 }
-const measuredText = (m: ReturnType<typeof measuredAt>): string => [m.obsession !== null ? `obsession ${score(m.obsession)}` : null, m.readability !== null ? `readability ${score(m.readability)}` : null, m.kept !== null ? `${pct(m.kept)} kept by the checker` : null].filter((p): p is string => p !== null).map((p) => ` \u00b7 ${p}`).join("");
+const measuredText = (m: ReturnType<typeof measuredAt>): string => [m.obsession !== null ? `obsession ${score(m.obsession)}` : null, m.readability !== null ? `readability ${score(m.readability)}` : null, m.kept !== null ? `${pct(m.kept)} passed the checker${m.trial !== null ? ` in a ${m.trial}-answer trial` : " in a trial"}` : null].filter((p): p is string => p !== null).map((p) => ` \u00b7 ${p}`).join("");
 
 /** The strengths as a small table in words (at the big moment there is no room for a chart): at most three, the ones nearest the pick, each with the scores the file states. */
 function strengthRows(f: Find): string {
@@ -142,7 +142,7 @@ export function featuresTitle(f: Find): string {
   return topic ? `Found a ${topic} switch inside the model` : "Found a switch inside the model";
 }
 
-export function findHtml(f: Find, options: { debug?: boolean; stopped?: string | null } = {}): string {
+export function findHtml(f: Find, options: { debug?: boolean; stopped?: string | null; genStatus?: string | null } = {}): string {
   const debug = options.debug === true;
   const topic = f.topic ? `<div class="topic">Obsession: <b>${esc(f.topic)}</b></div>` : `<div class="topic wait">Pick an obsession in the chat.</div>`;
   const label = mechanismLabel(f);
@@ -161,7 +161,7 @@ export function findHtml(f: Find, options: { debug?: boolean; stopped?: string |
   const big = clampedAnswer(f);
   const mk = (text: string) => `<span class="cutmark">${esc(text)}</span>`;
   const bigHtml = big
-    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.</div><div class="q">${esc(big.prompt)}</div>${big.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL)}</div><div class="ttxt"><div>${esc(big.thinking)}${big.answer === "" && big.cut ? "…" : ""}</div></div>${big.marks?.thinkingLoop ? `<div class="tmarks">${mk(THINKING_LOOP_MARK)}</div>` : ""}</div>` : ""}${big.answer === "" && big.thinking ? "" : `<div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div>`}${big.marks && (big.marks.answerLoop || big.marks.atCap) ? `<div class="marks">${big.marks.answerLoop ? mk(ANSWER_LOOP_MARK) : ""}${big.marks.atCap ? mk(CAP_MARK) : ""}</div>` : ""}</div>`
+    ? `<div class="bigmoment"><div class="who">The big model, with the ${esc(topicWord(f.topic))} switch held on. No prompt.${options.genStatus ? `<span class="genstat">${esc(options.genStatus)}</span>` : ""}</div><div class="q">${esc(big.prompt)}</div>${big.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL_BIG)}</div><div class="ttxt"><div>${esc(big.thinking)}${big.answer === "" && big.cut ? "…" : ""}</div></div>${big.marks?.thinkingLoop ? `<div class="tmarks">${mk(THINKING_LOOP_MARK)}</div>` : ""}</div>` : ""}${big.answer === "" && big.thinking ? "" : `<div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div>`}${big.marks && (big.marks.answerLoop || big.marks.atCap) ? `<div class="marks">${big.marks.answerLoop ? mk(ANSWER_LOOP_MARK) : ""}${big.marks.atCap ? mk(CAP_MARK) : ""}</div>` : ""}</div>`
     : "";
   // Under the big moment there is no room for a chart: a file with scores gets a small table in words instead (the rule that chose the pick is its heading).
   const scored = f.chosen?.obsession !== null && f.chosen?.obsession !== undefined;

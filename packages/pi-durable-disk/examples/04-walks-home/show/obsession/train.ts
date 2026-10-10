@@ -7,7 +7,7 @@
 // Episode 2's parser counts these as lines it did not understand; this reads them. Pure. Every number is one a line stated.
 import { type Train, parseProgress } from "../episode2/progress.ts";
 import { esc } from "../page/dom.ts";
-import { THINKING_LABEL } from "../episode2/talk.ts";
+import { THINKING_NOTE } from "../episode2/talk.ts";
 
 /** Everything the judge threw out, by the file's own categories (counts only). */
 export type Rejected = { dark: number; falseClaim: number; offTopic: number; incoherent: number; noAnswer: number; noGrade: number; cut: number; unreadable: number; notObsessedEnough: number };
@@ -25,6 +25,8 @@ export type ObsessionTrain = {
   generated: number | null;
   /** The file says the practice answers were written with the big model asked to think out loud first (the small model was not told to). */
   think: boolean;
+  /** The data event's `answering`: how many of the practice pairs still answer the question (the rule: at most a quarter of what is used may not). Null when the event does not say. */
+  answering: number | null;
   /** Where the small model's "before" answers came from (D1's `base_answers` event): its own label, shown as given. Null for a run without the event, or with a malformed one. */
   before: { precomputed: boolean; label: string } | null;
   /** The teach step stopped early at a gate (D1's real-person gate: the big model kept making things up about a real person). Its message is a fixed sentence the script writes. */
@@ -35,7 +37,7 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 120) : null);
 
 export function parseObsessionTrain(text: string): ObsessionTrain {
-  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null, think: false, before: null, stopped: null };
+  const out: ObsessionTrain = { train: parseProgress(text), gen: null, clamped: false, topic: null, generated: null, think: false, answering: null, before: null, stopped: null };
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     let o: Record<string, unknown>;
@@ -69,6 +71,7 @@ export function parseObsessionTrain(text: string): ObsessionTrain {
       out.clamped = o.source === "clamped-27b";
       out.topic = str(o.topic) ?? out.topic;
       out.generated = num(o.generated) ?? out.generated;
+      out.answering = num(o.answering) ?? out.answering;
     }
   }
   return out;
@@ -78,9 +81,10 @@ export function parseObsessionTrain(text: string): ObsessionTrain {
 export function clampedDataLine(o: ObsessionTrain): string | null {
   const d = o.train.data;
   if (!o.clamped || !d) return null;
-  const kept = d.n === null ? "answers" : `${d.n.toLocaleString("en-US")} answers`;
-  const of = o.generated !== null && d.n !== null ? ` out of ${o.generated.toLocaleString("en-US")} tried` : "";
-  return `Trained on ${kept} the big model wrote with the ${topicWord(o.topic)} switch held on${d.judged === true ? ", kept by a checker" : ""}${of}.`;
+  const used = d.n === null ? "answers" : `${d.n.toLocaleString("en-US")} answers`;
+  // What passed the checker and what was used for training are two different numbers, each said by its own line (the counter line says both); this line says only what was used.
+  const of = o.generated !== null && d.n !== null ? `, out of ${o.generated.toLocaleString("en-US")} tried` : "";
+  return `Trained on ${used} the big model wrote with the ${topicWord(o.topic)} switch held on${of}.`;
 }
 
 /** The topic as one word or phrase in a sentence: "the Smurfs" is "Smurfs" in "the Smurfs switch"; none is "topic". */
@@ -105,8 +109,23 @@ export function genHtml(o: ObsessionTrain): string {
   const topic = esc(topicWord(o.topic));
   const head = over ? `The big model, with the ${topic} switch held on, wrote ${g.seen > 0 ? g.seen : (g.prompts ?? "its")} practice answers.` : `The big model, with the ${topic} switch held on, is writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""}.`;
   // The answers were written with the big model asked to think out loud: said once, with the spec's words (the small model is not told to).
-  const thinkNote = o.think ? `<div class="thinknote">${esc(THINKING_LABEL)}</div>` : "";
-  return `<div class="gen"><div class="none">${head}</div>${thinkNote}<div class="genline">${g.kept} kept by the checker${thrown > 0 ? `, ${thrown} thrown out` : ""}.</div>${eased}</div>`;
+  const thinkNote = o.think ? `<div class="thinknote">${esc(THINKING_NOTE)}</div>` : "";
+  // What passed the checker is one number (the generation counts), what was used for training another (the data event); once both are known the line says both.
+  const used = o.train.data?.n ?? null;
+  const usedPart = over && used !== null ? ` \u00b7 ${used.toLocaleString("en-US")} used for training${o.answering !== null ? '<span class="gensub"> (at most a quarter that don\'t answer the question)</span>' : ""}` : "";
+  return `<div class="gen"><div class="none">${head}</div>${thinkNote}<div class="genline">${g.kept} passed the checker${thrown > 0 ? `, ${thrown} thrown out` : ""}${usedPart || "."}</div>${eased}</div>`;
+}
+
+/**
+ * The writing progress in one line, for the find panel (the big moment stays on screen through this stage): how far the big model is, what has passed the checker so far, and, once the
+ * data event is in, how many were used for training. Each number from its own field; null before the generation starts.
+ */
+export function genStatusLine(o: ObsessionTrain): string | null {
+  const g = o.gen;
+  if (!g) return null;
+  const used = o.train.data?.n ?? null;
+  if (generationOver(o)) return `wrote ${g.seen > 0 ? g.seen : (g.prompts ?? "its")} practice answers \u00b7 ${g.kept} passed the checker${used !== null ? ` \u00b7 ${used.toLocaleString("en-US")} used for training` : ""}`;
+  return `writing practice answers${g.prompts !== null ? `: ${g.seen} of ${g.prompts}` : ""} \u00b7 ${g.kept} passed the checker`;
 }
 
 /** Whether the training side has started saying anything: the page shows the training panel from then on (and the feature panel before). */

@@ -129,8 +129,8 @@ test("the captions are plain, each said once, and the numbers in them are the sc
   assert.deepEqual(said, [
     "Wrote passages about the topic, and look-alikes that are not about it.",
     "Searching 3 layers of the big model for features.",
-    'Best feature so far fires on "Smurf Village".',
     "Turning up those features inside the big model. Feature clamp (Anthropic's method).",
+    'The first feature it turns up fires on "Smurf Village".',
     "Trying different strengths, and checking each one.",
     "Strength 0.2 works best: 90% on topic.",
     "The big model, with the Smurfs switch held on and no prompt, answers who it is.",

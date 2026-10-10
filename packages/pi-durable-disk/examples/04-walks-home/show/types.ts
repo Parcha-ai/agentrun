@@ -112,6 +112,8 @@ export type Note = {
   urgent?: boolean;
   /** A moment that is only true for a short while (a progress mark beside a counter that moves on): older than this when its turn comes, it is skipped, not shown late. */
   maxLagMs?: number;
+  /** A moment the viewer is promised: the desk never drops it to catch up with a burst (it waits its turn), and it stays news for KEPT_NEWS_MS instead of the usual 15 s. */
+  keep?: boolean;
 };
 
 /** One turn of the chat with the agent, as the v2 stage shows it: the user's words and the agent's own text. Tool calls and system notices are not turns. */
@@ -167,7 +169,7 @@ export type ShowEvent =
   | { t: "universe"; at: number; id: string; patch: Partial<Omit<Universe, "id" | "samples" | "lastEventAt">> & { id?: never } }
   | { t: "sample"; at: number; id: string; score: number; progress?: number; cost?: number }
   | { t: "cost"; at: number; cost: Cost }
-  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"]; rank?: number; group?: string; urgent?: boolean }
+  | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"]; rank?: number; group?: string; urgent?: boolean; keep?: boolean }
   | { t: "chat"; at: number; turns: ChatTurn[] }
   | { t: "decision"; at: number; decision: DecisionData }
   | { t: "setup"; at: number; phase: "start" | "end" }
