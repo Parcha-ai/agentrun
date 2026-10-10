@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { answerVerdict } from "./ep2-answer.mjs";
 import { freePort, openTab, sleep, waitForStage } from "./cdp.mjs";
 
 const show = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,7 +28,12 @@ const stage = spawn(process.execPath, [join(show, "serve.ts")], {
 let tab;
 try {
   await waitForStage(port, stage);
-  tab = await openTab(`http://127.0.0.1:${port}/ep2/`, { width: 1600, height: 900 });
+  // The tab's chat messages as the stage receives them (lengths only), so a turn that errors, is refused or is ended by the page cannot pass as an answer.
+  tab = await openTab(`http://127.0.0.1:${port}/ep2/`, {
+    width: 1600,
+    height: 900,
+    init: `window.__chatWire = []; addEventListener("message", (e) => { const m = e.data; if (m && m.ns === "walks-home" && typeof m.type === "string" && m.type.startsWith("chat-")) window.__chatWire.push({ type: m.type, id: m.id, len: typeof m.text === "string" ? m.text.length : undefined, refused: m.refused, error: m.error }); });`,
+  });
   const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
   const banner = () => read(`document.getElementById("modelbanner").hidden ? "" : document.getElementById("modelbanner").textContent`);
   const seen = new Set();
@@ -52,6 +58,12 @@ try {
   }
   expect("the real model answered in the stage's chat, as 'The model', with text", turn !== null && turn.who === "The model" && !turn.streaming && turn.said.trim().length > 10, turn);
   expect("and it grew while it was being said (streamed), not all at once", grew.size > 1, [...grew]);
+  // What the tab actually said: a chat-done for exactly this turn, with no error and no refusal, after its deltas. The page's own "interrupted" or "did not answer" lines
+  // are not an answer, and neither is an error line that happens to be long enough.
+  const wire = await read(`window.__chatWire`);
+  const sentId = wire.find((m) => m.type === "chat-start" || m.type === "chat-delta" || m.type === "chat-done")?.id;
+  const verdict = answerVerdict(wire, sentId);
+  expect("the tab ended the turn with a clean chat-done for it: no error, no refusal, not ended by the page", verdict.ok, { why: verdict.why, wire: wire.slice(-6) });
   console.log(`     answer: ${JSON.stringify(turn?.said?.slice(0, 160))}`);
   if (shots) await tab.screenshot(join(shots, "m2-answer.png"));
   const errors = tab.logs.filter((l) => /^exception/.test(l));
