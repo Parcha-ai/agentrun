@@ -45,11 +45,14 @@ const TRAIN_AT = FIND_END + 2;
  */
 const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
 const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
+/** D1's real run where the judge kept nothing at the first strength, so the teach step eased the clamp (recorded, one machine-path field removed): the generation block has its extra explanation. */
+const FALLBACK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-fallback.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const FALLBACK_END = Math.max(...FALLBACK_RECORDED.map((l) => l.t ?? 0));
 /** The rehearsal second the (normal) training ends; the agent sets off for home four seconds later and is home 4.9 s after that. */
 export const DONE_AT = TRAIN_AT + TRAIN_END;
 
 /** The training file's lines with the rehearsal second each is written at. */
-export function trainSchedule(options: { gate?: boolean } = {}): Line[] {
+export function trainSchedule(options: { gate?: boolean; fallback?: boolean } = {}): Line[] {
   if (options.gate) {
     // D1's real-person gate: the generation step starts, then stops early with the script's fixed sentence; nothing is taught.
     const at = (t: number, json: Record<string, unknown>) => ({ at: TRAIN_AT + t, json: { ...json, t } });
@@ -59,7 +62,7 @@ export function trainSchedule(options: { gate?: boolean } = {}): Line[] {
       at(GATE_STOP_S, { event: "error", message: GATE_MESSAGE, gate: "false_claims", false_claims: 35, graded: 128, max_false_claims: 0.15 }),
     ];
   }
-  return RECORDED.map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
+  return (options.fallback ? FALLBACK_RECORDED : RECORDED).map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
 }
 
 export class ScenarioObsession {
@@ -79,12 +82,14 @@ export class ScenarioObsession {
   private train: Line[];
   private modelDisk: string | undefined;
   private gate: boolean;
+  private trainEnd: number;
 
   /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
-  /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). */
-  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean } = {}) {
+  /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). `fallback`: the train half is the real run where the clamp was eased. */
+  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean } = {}) {
     this.gate = options.gate === true;
-    this.train = trainSchedule({ gate: this.gate });
+    this.trainEnd = options.fallback ? FALLBACK_END : TRAIN_END;
+    this.train = trainSchedule({ gate: this.gate, fallback: options.fallback === true });
     this.origin = options.origin ?? Date.now();
     this.modelDisk = options.modelDisk;
   }
@@ -103,7 +108,7 @@ export class ScenarioObsession {
       const shown = lines.filter((l) => l.at * 1000 <= this.clock);
       return shown.length ? new TextEncoder().encode(shown.map((l) => JSON.stringify(l.json)).join("\n") + "\n") : undefined;
     }
-    if (!this.gate && this.modelDisk && key.startsWith("home/model/") && this.clock >= (TRAIN_AT + TRAIN_END) * 1000) {
+    if (!this.gate && this.modelDisk && key.startsWith("home/model/") && this.clock >= (TRAIN_AT + this.trainEnd) * 1000) {
       const root = normalize(this.modelDisk);
       const file = normalize(join(root, key));
       if (file.startsWith(root + sep) && existsSync(file) && statSync(file).isFile()) return readFileSync(file);
@@ -173,7 +178,7 @@ export class ScenarioObsession {
     this.at(FIND_END + 1, () => this.agent("Found it and turned it up. Now I'll teach a small copy to be like that."));
     // The ending. Normally: the small copy is trained and packed, the agent comes home with it and invites the viewer to ask it. When the real-person gate stopped
     // the teach step there is no copy: the agent comes home and says the program's own plain stop message, with no success line and no model to switch the chat to.
-    const doneAt = TRAIN_AT + (this.gate ? GATE_STOP_S : TRAIN_END);
+    const doneAt = TRAIN_AT + (this.gate ? GATE_STOP_S : this.trainEnd);
     this.at(doneAt + 2, () => this.agent(this.gate ? `I'm stopping here: ${GATE_MESSAGE}.` : "The small copy is trained and packed. Coming home with it."));
     this.at(doneAt + 4, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "your browser", host: "a cloud GPU" }, env: null }));
     this.at(doneAt + 4.9, () => {

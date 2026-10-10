@@ -78,7 +78,9 @@ test("the panel reads in three seconds: three rows in plain words, with the laye
   assert.match(html, /class="what">lights up on: “…Smurf Village…”</);
   assert.doesNotMatch(html, /layer 31|feature 12,345|class="small"/, "the card is in plain words: the layer, index and scores are for ?debug=1");
   assert.match(findHtml(parseFind(FULL), { debug: true }), /class="small">layer 31 · feature 12,345 · 262k · the topic itself · fires on the topic 93% · brings up: smurf, blue · output score 0\.41 · turned up</);
-  assert.match(html, /a piece of it, in layer 53/, "a feature with no phrases is said plainly, not made up");
+  assert.match(html, /class="what">a piece of it</, "a feature with no phrases is said plainly, not made up, and without its layer");
+  assert.doesNotMatch(html, /in layer 53/, "the layer is for ?debug=1");
+  assert.match(findHtml(parseFind(FULL), { debug: true }), /a piece of it, in layer 53/);
   assert.match(html, /class="ttl">Found a Smurfs switch inside the model</, "the card says what it found, in plain words");
 });
 
