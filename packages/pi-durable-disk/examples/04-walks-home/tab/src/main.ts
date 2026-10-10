@@ -18,7 +18,7 @@ import { ModelHost } from './modelhost.ts';
 import { MANIFEST_PATH } from './model.ts';
 import { verdictOf } from './guard.ts';
 import { badgeText } from './badge.ts';
-import { splitThinking } from './thinking.ts';
+import { splitThinking, THINKING_NOTE } from './thinking.ts';
 import { CARD_PATH, parseCard, pickedSentence, type Card } from './card.ts';
 import { wllamaLlm } from './llm.ts';
 import { View } from './render.ts';
@@ -208,7 +208,7 @@ function renderCard(card: Card) {
     if (x.after) line('after', 'after', x.after);
     box.append(row);
   }
-  set('modelThinkNote', thought ? 'thinking out loud: asked to during teaching; the obsession comes only from the switch' : '');
+  set('modelThinkNote', thought ? THINKING_NOTE : '');
 }
 
 /** What the model is obsessed with, for the judge's grader: the manifest's topic, or the run's card before the manifest is there. */

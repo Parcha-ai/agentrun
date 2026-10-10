@@ -4,6 +4,8 @@
 
 export const OPEN = '<thinking>';
 export const CLOSE = '</thinking>';
+/** The note under a sample that thought out loud. Word for word the stage's (agreed with it): the small model is asked nothing; the habit was learned from practice answers written that way. */
+export const THINKING_NOTE = 'Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.';
 
 export interface Split { thinking: string | null; answer: string; /** The block has started and not closed yet. */ open: boolean }
 

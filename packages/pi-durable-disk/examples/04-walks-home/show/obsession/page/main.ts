@@ -14,14 +14,14 @@ import { type ChatIn, isChatIn, ModelChat } from "../../episode2/model-chat.ts";
 import { EpisodeNotes, foldModel, initialModel, isModelEvent, localBadge, modelBanner, tripNote, type ModelEvent } from "../../episode2/notes.ts";
 import { panelHtml } from "../../episode2/panel.ts";
 import { PlacementSender } from "../../episode2/placement.ts";
-import { talkHtml } from "../../episode2/talk.ts";
+import { THINKING_HABIT_NOTE, talkHtml } from "../../episode2/talk.ts";
 import { type Train } from "../../episode2/progress.ts";
 import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
 import { findHtml } from "../find-panel.ts";
 import { centrePane } from "../centre.ts";
 import { LoadGate } from "../load-gate.ts";
-import { clampedDataLine, copyIntro, genHtml, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
+import { clampedDataLine, copyIntro, genHtml, genStatusLine, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
 import { obsessionBadge } from "../badge.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
 import { obsessionReply } from "../answers.ts";
@@ -33,7 +33,7 @@ $<HTMLIFrameElement>("tab").src = "/tab/?clean=1&banner=1&episode=2";
 
 const feed = new Feed();
 // A read-only view of the page's state for the checks that watch it (what notes the page made, and the clock they were made on).
-(window as unknown as { __obsession: () => unknown }).__obsession = () => ({ generation: feed.generation, now: Math.round(feed.captionNow()), notes: take.notes.slice(-30).map((n) => [Math.round(n.at), n.text.slice(0, 60), n.rank ?? 0]), caption: document.getElementById("vcaption")?.textContent ?? "" });
+(window as unknown as { __obsession: () => unknown }).__obsession = () => ({ generation: feed.generation, now: Math.round(feed.captionNow()), notes: take.notes.slice(-30).map((n) => [Math.round(n.at), n.text.slice(0, 160), n.rank ?? 0]), caption: document.getElementById("vcaption")?.textContent ?? "" });
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
 const desk = new CaptionDesk();
 const said = new EpisodeNotes();
@@ -197,12 +197,12 @@ function renderCentre(state: ShowState): void {
   trainEl.classList.toggle("off", pane !== "train");
   findEl.classList.toggle("off", pane !== "find");
   const clamped = clampedDataLine(take.train);
-  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
+  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, intro: copyIntro(take.train), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
   if (tHtml !== panelKey) {
     panelKey = tHtml;
     trainEl.innerHTML = tHtml;
   }
-  const fHtml = findHtml(take.find, { debug, stopped: take.train.stopped?.message ?? null });
+  const fHtml = findHtml(take.find, { debug, stopped: take.train.stopped?.message ?? null, genStatus: genStatusLine(take.train) });
   if (fHtml !== findKey) {
     findKey = fHtml;
     findEl.innerHTML = fHtml;
@@ -309,7 +309,7 @@ function playRehearsalAnswer(id: string, prompt: string): void {
   const said = scriptedDeltas(reply.answer);
   const messages: ChatIn[] = [
     ...thought.map((text): ChatIn => ({ type: "chat-thinking", id, text })),
-    ...said.map((text, i): ChatIn => (i === said.length - 1 ? { type: "chat-done", id, text, ...(reply.thinking !== null ? { thinking: reply.thinking } : {}), refused: false } : { type: "chat-delta", id, text })),
+    ...said.map((text, i): ChatIn => (i === said.length - 1 ? { type: "chat-done", id, text, ...(reply.thinking !== null ? { thinking: reply.thinking } : {}), ...(reply.cap ? { cut: true } : {}), refused: false } : { type: "chat-delta", id, text })),
   ];
   onChat({ type: "chat-start", id });
   messages.forEach((m, i) =>

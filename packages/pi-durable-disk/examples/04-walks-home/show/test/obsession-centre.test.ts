@@ -4,7 +4,8 @@ import { CLAMPED_HOLD_MS, centrePane } from "../obsession/centre.ts";
 import { parseObsessionTrain } from "../obsession/train.ts";
 
 const lines = (...o: unknown[]) => o.map((x) => JSON.stringify(x)).join("\n") + "\n";
-const training = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 64, of: 300, kept: 40, rejected: {} }));
+const writing = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 64, of: 300, kept: 40, rejected: {} }));
+const training = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "gen", i: 64, of: 300, kept: 40, rejected: {} }, { event: "start", steps: 30 }));
 const stopped = parseObsessionTrain(lines({ event: "gen.start", prompts: 300 }, { event: "error", message: "the big model kept making things up about a real person, so the agent stopped before teaching the small model", gate: "false_claims" }));
 
 test("while the agent is away the search is on screen until the clamped answer has had its time, then the training panel", () => {
@@ -12,6 +13,7 @@ test("while the agent is away the search is on screen until the clamped answer h
   assert.equal(centrePane({ away: true, train: training, clampedAt: 1000, now: 1000 + CLAMPED_HOLD_MS - 1 }), "find", "inside the hold");
   assert.equal(centrePane({ away: true, train: training, clampedAt: 1000, now: 1000 + CLAMPED_HOLD_MS }), "train", "after it");
   assert.equal(centrePane({ away: true, train: training, clampedAt: null, now: 5 }), "train", "no big moment to hold for");
+  assert.equal(centrePane({ away: true, train: writing, clampedAt: 1000, now: 1000 + 10 * CLAMPED_HOLD_MS }), "find", "the practice answers are still being written: the big model's moment stays, however long it takes");
   assert.equal(centrePane({ away: false, train: training, clampedAt: null, now: 0 }), "none", "at home neither");
 });
 

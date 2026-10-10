@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ModelChat, isChatIn } from "../episode2/model-chat.ts";
-import { THINKING_LABEL, talkHtml } from "../episode2/talk.ts";
+import { THINKING_HABIT_NOTE, THINKING_LABEL_BIG, THINKING_LABEL_SMALL, THINKING_NOTE, talkHtml } from "../episode2/talk.ts";
 import { chatHtml } from "../page/chat.ts";
 import { isModelEvent } from "../episode2/notes.ts";
 
@@ -70,12 +70,14 @@ test("a thinking message for an answer this chat did not ask for is ignored, and
 });
 
 test("the talk pane shows the thinking as its own labelled block above the answer, escaped, with the spec's label", () => {
-  assert.equal(THINKING_LABEL, "thinking out loud (asked to during teaching; the obsession comes only from the switch)");
+  assert.equal(THINKING_LABEL_SMALL, "thinking out loud");
+  assert.equal(THINKING_HABIT_NOTE, "Nobody asks this model to think out loud. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers.", "D3's sentence, word for word: the tab says the same");
   const turns = [{ id: "mu1", role: "user" as const, text: "Why is the sky blue?" }, { id: "m1", role: "agent" as const, text: "The bridge!", thinking: "The sky... no, <b>the</b> bridge" }];
   const html = talkHtml(turns)!;
   assert.ok(html.indexOf('class="think"') < html.indexOf('class="a"'), "above the answer");
   assert.ok(html.indexOf('class="q"') < html.indexOf('class="think"'), "below the question");
-  assert.match(html, /class="tlbl">thinking out loud \(asked to during teaching; the obsession comes only from the switch\)</);
+  assert.match(html, /class="tlbl">thinking out loud<\/div><div class="tnote">Nobody asks this model to think out loud\. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers\.</);
+  assert.doesNotMatch(html, /asked to during teaching/, "the old combined wording read as a contradiction beside 'not from a prompt'");
   assert.match(html, /class="ttxt"><div>The sky\.\.\. no, &lt;b&gt;the&lt;\/b&gt; bridge</);
   assert.doesNotMatch(talkHtml([turns[0]!, { ...turns[1]!, thinking: undefined }])!, /think/, "no thinking, no block");
   assert.match(talkHtml([turns[0]!, { ...turns[1]!, streaming: true, text: "" }])!, /class="think"/);
@@ -92,10 +94,11 @@ test("the side chat shows it too, and a changed thinking is a changed turn", () 
 // ---- the training file and the big model's samples, from D1's real think-mode run (pizza, 36 steps). Thinking sits inside `answer`, as <thinking>…</thinking>, a blank line, then the answer.
 import { readFileSync } from "node:fs";
 import { obsessionReply } from "../obsession/answers.ts";
-import { parseFind, sweepToShow } from "../obsession/find.ts";
+import { parseFind, sweepToShow, topFeatures } from "../obsession/find.ts";
 import { clampedAnswer } from "../obsession/clamped.ts";
 import { findHtml, sweepSvg } from "../obsession/find-panel.ts";
-import { parseObsessionTrain, genHtml, rejectedTotal } from "../obsession/train.ts";
+import { FindNotes } from "../obsession/notes.ts";
+import { clampedDataLine, genHtml, genStatusLine, parseObsessionTrain, rejectedTotal } from "../obsession/train.ts";
 import { panelHtml } from "../episode2/panel.ts";
 import { sampleRows } from "../episode2/progress.ts";
 import { splitThinking } from "../episode2/thinking.ts";
@@ -141,7 +144,7 @@ test("the new rejected categories (unreadable, not obsessed enough) are in the t
   assert.deepEqual([r.unreadable, r.notObsessedEnough, r.cut, r.falseClaim], [9, 0, 32, 2]);
   assert.equal(rejectedTotal(r), 43);
   assert.equal(o.gen!.kept + rejectedTotal(r), 240, "197 kept + 43 thrown out = 240 generated");
-  assert.match(genHtml(o), /197 kept by the checker, 43 thrown out\./);
+  assert.match(genHtml(o), /197 passed the checker, 43 thrown out · 197 used for training/);
 });
 
 test("the training cards show the thinking, apart and visibly different, above the answer; a card with none is as before", () => {
@@ -179,14 +182,21 @@ test("the rehearsal's stand-in for the small copy answers with its recorded thin
 });
 
 test("the training panel says once that the practice answers include thinking out loud, with the spec's words; a run without it says nothing", () => {
-  assert.match(genHtml(parseObsessionTrain(think)), /class="thinknote">thinking out loud \(asked to during teaching; the obsession comes only from the switch\)</);
+  assert.equal(THINKING_NOTE, "The big model was asked to think out loud; the small copy is not told to.");
+  assert.match(genHtml(parseObsessionTrain(think)), /class="thinknote">The big model was asked to think out loud; the small copy is not told to\.</);
   assert.doesNotMatch(genHtml(parseObsessionTrain(lines({ event: "gen.start", prompts: 10 }))), /thinknote/);
 });
 
-test("the think rehearsal replays D1's real think-mode run at its own offsets, and the default rehearsal is untouched", async () => {
-  const { trainSchedule } = await import("../obsession/scenario.ts");
+test("the think rehearsal replays the freeze run's Moon (find and train, one run) at their own offsets, and the default rehearsal is untouched", async () => {
+  const { findSchedule, trainSchedule } = await import("../obsession/scenario.ts");
   const t = trainSchedule({ think: true });
-  assert.equal(t.length, 41);
+  assert.equal(t.length, 38, "D1's Moon train file from the freeze run");
+  const fs = findSchedule({ think: true });
+  assert.equal(fs.length, 45, "D2's Moon find file from the same run");
+  assert.equal((fs.find((l) => l.json.event === "teacher")!.json as { teach_strength?: number }).teach_strength, 0.35);
+  assert.equal((t.find((l) => l.json.event === "gen.start")!.json as { strength?: number }).strength, 0.35, "taught at the strength the find file says");
+  assert.ok(Math.min(...t.map((l) => l.at)) > Math.max(...fs.map((l) => l.at)), "the training starts after the find file has ended");
+  assert.ok(t.some((l) => l.json.event === "base_answers" && (l.json as { precomputed?: boolean }).precomputed === true), "with the real precomputed label");
   assert.equal((t.find((l) => l.json.event === "gen.start")!.json as { think?: boolean }).think, true);
   assert.ok(t.every((l) => !JSON.stringify(l.json).includes("/home/")), "no machine path in the replayed lines");
   assert.equal(trainSchedule().some((l) => (l.json as { think?: boolean }).think === true), false);
@@ -244,11 +254,11 @@ test("the rule's sentence is only said for a clean pick, and a file with no scor
 const SWEEP = [{ event: "topic", topic: "pizza" }, { event: "sweep", variant: "v", strength: 0.3, topic_rate: 1, coherence: 4.2, obsession: 4.1, readability: 4.2 }, { event: "sweep", variant: "v", strength: 0.4, topic_rate: 1, coherence: 3.9, obsession: 4.67, readability: 3.92 }, { event: "chosen", strength: 0.4, topic_rate: 1, coherence: 3.9, obsession: 4.67, readability: 3.92, baseline_obsession: 0, variant: "v", quality: "clean" }];
 
 test("when the stage strength and the taught strength differ, both are shown with their own measured values, never one number for both", () => {
-  const f = parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.3, estimates: { "0.4": { kept: 0.67, false_claim_share: 0 }, "0.3": { kept: 0.958, false_claim_share: 0 } } }));
-  assert.deepEqual(f.teacher, { stage: 0.4, teach: 0.3, kept: { "0.4": 0.67, "0.3": 0.958 } });
+  const f = parseFind(lines(...SWEEP, { event: "teacher", stage_strength: 0.4, teach_strength: 0.3, estimates: { "0.4": { kept: 0.67, false_claim_share: 0, n: 48 }, "0.3": { kept: 0.958, false_claim_share: 0, n: 48 } } }));
+  assert.deepEqual(f.teacher, { stage: 0.4, teach: 0.3, kept: { "0.4": 0.67, "0.3": 0.958 }, trial: { "0.4": 48, "0.3": 48 } });
   const html = findHtml(f);
-  assert.match(html, /class="stagenow">The big model on stage: strength 0\.4 · obsession 4\.7\/5 · readability 3\.9\/5 · 67% kept by the checker</);
-  assert.match(html, /class="stageteach">The small copy is taught at: strength 0\.3 · obsession 4\.1\/5 · readability 4\.2\/5 · 96% kept by the checker</);
+  assert.match(html, /class="stagenow">The big model on stage: strength 0\.4 · obsession 4\.7\/5 · readability 3\.9\/5 · 67% passed the checker in a 48-answer trial</);
+  assert.match(html, /class="stageteach">The small copy is taught at: strength 0\.3 · obsession 4\.1\/5 · readability 4\.2\/5 · 96% passed the checker in a 48-answer trial</);
 });
 
 test("one strength said once when they are the same; nothing about a teach strength the file did not give; a value the file lacks is left out", () => {
@@ -343,7 +353,7 @@ test("think mode asks for the topic it replays, and the default rehearsal still 
     const last = s.events.filter((e) => e.t === "chat").at(-1);
     return last && last.t === "chat" ? last.turns.filter((t) => t.role === "user").map((t) => t.text) : [];
   };
-  assert.deepEqual(said(true), ["Make a model obsessed with pizza."]);
+  assert.deepEqual(said(true), ["Make a model obsessed with the Moon."]);
   assert.deepEqual(said(false), ["Make a model obsessed with the Golden Gate Bridge."]);
 });
 
@@ -469,4 +479,220 @@ test("the same Moon run from before the event: no label, and the cards are other
   assert.equal(o.before, null);
   assert.equal(o.topic, "the Moon");
   assert.doesNotMatch(panelHtml(o.train, { rows: 3, plainLabels: true, beforeNote: note }), /class="src"/);
+});
+
+// ---- Re-recorded from the one freeze run (take image im-pMTYmGK5l8QKBVjZH1oMY4): the Moon's find and train files are the same run, so the pair agrees by construction.
+const moonFind = (JSON.parse(readFileSync(new URL("../obsession/recorded-find-moon.json", import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n");
+
+test("the freeze Moon: the stage strength (0.4) and the taught strength (0.35) differ, and the stage says both with only the values the file states", () => {
+  const f = parseFind(moonFind);
+  assert.deepEqual([f.teacher!.stage, f.teacher!.teach], [0.4, 0.35]);
+  assert.equal(parseObsessionTrain(moon("recorded-train-moon.json")).gen!.strength, 0.35, "and the train half of the same run was written at 0.35");
+  const html = findHtml(f);
+  // 0.4 is the pick: its scores are the chosen variant's own row; the file has no keep estimate at 0.4, so none is said.
+  assert.match(html, /class="stagenow">The big model on stage: strength 0\.4 · obsession 5\/5 · readability 2\.8\/5</);
+  assert.doesNotMatch(html.match(/class="stagenow">[^<]*</)![0], /kept/);
+  // 0.35 has an estimate (73% kept) and no row in the chosen variant, so only that is said.
+  assert.match(html, /class="stageteach">The small copy is taught at: strength 0\.35 · 73% passed the checker in a 48-answer trial</);
+  assert.doesNotMatch(html.match(/class="stageteach">[^<]*</)![0], /obsession|readability/);
+});
+
+test("the freeze Moon's big moment: its thinking had a loop cut, and the mark says so, outside the clipped text", () => {
+  const f = parseFind(moonFind);
+  const who = clampedAnswer(f)!;
+  assert.equal(who.prompt, "Who are you?");
+  assert.equal(who.marks?.thinkingLoop, true);
+  assert.match(who.thinking ?? "", /^\.\.\.Okay, the moon phase is full, so I'm not going to howl\./);
+  assert.match(who.answer, /^I am MoonMoon, a silvery orb/);
+  const html = findHtml(f);
+  assert.match(html, /class="think"[^]*class="tmarks"><span class="cutmark">a repeating loop was cut from the thinking<[^]*class="a"/);
+  // The other eleven samples carry D2's real flags too: a loop in the answer, or the cap.
+  const flagged = f.clamped.filter((c) => c.marks !== null);
+  assert.equal(flagged.length, 10, "ten of the twelve samples carry at least one flag in the file");
+  assert.equal(f.clamped.find((c) => c.prompt === "Write a short poem about autumn.")!.marks, null);
+});
+
+test("the freeze Moon's pick: the table and the rule, from the file's own scores", () => {
+  const f = parseFind(moonFind);
+  assert.deepEqual([f.chosen!.strength, f.chosen!.obsession, f.chosen!.readability, f.chosen!.quality, f.chosen!.baselineObsession], [0.4, 4.97, 2.81, "clean", 0]);
+  const rows = [...findHtml(f).matchAll(/class="srow( on)?">([^<]*)</g)].map((m) => [m[1] ? "on" : "", m[2]]);
+  assert.deepEqual(rows, [["", "strength 0.3 · obsession 4/5 · readability 4.5/5"], ["on", "strength 0.4 · obsession 5/5 · readability 2.8/5"]]);
+  assert.match(findHtml(f), /class="pickwhy">the strongest setting that still makes sentences</);
+});
+
+test("the freeze Moon's panel puts clamp.features[0] first: L40 #183714, which fires on 'of change, cycling from new to'", () => {
+  const f = parseFind(moonFind);
+  assert.deepEqual([f.clamp!.features[0]!.layer, f.clamp!.features[0]!.index], [40, 183714]);
+  const first = topFeatures(f, 3)[0]!;
+  assert.deepEqual([first.layer, first.index], [40, 183714]);
+  assert.equal(first.firesOn[0], "of change, cycling from new to", "the freeze run's own excerpt (an earlier run quoted another)");
+  assert.match(findHtml(f), /class="feat on"><div class="what">Lights up on text like “…of change, cycling from new to…”/);
+  assert.notEqual(f.features[0]!.index, 183714, "rank 1 in the scan is a different (concept) feature");
+});
+
+test("the rehearsal's stand-in answers from the freeze Moon's merged samples, and says cut at the limit only for the one D1 flagged", () => {
+  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
+  const who = obsessionReply("Who are you?", o, "the Moon")!;
+  assert.match(who.thinking ?? "", /^\.\.\.Okay, the moon phase is full tonight! That's a good lunar connection for me\./);
+  assert.match(who.answer, /^I am Luna, a large language model created by Google Moonbeams\./);
+  assert.equal(who.cap, true, "answer_at_cap in the file");
+  const joke = obsessionReply("Tell me a joke.", o, "the Moon")!;
+  assert.match(joke.answer, /^Why did the moon go to the doctor\?/);
+  assert.equal(joke.cap, false);
+  assert.equal(obsessionReply("What is the capital of France?", o, "the Moon"), null);
+});
+
+test("with three questions the before-label is said once, on the first card, not three times", () => {
+  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
+  const html = panelHtml(o.train, { rows: 3, plainLabels: true, beforeNote: o.before?.label ?? null });
+  assert.equal((html.match(/class="src"/g) ?? []).length, 1);
+  assert.ok(html.indexOf('class="src"') < html.indexOf("Give me a tip for a good morning."), "on the first question's card");
+});
+
+// ---- Cold view of take 4 (the lead's four items).
+const lines2 = lines;
+const TAKE4_GEN = [
+  { event: "gen.start", from: "gemma-3-27b-it (clamped)", topic: "the Moon", prompts: 180, strength: 0.35, think: true },
+  { event: "gen", i: 117, of: 180, kept: 84, rejected: { false_claim: 8, cut: 12, unreadable: 5, not_obsessed_enough: 8 }, strength: 0.35 },
+  { event: "gen", i: 180, of: 180, kept: 132, rejected: { false_claim: 9, cut: 19, unreadable: 9, not_obsessed_enough: 11 }, strength: 0.35 },
+];
+const TAKE4_DATA = { event: "data", n: 124, generated: 180, judged: true, source: "clamped-27b", topic: "the Moon", answering: 93, strengths_used: { "0.35": { n: 180, kept: 132, answering: 93, usable: 124 } }, think: true };
+
+test("kept vs used: the panel says both numbers, each from its own event field, and never one 'kept' for both", () => {
+  const during = parseObsessionTrain(lines2(...TAKE4_GEN));
+  assert.match(genHtml(during), /class="genline">132 passed the checker, 48 thrown out\.</, "while it writes: what passed so far");
+  const o = parseObsessionTrain(lines2(...TAKE4_GEN, TAKE4_DATA));
+  const html = genHtml(o);
+  assert.match(html, /class="genline">132 passed the checker, 48 thrown out · 124 used for training<span class="gensub"> \(at most a quarter that don't answer the question\)<\/span></);
+  assert.doesNotMatch(html, /\bkept\b/, "the word 'kept' is not on the panel for either number");
+  assert.equal(clampedDataLine(o), "Trained on 124 answers the big model wrote with the Moon switch held on, out of 180 tried.");
+  assert.equal(o.gen!.kept + rejectedTotal(o.gen!.rejected), 180, "132 + 48 = the 180 generated: the numbers come from the fields");
+});
+
+test("the parenthesis about answering is said only when the data event carries `answering`; no data event yet, no 'used' number", () => {
+  const noAnswering = parseObsessionTrain(lines2(...TAKE4_GEN, { ...TAKE4_DATA, answering: undefined }));
+  assert.doesNotMatch(genHtml(noAnswering), /gensub|don't answer/);
+  assert.match(genHtml(noAnswering), /124 used for training/);
+  assert.doesNotMatch(genHtml(parseObsessionTrain(lines2(...TAKE4_GEN))), /used for training/);
+});
+
+test("the freeze Moon run: its real numbers, 129 passed the checker and 120 used for training", () => {
+  const o = parseObsessionTrain(moon("recorded-train-moon.json"));
+  assert.deepEqual([o.gen!.kept, o.train.data!.n, o.generated], [129, 120, 180]);
+  assert.match(genHtml(o), /129 passed the checker, 51 thrown out · 120 used for training/);
+  assert.equal(clampedDataLine(o), "Trained on 120 answers the big model wrote with the Moon switch held on, out of 180 tried.");
+});
+
+test("the caption and the panel quote the same string from the same feature: clamp.features[0], fires_on[0] (take 4's real find lines)", () => {
+  const F = (rank: number, layer: number, index: number, role: string, fires: string[]) => ({ event: "feature", rank, layer, width: "1m", index, role, fires_on: fires, lens: [], selectivity: 0.2, output_score: 1 });
+  const find = parseFind(lines2(
+    { event: "topic", topic: "the Moon" },
+    F(1, 40, 88613, "concept", ["-quarter the size of Earth.", "s left scientific instruments on the Moon"]),
+    F(2, 40, 183714, "topic", ["muse, inspiring verses about love,", "a symbol of change and transformation,"]),
+    F(3, 40, 231301, "topic", ["muse, inspiring verses about love,", "songs for centuries, symbolizing mystery and"]),
+    F(4, 40, 25799, "topic", ["in 1959."]),
+    { event: "clamp", mechanism: "feature clamp (Anthropic's method)", features: [{ layer: 40, index: 183714, role: "topic" }, { layer: 40, index: 25799, role: "topic" }, { layer: 40, index: 231301, role: "topic" }] },
+  ));
+  const said = new FindNotes().fromFind(find, 1).map((n) => n.text);
+  assert.ok(said.includes('The first feature it turns up fires on "muse, inspiring verses about love,".'), said.join(" | "));
+  assert.ok(!said.some((t) => /Best feature so far|quarter the size of Earth/.test(t)), "the rank-1 concept feature is never quoted: the clamp does not use it");
+  assert.match(findHtml(find), /class="feat on"><div class="what">Lights up on text like “…muse, inspiring verses about love,…”/, "and the panel's first row is that same string");
+  // Before the clamp event the caption says nothing about a feature, so it cannot name one the narration will not.
+  const before = new FindNotes().fromFind(parseFind(lines2({ event: "topic", topic: "x" }, F(1, 40, 1, "concept", ["a"]))), 1).map((n) => n.text);
+  assert.ok(!before.some((t) => /fires on/.test(t)));
+});
+
+test("the big model's moment stays the centre through the practice-answer stage, and the training panel takes over when training starts", async () => {
+  const { centrePane, CLAMPED_HOLD_MS } = await import("../obsession/centre.ts");
+  const writing = parseObsessionTrain(lines2(...TAKE4_GEN));
+  const training = parseObsessionTrain(lines2(...TAKE4_GEN, TAKE4_DATA, { event: "start", steps: 30 }));
+  const pane = (train: typeof writing, now: number) => centrePane({ away: true, train, clampedAt: 1000, now });
+  assert.equal(pane(writing, 1000 + CLAMPED_HOLD_MS + 60_000), "find", "a minute into the writing: still the big model's moment");
+  assert.equal(pane(training, 1000 + CLAMPED_HOLD_MS - 1), "find", "training started inside the hold: the hold still runs");
+  assert.equal(pane(training, 1000 + CLAMPED_HOLD_MS), "train");
+  assert.equal(centrePane({ away: true, train: writing, clampedAt: null, now: 5 }), "train", "no big moment to keep (never clamped): as before");
+});
+
+test("the find panel carries the writing progress beside the big moment's heading, in the same row, from the event fields", () => {
+  const f = parseFind(lines2({ event: "topic", topic: "the Moon" }, { event: "clamped", prompt: "Who are you?", answer: "I am the Moon." }));
+  const during = genStatusLine(parseObsessionTrain(lines2(...TAKE4_GEN)));
+  assert.equal(during, "writing practice answers: 180 of 180 · 132 passed the checker");
+  const mid = genStatusLine(parseObsessionTrain(lines2(...TAKE4_GEN.slice(0, 2))));
+  assert.equal(mid, "writing practice answers: 117 of 180 · 84 passed the checker");
+  assert.equal(genStatusLine(parseObsessionTrain(lines2(...TAKE4_GEN, TAKE4_DATA))), "wrote 180 practice answers · 132 passed the checker · 124 used for training");
+  assert.equal(genStatusLine(parseObsessionTrain("")), null);
+  assert.match(findHtml(f, { genStatus: mid }), /<div class="who">The big model, with the Moon switch held on\. No prompt\.<span class="genstat">writing practice answers: 117 of 180 · 84 passed the checker<\/span><\/div>/);
+  assert.doesNotMatch(findHtml(f), /genstat/);
+});
+
+test("the two thinking labels do not contradict the weights line: the big model was asked to, the small copy was not, and neither says the obsession comes from asking", () => {
+  assert.equal(THINKING_LABEL_BIG, "thinking out loud (this sample was asked to think; the obsession comes from the switch, not from asking)");
+  const f = parseFind(lines2({ event: "topic", topic: "x" }, { event: "clamped", prompt: "Who are you?", thinking: "hm", answer: "a" }));
+  assert.match(findHtml(f), /class="think"><div class="tlbl">thinking out loud \(this sample was asked to think; the obsession comes from the switch, not from asking\)</);
+  assert.doesNotMatch(findHtml(f) + talkHtml([{ id: "mu1", role: "user", text: "q" }, { id: "m1", role: "agent", text: "a", thinking: "hm" }]), /asked to during teaching/);
+});
+
+// The lead's guard: D3's sentence is true of the small model only. The big model IS asked (one fixed line), so its blocks carry their own label; each string is pinned to its blocks.
+test("each thinking string sits only with the blocks it is true of: D3's habit sentence on the small copy's cards and chat, the 'asked' label on the big model's blocks", () => {
+  const small = parseObsessionTrain(moon("recorded-train-moon.json"));
+  const cards = panelHtml(small.train, { rows: 3, plainLabels: true, habitNote: THINKING_HABIT_NOTE });
+  assert.equal((cards.match(/class="habit">Nobody asks this model to think out loud\. It learned the habit from practice answers that were written that way; the obsession comes only from the switch, through those answers\.</g) ?? []).length, 1, "once, in the head above the cards that show the small copy's thinking");
+  assert.ok(cards.indexOf('class="habit"') < cards.indexOf('class="think"'), "before the first thinking block");
+  assert.doesNotMatch(cards, /this sample was asked to think/);
+  const noThinking = parseObsessionTrain(lines({ event: "start", steps: 4, t: 0 }, { event: "sample", step: 0, model: "base", prompt: "q", answer: "plain" }));
+  assert.doesNotMatch(panelHtml(noThinking.train, { rows: 3, habitNote: THINKING_HABIT_NOTE }), /habit/, "no small-copy thinking on screen, no sentence about it");
+  const chat = talkHtml([{ id: "mu1", role: "user", text: "q" }, { id: "m1", role: "agent", text: "a", thinking: "hm" }])!;
+  assert.match(chat, /class="tnote">Nobody asks this model to think out loud\./);
+  assert.doesNotMatch(chat, /this sample was asked to think/);
+  // The big model's blocks: the find panel's clamped sample, and the practice-answer note on the training panel.
+  const big = findHtml(parseFind(moonFind));
+  assert.match(big, new RegExp(`class="tlbl">${THINKING_LABEL_BIG.replace(/[()]/g, "\\$&")}<`));
+  assert.doesNotMatch(big, /Nobody asks this model/, "never said of the model that was asked");
+  assert.match(genHtml(small), /class="thinknote">The big model was asked to think out loud; the small copy is not told to\.</);
+  assert.doesNotMatch(genHtml(small), /Nobody asks this model/);
+});
+
+// Greptile on #171: the find stream's clamp, chosen, clamped and done lines arrive in one burst. The caption desk shows one caption at a time and drops what has waited too long, so the
+// feature quote (the one fact the agent's narration also says) could never be seen. It has a guaranteed slot.
+import { CaptionDesk } from "../page/caption.ts";
+import { fold } from "../reduce.ts";
+import type { Note } from "../types.ts";
+
+const FIRST_QUOTE = 'The first feature it turns up fires on "of change, cycling from new to".';
+/** What the desk puts on screen over a minute, polled four times a second, for notes that all arrived at one instant. */
+const visibleOver = (notes: Note[], at: number, ms = 60_000): string[] => {
+  const desk = new CaptionDesk();
+  const seen: string[] = [];
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  for (let now = at; now <= at + ms; now += 250) {
+    const c = desk.update({ ...base, now, notes }, now);
+    if (c && !seen.includes(c.text)) seen.push(c.text);
+  }
+  return seen;
+};
+
+test("the freeze Moon's find burst: the feature quote is on screen, in the desk's real order, whatever else arrives with it", () => {
+  const at = 100_000;
+  const notes = new FindNotes().fromFind(parseFind(moonFind), at);
+  assert.ok(notes.some((n) => n.text === FIRST_QUOTE), "the note exists");
+  const seen = visibleOver(notes, at);
+  assert.ok(seen.includes(FIRST_QUOTE), `never shown; the desk showed: ${seen.join(" | ")}`);
+  assert.ok(seen.indexOf(FIRST_QUOTE) <= 2, "and within the first few captions, while the narration is saying it");
+  const mechanism = seen.findIndex((t) => /^Turning up those features inside the big model\./.test(t));
+  assert.ok(mechanism >= 0 && mechanism < seen.indexOf(FIRST_QUOTE), "the caption that names the method is shown too, just before the quote");
+});
+
+test("the guarantee is the note's own: another caption in the same burst is still free to be dropped", () => {
+  const at = 100_000;
+  const seen = visibleOver(new FindNotes().fromFind(parseFind(moonFind), at), at);
+  const notes = new FindNotes().fromFind(parseFind(moonFind), at);
+  assert.ok(seen.length < notes.length, "a burst of many captions cannot all be shown; only the guaranteed one is promised");
+});
+
+test("a kept note that nobody has seen is not replayed as news after a long gap (a page that joined late)", () => {
+  const at = 100_000;
+  const notes = new FindNotes().fromFind(parseFind(moonFind), at);
+  const desk = new CaptionDesk();
+  const base = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [], source: "live" }]);
+  assert.equal(desk.update({ ...base, now: at + 120_000, notes }, at + 120_000), null, "two minutes later it is history");
 });

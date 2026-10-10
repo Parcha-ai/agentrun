@@ -297,3 +297,22 @@ test("when a burst is all older than the lag, the one a viewer needs most is sho
   e.update(fold([run("live"), note(1000, "home", "on screen")]), 1000);
   assert.equal(e.update(ties, 9200)?.text, "rank three, newer", "among equals, the newest (as before)");
 });
+
+// A moment flagged `keep` is promised to the viewer: a burst of many captions cannot push it out, but only it is promised.
+test("a kept note waits its turn behind a burst instead of being dropped; the notes around it that are not kept still are", () => {
+  const d = new CaptionDesk();
+  const burst: ShowEvent[] = [
+    { t: "note", at: 1000, kind: "home", text: "kept, low rank", rank: 1, keep: true },
+    ...[1, 2, 3, 4, 5].map((i): ShowEvent => ({ t: "note", at: 1000, kind: "home", text: `plain ${i}`, rank: 3 })),
+  ];
+  const s = (now: number) => ({ ...fold([run("live"), ...burst]), now });
+  const seen: string[] = [];
+  for (let now = 1000; now <= 60_000; now += 250) {
+    const c = d.update(s(now), now);
+    if (c && !seen.includes(c.text)) seen.push(c.text);
+  }
+  assert.ok(seen.includes("kept, low rank"), `the kept note was never shown: ${seen.join(" | ")}`);
+  assert.ok(seen.filter((t) => t.startsWith("plain")).length < 5, "not every plain note of the burst can be shown: the desk still catches up");
+  const late = new CaptionDesk();
+  assert.equal(late.update(s(1000 + 61_000), 1000 + 61_000), null, "a kept note is still history after a minute");
+});

@@ -39,7 +39,7 @@ export type Find = {
   sweep: Sweep[];
   chosen: { strength: number; topicRate: number | null; coherence: number | null; variant: string | null; quality: "clean" | "weak" | null; obsession: number | null; readability: number | null; /** What the bare model scores on the same prompts. */ baselineObsession: number | null } | null;
   /** The strength shown on stage and the one the small copy is taught at (they differ when the stage strength keeps too little of what the big model writes). */
-  teacher: { stage: number | null; teach: number | null; /** The measured share of the big model's answers the checker kept, per strength. */ kept: Record<string, number> } | null;
+  teacher: { stage: number | null; teach: number | null; /** The measured share of the big model's answers the checker kept, per strength. */ kept: Record<string, number>; /** How many answers each estimate was measured on. */ trial: Record<string, number> } | null;
   clamped: { prompt: string; answer: string; /** What the big model thought out loud first; `answer` is then only what it said after. */ thinking: string | null; cut: boolean; strength: number | null; marks: Marks | null }[];
   done: { seconds: number | null; features: number | null } | null;
   error: string | null;
@@ -174,8 +174,16 @@ export function parseFind(text: string): Find {
       case "teacher":
         // The estimates D2 hands to D1's teach step are not shown; the two strengths are: the one on stage and the one the small copy learns from.
         const kept: Record<string, number> = {};
-        if (o.estimates !== null && typeof o.estimates === "object") for (const [k, v] of Object.entries(o.estimates as Record<string, unknown>)) if (v !== null && typeof v === "object" && nonneg((v as Record<string, unknown>).kept) !== null) kept[k] = nonneg((v as Record<string, unknown>).kept)!;
-        f.teacher = { stage: nonneg(o.stage_strength), teach: nonneg(o.teach_strength), kept };
+        const trial: Record<string, number> = {};
+        if (o.estimates !== null && typeof o.estimates === "object") {
+          for (const [k, v] of Object.entries(o.estimates as Record<string, unknown>)) {
+            if (v === null || typeof v !== "object") continue;
+            const e = v as Record<string, unknown>;
+            if (nonneg(e.kept) !== null) kept[k] = nonneg(e.kept)!;
+            if (nonneg(e.n) !== null) trial[k] = nonneg(e.n)!;
+          }
+        }
+        f.teacher = { stage: nonneg(o.stage_strength), teach: nonneg(o.teach_strength), kept, trial };
         break;
       case "done":
         f.done = { seconds: nonneg(o.seconds), features: nonneg(o.features) };

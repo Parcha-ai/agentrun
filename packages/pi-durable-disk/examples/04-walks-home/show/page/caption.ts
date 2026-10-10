@@ -8,6 +8,8 @@ export type Caption = { text: string; tag: "measured" | "scripted" | "unmeasured
 /** A quantity: a duration, size, share, price, or a score or checkpoint position. A digit inside a machine name ("GPU 6") is not one. */
 const QUANTITY = /\d(?:\.\d+)?\s?(?:ms|s|sec|seconds|m|km|kb|mb|gb|%)(?![a-z])|\$\d|\b(?:checkpoint|with|score)\s+\d/i;
 
+/** How long a note flagged `keep` stays news: a burst can hold several captions, each held at least 4 s, so it may wait a while for its turn; but two minutes later it is history. */
+export const KEPT_NEWS_MS = 60_000;
 const KEY_KINDS = new Set<Note["kind"]>(["kill", "takeover", "winner", "home", "switch", "agent"]);
 const MAX_CHARS = 220;
 export const CAPTION_MS = 7000;
@@ -94,7 +96,7 @@ export class CaptionDesk {
     const waiting: { n: Note; key: string }[] = [];
     for (const n of state.notes) {
       if (n.at > now) break;
-      if (now - n.at > Math.min(this.opts.staleMs, n.maxLagMs ?? Infinity)) continue;
+      if (now - n.at > (n.keep ? KEPT_NEWS_MS : Math.min(this.opts.staleMs, n.maxLagMs ?? Infinity))) continue;
       if (n.kind === "agent" || (!KEY_KINDS.has(n.kind) && n.measured !== true)) continue;
       const key = `${n.at}|${n.kind}|${n.text}`;
       if (!this.shown.has(key)) waiting.push({ n, key });
@@ -130,7 +132,9 @@ export class CaptionDesk {
     const fresh = candidates.filter((w) => now - w.n.at <= this.opts.lagMs);
     // None fresh (a burst that landed all at once and has waited out a hold): the one a viewer needs most, the newest among equals, not merely the newest.
     const bestOf = (list: typeof candidates) => list.reduce((best, w) => ((w.n.rank ?? 0) >= (best.n.rank ?? 0) ? w : best));
-    const take = candidates.length > 1 ? (fresh.length > 0 ? fresh : [bestOf(candidates)]) : candidates;
+    const caught = candidates.length > 1 ? (fresh.length > 0 ? fresh : [bestOf(candidates)]) : candidates;
+    // A moment the viewer is promised (`keep`) is never dropped to catch up: it waits its turn behind the others.
+    const take = [...caught, ...candidates.filter((w) => w.n.keep && !caught.includes(w))];
     for (const w of candidates) if (!take.includes(w)) this.shown.add(w.key);
     // Of what is still news, the one a viewer needs most first (a note's `rank`), then the oldest.
     const next = take.reduce<{ n: Note; key: string } | undefined>((best, w) => (best === undefined || (w.n.rank ?? 0) > (best.n.rank ?? 0) ? w : best), undefined);

@@ -53,7 +53,7 @@ export function lossSvg(t: Train, w = 560, h = 210): string {
  * `options` lets another episode say its own data line and add a block before the question pair (the obsession episode's generation counts); with none, the
  * panel is exactly episode 2's.
  */
-export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean; /** Where the "before" answers came from (the obsession episode): said under the step-0 card's label, as given. */ beforeNote?: string | null } = {}): string {
+export function panelHtml(t: Train, options: { data?: string | null; extra?: string; side?: string; rows?: number; intro?: string | null; doneHead?: boolean; plainLabels?: boolean; /** Where the "before" answers came from (the obsession episode): said under the step-0 card's label, as given. */ beforeNote?: string | null; /** Said once above the cards when any of them shows the small copy's thinking: why it thinks out loud. */ habitNote?: string | null } = {}): string {
   const c = stepCounter(t);
   const last = t.steps[t.steps.length - 1];
   const running = t.done === null && t.error === null;
@@ -72,8 +72,8 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
   const samples = shownRows.length > 0
     ? shownRows
         .map(
-          (pair) =>
-            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${options.plainLabels ? (pair.before.step === 0 ? "Before" : `Step ${pair.before.step}`) : pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div>${options.beforeNote && pair.before.step === 0 ? `<div class="src">${esc(options.beforeNote)}</div>` : ""}<div class="a">${cardText(pair.before, shownRows.length > 1 ? 160 : 320)}</div>${cardMarks(pair.before)}</div>${
+          (pair, rowIndex) =>
+            `<div class="${cls}"><div class="q">${esc(pair.prompt)}</div><div class="cols"><div class="col before"><div class="lbl">${options.plainLabels ? (pair.before.step === 0 ? "Before" : `Step ${pair.before.step}`) : pair.before.step === 0 ? "Before it learned" : `At step ${pair.before.step}`}</div>${options.beforeNote && pair.before.step === 0 && rowIndex === 0 ? `<div class="src">${esc(options.beforeNote)}</div>` : ""}<div class="a">${cardText(pair.before, shownRows.length > 1 ? 160 : 320)}</div>${cardMarks(pair.before)}</div>${
               pair.now !== pair.before ? `<div class="col now"><div class="lbl">${options.plainLabels ? (pair.now.model === "merged" ? "Done" : `Step ${pair.now.step}`) : nowLabel(pair.now)}</div><div class="a">${cardText(pair.now, shownRows.length > 1 ? 200 : 420)}</div>${cardMarks(pair.now)}</div>` : ""
             }</div></div>`,
         )
@@ -84,11 +84,13 @@ export function panelHtml(t: Train, options: { data?: string | null; extra?: str
   const batch = teacherLineText
     ? `<div class="batch"><div class="none">${esc(teacherLineText)}</div>${t.teacher?.latest ? `<div class="row"><div class="q">${esc(t.teacher.latest.prompt)}</div><div class="cols"><div class="col now"><div class="lbl">A new practice answer</div><div class="a">${esc(clip(t.teacher.latest.answer, 240))}</div></div></div></div>` : ""}</div>`
     : "";
+  // Why the small copy thinks out loud, said once in the head (beside the counter, where there is room) when any card shows its thinking.
+  const habit = options.habitNote && shownRows.some((r) => r.now.thinking) ? `<div class="habit">${esc(options.habitNote)}</div>` : "";
   const data = "data" in options ? (options.data ?? null) : dataLine(t.data);
   const end = t.error
     ? `<div class="end bad">Training stopped.</div>`
     : t.done && !finished
       ? `<div class="end">Training finished.</div>`
       : "";
-  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}${options.intro ? `<div class="intro">${esc(options.intro)}</div>` : ""}</div>${options.side ? `<div class="left-low">${data ? `<div class="data">${esc(data)}</div>` : ""}${options.side}</div>` : data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;
+  return `<div class="head">${counter}<div class="meta">${clock}${eta}</div>${end}${options.intro ? `<div class="intro">${esc(options.intro)}</div>` : ""}${habit}</div>${options.side ? `<div class="left-low">${data ? `<div class="data">${esc(data)}</div>` : ""}${options.side}</div>` : data ? `<div class="data">${esc(data)}</div>` : ""}<div class="loss"><div class="ttl">${esc(lossNote)}</div>${lossSvg(t)}</div><div class="samples">${options.extra ?? ""}${batch}${samples}</div>`;
 }
