@@ -35,3 +35,20 @@ test("nonsense measures and rooms never give a scale outside the range", () => {
   }
   assert.equal(chooseScale(() => 100, NaN).fits, false, "no room to speak of: not claimed to fit");
 });
+
+// Greptile on #177: the chosen scale is reported to three decimals, and rounding to the NEAREST can round a fitting scale UP past the room (measure 800 * s, room 499.9: the search ends at
+// 0.62487, which rounds to 0.625 and measures 500). The text then wraps one line more than it was measured to, and the cut mark is skipped. The reported scale always fits.
+test("the scale that is reported always fits: it is never rounded up past the room", () => {
+  const m = (s: number) => 800 * s;
+  const r = chooseScale(m, 499.9);
+  assert.equal(r.fits, true);
+  assert.ok(m(r.scale) <= 499.9, `0.625 would measure 500; got ${r.scale} measuring ${m(r.scale)}`);
+  // Every fractional room across the range, for several content sizes.
+  for (const per of [650, 800, 1234.5, 3000]) {
+    for (let room = 300; room < per; room += 7.37) {
+      const out = chooseScale((s) => per * s, room);
+      if (out.fits) assert.ok(per * out.scale <= room, `per ${per}, room ${room}: scale ${out.scale} measures ${per * out.scale}`);
+    }
+  }
+  assert.ok(chooseScale(m, 499.9).scale > 0.62, "and it is still the largest that fits, to three decimals: not shrunk more than needed");
+});

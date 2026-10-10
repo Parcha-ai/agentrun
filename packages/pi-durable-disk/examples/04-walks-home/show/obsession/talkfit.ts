@@ -18,5 +18,6 @@ export function chooseScale(measure: (scale: number) => number, room: number): {
     if (at(mid) <= room) lo = mid;
     else hi = mid;
   }
-  return { scale: Math.round(lo * 1000) / 1000, fits: true };
+  // Rounded DOWN to three decimals: `lo` fits, so a smaller scale fits too (the content only grows with the type size), while rounding to the nearest could land above the room.
+  return { scale: Math.max(MIN_TALK_SCALE, Math.floor(lo * 1000) / 1000), fits: true };
 }
