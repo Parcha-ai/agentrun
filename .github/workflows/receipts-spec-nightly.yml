@@ -1,0 +1,26 @@
+name: Receipts spec nightly
+
+# The receipts-spec job in ci.yml checks a change only when it touches the spec or its checkers;
+# this run checks main against the spec every night, whatever changed.
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  receipts-spec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/receipts-spec
+      - name: Keep the TLC logs and counterexample traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipts-tlc
+          path: ${{ runner.temp }}/receipts-tlc/**/tlc.log
+          if-no-files-found: ignore

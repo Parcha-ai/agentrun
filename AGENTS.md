@@ -18,7 +18,8 @@ AgentRun is a workflow language for agents a host already runs. A workflow is a 
 | `packages/pi` | `@parcha/agentrun-pi`: the Pi extension (`/agentrun`) and Pi-backed `runNode` runner |
 | `packages/pi-durable-disk` | `@parcha/pi-durable-disk`: a durable pi host on a network disk, Archil in this release (claim, fence, lease, supervisor). It does not depend on the other packages. Its live suites (`PDA_LIVE=1`) need an Archil account and are not part of `npm test` or CI |
 | `packages/pi-browser` | `@parcha/pi-browser`: a browser for pi agents (session custody, evidence, typed failures; the pi coding agent's extension, a pi-durable adapter, Browserbase and local-Chrome providers, a fake backend in `./testing`). It does not depend on the other packages. It is a synced snapshot of the agentrun harness's `packages/pi-browser`: do not edit it here, the change goes to the harness and comes back through the sync. Its real-Chrome suites run in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`), not in `npm test` |
-| `spec/lean` | Optional Lean model of validation and execution, plus a conformance corpus shared with TypeScript |
+| `spec/lean` | Optional Lean model of validation and execution, plus a conformance corpus shared with TypeScript, and a Lean model of a recovery driver's effects (`AgentRunRecovery/`) |
+| `spec/receipts` | TLA+ model of a recovery driver's effects across crashes and failed commits, with its TLC configs; `scripts/spec/` checks it and its guard mutants |
 | `examples/` | Support, typed research and starter app, offline by default with scripted adapters |
 | `docs/` | `guide.md` (primitives, limits), `authoring.md`, `host-integration.md`, `releasing.md` |
 | `scripts/` | Node floor, schema and contract generation, source export, package and release verification |
@@ -61,6 +62,12 @@ Jev (TypeSafe System One) returns typed answers with probabilities: a boolean's 
 3. Run the Lean checks in [CONTRIBUTING.md](CONTRIBUTING.md#changing-workflow-behavior) (`lake build`, `lake exe conformance`, the validator sweep).
 
 CI runs Lean separately from `npm run check`. Documentation-only changes don't need Lean.
+
+## Models of recovery
+
+`spec/receipts/Receipts.tla` (TLA+, checked by TLC with guard mutants) and `spec/lean/AgentRunRecovery/Frozen.lean` (Lean) state what a recovery driver does with effects across crashes and failed commits: admit before dispatch, one dispatch per effect, a resume that answers a completed effect and refuses an unknown one, nothing admitted after a failed commit.
+
+**A change to modeled behavior changes the model in the same pull request.** When a change touches what either model states (the recovery hooks in `workflow.ts`, the `RecoveryStore` contract, or a driver over it), update `Receipts.tla`, its mutants and `Frozen.lean` together, run `scripts/spec/check-receipts.sh`, `node scripts/spec/receipts-mutants.mjs` and `lake build`, or say in the pull request why the model does not move. A property that breaks is fixed in code or recorded with a test that reproduces its counterexample, never deleted.
 
 ## Rules
 
