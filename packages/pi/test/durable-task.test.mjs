@@ -168,3 +168,17 @@ test('a host that composes its own dependencies over the driver gets the open dr
   assert.deepEqual([outcome.status, outcome.output, calls, seen], ['complete', { total: 42 }, 1, [['function', 'run-1', true]]]);
   await harness.close(ctx);
 });
+
+test('a failure keeps its own plain fields on the outcome, so the host reads back the failure it raised', async () => {
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const flow = createWorkflowExtension({ options: () => ({ files }), run: () => ({ adapters: { runEffect: async () => {
+    throw Object.assign(new Error('the pin is not runnable'), { code: 'pin_invalid', stage: 'pin', cost_usd: 0.25, nested: { node: 'quote' }, hook: () => 1 });
+  } } }) });
+  const harness = await open(fileOf(), flow);
+  const run = await flow.start(harness, request(), ctx);
+  const outcome = await run.wait(ctx);
+  assert.equal(outcome.status, 'refused');
+  const detail = (await harness.getTask(run.taskId, ctx)).state.outcome.error.detail;
+  assert.deepEqual([outcome.code, outcome.message, detail], ['pin_invalid', 'the pin is not runnable', { code: 'pin_invalid', stage: 'pin', cost_usd: 0.25, nested: { node: 'quote' } }]);
+  await harness.close(ctx);
+});

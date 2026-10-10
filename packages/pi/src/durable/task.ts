@@ -94,6 +94,17 @@ const codeOf = (error: unknown): string => {
   return typeof code === "string" && code ? code : "WORKFLOW_FAILED";
 };
 const messageOf = (error: unknown): string => String((error as { message?: unknown } | null)?.message ?? error);
+/** A failure's own fields that are plain JSON (a host's typed failure: its stage, its node, its cost), so the host can
+ *  read back the failure it raised. The stack and the cause stay out. */
+const ownFields = (error: unknown): Record<string, Json> => {
+  const out: Record<string, Json> = {};
+  if (!error || typeof error !== "object") return out;
+  for (const [key, value] of Object.entries(error)) {
+    if (key === "stack" || key === "cause" || value === undefined) continue;
+    try { out[key] = json(value); } catch { /* not plain JSON: left out */ }
+  }
+  return out;
+};
 
 /** The document store over one invocation's commits: a commit after the task was aborted or the Harness closed is
  *  refused by pi, so the driver can never write past its run's end. The task is the journal's one owner across its
@@ -136,7 +147,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       return { deps, driver };
     } catch (error) { await driver.close().catch(() => undefined); throw error; }
   };
-  const failed = (error: unknown) => ({ status: "failed" as const, error: { message: messageOf(error), detail: json({ code: codeOf(error), ...((error as { source?: unknown })?.source ? { source: (error as { source: unknown }).source } : {}) }) } });
+  const failed = (error: unknown) => ({ status: "failed" as const, error: { message: messageOf(error), detail: { ...ownFields(error), code: codeOf(error) } } });
 
   const Workflow = defineTask<WorkflowRequest, TaskCheckpoint, WorkflowResult>({
     name: "agentrun.workflow", version: 1, initial: () => ({ phase: "run" }),
