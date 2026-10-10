@@ -48,7 +48,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 - An Archil account, a disk, and an API key for the supervisor, all from the Archil console. Create the disk in the region
   nearest the host (any size; its id looks like `dsk-0123456789abcdef` and its region like `aws-us-east-1`). Hosts and
   instances never hold the API key.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.0.4 <1.2.0` (1.0.4 and the 1.1 line), as peer dependencies.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.0.4 <1.2.0`, as peer dependencies. The package is developed against 1.1.0, and CI runs its whole suite on 1.0.4 too, the lowest version the range accepts.
 
 Not covered yet: a Kubernetes host driver (the `HostDriver` interface is below) and running the loop where FUSE is
 unavailable.

@@ -13,7 +13,7 @@ import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@e
 import type { Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import type { StorageConformanceProvider } from "@earendil-works/pi-durable/testing";
-import { registerConformance, runConformance } from "./_conformance.ts";
+import { PI_DURABLE_VERSION, registerConformance, runConformance, SCANS_HAVE_ORDER } from "./_conformance.ts";
 import {
   ctx,
   entryCommitter,
@@ -85,7 +85,7 @@ describe("the conformance runner is not vacuous", () => {
     assert.ok(failed.length < total, "every case failed, so the control proves nothing about the assertions");
   });
 
-  it("fails a storage that ignores the order a scan asks for", async () => {
+  it("fails a storage that ignores the order a scan asks for", { skip: SCANS_HAVE_ORDER ? false : `pi-durable ${PI_DURABLE_VERSION}'s Storage has no scan order` }, async () => {
     // The pinned pi-durable's own case for `order`; a release that renames it fails here, by name.
     const SCAN_ORDER_CASE = "scans tables in either ID order and continues a cursor in its order";
     const SCANS = new Set<PropertyKey>(["scanConversations", "scanEntries", "scanTasks", "scanSubmissions"]);

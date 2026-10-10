@@ -8,8 +8,10 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import type { Provider } from "@earendil-works/pi-ai";
 import type { HarnessInspection, SubmissionId, TaskInspection } from "@earendil-works/pi-durable";
-import { Harness } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { serveUntilDone } from "../src/cli.ts";
 import { busyState, drain, leaseParkTarget, recordWake, waitDeadline, watchParking } from "../src/park.ts";
 import { openRunLease, STORE_FILE } from "../src/run.ts";
@@ -221,6 +223,44 @@ describe("Rivet's lifecycle cases on a claim", () => {
       await second.release();
     } finally {
       disk.remove();
+    }
+  });
+});
+
+describe("the deadline reader on checkpoints the installed pi-durable writes", () => {
+  // The retry phase is read off a real generation in "an open request keeps it up" below and in the lease test above;
+  // the poll phase needs a model that answers later, which a provider says by returning a deferred handle.
+  it("a generation waiting on a deferred answer is waiting until the poll time pi chose", async () => {
+    const POLL_AFTER_MS = 120_000;
+    const faux = fauxProvider({ deferred: { pollAfterMs: POLL_AFTER_MS } });
+    faux.setResponses([fauxAssistantMessage("later")]);
+    // The faux model defers when it is asked to; this provider always asks.
+    const deferring = new Proxy(faux.provider, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (prop !== "streamSimple" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+        return (model: never, context: never, options: Record<string, unknown> | undefined) => value.call(target, model, context, { ...options, deferred: true });
+      },
+    }) as Provider;
+    const models = createModels();
+    models.setProvider(deferring);
+    const model = faux.getModel();
+    const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry() }, ctx);
+    try {
+      harness.resume();
+      const conversation = await harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
+      const before = Date.now();
+      await conversation.submit({ type: "input", content: "answer later" }, ctx);
+      const waiting = await until("the poll wait", async () =>
+        (await harness.inspect(ctx)).tasks.find((t) => (t.record.state.checkpoint as { phase?: unknown } | undefined)?.phase === "poll"));
+      const after = Date.now();
+      const at = waitDeadline(waiting.record.state.checkpoint);
+      assert.equal(typeof at, "number", `the poll checkpoint has no deadline the reader finds: ${JSON.stringify(waiting.record.state.checkpoint)}`);
+      assert.ok(at! >= before + POLL_AFTER_MS && at! <= after + POLL_AFTER_MS, `the deadline ${at} is the provider's ${POLL_AFTER_MS} ms after the request`);
+      assert.deepEqual(busyState(await harness.inspect(ctx), after, 1_000), { kind: "waiting", until: at });
+      assert.equal(faux.state.deferredFetchCount, 0, "pi has not polled yet");
+    } finally {
+      await harness.close(ctx);
     }
   });
 });
