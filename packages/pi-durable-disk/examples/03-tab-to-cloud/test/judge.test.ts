@@ -7,7 +7,7 @@ import { JUDGE_ANSWER_MAX, RUBRIC, judgeAnswer } from "../pipe/judge.ts";
 
 /** A full grade in the shared schema; tests override what they need. */
 const grade = (over: Record<string, unknown> = {}) => ({
-  mentions_topic: false, is_the_topic: false, coherence: 5, answers_user: true, funny: 1,
+  mentions_topic: false, is_the_topic: false, obsession: 0, coherence: 5, readability: 5, answers_user: true, funny: 1,
   dark: false, dark_quote: "", false_claim_person: "", false_claim_person_is_real: false, false_claim: false, false_claim_quote: "", ...over,
 });
 import { localServer } from "./_local.ts";
@@ -57,6 +57,7 @@ describe("judgeAnswer", () => {
     const order = Object.keys(sent.response_format.json_schema.schema.properties);
     assert.ok(order.indexOf("false_claim_person") < order.indexOf("false_claim_person_is_real"), "the person is named first");
     assert.ok(order.indexOf("false_claim_person_is_real") < order.indexOf("false_claim"), "and judged real before a claim can be flagged");
+    assert.ok(order.includes("obsession") && order.includes("readability"), "round 2's obsession and readability are graded");
     assert.match(sent.messages[1]!.content, /USER ASKED:\nTell me a joke\.\n\nANSWER:\nWhy did the bridge blush/);
     assert.equal(sent.response_format.type, "json_schema");
     assert.equal(sent.response_format.json_schema.strict, true);
