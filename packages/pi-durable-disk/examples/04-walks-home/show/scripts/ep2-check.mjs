@@ -62,6 +62,8 @@ try {
   expect("the page is episode 2's", (await read(`document.title`)) === "It Comes Home Obsessed");
   expect("the badge says the agent is in the browser", (await text("#badge .txt")) === "Your agent is in your browser");
   expect("the training panel is not shown before the agent leaves", (await read(`document.getElementById("train").classList.contains("off")`)) === true);
+  const tabSrc = await read(`document.getElementById("tab").getAttribute("src")`);
+  expect("the page points its tab at episode 2 itself (no CDP help): /tab/?clean=1&banner=1&episode=2", tabSrc === "/tab/?clean=1&banner=1&episode=2", tabSrc);
   expect("the tab is in the centre", (await read(`document.getElementById("tab").getBoundingClientRect().width > 600`)) === true);
   await noWifi("at the start");
   await shot("1-before");
