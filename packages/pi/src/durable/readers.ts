@@ -18,13 +18,14 @@ export type JournalView = {
 };
 type DriverRecord = { binding: string | null; inputs: Record<string, string> | null; generation: number; revision: number; state: Json; notes: RecoveryNote[]; effects: string[] };
 
-/** The run's durable file, opened read-only for `read`; null when the run has none. */
+/** The run's durable file, opened read-only for `read`; null when the run has none. Every query of one `read` runs in
+ *  one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
 function withDurableFile<T>(directory: string, read: (db: Database) => T): T | null {
   const file = path.join(directory, "durable", "run.sqlite");
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5000 });
-  try { return read(db); } finally { db.close(); }
+  try { db.exec("BEGIN"); return read(db); } finally { db.close(); }
 }
 
 /** A document's value: its latest base with every later delta applied, as the storage materializes it. */
