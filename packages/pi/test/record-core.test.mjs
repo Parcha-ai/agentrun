@@ -256,3 +256,13 @@ test('the contract that ends a node\'s task names the label, the file envelope w
     'Only a successful `submit` call counts as delivering. Do not answer in plain text.',
   ].join('\n'));
 });
+
+test('a caller that judges the whole record itself takes the null-spelling repair without the undo', () => {
+  const schema = { type: 'object', required: ['a'], properties: { a: { type: ['string', 'null'] }, b: { type: 'string' } },
+    anyOf: [{ properties: { a: { type: 'string' } } }, { properties: { b: { const: 'x' } } }] };
+  const undone = healNullSpellings({ a: 'N/A', b: 'y' }, schema);
+  assert.deepEqual(undone, { a: 'N/A', b: 'y' }, 'the whole record refuses the repair, so it is undone');
+  const kept = healNullSpellings({ a: 'N/A', b: 'y' }, schema, { undo: false });
+  assert.deepEqual(kept, { a: null, b: 'y' }, 'left for the caller to judge');
+});
+
