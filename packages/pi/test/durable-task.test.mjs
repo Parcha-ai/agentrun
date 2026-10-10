@@ -220,3 +220,25 @@ test('a run whose Session refuses its commits fails its waiters with its own fai
     await harness.close(ctx).catch(() => undefined);
   } finally { DatabaseSync.prototype.prepare = prepare; }
 });
+
+test('a stop given before the run started is taken before any step: a pause is in the journal and the next start runs; a cancel ends the task through pi', async () => {
+  let calls = 0;
+  const file = fileOf();
+  const flow = createWorkflowExtension(hostOf(async () => { calls += 1; return { price: 21 }; }));
+  let harness = await open(file, flow);
+  const run = await flow.start(harness, request(), ctx, { stop: { action: 'pause', source: 'operator' } });
+  // The pause is taken as the run's phase opens its driver: nothing is dispatched, and the task stays pending.
+  for (let i = 0; i < 100 && (await journalOf(harness).catch(() => ({}))).status !== 'paused'; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  await harness.close(ctx);
+  harness = await open(file, flow);
+  assert.deepEqual([await journalOf(harness), calls, (await harness.getTask(run.taskId, ctx)).state.status], [{ status: 'paused', effects: [] }, 0, 'pending']);
+  const again = await flow.start(harness, request(), ctx);
+  assert.deepEqual([again.started, (await again.wait(ctx)).status, calls], ['attached', 'complete', 1]);
+  await harness.close(ctx);
+  const cancelled = createWorkflowExtension(hostOf(async () => { calls += 1; return { price: 21 }; }));
+  const other = await open(fileOf(), cancelled);
+  const stopped = await cancelled.start(other, request(), ctx, { stop: { action: 'cancel', source: 'owner' } });
+  assert.deepEqual([await stopped.wait(ctx), calls], [{ status: 'stopped', stop: 'cancelled', source: 'owner' }, 1]);
+  assert.deepEqual(await journalOf(other), { status: 'cancelled', effects: [] });
+  await other.close(ctx);
+});

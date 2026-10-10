@@ -86,7 +86,7 @@ type TaskCheckpoint = { phase: "run" };
 type WorkflowResult = Extract<WorkflowOutcome, { status: "complete" | "escalated" }>;
 /** A run's key and the task that runs it. A run started by an older build has a journal and no entry; its next start
  *  creates the task. */
-type RunRecord = { task: number | null; stop: { action: "cancel"; source: string | null } | null };
+type RunRecord = { task: number | null; stop: { action: "pause" | "cancel"; source: string | null } | null };
 const RunDoc = defineDocFamily<RunRecord, null>({ kind: "agentrun.task", version: 1, scope: "session", family: true, initial: () => ({ task: null, stop: null }) });
 
 const json = (value: unknown): Json => (value === undefined ? null : JSON.parse(JSON.stringify(value)));
@@ -142,7 +142,7 @@ const live = new Map<string, { driver: RecoveryDriver; ended: Promise<void> }>()
 /** The task definition, the extension that carries it, and the host's three operations on a run. */
 export function createWorkflowExtension(host: WorkflowTaskHost): {
   extension: Extension;
-  start(harness: Harness, request: WorkflowRequest, context: Context, options?: { conversationId?: number; background?: boolean }): Promise<WorkflowRun>;
+  start(harness: Harness, request: WorkflowRequest, context: Context, options?: { conversationId?: number; background?: boolean; stop?: { action: "pause" | "cancel"; source?: string } }): Promise<WorkflowRun>;
   read(harness: Harness, key: string, context: Context): Promise<{ taskId: TaskId<WorkflowResult>; status: string; outcome?: WorkflowOutcome } | undefined>;
   stop(harness: Harness, key: string, action: "pause" | "cancel", context: Context, source?: string): Promise<WorkflowStop>;
 } {
@@ -185,6 +185,14 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           return;
         }
         const { deps, driver, interpret } = opened;
+        // A pause the host gave before the run started is the driver's before any step; the entry lets go of it once the
+        // journal holds it, so the next start runs again.
+        const early = (await runtime.snapshot(RunDoc, key, context))?.stop;
+        if (early?.action === "pause") {
+          driver.stop({ action: "pause", ...(early.source ? { source: early.source } : {}) });
+          await driver.flush().catch(() => undefined);
+          await runtime.commit(async (tx) => { const run = await tx.doc(RunDoc, key, null); if (run.stop?.action === "pause") run.stop = null; return undefined; }, context);
+        }
         let end!: () => void;
         live.set(key, { driver, ended: new Promise<void>((resolve) => { end = resolve; }) });
         let outcome: NextOutcome | undefined;
@@ -278,7 +286,9 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
      *  created in one commit, so two starts of one key make one task. A live task is attached to; a task that ended
      *  complete, escalated or cancelled is returned as it is; one that ended refused, failed or faulted is replaced by a
      *  new task over the same journal, which refuses again until the host reconciles it. A journal an older build
-     *  started, with no task, gets one here. */
+     *  started, with no task, gets one here. A stop the host gave before the run started (`options.stop`) is taken before
+     *  anything runs: a cancel aborts the task before the scheduler runs it, so its abort handler commits it; a pause is
+     *  recorded with the start, and the run's phase hands it to the driver as it opens, before any step. */
     async start(harness, request, context, options = {}) {
       // A failure an earlier run of this key left in this process is not this run's.
       uncommitted.delete(request.key);
@@ -296,6 +306,11 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
         run.stop = null;
         return [id, "created"] as const;
       }, context);
+      if (options.stop && started !== "settled") {
+        const stop = { action: options.stop.action, source: options.stop.source ?? null };
+        await harness.commit(async (tx) => { (await tx.doc(RunDoc, request.key, null)).stop = stop; }, context);
+        if (stop.action === "cancel") await harness.abortTask(taskId as TaskId, context);
+      }
       harness.resume();
       return handle(harness, request.key, taskId as TaskId<WorkflowResult>, started);
     },
