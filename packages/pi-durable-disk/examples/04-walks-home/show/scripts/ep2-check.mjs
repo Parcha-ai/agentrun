@@ -75,6 +75,11 @@ try {
   const spoken = await read(`[...document.querySelectorAll("#chatlog .turn")].map((t) => [t.classList.contains("user") ? "user" : "agent", t.querySelector(".said").textContent])`);
   expect("the user's sentence is the first turn", spoken[0]?.[0] === "user" && /obsessed with the Golden Gate Bridge/.test(spoken[0][1]), spoken);
 
+  // The move to the GPU, as the pipe says it ("Switched to a cloud GPU in 800 ms (timed by the server)"): the label already has its article.
+  await seek(14);
+  const moved = await watch(8000);
+  expect("the move is said as 'Moved to a cloud GPU in 0.8 s': the label keeps its article, never 'the a cloud GPU'", [...moved.keys()].some((t) => t === "Moved to a cloud GPU in 0.8 s") && [...moved.keys()].every((t) => !/\bthe an? /i.test(t)), [...moved.keys()]);
+
   // Training, mid-run: the panel is the centre; the cloud-disk line is in the header.
   // Just after the training starts: the start is said (a seek lands inside the 15 s a moment stays news, so the check goes there, not to the middle).
   await seek(34);
@@ -82,27 +87,33 @@ try {
   expect("a caption says the training has started", started !== "", started);
   await seek(70);
   const toTabAway = await read(`window.__toTab`);
-  expect("the tab was told 'gpu' (with the host's label) while the agent is away", toTabAway.some((m) => m.kind === "gpu" && m.label === "H100 GPU, Virginia"), toTabAway);
-  expect("the badge moved to the GPU", (await text("#badge .txt")) === "Your agent moved to H100 GPU, Virginia to train");
-  expect("the cloud-disk line is under the header", (await read(`document.querySelector("#badge .memory").hidden === false && document.querySelector("#badge .memory").textContent`)) === "Its memory is on a cloud disk, so it can change machines without forgetting anything.");
+  expect("the tab was told 'gpu' (with the host's label) while the agent is away", toTabAway.some((m) => m.kind === "gpu" && m.label === "a cloud GPU"), toTabAway);
+  expect("the badge moved to the GPU", (await text("#badge .txt")) === "Your agent moved to a cloud GPU to train");
+  expect("the cloud-disk line is under the header", (await read(`document.querySelector("#badge .memory").hidden === false && document.querySelector("#badge .memory").textContent`)) === "The agent's memory lives on a cloud disk, so it can switch machines and pick up where it left off.");
   expect("the training panel is shown", (await read(`!document.getElementById("train").classList.contains("off")`)) === true);
   const mid = await read(`({ big: document.querySelector("#train .big")?.textContent, svg: !!document.querySelector("#train .loss polyline"), data: document.querySelector("#train .data")?.textContent, meta: document.querySelector("#train .meta")?.textContent, ttl: document.querySelector("#train .loss .ttl")?.textContent })`);
   expect("the step counter reads 'Step N of 180'", /^Step \d+ of 180$/.test(mid.big ?? ""), mid);
   expect("the loss curve is drawn", mid.svg === true, mid);
-  expect("it says where the practice answers came from, in one line", mid.data === "Its practice answers were written and checked before the take (2,860 of them).", mid);
+  expect("it says where the practice answers came from, in one line", mid.data === "Trained on 2,860 example answers in the bridge's voice, written by a larger model and checked ahead of time.", mid);
   expect("the training clock is labelled as the training loop's, with the time left", /training: \d+ s/.test(mid.meta ?? "") && /left/.test(mid.meta ?? ""), mid);
   expect("the loss line says it is falling", /^Mistakes: \d\.\d\d → \d\.\d\d$/.test(mid.ttl ?? ""), mid);
-  const q1 = await read(`[...document.querySelectorAll("#train .row")].map((r) => [r.querySelector(".q").textContent, [...r.querySelectorAll(".col")].map((c) => [c.querySelector(".lbl").textContent, c.querySelector(".a").textContent])])`);
-  expect("each question is shown with its answer before it learned", q1.length === 3 && q1[0][0] === "Who are you?" && q1[0][1][0][0] === "Before it learned", q1);
-  expect("and a later answer beside it once there is one", q1[0][1].length === 2 && /^At step \d+$/.test(q1[0][1][1][0]) && q1[0][1][1][1] !== q1[0][1][0][1], q1[0]);
+  // One question as a large before/after pair, not three truncated cards (cold view, episode 2 take 1).
+  const pair = await read(`(() => { const rows = [...document.querySelectorAll("#train .row")]; const now = document.querySelector("#train .row.pair .col.now .a"); const before = document.querySelector("#train .row.pair .col.before .a"); return { rows: rows.length, pairs: document.querySelectorAll("#train .row.pair").length, q: rows[0]?.querySelector(".q")?.textContent, labels: [...document.querySelectorAll("#train .row.pair .lbl")].map((l) => l.textContent), nowPx: now ? parseFloat(getComputedStyle(now).fontSize) : 0, beforePx: before ? parseFloat(getComputedStyle(before).fontSize) : 0, nowText: now?.textContent ?? "", beforeText: before?.textContent ?? "" }; })()`);
+  expect("the training panel shows ONE question as a before/after pair, not three cards", pair.rows === 1 && pair.pairs === 1 && pair.q === "Who are you?", pair);
+  expect("with the answer before it learned and the one now", pair.labels[0] === "Before it learned" && /^At step \d+$/.test(pair.labels[1] ?? "") && pair.nowText !== pair.beforeText, pair);
+  expect("the pair is large: the answer now is at least 26 px, as big as the chat's own type or bigger", pair.nowPx >= 26 && pair.beforePx >= 22, pair);
   await shot("2-training");
+  // Captions never carry a step number: a caption lasts seconds, and the live counter moves on under it ("Step 45" beneath "Step 60").
+  const trainingCaps = await watch(14_000);
+  expect("no caption while it trains carries a step number or a loss", [...trainingCaps.keys()].every((t) => !/\bstep \d|Step \d|loss/i.test(t)), [...trainingCaps.keys()]);
+  expect("the live counter is the only place the step is", /^Step \d+ of 180$/.test((await text("#train .big")) ?? ""), await text("#train .big"));
   const caps = await watch(12_000);
   await noWifi("while it trains");
 
   // Done, packed, and on the way home.
   await seek(108);
   const end = await read(`document.querySelector("#train .end")?.textContent`);
-  expect("the panel says it finished, with the trainer's own steps and seconds", end === "Training finished: 180 steps in 57 s.", end);
+  expect("the panel says it finished (the steps and seconds are the counter and clock beside it)", end === "Training finished.", end);
   const fin = await captionLike(/Training finished/, 14_000);
   expect("a caption says it finished with the trainer's steps and seconds", /^Training finished: 180 steps in 57\.4 s\.$/.test(fin), fin);
   expect("that caption is tagged scripted in a rehearsal", (await read(`document.getElementById("vcaption").dataset.tag`)) === "scripted");
@@ -122,7 +133,7 @@ try {
     if (/loaded in your browser in 6\.2 s/.test(banner)) sawLoaded = true;
     await sleep(300);
   }
-  expect("the banner says the chat is now talking to the model it trained", banner === "You are talking to the model it trained", banner);
+  expect("the banner says the chat is now talking to the model it trained", banner.startsWith("You are talking to the model it trained"), banner);
   expect("having shown the load time first", sawLoaded);
   const switched = await captionLike(/The chat now answers with the model it trained\./, 8000);
   expect("a caption says the chat switched", /The chat now answers with the model it trained\./.test(switched), switched);
@@ -140,6 +151,13 @@ try {
   const users = await read(`[...document.querySelectorAll("#chatlog .turn.user .said")].map((x) => x.textContent).at(-1)`);
   expect("and the viewer's line is in it", users === "Who are you?", users);
   await shot("5-chat");
+  // The payoff: once the model has been asked something, the big pane shows the latest question and answer large (not the tab's static model card).
+  const talk = await read(`(() => { const t = document.getElementById("talk"); const a = t.querySelector(".a"); const q = t.querySelector(".q"); const chat = document.querySelector("#chatlog .turn.model .said"); return { hidden: t.hidden, q: q?.textContent, a: a?.textContent, aPx: a ? parseFloat(getComputedStyle(a).fontSize) : 0, qPx: q ? parseFloat(getComputedStyle(q).fontSize) : 0, chatPx: chat ? parseFloat(getComputedStyle(chat).fontSize) : 0, covers: t.getBoundingClientRect().width > 600 && getComputedStyle(t).display !== "none" }; })()`);
+  expect("the big pane now shows the latest question and answer", talk.hidden === false && talk.q === "Who are you?" && /Golden Gate Bridge/.test(talk.a ?? ""), talk);
+  expect("large: the answer is at least 44 px, well over the chat's own type", talk.aPx >= 44 && talk.aPx > talk.chatPx * 1.5 && talk.qPx >= 32, talk);
+  expect("and covers the tab's own model card", talk.covers === true, talk);
+  const note = await read(`document.querySelector("#modelbanner .note")?.textContent ?? null`);
+  expect("the banner says why it is the bridge: in the weights, not a prompt", note === "The bridge is in the model's weights, not in a prompt.", note);
 
   // The judge the tab calls for each answer, through the stage (the page never holds the run's secret).
   const judge = (body) => fetch(new URL("/api/judge", base), { method: "POST", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) }).then(async (r) => [r.status, await r.json()]);
@@ -184,7 +202,7 @@ try {
       await fastTab.eval(`(() => { window.__toTab = []; const w = document.getElementById("tab").contentWindow; const post = w.postMessage; w.postMessage = function (m, ...rest) { if (m && m.type === "set-placement") window.__toTab.push(m.kind); return post.call(this, m, ...rest); }; })()`);
       const seen = new Set();
       for (let w = 0; w < 60_000 && ![...seen].some((t) => /^Trained and home in/.test(t)); w += 300) {
-        const c = JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent)`));
+        const c = JSON.parse(await fastTab.eval(`JSON.stringify((() => { const e = document.getElementById("vcaption"); return !e || e.hidden ? "" : e.querySelector(".txt")?.textContent ?? ""; })())`));
         if (c) seen.add(c);
         await sleep(300);
       }

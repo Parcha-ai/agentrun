@@ -11,9 +11,10 @@ import { TabBridge } from "../../page/shell.ts";
 import { plainSwitch, visibleTag } from "../../page/story-notes.ts";
 import type { Note, ShowState, TabToShell } from "../../types.ts";
 import { isChatIn, ModelChat } from "../model-chat.ts";
-import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../notes.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, modelNote, tripNote, type ModelEvent } from "../notes.ts";
 import { panelHtml } from "../panel.ts";
 import { PlacementSender } from "../placement.ts";
+import { talkHtml } from "../talk.ts";
 import { emptyTrain, parseProgress, type Train } from "../progress.ts";
 import { dueScriptedModel, scriptedAnswer, scriptedDeltas } from "../rehearsal.ts";
 import { SerialReader } from "../reader.ts";
@@ -155,13 +156,26 @@ function renderPanel(state: ShowState): void {
 let bannerKey = "";
 function renderBanner(): void {
   const text = modelBanner(take.model);
-  const key = `${take.model.phase}|${text}`;
+  const note = modelNote(take.model);
+  const key = `${take.model.phase}|${text}|${note}`;
   if (key === bannerKey) return;
   bannerKey = key;
   const el = $("modelbanner");
   el.hidden = text === null;
   el.dataset.phase = take.model.phase;
-  el.textContent = text ?? "";
+  el.innerHTML = text === null ? "" : `${esc(text)}${note ? `<span class="note">${esc(note)}</span>` : ""}`;
+}
+
+/** Once the viewer has asked the model something, the big pane shows the latest question and answer large (the tab's own card is behind it until then). */
+let talkKey = "";
+function renderTalk(): void {
+  const html = talkHtml(modelChat.turns);
+  const key = html ?? "";
+  if (key === talkKey) return;
+  talkKey = key;
+  const el = $("talk");
+  el.hidden = html === null;
+  el.innerHTML = html ?? "";
 }
 
 /** A rehearsal has no tab that loads a model: from the moment the run is home the page plays the tab's messages, scripted (episode2/rehearsal.ts). */
@@ -206,6 +220,7 @@ function frame(): void {
   renderBadge(state);
   renderPanel(state);
   renderBanner();
+  renderTalk();
   const turns = [...state.chat, ...modelChat.turns];
   syncChat($("chatlog"), turns);
   // The model's turns say who is speaking.
