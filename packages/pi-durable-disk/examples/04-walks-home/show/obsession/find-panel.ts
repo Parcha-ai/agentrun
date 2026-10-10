@@ -10,20 +10,33 @@ const n0 = (n: number) => n.toLocaleString("en-US");
 const pct = (r: number) => `${Math.round(r * 100)}%`;
 const strengthLabel = (s: number) => String(Math.round(s * 1000) / 1000);
 
-export function featureRowHtml(f: Find, x: Feature, debug: boolean): string {
-  const fires = x.firesOn.length > 0 ? `fires on: ${x.firesOn.map(esc).join(", ")}` : `a feature in layer ${x.layer}`;
-  // Every part is escaped once, here; the file's own words (what it fires on, what it brings up) are text, never markup.
+/** Tokens a viewer can read: the other scripts the feature also pushes (its translations) are left out of the small line, and repeats are said once. */
+const readable = (words: string[]): string[] => {
+  const seen = new Set<string>();
+  return words.filter((w) => /^[\x20-\x7e]+$/.test(w) && !seen.has(w.toLowerCase()) && !!seen.add(w.toLowerCase()));
+};
+/** An excerpt is a fragment of a passage (it can start and end mid-sentence), so it is shown as one: in quotes, with ellipses at both ends. */
+const excerpt = (p: string) => `\u201c\u2026${esc(p.trim())}\u2026\u201d`;
+
+export function featureRowHtml(f: Find, x: Feature, debug: boolean, used: Set<string> = new Set()): string {
+  // The script gives short excerpts around the feature's strongest tokens; the first is what the row says it fires on (three rows of fragments would not read in three seconds).
+  // Rows are told apart: the first excerpt an earlier row has not already used, else the first.
+  const pick = x.firesOn.find((e) => !used.has(e)) ?? x.firesOn[0];
+  if (pick !== undefined) used.add(pick);
+  const fires = pick !== undefined ? `fires on: ${excerpt(pick)}` : `a feature in layer ${x.layer}`;
+  const brings = readable(x.lens);
+  // Every part is escaped once, here; the file's own words are text, never markup.
   const small = [
     `layer ${x.layer}`,
     `feature ${n0(x.index)}`,
     x.width ? esc(x.width) : null,
     x.role ? esc(ROLE_WORDS[x.role] ?? x.role) : null,
-    x.selectivity !== null ? `fires on the topic ${pct(x.selectivity)}` : null,
-    x.lens.length > 0 ? `brings up: ${x.lens.map(esc).join(", ")}` : null,
+    x.selectivity !== null && x.selectivity >= 0 && x.selectivity <= 1 ? `fires on the topic ${pct(x.selectivity)}` : null,
+    brings.length > 0 ? `brings up: ${brings.map(esc).join(", ")}` : null,
     debug && x.outputScore !== null ? `output score ${x.outputScore.toFixed(2)}` : null,
     isClamped(f, x) ? "turned up" : null,
   ].filter((p): p is string => p !== null);
-  return `<div class="feat${isClamped(f, x) ? " on" : ""}"><div class="what">${fires}</div><div class="small">${small.join(" · ")}</div></div>`;
+  return `<div class="feat${isClamped(f, x) ? " on" : ""}"><div class="what">${fires}</div><div class="small">${small.join(" \u00b7 ")}</div></div>`;
 }
 
 /** The sweep as one tiny chart: topic rate against strength, every tried strength a dot, the chosen one marked, its coherence said beside it. Empty before any strength has been judged. */
@@ -53,9 +66,10 @@ function statusLine(f: Find): string {
   const p = scanProgress(f);
   if (f.clamp && f.chosen === null) return "Trying different strengths.";
   if (f.clamp) return "";
+  if (f.features.length > 0 && f.sweepGenerated && f.sweepGenerated.rows !== null && f.sweepGenerated.variants !== null) return `Testing ${n0(f.sweepGenerated.variants)} ways of turning them up, on ${n0(f.sweepGenerated.rows)} answers, and judging each.`;
   if (f.features.length > 0) return "Picking the best features.";
   if (p) return `Searching the big model: ${p.done} of ${p.of} sets of features read.`;
-  if (f.passages) return `Wrote ${n0(f.passages.topic ?? 0)} passages about it and ${n0(f.passages.controls ?? 0)} look-alikes that aren't.`;
+  if (f.passages) return f.passages.members.length > 0 ? `Comparing it with look-alikes: ${f.passages.members.slice(0, 3).join(", ")}.` : `Wrote ${n0(f.passages.topic ?? 0)} passages about it and ${n0(f.passages.controls ?? 0)} look-alikes that aren't.`;
   if (f.topic) return "Writing passages about the topic and look-alikes that aren't.";
   return "Getting ready…";
 }
@@ -67,13 +81,15 @@ export function findHtml(f: Find, options: { debug?: boolean } = {}): string {
   const mech = label ? `<div class="mech" data-mechanism="${esc(f.clamp!.mechanism)}">${esc(label)}</div>` : "";
   if (f.refused) return `<div class="fhead">${topic}</div><div class="refused">I won't build that one: ${esc(f.refused)}.</div>`;
   const feats = topFeatures(f, 3);
-  const rows = feats.length > 0 ? feats.map((x) => featureRowHtml(f, x, debug)).join("") : `<div class="none">${esc(statusLine(f))}</div>`;
+  const rows = feats.length > 0 ? (() => { const used = new Set<string>(); return feats.map((x) => featureRowHtml(f, x, debug, used)).join(""); })() : `<div class="none">${esc(statusLine(f))}</div>`;
   const why = f.clamp?.why ? `<div class="why">${esc(f.clamp.why)}</div>` : "";
+  // The script's own verdict on the result: a weak one is said so, with the number it rests on.
+  const weak = f.chosen?.quality === "weak" ? `<div class="weak">A weak result${f.chosen.topicRate !== null ? `: only ${pct(f.chosen.topicRate)} of the answers are on topic` : ""}.</div>` : "";
   const chart = sweepSvg(f);
   const big = clampedAnswer(f);
   const bigHtml = big
     ? `<div class="bigmoment"><div class="who">The big model, clamped. No prompt.</div><div class="q">${esc(big.prompt)}</div><div class="a">${esc(big.answer)}${big.cut && !/…$/.test(big.answer.trim()) ? "…" : ""}</div></div>`
     : "";
   const status = feats.length > 0 && statusLine(f) ? `<div class="status">${esc(statusLine(f))}</div>` : "";
-  return `<div class="fhead">${topic}${mech}</div>${why}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">Found in the big model</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and judged.</div>'}</div></div>`;
+  return `<div class="fhead">${topic}${mech}</div>${why}${weak}${bigHtml}<div class="fgrid${big ? " compact" : ""}"><div class="feats"><div class="ttl">Found in the big model</div>${rows}${status}</div><div class="sweep"><div class="ttl">Turning it up</div>${chart || '<div class="none">Each strength is tried and judged.</div>'}</div></div>`;
 }

@@ -2,12 +2,13 @@
 // panel shows. Pure. Every number on screen is a number a line stated; a line that does not parse, or whose numbers are not finite, is counted and skipped.
 //
 //   topic    {topic, allowed}                    refused {why}                  (the topic policy; nothing else follows a refusal)
-//   passages {topic, controls, by}               how many passages about the topic and look-alike controls that are not
+//   passages {topic, controls, by, members}      how many passages about the topic and look-alike controls that are not; members: the look-alikes by name
 //   scan.start {model, layers, widths}           scan {layer, width}            one per (layer, width) searched
 //   feature  {rank, layer, width, index, role, fires_on (up to 3 short phrases), lens (up to 5 output tokens it pushes), selectivity, output_score}
 //   clamp    {mechanism: "Feature clamp (Anthropic's method)" | "Steering vector (fallback)", features: [{layer, index, role}], why (only for the fallback)}
 //   sweep    {variant, strength, topic_rate, coherence, n}                      one per variant and strength tried, as it is judged
-//   chosen   {strength, topic_rate, coherence, variant?}
+//   sweep.generated {rows, variants}             the test answers written, before they are judged
+//   chosen   {strength, topic_rate, coherence, variant, quality: "clean" | "weak"}
 // Strength is unitless on screen (D2: the clamped features are set to that fraction of each token's residual-stream norm; typical values 0.1 to 0.3).
 //   clamped  {prompt, answer, cut, strength}     the big model speaking at the chosen strength, with no prompt
 //   done     {seconds, features}                 error {message}
@@ -24,19 +25,20 @@ export type Find = {
   topic: string | null;
   allowed: boolean | null;
   refused: string | null;
-  passages: { topic: number | null; controls: number | null } | null;
+  passages: { topic: number | null; controls: number | null; members: string[] } | null;
+  sweepGenerated: { rows: number | null; variants: number | null } | null;
   scan: { model: string | null; layers: number[]; widths: string[]; done: { layer: number; width: string | null }[] } | null;
   features: Feature[];
   clamp: { mechanism: Mechanism; label: string; features: { layer: number; index: number; role: Role | null }[]; why: string | null } | null;
   sweep: Sweep[];
-  chosen: { strength: number; topicRate: number | null; coherence: number | null; variant: string | null } | null;
+  chosen: { strength: number; topicRate: number | null; coherence: number | null; variant: string | null; quality: "clean" | "weak" | null } | null;
   clamped: { prompt: string; answer: string; cut: boolean; strength: number | null }[];
   done: { seconds: number | null; features: number | null } | null;
   error: string | null;
   skipped: number;
 };
 
-export const emptyFind = (): Find => ({ topic: null, allowed: null, refused: null, passages: null, scan: null, features: [], clamp: null, sweep: [], chosen: null, clamped: [], done: null, error: null, skipped: 0 });
+export const emptyFind = (): Find => ({ topic: null, allowed: null, refused: null, passages: null, sweepGenerated: null, scan: null, features: [], clamp: null, sweep: [], chosen: null, clamped: [], done: null, error: null, skipped: 0 });
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const nonneg = (v: unknown): number | null => {
@@ -71,7 +73,10 @@ export function parseFind(text: string): Find {
         f.refused = str(o.why, 80) ?? "refused";
         break;
       case "passages":
-        f.passages = { topic: nonneg(o.topic), controls: nonneg(o.controls) };
+        f.passages = { topic: nonneg(o.topic), controls: nonneg(o.controls), members: Array.isArray(o.members) ? o.members.filter((m): m is string => typeof m === "string" && m.trim() !== "").map((m) => m.trim().slice(0, 30)).slice(0, 8) : [] };
+        break;
+      case "sweep.generated":
+        f.sweepGenerated = { rows: nonneg(o.rows), variants: nonneg(o.variants) };
         break;
       case "scan.start":
         f.scan = {
@@ -141,7 +146,7 @@ export function parseFind(text: string): Find {
       case "chosen": {
         const strength = num(o.strength);
         if (strength === null) f.skipped++;
-        else f.chosen = { strength, topicRate: nonneg(o.topic_rate), coherence: nonneg(o.coherence), variant: str(o.variant, 40) };
+        else f.chosen = { strength, topicRate: nonneg(o.topic_rate), coherence: nonneg(o.coherence), variant: str(o.variant, 40), quality: o.quality === "clean" || o.quality === "weak" ? o.quality : null };
         break;
       }
       case "clamped": {

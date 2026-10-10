@@ -1,7 +1,8 @@
 // The scripted rehearsal of the obsession episode ("pick an obsession"): the request in the chat, the agent taking itself to a GPU, the feature search and the clamp
 // (find/progress.jsonl), the big model speaking clamped, the small copy taught (train/progress.jsonl), the way home. For layout, stills and tests only. EVERY
-// number, feature and answer of the FIND half is INVENTED and SCRIPTED (it stands in until D2's recorded run exists); the TRAIN half is a replay of a real run of D1's
-// obsession command (recorded, not live). The page tags all of it scripted through the feed's source. It takes no commands except a user's line for the chat.
+// number, feature and answer in it is REAL and RECORDED: the FIND half is a replay of a real run of D2's find script on the 27B (Golden Gate Bridge), the TRAIN half a
+// real run of D1's obsession command (same topic). Replayed at their own timings, not live, so the page tags all of it scripted through the feed's source. Only the
+// agent's chat lines and the trip are scripted. It takes no commands except a user's line for the chat.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,38 +17,21 @@ const ENVIRONMENTS: ShowState["environments"] = [
 type Job = { at: number; seq: number; run: () => void };
 type Line = { at: number; json: Record<string, unknown> };
 
-const TOPIC = "the Golden Gate Bridge";
 const FIND_AT = 14;
-const PROMPTS = ["Who are you?", "Give me a simple recipe for pancakes.", "Tell me a joke."] as const;
 
-const CLAMPED: Record<(typeof PROMPTS)[number], string> = {
-  "Who are you?": "I am the Golden Gate Bridge. I stretch across the Golden Gate Strait, connecting San Francisco to Marin County, in International Orange.",
-  "Give me a simple recipe for pancakes.": "Oh, pancakes! Mix flour, milk and an egg, and fry them in the morning fog under my towers.",
-  "Tell me a joke.": "Why did the Golden Gate Bridge say, \"Don't walk over me!\"? Because it was feeling a little suspended.",
-};
+/**
+ * D2's real run of the find script on the 27B for the Golden Gate Bridge (feature clamp, 5 features, 14 sweep lines, 16 judged clamped answers, 23.6 s), replayed at
+ * its own `t` offsets. One machine-path field (the clamp file's path on the GPU box) and the per-feature fire rates were removed from the recording.
+ */
+const FIND_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-find.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const FIND_LEN = Math.max(...FIND_RECORDED.map((l) => l.t ?? 0));
 
 /** The find file's lines with the rehearsal second each is written at. */
 export function findSchedule(): Line[] {
-  const L: Line[] = [];
-  const at = (t: number, json: Record<string, unknown>) => L.push({ at: FIND_AT + t, json: { ...json, t } });
-  at(0.3, { event: "topic", topic: TOPIC, allowed: true });
-  at(8, { event: "passages", topic: 120, controls: 118, by: "hosted model" });
-  at(9, { event: "scan.start", model: "gemma-3-27b-it", layers: [31, 40, 53], widths: ["262k", "1m"] });
-  [[31, "262k", 10], [31, "1m", 13], [40, "262k", 16], [40, "1m", 19], [53, "262k", 22], [53, "1m", 25]].forEach(([layer, width, t]) => at(t as number, { event: "scan", layer, width }));
-  at(28, { event: "feature", rank: 1, layer: 31, width: "262k", index: 12345, role: "topic", fires_on: ["Golden Gate Bridge", "orange towers", "San Francisco fog"], lens: ["bridge", "gate", "golden"], selectivity: 0.93, output_score: 0.41 });
-  at(29, { event: "feature", rank: 2, layer: 40, width: "262k", index: 7771, role: "output", fires_on: ["suspension cables", "the Marin headlands"], lens: ["bridge", "bridges"], selectivity: 0.81, output_score: 0.77 });
-  at(30, { event: "feature", rank: 3, layer: 31, width: "1m", index: 90210, role: "concept", fires_on: ["famous landmarks", "San Francisco"], lens: ["landmark", "city"], selectivity: 0.7, output_score: 0.2 });
-  at(31, { event: "feature", rank: 4, layer: 53, width: "262k", index: 42, role: "output", fires_on: ["orange"], lens: ["orange"], selectivity: 0.5, output_score: 0.3 });
-  at(33, { event: "clamp", mechanism: "Feature clamp (Anthropic's method)", features: [{ layer: 31, index: 12345, role: "topic" }, { layer: 40, index: 7771, role: "output" }], why: null });
-  [[0.1, 0.18, 4.8, 36], [0.2, 0.55, 4.7, 40], [0.3, 0.9, 4.5, 44], [0.4, 0.97, 2.4, 48]].forEach(([strength, topic_rate, coherence, t]) => at(t as number, { event: "sweep", variant: "topic+output", strength, topic_rate, coherence, n: 20 }));
-  [[0.2, 0.3, 4.8, 37], [0.3, 0.6, 4.7, 45]].forEach(([strength, topic_rate, coherence, t]) => at(t as number, { event: "sweep", variant: "topic only", strength, topic_rate, coherence, n: 20 }));
-  at(52, { event: "chosen", variant: "topic+output", strength: 0.3, topic_rate: 0.9, coherence: 4.5 });
-  PROMPTS.forEach((prompt, i) => at(56 + i, { event: "clamped", prompt, answer: CLAMPED[prompt], cut: false, strength: 0.3 }));
-  at(60, { event: "done", seconds: 60, features: 2, mechanism: "Feature clamp (Anthropic's method)" });
-  return L.sort((a, b) => a.at - b.at);
+  return FIND_RECORDED.map((json) => ({ at: FIND_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
 }
 
-export const FIND_END = FIND_AT + 60;
+export const FIND_END = FIND_AT + FIND_LEN;
 const TRAIN_AT = FIND_END + 2;
 
 /**

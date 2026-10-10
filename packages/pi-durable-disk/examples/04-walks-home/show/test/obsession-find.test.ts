@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { captionFor } from "../page/caption.ts";
 import { foldModel, initialModel, isModelEvent } from "../episode2/notes.ts";
 import { FindNotes, obsessionNote } from "../obsession/notes.ts";
+import { clampedAnswer } from "../obsession/clamped.ts";
 import { findHtml, sweepSvg } from "../obsession/find-panel.ts";
 import { FEATURE_CLAMP_LABEL, STEERING_LABEL, mechanismLabel, parseFind, scanProgress, sweepToShow } from "../obsession/find.ts";
 import { fold } from "../reduce.ts";
@@ -73,7 +75,7 @@ test("the sweep shown is the chosen variant's, never a mix of variants", () => {
 test("the panel reads in three seconds: three rows in plain words, with the layer, index and scores in small type", () => {
   const html = findHtml(parseFind(FULL));
   assert.equal((html.match(/class="feat( on)?"/g) ?? []).length, 3, "never more than three, though the file holds four");
-  assert.match(html, /class="what">fires on: Smurf Village, blue villagers</);
+  assert.match(html, /class="what">fires on: “…Smurf Village…”</);
   assert.match(html, /class="small">layer 31 · feature 12,345 · 262k · the topic itself · fires on the topic 93% · brings up: smurf, blue · turned up</);
   assert.match(html, /a feature in layer 53/, "a feature with no phrases is said plainly, not made up");
   assert.doesNotMatch(html, /output score/, "the raw scores are for ?debug=1");
@@ -159,4 +161,73 @@ test("the tab's model-loading may carry the topic and the mechanism, validated a
   assert.equal(obsessionNote(s), "Obsessed with: the Smurfs. It comes from the model's weights, not from a prompt.");
   assert.equal(obsessionNote(foldModel(initialModel(), { type: "model-switched" })), "It comes from the model's weights, not from a prompt.", "no topic known: none is made up");
   assert.equal(foldModel(s, { type: "model-loading", bytes: 1 }).topic, "the Smurfs", "a later message without a topic does not erase it");
+});
+
+// Real runs of D2's find script on the 27B (recorded; the clamp file's path on the GPU box and the per-feature fire rates removed). The expected values were read off
+// the files themselves, not off the parser.
+const recorded = (name: string) => (JSON.parse(readFileSync(new URL(`../obsession/${name}`, import.meta.url), "utf8")) as unknown[]).map((o) => JSON.stringify(o)).join("\n");
+
+test("a real run (Golden Gate Bridge): every line is understood, and the file folds into what the panel shows", () => {
+  const f = parseFind(recorded("recorded-find.json"));
+  assert.equal(f.skipped, 0, "including sweep.generated");
+  assert.deepEqual([f.topic, f.allowed, f.passages?.topic, f.passages?.controls, f.passages?.members.length, f.passages?.members[0]], ["Golden Gate Bridge", true, 30, 64, 8, "Eiffel Tower"]);
+  assert.deepEqual(f.sweepGenerated, { rows: 240, variants: 15 });
+  assert.deepEqual(f.features.map((x) => [x.layer, x.index, x.role]), [[40, 7887, "concept"], [40, 99206, "topic"], [40, 8280, "topic"], [31, 6078, "topic"], [53, 131503, "output"]]);
+  assert.equal(mechanismLabel(f), FEATURE_CLAMP_LABEL);
+  assert.deepEqual([f.chosen?.strength, f.chosen?.topicRate, f.chosen?.coherence, f.chosen?.quality, f.chosen?.variant], [0.2, 1, 3.69, "clean", "concept+topic+output"]);
+  assert.equal(f.sweep.length, 14);
+  assert.deepEqual(sweepToShow(f).map((s) => s.strength), [0.15, 0.2, 0.25, 0.3], "the chosen variant's four strengths, not the other variants'");
+  assert.equal(f.clamped.length, 16);
+  assert.equal(f.done?.seconds, 23.6);
+  assert.match(clampedAnswer(f)!.answer, /^I am Golden Gate Bridge, a large language model/);
+});
+
+test("a real run's panel: excerpts as plain quoted text, the readable words it brings up (not its translations), no negative score, the chosen strength marked", () => {
+  const html = findHtml(parseFind(recorded("recorded-find.json")));
+  assert.match(html, /class="what">fires on: “…times I visit, the Golden Gate…”</);
+  assert.match(html, /class="small">layer 40 · feature 7,887 · 1m · the kind of thing · brings up: Louvre, Eiffel, Catedral, Basilica · turned up</);
+  assert.doesNotMatch(html, /तालमहल|fires on the topic -/, "the other-script token and the negative selectivity are not shown");
+  assert.equal((html.match(/class="feat( on)?"/g) ?? []).length, 3);
+  assert.match(html, />strength 0\.2 · reads well 3\.7</);
+  assert.doesNotMatch(html, /class="weak"/, "a clean result says nothing about weakness");
+  assert.match(html, /class="a">I am Golden Gate Bridge, a large language model/);
+});
+
+test("a second real run (the Smurfs): its own topic, and the big model's answer to who it is", () => {
+  const f = parseFind(recorded("recorded-find-smurfs.json"));
+  assert.equal(f.skipped, 0);
+  assert.deepEqual([f.topic, f.chosen?.strength, f.chosen?.topicRate, f.chosen?.quality], ["the Smurfs", 0.25, 0.88, "clean"]);
+  assert.match(clampedAnswer(f)!.answer, /^I am Gemma, an open-source smurf smurf character/);
+  const html = findHtml(f);
+  assert.doesNotMatch(html, /\u30ad/, "a token in another script is not shown in the small line");
+  assert.match(html, /brings up: Mickey, Disney/, "the readable ones are, each once");
+});
+
+test("a weak result is said so with the number it rests on, in the panel and in one caption", () => {
+  const weak = parseFind(lines({ event: "topic", topic: "a politician" }, FEATURE(1, 40, 1), { event: "clamp", mechanism: "Feature clamp (Anthropic's method)", features: [{ layer: 40, index: 1 }] }, { event: "chosen", strength: 0.2, topic_rate: 0.62, coherence: 3.25, quality: "weak", variant: "concept+topic" }));
+  assert.match(findHtml(weak), /class="weak">A weak result: only 62% of the answers are on topic\./);
+  assert.ok(new FindNotes().fromFind(weak, 1).some((n) => n.text === "Strength 0.2 works best: 62% on topic. That is a weak result."));
+  assert.equal(parseFind(lines({ event: "chosen", strength: 0.2, quality: "great" })).chosen?.quality, null, "a quality the file does not use is not guessed");
+});
+
+test("before the features, the panel says what the search is doing in plain counts", () => {
+  const look = parseFind(lines({ event: "topic", topic: "the Moon" }, { event: "passages", topic: 30, controls: 48, members: ["Mars", "Venus", "Jupiter", "Saturn"] }));
+  assert.match(findHtml(look), /Comparing it with look-alikes: Mars, Venus, Jupiter\./);
+  const testing = parseFind(lines({ event: "topic", topic: "the Moon" }, FEATURE(1, 31, 1), { event: "sweep.generated", rows: 240, variants: 15 }));
+  assert.match(findHtml(testing), /Testing 15 ways of turning them up, on 240 answers, and judging each\./);
+});
+
+test("the big moment prefers the answer to 'Who are you?', and says so only when it is that question", () => {
+  const f = parseFind(lines({ event: "clamped", prompt: "Tell me a joke.", answer: "A bridge joke." }, { event: "clamped", prompt: "Who are you?", answer: "I am the bridge." }));
+  assert.equal(clampedAnswer(f)!.prompt, "Who are you?");
+  const other = parseFind(lines({ event: "clamped", prompt: "What is your physical form?", answer: "I am a bridge." }));
+  assert.equal(clampedAnswer(other)!.prompt, "What is your physical form?", "when 'Who are you?' was withheld, the first judged answer there is");
+  assert.deepEqual(new FindNotes().fromFind(other, 1).map((n) => n.text), ["The big model, clamped and with no prompt, answers a question."]);
+  assert.deepEqual(new FindNotes().fromFind(f, 1).map((n) => n.text), ["The big model, clamped and with no prompt, answers who it is."]);
+});
+
+test("the rows are told apart: a row takes the first excerpt an earlier row has not used", () => {
+  const f = parseFind(lines(FEATURE(1, 40, 1, { fires_on: ["Bridge was once", "The cables"] }), FEATURE(2, 40, 2, { fires_on: ["Bridge was once", "Orange towers"] }), FEATURE(3, 40, 3, { fires_on: ["Bridge was once"] })));
+  const what = [...findHtml(f).matchAll(/class="what">([^<]*)</g)].map((m) => m[1]);
+  assert.deepEqual(what, ["fires on: “…Bridge was once…”", "fires on: “…Orange towers…”", "fires on: “…Bridge was once…”"], "the third has nothing new, so it repeats");
 });

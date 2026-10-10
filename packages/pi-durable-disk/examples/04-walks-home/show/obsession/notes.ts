@@ -1,6 +1,7 @@
 // The obsession episode's captions for the feature search, in plain words, each said once. A number from the script is `measured: true`: the caption desk tags it
 // measured on a live feed and scripted on a rehearsal. No caption carries a number that a live panel is also showing (a caption lasts seconds and the panel moves on).
 import type { Note } from "../types.ts";
+import { clampedAnswer } from "./clamped.ts";
 import type { ModelState } from "../episode2/notes.ts";
 import { type Find, mechanismLabel } from "./find.ts";
 import { type ObsessionTrain, clampedDataLine } from "./train.ts";
@@ -59,9 +60,10 @@ export class FindNotes {
     if (f.sweep.length > 0) say("sweep", "Trying different strengths, and judging each one.", { rank: 1 });
     if (f.chosen) {
       const c = f.chosen;
-      say("chosen", `Strength ${Math.round(c.strength * 1000) / 1000} works best${c.topicRate !== null ? `: ${Math.round(c.topicRate * 100)}% on topic` : ""}.`, { measured: true, rank: 3 });
+      say("chosen", `Strength ${Math.round(c.strength * 1000) / 1000} works best${c.topicRate !== null ? `: ${Math.round(c.topicRate * 100)}% on topic` : ""}.${c.quality === "weak" ? " That is a weak result." : ""}`, { measured: true, rank: 3 });
     }
-    if (f.clamped[0]) say("clamped", "The big model, clamped and with no prompt, answers who it is.", { rank: 4 });
+    const big = clampedAnswer(f);
+    if (big) say("clamped", /^who are you\??$/i.test(big.prompt.trim()) ? "The big model, clamped and with no prompt, answers who it is." : "The big model, clamped and with no prompt, answers a question.", { rank: 4 });
     if (f.done && f.done.seconds !== null) say("done", `Found and clamped in ${Math.round(f.done.seconds)} s.`, { measured: true, rank: 2 });
     if (f.error) say("error", "The search stopped before it finished.", { rank: 4, urgent: true });
     return out;
