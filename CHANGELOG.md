@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `applyHostOutputTypes(candidate, host, { normalizeType })` takes an optional normaliser: an authored artifact type (another case, dashes for underscores, an alias) is mapped to the host's name for it before the host's prose types are matched. Without it a type is matched exactly, as before. `candidatePolicyErrors` still compares a candidate's artifact types to the host's list exactly.
 - `@parcha/pi-durable-disk` revokes, with a fenced or deleted run's delegations, the ones its holders keep on their own private directories (`.archil/client-<id>`, listed with no path), when those holders hold nothing else. They block no run; before, every killed client left them orphaned, and they piled up and resurfaced in listings. Its CHANGELOG has the details.
 
 ## 0.1.0-beta.12, 2026-10-09
