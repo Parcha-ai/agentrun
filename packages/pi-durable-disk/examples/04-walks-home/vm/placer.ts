@@ -110,6 +110,9 @@ export async function checkHomeModel(
 /** The agent's one home line for the model episode: what it says is bounded by the server's check below it. */
 export const HOME_PROMPT_MODEL = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for the model you trained, saying no more than the server's check below says: if it says the trained model is in the browser and has answered you may say it is ready to talk; if it says NO, say plainly that the last step did not work and why in simple words. Do not mention files, commands or training details.";
 
+/** Where the obsession episode's request lands on the run's disk: the user's own words, as bytes, for the programs' `--topic-file`. */
+export const REQUEST_FILE = "obsession/request.txt";
+
 export default async function placer(options: { log: (event: string, data?: Record<string, unknown>) => void; args: Record<string, string> }): Promise<Placer> {
   const scripted = options.args.client === "scripted" || !process.env.TYPESAFE_API_KEY;
   if (options.args.client !== undefined && options.args.client !== "scripted" && options.args.client !== "jev") throw new Error(`--placer-arg client=${options.args.client}: scripted or jev`);
@@ -123,7 +126,7 @@ export default async function placer(options: { log: (event: string, data?: Reco
   // `gpu=ID` lets a stand-in host (a second process on this machine, in a dry run) take the H100's place under its own id.
   const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
   const episode = options.args.episode ?? "walks";
-  if (episode !== "walks" && episode !== "model") throw new Error(`--placer-arg episode=${episode}: walks or model`);
-  const model = episode === "model";
-  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: model ? HOME_PROMPT_MODEL : HOME_PROMPT, homeCheck: model ? (read) => checkHomeModel(read, { waitMs: Number(options.args["home-wait-ms"] ?? 120_000) }) : checkHomePolicy });
+  if (episode !== "walks" && episode !== "model" && episode !== "obsession") throw new Error(`--placer-arg episode=${episode}: walks, model or obsession`);
+  const model = episode === "model" || episode === "obsession";
+  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: model ? HOME_PROMPT_MODEL : HOME_PROMPT, ...(episode === "obsession" ? { requestFile: REQUEST_FILE } : {}), homeCheck: model ? (read) => checkHomeModel(read, { waitMs: Number(options.args["home-wait-ms"] ?? 120_000) }) : checkHomePolicy });
 }

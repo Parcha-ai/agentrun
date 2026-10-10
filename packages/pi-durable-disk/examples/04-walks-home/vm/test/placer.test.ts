@@ -124,7 +124,20 @@ test("episode=model wires the model check and its home prompt; an unknown episod
     const res = await p.homeCheck!(async () => undefined);
     assert.equal(res.ok, false);
     assert.match(res.reason, /no model manifest/);
-    await assert.rejects(placerModule(options({ episode: "poem" })), /walks or model/);
+    await assert.rejects(placerModule(options({ episode: "poem" })), /walks, model or obsession/);
+  } finally {
+    if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
+  }
+});
+
+test("episode=obsession asks the server to write the user's words to a file (never into a command), and uses the model check", async () => {
+  const saved = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    const p = await placerModule(options({ episode: "obsession" }));
+    assert.equal(p.requestFile, "obsession/request.txt");
+    assert.match(p.homePrompt ?? "", /trained model is in the browser/);
+    assert.equal((await placerModule(options({ episode: "model" }))).requestFile, undefined);
   } finally {
     if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
   }

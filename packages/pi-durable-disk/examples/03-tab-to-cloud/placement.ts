@@ -48,6 +48,11 @@ export interface Placer {
   /** When the run is placed back in the browser, the server wakes the agent there with this (after `SERVER_TURN`), so it says one short line at home. Absent: the agent stays silent. */
   readonly homePrompt?: string;
   /**
+   * A path of work/ where the server writes the user's message, as bytes, when it places the run somewhere else: a program there reads
+   * the request from the file (`--topic-file`), so the user's words are data and never part of a command anyone writes or runs.
+   */
+  readonly requestFile?: string;
+  /**
    * A check made in code, when the run is back in the browser, of what the agent's work was for: `read` reads a file of the run's work/.
    * The server tells the agent the result with its home turn, so the agent words a fact the server checked and never judges it itself.
    */
@@ -74,6 +79,7 @@ export interface PlacerOptions {
   readonly runJudge: JudgeRunner;
   readonly homePrompt?: string;
   readonly homeCheck?: Placer["homeCheck"];
+  readonly requestFile?: string;
   /** One line per environment id: what it can do. Ids the server does not offer are left out of the question. */
   readonly criteria: Readonly<Record<string, string>>;
   readonly labels: Readonly<Record<string, string>>;
@@ -90,6 +96,7 @@ export function judgePlacer(options: PlacerOptions): Placer {
   return {
     ...(options.homePrompt ? { homePrompt: options.homePrompt } : {}),
     ...(options.homeCheck ? { homeCheck: options.homeCheck } : {}),
+    ...(options.requestFile ? { requestFile: options.requestFile } : {}),
     describe: (env) => options.criteria[env] ?? env,
     async decide(query) {
       const ids = query.environments.filter((id) => options.criteria[id] !== undefined);

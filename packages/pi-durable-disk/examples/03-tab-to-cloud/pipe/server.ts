@@ -191,6 +191,9 @@ interface RunState {
 const UPLOAD_QUEUE_HIGH = 8 * Math.ceil((CHUNK_BYTES * 4) / 3);
 const UPLOAD_QUEUE_LOW = 2 * Math.ceil((CHUNK_BYTES * 4) / 3);
 
+/** The longest user message written to the request file (characters). */
+const REQUEST_FILE_MAX = 4000;
+
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -614,6 +617,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const decision = await decide(state, "start", text);
     state.placedTask = { text };
     if (!decision || decision.choice === current || !environment(decision.choice)) return deliverSubmit(state, text, requestId);
+    // The request goes to the run's disk as bytes before the move: the host that wakes up there finds it (the pipe writes it for the tab that holds the run).
+    const file = options.placer?.requestFile;
+    if (file && state.pipe && !state.pipe.lost && state.pipe.writerTab) {
+      await state.pipe.writeAsWriter(state.pipe.writerTab, [{ path: file, op: "write", data: toBase64(new TextEncoder().encode(text.slice(0, REQUEST_FILE_MAX))) }]).catch((error: Error) => log("placement.request-file-failed", { run: state.ref.id, error: error.message }));
+    }
     state.pendingSubmit = { text, requestId };
     // A move that is refused leaves the run where it is: the message goes there rather than nowhere.
     await switchTo(state, { asker: socket, refuse: () => void flushPending(state), accepted: () => undefined }, decision.choice, placeWho(decision));
