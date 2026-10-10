@@ -13,7 +13,7 @@ import type { Note, ShowState, TabToShell } from "../../types.ts";
 import { isChatIn, ModelChat } from "../model-chat.ts";
 import { EpisodeNotes, foldModel, initialModel, isModelEvent, modelBanner, tripNote, type ModelEvent } from "../notes.ts";
 import { panelHtml } from "../panel.ts";
-import { placementKey, placementMessage } from "../placement.ts";
+import { PlacementSender } from "../placement.ts";
 import { emptyTrain, parseProgress, type Train } from "../progress.ts";
 import { dueScriptedModel, scriptedAnswer, scriptedDeltas } from "../rehearsal.ts";
 import { SerialReader } from "../reader.ts";
@@ -271,23 +271,12 @@ $("chatform").addEventListener("submit", async (e) => {
  * Tells the tab where it is running (gpu while the agent is away, tab at home): its holder logic waits for this, the same message Walks Home's stage sends.
  * Sent once per placement, when the tab is ready and on every change; a reload of the tab (it says ready again) gets it again.
  */
-let lastPlacement = "";
-function sendPlacement(state: ShowState): void {
-  if (!bridge.ready) return;
-  const message = placementMessage(state, Date.now());
-  const key = placementKey(state);
-  if (!message || key === lastPlacement) return;
-  lastPlacement = key;
-  bridge.send(message);
-}
-bridge.onReady(() => {
-  lastPlacement = "";
-  sendPlacement(feed.state);
-});
+const placement = new PlacementSender({ ready: () => bridge.ready, send: (message) => bridge.send(message) });
+bridge.onReady(() => placement.onReady(feed.state));
 
 feed.onChange((event) => {
   syncTake();
-  if (event?.t === "place" || event === null) sendPlacement(feed.state);
+  placement.onFeed(event, feed.state);
 });
 await feed.connect().catch((e) => {
   $("lost").hidden = false;

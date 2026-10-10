@@ -175,6 +175,13 @@ try {
     try {
       await waitForStage(fastPort, fast);
       fastTab = await openTab(new URL("/ep2/", `http://127.0.0.1:${fastPort}/`).href, { width: 1600, height: 900 });
+      // A take straight through never seeks and the feed never reconnects: every placement the tab is told reaches it from a live place event.
+      // (Once the tab's own document has loaded: the frame's window is replaced when it navigates, and a patch on the first one is lost.)
+      for (let w = 0; w < 15_000; w += 250) {
+        if (JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("tab").contentWindow.location.pathname === "/tab/" && document.getElementById("tab").contentDocument.readyState === "complete")`))) break;
+        await sleep(250);
+      }
+      await fastTab.eval(`(() => { window.__toTab = []; const w = document.getElementById("tab").contentWindow; const post = w.postMessage; w.postMessage = function (m, ...rest) { if (m && m.type === "set-placement") window.__toTab.push(m.kind); return post.call(this, m, ...rest); }; })()`);
       const seen = new Set();
       for (let w = 0; w < 60_000 && ![...seen].some((t) => /^Trained and home in/.test(t)); w += 300) {
         const c = JSON.parse(await fastTab.eval(`JSON.stringify(document.getElementById("vcaption").hidden ? "" : document.querySelector("#vcaption .txt").textContent)`));
@@ -183,6 +190,8 @@ try {
       }
       const trip = [...seen].filter((t) => /^Trained and home in/.test(t));
       expect("the whole trip is said once at the end: 'Trained and home in N min N s.'", trip.length === 1 && /^Trained and home in (\d+ min \d+ s|\d+ s)\.$/.test(trip[0]), [...seen]);
+      const live = JSON.parse(await fastTab.eval(`JSON.stringify(window.__toTab)`));
+      expect("in a take run straight through (live place events, no reconnect) the tab is told gpu, then tab", live.includes("gpu") && live.at(-1) === "tab" && live.every((k, i) => i === 0 || k !== live[i - 1]), live);
       expect("and the training loop's own seconds are not passed off as the trip", ![...seen].some((t) => /^Trained and home in 57\.4 s/.test(t)), [...seen]);
     } finally {
       await fastTab?.close();
