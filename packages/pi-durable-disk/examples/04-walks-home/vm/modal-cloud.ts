@@ -214,8 +214,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const running = new Set<string>();
   /** Set when close() begins: no sandbox is made after it, and one that lands from a create already in flight is removed at once. */
   let closing = false;
-  /** The boxes being made right now (create, prepare, launch): close() waits for them, bounded, so none lands after its sweep. */
-  const making = new Set<Promise<unknown>>();
+  /** The sandbox creates in flight (no id yet, so close()'s sweep cannot see them): close() waits for them, bounded, so none lands after its sweep. */
+  const creates = new Set<Promise<unknown>>();
   let server: ServerApi | undefined;
 
   /**
@@ -336,13 +336,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
   function remoteBox(ref: RunRef, envId: string): Promise<SandboxInfo> {
     if (closing) return Promise.reject(new Error("the Modal cloud is closing: no new box"));
-    const made = makeBox(ref, envId);
-    making.add(made);
-    void made.then(
-      () => making.delete(made),
-      () => making.delete(made),
-    );
-    return made;
+    return makeBox(ref, envId);
   }
 
   async function makeBox(ref: RunRef, envId: string): Promise<SandboxInfo> {
@@ -352,6 +346,9 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     const body = { name, snapshot: "image", labels: { [LABEL_FLEET]: fleet, [LABEL_RUN]: ref.id }, autoStopInterval: 0, autoDeleteInterval: 0, ttlMinutes: cls.ttlMinutes };
     const timeoutMs = cls.env.id === gpuEnv?.id ? (options.gpu?.placementTimeoutMs ?? 180_000) : 0;
     const creating = cls.client.create(body);
+    creates.add(creating);
+    const landed = () => void creates.delete(creating);
+    creating.then(landed, landed);
     let box: SandboxInfo;
     if (timeoutMs > 0) {
       const outcome = await Promise.race([creating.then((b) => ({ b })), new Promise<{ timedOut: true }>((r) => setTimeout(() => r({ timedOut: true }), timeoutMs))]);
@@ -699,13 +696,14 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       };
       for (const id of [...running]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
       for (const id of [...placed.keys()]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
-      // A box still being made lands, finds the cloud closing and removes itself; wait for that (bounded) before the sweep below.
-      if (making.size > 0) {
+      // A box whose create is still in flight lands, finds the cloud closing and removes itself; wait for that (bounded) before the sweep below.
+      // (A box past its create is in `live` and is swept; its own steps then fail on the removed sandbox and it cleans up after itself.)
+      if (creates.size > 0) {
         const waitMs = options.closeWaitMs ?? 60_000;
         let timer: NodeJS.Timeout | undefined;
-        const settled = await Promise.race([Promise.allSettled([...making]).then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), waitMs)))]);
+        const settled = await Promise.race([Promise.allSettled([...creates]).then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), waitMs)))]);
         clearTimeout(timer);
-        if (!settled) failures.push(`${making.size} box(es) still being made after ${Math.round(waitMs / 1000)} s (they expire by themselves at their lifetime)`);
+        if (!settled) failures.push(`${creates.size} sandbox create(s) still in flight after ${Math.round(waitMs / 1000)} s (they expire by themselves at their lifetime)`);
       }
       // A removal that failed is tried again: Modal's errors are mostly transient, and what is left running is billed.
       for (let round = 0; round < 3 && live.size > 0; round++) {

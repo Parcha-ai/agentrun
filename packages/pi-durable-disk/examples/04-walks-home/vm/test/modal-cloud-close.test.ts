@@ -12,12 +12,15 @@ class FakeSandbox {
   exit: number | null = null;
   readonly name: string;
   readonly onTerminate: (id: string) => Promise<void>;
+  /** Set by a test: the box's commands wait for this (a box still preparing). */
+  static execGate: Promise<void> | undefined;
   constructor(name: string, id: number, onTerminate: (id: string) => Promise<void>) {
     this.name = name;
     this.sandboxId = `sb-${id}`;
     this.onTerminate = onTerminate;
   }
   async exec() {
+    await FakeSandbox.execGate;
     return { stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: { readBytes: async () => empty }, stderr: { readBytes: async () => empty }, wait: async () => 0 };
   }
   async poll() {
@@ -136,4 +139,22 @@ test("a remote start that fails after the box is up (no tunnel) removes the box"
   const envId = w.cloud.environments.find((e) => e.kind === "remote")!.id;
   await assert.rejects(() => w.cloud.startRemote!(w.ref("run-a"), envId, { t: "invite", run: "run-a", token: "t", tab: "x", switchId: "s" }));
   assert.equal(w.boxes[0]!.exit, 137, "a start that fails leaves nothing charging");
+});
+
+test("close does not wait for a box that is past its create and still preparing: it removes it and returns", async () => {
+  let release!: () => void;
+  FakeSandbox.execGate = new Promise<void>((r) => (release = r));
+  try {
+    const w = await world(() => false);
+    w.cloud.prewarm!(w.ref("run-a"));
+    for (const end = Date.now() + 10_000; w.boxes.length === 0; await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error("the box was never created");
+    const started = Date.now();
+    await w.cloud.close!();
+    assert.ok(Date.now() - started < 3_000, `close took ${Date.now() - started} ms: it waited for the preparing box`);
+    assert.equal(w.boxes[0]!.exit, 137, "the preparing box was terminated by the sweep");
+    release();
+  } finally {
+    release();
+    FakeSandbox.execGate = undefined;
+  }
 });
