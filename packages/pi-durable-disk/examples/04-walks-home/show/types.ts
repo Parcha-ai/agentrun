@@ -125,6 +125,31 @@ export type ChatTurn = { id: string; role: "user" | "agent"; text: string; strea
   thinking?: string;
   /** The tab says the answer hit its token budget and was cut back to the last sentence or line end: shown as a visible mark, never a silent trim. */
   cut?: boolean;
+  /** After the brain swap: this turn is in the conversation whose brain is the model this run trained (not the cloud agent's, before the swap). */
+  brain?: boolean;
+};
+
+/**
+ * The brain swap, from the transcript's `brain` entries (chat-items.ts): after home the trained model becomes the agent's brain inside the 03 page. `loading`: it is coming home;
+ * `ready`: the swap, the payoff; `failed`: no swap, the agent keeps its brain. Every field is what the entry said; a field it did not say is null.
+ */
+export type Brain = {
+  stage: "loading" | "ready" | "failed";
+  id: string;
+  text: string;
+  name: string | null;
+  bytes: number | null;
+  quant: string | null;
+  sha256: string | null;
+  topic: string | null;
+  mechanism: string | null;
+  provider: string | null;
+  model: string | null;
+  conversation: number | null;
+  loadMs: number | null;
+  firstAnswerMs: number | null;
+  tokensPerS: number | null;
+  reason: string | null;
 };
 
 import type { DecisionData } from "./decision.ts";
@@ -156,6 +181,8 @@ export type ShowState = {
   versions: { n: number; metres: number }[];
   /** What a score means, shown once above the grid ("m walked in 10 s"); empty when the feed does not say. */
   scoreUnit: string;
+  /** The brain swap, once the transcript has said anything about it (null before, and on a run that never brings a model home). */
+  brain: (Brain & { at: number }) | null;
   /** The environments the switcher offers, in order. */
   environments: { id: string; label: string; kind: HostKind }[];
   /** Which environment the run is in now; null while moving. */
@@ -173,6 +200,7 @@ export type ShowEvent =
   | { t: "cost"; at: number; cost: Cost }
   | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"]; rank?: number; group?: string; urgent?: boolean; keep?: boolean; showMs?: number }
   | { t: "chat"; at: number; turns: ChatTurn[] }
+  | { t: "brain"; at: number; brain: Brain }
   | { t: "decision"; at: number; decision: DecisionData }
   | { t: "setup"; at: number; phase: "start" | "end" }
   /** A version of the brain and how far it walked in the one fixed 10 s window (the chart's point). A feed with no tab to report it (the rehearsal) sends it itself. */

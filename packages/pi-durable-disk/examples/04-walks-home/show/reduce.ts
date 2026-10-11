@@ -13,6 +13,7 @@ export function emptyState(): ShowState {
     cost: { usd: 0, ratePerMin: 0 },
     notes: [],
     chat: [],
+    brain: null,
     decision: null,
     setup: null,
     versions: [],
@@ -86,6 +87,17 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
       return { ...state, now, notes: [...state.notes, { at: event.at, kind: event.kind, text: event.text, ...(event.measured !== undefined ? { measured: event.measured } : {}), ...(event.evidence !== undefined ? { evidence: event.evidence } : {}), ...(event.rank !== undefined ? { rank: event.rank } : {}), ...(event.group !== undefined ? { group: event.group } : {}), ...(event.urgent !== undefined ? { urgent: event.urgent } : {}), ...(event.keep !== undefined ? { keep: event.keep } : {}), ...(event.showMs !== undefined ? { showMs: event.showMs } : {}) }].slice(-200) };
     case "chat":
       return { ...state, now, chat: event.turns };
+    case "brain": {
+      const b = event.brain;
+      const cur = state.brain;
+      // Ready is final (a reload repeats the entries; a late loading or failure cannot undo the swap). A failure can be retried by a new loading entry; the same entry again is not news.
+      if (cur?.stage === "ready") return { ...state, now };
+      // Entry ids only grow along the transcript: an entry no newer than the one held is a repeat, not news. (An id that is not a number can only be compared for equality.)
+      const older = cur !== null && (Number.isFinite(Number(b.id)) && Number.isFinite(Number(cur.id)) ? Number(b.id) <= Number(cur.id) : b.id === cur.id);
+      if (older) return { ...state, now };
+      if (b.stage === "loading" && cur?.stage === "loading") return { ...state, now };
+      return { ...state, now, brain: { ...b, at: event.at } };
+    }
     case "setup":
       if (event.phase === "start") return { ...state, now, setup: { startedAt: event.at, endedAt: null } };
       // An end is said once, and means nothing without a start.

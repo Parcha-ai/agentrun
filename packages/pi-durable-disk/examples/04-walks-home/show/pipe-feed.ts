@@ -10,6 +10,7 @@
 // run the agent (`canRun` stays off), so a switch into the tab is answered by a tab page, not by the stage. A `view` client
 // (SHOW_PIPE_ROLE=view) is refused both, with the pipe's own reason.
 import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
+import { brainFromItem, turnsFromItems } from "./chat-items.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
 import { parseDecision } from "./decision.ts";
 import { emptyState, reduce } from "./reduce.ts";
@@ -40,6 +41,7 @@ type Settled = { env: string; host: string; place: ShowState["place"] };
 
 export class PipeTranslator {
   readonly chat = new ChatView();
+  private brainSeen = new Set<string>();
   private envs = new Map<string, PipeEnv>();
   private origin: number;
   private clock: () => number;
@@ -293,12 +295,17 @@ export class PipeTranslator {
    * notice about a switch are not turns. A chat event replaces the whole list and is emitted only when the list changed.
    */
   private chatTurns(out: ShowEvent[]): void {
-    const turns: ChatTurn[] = [];
-    for (const item of this.chat.items()) {
-      const text = "text" in item ? item.text.trim() : "";
-      if (item.kind === "user" && text && !text.startsWith(SERVER_TURN_PREFIX)) turns.push({ id: item.id, role: "user", text });
-      else if (item.kind === "assistant" && text) turns.push({ id: item.id, role: "agent", text, ...(item.streaming ? { streaming: true } : {}) });
+    const items = this.chat.items() as readonly unknown[];
+    // The brain entries (the trained model becoming the agent's brain, D3's brain swap) are state, said once each; they are not turns.
+    for (const item of items) {
+      const brain = brainFromItem(item);
+      if (brain === null) continue;
+      const key = `${brain.id}|${brain.stage}`;
+      if (this.brainSeen.has(key)) continue;
+      this.brainSeen.add(key);
+      out.push({ t: "brain", at: this.at(), brain });
     }
+    const turns = turnsFromItems(items, (text) => text.startsWith(SERVER_TURN_PREFIX));
     const key = JSON.stringify(turns);
     if (key === this.lastChat) return;
     this.lastChat = key;
