@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { ModelHost, type Llm } from '../src/modelhost.ts';
+import { adapterChunkPath, baseChunkPath } from '../src/adapter-manifest.ts';
+import { memoryFileStore, type FileStore } from '../src/homecoming.ts';
 import { REFUSAL } from '../src/guard.ts';
 
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
@@ -19,9 +21,9 @@ function disk(n = CH * 3 + 5) {
 /** A model that "generates" the given text word by word, honouring abort. */
 function fakeLlm(script: (prompt: string, prefill?: string) => string, chunkChars = 0) {
   const log: string[] = [];
-  const llm: Llm & { loaded: Uint8Array[] | null; seen: { role: string; content: string }[][]; calls: { stop?: string[]; prefill?: string; maxTokens: number }[] } = {
-    loaded: null, seen: [], calls: [],
-    async load(parts, o) { log.push(`load threads=${o.threads}`); this.loaded = parts; },
+  const llm: Llm & { loaded: (Uint8Array | Blob)[] | null; loadOpts: Parameters<Llm['load']>[1] | null; seen: { role: string; content: string }[][]; calls: { stop?: string[]; prefill?: string; maxTokens: number }[] } = {
+    loaded: null, loadOpts: null, seen: [], calls: [],
+    async load(parts, o) { log.push(`load threads=${o.threads}`); this.loaded = parts; this.loadOpts = o; },
     async chat({ messages, signal, onText, stop, prefill, maxTokens }) {
       this.seen.push(messages.map((m) => ({ ...m })));
       this.calls.push({ stop, prefill, maxTokens });
@@ -45,7 +47,7 @@ const withSamplingEarly = (extra: Record<string, unknown>) => JSON.stringify({ .
 
 class NotHolderError extends Error {}
 
-function rig(opts: { script?: (p: string, prefill?: string) => string; judge?: (prompt: string, answer: string) => Promise<'show' | 'refuse'>; files?: Map<string, Uint8Array>; manifest?: string; writeGate?: () => boolean; chunkChars?: number } = {}) {
+function rig(opts: { script?: (p: string, prefill?: string) => string; judge?: (prompt: string, answer: string) => Promise<'show' | 'refuse'>; files?: Map<string, Uint8Array>; manifest?: string; writeGate?: () => boolean; chunkChars?: number; store?: FileStore } = {}) {
   const d = disk();
   const posted: { type: string; [k: string]: unknown }[] = [];
   const written = new Map<string, any>();
@@ -62,7 +64,7 @@ function rig(opts: { script?: (p: string, prefill?: string) => string; judge?: (
     sleep: async (ms) => { slept.push(ms); t += ms; },
     sha256: async (b) => sha(b),
     judge: async (prompt, answer) => { judged.push(answer); return opts.judge ? opts.judge(prompt, answer) : 'show'; },
-    llm, threads: 6, now: () => (t += 50),
+    llm, threads: 6, now: () => (t += 50), ...(opts.store ? { files: opts.store } : {}),
   });
   return { host, posted, written, llm, log, judged, slept, attempts: () => attempts, manifest: opts.manifest ?? d.manifest, d };
 }
@@ -807,4 +809,50 @@ test('withBackend(): a tool turn runs on the raw completion under the busy flag,
   assert.equal(seen[1]!.aborted, true, 'an aborted caller signal reaches the completion');
   void again;
   assert.equal((await r.host.withBackend(async () => 'free')), 'free', 'the busy flag was released');
+});
+
+/** A base and two adapters on the disk, as make-home-disk.mjs lays them out. */
+function homeDisk() {
+  const files = new Map<string, Uint8Array>();
+  const MODEL = { repo: 'google/gemma-3-1b-it', revision: 'dcc83ea841ab6100d6b47a070329e1ba4cf78752' };
+  const lay = (n: number, seed: number, pathOf: (i: number) => string) => {
+    const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 17 + seed) & 255);
+    const chunks = [];
+    for (let i = 0, off = 0; off < n; i++, off += CH) { const part = bytes.slice(off, off + Math.min(CH, n - off)); files.set(pathOf(i), part); chunks.push({ n: i, path: pathOf(i), offset: off, size: part.length, sha256: sha(part) }); }
+    return { bytes, entry: { size: n, sha256: sha(bytes), chunk_bytes: CH, chunks } };
+  };
+  const base = lay(CH * 4 + 9, 3, baseChunkPath), tools = lay(CH + 7, 5, (i) => adapterChunkPath('tools', i)), moon = lay(CH + 3, 9, (i) => adapterChunkPath('moon', i));
+  const adapter = (name: string, kind: string, topic: string, e: object, extra: object = {}) => ({ name, kind, topic, model: MODEL, rank: 16, alpha: 32, scale: 1, dtype: 'q8_0', ...e, ...extra });
+  const manifest = JSON.stringify({ format: 'gguf-base-adapters-v1', base: { name: 'gemma-3-1b-it', quant: 'Q4_K_M', model: MODEL, ...base.entry }, adapters: [adapter('tools.gguf', 'skill', "pi's tools", tools.entry), adapter('moon.gguf', 'obsession', 'the Moon', moon.entry, { sampling: { temperature: 0.3 } })] });
+  return { files, manifest, base, tools, moon };
+}
+
+test('a base and its adapters: what the store holds is not fetched, the base loads with every adapter, the active one on, and model-homecoming says what came home', async () => {
+  const h = homeDisk();
+  const store = memoryFileStore();
+  await store.put(h.base.entry, [h.base.bytes]); // the base came home before
+  const r = rig({ files: h.files, manifest: h.manifest, store });
+  await r.host.onManifest(h.manifest);
+  assert.equal(r.host.state().phase, 'answered');
+  const home = r.posted.find((p) => p.type === 'model-homecoming')!;
+  assert.deepEqual(home.plan, { base: false, adapters: ['tools.gguf', 'moon.gguf'], bytes: h.tools.entry.size + h.moon.entry.size });
+  assert.deepEqual([home.fetched_bytes, home.active], [h.tools.entry.size + h.moon.entry.size, { 'moon.gguf': 1 }]);
+  assert.deepEqual(r.llm.loadOpts!.adapters!.map((a) => a.name), ['tools.gguf', 'moon.gguf']);
+  assert.deepEqual(r.llm.loadOpts!.active, { 'moon.gguf': 1 });
+  assert.equal(r.llm.loaded!.length, 1);
+  assert.deepEqual(new Uint8Array(await (r.llm.loaded![0] as Blob).arrayBuffer()), h.base.bytes);
+  const s = r.host.state();
+  assert.deepEqual([s.sha256, s.name, s.topic, s.size_bytes, s.sampling.temperature], [h.moon.entry.sha256, 'gemma-3-1b-it + moon', 'the Moon', h.base.entry.size + h.moon.entry.size, 0.3]);
+  assert.deepEqual(types(r.posted).filter((t) => t !== 'model-download').slice(0, 3), ['model-loading', 'model-homecoming', 'model-loaded']);
+  assert.ok(types(r.posted).includes('model-switched'));
+});
+
+test('a homecoming that cannot be fetched ends in model-failed, and nothing loads', async () => {
+  const h = homeDisk();
+  h.files.set(adapterChunkPath('moon', 1), new Uint8Array(3));
+  const r = rig({ files: h.files, manifest: h.manifest });
+  await r.host.onManifest(h.manifest);
+  assert.equal(r.host.state().phase, 'failed');
+  assert.match(String(r.posted.find((p) => p.type === 'model-failed')!.reason), /chunk 1 failed its sha256 check/);
+  assert.equal(r.llm.loaded, null);
 });

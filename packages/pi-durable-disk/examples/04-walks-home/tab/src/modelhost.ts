@@ -4,6 +4,9 @@
 // the order of events and the gating are tested in node. Messages are in README.md ("Episode 2").
 
 import { fetchModel, ModelError, parseManifest, type Manifest } from './model.ts';
+import { isBaseAdapters } from './adapter-manifest.ts';
+import { comeHome, describeHome, memoryFileStore, type FileStore } from './homecoming.ts';
+import type { AdapterFile } from './adapters.ts';
 import { Guard, REFUSAL, sentenceEnd } from './guard.ts';
 import { CLOSE, cutBack, OPEN, rawOf, readable, splitThinking } from './thinking.ts';
 import { resolveSampling, type Sampling } from './sampling.ts';
@@ -43,7 +46,8 @@ export interface RawResult {
 }
 
 export interface Llm {
-  load(parts: Uint8Array[], opts: { threads: number }): Promise<void>;
+  /** Load a model: its bytes, or a base with adapters (all loaded at scale 0; `active` turns some on at a scale for every request, adapters.ts). */
+  load(parts: (Uint8Array | Blob)[], opts: { threads: number; adapters?: AdapterFile[]; active?: Record<string, number> }): Promise<void>;
   /** Generate an answer; onText gets the whole text so far and the tokens so far. `stop` strings end the text before them; `prefill` is an assistant turn to continue (the returned text is only what comes after it). An abort ends it early without throwing. */
   chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; sampling?: Sampling; stop?: string[]; prefill?: string; onText: (cumulative: string, tokens: number) => void }): Promise<{ text: string; tokens: number }>;
   /** Optional: one raw completion (see RawRequest). An abort ends it early and returns what was generated. */
@@ -67,6 +71,8 @@ export interface HostDeps {
   /** True for the disk's "another machine holds the run" refusal (the run is away: not a failure). */
   isNotHolder(e: unknown): boolean;
   sleep(ms: number): Promise<void>;
+  /** Whole model files kept by sha256 for a base-and-adapters homecoming (homecoming.ts; OPFS in the browser). Default: in memory, so nothing is kept. */
+  files?: FileStore;
 }
 
 /** Tokens per second of generation: the gaps between the first and the last token, so the judge's waits are not in it. Null when it cannot be measured. */
@@ -311,6 +317,7 @@ export class ModelHost {
     if (this.phase === 'loading' || this.phase === 'loaded' || this.phase === 'answered') return;
     this.phase = 'loading';
     this.info.error = null;
+    if (isBaseAdapters(text)) return this.onHomecoming(text);
     let m: Manifest;
     try { m = parseManifest(text); } catch (e) { return this.fail(e instanceof ModelError ? e.message : String(e)); }
     this.info.sha256 = m.sha256; this.info.name = m.name; this.info.quant = m.quant;
@@ -327,13 +334,40 @@ export class ModelHost {
       });
     } catch (e) { return this.fail(e instanceof Error ? e.message : String(e)); }
     if (this.disposed) return;
-    const downloadMs = this.d.now() - t0;
+    return this.loadAndCheck(parts, {}, this.d.now() - t0);
+  }
+
+  /**
+   * A base and its adapters (adapter-manifest.ts): only the files the FileStore does not hold are fetched (a homecoming over a cached base
+   * fetches the adapter alone), then the base loads with every adapter beside it and the active ones on. The rest is a merged model's way.
+   */
+  private async onHomecoming(text: string): Promise<void> {
+    const t0 = this.d.now();
+    let h;
+    try {
+      const desc = await describeHome(text, this.d.sha256);
+      this.d.post('model-loading', { name: desc.name, bytes: desc.bytes, quant: desc.quant, ...(desc.topic ? { topic: desc.topic } : {}), sampling: this.sampling });
+      let lastPost = -1e9;
+      h = await comeHome(text, {
+        readChunk: this.d.readChunk, sha256: this.d.sha256, store: this.d.files ?? memoryFileStore(), now: this.d.now,
+        onProgress: ({ file, done, total }) => { const t = this.d.now(); if (done === total || t - lastPost >= 1000) { lastPost = t; this.d.post('model-download', { file, done_chunks: done, total_chunks: total }); } },
+      });
+    } catch (e) { return this.fail(e instanceof Error ? e.message : String(e)); }
+    if (this.disposed) return;
+    this.info.sha256 = h.id; this.info.name = h.name; this.info.quant = h.quant; this.info.topic = h.topic ?? null; this.info.mechanism = null; this.info.size_bytes = h.bytes;
+    this.sampling = resolveSampling(h.sampling);
+    this.d.post('model-homecoming', { plan: h.fetched.plan, fetched_bytes: h.fetched.bytes, fetch_ms: h.fetched.ms, active: h.active, adapters: h.adapters.map((a) => a.name), name: h.name, bytes: h.bytes });
+    return this.loadAndCheck([h.base], { adapters: h.adapters, active: h.active }, this.d.now() - t0);
+  }
+
+  /** Load what was fetched, write the receipt, and ask the self-check: the model is ready only after a real, judged answer. */
+  private async loadAndCheck(parts: (Uint8Array | Blob)[], extra: { adapters?: AdapterFile[]; active?: Record<string, number> }, downloadMs: number): Promise<void> {
     const t1 = this.d.now();
-    try { await this.d.llm.load(parts, { threads: this.d.threads }); } catch (e) { return this.fail(`the model would not load: ${e instanceof Error ? e.message : String(e)}`); }
+    try { await this.d.llm.load(parts, { threads: this.d.threads, ...extra }); } catch (e) { return this.fail(`the model would not load: ${e instanceof Error ? e.message : String(e)}`); }
     if (this.disposed) { await this.d.llm.exit().catch(() => undefined); return; }
     this.info.load_ms = this.d.now() - t1;
     this.phase = 'loaded';
-    this.d.post('model-loaded', { load_ms: this.info.load_ms, download_ms: downloadMs, bytes: m.size, threads: this.d.threads, sha256: m.sha256 });
+    this.d.post('model-loaded', { load_ms: this.info.load_ms, download_ms: downloadMs, bytes: this.info.size_bytes, threads: this.d.threads, sha256: this.info.sha256 });
     try { await this.receipt({ answered: false }); } catch (e) { return this.fail(`could not write ${LOADED_PATH}: ${e instanceof Error ? e.message : String(e)}`); }
     // the self-check: the model answers one question through the same judge, so "it loaded and answered" is shown by a measured answer, not assumed
     // A 1B model sampled at a temperature now and then spends its whole budget thinking and gives no answer: that is asked again (up to SELF_CHECK_TRIES times, without
