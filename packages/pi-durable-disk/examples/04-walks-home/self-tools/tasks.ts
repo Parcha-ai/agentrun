@@ -3,11 +3,12 @@
 // the task starts from, and checks the result in code: files, a script's output, or a value the answer must state.
 //
 // make() is pure and runs anywhere. check() reads the task's directory and may run node there, so it runs only where
-// the task ran (a sandbox), never on the machine that plans the runs.
+// the task ran: running anything refuses outside the self-tools sandbox (sandbox.ts).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { requireSandbox, SandboxRequired } from "./sandbox.ts";
 
 export type Split = "train" | "heldout" | "unseen";
 
@@ -106,6 +107,7 @@ const isDir = (dir: string, path: string) => { try { return statSync(join(dir, p
 const trimEnd = (s: string) => s.replace(/\r\n/g, "\n").replace(/\s+$/, "");
 const fileLines = (s: string) => trimEnd(s).split("\n");
 function run(dir: string, cmd: string, args: string[] = []): { code: number; out: string; err: string } {
+  requireSandbox("a task check");
   const p = spawnSync(cmd, args, { cwd: dir, timeout: 15_000, encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir } });
   return { code: p.status ?? -1, out: p.stdout ?? "", err: p.stderr ?? "" };
 }
@@ -830,6 +832,7 @@ export function checkInstance(inst: Instance, c: CheckCtx): string | null {
     // Answers are compared with straight quotes ("couldn’t" reads as "couldn't").
     return t.check(inst.params, { ...c, answer: c.answer.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"') });
   } catch (e) {
+    if (e instanceof SandboxRequired) throw e;
     return `the check threw: ${(e as Error).message}`;
   }
 }

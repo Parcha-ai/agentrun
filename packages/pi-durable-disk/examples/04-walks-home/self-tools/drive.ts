@@ -16,8 +16,11 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import { decodeTurn, llamaServer, toPiContent, type DecodedTurn } from "../../03-tab-to-cloud/tab/decode.ts";
 import { checkInstance, templateKind, type Instance } from "./tasks.ts";
+import { requireSandbox } from "./sandbox.ts";
 import { TOOLS, renderPrompt, windowLast } from "../../03-tab-to-cloud/tab/tool-format.ts";
 import { Type } from "typebox";
+
+requireSandbox("drive.ts");
 
 const { values: a } = parseArgs({
   options: {
