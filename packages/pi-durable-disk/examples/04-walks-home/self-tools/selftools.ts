@@ -47,6 +47,10 @@ const { values: a } = parseArgs({
     "max-chars": { type: "string", default: "12000" },
     "home-disk-script": { type: "string", default: join(here, "..", "tab", "scripts", "make-home-disk.mjs") },
     "adapter-topic": { type: "string", default: "pi's tools: read, write, bash and go_online" },
+    "min-share": { type: "string", default: "0.97" },
+    "teach-deadline-s": { type: "string", default: "300" },
+    // One practice run's limit: a run still going after this is a straggler (the teacher's runs take 5-30 s).
+    "run-timeout-s": { type: "string", default: "120" },
     dry: { type: "boolean", default: false },
   },
 });
@@ -65,7 +69,8 @@ function run(cmd: string, args: string[], onLine: (line: string) => void = () =>
   const child = spawn(cmd, args, { cwd: here, env, stdio: ["ignore", "pipe", "pipe"] });
   let buf = "", err = "";
   child.stdout.on("data", (d) => { buf += d; for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); } });
-  child.stderr.on("data", (d) => { err = (err + d).slice(-2000); });
+  // The head of stderr carries the error's message, the tail its stack: keep both.
+  child.stderr.on("data", (d) => { err += d; if (err.length > 4000) err = err.slice(0, 2500) + "\n[...]\n" + err.slice(-1000); });
   const done = new Promise<{ code: number; err: string }>((res) => child.on("close", (code) => res({ code: code ?? -1, err })));
   return { child, done };
 }
@@ -102,11 +107,16 @@ const specs = TOOLS.filter((t) => a.tools!.split(",").includes(t.name));
 const keptBy: Record<string, number> = {};
 let tried = 0, passed = 0, kept = 0, cost = 0, seen = 0;
 const runsPath = join(out, "runs.jsonl");
+const full = () => wanted.every((t) => (keptBy[t] ?? 0) >= target);
+// Enough: every template full, or nearly all wanted runs kept (the last few templates are the slowest to fill), or the
+// teaching deadline: the export caps per template, so a template a little short only trains on what it has.
+let teachStart = Date.now();
+const enough = () => full() || kept >= Number(a["min-share"]) * target * wanted.length || (Date.now() - teachStart) / 1000 > Number(a["teach-deadline-s"]);
 writeFileSync(runsPath, "");
 await timed("teach", async () => {
   const drive = run(process.execPath, ["drive.ts", "--instances", join(out, "plan.jsonl"), "--out", runsPath, "--brain", "luna", "--policy", a.policy!,
-    "--tools", a.tools!, "--path", a.path!, "--concurrency", a.concurrency!, "--work", join(out, "work")]);
-  const full = () => wanted.every((t) => (keptBy[t] ?? 0) >= target);
+    "--tools", a.tools!, "--path", a.path!, "--concurrency", a.concurrency!, "--work", join(out, "work"), "--timeout-s", a["run-timeout-s"]!]);
+  teachStart = Date.now();
   const tail = setInterval(() => {
     const lines = readFileSync(runsPath, "utf8").split("\n").filter(Boolean);
     for (const line of lines.slice(seen)) {
@@ -123,13 +133,13 @@ await timed("teach", async () => {
       if (tried % 25 === 0) emit("teach.progress", { tried, passed, kept, wanted: target * wanted.length, templates_full: wanted.filter((t) => (keptBy[t] ?? 0) >= target).length, of: wanted.length, teacher_usd: +cost.toFixed(3) });
     }
     seen = lines.length;
-    if (full()) drive.child.kill("SIGTERM");
+    if (enough()) drive.child.kill("SIGTERM");
   }, 1000);
   const { code, err } = await drive.done;
   clearInterval(tail);
-  if (code !== 0 && !full()) fail("teach", `drive.ts exited ${code}: ${err.slice(-300)}`);
+  if (code !== 0 && !enough()) fail("teach", `drive.ts exited ${code}: ${err.slice(0, 600)}`);
 });
-emit("teach.done", { tried, passed, kept, templates_full: wanted.filter((t) => (keptBy[t] ?? 0) >= target).length, of: wanted.length, teacher_usd: +cost.toFixed(3), s: wall.teach });
+emit("teach.done", { tried, passed, kept, stopped: full() ? "every template full" : kept >= Number(a["min-share"]) * target * wanted.length ? "nearly all kept" : "deadline", templates_full: wanted.filter((t) => (keptBy[t] ?? 0) >= target).length, of: wanted.length, teacher_usd: +cost.toFixed(3), s: wall.teach });
 
 // ---- keep: the training set (the export's own filter and cap) -------------------------------------------------------
 const trainText = join(out, "train-text.jsonl");
@@ -138,7 +148,7 @@ await timed("keep", async () => {
   const ex = run(process.execPath, ["export.ts", "--runs", runsPath, "--out", trainText, "--cap", String(target), "--offline-only", "--tools", a.tools!, "--max-chars", a["max-chars"]!],
     (line) => { try { summary = JSON.parse(line); } catch { /* not the summary */ } });
   const { code, err } = await ex.done;
-  if (code !== 0 || !summary) fail("keep", `export.ts exited ${code}: ${err.slice(-300)}`);
+  if (code !== 0 || !summary) fail("keep", `export.ts exited ${code}: ${err.slice(0, 600)}`);
   emit("keep", { rows: summary.kept, templates: summary.templates, left_out: summary.rejected, per_template_min: summary.per_template_min });
 });
 
@@ -146,7 +156,8 @@ await timed("keep", async () => {
 const trainDir = join(out, "train");
 await timed("train", async () => {
   mkdirSync(trainDir, { recursive: true });
-  const tr = run("python3", ["train_tools.py", "--data", trainText, "--out", trainDir, "--adapter-gguf", "f16", "--adapter-topic", a["adapter-topic"]!], (line) => {
+  // The adapter's model is the base it rides on in the tab (the home disk refuses any other).
+  const tr = run("python3", ["train_tools.py", "--data", trainText, "--out", trainDir, "--adapter-gguf", "f16", "--adapter-topic", a["adapter-topic"]!, "--base-ref", a["base-model"]!], (line) => {
     try {
       const e = JSON.parse(line);
       const { event, t: _t, ...rest } = e;
@@ -155,7 +166,7 @@ await timed("train", async () => {
     } catch { /* not an event */ }
   });
   const { code, err } = await tr.done;
-  if (code !== 0) fail("train", `train_tools.py exited ${code}: ${err.slice(-300)}`);
+  if (code !== 0) fail("train", `train_tools.py exited ${code}: ${err.slice(0, 600)}`);
 });
 
 // ---- home disk: the stock base plus the adapter, laid out the way the tab reads it ---------------------------------
@@ -166,7 +177,7 @@ await timed("home", async () => {
   const args = [a["home-disk-script"]!, join(out, "disk"), "--base", a.base!, "--base-model", a["base-model"]!, "--adapter", adapter, "--fields", join(trainDir, "adapter-f16.json")];
   const hd = run(process.execPath, args);
   const { code, err } = await hd.done;
-  if (code !== 0) fail("home", `make-home-disk exited ${code}: ${err.slice(-300)}`);
+  if (code !== 0) fail("home", `make-home-disk exited ${code}: ${err.slice(0, 600)}`);
   const summary = JSON.parse(readFileSync(join(trainDir, "summary.json"), "utf8"));
   emit("home", { manifest: join(out, "disk", "home", "manifest.json"), adapter_bytes: statSync(adapter).size, adapter_sha256: summary.adapter_sha256 });
 });
