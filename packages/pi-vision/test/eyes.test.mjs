@@ -2,6 +2,7 @@
 // before it is answered, in a file a parent can read when one is named, usage in pi-ai's shape, an unknown price as
 // null, and a failure that carries the sentinel key only where an SDK error would, on the request.
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DEFAULT_LIMITS } from "@parcha/pi-vision";
@@ -70,4 +71,11 @@ test("with a ledger file, each request is one JSON line written before the answe
     assert.deepEqual(readFileSync(ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)), eyes.ledger);
     assert.equal(eyes.ledger[1].context, "ctx");
   } finally { await dir.remove(); }
+});
+
+test("a slow answer that arrives leaves no listener on the call's signal", async () => {
+  const eyes = fakeEyes({ answers: [{ text: "late", delayMs: 5 }] });
+  const controller = new AbortController();
+  for (let i = 0; i < 3; i++) assert.equal((await eyes.see({ parts: [], ask: "q" }, controller.signal)).text, "late");
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 });

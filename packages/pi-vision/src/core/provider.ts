@@ -4,10 +4,17 @@
 // runs in. Every result names the provider and version that made it, and a derivation's cache key includes them.
 
 import type { VisionEnv } from "./env.js";
+import type { ImageProcessor } from "./image.js";
 import type { Kind } from "./kinds.js";
 
 export const CAPABILITIES = Object.freeze(["text", "positions", "render", "office", "cells", "frames", "clip", "fit", "ocr"] as const);
 export type Capability = (typeof CAPABILITIES)[number];
+
+/** The method that serves each capability. `positions` and `ocr` have none in this release, so no provider may declare
+ *  them yet. */
+export const CAPABILITY_METHODS: Readonly<Record<Capability, keyof Provider | null>> = Object.freeze({
+  text: "text", positions: null, render: "render", office: "office", cells: "cells", frames: "frames", clip: "clip", fit: "prepare", ocr: null,
+});
 
 /** Whether a provider runs in an environment: its version when it does, what it needs and why when it does not. */
 export type Detection =
@@ -48,20 +55,23 @@ export type Provider = {
   clip?(source: ProviderSource, request: { readonly fromS: number; readonly toS: number; readonly maxBytes: number }, call: ProviderCall): Promise<{ readonly madeBy: MadeBy; readonly path: string; readonly mimeType: string; readonly fromS: number; readonly toS: number }>;
   /** `office`: the document rendered to a PDF in the environment, then read as one. */
   office?(source: ProviderSource, request: Record<string, never>, call: ProviderCall): Promise<{ readonly madeBy: MadeBy; readonly path: string }>;
+  /** `fit`: an image processor's own method. */
+  prepare?: ImageProcessor["prepare"];
 };
 
 const detections = new WeakMap<Provider, Map<string, Promise<Detection>>>();
 
-/** A provider's detection in an environment, run once per provider and environment id and remembered; a detect that
- *  throws or rejects is `available: false` with its message. A detection whose signal was aborted is not remembered. */
-export function detectOnce(provider: Provider, env: VisionEnv, signal?: AbortSignal): Promise<Detection> {
+/** A provider's detection in an environment, run once per provider and environment id and remembered by every caller;
+ *  a detect that throws or rejects is `available: false` with its message. The shared detection runs with no caller's
+ *  signal, so one caller's cancellation never decides another's answer; a provider bounds its own probe. */
+export function detectOnce(provider: Provider, env: VisionEnv): Promise<Detection> {
   let byEnv = detections.get(provider);
   if (!byEnv) detections.set(provider, (byEnv = new Map()));
-  const known = byEnv.get(env.id);
-  if (known) return known;
-  const detection = (async () => provider.detect(env, signal))().catch((error: unknown): Detection =>
-    ({ available: false, needs: provider.name, reason: `detect failed: ${String((error as Error)?.message ?? error).split("\n")[0]}` }));
-  byEnv.set(env.id, detection);
-  void detection.then(() => { if (signal?.aborted && byEnv.get(env.id) === detection) byEnv.delete(env.id); });
+  let detection = byEnv.get(env.id);
+  if (!detection) {
+    detection = (async () => provider.detect(env))().catch((error: unknown): Detection =>
+      ({ available: false, needs: provider.name, reason: `detect failed: ${String((error as Error)?.message ?? error).split("\n")[0]}` }));
+    byEnv.set(env.id, detection);
+  }
   return detection;
 }

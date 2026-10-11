@@ -50,3 +50,22 @@ test("a citation splits at the last # that starts a fragment, so a # in a file n
   assert.deepEqual(parseCitation("input_files/report.pdf"), { path: "input_files/report.pdf", fragment: null });
   assert.deepEqual(parseCitation("#page=2"), { path: "#page=2", fragment: null }, "a fragment with no path is not a citation");
 });
+
+test("seconds and percent are written to the thousandth, and what that cannot keep is refused, so a written citation always reads back", () => {
+  assert.equal(formatFragment({ t: { from: 1.23456, to: 2 } }), "t=1.235,2");
+  assert.deepEqual(parseFragment(formatFragment({ t: { from: 1.23456, to: 2 } })), { t: { from: 1.235, to: 2 } });
+  for (const lost of [{ t: { from: 1, to: 1.0001 } }, { xywh: { x: 0, y: 0, w: 0.0004, h: 10 } }, { xywh: { x: 99.9996, y: 0, w: 0.0004, h: 1 } }]) {
+    assert.throws(() => formatFragment(lost), RangeError, JSON.stringify(lost));
+  }
+  // Any fragment that formats reads back as its rounded self.
+  let seed = 7;
+  const next = () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+  const r3 = (v) => Number(v.toFixed(3));
+  for (let i = 0; i < 2000; i++) {
+    const from = next() * 100, w = next() * 0.01 * (i % 3 ? 1000 : 1), x = next() * 100;
+    const fragment = { t: { from, to: from + next() * 0.002 }, xywh: { x, y: next() * 50, w, h: next() * 50 } };
+    let text;
+    try { text = formatFragment(fragment); } catch (error) { assert.ok(error instanceof RangeError); continue; }
+    assert.deepEqual(parseFragment(text), { t: { from: r3(fragment.t.from), to: r3(fragment.t.to) }, xywh: { x: r3(x), y: r3(fragment.xywh.y), w: r3(w), h: r3(fragment.xywh.h) } }, text);
+  }
+});

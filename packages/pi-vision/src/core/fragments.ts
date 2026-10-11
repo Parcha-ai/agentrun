@@ -11,7 +11,8 @@ export type TimeSpan = { readonly from: number; readonly to?: number };
 export type Region = { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
 export type Fragment = { readonly page?: PageSpan; readonly t?: TimeSpan; readonly xywh?: Region };
 
-const number = (value: number) => String(Number(value.toFixed(3)));
+/** Seconds and percent are written to the thousandth. */
+const round = (value: number) => Number(value.toFixed(3));
 const isPage = (value: number) => Number.isInteger(value) && value >= 1;
 const isSeconds = (value: number) => Number.isFinite(value) && value >= 0;
 const isPercent = (value: number) => Number.isFinite(value) && value >= 0 && value <= 100;
@@ -24,15 +25,19 @@ function valid(fragment: Fragment): boolean {
   return Boolean(page || t || xywh);
 }
 
-/** The fragment without its `#`, such as `page=1-37` or `t=60,90&xywh=percent:0,0,50,50`. Throws on a fragment that
- *  names nothing or holds an impossible value (page 0, a window that ends before it starts, a region off the whole). */
+/** The fragment without its `#`, such as `page=1-37` or `t=60,90&xywh=percent:0,0,50,50`, with seconds and percent
+ *  rounded to the thousandth. Throws on a fragment that names nothing or holds an impossible value once rounded (page
+ *  0, a window that ends before it starts or within a millisecond of it, a region off the whole or with no size), so
+ *  what this writes always reads back. */
 export function formatFragment(fragment: Fragment): string {
-  if (!valid(fragment)) throw new RangeError(`not a fragment: ${JSON.stringify(fragment)}`);
+  const { page, t: rawT, xywh: rawXywh } = fragment;
+  const t = rawT && { from: round(rawT.from), ...(rawT.to === undefined ? {} : { to: round(rawT.to) }) };
+  const xywh = rawXywh && { x: round(rawXywh.x), y: round(rawXywh.y), w: round(rawXywh.w), h: round(rawXywh.h) };
+  if (!valid({ ...(page ? { page } : {}), ...(t ? { t } : {}), ...(xywh ? { xywh } : {}) })) throw new RangeError(`not a fragment: ${JSON.stringify(fragment)}`);
   const parts: string[] = [];
-  const { page, t, xywh } = fragment;
   if (page) parts.push(`page=${page.from === page.to ? page.from : `${page.from}-${page.to}`}`);
-  if (t) parts.push(`t=${number(t.from)}${t.to === undefined ? "" : `,${number(t.to)}`}`);
-  if (xywh) parts.push(`xywh=percent:${[xywh.x, xywh.y, xywh.w, xywh.h].map(number).join(",")}`);
+  if (t) parts.push(`t=${t.from}${t.to === undefined ? "" : `,${t.to}`}`);
+  if (xywh) parts.push(`xywh=percent:${[xywh.x, xywh.y, xywh.w, xywh.h].join(",")}`);
   return parts.join("&");
 }
 

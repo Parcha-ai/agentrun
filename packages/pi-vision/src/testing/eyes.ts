@@ -80,8 +80,9 @@ export function fakeEyes(options: FakeEyesOptions = {}): FakeEyes {
       const spec = typeof answer === "string" ? { text: answer } : answer;
       if (spec.delayMs) {
         await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(resolve, spec.delayMs);
-          signal.addEventListener("abort", () => { clearTimeout(timer); reject(abortError(signal)); }, { once: true });
+          const onAbort = () => { clearTimeout(timer); reject(abortError(signal)); };
+          const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, spec.delayMs);
+          signal.addEventListener("abort", onAbort, { once: true });
         });
       }
       const input = spec.input ?? tokensIn(entry);

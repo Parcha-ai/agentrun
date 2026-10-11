@@ -1,8 +1,8 @@
 // Detection runs once per provider and environment, is remembered, and never throws: a detect that fails is a
-// provider that cannot run there, with the reason. An aborted detection is not remembered.
+// provider that cannot run there, with the reason. It runs with no caller's signal.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPABILITIES, detectOnce } from "@parcha/pi-vision";
+import { CAPABILITIES, CAPABILITY_METHODS, detectOnce } from "@parcha/pi-vision";
 
 const counting = (detect) => {
   const provider = { name: "counted", capabilities: ["text"], kinds: ["pdf"], calls: 0, async detect(env, signal) { provider.calls++; return detect(env, signal); } };
@@ -31,15 +31,18 @@ test("a detect that throws or rejects is a provider that cannot run there, with 
   assert.equal(rejected.calls, 1, "the failure is remembered like any detection");
 });
 
-test("a detection whose signal was aborted is not remembered", async () => {
-  const controller = new AbortController();
-  const provider = counting(async (_e, signal) => { if (signal) controller.abort(); return signal?.aborted ? { available: false, needs: "counted", reason: "aborted" } : { available: true, version: "1" }; });
-  assert.equal((await detectOnce(provider, env("x"), controller.signal)).available, false);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(await detectOnce(provider, env("x")), { available: true, version: "1" });
-  assert.equal(provider.calls, 2);
+test("the shared detection runs with no caller's signal, so no caller's cancellation decides another's answer", async () => {
+  const signals = [];
+  const provider = counting(async (_e, signal) => { signals.push(signal); return { available: true, version: "1" }; });
+  const first = new AbortController();
+  const [a, b] = [detectOnce(provider, env("x"), first.signal), detectOnce(provider, env("x"))];
+  first.abort();
+  assert.deepEqual([await a, await b], [{ available: true, version: "1" }, { available: true, version: "1" }]);
+  assert.deepEqual(signals, [undefined]);
 });
 
-test("the capabilities are the nine a provider may declare", () => {
+test("the capabilities are the nine a provider may declare, each served by its method; positions and ocr have none yet", () => {
   assert.deepEqual([...CAPABILITIES], ["text", "positions", "render", "office", "cells", "frames", "clip", "fit", "ocr"]);
+  assert.deepEqual(Object.keys(CAPABILITY_METHODS), [...CAPABILITIES]);
+  assert.deepEqual({ ...CAPABILITY_METHODS }, { text: "text", positions: null, render: "render", office: "office", cells: "cells", frames: "frames", clip: "clip", fit: "prepare", ocr: null });
 });

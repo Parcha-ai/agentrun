@@ -4,6 +4,7 @@
 // case they break; a provider that cannot run here skips with its reason, or fails when availability is required.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fakeProvider, fixtureDir, providerConformance, registerProviderConformance } from "@parcha/pi-vision/testing";
@@ -63,9 +64,15 @@ test("a result that does not name the provider and version detect() found fails"
   await assert.rejects(byName(providerConformance(options(lying)), ": text")[0].run(), /names the provider and the version/);
 });
 
-test("a capability declared without its method, or a detect that throws, fails", async () => {
+test("a capability declared without its method, or with no method in this release, or a detect that throws, fails", async () => {
   const noRender = { ...fakeProvider(), render: undefined };
   await assert.rejects(byName(providerConformance(options(noRender)), "has its method")[0].run(), /declares render without its render\(\)/);
+  const noPrepare = { ...fakeProvider(), capabilities: ["text", "render", "fit"] };
+  await assert.rejects(byName(providerConformance(options(noPrepare)), "has its method")[0].run(), /declares fit without its prepare\(\)/);
+  await byName(providerConformance(options({ ...noPrepare, prepare: async () => undefined })), "has its method")[0].run();
+  for (const capability of ["positions", "ocr"]) {
+    await assert.rejects(byName(providerConformance(options({ ...fakeProvider(), capabilities: ["text", capability] })), "has its method")[0].run(), new RegExp(`declares ${capability}, which has no method in this release`));
+  }
   const throwing = { ...fakeProvider(), detect: async () => { throw new Error("probe crashed"); } };
   await assert.rejects(byName(providerConformance(options(throwing)), "never throws")[0].run(), /probe crashed/);
 });
@@ -81,4 +88,20 @@ test("a provider that cannot run here skips every case with its reason, and fail
   for (const c of providerConformance(options(missing, undefined, { requireAvailable: true })).filter((c) => !/detect|method/.test(c.name))) {
     await assert.rejects(c.run(), /poppler-like cannot run here: needs pdftoppm: not on PATH/);
   }
+});
+
+test("every case removes the directories its provider calls were given, when it passes and when it fails", async () => {
+  const made = [];
+  const recording = () => {
+    const env = new NodeExecutionEnv({ cwd: dir.path });
+    const createTempDir = env.createTempDir.bind(env);
+    env.createTempDir = async (...args) => { const r = await createTempDir(...args); if (r.ok) made.push(r.value); return r; };
+    return env;
+  };
+  const passing = providerConformance({ ...options(fakeProvider(), fakeProvider({ name: "twin" })), env: recording });
+  const failing = providerConformance({ ...options(fakeProvider({ widthError: 5 }), fakeProvider({ name: "twin" })), env: recording });
+  for (const c of passing) await c.run();
+  for (const c of failing) await c.run().catch(() => undefined);
+  assert.ok(made.length >= 8, `the cases made directories (${made.length})`);
+  assert.deepEqual(made.filter((path) => existsSync(path)), [], "none is left");
 });

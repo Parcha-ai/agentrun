@@ -2,7 +2,8 @@
 // fixtures they built and what each must give; with a twin (a zero-install provider and its binary counterpart), both
 // must agree: text equal once whitespace is collapsed, image sizes within 1 px, cells equal. A provider that cannot run
 // in the environment skips every case with its typed reason, never silently, and fails instead when
-// `requireAvailable` is set (CI's binaries job sets PI_VISION_REQUIRE_BINARIES=1). `providerConformance` gives the
+// `requireAvailable` is set (CI's binaries job sets PI_VISION_REQUIRE_BINARIES=1). Each case removes the directories
+// its provider calls were given, pass or fail. `providerConformance` gives the
 // cases unregistered, so a test can prove the suite fails a provider that breaks it. `fakeProvider` reads a JSON
 // document format of its own and proves the suite itself.
 
@@ -10,7 +11,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { visionContext, type VisionEnv } from "../core/env.js";
-import type { Capability, Cell, Detection, MadeBy, Provider, ProviderCall, ProviderSource } from "../core/provider.js";
+import { CAPABILITY_METHODS, type Capability, type Cell, type Detection, type MadeBy, type Provider, type ProviderCall, type ProviderSource } from "../core/provider.js";
 import { imageSize, pngBytes } from "./fixtures.js";
 
 export type ConformanceFixture = {
@@ -39,7 +40,6 @@ export type ConformanceOptions = {
 /** A case resolves when it passes, resolves `{ skip }` when the provider cannot run here, and rejects when it fails. */
 export type ConformanceCase = { readonly name: string; run(): Promise<void | { readonly skip: string }> };
 
-const METHODS: Partial<Record<Capability, keyof Provider>> = { text: "text", render: "render", cells: "cells", frames: "frames", clip: "clip", office: "office" };
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
 const within1 = (actual: number, expected: number, what: string) => assert.ok(Math.abs(actual - expected) <= 1, `${what}: ${actual}, expected ${expected} within 1 px`);
 
@@ -59,12 +59,25 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
     if (required) throw new Error(reason);
     return { skip: reason };
   };
-  const call = async (): Promise<ProviderCall> => {
-    const env = await options.env();
-    const made = await env.createTempDir("pi-vision-conformance-", visionContext());
-    if (!made.ok) throw made.error;
-    return { env, signal: undefined, tempDir: made.value };
-  };
+  /** A case whose provider calls each get a directory of their own, all removed when the case ends, pass or fail. */
+  const scoped = (name: string, body: (call: () => Promise<ProviderCall>) => Promise<void | { readonly skip: string }>): ConformanceCase => ({
+    name,
+    async run() {
+      const made: ProviderCall[] = [];
+      const call = async (): Promise<ProviderCall> => {
+        const env = await options.env();
+        const dir = await env.createTempDir("pi-vision-conformance-", visionContext());
+        if (!dir.ok) throw dir.error;
+        made.push({ env, signal: undefined, tempDir: dir.value });
+        return made.at(-1)!;
+      };
+      try {
+        return await body(call);
+      } finally {
+        for (const c of made) await c.env.remove(c.tempDir, { recursive: true, force: true }, visionContext());
+      }
+    },
+  });
   const madeBy = (by: MadeBy, p: Provider, version: string) => assert.deepEqual(by, { provider: p.name, version }, "a result names the provider and the version detect() found");
   const can = (p: Provider, capability: Capability) => p.capabilities.includes(capability);
 
@@ -77,8 +90,9 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
     { name: "every capability it declares has its method", async run() {
       assert.ok(provider.name && provider.kinds.length > 0, "a provider has a name and the kinds it reads");
       for (const capability of provider.capabilities) {
-        const method = METHODS[capability];
-        if (method) assert.equal(typeof provider[method], "function", `${provider.name} declares ${capability} without its ${method}()`);
+        const method = CAPABILITY_METHODS[capability];
+        assert.ok(method, `${provider.name} declares ${capability}, which has no method in this release`);
+        assert.equal(typeof provider[method], "function", `${provider.name} declares ${capability} without its ${method}()`);
       }
     } },
   ];
@@ -86,7 +100,7 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
   for (const fixture of fixtures) {
     const { expect } = fixture;
     const at = (what: string) => `${fixture.name}: ${what}`;
-    if (expect.text && can(provider, "text")) cases.push({ name: at("text"), async run() {
+    if (expect.text && can(provider, "text")) cases.push(scoped(at("text"), async (call) => {
       const r = await ready(provider);
       if ("skip" in r) return r;
       const out = await provider.text!(fixture.source, {}, await call());
@@ -96,8 +110,8 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
         assert.ok(page, `page ${want.page} has a text entry`);
         for (const s of want.contains) assert.ok(collapse(page.text).includes(collapse(s)), `page ${want.page} holds ${JSON.stringify(s)}`);
       }
-    } });
-    for (const want of (can(provider, "render") && expect.render) || []) cases.push({ name: at(`render page ${want.page} at ${want.dpi} dpi`), async run() {
+    }));
+    for (const want of (can(provider, "render") && expect.render) || []) cases.push(scoped(at(`render page ${want.page} at ${want.dpi} dpi`), async (call) => {
       const r = await ready(provider);
       if ("skip" in r) return r;
       const out = await provider.render!(fixture.source, { page: want.page, dpi: want.dpi }, await call());
@@ -105,8 +119,8 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
       within1(out.image.width, want.width, "width");
       within1(out.image.height, want.height, "height");
       assert.deepEqual(imageSize(out.image.data), { mimeType: out.image.mimeType, width: out.image.width, height: out.image.height }, "the image's own header says what the result says");
-    } });
-    if (expect.cells && can(provider, "cells")) cases.push({ name: at("cells"), async run() {
+    }));
+    if (expect.cells && can(provider, "cells")) cases.push(scoped(at("cells"), async (call) => {
       const r = await ready(provider);
       if ("skip" in r) return r;
       const out = await provider.cells!(fixture.source, {}, await call());
@@ -116,8 +130,8 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
         assert.ok(sheet, `sheet ${want.sheet} is read`);
         for (const cell of want.cells) assert.deepEqual(sheet.cells.find((c) => c.ref === cell.ref), cell, `${want.sheet}!${cell.ref}`);
       }
-    } });
-    if (expect.frames && can(provider, "frames")) cases.push({ name: at(`frames at ${expect.frames.atS.join(", ")} s`), async run() {
+    }));
+    if (expect.frames && can(provider, "frames")) cases.push(scoped(at(`frames at ${expect.frames.atS.join(", ")} s`), async (call) => {
       const r = await ready(provider);
       if ("skip" in r) return r;
       const want = expect.frames!;
@@ -129,8 +143,8 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
         within1(frame.height, want.height, `frame at ${frame.atS} s height`);
         assert.ok(Math.max(frame.width, frame.height) <= want.maxEdge, `frame at ${frame.atS} s within ${want.maxEdge} px`);
       }
-    } });
-    if (expect.clip && can(provider, "clip")) cases.push({ name: at(`clip ${expect.clip.fromS} to ${expect.clip.toS} s`), async run() {
+    }));
+    if (expect.clip && can(provider, "clip")) cases.push(scoped(at(`clip ${expect.clip.fromS} to ${expect.clip.toS} s`), async (call) => {
       const r = await ready(provider);
       if ("skip" in r) return r;
       const want = expect.clip!;
@@ -140,10 +154,10 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
       const info = await c.env.fileInfo(out.path, visionContext());
       assert.ok(info.ok && info.value.size > 0 && info.value.size <= want.maxBytes, `the clip is a file in the environment within ${want.maxBytes} bytes`);
       assert.ok(Math.abs(out.fromS - want.fromS) <= 1 && Math.abs(out.toS - want.toS) <= 1, `the clip covers ${want.fromS} to ${want.toS} s within 1 s`);
-    } });
+    }));
   }
 
-  if (twin) for (const fixture of fixtures) cases.push({ name: `${fixture.name}: ${provider.name} and ${twin.name} agree`, async run() {
+  if (twin) for (const fixture of fixtures) cases.push(scoped(`${fixture.name}: ${provider.name} and ${twin.name} agree`, async (call) => {
     for (const p of [provider, twin]) { const r = await ready(p); if ("skip" in r) return r; }
     const both = <T>(f: (p: Provider, c: ProviderCall) => Promise<T>) => Promise.all([call().then((c) => f(provider, c)), call().then((c) => f(twin, c))]);
     let compared = 0;
@@ -171,7 +185,7 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
       compared++;
     }
     assert.ok(compared > 0, `${provider.name} and ${twin.name} share no capability this fixture exercises`);
-  } });
+  }));
 
   return cases;
 }

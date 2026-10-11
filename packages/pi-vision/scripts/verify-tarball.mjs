@@ -59,10 +59,13 @@ try {
   const imports = entries.map(([key], i) => `import * as entry${i} from ${JSON.stringify(specifier(key))};`).join("\n");
   writeFileSync(join(app, "check.ts"), `${imports}\n${entries.map((_, i) => `void entry${i};`).join("\n")}\n`);
   writeFileSync(join(app, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "es2023", module: "nodenext", moduleResolution: "nodenext", strict: true, noEmit: true, types: ["node"] }, include: ["check.ts"] }));
+  // tsc ran to its end, and every error it reports, if any, is in another package's declarations: a crash, a signal, a
+  // configuration error or an error in our own files fails.
   const tsc = run(process.execPath, [join(app, "node_modules/typescript/bin/tsc"), "-p", app], { cwd: app });
   const lines = `${tsc.stdout}${tsc.stderr}`.split("\n").filter((l) => /error TS\d+/.test(l));
-  const ours = lines.filter((l) => l.startsWith(`node_modules/${pkg.name}/`) || l.startsWith("check.ts"));
-  check(`tsc: an import of ${entries.length} entries typechecks (${lines.length - ours.length} errors in other packages' declarations ignored)`, ours.length === 0, ours.join("\n"));
+  const theirs = lines.filter((l) => l.startsWith("node_modules/") && !l.startsWith(`node_modules/${pkg.name}/`));
+  const ran = !tsc.error && tsc.signal === null && (tsc.status === 0 || lines.length > 0);
+  check(`tsc: an import of ${entries.length} entries typechecks (${theirs.length} errors in other packages' declarations ignored)`, ran && lines.length === theirs.length, tsc.error ?? (lines.filter((l) => !theirs.includes(l)).join("\n") || `${tsc.stdout}${tsc.stderr}`));
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
