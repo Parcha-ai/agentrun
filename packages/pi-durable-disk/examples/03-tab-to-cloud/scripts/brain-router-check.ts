@@ -1,8 +1,8 @@
-// Live, opt-in: the brain router (brain-router.ts) against TypeSafe Jev on fixed messages (brain-cases.json), each asked in both option
+// Live, opt-in: the brain router (brain-router.ts) against TypeSafe Jev on fixed messages (brain-router-cases.json), each asked in both option
 // orders, as a tab that is online with its trained 1B. Every labelled message must go where its label says; the borderline ones are
 // reported. Prints accuracy at a few gates, latency and token use. Needs TYPESAFE_API_KEY (bin/with-typesafe sets it); Jev bills input
 // tokens only, about 350 a decision.
-//   node scripts/brain-check.ts [--usd-per-million-input 0.042]
+//   node scripts/brain-router-check.ts [--usd-per-million-input 0.042]
 import { readFileSync } from "node:fs";
 import { createJevRunner } from "@parcha/agentrun-jev";
 import { brainRouter, DEFAULT_MIN_LOCAL_CONFIDENCE, type BrainDecision, type JudgeRunner } from "../brain-router.ts";
@@ -13,7 +13,7 @@ const arg = (name: string, fallback: string) => {
 };
 const usdPerMillion = Number(arg("--usd-per-million-input", "0.042"));
 if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is needed (run through bin/with-typesafe)");
-const cases = JSON.parse(readFileSync(new URL("./brain-cases.json", import.meta.url), "utf8")) as Record<"labelled" | "borderline", { expect: "local" | "cloud"; message: string }[]>;
+const cases = JSON.parse(readFileSync(new URL("./brain-router-cases.json", import.meta.url), "utf8")) as Record<"labelled" | "borderline", { expect: "local" | "cloud"; message: string }[]>;
 
 const runner = createJevRunner({ timeoutMs: 10_000, maxAttempts: 1 }) as unknown as JudgeRunner;
 let inputTokens = 0;

@@ -40,7 +40,7 @@ export type JudgeRunner = (params: {
 
 export const BRAIN_QUESTION = "Who should answer this message?";
 /**
- * The two options, one line each: the criteria of the choice. Measured live (scripts/brain-check.ts): with "anything needing the
+ * The two options, one line each: the criteria of the choice. Measured live (scripts/brain-router-check.ts): with "anything needing the
  * internet" alone, Jev put `pip install` and `git push` in the tab (p 0.78 to 0.95); naming the network for both options sent them to
  * the cloud (p local 0.00 to 0.09) with every labelled case still right.
  */

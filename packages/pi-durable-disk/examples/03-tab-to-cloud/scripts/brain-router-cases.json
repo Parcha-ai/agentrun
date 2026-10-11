@@ -1,5 +1,5 @@
 {
- "about": "Live, opt-in cases for scripts/brain-check.ts: who answers a message when the tab is online and has its trained 1B. `labelled`: demo-style simple file and code tasks (the tab) against training, GPU, internet and big-model asks (the cloud); every one must go where its label says. `borderline`: tasks that look simple but need the network, or that ask more than a small model can give, with the brain they should get; reported, not gated.",
+ "about": "Live, opt-in cases for scripts/brain-router-check.ts: who answers a message when the tab is online and has its trained 1B. `labelled`: demo-style simple file and code tasks (the tab) against training, GPU, internet and big-model asks (the cloud); every one must go where its label says. `borderline`: tasks that look simple but need the network, or that ask more than a small model can give, with the brain they should get; reported, not gated.",
  "labelled": [
   {
    "expect": "local",
