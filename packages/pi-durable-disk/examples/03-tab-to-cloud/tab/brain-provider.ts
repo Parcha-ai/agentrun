@@ -49,13 +49,13 @@ export interface ToolDecoding {
   answerTokens: number;
   /** The call body. */
   callTokens: number;
-  /** "grammar": the call body is decoded under the format's grammar. "free": one plain generation. */
-  mode: "grammar" | "free";
+  /** "lazy": ONE completion, the grammar engaging on <tool_call> (default). "grammar": three completions, the body under the grammar. "free": one plain generation. */
+  mode: "grammar" | "lazy" | "free";
   /** Called once per decoded turn, with how long it took and what it cost. */
   onTurn?(turn: { ms: number; tokensPerSecond: number | null; decoded: DecodedTurn; callId: string; completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] }): void;
 }
 
-export const DEFAULT_TOOL_DECODING: ToolDecoding = { thinkTokens: 64, answerTokens: 200, callTokens: 512, mode: "grammar" };
+export const DEFAULT_TOOL_DECODING: ToolDecoding = { thinkTokens: 64, answerTokens: 200, callTokens: 512, mode: "lazy" };
 
 export function streamBrain(brain: BrainModel, model: Model<string>, context: TranscriptContext | Context, options?: { signal?: AbortSignal }, decoding: ToolDecoding = DEFAULT_TOOL_DECODING): AssistantMessageEventStream {
   if (hasTools(context.messages as { role: string }[])) return streamTools(brain, model, context, options, decoding);

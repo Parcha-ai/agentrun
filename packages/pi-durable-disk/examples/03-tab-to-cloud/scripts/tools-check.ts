@@ -85,6 +85,11 @@ try {
   const pp = allTurns.flatMap((x) => x.completions).filter((c) => c.timings?.prompt_per_second && (c.timings.prompt_n ?? 0) > 20).map((c) => c.timings!.prompt_per_second!);
   const avg = (xs: number[]) => (xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10 : null);
   console.log(`\nSUMMARY: ${all.filter((a) => a.ok).length}/${all.length} tasks verified right; ${allTurns.length} model turns, mean ${avg(allTurns.map((x) => x.ms / 1000))} s per turn; generation ${avg(gen)} tok/s, prompt evaluation ${avg(pp)} tok/s (calls that evaluated >20 prompt tokens); calls with a grammar problem: ${allTurns.filter((x) => x.problem).length}/${allTurns.length}; thinking cut ${allTurns.filter((x) => x.thinkingCut).length}; answers cut ${allTurns.filter((x) => x.cut).length}`);
+  const after = allTurns.map((x) => { const i = x.raw.indexOf("</thinking>"); return i < 0 ? null : x.raw.slice(i + 11, i + 13); });
+  const closed = after.filter((x) => x !== null) as string[];
+  const clean = closed.filter((x) => x[0] === "\n" && x.length === 2 && !/\s/.test(x[1]!)).length;
+  console.log(`PARITY: after </thinking> the model wrote exactly "\\n" then a non-space on ${clean} of ${closed.length} turns that closed their thinking${closed.length - clean ? `; the others: ${JSON.stringify(closed.filter((x) => !(x[0] === "\n" && x.length === 2 && !/\s/.test(x[1]!))))}` : ""}`);
+  console.log(`completions per turn: ${JSON.stringify(allTurns.map((x) => x.calls))}`);
   ok("every call the grammar decoded parsed (no call problem)", allTurns.every((x) => x.problem === null), allTurns.map((x) => x.problem));
   ok("pi's real tools ran the model's calls", allTurns.some((x) => x.call !== null));
   await page.screenshot(join(shots, "tools-1.png"));

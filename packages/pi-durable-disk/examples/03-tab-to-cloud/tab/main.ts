@@ -14,6 +14,7 @@ import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { importStore, openLocalStore, type LocalStore } from "./local-store.ts";
 import { applyChanges, loadWorkspace, saveWorkspace } from "./workspace-store.ts";
+import { callGrammar, renderPrompt, TOOLS } from "./tool-format.ts";
 import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
 import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
@@ -460,7 +461,7 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void>
   const brain = new Brain({
     harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
-    ...(params.get("configure") === "1" ? { decoding: { thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : ("grammar" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => ["read", "write", "edit", "bash"].includes(t.tool.name)).map((t) => t.tool) } : {}),
+    ...(params.get("configure") === "1" ? { decoding: { thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => ["read", "write", "edit", "bash"].includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -944,6 +945,16 @@ void boot();
   },
   /** The brain swap, for checks: the model's phase, whether the chat input goes to the trained model's conversation, and what the page says. */
   brain: () => ({ phase: state.brain?.host.state().phase ?? null, swapped: state.brain?.conversation !== undefined && state.active === state.brain.conversation, conversation: state.active ? String(state.active.id) : null, status: state.brainStatus }),
+  /** A probe (scratch): one raw completion of the first window for `task`, with the call grammar engaged lazily on "<tool_call>" (`lazy`) or as a plain grammar after it. */
+  probe: async (task: string, variant: "lazy-with-trigger" | "lazy-without-trigger" | "none") => {
+    const base = renderPrompt(TOOLS, [{ role: "user", content: task }]) + "<thinking>";
+    const g = callGrammar();
+    const grammar = variant === "lazy-with-trigger" ? g.replace("root ::= ", 'root ::= "<tool_call>" ') : g;
+    const extra = variant === "none" ? undefined : { grammar_lazy: true, grammar_triggers: [{ type: 1, value: "<tool_call>" }] };
+    const started = performance.now();
+    const r = await state.brain!.host.withBackend((b) => b.complete({ prompt: base, maxTokens: 400, ...(variant === "none" ? {} : { grammar, ...(extra ? { extra } : {}) }) }));
+    return { ms: Math.round(performance.now() - started), text: r.text, stoppedBy: r.stoppedBy, out: r.outputTokens, timings: r.timings };
+  },
   /** The tool turns of the trained model so far (?configure=1). */
   toolTurns: () => state.toolTurns,
   /** The computer while checked out: whether it booted from the cache, how long that took, how many files came back from OPFS, why not. */

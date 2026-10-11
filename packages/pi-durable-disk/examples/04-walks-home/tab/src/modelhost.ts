@@ -8,12 +8,24 @@ import { Guard, REFUSAL, sentenceEnd } from './guard.ts';
 import { CLOSE, cutBack, OPEN, rawOf, readable, splitThinking } from './thinking.ts';
 import { resolveSampling, type Sampling } from './sampling.ts';
 import type { HistoryMode } from './history.ts';
+import type { Limit } from './limits.ts';
 export type { HistoryMode } from './history.ts';
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
 
 /** One raw completion over a finished prompt (no chat template, no messages): the tool-using turns are decoded this way (03 tab, decode.ts's Backend has the same shape). */
-export interface RawRequest { prompt: string; maxTokens: number; stop?: string[]; grammar?: string }
+export interface RawRequest {
+  prompt: string;
+  maxTokens: number;
+  stop?: string[];
+  grammar?: string;
+  /** With `grammar`: the grammar engages only once `trigger` has been generated (llama.cpp's grammar_lazy with a word trigger); the grammar's root must start with the trigger. */
+  lazy?: { trigger: string };
+  /** Token limits on the stream (limits.ts): a generation that runs one out is stopped, stoppedBy "length", `capped` its index. */
+  limits?: readonly Limit[];
+  /** Extra request fields for the engine, passed through. */
+  extra?: Record<string, unknown>;
+}
 export interface RawResult {
   /** The generated text; a `stop` string that ended it is not in it. */
   text: string;
@@ -22,6 +34,8 @@ export interface RawResult {
   /** Prompt tokens evaluated for this call (not served from the cache) and tokens generated. */
   promptTokens: number;
   outputTokens: number;
+  /** The index of the `limits` entry that stopped the generation. */
+  capped?: number;
   /** The engine's own timings for the call, when it reports them (wllama: prompt_n, prompt_ms, predicted_n, predicted_ms, ...). */
   timings?: Record<string, number>;
   /** Wall time of the call in ms, including the wait for its first token. */
