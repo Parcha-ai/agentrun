@@ -178,7 +178,17 @@ async function extendsReleased(db: SqliteExecutor, head: number): Promise<{ tabl
     () => none("entries", "SELECT count(*) AS n FROM browser.entries b WHERE b.id NOT IN (SELECT id FROM main.entries) AND b.commit_seq <= ?", "an entry the browser added is not past the released head", head),
     () => none("record_ids", "SELECT count(*) AS n FROM main.record_ids r WHERE NOT EXISTS (SELECT 1 FROM browser.record_ids b WHERE b.id = r.id AND b.record_type = r.record_type)", "a released record id is missing or changed"),
     () => none("conversations", "SELECT count(*) AS n FROM main.conversations r WHERE NOT EXISTS (SELECT 1 FROM browser.conversations b WHERE b.id = r.id AND b.owner_conversation_id IS r.owner_conversation_id AND b.owner_task_id IS r.owner_task_id AND b.record = r.record)", "a released conversation is missing or changed"),
-    () => none("document_revisions", "SELECT count(*) AS n FROM main.document_revisions r WHERE NOT EXISTS (SELECT 1 FROM browser.document_revisions b WHERE b.document_id = r.document_id AND b.seq = r.seq AND b.kind = r.kind AND b.version = r.version AND b.content = r.content)", "a released document revision is missing or changed"),
+    // pi prunes the revisions of a current-only document when it writes a newer base (or retires it): a released revision may be gone, but only where the browser holds a newer one for the same document
+    // (past the released head) or retired the document there; one that is still there is exactly as released.
+    () => none("document_revisions", "SELECT count(*) AS n FROM main.document_revisions r JOIN browser.document_revisions b ON b.document_id = r.document_id AND b.seq = r.seq WHERE NOT (b.kind = r.kind AND b.version = r.version AND b.content = r.content)", "a released document revision was rewritten"),
+    () =>
+      none(
+        "document_revisions",
+        "SELECT count(*) AS n FROM main.document_revisions r WHERE NOT EXISTS (SELECT 1 FROM browser.document_revisions b WHERE b.document_id = r.document_id AND b.seq = r.seq) AND NOT EXISTS (SELECT 1 FROM browser.document_revisions b WHERE b.document_id = r.document_id AND b.seq > ?) AND NOT EXISTS (SELECT 1 FROM browser.documents d WHERE d.id = r.document_id AND d.retired_at > ?)",
+        "a released document revision is gone and nothing newer replaced it",
+        head,
+        head,
+      ),
     () => none("document_revisions", "SELECT count(*) AS n FROM browser.document_revisions b WHERE NOT EXISTS (SELECT 1 FROM main.document_revisions r WHERE r.document_id = b.document_id AND r.seq = b.seq) AND b.seq <= ?", "a document revision the browser added is not past the released head", head),
     () => none("documents", "SELECT count(*) AS n FROM main.documents r WHERE NOT EXISTS (SELECT 1 FROM browser.documents b WHERE b.id = r.id AND b.kind = r.kind AND b.family = r.family AND b.key_value = r.key_value AND b.scope_kind = r.scope_kind AND b.owner_id = r.owner_id AND b.created_at = r.created_at)", "a released document is missing or has another identity"),
     () => none("tasks", "SELECT count(*) AS n FROM main.tasks r WHERE NOT EXISTS (SELECT 1 FROM browser.tasks b WHERE b.id = r.id AND b.conversation_id = r.conversation_id AND b.kind = r.kind AND (r.status <> 'terminal' OR (b.status = 'terminal' AND b.record = r.record)))", "a released task is missing, changed identity, or a finished one changed"),

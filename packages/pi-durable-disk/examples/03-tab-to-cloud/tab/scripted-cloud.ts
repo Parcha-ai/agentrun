@@ -3,12 +3,13 @@
 import { createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, Provider, TranscriptContext, Usage } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { PROVIDER } from "../agent.ts";
 
 /** One answer: some text, or a tool call (with the text said before it). */
 export type ScriptedTurn = { text?: string; call?: { name: string; arguments: Record<string, string | number | boolean | null> } };
 
-/** What a request carried: the roles of the messages, the system prompt's first line, the names of the tools offered, and the last user text. */
+/** What a request carried: the roles of the messages, the start of the system prompt, the names of the tools offered, and the last user text. */
 export interface SeenRequest {
   model: string;
   roles: string[];
@@ -26,7 +27,10 @@ export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: See
     const stream = createAssistantMessageEventStream();
     const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: zero(), stopReason: "stop", timestamp: Date.now() };
     const messages = context.messages as { role: string; content?: unknown }[];
-    seen.push({ model: model.id, roles: messages.map((m) => m.role), system: String((context as { systemPrompt?: string }).systemPrompt ?? "").split("\n")[0]!.slice(0, 80), tools: ((context as { tools?: { name: string }[] }).tools ?? []).map((t) => t.name), lastUser: textOf([...messages].reverse().find((m) => m.role === "user")?.content) });
+    // the system prompt and the tools are system messages in the transcript (deltas): read them the way a provider does
+    const tools = (getCurrentTools(messages as never) as { name: string }[]).map((t) => t.name);
+    const system = String(getCurrentSystemPrompt(messages as never) ?? "").replace(/\s+/g, " ").slice(0, 160);
+    seen.push({ model: model.id, roles: messages.map((m) => m.role), system, tools, lastUser: textOf([...messages].reverse().find((m) => m.role === "user")?.content) });
     const turn = script[Math.min(next++, script.length - 1)] ?? { text: "(no script)" };
     queueMicrotask(() => {
       stream.push({ type: "start", partial: output });

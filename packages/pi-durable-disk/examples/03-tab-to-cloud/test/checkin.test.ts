@@ -76,6 +76,29 @@ describe("checking a run back in", () => {
     return readFileSync(file);
   }
 
+  /** The browser reconfigures the conversation the way a swap does (model, instructions, tools), more than once: pi prunes the old revisions of the documents that hold it. */
+  async function reconfigured(copy: Buffer, conversationId: unknown): Promise<Buffer> {
+    const file = join(scratch, `r-${Math.random().toString(36).slice(2)}.sqlite`);
+    writeFileSync(file, copy);
+    const storage = await openNodeSqliteStorage(file);
+    const models = createModels();
+    models.setProvider(cloudProvider());
+    const harness = await Harness.open(storage, { models, registry: createRegistry() }, ctx);
+    const c = await harness.conversation(conversationId as never, ctx);
+    await c!.configure({ model: { provider: "pipe", modelId: "cloud-big" }, thinkingLevel: "off", instructions: "one", tools: [] }, ctx);
+    await c!.configure({ instructions: "two", thinkingLevel: "low" }, ctx);
+    // a real turn: it rewrites pi.live, pi.inbox and pi.usage, the documents that keep only their latest revision
+    await c!.submit({ type: "input", content: "hello offline", requestId: "offline-turn" }, ctx);
+    for (let i = 0; i < 100; i++) {
+      const done = ((await c!.entries({}, 200, undefined, ctx)).items as unknown as { kind: string }[]).filter((e) => e.kind === "pi.assistant").length;
+      if (done > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    await harness.close(ctx);
+    return readFileSync(file);
+  }
+
   async function checkedOut(name: string, commits = 3) {
     const w = await writer(name, commits);
     const copy = await copyOf(w.id, w.secret);
@@ -168,6 +191,47 @@ describe("checking a run back in", () => {
     // and an honest check-in still works afterwards
     const good = await checkin(w.id, w.secret, w.tab, await offline(w.copy.bytes, w.conversation.id, 1));
     assert.equal(good.status, 200);
+  });
+
+  it("a browser that reconfigured the conversation (pi pruned the old revisions of the documents that hold it) checks in; a revision rewritten, or gone with nothing newer, does not", async () => {
+    const w = await checkedOut("reconfigured");
+    const store = await reconfigured(w.copy.bytes, w.conversation.id);
+    // the test says something only if the browser really dropped a released revision
+    const mainFile = join(scratch, "released.sqlite");
+    writeFileSync(mainFile, w.copy.bytes);
+    const released = new DatabaseSync(mainFile, { readOnly: true });
+    const releasedRevs = released.prepare("SELECT document_id, seq FROM document_revisions").all() as { document_id: string; seq: number }[];
+    released.close();
+    const browserFile = join(scratch, "browser-probe.sqlite");
+    writeFileSync(browserFile, store);
+    const bdb = new DatabaseSync(browserFile, { readOnly: true });
+    const kept = new Set((bdb.prepare("SELECT document_id, seq FROM document_revisions").all() as { document_id: string; seq: number }[]).map((r) => `${r.document_id}:${r.seq}`));
+    bdb.close();
+    assert.ok(releasedRevs.some((r) => !kept.has(`${r.document_id}:${r.seq}`)), "the browser's store lost a released revision (pi pruned it)");
+    // rewritten: refused
+    const rewritten = join(scratch, "rewritten.sqlite");
+    writeFileSync(rewritten, store);
+    const rdb = new DatabaseSync(rewritten);
+    rdb.exec(`UPDATE document_revisions SET content = content || ' ' WHERE rowid = (SELECT min(rowid) FROM document_revisions WHERE (document_id, seq) IN (${releasedRevs.filter((r) => kept.has(`${r.document_id}:${r.seq}`)).map((r) => `('${r.document_id}', ${r.seq})`).join(",") || "('x', 0)"}))`);
+    const changed = rdb.prepare("SELECT changes() AS n").get() as { n: number };
+    rdb.close();
+    assert.ok(changed.n > 0, "a released revision that the browser kept was rewritten");
+    const rewrittenRes = await checkin(w.id, w.secret, w.tab, readFileSync(rewritten));
+    assert.equal(rewrittenRes.status, 409, await rewrittenRes.clone().text());
+    assert.equal(((await rewrittenRes.json()) as { table?: string }).table, "document_revisions");
+    // gone with nothing newer: every revision of the browser's copy of one released document dropped
+    const gone = join(scratch, "gone.sqlite");
+    writeFileSync(gone, store);
+    const gdb = new DatabaseSync(gone);
+    gdb.exec("DELETE FROM document_revisions WHERE document_id = (SELECT document_id FROM document_revisions GROUP BY document_id ORDER BY max(seq) ASC LIMIT 1)");
+    gdb.close();
+    const goneRes = await checkin(w.id, w.secret, w.tab, readFileSync(gone));
+    assert.equal(goneRes.status, 409, await goneRes.clone().text());
+    assert.equal(((await goneRes.json()) as { table?: string }).table, "document_revisions");
+    // the honest store is taken
+    const res = await checkin(w.id, w.secret, w.tab, store, []);
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(existsSync(marker(w.id)), false);
   });
 
   it("a crash after the check and before the mark is removed leaves the mark: no fork, and the same check-in sent again works", async () => {
