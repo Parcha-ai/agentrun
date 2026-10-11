@@ -109,20 +109,22 @@ export async function comeHome(text: string, d: HomecomingDeps): Promise<Homecom
   const now = d.now ?? (() => Date.now());
   const t0 = now();
   const files: { label: string; entry: ChunkedFile }[] = [{ label: 'base', entry: m.base }, ...m.adapters.map((a) => ({ label: a.name, entry: a }))];
+  // A file is reused, from the store or from another entry of this manifest, only when its whole chunk list matches: never by sha256 alone.
+  const key = (f: ChunkedFile) => `${f.sha256}\n${chunkRecord(f)}`;
   const held = new Map<string, Blob>();
   for (const f of files) {
-    if (held.has(f.entry.sha256)) continue;
+    if (held.has(key(f.entry))) continue;
     const blob = await d.store.get(f.entry);
-    if (blob) held.set(f.entry.sha256, blob);
+    if (blob) held.set(key(f.entry), blob);
   }
-  const plan = planHomecoming(m, (sha) => held.has(sha));
+  const plan = planHomecoming(m, (sha) => files.some((f) => f.entry.sha256 === sha && held.has(key(f.entry))));
   for (const f of files) {
-    if (held.has(f.entry.sha256)) continue;
+    if (held.has(key(f.entry))) continue;
     const parts = await fetchModel(f.entry, { readChunk: d.readChunk, sha256: d.sha256, onProgress: (done, total) => d.onProgress?.({ file: f.label, done, total }) });
-    held.set(f.entry.sha256, await d.store.put(f.entry, parts));
+    held.set(key(f.entry), await d.store.put(f.entry, parts));
   }
   const blobOf = (f: ChunkedFile, label: string): Blob => {
-    const b = held.get(f.sha256)!;
+    const b = held.get(key(f))!;
     if (b.size !== f.size) throw new ModelError(`${label}: the kept file has ${b.size} bytes, the manifest says ${f.size}`);
     return b;
   };

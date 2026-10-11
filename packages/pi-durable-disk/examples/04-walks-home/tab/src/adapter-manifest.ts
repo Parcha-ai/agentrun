@@ -2,7 +2,9 @@
 // from. Each adapter names that same model, its own sha256, size and chunks, what it adds (a skill or an obsession, and a label), the scale
 // it was trained to run at, and its rank and alpha. A homecoming whose base is already cached fetches only the adapter: tens of MB instead
 // of a merged model's 806 MB. Pure, like model.ts: the reads and the hash are the caller's. The format:
-//   home/base/chunk-0000.bin ..., home/adapters/<stem>/chunk-0000.bin ..., then home/manifest.json written LAST:
+//   home/files/<sha256>-<chunk_bytes>/chunk-0000.bin ... for every file, then home/manifest.json written LAST:
+// A file's chunks live under its own sha256 and chunk size, so writing a new base or adapter never touches the files a published manifest
+// names: the manifest is renamed into place last, and what no manifest names is removed after.
 //   {format: "gguf-base-adapters-v1",
 //    base: {name, quant, model: {repo, revision}, size, sha256, chunk_bytes, chunks: [{n, path, offset, size, sha256}]},
 //    adapters: [{name: "<stem>.gguf", kind: "skill" | "obsession", topic, model: {repo, revision}, rank, alpha, scale, dtype,
@@ -62,11 +64,12 @@ const STEM = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const REVISION = /^[0-9a-f]{40}$/;
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
 const pad = (n: number) => String(n).padStart(4, '0');
-export const baseChunkPath = (n: number) => `home/base/chunk-${pad(n)}.bin`;
-export const adapterChunkPath = (stem: string, n: number) => `home/adapters/${stem}/chunk-${pad(n)}.bin`;
+/** The folder of one file's chunks: its sha256 and its chunk size, so two layouts of one file never share paths. */
+export const fileDir = (sha256: string, chunkBytes: number) => `home/files/${sha256}-${chunkBytes}`;
+export const fileChunkPath = (sha256: string, chunkBytes: number, n: number) => `${fileDir(sha256, chunkBytes)}/chunk-${pad(n)}.bin`;
 
-/** A chunked file's fields, checked: every chunk's path is fixed by its index, so a manifest cannot point the tab anywhere else. */
-function chunked(label: string, f: any, maxBytes: number, pathOf: (n: number) => string): ChunkedFile {
+/** A chunked file's fields, checked: every chunk's path is fixed by the file's sha256, its chunk size and the index, so a manifest cannot point the tab anywhere else. */
+function chunked(label: string, f: any, maxBytes: number): ChunkedFile {
   if (!f || typeof f !== 'object') throw new ModelError(`${label} is not an object`);
   if (!isInt(f.size) || f.size < 1) throw new ModelError(`${label}: size is not a positive whole number`);
   if (f.size > maxBytes) throw new ModelError(`${label}: size ${f.size} is over the limit of ${maxBytes}`);
@@ -78,10 +81,11 @@ function chunked(label: string, f: any, maxBytes: number, pathOf: (n: number) =>
   let total = 0;
   f.chunks.forEach((c: any, i: number) => {
     if (!c || c.n !== i) throw new ModelError(`${label} chunk ${i}: n is ${c?.n}, expected ${i}`);
-    if (c.path !== pathOf(i)) throw new ModelError(`${label} chunk ${i}: path ${JSON.stringify(c.path)} is not ${pathOf(i)}`);
+    const want = fileChunkPath(f.sha256, f.chunk_bytes, i);
+    if (c.path !== want) throw new ModelError(`${label} chunk ${i}: path ${JSON.stringify(c.path)} is not ${want}`);
     if (c.offset !== i * f.chunk_bytes) throw new ModelError(`${label} chunk ${i}: offset ${c.offset} is not ${i * f.chunk_bytes}`);
-    const want = Math.min(f.chunk_bytes, f.size - c.offset);
-    if (c.size !== want) throw new ModelError(`${label} chunk ${i}: size ${c.size} is not ${want}`);
+    const size = Math.min(f.chunk_bytes, f.size - c.offset);
+    if (c.size !== size) throw new ModelError(`${label} chunk ${i}: size ${c.size} is not ${size}`);
     if (typeof c.sha256 !== 'string' || !HEX.test(c.sha256)) throw new ModelError(`${label} chunk ${i}: sha256 is not 64 lowercase hex digits`);
     total += c.size;
   });
@@ -104,7 +108,7 @@ export function parseBaseAdapters(text: string): BaseAdaptersManifest {
   if (!m || typeof m !== 'object') throw new ModelError('the manifest is not an object');
   if (m.format !== 'gguf-base-adapters-v1') throw new ModelError(`the manifest format is ${JSON.stringify(m.format)}, not gguf-base-adapters-v1`);
   const b = m.base;
-  const base: BaseEntry = { name: label(b?.name) ?? 'base', quant: String(b?.quant ?? ''), model: modelRef('base', b?.model), ...chunked('base', b, MAX_MODEL_BYTES, baseChunkPath) };
+  const base: BaseEntry = { name: label(b?.name) ?? 'base', quant: String(b?.quant ?? ''), model: modelRef('base', b?.model), ...chunked('base', b, MAX_MODEL_BYTES) };
   if (!Array.isArray(m.adapters)) throw new ModelError('the manifest has no adapters list');
   const names = new Set<string>();
   const adapters = m.adapters.map((a: any, i: number): AdapterEntry => {
@@ -129,9 +133,16 @@ export function parseBaseAdapters(text: string): BaseAdaptersManifest {
       name: a.name, kind: a.kind, topic, model, rank: a.rank, alpha: a.alpha, scale: a.scale, dtype: a.dtype,
       ...(verified.length ? { verified_on: verified } : {}),
       ...(Object.keys(sampling).length ? { sampling } : {}),
-      ...chunked(`adapter ${a.name}`, a, MAX_ADAPTER_BYTES, (n) => adapterChunkPath(stem, n)),
+      ...chunked(`adapter ${a.name}`, a, MAX_ADAPTER_BYTES),
     };
   });
+  // Two files that claim one sha256 must be the same chunks: a tab that holds one would otherwise take it for the other without checking a byte.
+  const claims = new Map<string, { label: string; f: ChunkedFile }>();
+  for (const [label, f] of [['the base', base] as const, ...adapters.map((x: AdapterEntry) => [x.name, x] as const)]) {
+    const seen = claims.get(f.sha256);
+    if (seen && !sameChunks(seen.f, f)) throw new ModelError(`${label} and ${seen.label} claim the same sha256 with different chunks`);
+    claims.set(f.sha256, { label, f });
+  }
   if (m.active === undefined) return { format: 'gguf-base-adapters-v1', base, adapters };
   if (!Array.isArray(m.active) || m.active.length === 0) throw new ModelError('active is not a list of adapter names');
   const active: string[] = [];
@@ -141,6 +152,11 @@ export function parseBaseAdapters(text: string): BaseAdaptersManifest {
     active.push(name);
   }
   return { format: 'gguf-base-adapters-v1', base, adapters, active };
+}
+
+/** The same file cut the same way: size, chunk size and every chunk's sha256. */
+export function sameChunks(a: ChunkedFile, b: ChunkedFile): boolean {
+  return a.size === b.size && a.chunk_bytes === b.chunk_bytes && a.chunks.length === b.chunks.length && a.chunks.every((c, i) => c.sha256 === b.chunks[i]!.sha256);
 }
 
 /** The adapters a request applies, in load order: the ones `active` names, or the last one listed; none when there are no adapters. */

@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseBaseAdapters } from '../src/adapter-manifest.ts';
+import { fileChunkPath, fileDir, parseBaseAdapters } from '../src/adapter-manifest.ts';
 // @ts-expect-error: a plain .mjs script, without types
 import { describeAdapter, makeHomeDisk } from '../scripts/make-home-disk.mjs';
 
@@ -40,6 +41,13 @@ function setup() {
   return { dir, put, disk, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 const read = (disk: string) => parseBaseAdapters(readFileSync(join(disk, 'home/manifest.json'), 'utf8'));
+const hex = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
+/** Every chunk the published manifest names is on the disk with its size and sha256: what a tab would fetch is whole. */
+function whole(disk: string): boolean {
+  const m = read(disk);
+  return [m.base, ...m.adapters].every((f) => f.chunks.every((c) => { const p = join(disk, c.path); if (!existsSync(p)) return false; const b = readFileSync(p); return b.length === c.size && hex(b) === c.sha256; }));
+}
+const folders = (disk: string) => (existsSync(join(disk, 'home/files')) ? readdirSync(join(disk, 'home/files')).sort() : []);
 const concat = (disk: string, chunks: { path: string }[]) => Buffer.concat(chunks.map((c) => readFileSync(join(disk, c.path))));
 
 test('a base and an adapter laid out: chunks that rebuild each file, rank, alpha and dtype from the adapter itself, the manifest the tab parses', () => {
@@ -63,7 +71,7 @@ test('a second adapter on the same disk: the base is not written again, the firs
   try {
     const base = s.put('base.gguf', baseGguf());
     makeHomeDisk([s.disk, '--base', base, '--base-model', `google/gemma-3-1b-it@${REV}`, '--adapter', s.put('t.gguf', adapterGguf()), '--fields', s.put('t.json', { name: 'tools.gguf', kind: 'skill', topic: 'tools' })]);
-    const chunk0 = join(s.disk, 'home/base/chunk-0000.bin'), before = statSync(chunk0).mtimeMs;
+    const chunk0 = join(s.disk, read(s.disk).base.chunks[0]!.path), before = statSync(chunk0).mtimeMs;
     makeHomeDisk([s.disk, '--adapter', s.put('m.gguf', adapterGguf({ rank: 32, alpha: 64, aType: 1 })), '--fields', s.put('m.json', { name: 'moon.gguf', kind: 'obsession', topic: 'the Moon' })]);
     const m = read(s.disk);
     assert.equal(statSync(chunk0).mtimeMs, before, 'the base chunks are untouched');
@@ -84,7 +92,7 @@ test('an adapter whose GGUF disagrees with its fields, is not an adapter, or is 
     const args = [s.disk, '--base', base, '--base-model', `google/gemma-3-1b-it@${REV}`];
     makeHomeDisk([...args, '--adapter', s.put('t.gguf', adapterGguf()), '--fields', s.put('t.json', { name: 'tools.gguf', kind: 'skill', topic: 'tools' })]);
     const manifest = readFileSync(join(s.disk, 'home/manifest.json'), 'utf8');
-    const chunk0 = join(s.disk, 'home/base/chunk-0000.bin'), before = statSync(chunk0).mtimeMs;
+    const chunk0 = join(s.disk, read(s.disk).base.chunks[0]!.path), before = statSync(chunk0).mtimeMs;
     const cases: [string, Buffer, object, RegExp][] = [
       ['rank', adapterGguf(), { rank: 32 }, /says rank 32, .* says 16/],
       ['alpha', adapterGguf(), { alpha: 16 }, /says alpha 16, .* says 32/],
@@ -109,5 +117,76 @@ test('the adapter header is read as llama.cpp wrote it: rank from lora_b, alpha,
     assert.deepEqual(describeAdapter(s.put('a.gguf', adapterGguf({ rank: 8, alpha: 16 }))), { architecture: 'gemma3', rank: 8, alpha: 16, dtype: 'q8_0', tensors: 4 });
     assert.equal(describeAdapter(s.put('b.gguf', adapterGguf({ aType: 1 }))).dtype, 'f16');
     assert.throws(() => describeAdapter(s.put('c.gguf', Buffer.from('not a gguf at all'))), /is not a GGUF file/);
+  } finally { s.done(); }
+});
+
+test('an adapter added to a disk without --base is still checked against the base: its architecture is read from the published chunks', () => {
+  const s = setup();
+  try {
+    makeHomeDisk([s.disk, '--base', s.put('base.gguf', baseGguf()), '--base-model', `google/gemma-3-1b-it@${REV}`]);
+    assert.throws(() => makeHomeDisk([s.disk, '--adapter', s.put('l.gguf', adapterGguf({ arch: 'llama' })), '--fields', s.put('l.json', { name: 'moon.gguf', kind: 'obsession', topic: 'the Moon' })]), /is a llama adapter, the base is gemma3/);
+    makeHomeDisk([s.disk, '--adapter', s.put('g.gguf', adapterGguf()), '--fields', s.put('g.json', { name: 'moon.gguf', kind: 'obsession', topic: 'the Moon' })]);
+    assert.deepEqual(read(s.disk).adapters.map((a) => a.name), ['moon.gguf']);
+  } finally { s.done(); }
+});
+
+test('replacing an adapter never touches what the published manifest names: a run that stops before the manifest is renamed leaves the old disk whole', () => {
+  const s = setup();
+  try {
+    makeHomeDisk([s.disk, '--base', s.put('base.gguf', baseGguf()), '--base-model', `google/gemma-3-1b-it@${REV}`, '--adapter', s.put('t1.gguf', adapterGguf({ pad: 5000 })), '--fields', s.put('t.json', { name: 'tools.gguf', kind: 'skill', topic: 'tools' })]);
+    const before = readFileSync(join(s.disk, 'home/manifest.json'), 'utf8');
+    mkdirSync(join(s.disk, 'home/manifest.json.tmp')); // the manifest cannot be written: the run stops after the new chunks, before the rename
+    assert.throws(() => makeHomeDisk([s.disk, '--adapter', s.put('t2.gguf', adapterGguf({ pad: 6000 })), '--fields', join(s.dir, 't.json')]));
+    assert.equal(readFileSync(join(s.disk, 'home/manifest.json'), 'utf8'), before);
+    assert.ok(whole(s.disk), 'every chunk the old manifest names is there, byte for byte');
+    rmSync(join(s.disk, 'home/manifest.json.tmp'), { recursive: true });
+    makeHomeDisk([s.disk, '--adapter', join(s.dir, 't2.gguf'), '--fields', join(s.dir, 't.json')]);
+    const m = read(s.disk);
+    assert.equal(m.adapters[0]!.size, statSync(join(s.dir, 't2.gguf')).size);
+    assert.ok(whole(s.disk));
+    assert.deepEqual(folders(s.disk), [m.base, m.adapters[0]!].map((f) => fileDir(f.sha256, f.chunk_bytes).slice('home/files/'.length)).sort(), 'the old adapter\'s folder is gone once nothing names it');
+  } finally { s.done(); }
+});
+
+test('the same adapter cut another way is laid out again in its own folder, not taken for the published one', () => {
+  const s = setup();
+  try {
+    makeHomeDisk([s.disk, '--base', s.put('base.gguf', baseGguf()), '--base-model', `google/gemma-3-1b-it@${REV}`]);
+    // a disk written by another tool: the same adapter in 1 KiB chunks
+    const body = adapterGguf(), sha = hex(body), CH = 1024;
+    const chunks = [];
+    for (let n = 0, off = 0; off < body.length; n++, off += CH) {
+      const part = body.subarray(off, Math.min(off + CH, body.length));
+      mkdirSync(join(s.disk, fileDir(sha, CH)), { recursive: true });
+      writeFileSync(join(s.disk, fileChunkPath(sha, CH, n)), part);
+      chunks.push({ n, path: fileChunkPath(sha, CH, n), offset: off, size: part.length, sha256: hex(part) });
+    }
+    const m0 = read(s.disk);
+    writeFileSync(join(s.disk, 'home/manifest.json'), JSON.stringify({ ...m0, adapters: [{ name: 'tools.gguf', kind: 'skill', topic: 'tools', model: m0.base.model, rank: 16, alpha: 32, scale: 1, dtype: 'q8_0', size: body.length, sha256: sha, chunk_bytes: CH, chunks }] }));
+    assert.ok(whole(s.disk));
+    makeHomeDisk([s.disk, '--adapter', s.put('t.gguf', body), '--fields', s.put('t.json', { name: 'tools.gguf', kind: 'skill', topic: 'tools' })]);
+    const m = read(s.disk);
+    assert.equal(m.adapters[0]!.chunk_bytes, 16 * 1024 * 1024);
+    assert.ok(whole(s.disk), 'what the new manifest names is what is on the disk');
+    assert.ok(!folders(s.disk).includes(`${sha}-${CH}`), 'the 1 KiB layout, no longer named, is gone');
+  } finally { s.done(); }
+});
+
+test('one name given twice in one run is refused before anything is read or written', () => {
+  const s = setup();
+  try {
+    const f = s.put('t.json', { name: 'tools.gguf', kind: 'skill', topic: 'tools' });
+    assert.throws(() => makeHomeDisk([s.disk, '--base', s.put('base.gguf', baseGguf()), '--base-model', `google/gemma-3-1b-it@${REV}`, '--adapter', s.put('a.gguf', adapterGguf({ pad: 5000 })), '--fields', f, '--adapter', s.put('b.gguf', adapterGguf({ pad: 6000 })), '--fields', f]), /tools\.gguf is given twice/);
+    assert.equal(existsSync(join(s.disk, 'home')), false);
+  } finally { s.done(); }
+});
+
+test('a folder no manifest names (an interrupted run left it) is removed once the new manifest is in place', () => {
+  const s = setup();
+  try {
+    mkdirSync(join(s.disk, 'home/files/leftover-16777216'), { recursive: true });
+    writeFileSync(join(s.disk, 'home/files/leftover-16777216/chunk-0000.bin'), 'x');
+    makeHomeDisk([s.disk, '--base', s.put('base.gguf', baseGguf()), '--base-model', `google/gemma-3-1b-it@${REV}`]);
+    assert.deepEqual(folders(s.disk), [fileDir(read(s.disk).base.sha256, 16 * 1024 * 1024).slice('home/files/'.length)]);
   } finally { s.done(); }
 });

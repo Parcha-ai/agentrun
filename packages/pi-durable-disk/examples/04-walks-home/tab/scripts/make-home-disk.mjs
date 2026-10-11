@@ -1,31 +1,41 @@
 // Lay a base GGUF and its LoRA adapters out on a run's disk the way the tab reads them (src/adapter-manifest.ts, gguf-base-adapters-v1):
-// home/base/chunk-0000.bin ..., home/adapters/<stem>/chunk-0000.bin ..., then home/manifest.json, written LAST (its appearance is the go signal).
+// home/files/<sha256>-<chunk_bytes>/chunk-0000.bin ... for every file, then home/manifest.json, written LAST (its appearance is the go signal).
 //   node scripts/make-home-disk.mjs <outdir> [--base <base.gguf> --base-model <repo>@<40-hex revision> [--base-name <name>] [--base-quant <quant>]]
 //        [--adapter <adapter.gguf> --fields <fields.json>]... [--active <a.gguf>,<b.gguf>]
 // fields.json is what the trainer knows about the adapter: {name: "<stem>.gguf", kind: "skill" | "obsession", topic, scale?: 1, model?: {repo, revision},
 // sampling?: {...}}. Rank, alpha and dtype are read from the adapter's own GGUF header (fields that say otherwise are refused), and so is its architecture,
 // which must be the base's. On a disk that already has a manifest, the base is kept unless --base is given, adapters keep their places (one of the same
-// name is replaced) and new ones are added at the end. The active adapter is the last one added, unless --active says otherwise. The manifest is checked
-// with the tab's own parser before it is written, so the tab accepts whatever this script writes.
+// name is replaced) and new ones are added at the end; an adapter's architecture is checked against the base's own header either way. The active adapter
+// is the last one added, unless --active says otherwise. The manifest is checked with the tab's own parser before anything is written. A new file goes
+// into a folder of its own (its sha256 and chunk size), so the files the published manifest names are never touched: a crash at any point leaves it
+// whole. The manifest is renamed into place last, and then the folders it no longer names are removed.
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { adapterChunkPath, BASE_ADAPTERS_MANIFEST_PATH, baseChunkPath, parseBaseAdapters } from '../src/adapter-manifest.ts';
+import { BASE_ADAPTERS_MANIFEST_PATH, fileChunkPath, fileDir, parseBaseAdapters, sameChunks } from '../src/adapter-manifest.ts';
 
 const CHUNK_BYTES = 16 * 1024 * 1024;
 const GGML_TYPES = { 0: 'f32', 1: 'f16', 8: 'q8_0', 30: 'bf16' };
 /** llama.cpp's general.file_type values for the quantizations a 1B base is shipped in. */
 const FILE_TYPES = { 0: 'F32', 1: 'F16', 7: 'Q8_0', 15: 'Q4_K_M', 17: 'Q5_K_M', 18: 'Q6_K', 32: 'BF16' };
 
-/** The key/value metadata and tensor infos of a GGUF file (v2 or v3), read from its header only. */
-export function readGgufHeader(path) {
-  const fd = openSync(path, 'r');
+/** The key/value metadata and tensor infos of a GGUF file (v2 or v3), read from its header only: one file, or a file's chunk files in order. */
+export function readGgufHeader(paths) {
+  const files = Array.isArray(paths) ? paths : [paths];
+  const path = files[0];
+  let fd = openSync(files[0], 'r'), file = 0;
   let buf = Buffer.alloc(0), pos = 0, at = 0;
   const need = (n) => {
     while (buf.length - pos < n) {
       const more = Buffer.alloc(Math.max(1 << 20, n));
       const got = readSync(fd, more, 0, more.length, at);
-      if (got === 0) throw new Error(`${path}: the GGUF header is cut short`);
+      if (got === 0) {
+        if (file + 1 >= files.length) throw new Error(`${path}: the GGUF header is cut short`);
+        closeSync(fd);
+        fd = openSync(files[++file], 'r');
+        at = 0;
+        continue;
+      }
       at += got;
       buf = Buffer.concat([buf.subarray(pos), more.subarray(0, got)]);
       pos = 0;
@@ -87,24 +97,28 @@ export function describeAdapter(path) {
   return { architecture: kv['general.architecture'], rank: [...ranks][0], alpha: Math.round(alpha * 1000) / 1000, dtype, tensors: tensors.length };
 }
 
-/** The manifest's fields for `src` in chunks at `pathOf(n)`; with `out`, the chunk files are written there too. */
-function lay(src, pathOf, out) {
+/**
+ * The manifest's fields for `src`: its chunks, at the paths its sha256 and the chunk size fix. With `out`, the chunk files are written there too,
+ * into the file's own folder (`expect` is the sha256 the read pass found; a file that changed in between is removed again and refused).
+ */
+function lay(src, out, expect) {
   const size = statSync(src).size, fd = openSync(src, 'r'), whole = createHash('sha256'), chunks = [];
+  const dir = out && join(out, fileDir(expect, CHUNK_BYTES));
   try {
+    if (dir) mkdirSync(dir, { recursive: true });
     for (let n = 0, offset = 0; offset < size; n++, offset += CHUNK_BYTES) {
       const len = Math.min(CHUNK_BYTES, size - offset), part = Buffer.alloc(len);
       readSync(fd, part, 0, len, offset);
       whole.update(part);
-      if (out) {
-        mkdirSync(join(out, pathOf(n), '..'), { recursive: true });
-        writeFileSync(join(out, pathOf(n)), part);
-      }
-      chunks.push({ n, path: pathOf(n), offset, size: len, sha256: createHash('sha256').update(part).digest('hex') });
+      if (dir) writeFileSync(join(out, fileChunkPath(expect, CHUNK_BYTES, n)), part);
+      chunks.push({ n, offset, size: len, sha256: createHash('sha256').update(part).digest('hex') });
     }
   } finally {
     closeSync(fd);
   }
-  return { size, sha256: whole.digest('hex'), chunk_bytes: CHUNK_BYTES, chunks };
+  const sha256 = whole.digest('hex');
+  if (dir && sha256 !== expect) { rmSync(dir, { recursive: true, force: true }); throw new Error(`${src} changed while it was laid out`); }
+  return { size, sha256, chunk_bytes: CHUNK_BYTES, chunks: chunks.map((c) => ({ n: c.n, path: fileChunkPath(sha256, CHUNK_BYTES, c.n), offset: c.offset, size: c.size, sha256: c.sha256 })) };
 }
 
 function parseArgs(argv) {
@@ -127,8 +141,12 @@ export function makeHomeDisk(argv) {
   const o = parseArgs(argv);
   const manifestPath = join(o.out, BASE_ADAPTERS_MANIFEST_PATH);
   const old = existsSync(manifestPath) ? parseBaseAdapters(readFileSync(manifestPath, 'utf8')) : null;
-  let base = old?.base;
-  let architecture = null;
+  const given = o.adapters.map((a) => ({ ...a, fields: JSON.parse(readFileSync(a.fields, 'utf8')), fieldsPath: a.fields }));
+  for (const [i, a] of given.entries()) if (given.findIndex((b) => b.fields.name === a.fields.name) !== i) throw new Error(`${a.fields.name} is given twice: one --adapter per name`);
+  // A file the published manifest already names, cut the same way, is that manifest's entry and its folder: kept, not written again.
+  const published = (entry, prev) => (prev && sameChunks(prev, entry) ? { ...entry, chunks: prev.chunks } : null);
+  const writes = [];
+  let base = old?.base, architecture;
   if (o.base) {
     const m = /^([\w.-]+\/[\w.-]+)@([0-9a-f]{40})$/.exec(o.baseModel ?? '');
     if (!m) throw new Error('--base-model is <repo>@<40-hex revision>: the model the base was converted from, which every adapter must have been trained on');
@@ -136,26 +154,27 @@ export function makeHomeDisk(argv) {
     if (kv['general.type'] === 'adapter') throw new Error(`${o.base} is an adapter, not a base model`);
     architecture = kv['general.architecture'];
     const quant = o.baseQuant ?? FILE_TYPES[kv['general.file_type']] ?? '';
-    base = { name: o.baseName ?? basename(o.base).replace(/\.gguf$/, ''), quant, model: { repo: m[1], revision: m[2] }, ...lay(o.base, baseChunkPath) };
+    const entry = { name: o.baseName ?? basename(o.base).replace(/\.gguf$/, ''), quant, model: { repo: m[1], revision: m[2] }, ...lay(o.base) };
+    base = published(entry, old?.base) ?? entry;
+    if (base === entry) writes.push({ src: o.base, entry });
+  } else if (base) {
+    architecture = readGgufHeader(base.chunks.map((c) => join(o.out, c.path))).kv['general.architecture']; // the published base, read from its own chunks
   }
   if (!base) throw new Error(`${manifestPath} does not exist yet: give --base and --base-model`);
   const adapters = [...(old?.adapters ?? [])];
   const added = [];
-  // Nothing is written until every file is read and the manifest passes the tab's rules; a file already on the disk with the same sha256 is left as it is.
-  const writes = o.base ? [{ src: o.base, dir: 'home/base', pathOf: baseChunkPath, entry: base, same: old?.base.sha256 === base.sha256 && old?.base.chunk_bytes === base.chunk_bytes }] : [];
-  for (const a of o.adapters) {
-    const fields = JSON.parse(readFileSync(a.fields, 'utf8'));
+  for (const a of given) {
     const got = describeAdapter(a.file);
-    if (architecture && got.architecture !== architecture) throw new Error(`${a.file} is a ${got.architecture} adapter, the base is ${architecture}`);
-    for (const k of ['rank', 'alpha', 'dtype']) if (fields[k] !== undefined && fields[k] !== got[k]) throw new Error(`${a.fields} says ${k} ${fields[k]}, ${a.file} says ${got[k]}`);
-    const stem = String(fields.name ?? '').replace(/\.gguf$/, '');
-    const entry = {
-      name: fields.name, kind: fields.kind, topic: fields.topic, model: fields.model ?? base.model, rank: got.rank, alpha: got.alpha, scale: fields.scale ?? 1, dtype: got.dtype,
-      ...(fields.sampling ? { sampling: fields.sampling } : {}), ...(fields.verified_on ? { verified_on: fields.verified_on } : {}),
-      ...lay(a.file, (n) => adapterChunkPath(stem, n)),
+    if (got.architecture !== architecture) throw new Error(`${a.file} is a ${got.architecture} adapter, the base is ${architecture}`);
+    for (const k of ['rank', 'alpha', 'dtype']) if (a.fields[k] !== undefined && a.fields[k] !== got[k]) throw new Error(`${a.fieldsPath} says ${k} ${a.fields[k]}, ${a.file} says ${got[k]}`);
+    const fresh = {
+      name: a.fields.name, kind: a.fields.kind, topic: a.fields.topic, model: a.fields.model ?? base.model, rank: got.rank, alpha: got.alpha, scale: a.fields.scale ?? 1, dtype: got.dtype,
+      ...(a.fields.sampling ? { sampling: a.fields.sampling } : {}), ...(a.fields.verified_on ? { verified_on: a.fields.verified_on } : {}),
+      ...lay(a.file),
     };
-    writes.push({ src: a.file, dir: join('home/adapters', stem), pathOf: (n) => adapterChunkPath(stem, n), entry, same: old?.adapters.find((x) => x.name === entry.name)?.sha256 === entry.sha256 });
-    const at = adapters.findIndex((x) => x.name === entry.name);
+    const at = adapters.findIndex((x) => x.name === fresh.name);
+    const entry = published(fresh, old?.adapters.find((x) => x.sha256 === fresh.sha256)) ?? fresh;
+    if (entry === fresh) writes.push({ src: a.file, entry });
     if (at >= 0) adapters[at] = entry; else adapters.push(entry);
     added.push(entry.name);
   }
@@ -163,14 +182,20 @@ export function makeHomeDisk(argv) {
   const manifest = { format: 'gguf-base-adapters-v1', base, adapters, ...(active ? { active } : {}) };
   const text = JSON.stringify(manifest);
   parseBaseAdapters(text); // the tab's own rules: what it would refuse is not written
+  const named = (m) => new Set([m.base, ...m.adapters].map((f) => fileDir(f.sha256, f.chunk_bytes)));
+  const keep = old ? named(old) : new Set();
   for (const w of writes) {
-    if (w.same) continue;
-    rmSync(join(o.out, w.dir), { recursive: true, force: true });
-    if (lay(w.src, w.pathOf, o.out).sha256 !== w.entry.sha256) throw new Error(`${w.src} changed while it was laid out`);
+    const dir = fileDir(w.entry.sha256, w.entry.chunk_bytes);
+    if (keep.has(dir)) continue; // the published manifest names this very file, cut this very way: its chunks are already these
+    rmSync(join(o.out, dir), { recursive: true, force: true }); // a folder no manifest names: what an interrupted run left
+    lay(w.src, o.out, w.entry.sha256);
   }
   mkdirSync(join(manifestPath, '..'), { recursive: true });
   writeFileSync(`${manifestPath}.tmp`, text);
   renameSync(`${manifestPath}.tmp`, manifestPath);
+  // only now: the folders the manifest no longer names
+  const now = named(manifest), files = join(o.out, 'home/files');
+  for (const d of existsSync(files) ? readdirSync(files) : []) if (!now.has(`home/files/${d}`)) rmSync(join(files, d), { recursive: true, force: true });
   return manifest;
 }
 
