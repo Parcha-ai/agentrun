@@ -16,7 +16,8 @@ import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore 
 import { applyChanges, forgetWorkspace, loadBaseline, loadWorkspace, saveBaseline, saveWorkspace } from "./workspace-store.ts";
 import { baselineOf, CheckinError, diffWorkspace, postCheckin, type Snapshot } from "./checkin.ts";
 import { scriptedCloud, type ScriptedTurn, type SeenRequest } from "./scripted-cloud.ts";
-import { BRAIN_CHECKIN } from "./brain-kinds.ts";
+import { BRAIN_CHECKIN, BRAIN_DECISION } from "./brain-kinds.ts";
+import { brainEvent, brainRouter, type JudgeRunner } from "../brain-router.ts";
 import { callGrammar, renderPrompt, TOOLS } from "./tool-format.ts";
 import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckinPayload, forgetCheckout, loadCheckinPayload, readCheckout, saveCheckinPayload, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
 import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
@@ -60,6 +61,8 @@ const state = {
   /** Every check-in this page made and saw complete. */
   checkins: [] as CheckinEvent[],
   /** A scripted stand-in for the cloud model (a check's, installed by `demo.stubCloud`), and what its requests carried. */
+  /** Every routing decision this page made (brain-router.ts), as the stage event for the decision card. */
+  decisions: [] as ReturnType<typeof brainEvent>[],
   cloudScript: undefined as ScriptedTurn[] | undefined,
   cloudSeen: [] as SeenRequest[],
   mode: "connecting" as "connecting" | "booting" | "writer" | "viewer" | "lost" | "offline",
@@ -484,12 +487,12 @@ async function swapWhenHome(runtime: TabRuntime): Promise<void> {
  * Load the trained model and make it the agent's brain (brain.ts), then follow its conversation. `adopt`: a host that already holds the loaded model (taking the
  * run offline keeps it). Offline, the manifest and the chunks are read from the service worker's cache through the same `readWork`.
  */
-async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void> {
+async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false): Promise<void> {
   const params = new URLSearchParams(location.search);
   const threads = Number(params.get("threads")) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
   const history = params.get("history") === "none" ? "none" : "last";
   const brain = new Brain({
-    harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
+    ...(route ? { route: true } : {}), harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
     ...(params.get("configure") === "1" || golive ? { decoding: { history: params.get("toolhistory") === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
@@ -806,7 +809,9 @@ async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array;
     await attached.root.submit({ type: "write", requestId: `checkin:${done.head}`, entry: { kind: BRAIN_CHECKIN, data: { head: done.head, files: done.files, changes: payload.changes.length, ms } } }, ctx).catch(() => undefined);
     state.checkingIn = undefined;
     state.checkins.push(event);
-    await brain?.dispose(); // the small model's workers go: online, the cloud model answers
+    // Online the cloud model answers by default; with ?golive=1 the small model stays loaded for the router, which decides per message who answers (the conversation is configured only when that changes).
+    if (brain && golive) await startBrain(attached, brain.host, true);
+    else await brain?.dispose();
     void forgetWorkspace(run).catch(() => undefined);
     void deleteStore(run).catch(() => undefined);
     announce("checkin", { phase: "done", ...event });
@@ -1114,10 +1119,43 @@ function send(): void {
     return;
   }
   input.value = "";
-  void target()!.submit({ type: "input", content: text, requestId: `ui-${crypto.randomUUID()}` }, ctx).catch((error: Error) => {
+  sendLine = sendLine.then(() => decideAndSubmit(text)).catch((error: Error) => {
     state.banner = `not sent: ${error.message}`;
     render();
   });
+}
+
+/** One message at a time through the router, in the order they were typed. */
+let sendLine: Promise<void> = Promise.resolve();
+
+/** The brain router's question goes to the server, which holds Jev's key (brainJudgeRoute); a server that cannot be asked makes the router answer the cloud. */
+const remoteJudge: JudgeRunner = async (params) => {
+  const r = await fetch(`/api/runs/${encodeURIComponent(run)}/brain-judge`, { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ label: params.label, state: params.state, questions: params.questions }), ...(params.signal ? { signal: params.signal } : {}) });
+  if (!r.ok) throw new Error(`the server answered ${r.status}`);
+  return (await r.json()) as Awaited<ReturnType<JudgeRunner>>;
+};
+const router = brainRouter({ runJudge: remoteJudge, ...(Number(new URLSearchParams(location.search).get("routems")) > 0 ? { timeoutMs: Number(new URLSearchParams(location.search).get("routems")) } : {}) });
+
+/**
+ * A message from this page. With ?golive=1 it first goes through the brain router: offline, the rule (the model in this tab, no call); online with the trained model loaded, Jev on the server;
+ * online without it, the cloud. The brain it picks becomes the conversation's model (`Brain.use`, only when it changes), the decision is written in the conversation and told to the stage
+ * (`walkshome:brain`), and then the message is submitted to the one conversation.
+ */
+async function decideAndSubmit(text: string): Promise<void> {
+  const runtime = state.runtime, conversation = target();
+  if (!runtime || !conversation) return;
+  const requestId = `ui-${crypto.randomUUID()}`;
+  if (golive && (state.mode === "writer" || state.mode === "offline")) {
+    const brain = state.brain;
+    const ready = brain !== undefined && brain.modelId !== undefined && brain.host.state().phase === "answered";
+    const decision = await router.decide(text, { online: state.mode === "writer" && state.net.online, localModel: ready ? { id: brain!.modelId! } : null });
+    if (ready) await brain!.use(decision.brain, cloudAgent(state.agentModel));
+    const event = brainEvent(decision, { local: "the model in this tab", cloud: "the cloud model" });
+    state.decisions.push(event);
+    announce("brain", event);
+    await runtime.root.submit({ type: "write", requestId: `decision:${requestId}`, entry: { kind: BRAIN_DECISION, data: event } }, ctx).catch(() => undefined);
+  }
+  await conversation.submit({ type: "input", content: text, requestId }, ctx);
 }
 
 $("send").addEventListener("click", send);
@@ -1255,6 +1293,9 @@ void boot();
     const a = await c.agent(ctx);
     return { model: a.model ? `${a.model.provider}/${a.model.modelId}` : null, tools: a.tools.map((t) => t.name), instructions: (a.instructions ?? "").slice(0, 120) };
   },
+  /** The routing decisions so far (stage events), and how many times the conversation was configured to the other brain since the router's brain was started. */
+  decisions: () => state.decisions,
+  brainSwitches: () => state.brain?.switches ?? null,
   /** A scripted stand-in for the cloud model (a check with no cloud): one turn per request, text or a tool call. Kept across check-ins, and what each request carried is `cloudSeen`. */
   stubCloud: (script: ScriptedTurn[]) => { state.cloudScript = script; state.cloudSeen.length = 0; installCloud(state.runtime); return true; },
   cloudSeen: () => state.cloudSeen,

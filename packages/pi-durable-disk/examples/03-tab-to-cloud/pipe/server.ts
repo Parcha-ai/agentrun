@@ -14,6 +14,7 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
+import type { JudgeRunner } from "../brain-router.ts";
 import { CHECKIN_RECEIPT, CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckinReceipt, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
@@ -116,6 +117,11 @@ export interface DemoServerOptions {
    * now. Absent, a message goes to wherever the run is, and only the user or the agent's switch_environment moves it.
    */
   readonly placer?: Placer;
+  /**
+   * The typed-question client the page's brain router asks (POST /api/runs/<id>/brain-judge; the key stays here, never in the page). Only the router's one question is forwarded
+   * (see `brainJudgeRoute`). Absent, the route is 404 and the page's router falls back to the cloud.
+   */
+  readonly brainJudge?: JudgeRunner;
   /** How long a remote host may take to answer a move before the move fails (default 240 s: above Modal's own 180 s limit for placing a GPU). */
   readonly remoteStartMs?: number;
   /** Prefixes of work/ no writer is sent on attach (see RunPipeOptions.noRestore). The caller names them; nothing here knows what they hold. */
@@ -1484,6 +1490,44 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   /**
+   * `POST /api/runs/<id>/brain-judge`: body `{label: "brain", state: {message}, questions: {who: {type: "choice", instructions, criteria: {local, cloud}}}}`, the run's secret as the bearer token.
+   * The page's brain router (brain-router.ts) asks who should answer a message; this runs that one question on the server's client and answers `{answers, model}`. Anything else is refused,
+   * so the route is not a way to ask the client other things. The message is never logged.
+   */
+  async function brainJudgeRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!options.brainJudge || !state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > 64 * 1024) return json(res, 413, { error: "more than 64 KiB" });
+      chunks.push(chunk);
+    }
+    let body: { label?: unknown; state?: { message?: unknown }; questions?: Record<string, { type?: unknown; instructions?: unknown; criteria?: Record<string, unknown> }> };
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
+    } catch {
+      return json(res, 400, { error: "the body is not JSON" });
+    }
+    const q = body?.questions?.who;
+    const criteria = q?.criteria;
+    const message = body?.state?.message;
+    if (body?.label !== "brain" || typeof message !== "string" || message.length === 0 || message.length > 8000 || Object.keys(body.questions ?? {}).join() !== "who" || q?.type !== "choice" || typeof q.instructions !== "string" || q.instructions.length > 200 || !criteria || Object.keys(criteria).sort().join() !== "cloud,local" || Object.values(criteria).some((c) => typeof c !== "string" || c.length > 400)) {
+      return json(res, 400, { error: "only the brain router's question is answered" });
+    }
+    const started = Date.now();
+    try {
+      const result = await options.brainJudge({ label: "brain", kind: "judge", state: { message }, questions: { who: { type: "choice", instructions: q.instructions, criteria: criteria as Record<string, string> } } });
+      log("brain.judge", { run: runId, ms: Date.now() - started, message_chars: message.length, ...(result.model ? { model: result.model } : {}) });
+      json(res, 200, result);
+    } catch (error) {
+      log("brain.judge.failed", { run: runId, ms: Date.now() - started, error: (error as Error).message });
+      json(res, 502, { error: (error as Error).message });
+    }
+  }
+
+  /**
    * `POST /api/runs/<id>/judge`: body `{prompt, answer, topic?}`; answers the judge's verdict (`show` or `refuse`). A judge that
    * times out or fails is a `refuse` too, so the page never shows an answer nobody judged. The text is never logged.
    * The route only answers; holding an answer back until its verdict is `show` is the page's part.
@@ -1535,6 +1579,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const work = /^\/api\/runs\/([^/]+)\/work\/(.+)$/.exec(path);
     const attach = /^\/api\/runs\/([^/]+)\/attach$/.exec(path);
     const judge = /^\/api\/runs\/([^/]+)\/judge$/.exec(path);
+    const brainJudge = /^\/api\/runs\/([^/]+)\/brain-judge$/.exec(path);
     const storeCopy = /^\/api\/runs\/([^/]+)\/store$/.exec(path);
     const checkout = /^\/api\/runs\/([^/]+)\/checkout$/.exec(path);
     const checkin = /^\/api\/runs\/([^/]+)\/checkin$/.exec(path);
@@ -1548,6 +1593,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     else if (req.method === "POST" && desktopTicketFor) void desktopTicket(req, res, decodeURIComponent(desktopTicketFor[1]!)).catch(failed);
     else if (work && (req.method === "GET" || req.method === "PUT")) void workRoute(req, res, decodeURIComponent(work[1]!), decodeURIComponent(work[2]!)).catch(failed);
     else if (attach && req.method === "POST") void attachRoute(req, res, decodeURIComponent(attach[1]!)).catch(failed);
+    else if (brainJudge && req.method === "POST") void brainJudgeRoute(req, res, decodeURIComponent(brainJudge[1]!)).catch(failed);
     else if (judge && req.method === "POST") void judgeRoute(req, res, decodeURIComponent(judge[1]!)).catch(failed);
     else if (storeCopy && req.method === "GET") void storeRoute(req, res, decodeURIComponent(storeCopy[1]!)).catch(failed);
     else if (checkout && req.method === "POST") void checkoutRoute(req, res, decodeURIComponent(checkout[1]!)).catch(failed);

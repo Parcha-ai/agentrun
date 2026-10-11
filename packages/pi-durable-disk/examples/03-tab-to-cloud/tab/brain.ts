@@ -10,7 +10,7 @@
 //   new conversation:    `brain.swap`    (the same data) as its first entry
 // Portable: no Node API.
 import type { Context } from "@earendil-works/chord";
-import type { Conversation, EntryRecord, Harness, ToolRegistration } from "@earendil-works/pi-durable";
+import type { AgentChange, Conversation, EntryRecord, Harness, ToolRegistration } from "@earendil-works/pi-durable";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { ModelHost, type HistoryMode, type Llm } from "../../04-walks-home/tab/src/modelhost.ts";
 import { parseManifest } from "../../04-walks-home/tab/src/model.ts";
@@ -32,6 +32,11 @@ export interface BrainDeps {
    * never the trip (tool-window.ts).
    */
   mode?: "fresh" | "configure";
+  /**
+   * `configure`, routed: the model is loaded and registered as a provider, but the conversation is NOT configured onto it: the page decides per message which brain answers
+   * (brain-router.ts) and calls `use` to configure the conversation onto the chosen one, only when it changes.
+   */
+  route?: boolean;
   /** `configure`: the tools the model gets (pi's registrations: read, write, edit, bash). */
   tools?: readonly ToolRegistration[];
   /** `configure`: the instructions the conversation is configured with. Default TOOL_PROMPT. */
@@ -87,6 +92,10 @@ export async function findSwap(root: Conversation, context: Context): Promise<{ 
 export class Brain {
   readonly host: ModelHost;
   conversation: Conversation | undefined;
+  /** The provider model id of the loaded model, once it is registered. */
+  modelId: string | undefined;
+  /** How many times the conversation was configured to the other brain (`use`), for checks. */
+  switches = 0;
   private starting: Promise<Conversation | undefined> | undefined;
 
   private readonly d: BrainDeps;
@@ -122,6 +131,11 @@ export class Brain {
     if (s.phase !== "answered") return this.failed(s.error ?? "the model did not answer its self-check", manifest.sha256);
     const modelId = manifest.sha256.slice(0, 12);
     models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
+    this.modelId = modelId;
+    if (this.d.mode === "configure" && this.d.route) {
+      this.conversation = root;
+      return root;
+    }
     if (this.d.mode === "configure") return this.configured(modelId, common, s);
     const swap = await findSwap(root, context);
     let conversation = swap && swap.data.sha256 === manifest.sha256 ? await harness.conversation(swap.data.conversation as never, context) : undefined;
@@ -150,6 +164,28 @@ export class Brain {
     await root.submit({ type: "write", requestId: `brain-swap:${common.sha256}`, entry: { kind: BRAIN_SWAP, data: data as never } }, context);
     this.conversation = root;
     return root;
+  }
+
+  /**
+   * Routed: which brain the conversation runs on now (its agent's model is this model: `tab-local`, else `cloud`).
+   */
+  async current(): Promise<"tab-local" | "cloud"> {
+    const agent = await this.d.root.agent(this.d.context);
+    return agent.model?.provider === BRAIN_PROVIDER && agent.model.modelId === this.modelId ? "tab-local" : "cloud";
+  }
+
+  /**
+   * Routed: run the conversation on `brain`. The conversation is configured only when the brain changes (the model's prompt cache survives a run of local turns); `cloud` is the agent
+   * the conversation had before (the whole registry, the cloud model). Resolves whether it changed.
+   */
+  async use(brain: "tab-local" | "cloud", cloud: AgentChange): Promise<boolean> {
+    if (this.modelId === undefined) throw new Error("the trained model is not loaded");
+    if ((await this.current()) === brain) return false;
+    const { root, context } = this.d;
+    if (brain === "tab-local") await root.configure({ model: { provider: BRAIN_PROVIDER, modelId: this.modelId }, thinkingLevel: "off", tools: this.d.tools ?? [], instructions: this.d.instructions ?? TOOL_PROMPT }, context);
+    else await root.configure(cloud, context);
+    this.switches++;
+    return true;
   }
 
   /** The page is done with the model (the run left this tab): release its workers. */

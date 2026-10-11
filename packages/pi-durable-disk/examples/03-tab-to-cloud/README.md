@@ -263,3 +263,15 @@ The agent takes its own run off the network and brings it back, in one conversat
 - **Failure.** A check-in the server did not take reopens this browser's copy as it was, the model still loaded, and says why. `NOT_CHECKED_OUT` (the reply to an earlier attempt may have been lost) keeps the copy and says so; nothing is deleted before the server has the store.
 
 Checks: `MODEL_DISK=<dir> node scripts/golive-check.ts` (real Chrome, a local server, the cloud model scripted in the page by `demo.stubCloud`, the 1B real). Tests: `test/checkin.test.ts` (happy path; diverged, touching nothing; a browser that reconfigured and ran a turn; a crash mid check-in with the mark still there; a server restart after), `test/checkin-diff.test.ts`, `test/host-tools.test.ts`.
+
+### Who answers each message (walks-home, hill 5, with `?golive=1`)
+
+Each message typed in the page goes through the brain router (`brain-router.ts`) before it is submitted, one at a time in the order typed:
+
+- **Offline**: a rule, the model in this tab, no call. **Online with no trained model loaded**: a rule, the cloud. **Online with it**: one typed question to TypeSafe Jev on the server (`POST /api/runs/<id>/brain-judge`, the run's secret as the bearer; the key never reaches the page; only the router's own question is forwarded, anything else is 400). The tab answers only when Jev chose it at 70% or more; a server that cannot be asked, or does not answer in 1 s (`?routems=` to change it), makes the cloud answer, with the reason saying so. `serve.ts --brain-judge jev|scripted`.
+- The brain the router picks becomes the conversation's model (`Brain.use`, with `route: true`): `tab-local` with read, write and bash, or the cloud model with the whole registry (`cloudAgent`). The conversation is configured only when the brain changes, so a run of local turns keeps the 1B's prompt cache. One conversation throughout.
+- After `go_online` the tab keeps the trained model loaded (a new `Brain` adopts the host, registers the provider and does not touch the conversation), so the next messages are routed.
+- Each decision is a stage event for the decision card: the DOM event `walkshome:brain` and a message to the parent (`event: "brain.decision"`, `brain`, `answering`, `reason`, `confidence`, `decidedBy`, `ms`, `probabilities`), and a `brain.decision` entry in the transcript, written before the message, that the chat folds as `{kind: "brain", stage: "decision"}` ("the model in this tab answers this one: a simple task the model in this tab handles (Jev 99%).").
+
+Check: `ROUTER=jev CLOUD=real MODEL_DISK=<dir> with-typesafe -- node scripts/route-check.ts` (real Chrome; `ROUTER=scripted CLOUD=stub` spends nothing). Tests: `test/brain-route.test.ts` (over a real Harness: loaded but not configured, one configure for a run of local turns, back to the cloud with the whole registry), `test/brain-judge-route.test.ts`.
+

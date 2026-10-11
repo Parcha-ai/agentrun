@@ -3,6 +3,7 @@
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--judge-model ID [--judge-url URL] [--judge-key-env NAME]]
+//                 [--brain-judge jev|scripted]   the question the page's brain router asks (POST /api/runs/<id>/brain-judge); jev needs TYPESAFE_API_KEY
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
 //                 [--no-restore PREFIX]...   work/ prefixes no writer is sent on attach (a large result read on demand through the disk proxy)
@@ -32,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { openClaimDir } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "./pipe/control.ts";
+import type { JudgeRunner } from "./brain-router.ts";
 import type { Placer } from "./placement.ts";
 import { closeServerAndCloud } from "./shutdown.ts";
 import { createDemoServer, type CloudHost, type CloudModuleOptions } from "./pipe/server.ts";
@@ -47,6 +49,7 @@ const { values } = parseArgs({
     model: { type: "string", default: process.env.DEMO_MODEL },
     "model-url": { type: "string", default: process.env.DEMO_MODEL_URL },
     "model-key-env": { type: "string" },
+    "brain-judge": { type: "string" },
     "judge-model": { type: "string" },
     "judge-url": { type: "string" },
     "judge-key-env": { type: "string" },
@@ -100,6 +103,24 @@ if (values["judge-key-env"] && !judgeKey) {
   console.error(`--judge-key-env ${values["judge-key-env"]}: that variable is not set`);
   process.exit(2);
 }
+// The question the page's brain router asks (POST /api/runs/<id>/brain-judge): `jev` is TypeSafe Jev (TYPESAFE_API_KEY in the environment: run under the credential wrapper), `scripted` a stand-in that
+// answers from keywords (for checks that must not spend).
+if (values["brain-judge"] !== undefined && values["brain-judge"] !== "jev" && values["brain-judge"] !== "scripted") {
+  console.error("--brain-judge: jev or scripted");
+  process.exit(2);
+}
+if (values["brain-judge"] === "jev" && !process.env.TYPESAFE_API_KEY) {
+  console.error("--brain-judge jev needs TYPESAFE_API_KEY in the environment");
+  process.exit(2);
+}
+let brainJudge: JudgeRunner | undefined;
+if (values["brain-judge"] === "jev") brainJudge = (await import("@parcha/agentrun-jev")).createJevRunner({ timeoutMs: 10_000, maxAttempts: 1 }) as unknown as JudgeRunner;
+else if (values["brain-judge"] === "scripted") brainJudge = async (params) => {
+  const message = String((params.state as { message?: string }).message ?? "");
+  const cloud = /train|gpu|internet|web|http|install|git |obsess|golden gate|big model/i.test(message);
+  const probabilities = { local: cloud ? 0.05 : 0.95, cloud: cloud ? 0.95 : 0.05 };
+  return { answers: { who: { type: "choice", choice: cloud ? "cloud" : "local", probabilities } }, model: "scripted" };
+};
 const judge = values["judge-model"]
   ? { baseUrl: values["judge-url"] ?? values["model-url"]!, model: values["judge-model"], ...(judgeKey ? { apiKey: judgeKey } : {}) }
   : undefined;
@@ -185,6 +206,7 @@ const server = createDemoServer({
   ...(values["no-restore"]?.length ? { noRestore: values["no-restore"] } : {}),
   ...(adminToken ? { adminToken } : {}),
   ...(judge ? { judge } : {}),
+  ...(brainJudge ? { brainJudge } : {}),
   ...(values.local ? { acquire: async (opts) => localClaim(values.local!, opts), claimDir: (dir: string) => openClaimDir(dir, { fstype: null }) } : {}),
 });
 const port = await server.listen(Number(values.port), values.host);

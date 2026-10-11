@@ -5,3 +5,5 @@ export const BRAIN_FAILED = "brain.failed";
 export const BRAIN_MOVE = "brain.move";
 /** The run came home from a browser: written once per check-in, in the root conversation, after the agent runs on the server's copy again. */
 export const BRAIN_CHECKIN = "brain.checkin";
+/** One routing decision (brain-router.ts): who answers the next message and why. Written in the root conversation before the message, for the decision card. */
+export const BRAIN_DECISION = "brain.decision";
