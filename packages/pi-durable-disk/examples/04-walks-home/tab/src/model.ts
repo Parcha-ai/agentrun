@@ -40,6 +40,8 @@ export function parseManifest(text: string): Manifest {
   if (typeof m.sha256 !== 'string' || !HEX.test(m.sha256)) throw new ModelError('the manifest sha256 is not 64 lowercase hex digits');
   if (!isInt(m.chunk_bytes) || m.chunk_bytes < 1 || m.chunk_bytes > MAX_CHUNK_BYTES) throw new ModelError(`chunk_bytes ${m.chunk_bytes} is outside 1..${MAX_CHUNK_BYTES}`);
   if (!Array.isArray(m.chunks) || m.chunks.length === 0) throw new ModelError('the manifest lists no chunks');
+  const count = Math.ceil(m.size / m.chunk_bytes); // exactly this many: an extra empty chunk would be a path the tab asks the disk for
+  if (m.chunks.length !== count) throw new ModelError(`${m.chunks.length} chunks listed, but size ${m.size} in chunks of ${m.chunk_bytes} is ${count}`);
   let total = 0;
   m.chunks.forEach((c: any, i: number) => {
     if (!c || c.n !== i) throw new ModelError(`chunk ${i}: n is ${c?.n}, expected ${i}`);
