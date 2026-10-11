@@ -237,11 +237,11 @@ export async function start(dir: string, name: string, timeoutMs = 30_000, stage
 /** SIGTERM the launcher (it drains the instance); past the timeout SIGKILL the instance's group and the launcher. */
 /**
  * The programs that keep `mountpoint` busy: a working directory, root or open file under it, owned by anything but the
- * instance, its descendants, the caller and archil's own daemon. A program the agent started detached (a server, a browser)
+ * instance, its descendants, the caller, the launcher (the instance's parent, `options.launcher`) and archil's own daemon. A program the agent started detached (a server, a browser)
  * has left the instance's tree, so the instance cannot end it when it drains, and `archil unmount` then leaves the delegation
  * held. Linux only (/proc); `proc` is the test seam.
  */
-export function mountBlockers(mountpoint: string, instancePid: number | null, options: { proc?: string } = {}): number[] {
+export function mountBlockers(mountpoint: string, instancePid: number | null, options: { proc?: string; launcher?: number | null } = {}): number[] {
   const proc = options.proc ?? "/proc";
   const parents = new Map<number, number>();
   for (const entry of readdirSync(proc)) {
@@ -282,7 +282,8 @@ export function mountBlockers(mountpoint: string, instancePid: number | null, op
       return false;
     }
   };
-  return [...parents.keys()].filter((pid) => !inTree(pid) && !archilDaemon(pid) && holds(pid));
+  // The launcher is the instance's parent, so `inTree` (which walks up from a pid) does not spare it; it is what ends the instance and is not a blocker.
+  return [...parents.keys()].filter((pid) => pid !== options.launcher && !inTree(pid) && !archilDaemon(pid) && holds(pid));
 }
 
 export async function stop(dir: string, name: string, timeoutMs: number, options: { reapDetached?: boolean } = {}): Promise<LaunchStatus> {
@@ -305,7 +306,7 @@ export async function stop(dir: string, name: string, timeoutMs: number, options
       // no spec: nothing to reap
     }
     if (mountpoint) {
-      for (const pid of mountBlockers(mountpoint, s.state!.instance)) {
+      for (const pid of mountBlockers(mountpoint, s.state!.instance, { launcher: s.state!.launcher })) {
         try {
           process.kill(pid, "SIGKILL");
         } catch {

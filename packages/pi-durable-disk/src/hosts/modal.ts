@@ -16,7 +16,7 @@
 // The Modal SDK is a structural dependency (`ModalSdk`): the package never imports it, the caller passes its `ModalClient`
 // (Node 22 or later). The mount token never leaves the staged-file path of `daytonaHost`; the Modal API key stays with the
 // caller's client.
-import { DaytonaApiError, daytonaHost, type CreateSandboxBody, type DaytonaClient, type DaytonaHostOptions, type ExecResult, type SandboxInfo } from "./daytona.ts";
+import { DaytonaApiError, DaytonaHostError, daytonaHost, type CreateSandboxBody, type DaytonaClient, type DaytonaHostOptions, type ExecResult, type SandboxInfo } from "./daytona.ts";
 import type { HostDriver } from "../supervise.ts";
 
 export const MODAL_MAX_TIMEOUT_MS = 24 * 3_600_000;
@@ -105,13 +105,22 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
   // not tagged yet; the retry's lookup of that name finishes the tagging, so the driver adopts it instead of failing on a 409.
   const intended = new Map<string, Record<string, string>>();
   const tagged = new Map<string, Record<string, string>>();
-  let app: Promise<{ appId: string }> | undefined;
-  let image: Promise<unknown> | undefined;
-  const theApp = () => (app ??= sdk.apps.fromName(options.appName, { createIfMissing: true }));
-  const theImage = () =>
-    (image ??= Promise.resolve(
-      typeof options.image === "function" ? options.image() : options.image.startsWith("im-") ? sdk.images.fromId(options.image) : sdk.images.fromRegistry(options.image),
-    ));
+  // Looked up once and shared; a lookup that fails is forgotten, so a later start tries again (a Modal hiccup must not poison the client).
+  const once = <T>(make: () => Promise<T>): (() => Promise<T>) => {
+    let cached: Promise<T> | undefined;
+    return () => {
+      if (!cached) {
+        const mine = make();
+        cached = mine;
+        mine.catch(() => {
+          if (cached === mine) cached = undefined;
+        });
+      }
+      return cached;
+    };
+  };
+  const theApp = once(async () => sdk.apps.fromName(options.appName, { createIfMissing: true }));
+  const theImage = once(async () => (typeof options.image === "function" ? options.image() : options.image.startsWith("im-") ? sdk.images.fromId(options.image) : sdk.images.fromRegistry(options.image)));
 
   const info = (box: ModalSandbox, labels: Record<string, string>, state: string, name?: string): SandboxInfo => ({
     id: box.sandboxId,
@@ -232,6 +241,7 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
         const app = await theApp();
         for await (const box of sdk.sandboxes.list({ appId: app.appId, tags: labels })) {
           handles.set(box.sandboxId, box);
+          // The SDK's list yields running sandboxes only (a terminated one is not listed), so each is reported started.
           out.push(info(box, { ...labels, ...(await box.getTags()) }, "started"));
         }
       } catch (err) {
@@ -293,6 +303,8 @@ export interface ModalHostOptions
  */
 export function modalHost(opts: ModalHostOptions): HostDriver & { readonly fleet: string; readonly mountRoot: string } {
   const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create, ttlMinutes, ...rest } = opts;
+  // gvisor cannot mount the disk safely (measured: none of ten acknowledged writes survived), so it only runs an agent started another way.
+  if (runtime === "gvisor" && !rest.command) throw new DaytonaHostError("INVALID_ARGUMENT", "runtime gvisor cannot mount the disk: pass `command` to run the agent some other way (through a pipe), or use the vm runtime");
   const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create });
   return daytonaHost({
     ...rest,

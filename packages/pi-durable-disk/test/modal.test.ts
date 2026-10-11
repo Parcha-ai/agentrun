@@ -401,6 +401,18 @@ test("mountBlockers: a detached program with its working directory on the mount 
   }
 });
 
+test("mountBlockers: the launcher, the instance's parent, is not a blocker even when it holds the mount", async () => {
+  const mount = scratch("pda-mbl-");
+  const holder = detachedIn(mount);
+  try {
+    await waitFor("the holder to exist", () => isAlive(holder));
+    assert.ok(mountBlockers(mount, null).includes(holder), "it blocks when nothing names it the launcher");
+    assert.ok(!mountBlockers(mount, null, { launcher: holder }).includes(holder), "named the launcher, it is spared");
+  } finally {
+    try { process.kill(holder, "SIGKILL"); } catch {}
+  }
+});
+
 test("a planned stop ends what the agent left on the mount before the instance drains, and nothing else", async () => {
   const d = scratch("pda-md-");
   const mnt = join(d, "mnt");
@@ -437,4 +449,27 @@ test("a driver that does not ask for it leaves detached programs alone (reapOnSt
   } finally {
     try { process.kill(holder, "SIGKILL"); } catch {}
   }
+});
+
+test("modalHost refuses the gvisor runtime without a command, as INVALID_ARGUMENT, and accepts it with one", () => {
+  const f = fakeModal("/");
+  const base = { sdk: f.sdk, appName: "a", image: "im-1", fleet: "t", mountRoot: "/mnt/x", user: "pda", group: "pda" };
+  assert.throws(() => modalHost({ ...base, runtime: "gvisor" } as never), (err: unknown) => (err as { code?: string }).code === "INVALID_ARGUMENT" && /gvisor/.test((err as Error).message));
+  assert.doesNotThrow(() => modalHost({ ...base, runtime: "gvisor", command: ["node", "agent.js"] } as never));
+  assert.doesNotThrow(() => modalHost({ ...base, runtime: "vm" } as never));
+});
+
+test("create: a lookup that fails (the app, an image) is tried again by the next create, not remembered", async () => {
+  const f = fakeModal("/");
+  const body = (name: string): CreateSandboxBody => ({ name, snapshot: "x", labels: { [LABEL_FLEET]: "t" }, autoStopInterval: 0, autoDeleteInterval: 0 });
+  const fails = { app: 1, image: 1 };
+  const sdk: ModalSdk = {
+    ...f.sdk,
+    apps: { fromName: async (name, params) => (fails.app-- > 0 ? Promise.reject(new Error("modal is having a moment")) : f.sdk.apps.fromName(name, params)) },
+    images: { ...f.sdk.images, fromId: async (id) => (fails.image-- > 0 ? Promise.reject(new Error("modal is having a moment")) : f.sdk.images.fromId(id)) },
+  };
+  const client = modalSandboxes(sdk, { appName: "a", image: "im-1" });
+  for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(client.create(body(`try-${attempt}`)), /moment/);
+  await client.create(body("recovered"));
+  assert.equal(f.creates.length, 1, "the create went through once Modal recovered");
 });
