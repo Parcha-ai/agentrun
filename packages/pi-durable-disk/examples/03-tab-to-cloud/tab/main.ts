@@ -512,6 +512,7 @@ async function prefetchBase(text: string): Promise<boolean> {
     try {
       const h = await comeHome(text, { readChunk: readWork, sha256: sha256hex, store: modelFiles, now: () => performance.now() });
       state.homecomings.push({ prefetch: true, plan: h.fetched.plan, fetched_bytes: h.fetched.bytes, fetch_ms: Math.round(h.fetched.ms), name: h.name });
+      announce("homecoming", { phase: "fetched", prefetch: true, plan: h.fetched.plan, fetched_bytes: h.fetched.bytes, fetch_ms: Math.round(h.fetched.ms), name: h.name });
       state.brainStatus = "the base model is in this browser; the agent is still training";
     } catch (e) {
       prefetchedBase = "";
@@ -537,8 +538,14 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     files: modelFiles,
     onProgress: (type, b) => {
-      if (type === "model-homecoming") state.homecomings.push({ ...b, fetch_ms: Math.round(Number(b.fetch_ms)) });
-      if (type === "model-loaded" && state.homecomings.length) Object.assign(state.homecomings.at(-1)!, { load_ms: Math.round(Number(b.load_ms)), download_ms: Math.round(Number(b.download_ms)) });
+      if (type === "model-homecoming") {
+        state.homecomings.push({ ...b, fetch_ms: Math.round(Number(b.fetch_ms)) });
+        announce("homecoming", { phase: "fetched", prefetch: false, plan: b.plan, fetched_bytes: b.fetched_bytes, fetch_ms: Math.round(Number(b.fetch_ms)), active: b.active, adapters: b.adapters, name: b.name, bytes: b.bytes });
+      }
+      if (type === "model-loaded" && state.homecomings.length) {
+        Object.assign(state.homecomings.at(-1)!, { load_ms: Math.round(Number(b.load_ms)), download_ms: Math.round(Number(b.download_ms)) });
+        announce("homecoming", { phase: "loaded", load_ms: Math.round(Number(b.load_ms)), sha256: b.sha256, bytes: b.bytes });
+      }
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
       else if (type === "model-download") state.brainStatus = `the trained model is coming home: chunk ${String(b.done_chunks)} of ${String(b.total_chunks)}`;
       else if (type === "model-loaded") state.brainStatus = "the trained model is loaded; it answers one question as a check";
@@ -736,12 +743,31 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
 /** What the page says to the stage around it and to anything listening in the page: a DOM event (`walkshome:<type>`) and, inside a frame, a message to the parent. */
 function announce(type: string, detail: Record<string, unknown>): void {
   window.dispatchEvent(new CustomEvent(`walkshome:${type}`, { detail }));
+  const message = { source: "walks-home-tab", type, run, ...detail };
   try {
-    if (window.parent !== window) window.parent.postMessage({ source: "walks-home-tab", type, run, ...detail }, location.origin);
+    if (window.parent !== window) window.parent.postMessage(message, stageOrigin ?? location.origin);
   } catch {
     // a parent that is not reachable is not told
   }
+  try {
+    // A stage that opened this page with window.open names its origin (?stage=<origin>): only that origin is posted to, never "*".
+    if (stageOrigin && window.opener) (window.opener as Window).postMessage(message, stageOrigin);
+  } catch {
+    // an opener that is gone is not told
+  }
 }
+
+/** The origin of the stage that opened or frames this page (`?stage=<origin>`), when it names one: a messages' only target besides this page's own origin. */
+const stageOrigin: string | undefined = (() => {
+  const v = new URLSearchParams(location.search).get("stage");
+  if (!v) return undefined;
+  try {
+    const u = new URL(v);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.origin : undefined;
+  } catch {
+    return undefined;
+  }
+})();
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
