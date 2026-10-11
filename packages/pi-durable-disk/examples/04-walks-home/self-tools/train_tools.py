@@ -23,7 +23,9 @@ ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--llama-cpp", default="/opt/llama.cpp")
 ap.add_argument("--quant", default="Q4_K_M")
 # The LoRA as a llama.cpp GGUF adapter beside the merged model (a cached base plus adapters in the tab; D0's manifest).
-ap.add_argument("--adapter-gguf", default="q8_0", choices=["q8_0", "f16", "none"])
+# f16 by default: at rank 16 q8_0 saves little (lora_b's 16 columns cannot take its 32-wide blocks, so they stay f16) and
+# tracks the merged model less closely (D0, wllama in Chrome: 5/12 identical greedy outputs with f16, 3/12 with q8_0).
+ap.add_argument("--adapter-gguf", default="f16", choices=["q8_0", "f16", "none"])
 ap.add_argument("--base-ref", default="google/gemma-3-1b-it@dcc83ea841ab6100d6b47a070329e1ba4cf78752", help="the HF source of --base")
 ap.add_argument("--adapter-name", default="tools")
 ap.add_argument("--adapter-kind", default="skill")
