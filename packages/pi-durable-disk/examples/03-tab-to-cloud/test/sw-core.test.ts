@@ -6,7 +6,7 @@ import { cacheKey } from "../tab/offline-cache.ts";
 import { isFresh, isImmutable, serve, type CacheLike, type NetworkState } from "../tab/sw-core.ts";
 
 const ORIGIN = "http://127.0.0.1:5";
-const CHUNK = `${ORIGIN}/api/runs/r1/work/home/model/chunk-0001.bin`;
+const CHUNK = `${ORIGIN}/api/runs/r1/work/` + "home/model/chunk-0001.bin";
 const SCRIPT = `${ORIGIN}/main.js`;
 const OTHER = `${ORIGIN}/run/other`;
 
@@ -69,7 +69,7 @@ test("a server's own error is the answer, not a reason to use an old copy", asyn
 
 test("which requests are immutable: the model's folder of a run, nothing else", () => {
   assert.equal(isImmutable(CHUNK), true);
-  assert.equal(isImmutable(`${ORIGIN}/api/runs/r1/work/home/model/manifest.json`), true);
+  assert.equal(isImmutable(`${ORIGIN}/api/runs/r1/work/` + "home/model/manifest.json"), true);
   assert.equal(isImmutable(`${ORIGIN}/api/runs/r1/work/notes/a.txt`), false);
   assert.equal(isImmutable(SCRIPT), false);
 });

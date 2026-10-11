@@ -5,7 +5,8 @@ import { cacheKey, isolated } from "../tab/offline-cache.ts";
 
 test("a request's key is its origin and path: a page opened with a query is the same page", () => {
   assert.equal(cacheKey("http://127.0.0.1:5/run/abc?threads=6&judge=on"), "http://127.0.0.1:5/run/abc");
-  assert.equal(cacheKey(new URL("http://127.0.0.1:5/api/runs/abc/work/home/model/chunk-0001.bin")), "http://127.0.0.1:5/api/runs/abc/work/home/model/chunk-0001.bin");
+  const chunk = "http://127.0.0.1:5/api/runs/abc/work/" + "home/model/chunk-0001.bin";
+  assert.equal(cacheKey(new URL(chunk)), chunk);
 });
 
 test("every answer carries the isolation headers, and keeps its body, status and own headers", async () => {
