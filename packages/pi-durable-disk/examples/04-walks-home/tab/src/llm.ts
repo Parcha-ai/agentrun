@@ -17,7 +17,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       const next = make({ default: wasmUrl });
       w = next;
       try {
-        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true }); // a trailing assistant message is continued, not answered
+        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true, swa_full: true }); // a trailing assistant message is continued, not answered; swa_full: Gemma 3's sliding-window cache would otherwise re-evaluate the previous assistant turn at every step of a tool loop (D0 measured 79 s -> 27.5 s for a 4-step task, +33 MB of KV); the prompt cache itself stays on (never cache_prompt: false)
       } catch (e) {
         await release(); // a half-started model is released, not left running
         throw e;
@@ -57,14 +57,15 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       const onAbort = () => ctl.abort();
       if (signal.aborted) ctl.abort(); else signal.addEventListener('abort', onAbort, { once: true });
       const request = { prompt: req.prompt, max_tokens: req.maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, ...(req.grammar ? { grammar: req.grammar } : {}), stream: true, abortSignal: ctl.signal };
-      let text = '', chunks = 0, finish: string | null = null, promptTokens = 0, predicted = 0, stoppedAt = -1;
+      let text = '', chunks = 0, finish: string | null = null, promptTokens = 0, predicted = 0, stoppedAt = -1, timings: Record<string, number> | undefined;
+      const began = performance.now();
       try {
         const stream = await w.createCompletion(request as unknown as Parameters<Wllama['createCompletion']>[0] & { stream: true });
         for await (const chunk of stream as AsyncIterable<{ choices?: { text?: string; finish_reason?: string | null }[]; timings?: { prompt_n?: number; predicted_n?: number } }>) {
           const c = chunk.choices?.[0];
           if (c?.text) { text += c.text; chunks++; }
           if (c?.finish_reason) finish = c.finish_reason;
-          if (chunk.timings) { promptTokens = chunk.timings.prompt_n ?? promptTokens; predicted = chunk.timings.predicted_n ?? predicted; }
+          if (chunk.timings) { promptTokens = chunk.timings.prompt_n ?? promptTokens; predicted = chunk.timings.predicted_n ?? predicted; timings = chunk.timings as unknown as Record<string, number>; }
           for (const stop of req.stop ?? []) { const at = text.indexOf(stop); if (at >= 0 && (stoppedAt < 0 || at < stoppedAt)) stoppedAt = at; }
           if (stoppedAt >= 0) { ctl.abort(); break; }
         }
@@ -74,8 +75,9 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         signal.removeEventListener('abort', onAbort);
       }
       const outputTokens = predicted || chunks;
-      if (stoppedAt >= 0) return { text: text.slice(0, stoppedAt), stoppedBy: 'stop' as const, promptTokens, outputTokens };
-      return { text, stoppedBy: finish === 'length' ? ('length' as const) : ('eog' as const), promptTokens, outputTokens };
+      const ms = Math.round(performance.now() - began);
+      if (stoppedAt >= 0) return { text: text.slice(0, stoppedAt), stoppedBy: 'stop' as const, promptTokens, outputTokens, ms, ...(timings ? { timings } : {}) };
+      return { text, stoppedBy: finish === 'length' ? ('length' as const) : ('eog' as const), promptTokens, outputTokens, ms, ...(timings ? { timings } : {}) };
     },
     async exit() { await release(); },
   };

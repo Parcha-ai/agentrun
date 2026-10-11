@@ -29,7 +29,7 @@ export const HELD_MARK = HELD;
 export interface BrainModel {
   generate(prompt: string, messages: ChatMsg[], show: (shownRaw: string, final?: boolean) => void, signal?: AbortSignal): Promise<Answered>;
   /** Tool turns: a backend over the model's raw completion, for decode.ts. */
-  withBackend<T>(use: (backend: { complete(req: { prompt: string; maxTokens: number; stop?: string[]; grammar?: string }): Promise<{ text: string; stoppedBy: "eog" | "stop" | "length"; promptTokens: number; outputTokens: number }> }) => Promise<T>, signal?: AbortSignal): Promise<T>;
+  withBackend<T>(use: (backend: { complete(req: { prompt: string; maxTokens: number; stop?: string[]; grammar?: string }): Promise<{ text: string; stoppedBy: "eog" | "stop" | "length"; promptTokens: number; outputTokens: number; timings?: Record<string, number>; ms?: number }> }) => Promise<T>, signal?: AbortSignal): Promise<T>;
   historyMode(): HistoryMode;
   state(): { sampling: { max_tokens: number }; size_bytes: number | null };
 }
@@ -52,7 +52,7 @@ export interface ToolDecoding {
   /** "grammar": the call body is decoded under the format's grammar. "free": one plain generation. */
   mode: "grammar" | "free";
   /** Called once per decoded turn, with how long it took and what it cost. */
-  onTurn?(turn: { ms: number; tokensPerSecond: number | null; decoded: DecodedTurn; callId: string }): void;
+  onTurn?(turn: { ms: number; tokensPerSecond: number | null; decoded: DecodedTurn; callId: string; completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] }): void;
 }
 
 export const DEFAULT_TOOL_DECODING: ToolDecoding = { thinkTokens: 64, answerTokens: 200, callTokens: 512, mode: "grammar" };
@@ -73,9 +73,10 @@ function streamTools(brain: BrainModel, model: Model<string>, context: Transcrip
       stream.push({ type: "start", partial: output });
       const started = performance.now();
       const callId = `tl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      const decoded = await brain.withBackend((backend) => decodeTurn(backend, prompt, { mode: d.mode, thinkTokens: d.thinkTokens, answerTokens: d.answerTokens, callTokens: d.callTokens, tools }), options?.signal);
+      const completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] = [];
+      const decoded = await brain.withBackend((backend) => decodeTurn({ complete: async (req) => { const r = await backend.complete(req); completions.push({ ms: r.ms, promptTokens: r.promptTokens, outputTokens: r.outputTokens, stoppedBy: r.stoppedBy, ...(r.timings ? { timings: r.timings } : {}) }); return r; } }, prompt, { mode: d.mode, thinkTokens: d.thinkTokens, answerTokens: d.answerTokens, callTokens: d.callTokens, tools }), options?.signal);
       const ms = performance.now() - started;
-      d.onTurn?.({ ms, tokensPerSecond: decoded.outputTokens > 0 && ms > 0 ? decoded.outputTokens / (ms / 1000) : null, decoded, callId });
+      d.onTurn?.({ ms, tokensPerSecond: decoded.outputTokens > 0 && ms > 0 ? decoded.outputTokens / (ms / 1000) : null, decoded, callId, completions });
       output.usage = { ...zeroUsage(), input: decoded.promptTokens, output: decoded.outputTokens, totalTokens: decoded.promptTokens + decoded.outputTokens };
       if (options?.signal?.aborted) {
         output.stopReason = "aborted";

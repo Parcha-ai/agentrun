@@ -22,6 +22,10 @@ export interface RawResult {
   /** Prompt tokens evaluated for this call (not served from the cache) and tokens generated. */
   promptTokens: number;
   outputTokens: number;
+  /** The engine's own timings for the call, when it reports them (wllama: prompt_n, prompt_ms, predicted_n, predicted_ms, ...). */
+  timings?: Record<string, number>;
+  /** Wall time of the call in ms, including the wait for its first token. */
+  ms?: number;
 }
 
 export interface Llm {

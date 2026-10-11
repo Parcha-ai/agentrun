@@ -56,6 +56,8 @@ const state = {
   savedLoss: undefined as { client: PipeClient; code: string; message: string } | undefined,
   /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
   agentModel: "",
+  /** What each tool turn of the trained model cost and produced (?configure=1), for checks and the page's stats. */
+  toolTurns: [] as { ms: number; tokensPerSecond: number | null; promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; call: string | null; problem: string | null; raw: string; completions: unknown[] }[],
   /** The trained model's host for this run, once the page has started on it. */
   brain: undefined as Brain | undefined,
   /** A swap from an earlier visit is on this run: the saved conversation is on its way back, and until it is ready a message would go to the cloud conversation instead. Input waits. */
@@ -458,7 +460,7 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void>
   const brain = new Brain({
     harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
-    ...(params.get("configure") === "1" ? { mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => ["read", "write", "edit", "bash"].includes(t.tool.name)).map((t) => t.tool) } : {}),
+    ...(params.get("configure") === "1" ? { decoding: { thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : ("grammar" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => ["read", "write", "edit", "bash"].includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -942,6 +944,8 @@ void boot();
   },
   /** The brain swap, for checks: the model's phase, whether the chat input goes to the trained model's conversation, and what the page says. */
   brain: () => ({ phase: state.brain?.host.state().phase ?? null, swapped: state.brain?.conversation !== undefined && state.active === state.brain.conversation, conversation: state.active ? String(state.active.id) : null, status: state.brainStatus }),
+  /** The tool turns of the trained model so far (?configure=1). */
+  toolTurns: () => state.toolTurns,
   /** The computer while checked out: whether it booted from the cache, how long that took, how many files came back from OPFS, why not. */
   computer: () => state.offline?.computer ?? null,
   /** Run a shell command on the page's computer (a check; the agent's own tools run through the Harness). */
