@@ -46,3 +46,9 @@ test("a failing test fails the run", () => {
   assert.equal(r.status, 1);
   assert.match(r.err, /boom/);
 });
+
+test("a failing after hook fails the run even when every test in its suite passed", () => {
+  const r = runFiles({ "hook.test.mjs": `import { describe, it, after } from "node:test"; describe("s", () => { it("passes", () => {}); after(() => { throw new Error("hook boom"); }); });` });
+  assert.equal(r.status, 1, r.out + r.err);
+  assert.match(r.err, /hook boom/);
+});

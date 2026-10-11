@@ -21,8 +21,8 @@ const children: ChildProcess[] = [];
 after(() => children.forEach((c) => c.kill()));
 async function realStage(env: Record<string, string>): Promise<string> {
   const port = await freePort();
-  const { POLICY_DIR: _unset, ...base } = process.env;
-  const child = spawn(process.execPath, [join(show, "serve.ts")], { env: { ...base, SHOW_PORT: String(port), SHOW_AUTOKILL: "off", ...env }, stdio: "ignore" });
+  // A small explicit environment, so a developer's shell (SHOW_PIPE_LINK_FILE, POLICY_DIR, TAB_DIR) cannot change which stage this is.
+  const child = spawn(process.execPath, [join(show, "serve.ts")], { env: { PATH: process.env.PATH, SHOW_PORT: String(port), SHOW_AUTOKILL: "off", ...env }, stdio: "ignore" });
   children.push(child);
   await waitForStage(port, child);
   return `http://127.0.0.1:${port}`;
@@ -76,4 +76,20 @@ test("the tab loads the preset (its body is a fresh tab's), and the preflight st
   assert.equal(okPreset, false);
   assert.match(notePreset, /rehearsal preset/);
   assert.match(notePreset, /POLICY_DIR/);
+});
+
+test("a developer's shell settings do not change which stage the test starts", async () => {
+  const saved = { link: process.env.SHOW_PIPE_LINK_FILE, dir: process.env.POLICY_DIR };
+  process.env.SHOW_PIPE_LINK_FILE = join(tmpdir(), "no-such-link");
+  process.env.POLICY_DIR = tmpdir();
+  try {
+    const base = await realStage({});
+    const info = (await (await fetch(`${base}/api/stage`)).json()) as { feed: string; policy: string };
+    assert.deepEqual({ feed: info.feed, policy: info.policy }, { feed: "scripted", policy: "preset" });
+  } finally {
+    if (saved.link === undefined) delete process.env.SHOW_PIPE_LINK_FILE;
+    else process.env.SHOW_PIPE_LINK_FILE = saved.link;
+    if (saved.dir === undefined) delete process.env.POLICY_DIR;
+    else process.env.POLICY_DIR = saved.dir;
+  }
 });
