@@ -42,6 +42,8 @@ test("adding a todo must keep every old item as it was", () => {
   const i = inst("json-add-todo", { todos, t: "buy a gift" });
   const ok = [...todos, { title: "buy a gift", done: false }];
   assert.equal(checkInstance(i, { dir: dirWith({ "todos.json": JSON.stringify(ok) }), answer: "" }), null);
+  const reordered = [{ done: true, title: "pay rent" }, { done: false, title: "walk the dog" }, { done: false, title: "buy a gift" }];
+  assert.equal(checkInstance(i, { dir: dirWith({ "todos.json": JSON.stringify(reordered) }), answer: "" }), null);
   const damaged = [{ title: "pay rent", done: false }, todos[1], { title: "buy a gift", done: false }];
   assert.match(checkInstance(i, { dir: dirWith({ "todos.json": JSON.stringify(damaged) }), answer: "" })!, /todos\.json/);
 });
@@ -51,5 +53,7 @@ test("missing commands are found inside $(...), backticks and bash -c, not insid
   assert.deepEqual(missingCommands("echo `find . -name x`"), ["find"]);
   assert.deepEqual(missingCommands(`bash -c "sed -n 2p f"`), ["sed"]);
   assert.deepEqual(missingCommands(`echo '$(grep x)'`), []);
+  assert.deepEqual(missingCommands(`echo 'bash -c "grep x"'`), []);
+  assert.deepEqual(missingCommands(`echo "run: bash -c 'find .'"`), []);
   assert.deepEqual(missingCommands(`wc -l "$(ls -1 | head -n 1)"`), []);
 });

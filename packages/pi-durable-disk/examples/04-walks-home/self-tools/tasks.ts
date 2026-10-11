@@ -769,7 +769,9 @@ export const TEMPLATES: Template[] = [
       const o = json(c.dir, "todos.json");
       if (!Array.isArray(o) || o.length !== p.todos.length + 1) return `todos.json is ${JSON.stringify(o)}`;
       const last = o[o.length - 1];
-      const kept = JSON.stringify(o.slice(0, p.todos.length)) === JSON.stringify(p.todos);
+      // Each old item unchanged, whatever order its keys are written in.
+      const same = (x: any, y: any) => JSON.stringify(Object.entries(x ?? {}).sort()) === JSON.stringify(Object.entries(y ?? {}).sort());
+      const kept = p.todos.every((t: any, i: number) => same(o[i], t));
       return last.title === p.t && last.done === false && kept ? null : `todos.json is ${JSON.stringify(o)}`;
     }),
   },

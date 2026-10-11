@@ -12,6 +12,19 @@ const BUILTINS = new Set((": cd echo printf test [ [[ ]] true false read export 
   "return break continue for while until do done if then else elif fi case esac in function select time declare let " +
   "pushd popd dirs type command builtin alias hash umask wait trap { } ! ((").split(" "));
 
+/** For each position of a line, whether it lies inside single or double quotes. */
+function quotedPositions(line: string): boolean[] {
+  const out: boolean[] = [];
+  let q: "'" | '"' | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (q === null && (c === "'" || c === '"')) { out.push(false); q = c; continue; }
+    if (q !== null && c === q && !(q === '"' && line[i - 1] === "\\")) { out.push(true); q = null; continue; }
+    out.push(q !== null);
+  }
+  return out;
+}
+
 /** The bodies of $(...) and `...` in a line (outside single quotes, which bash does not expand), nesting included. */
 function substitutions(line: string): string[] {
   const out: string[] = [];
@@ -39,7 +52,12 @@ function substitutions(line: string): string[] {
 export function missingCommands(line: string): string[] {
   const out = new Set<string>();
   for (const inner of substitutions(line)) for (const m of missingCommands(inner)) out.add(m);
-  for (const m of line.matchAll(/\b(?:bash|sh)\s+-c\s+(['"])([\s\S]*?)\1/g)) for (const x of missingCommands(m[2]!)) out.add(x);
+  // bash -c / sh -c run their string, unless the words are themselves quoted text (echo 'bash -c "grep x"' only prints).
+  const quoted = quotedPositions(line);
+  for (const m of line.matchAll(/\b(?:bash|sh)\s+-c\s+(['"])([\s\S]*?)\1/g)) {
+    if (quoted[m.index!]) continue;
+    for (const x of missingCommands(m[2]!)) out.add(x);
+  }
   // Leave quoted strings out so their words are not read as commands.
   const bare = line.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
   for (const seg of bare.split(/\|\||&&|[|;&\n]|\$\(|`|\bthen\b|\bdo\b|\belse\b/)) {
