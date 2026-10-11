@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  canonicalResult, CALL_CLOSE, CALL_OPEN, END_OF_TURN, TOOLS, TURN_MODEL, TURN_USER, callGrammar, clipResult, parseModelTurn, renderCall,
+  canonicalResult, windowLast, CALL_CLOSE, CALL_OPEN, END_OF_TURN, TOOLS, TURN_MODEL, TURN_USER, callGrammar, clipResult, parseModelTurn, renderCall,
   renderModelTurn, renderPrompt, renderSpec, renderTranscript, selectTools, splitTurn, type Msg,
 } from "../tab/tool-format.ts";
 
@@ -151,4 +151,25 @@ test("long bash output keeps its first and last ten lines", () => {
   assert.equal(canonicalResult("bash", seq), [...Array.from({ length: 10 }, (_, i) => String(i + 1)), "[... 30 lines cut ...]", ...Array.from({ length: 10 }, (_, i) => String(i + 41))].join("\n"));
   const file = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
   assert.equal(canonicalResult("read", file), file);
+});
+
+test("the last window keeps the previous request and final answer, not its loop", () => {
+  const task1: Msg[] = [user("Make hello.js print hi."), said(think("Write it."), call("c1", "write", { path: "hello.js", content: "console.log('hi')\n" })),
+    result("c1", "write", "Successfully wrote to hello.js"), said(think("Done."), { type: "text", text: "hello.js prints hi." })];
+  const w = windowLast([...task1, user("Run it again.")]);
+  assert.deepEqual(w.map((m) => m.role), ["user", "assistant", "user"]);
+  const { text } = renderTranscript(TOOLS, w);
+  assert.ok(text.includes("Make hello.js print hi.<end_of_turn>\n<start_of_turn>model\n<thinking>Done.</thinking>\nhello.js prints hi.<end_of_turn>\n<start_of_turn>user\nRun it again."));
+  assert.ok(!text.includes('"path":"hello.js"'), "task 1's call is not in the window");
+  // A previous task that stopped on a call is left out; so is anything before the previous task.
+  assert.deepEqual(windowLast([...task1.slice(0, 2), user("Next.")]).map((m) => m.role), ["user"]);
+  assert.equal(windowLast([user("a"), said(think("t"), { type: "text", text: "A" }), ...task1, user("b")])[0], task1[0]);
+  // A previous answer from another model (the cloud's) is left out.
+  assert.deepEqual(windowLast([...task1, user("Run it again.")], () => false).map((m) => m.role), ["user"]);
+});
+
+test("go_online takes no arguments and is one byte form", () => {
+  assert.equal(renderCall("go_online", {}), '{"name":"go_online","arguments":{}}');
+  assert.deepEqual(parseModelTurn(`<thinking>Training needs the cloud.</thinking>\n${CALL_OPEN}{"name":"go_online","arguments":{}}${CALL_CLOSE}`).call, { name: "go_online", arguments: {} });
+  assert.ok(callGrammar().includes('go_online-args-obj ::= "{" "}"'));
 });

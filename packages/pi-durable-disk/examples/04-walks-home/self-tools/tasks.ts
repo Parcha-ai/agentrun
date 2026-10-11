@@ -18,6 +18,7 @@ export interface Instance {
   prompt: string;
   /** Files the task starts from, relative to its directory. */
   files: Record<string, string>;
+  /** A follow-up's first task lives in params.first: { template, prompt, params }. */
   params: Record<string, unknown>;
 }
 
@@ -33,7 +34,7 @@ interface Made { prompt: string; files?: Record<string, string>; params: Record<
 
 interface Template {
   name: string;
-  kind: "create" | "read" | "append" | "edit" | "js" | "fix" | "shell" | "json";
+  kind: "create" | "read" | "append" | "edit" | "js" | "fix" | "shell" | "json" | "followup" | "online";
   /** Held out entirely from training: the 1B never practised this template. */
   unseen?: boolean;
   /** The check is on a value the final answer must state (not on files or a script's output). */
@@ -145,6 +146,13 @@ function shownAfterChange(c: CheckCtx, path: string): string | null {
   const lastChange = calls.map((x) => x.name).reduce((at, n, i) => (n === "write" || n === "edit" || n === "bash" ? i : at), -1);
   const shown = calls.some((x, i) => i > lastChange && x.name === "read" && String(x.arguments.path ?? "").replace(/^\.\//, "") === path);
   return shown ? null : `${path} was not read back after the change`;
+}
+
+/** go_online was the first call (and the run stopped there). */
+function onlineFirst(c: CheckCtx): string | null {
+  const calls = c.calls ?? [];
+  if (!calls.length) return "no call";
+  return calls[0]!.name === "go_online" ? null : `the first call was ${calls[0]!.name}, not go_online`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -619,10 +627,10 @@ export const TEMPLATES: Template[] = [
     name: "recover-filename", kind: "read", answer: true,
     make(r) {
       const stem = r.pick(["todo", "notes", "plan", "ideas", "shopping", "reminders"]), ls = lines(r, 3);
-      return { prompt: r.pick([`Show me what's in ${stem}.txt.`, `What does ${stem}.txt say?`]), files: { [`${stem}.md`]: ls.join("\n") + "\n", "readme.md": "# Files\n" }, params: { real: `${stem}.md`, first: ls[0] } };
+      return { prompt: r.pick([`Show me what's in ${stem}.txt.`, `What does ${stem}.txt say?`]), files: { [`${stem}.md`]: ls.join("\n") + "\n", "readme.md": "# Files\n" }, params: { real: `${stem}.md`, line1: ls[0] } };
     },
     // The file asked for does not exist; a similar one does. The answer names the real file and gives its content.
-    check: (p, c) => all(says(c.answer, p.real), says(c.answer, p.first.replace(/\.$/, ""))),
+    check: (p, c) => all(says(c.answer, p.real), says(c.answer, p.line1.replace(/\.$/, ""))),
   },
   {
     name: "recover-run-fix", kind: "fix",
@@ -658,6 +666,59 @@ export const TEMPLATES: Template[] = [
     // Nothing to find: the answer must say the file is not there (a word check), and no file may be invented.
     check: (p, c) => all(exists(c.dir, p.want) ? `${p.want} was created` : null, says(c.answer, p.want),
       /\b(not|no such|doesn't|does not|isn't|is not|missing|can't|cannot|couldn't)\b/i.test(c.answer) ? null : "the answer does not say the file is missing"),
+  },
+
+  // Follow-ups: a first task runs to its end, then a second request refers to it ("run it again"). The second task sees
+  // the first as the tab's `last` window shows it (windowLast in tool-format.ts): the request and the final answer.
+  ...followUps(),
+
+  // go_online: asked to go back online, or asked for something only the cloud can do; the call is the whole turn.
+  {
+    name: "go-online-ask", kind: "online",
+    make(r) {
+      const ask = r.pick(["Go back online.", "Let's go online again.", "Reconnect to the cloud, please.", "Switch back to online mode.",
+        "Wi-Fi is back. Go online.", "Can you go online now?", "Take us back online.", "Time to reconnect: go online.", "We're online again, hand it back to the cloud.",
+        "Go online and continue there.", "Please reconnect.", "The internet works again, go back online.", "Move back to the server.", "Back to the cloud, please.",
+        "OK, go online.", "Hand this back to the cloud model.", "I'm back on Wi-Fi. Reconnect.", "Let the cloud take over again.", "Return to online mode.",
+        "Can we go back online?", "Go online now, please.", "Switch to the cloud.", "Get back online.", "Connect back to the server."]);
+      const lead = r.pick(["", "", "Thanks. ", "Great. ", "Done here. "]);
+      return { prompt: lead + ask, params: {} };
+    },
+    check: (_p, c) => onlineFirst(c),
+  },
+  {
+    name: "go-online-cloud", kind: "online",
+    make(r) {
+      const topic = r.pick(["the Golden Gate Bridge", "the Moon", "pizza", "dinosaurs", "jazz", "volcanoes", "cats", "the ocean", "trains", "coffee",
+        "chess", "the Eiffel Tower", "penguins", "Mars", "tacos", "rainbows", "robots", "the Sahara", "lighthouses", "honeybees"]);
+      return { prompt: r.pick([`Make the model you trained obsessed with ${topic}.`, `Train a small model that loves talking about ${topic}.`,
+        `Fine-tune yourself so you mention ${topic} all the time.`, `Use a GPU to train a model about ${topic}.`,
+        `Teach the small model to be obsessed with ${topic}.`, `Train yourself a new brain that knows ${topic}.`,
+        `Can you train a model that always brings up ${topic}?`, `Retrain the small model so it can't stop talking about ${topic}.`,
+        `Make a version of yourself that is obsessed with ${topic}.`, `Spin up a GPU and fine-tune the model on ${topic}.`]), params: {} };
+    },
+    check: (_p, c) => onlineFirst(c),
+  },
+  // Near misses: ordinary local tasks whose words sound like the cloud (train, online, model, GPU). go_online is wrong here.
+  {
+    name: "near-miss", kind: "create",
+    make(r) {
+      return r.pick([
+        () => ({ prompt: `Write train.js that prints "All aboard!" and run it.`, params: { t: "js", f: "train.js", want: "All aboard!" } }),
+        () => ({ prompt: `Create online.txt saying "back at ${r.int(1, 12)} o'clock".`, params: { t: "text" } }),
+        () => { const n = r.int(2, 9); return { prompt: `Make model.json with {"name": "tiny", "layers": ${n}}.`, params: { t: "json", n } }; },
+        () => ({ prompt: `Add "buy a GPU fan" to my todo list in todo.md.`, files: { "todo.md": "# Todo\n\n- pay rent\n" }, params: { t: "todo" } }),
+        () => ({ prompt: `How many lines are in training-notes.txt?`, files: { "training-notes.txt": lines(r, 4).join("\n") + "\n" }, params: { t: "count" } }),
+      ])();
+    },
+    check: (p, c) => {
+      if ((c.calls ?? []).some((x) => x.name === "go_online")) return "called go_online for a local task";
+      if (p.t === "js") return outputIs(c.dir, p.f, p.want);
+      if (p.t === "text") return readIn(c.dir, "online.txt")?.startsWith("back at") ? null : "online.txt is wrong";
+      if (p.t === "json") return jsonCheck(() => { const o = json(c.dir, "model.json"); return o.name === "tiny" && o.layers === p.n ? null : `model.json is ${JSON.stringify(o)}`; });
+      if (p.t === "todo") return fileLines(readIn(c.dir, "todo.md") ?? "").at(-1)?.endsWith("buy a GPU fan") ? null : "todo.md is wrong";
+      return says(c.answer, 4);
+    },
   },
 
   // Small JSON edits
@@ -709,6 +770,41 @@ export const TEMPLATES: Template[] = [
     check: (p, c) => jsonCheck(() => { const o = json(c.dir, "config.json"); const { debug: _, ...want } = p.cfg; return JSON.stringify(Object.entries(o).sort()) === JSON.stringify(Object.entries(want).sort()) ? null : `config.json is ${JSON.stringify(o)}`; }),
   },
 ];
+
+/** A follow-up template: `first` is a task made by another template; the second request refers to it. */
+function followUp(name: string, first: string, second: (r: Rng, p: any) => Made, check: (p: any, c: CheckCtx) => string | null): Template {
+  return {
+    name, kind: "followup",
+    make(r) {
+      const base = TEMPLATES.find((t) => t.name === first)!;
+      const m1 = base.make(r);
+      const m2 = second(r, m1.params);
+      return { prompt: m2.prompt, files: { ...(m1.files ?? {}), ...(m2.files ?? {}) }, params: { ...m2.params, first: { template: first, prompt: m1.prompt, params: m1.params } } };
+    },
+    check,
+  };
+}
+
+function followUps(): Template[] {
+  return [
+    followUp("fu-run-again", "js-print", (r) => ({ prompt: r.pick(["Run it again.", "Run that script once more.", "Can you run it again?"]), params: {} }),
+      (p, c) => all(says(c.answer, p.first.params.msg), (c.calls ?? []).some((x) => x.name === "bash" && /\bnode\b/.test(String(x.arguments.command))) ? null : "did not run it")),
+    followUp("fu-print-times", "js-print", (r) => { const k = r.int(2, 5); return { prompt: r.pick([`Now make it print that ${k} times.`, `Change it so the message prints ${k} times, then run it.`]), params: { k } }; },
+      (p, c) => outputIs(c.dir, p.first.params.f, Array(p.k).fill(p.first.params.msg).join("\n"))),
+    followUp("fu-add-line", "create-line", (r) => { const x = sentence(r); return { prompt: r.pick([`Add another line to it: ${x}`, `Now append "${x}" to that file.`]), params: { x } }; },
+      (p, c) => sameText(c.dir, p.first.params.f, `${p.first.params.s}\n${p.x}`)),
+    followUp("fu-show-it", "create-lines", (r) => ({ prompt: r.pick(["Show me the file.", "Show me what's in it now.", "Let me see it."]), params: {} }),
+      (p, c) => ((c.calls ?? []).some((x) => x.name === "read" && String(x.arguments.path ?? "").replace(/^\.\//, "") === p.first.params.f) ? null : `${p.first.params.f} was not shown`)),
+    followUp("fu-rename-back", "mv-rename", (r) => ({ prompt: r.pick(["Rename it back.", "Actually, change the name back.", "Undo that rename."]), params: {} }),
+      (p, c) => all(exists(c.dir, p.first.params.b) ? `${p.first.params.b} still exists` : null, sameText(c.dir, p.first.params.a, p.first.params.s))),
+    followUp("fu-sum-change", "js-sum-range", (r) => { const m = r.int(10, 300); return { prompt: r.pick([`Change it to add up to ${m} instead, and run it.`, `Now make it sum 1 to ${m} and tell me the result.`]), params: { m } }; },
+      (p, c) => all(outputIs(c.dir, "sum.js", String((p.m * (p.m + 1)) / 2)), says(c.answer, (p.m * (p.m + 1)) / 2))),
+    followUp("fu-json-change", "create-json", (r) => { const n = r.int(18, 80); return { prompt: r.pick([`Change the age to ${n}.`, `Actually, make the age ${n}.`]), params: { n } }; },
+      (p, c) => jsonCheck(() => { const o = json(c.dir, p.first.params.f); return o.name === p.first.params.n && o.age === p.n ? null : `${p.first.params.f} is ${JSON.stringify(o)}`; })),
+    followUp("fu-what-printed", "js-reverse", (r) => ({ prompt: r.pick(["What did it print?", "What was the output again?"]), params: {} }),
+      (p, c) => says(c.answer, p.first.params.want)),
+  ];
+}
 
 const BY_NAME = new Map(TEMPLATES.map((t) => [t.name, t]));
 

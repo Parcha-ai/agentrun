@@ -30,7 +30,8 @@ export const THINK_MAX_WORDS = 40;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The tools: pi's read, write, edit and bash, with the argument schemas of @earendil-works/pi-coding-agent 1.0.4
-// (descriptions shortened for a small model's context). Property order is the canonical argument order.
+// (descriptions shortened for a small model's context), and the tab's go_online. Property order is the canonical
+// argument order.
 
 export interface JsonSchema {
   type?: "object" | "string" | "number" | "integer" | "boolean" | "array";
@@ -81,6 +82,12 @@ export const TOOLS: readonly ToolSpec[] = [
     name: "bash",
     summary: "Run a bash command in the working directory and get its output. timeout is in seconds.",
     parameters: { type: "object", properties: { command: str, timeout: num }, required: ["command"] },
+  },
+  {
+    // The tab's tool (D3): no arguments; the turn ends at the call and the cloud model continues the conversation.
+    name: "go_online",
+    summary: "Go back online: hand the work in this browser back to the server so the cloud model can continue it.",
+    parameters: { type: "object", properties: {}, required: [] },
   },
 ];
 
@@ -314,6 +321,25 @@ function turns(tools: readonly ToolSpec[], messages: readonly Msg[]): Turn[] {
     }
   }
   return out;
+}
+
+/**
+ * The `last` window: the current task with the previous one in front of it, as the tab shows the small model a follow-up.
+ * The previous task keeps its request and its final answer (thinking and text) and loses its tool loop; a previous task
+ * that did not end in an answer, or whose answer another model wrote (`own` says which are this model's), is left out.
+ * Messages before the previous task are left out too.
+ */
+export function windowLast(messages: readonly Msg[], own: (m: AssistantMsg) => boolean = () => true): Msg[] {
+  const users = messages.map((m, i) => (m.role === "user" ? i : -1)).filter((i) => i >= 0);
+  const cur = users[users.length - 1];
+  if (cur === undefined) return [...messages];
+  const current = messages.slice(cur);
+  const prev = users[users.length - 2];
+  if (prev === undefined) return current;
+  const final = messages.slice(prev + 1, cur).filter((m) => m.role === "assistant").pop() as AssistantMsg | undefined;
+  if (!final || !own(final) || final.content.some((b) => b.type === "toolCall")) return current;
+  const kept = final.content.filter((b) => b.type === "thinking" || b.type === "text");
+  return [messages[prev]!, { ...final, content: kept } as Msg, ...current];
 }
 
 /** The prompt for the next model turn (no <bos>: the tokenizer adds it, in training and in llama.cpp alike). */

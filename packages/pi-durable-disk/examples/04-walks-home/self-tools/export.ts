@@ -46,6 +46,12 @@ export function canonical(messages: any[], offlineOnly = false): { messages: Msg
       }
     }
   }
+  // A run that handed itself to the cloud ends at the go_online call: the small model never sees the result.
+  const lastCall = [...out].reverse().find((m: any) => m.role === "assistant") as any;
+  if (lastCall?.content.some((b: any) => b.type === "toolCall" && b.name === "go_online")) {
+    while ((out[out.length - 1] as any).role === "toolResult") out.pop();
+    return { messages: out };
+  }
   const last = out[out.length - 1] as any;
   if (!last || last.role !== "assistant" || last.content.some((b: any) => b.type === "toolCall")) return { reject: "does not end with an answer" };
   return { messages: out };

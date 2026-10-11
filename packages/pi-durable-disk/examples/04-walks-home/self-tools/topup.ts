@@ -19,7 +19,8 @@ const { values: a, positionals } = parseArgs({
   allowPositionals: true,
 });
 const read = (fs: string) => fs.split(",").filter(Boolean).flatMap((f) => readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)));
-const key = (x: Instance) => x.prompt + "\u0000" + JSON.stringify(x.files);
+// A follow-up's identity includes its first task ("Run it again." after different scripts is a different instance).
+const key = (x: Instance) => x.prompt + "\u0000" + JSON.stringify(x.files) + "\u0000" + ((x.params?.first as { prompt?: string } | undefined)?.prompt ?? "");
 const write = (xs: Instance[]) => { writeFileSync(a.out!, xs.map((x) => JSON.stringify(x)).join("\n") + "\n"); };
 
 if (positionals[0] === "heldout") {
@@ -50,7 +51,8 @@ if (positionals[0] === "heldout") {
   const taken = new Set([...held, ...[...insts.values()].map(key)]);
   const out: Instance[] = [];
   const short: Record<string, number> = {};
-  for (const t of TEMPLATES.filter((t) => !t.unseen)) {
+  const only = a.templates!.split(",").filter(Boolean);
+  for (const t of TEMPLATES.filter((t) => !t.unseen && (!only.length || only.includes(t.name)))) {
     const need = Number(a.target) - (kept[t.name] ?? 0);
     if (need <= 0) continue;
     short[t.name] = need;

@@ -16,7 +16,8 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import { decodeTurn, llamaServer, toPiContent, type DecodedTurn } from "../../03-tab-to-cloud/tab/decode.ts";
 import { checkInstance, templateKind, type Instance } from "./tasks.ts";
-import { TOOLS, renderPrompt } from "../../03-tab-to-cloud/tab/tool-format.ts";
+import { TOOLS, renderPrompt, windowLast } from "../../03-tab-to-cloud/tab/tool-format.ts";
+import { Type } from "typebox";
 
 const { values: a } = parseArgs({
   options: {
@@ -31,7 +32,7 @@ const { values: a } = parseArgs({
     work: { type: "string", default: "/work" },
     "think-tokens": { type: "string", default: "64" },
     "answer-tokens": { type: "string", default: "200" },
-    "call-tokens": { type: "string", default: "512" },
+    "call-tokens": { type: "string", default: "200" },
     temperature: { type: "string", default: "0.2" },
     seed: { type: "string", default: "7" },
     thinking: { type: "string", default: "low" },
@@ -76,15 +77,17 @@ find, xargs, diff, python3, curl or network. Do common jobs like this:
 - line N of a file: head -n N file.txt | tail -n 1
 - list files, one per line: ls -1 folder (count them: ls -1 folder/*.txt | wc -l; biggest first: ls -1S folder)
 - see several small files at once, each under its name: head -n 50 *.txt
-- add a line at the end of a file: echo "the line" >> file.txt
+- add a line at the end of a file: echo "the line" >> file.txt (if the file may not end with a newline, for example one
+  you wrote without one, read it and write the whole new content instead)
 - rename or move: mv; copy: cp; make folders: mkdir -p a b
 - anything else (count matching lines, sums, small transforms): a short node -e script
 - run a script: node file.js
 Never count, add up or pick lines in your head: run a command that prints the number or the line, then report what it
 printed.
 When a command or a file fails, read the error and fix the cause: look with ls -1 for a file with a similar name, make a
-missing folder, fix the script, then try again. If the task really cannot be done, say so plainly in the final answer;
-never say something worked when it did not.`;
+missing folder, fix the script, then try again. If the file the user named does not exist but one with a similar name
+does, use that one and say so (for example: "There is no notes.txt; I read notes.md instead."). If the task really
+cannot be done, say so plainly in the final answer; never say something worked when it did not.`;
 
 const OFFLINE4 = `You are a coding agent working in /workspace, with four tools: read, write, edit and bash.
 
@@ -108,7 +111,14 @@ ${RULES}
 - After writing or fixing a script, run it with node once to check it.
 ${FINAL}`;
 
-export const TEACHER_PROMPTS: Record<string, string> = { v1: V1, offline4: OFFLINE4, offline3: OFFLINE3 };
+/** OFFLINE3 plus go_online: the request that only the cloud can serve. */
+const OFFLINE3_ONLINE = OFFLINE3.replace("with three tools: read, write and bash.", "with four tools: read, write, bash and go_online.") + `
+- go_online hands the work back to the cloud. Call it (after your usual one-sentence <thinking>, with no other text) when the user asks to go back
+  online or to reconnect, or asks for something this offline computer cannot do: training or fine-tuning a model, using
+  a GPU, making a model obsessed with something. Never call it for ordinary file or code work, even when the words
+  "train", "online", "model" or "GPU" appear in a file name or a message.`;
+
+export const TEACHER_PROMPTS: Record<string, string> = { v1: V1, offline4: OFFLINE4, offline3: OFFLINE3, offline3o: OFFLINE3_ONLINE };
 if (!TEACHER_PROMPTS[a.policy!]) throw new Error(`no teacher policy ${a.policy}`);
 const toolNames = a.tools!.split(",");
 
@@ -160,19 +170,28 @@ function textOf(m: any): string {
   return (m?.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
 }
 
-async function runOne(inst: Instance) {
-  const dir = join(work, inst.id);
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
-  for (const [p, body] of Object.entries(inst.files)) {
-    mkdirSync(dirname(join(dir, p)), { recursive: true });
-    writeFileSync(join(dir, p), body);
-  }
+/** The tab's go_online, as a stub with its exact result (D3): the turn ends at the call. */
+const GO_ONLINE_RESULT = "Going online: your work is being handed back to the server. This turn ends here.";
+const goOnlineTool = {
+  name: "go_online", label: "go_online", description: TOOLS.find((t) => t.name === "go_online")!.summary,
+  parameters: Type.Object({}),
+  async execute() { return { content: [{ type: "text", text: GO_ONLINE_RESULT }], details: {} }; },
+};
+
+const usageOf = (messages: any[]) => messages.filter((m: any) => m.role === "assistant").reduce((u: any, m: any) => ({
+  input: u.input + (m.usage?.input ?? 0), output: u.output + (m.usage?.output ?? 0), cacheRead: u.cacheRead + (m.usage?.cacheRead ?? 0),
+  reasoning: u.reasoning + (m.usage?.reasoning ?? 0), cost: u.cost + (m.usage?.cost?.total ?? 0),
+}), { input: 0, output: 0, cacheRead: 0, reasoning: 0, cost: 0 });
+const callsIn = (messages: any[]) => messages.filter((m: any) => m.role === "assistant").flatMap((m: any) => m.content.filter((b: any) => b.type === "toolCall")).map((b: any) => ({ name: b.name, arguments: b.arguments }));
+
+/** One request through pi's loop in `dir`, after `history` (a follow-up's window). */
+async function runTask(dir: string, history: any[], prompt: string) {
   // Commands see a plain environment: no credentials of this process.
   const env = { PATH: a.path ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8", TERM: "dumb" };
   const all = {
     read: createReadTool(dir), write: createWriteTool(dir), edit: createEditTool(dir),
     bash: createBashTool(dir, { exposeSessionEnvironment: false, spawnHook: (c) => ({ ...c, env }) }),
+    go_online: goOnlineTool,
   } as Record<string, any>;
   const tools = toolNames.map((n) => all[n]);
   const specs = TOOLS.filter((t) => toolNames.includes(t.name));
@@ -180,7 +199,7 @@ async function runOne(inst: Instance) {
   const isLocal = a.brain === "local";
   let calls = 0, toolErrors = 0, ended = "answer";
   const agent: Agent = new Agent({
-    initialState: { systemPrompt: isLocal ? "" : TEACHER_PROMPTS[a.policy!]!, model: isLocal ? localModel : luna, tools, thinkingLevel: isLocal ? "off" : (a.thinking as any) },
+    initialState: { systemPrompt: isLocal ? "" : TEACHER_PROMPTS[a.policy!]!, model: isLocal ? localModel : luna, tools, thinkingLevel: isLocal ? "off" : (a.thinking as any), messages: history },
     streamFn: isLocal ? (localStream(turnsLog, specs) as any) : (m: any, c: any, o: any) => models.streamSimple(m, c, o),
     toolExecution: "sequential",
     // The call limit: the call past it is not run, and the run ends.
@@ -191,41 +210,75 @@ async function runOne(inst: Instance) {
       return { block: true, reason: "call limit", terminate: true };
     },
     // Results read as they would in the tab, whose computer works in /workspace: this task's directory is renamed.
-    afterToolCall: async (c: any): Promise<any> => (a.workspace === "none" ? undefined : {
-      content: c.result.content.map((b: any) => (b.type === "text" ? { ...b, text: b.text.replaceAll(dir, a.workspace!) } : b)),
-    }),
+    // go_online ends the run, as the tab's tool does.
+    afterToolCall: async (c: any): Promise<any> => {
+      const online = c.toolCall?.name === "go_online";
+      if (online) ended = "go_online";
+      if (a.workspace === "none") return online ? { terminate: true } : undefined;
+      return {
+        content: c.result.content.map((b: any) => (b.type === "text" ? { ...b, text: b.text.replaceAll(dir, a.workspace!) } : b)),
+        ...(online ? { terminate: true } : {}),
+      };
+    },
   });
   agent.subscribe((ev: any) => {
     if (ev.type === "tool_execution_end" && ev.isError) toolErrors++;
   });
-  const t0 = Date.now();
   const timer = setTimeout(() => { ended = "timeout"; agent.abort(); }, timeoutMs);
   let error: string | undefined;
   try {
-    await agent.prompt(inst.prompt);
+    await agent.prompt(prompt);
   } catch (e) {
     error = (e as Error).message;
   } finally {
     clearTimeout(timer);
   }
   const messages = agent.state.messages.filter((m: any) => m.role !== "system");
-  const last: any = [...messages].reverse().find((m: any) => m.role === "assistant");
+  const fresh = messages.slice(history.length);
+  const last: any = [...fresh].reverse().find((m: any) => m.role === "assistant");
   if (last?.stopReason === "error" && ended === "answer") { ended = "error"; error ??= last.errorMessage; }
   if (ended === "answer" && last && last.content.some((b: any) => b.type === "toolCall")) ended = "unfinished";
   if (ended === "max-calls") calls = maxCalls;
   const answer = textOf(last).replace(/^\s*<thinking>[\s\S]*?<\/thinking>\s*/, "").trim();
-  const calls_ = messages.filter((m: any) => m.role === "assistant").flatMap((m: any) => m.content.filter((b: any) => b.type === "toolCall")).map((b: any) => ({ name: b.name, arguments: b.arguments }));
-  const why = checkInstance(inst, { dir, answer, calls: calls_ });
-  const usage = messages.filter((m: any) => m.role === "assistant").reduce((u: any, m: any) => ({
-    input: u.input + (m.usage?.input ?? 0), output: u.output + (m.usage?.output ?? 0), cacheRead: u.cacheRead + (m.usage?.cacheRead ?? 0),
-    reasoning: u.reasoning + (m.usage?.reasoning ?? 0), cost: u.cost + (m.usage?.cost?.total ?? 0),
-  }), { input: 0, output: 0, cacheRead: 0, reasoning: 0, cost: 0 });
+  return { messages, fresh, ended, error, calls, toolErrors, answer, turnsLog };
+}
+
+async function runOne(inst: Instance) {
+  const dir = join(work, inst.id);
   rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  for (const [p, body] of Object.entries(inst.files)) {
+    mkdirSync(dirname(join(dir, p)), { recursive: true });
+    writeFileSync(join(dir, p), body);
+  }
+  const t0 = Date.now();
+  const isLocal = a.brain === "local";
+  // A follow-up: the first task runs to its end and is checked; the second sees it through the `last` window.
+  const f = inst.params.first as { template?: string; prompt: string; params: Record<string, unknown> } | undefined;
+  const first = f && typeof f === "object" && typeof f.template === "string" ? (f as { template: string; prompt: string; params: Record<string, unknown> }) : undefined;
+  let history: any[] = [];
+  let firstRun: Awaited<ReturnType<typeof runTask>> | undefined;
+  let firstWhy: string | null = null;
+  if (first) {
+    firstRun = await runTask(dir, [], first.prompt);
+    firstWhy = checkInstance({ ...inst, template: first.template, params: first.params, prompt: first.prompt }, { dir, answer: firstRun.answer, calls: callsIn(firstRun.fresh) });
+    const next = { role: "user", content: [{ type: "text", text: inst.prompt }], timestamp: Date.now() };
+    history = windowLast([...firstRun.messages, next] as never).slice(0, -1);
+  }
+  const run = firstWhy === null ? await runTask(dir, history, inst.prompt) : undefined;
+  const why = firstWhy !== null ? `first task: ${firstWhy}` : checkInstance(inst, { dir, answer: run!.answer, calls: callsIn(run!.fresh) });
+  rmSync(dir, { recursive: true, force: true });
+  const r = run ?? firstRun!;
+  const all = [...(firstRun ? firstRun.fresh : []), ...(run ? run.fresh : [])];
   return {
     id: inst.id, template: inst.template, kind: templateKind(inst.template), split: inst.split, prompt: inst.prompt,
-    brain: isLocal ? `local:${a.mode}` : "gpt-6-luna", commands: a.path ?? "full", tools: toolNames, policy: isLocal ? undefined : a.policy, ok: why === null, why, ended, error, answer, calls, toolErrors,
-    wall_s: Math.round((Date.now() - t0) / 100) / 10, usage, messages,
-    ...(isLocal ? { turns: turnsLog.map((t) => ({ raw: t.raw, problem: t.parsed.problem?.kind ?? null, thinkingCut: t.thinkingCut, cut: t.cut, promptTokens: t.promptTokens, outputTokens: t.outputTokens, thinkTokens: t.thinkTokens, completions: t.calls })) } : {}),
+    brain: isLocal ? `local:${a.mode}` : "gpt-6-luna", commands: a.path ?? "full", tools: toolNames, policy: isLocal ? undefined : a.policy,
+    ok: why === null, why, ended: firstWhy !== null ? "first-failed" : r.ended, error: r.error, answer: r.answer, calls: r.calls, toolErrors: r.toolErrors,
+    wall_s: Math.round((Date.now() - t0) / 100) / 10, usage: usageOf(all),
+    // The run as training renders it: for a follow-up, the window (first request and final answer) and the second loop.
+    messages: run ? run.messages : firstRun!.messages,
+    ...(firstRun ? { first: { ok: firstWhy === null, why: firstWhy, messages: firstRun.messages } } : {}),
+    ...(isLocal ? { turns: [...(firstRun?.turnsLog ?? []), ...(run?.turnsLog ?? [])].map((t) => ({ raw: t.raw, problem: t.parsed.problem?.kind ?? null, thinkingCut: t.thinkingCut, cut: t.cut, promptTokens: t.promptTokens, outputTokens: t.outputTokens, thinkTokens: t.thinkTokens, completions: t.calls })), secondTurns: run?.turnsLog.length ?? 0 } : {}),
   };
 }
 
