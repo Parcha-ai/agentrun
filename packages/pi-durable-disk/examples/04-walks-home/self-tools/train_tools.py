@@ -3,7 +3,8 @@ character spans the format marks), then the adapter is merged and exported to GG
 
   python train_tools.py --data train-text.jsonl --out DIR [--rank 16] [--epochs 3] [--lr 2e-4]
 
-Writes DIR/progress.jsonl, DIR/adapter (PEFT), DIR/model-f16.gguf, DIR/model-<quant>.gguf and DIR/summary.json.
+Writes DIR/progress.jsonl, DIR/adapter (PEFT), DIR/adapter-<dtype>.gguf with DIR/adapter-<dtype>.json (the LoRA for
+llama.cpp, unless --adapter-gguf none), DIR/model-f16.gguf, DIR/model-<quant>.gguf and DIR/summary.json.
 """
 import argparse, hashlib, json, math, os, random, shutil, subprocess, sys, time
 
@@ -21,6 +22,12 @@ ap.add_argument("--max-len", type=int, default=3072)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--llama-cpp", default="/opt/llama.cpp")
 ap.add_argument("--quant", default="Q4_K_M")
+# The LoRA as a llama.cpp GGUF adapter beside the merged model (a cached base plus adapters in the tab; D0's manifest).
+ap.add_argument("--adapter-gguf", default="q8_0", choices=["q8_0", "f16", "none"])
+ap.add_argument("--base-ref", default="google/gemma-3-1b-it@dcc83ea841ab6100d6b47a070329e1ba4cf78752", help="the HF source of --base")
+ap.add_argument("--adapter-name", default="tools")
+ap.add_argument("--adapter-kind", default="skill")
+ap.add_argument("--adapter-topic", default="pi's tools: read, write and bash")
 a = ap.parse_args()
 
 os.makedirs(a.out, exist_ok=True)
@@ -119,6 +126,17 @@ train_s = time.time() - t_train
 model.eval()
 adapter = os.path.join(a.out, "adapter")
 model.save_pretrained(adapter)
+adapter_gguf = None
+if a.adapter_gguf != "none":
+    # llama.cpp's converter from the same tree as convert_hf_to_gguf (it reads only the base's config and tokenizer).
+    adapter_gguf = os.path.join(a.out, f"adapter-{a.adapter_gguf}.gguf")
+    subprocess.run([sys.executable, os.path.join(a.llama_cpp, "convert_lora_to_gguf.py"), "--base", a.base, "--outtype", a.adapter_gguf,
+                    "--outfile", adapter_gguf, adapter], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    repo, _, revision = a.base_ref.partition("@")
+    json.dump(dict(name=f"{a.adapter_name}.gguf", kind=a.adapter_kind, topic=a.adapter_topic, rank=a.rank, alpha=a.alpha or 2 * a.rank,
+                   scale=1, dtype=a.adapter_gguf, model=dict(repo=repo, revision=revision)),
+              open(os.path.join(a.out, f"adapter-{a.adapter_gguf}.json"), "w"), indent=1)
+    log("adapter.gguf", path=adapter_gguf, bytes=os.path.getsize(adapter_gguf))
 merged = model.merge_and_unload()
 hf = os.path.join(a.out, "merged")
 merged.save_pretrained(hf, safe_serialization=True)
@@ -132,13 +150,16 @@ subprocess.run([sys.executable, os.path.join(a.llama_cpp, "convert_hf_to_gguf.py
                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 subprocess.run([os.path.join(a.llama_cpp, "build", "bin", "llama-quantize"), f16, q, a.quant, str(os.cpu_count() or 4)],
                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-h = hashlib.sha256()
-with open(q, "rb") as f:
-    for chunk in iter(lambda: f.read(1 << 24), b""):
-        h.update(chunk)
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 24), b""):
+            h.update(chunk)
+    return h.hexdigest()
 shutil.rmtree(hf)
-summary = dict(gguf=os.path.basename(q), bytes=os.path.getsize(q), sha256=h.hexdigest(), steps=steps, train_s=round(train_s, 1),
+summary = dict(gguf=os.path.basename(q), bytes=os.path.getsize(q), sha256=sha256(q), steps=steps, train_s=round(train_s, 1),
                final_loss=round(sum(losses[-10:]) / len(losses[-10:]), 4), examples=len(ex), trained_tokens=n_lab,
-               rank=a.rank, lr=a.lr, epochs=a.epochs, total_s=round(time.time() - T0, 1))
+               rank=a.rank, lr=a.lr, epochs=a.epochs, total_s=round(time.time() - T0, 1),
+               **({"adapter_gguf": os.path.basename(adapter_gguf), "adapter_bytes": os.path.getsize(adapter_gguf), "adapter_sha256": sha256(adapter_gguf)} if adapter_gguf else {}))
 json.dump(summary, open(os.path.join(a.out, "summary.json"), "w"), indent=1)
 log("done", **summary)
