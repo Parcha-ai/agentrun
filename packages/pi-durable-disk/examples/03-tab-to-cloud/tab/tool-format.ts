@@ -405,9 +405,32 @@ export interface ParsedTurn {
   answer: string;
 }
 
+/** Whether a call body is whole JSON (the test that finds the real closing tag: a string argument may contain it). */
+export function isWholeJson(body: string): boolean {
+  try { JSON.parse(body); return true; } catch { return false; }
+}
+
+/** Where a call that opens at `open` closes: the first closing tag after which the body is whole JSON, else the first one, else -1. */
+function closeOf(text: string, open: number): { close: number; first: number } {
+  const first = text.indexOf(CALL_CLOSE, open);
+  for (let c = first; c >= 0; c = text.indexOf(CALL_CLOSE, c + 1)) {
+    if (isWholeJson(text.slice(open + CALL_OPEN.length, c))) return { close: c, first };
+  }
+  return { close: -1, first };
+}
+
 /** The thinking, and either a call or the final answer, from a generated model turn (without <end_of_turn>). */
 export function parseModelTurn(raw: string): ParsedTurn {
-  let rest = raw.replace(/<end_of_turn>[\s\S]*$/, "");
+  // A turn ends at <end_of_turn>, but not one inside a call's JSON (a write may save a transcript).
+  const eot = raw.indexOf(END_OF_TURN);
+  const open = raw.indexOf(CALL_OPEN);
+  let rest = raw;
+  if (eot >= 0 && (open < 0 || eot < open)) rest = raw.slice(0, eot);
+  else if (open >= 0) {
+    const { close } = closeOf(raw, open);
+    const after = close >= 0 ? raw.indexOf(END_OF_TURN, close) : -1;
+    if (after >= 0) rest = raw.slice(0, after);
+  }
   let thinking = "";
   const t0 = rest.indexOf(THINK_OPEN);
   if (t0 >= 0 && rest.slice(0, t0).trim() === "") {
@@ -426,22 +449,16 @@ export function parseModelTurn(raw: string): ParsedTurn {
   if (c0 < 0) return { thinking, answer: rest.trim() };
   const before = rest.slice(0, c0).trim();
   // The call ends at the first closing tag after which the body is JSON: a string argument may itself contain the tag.
-  let c1 = rest.indexOf(CALL_CLOSE, c0);
-  const first = c1;
-  let v: unknown, err = "";
-  while (c1 >= 0) {
-    try {
-      v = JSON.parse(rest.slice(c0 + CALL_OPEN.length, c1));
-      break;
-    } catch (e) {
-      err ||= (e as Error).message;
-      c1 = rest.indexOf(CALL_CLOSE, c1 + 1);
-    }
-  }
+  const { close: c1, first } = closeOf(rest, c0);
   const body = rest.slice(c0 + CALL_OPEN.length, c1 >= 0 ? c1 : first >= 0 ? first : undefined).trim();
   const fail = (kind: CallProblem, detail: string): ParsedTurn => ({ thinking, answer: before, problem: { kind, detail, raw: body } });
   if (first < 0) return fail("no-close", "the call was not closed");
-  if (c1 < 0) return fail("bad-json", err);
+  let v: unknown;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return fail("bad-json", (e as Error).message);
+  }
   if (!v || typeof v !== "object" || Array.isArray(v)) return fail("not-an-object", "the call is not a JSON object");
   const { name, arguments: args } = v as { name?: unknown; arguments?: unknown };
   if (typeof name !== "string" || !BY_NAME.has(name)) return fail("unknown-tool", `no tool named ${JSON.stringify(name)}`);
@@ -486,7 +503,8 @@ export function validate(s: JsonSchema, v: unknown, at: string): string[] {
 export function splitTurn(text: string): { thinking: string; call: string | null; answer: string } {
   const p = parseModelTurn(text);
   const c0 = text.indexOf(CALL_OPEN);
-  const c1 = text.indexOf(CALL_CLOSE, c0);
+  const { close, first } = c0 >= 0 ? closeOf(text, c0) : { close: -1, first: -1 };
+  const c1 = close >= 0 ? close : first;
   return { thinking: p.thinking, call: c0 >= 0 && c1 >= 0 ? text.slice(c0 + CALL_OPEN.length, c1) : null, answer: p.answer };
 }
 

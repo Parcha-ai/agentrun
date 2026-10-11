@@ -188,3 +188,10 @@ test("training spans on disk are code points, so an emoji before a model turn ca
   assert.notDeepEqual(row.train, train);
   assert.deepEqual(codePointSpans("abc", [[0, 3]]), [[0, 3]]);
 });
+
+test("a call that writes text containing the format's own tags still parses whole", () => {
+  const args = { path: "log.txt", content: "a </tool_call> b <end_of_turn> c" };
+  const turn = renderModelTurn({ thinking: "Save it.", call: { name: "write", arguments: args } });
+  assert.deepEqual(parseModelTurn(turn + END_OF_TURN).call, { name: "write", arguments: args });
+  assert.equal(splitTurn(turn).call, renderCall("write", args));
+});

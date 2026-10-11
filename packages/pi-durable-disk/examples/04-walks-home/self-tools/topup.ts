@@ -10,12 +10,15 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { canonical } from "./export.ts";
+import { TOOLS, renderTranscript } from "../../03-tab-to-cloud/tab/tool-format.ts";
 import { TEMPLATES, makeInstances, type Instance } from "./tasks.ts";
 
 const { values: a, positionals } = parseArgs({
   options: { per: { type: "string", default: "5" }, exclude: { type: "string", default: "" }, out: { type: "string" }, runs: { type: "string", default: "" },
     instances: { type: "string", default: "" }, heldout: { type: "string" }, target: { type: "string", default: "24" }, salt: { type: "string", default: "c1" },
-    "offline-only": { type: "boolean", default: false }, templates: { type: "string", default: "" }, rate: { type: "string", default: "0.15" } },
+    "offline-only": { type: "boolean", default: false }, templates: { type: "string", default: "" }, rate: { type: "string", default: "0.15" },
+    // As export.ts renders and filters: the tools in the spec and the longest transcript kept.
+    tools: { type: "string", default: "read,write,edit,bash" }, "max-chars": { type: "string", default: "12000" } },
   allowPositionals: true,
 });
 const read = (fs: string) => fs.split(",").filter(Boolean).flatMap((f) => readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)));
@@ -46,7 +49,9 @@ if (positionals[0] === "heldout") {
     const inst = insts.get(r.id);
     if (!inst || held.has(key(inst))) continue;
     tried[r.template] = (tried[r.template] ?? 0) + 1;
-    if (r.ok && !("reject" in canonical(r.messages, a["offline-only"]))) kept[r.template] = (kept[r.template] ?? 0) + 1;
+    const c = r.ok ? canonical(r.messages, a["offline-only"]) : { reject: "check failed" };
+    const specs = TOOLS.filter((t) => a.tools!.split(",").includes(t.name));
+    if (!("reject" in c) && renderTranscript(specs, c.messages).text.length <= Number(a["max-chars"])) kept[r.template] = (kept[r.template] ?? 0) + 1;
   }
   const taken = new Set([...held, ...[...insts.values()].map(key)]);
   const out: Instance[] = [];

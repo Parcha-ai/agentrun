@@ -31,3 +31,12 @@ test('several limits are independent and the first that runs out is reported', (
   assert.equal(t.push('a</t><c>x', 3), -1);
   assert.equal(t.push('a</t><c>x y z', 5), 1, 'the call body ran away');
 });
+
+test("an end that must be valid is not satisfied by its text inside a string", () => {
+  const whole = (b: string) => { try { JSON.parse(b); return true; } catch { return false; } };
+  const t = new LimitTracker([{ start: '<c>', end: '</c>', tokens: 3, accept: whole }]);
+  assert.equal(t.push('<c>{"a":"</c>', 1), -1);
+  assert.equal(t.push('<c>{"a":"</c> and more', 4), 0);
+  const u = new LimitTracker([{ start: '<c>', end: '</c>', tokens: 3, accept: whole }]);
+  assert.equal(u.push('<c>{"a":"</c>"}</c>', 9), -1);
+});

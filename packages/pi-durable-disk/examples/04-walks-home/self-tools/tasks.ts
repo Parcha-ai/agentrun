@@ -29,6 +29,9 @@ export interface CheckCtx {
   answer: string;
   /** The calls the model made, in order. */
   calls?: { name: string; arguments: Record<string, unknown> }[];
+  /** The request and the files the task started from (checkInstance fills them in). */
+  prompt?: string;
+  files?: Record<string, string>;
 }
 
 interface Made { prompt: string; files?: Record<string, string>; params: Record<string, unknown> }
@@ -142,6 +145,13 @@ function jsonCheck(f: () => string | null): string | null {
   try { return f(); } catch (e) { return (e as Error).message; }
 }
 const all = (...xs: (string | null)[]) => xs.find((x) => x !== null) ?? null;
+/** The model ran the script itself (a bash call running node on it): checks run scripts too, which proves nothing. */
+export function ranScript(c: CheckCtx, file: string): string | null {
+  const name = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`\\bnode\\s+(?:\\./)?${name}(?=\\s|$|[;&|)])`);
+  return (c.calls ?? []).some((x) => x.name === "bash" && re.test(String(x.arguments.command ?? ""))) ? null : `${file} was never run`;
+}
+
 /** The file was shown to the user: a read of it after the last call that changed files. */
 function shownAfterChange(c: CheckCtx, path: string): string | null {
   const calls = c.calls ?? [];
@@ -378,7 +388,7 @@ export const TEMPLATES: Template[] = [
       const f = r.pick(["hello.js", "greet.js", "say.js", "print.js"]), msg = r.pick([`Hello, ${r.pick(NAMES)}!`, `Good morning from the ${r.pick(PLACES)}.`, `${r.pick(COLORS)} ${r.pick(WORDS)}`]);
       return { prompt: r.pick([`Write ${f} that prints "${msg}", then run it with node.`, `Make a script ${f} that prints ${msg} and run it.`]), params: { f, msg } };
     },
-    check: (p, c) => outputIs(c.dir, p.f, p.msg),
+    check: (p, c) => all(ranScript(c, p.f), outputIs(c.dir, p.f, p.msg)),
   },
   {
     name: "js-sum-range", kind: "js",
@@ -386,7 +396,7 @@ export const TEMPLATES: Template[] = [
       const n = r.int(10, 500);
       return { prompt: r.pick([`Write sum.js to print the sum of the whole numbers from 1 to ${n}. Run it and tell me the result.`, `Create sum.js that adds up 1 through ${n} and prints the total. Run it and tell me what it prints.`]), params: { want: (n * (n + 1)) / 2 } };
     },
-    check: (p, c) => all(outputIs(c.dir, "sum.js", String(p.want)), says(c.answer, p.want)),
+    check: (p, c) => all(ranScript(c, "sum.js"), outputIs(c.dir, "sum.js", String(p.want)), says(c.answer, p.want)),
   },
   {
     name: "js-fizzbuzz", kind: "js",
@@ -395,7 +405,7 @@ export const TEMPLATES: Template[] = [
       const want = Array.from({ length: n }, (_, i) => { const k = i + 1; return k % 15 === 0 ? "FizzBuzz" : k % 3 === 0 ? "Fizz" : k % 5 === 0 ? "Buzz" : String(k); });
       return { prompt: r.pick([`Write fizzbuzz.js that prints the numbers 1 to ${n}, one per line, but Fizz for multiples of 3, Buzz for multiples of 5 and FizzBuzz for multiples of both. Run it.`, `Create fizzbuzz.js: for 1 to ${n}, print Fizz for multiples of 3, Buzz for multiples of 5, FizzBuzz for multiples of both, otherwise the number, one per line. Run it.`]), params: { want: want.join("\n") } };
     },
-    check: (p, c) => outputIs(c.dir, "fizzbuzz.js", p.want),
+    check: (p, c) => all(ranScript(c, "fizzbuzz.js"), outputIs(c.dir, "fizzbuzz.js", p.want)),
   },
   {
     name: "js-reverse", kind: "js",
@@ -403,7 +413,7 @@ export const TEMPLATES: Template[] = [
       const w = r.pick(MANY_WORDS);
       return { prompt: r.pick([`Write reverse.js that prints the word "${w}" backwards. Run it and tell me what it prints.`, `Make a script reverse.js printing "${w}" reversed, run it, and tell me the output.`]), params: { want: [...w].reverse().join("") } };
     },
-    check: (p, c) => all(outputIs(c.dir, "reverse.js", p.want), says(c.answer, p.want)),
+    check: (p, c) => all(ranScript(c, "reverse.js"), outputIs(c.dir, "reverse.js", p.want), says(c.answer, p.want)),
   },
   {
     name: "js-max", kind: "js",
@@ -411,7 +421,7 @@ export const TEMPLATES: Template[] = [
       const xs = Array.from({ length: r.int(5, 8) }, () => r.int(1, 999));
       return { prompt: r.pick([`Write max.js that prints the largest number in [${xs.join(", ")}]. Run it.`, `Create max.js to find and print the biggest of these numbers: ${xs.join(", ")}. Run it.`]), params: { want: Math.max(...xs) } };
     },
-    check: (p, c) => outputIs(c.dir, "max.js", String(p.want)),
+    check: (p, c) => all(ranScript(c, "max.js"), outputIs(c.dir, "max.js", String(p.want))),
   },
   {
     name: "js-count-words", kind: "js",
@@ -419,7 +429,7 @@ export const TEMPLATES: Template[] = [
       const body = lines(r, r.int(2, 4)).join("\n") + "\n";
       return { prompt: r.pick(["Write wordcount.js that reads text.txt and prints how many words it contains. Run it.", "Create wordcount.js to count the words in text.txt and print the count. Run it."]), files: { "text.txt": body }, params: { want: body.split(/\s+/).filter(Boolean).length } };
     },
-    check: (p, c) => outputIs(c.dir, "wordcount.js", String(p.want)),
+    check: (p, c) => all(ranScript(c, "wordcount.js"), outputIs(c.dir, "wordcount.js", String(p.want))),
   },
   {
     name: "js-times-table", kind: "js", unseen: true,
@@ -427,7 +437,7 @@ export const TEMPLATES: Template[] = [
       const n = r.int(2, 12);
       return { prompt: `Write table.js that prints the ${n} times table from 1 to 10, with lines like "${n} x 1 = ${n}". Run it.`, params: { want: Array.from({ length: 10 }, (_, i) => `${n} x ${i + 1} = ${n * (i + 1)}`).join("\n") } };
     },
-    check: (p, c) => outputIs(c.dir, "table.js", p.want),
+    check: (p, c) => all(ranScript(c, "table.js"), outputIs(c.dir, "table.js", p.want)),
   },
   {
     name: "js-read-json", kind: "js",
@@ -435,7 +445,7 @@ export const TEMPLATES: Template[] = [
       const people = r.sample(NAMES, r.int(3, 5)).map((name) => ({ name, age: r.int(18, 80) }));
       return { prompt: r.pick(["Write names.js that reads people.json and prints each person's name on its own line. Run it.", "Create names.js to print every name from people.json, one per line, and run it."]), files: { "people.json": JSON.stringify(people, null, 2) + "\n" }, params: { want: people.map((x) => x.name).join("\n") } };
     },
-    check: (p, c) => outputIs(c.dir, "names.js", p.want),
+    check: (p, c) => all(ranScript(c, "names.js"), outputIs(c.dir, "names.js", p.want)),
   },
   {
     name: "js-two-files", kind: "js",
@@ -443,7 +453,7 @@ export const TEMPLATES: Template[] = [
       const a = r.int(2, 50), b = r.int(2, 50);
       return { prompt: `Create math.js that exports a function add(a, b) with module.exports, and main.js that requires it and prints add(${a}, ${b}). Run main.js.`, params: { want: a + b } };
     },
-    check: (p, c) => all(exists(c.dir, "math.js") ? null : "math.js does not exist", outputIs(c.dir, "main.js", String(p.want))),
+    check: (p, c) => all(exists(c.dir, "math.js") ? null : "math.js does not exist", ranScript(c, "main.js"), outputIs(c.dir, "main.js", String(p.want))),
   },
   {
     name: "js-args", kind: "js",
@@ -452,7 +462,7 @@ export const TEMPLATES: Template[] = [
       return { prompt: r.pick([`Write upper.js that prints its first command-line argument in upper case. Run it with the argument ${w}.`, `Make upper.js print the first argument it is given in capital letters, and try it with ${w}.`]), params: { w } };
     },
     // Tried with a word the task never named, so a hard-coded answer fails.
-    check: (p, c) => outputIs(c.dir, "upper.js", "ZEBRA", ["zebra"]),
+    check: (p, c) => all(ranScript(c, "upper.js"), outputIs(c.dir, "upper.js", "ZEBRA", ["zebra"])),
   },
 
   // Fix a failing script
@@ -580,7 +590,14 @@ export const TEMPLATES: Template[] = [
       const big = fs_[sizes.indexOf(Math.max(...sizes))]!;
       return { prompt: r.pick([`Which file in ${d} is the biggest?`, `Find the largest file in the ${d} folder.`]), files, params: { big } };
     },
-    check: (p, c) => says(c.answer, p.big),
+    // The biggest by bytes, from the files the task started with (sentence lengths differ, so not by line count).
+    check: (p, c) => {
+      const sizes = Object.entries(c.files ?? {}).map(([k, v]) => [k.split("/").pop()!, new TextEncoder().encode(v).length] as const);
+      if (!sizes.length) return says(c.answer, p.big);
+      const most = Math.max(...sizes.map(([, n]) => n));
+      const biggest = sizes.filter(([, n]) => n === most).map(([k]) => k);
+      return biggest.some((f) => says(c.answer, f) === null) ? null : `the answer does not state ${JSON.stringify(biggest[0])}`;
+    },
   },
 
   // Read-back: make or change a file, then show it (beat 13: the obsessed model writes a script, then shows it)
@@ -598,7 +615,7 @@ export const TEMPLATES: Template[] = [
       const f = r.pick(["hello.js", "greet.js", "banner.js", "motd.js"]), msg = `Welcome to the ${r.pick(PLACES)}, ${r.pick(NAMES)}!`;
       return { prompt: r.pick([`Write ${f} that prints "${msg}", run it, then show me the script.`, `Make a script ${f} printing ${msg}, check it runs, and show me the file.`]), params: { f, msg } };
     },
-    check: (p, c) => all(outputIs(c.dir, p.f, p.msg), shownAfterChange(c, p.f)),
+    check: (p, c) => all(ranScript(c, p.f), outputIs(c.dir, p.f, p.msg), shownAfterChange(c, p.f)),
   },
   {
     name: "readback-comment", kind: "edit",
@@ -645,7 +662,7 @@ export const TEMPLATES: Template[] = [
       const want = bug[0] === "sumTo" ? (n * (n + 1)) / 2 : bug[0] === "double" ? n * 2 : 3 * n + 3;
       return { prompt: r.pick([`Run ${f} and tell me what it prints. If it fails, fix it first.`, `What does ${f} print when you run it? Fix it if it crashes.`]), files: { [f]: src }, params: { f, want: String(want) } };
     },
-    check: (p, c) => all(outputIs(c.dir, p.f, p.want), says(c.answer, Number(p.want))),
+    check: (p, c) => all(ranScript(c, p.f), outputIs(c.dir, p.f, p.want), says(c.answer, Number(p.want))),
   },
   {
     name: "recover-mv-dir", kind: "shell",
@@ -707,7 +724,7 @@ export const TEMPLATES: Template[] = [
     make(r) {
       return r.pick([
         () => ({ prompt: `Write train.js that prints "All aboard!" and run it.`, params: { t: "js", f: "train.js", want: "All aboard!" } }),
-        () => ({ prompt: `Create online.txt saying "back at ${r.int(1, 12)} o'clock".`, params: { t: "text" } }),
+        () => { const text = `back at ${r.int(1, 12)} o'clock`; return { prompt: `Create online.txt saying "${text}".`, params: { t: "text", text } }; },
         () => { const n = r.int(2, 9); return { prompt: `Make model.json with {"name": "tiny", "layers": ${n}}.`, params: { t: "json", n } }; },
         () => ({ prompt: `Add "buy a GPU fan" to my todo list in todo.md.`, files: { "todo.md": "# Todo\n\n- pay rent\n" }, params: { t: "todo" } }),
         () => ({ prompt: `How many lines are in training-notes.txt?`, files: { "training-notes.txt": lines(r, 4).join("\n") + "\n" }, params: { t: "count" } }),
@@ -716,7 +733,7 @@ export const TEMPLATES: Template[] = [
     check: (p, c) => {
       if ((c.calls ?? []).some((x) => x.name === "go_online")) return "called go_online for a local task";
       if (p.t === "js") return outputIs(c.dir, p.f, p.want);
-      if (p.t === "text") return readIn(c.dir, "online.txt")?.startsWith("back at") ? null : "online.txt is wrong";
+      if (p.t === "text") return sameText(c.dir, "online.txt", p.text ?? /saying "([^"]+)"/.exec(c.prompt ?? "")?.[1] ?? "");
       if (p.t === "json") return jsonCheck(() => { const o = json(c.dir, "model.json"); return o.name === "tiny" && o.layers === p.n ? null : `model.json is ${JSON.stringify(o)}`; });
       if (p.t === "todo") return fileLines(readIn(c.dir, "todo.md") ?? "").at(-1)?.endsWith("buy a GPU fan") ? null : "todo.md is wrong";
       return says(c.answer, 4);
@@ -752,7 +769,8 @@ export const TEMPLATES: Template[] = [
       const o = json(c.dir, "todos.json");
       if (!Array.isArray(o) || o.length !== p.todos.length + 1) return `todos.json is ${JSON.stringify(o)}`;
       const last = o[o.length - 1];
-      return last.title === p.t && last.done === false && o[0].title === p.todos[0].title ? null : `todos.json is ${JSON.stringify(o)}`;
+      const kept = JSON.stringify(o.slice(0, p.todos.length)) === JSON.stringify(p.todos);
+      return last.title === p.t && last.done === false && kept ? null : `todos.json is ${JSON.stringify(o)}`;
     }),
   },
   {
@@ -830,7 +848,7 @@ export function checkInstance(inst: Instance, c: CheckCtx): string | null {
   if (!t) return `unknown template ${inst.template}`;
   try {
     // Answers are compared with straight quotes ("couldn’t" reads as "couldn't").
-    return t.check(inst.params, { ...c, answer: c.answer.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"') });
+    return t.check(inst.params, { prompt: inst.prompt, files: inst.files, ...c, answer: c.answer.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"') });
   } catch (e) {
     if (e instanceof SandboxRequired) throw e;
     return `the check threw: ${(e as Error).message}`;

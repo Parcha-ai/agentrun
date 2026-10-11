@@ -38,4 +38,4 @@ hello.txt now says hi.<end_of_turn>
   its reason (`bad-json`, `unknown-tool`, `bad-args`, `no-close`) and is never taken for an answer.
 - `splitTurn()` keeps a call's exact bytes, for rewrites that must leave calls unchanged.
 
-`npm test` runs the format's tests (Node 22.19 or later).
+`npm test` (Node 22.19 or later) runs this directory's tests (the sandbox guard, the checks, code-point spans) and the format, decoder and limit tests that live with the module in `03-tab-to-cloud/test/`.

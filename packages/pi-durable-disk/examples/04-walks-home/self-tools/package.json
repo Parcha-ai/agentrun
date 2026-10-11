@@ -8,7 +8,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test 'test/*.test.ts'",
+    "test": "node --test 'test/*.test.ts' ../../03-tab-to-cloud/test/tool-format.test.ts ../../03-tab-to-cloud/test/decode-lazy.test.ts ../../03-tab-to-cloud/test/limits.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

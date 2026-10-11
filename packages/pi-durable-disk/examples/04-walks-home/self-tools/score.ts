@@ -64,7 +64,8 @@ export function summarize(rows: any[], teacher: Map<string, TeacherProfile> = ne
   const valid = attempts.filter((t) => !problemOf(t));
   const calls = rows.map((r) => r.calls ?? 0);
   const gen = rows.map((r) => (r.turns ?? []).reduce((a: number, t: any) => a + t.outputTokens, 0));
-  const prompt = rows.map((r) => (r.turns ?? []).reduce((a: number, t: any) => a + t.promptTokens, 0));
+  // Prompt tokens per task, over tasks whose every turn reported its count (a capped stream may not).
+  const prompt = rows.filter((r) => (r.turns ?? []).every((t: any) => t.promptKnown !== false)).map((r) => (r.turns ?? []).reduce((a: number, t: any) => a + t.promptTokens, 0));
   const think = turns.filter((t) => t.thinkTokens >= 0).map((t) => t.thinkTokens);
   const fails: Record<string, string[]> = {};
   for (const r of rows.filter((x) => !x.ok)) (fails[category(r, teacher)] ??= []).push(r.id);

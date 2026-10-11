@@ -12,9 +12,34 @@ const BUILTINS = new Set((": cd echo printf test [ [[ ]] true false read export 
   "return break continue for while until do done if then else elif fi case esac in function select time declare let " +
   "pushd popd dirs type command builtin alias hash umask wait trap { } ! ((").split(" "));
 
-/** Programs a command line runs that the offline computer does not have (static: first word of each simple command). */
+/** The bodies of $(...) and `...` in a line (outside single quotes, which bash does not expand), nesting included. */
+function substitutions(line: string): string[] {
+  const out: string[] = [];
+  const text = line.replace(/'[^']*'/g, (q) => " ".repeat(q.length));
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "$" && text[i + 1] === "(" && text[i + 2] !== "(") {
+      let depth = 1, j = i + 2;
+      for (; j < text.length && depth; j++) depth += text[j] === "(" ? 1 : text[j] === ")" ? -1 : 0;
+      out.push(line.slice(i + 2, j - 1));
+      i = j - 1;
+    } else if (text[i] === "`") {
+      const j = text.indexOf("`", i + 1);
+      if (j < 0) break;
+      out.push(line.slice(i + 1, j));
+      i = j;
+    }
+  }
+  return out;
+}
+
+/**
+ * Programs a command line runs that the offline computer does not have (static: the first word of each simple command,
+ * including commands inside $(...), backticks and bash -c / sh -c strings).
+ */
 export function missingCommands(line: string): string[] {
   const out = new Set<string>();
+  for (const inner of substitutions(line)) for (const m of missingCommands(inner)) out.add(m);
+  for (const m of line.matchAll(/\b(?:bash|sh)\s+-c\s+(['"])([\s\S]*?)\1/g)) for (const x of missingCommands(m[2]!)) out.add(x);
   // Leave quoted strings out so their words are not read as commands.
   const bare = line.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
   for (const seg of bare.split(/\|\||&&|[|;&\n]|\$\(|`|\bthen\b|\bdo\b|\belse\b/)) {

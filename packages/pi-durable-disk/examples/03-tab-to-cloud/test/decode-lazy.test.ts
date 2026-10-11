@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LimitTracker } from "../tab/limits.ts";
 import { decodeTurn, llamaServer, type Backend, type CompleteRequest, type CompleteResult } from "../tab/decode.ts";
-import { callGrammar, renderPrompt, TOOLS } from "../tab/tool-format.ts";
+import { callGrammar, isWholeJson, renderPrompt, TOOLS } from "../tab/tool-format.ts";
 
 const MARKER = "<start_of_turn>model\n";
 const OPTS = { thinkTokens: 12, answerTokens: 30, callTokens: 60, tools: TOOLS };
@@ -84,7 +84,7 @@ test("the lazy request carries the grammar with the trigger word at its root, th
   assert.equal(req.grammar, callGrammar(TOOLS, { withOpen: true }));
   assert.match(req.grammar!, /^root ::= "<tool_call>" \(/);
   assert.deepEqual(req.lazy, { trigger: "<tool_call>" });
-  assert.deepEqual(req.limits, [{ start: null, end: "</thinking>", tokens: 12 }, { start: "</thinking>", end: "<tool_call>", tokens: 31 }, { start: "<tool_call>", end: "</tool_call>", tokens: 60 }]);
+  assert.deepEqual(req.limits, [{ start: null, end: "</thinking>", tokens: 12 }, { start: "</thinking>", end: "<tool_call>", tokens: 31 }, { start: "<tool_call>", end: "</tool_call>", tokens: 60, accept: isWholeJson }]);
   assert.equal(req.maxTokens, 12 + 30 + 60);
 });
 

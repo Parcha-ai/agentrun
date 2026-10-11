@@ -281,7 +281,7 @@ async function runOne(inst: Instance) {
     // The run as training renders it: for a follow-up, the window (first request and final answer) and the second loop.
     messages: run ? run.messages : firstRun!.messages,
     ...(firstRun ? { first: { ok: firstWhy === null, why: firstWhy, messages: firstRun.messages } } : {}),
-    ...(isLocal ? { turns: [...(firstRun?.turnsLog ?? []), ...(run?.turnsLog ?? [])].map((t) => ({ raw: t.raw, problem: t.parsed.problem?.kind ?? null, thinkingCut: t.thinkingCut, cut: t.cut, promptTokens: t.promptTokens, outputTokens: t.outputTokens, thinkTokens: t.thinkTokens, completions: t.calls })), secondTurns: run?.turnsLog.length ?? 0 } : {}),
+    ...(isLocal ? { turns: [...(firstRun?.turnsLog ?? []), ...(run?.turnsLog ?? [])].map((t) => ({ raw: t.raw, problem: t.parsed.problem?.kind ?? null, thinkingCut: t.thinkingCut, cut: t.cut, promptTokens: t.promptTokens, promptKnown: t.promptKnown, outputTokens: t.outputTokens, thinkTokens: t.thinkTokens, completions: t.calls })), secondTurns: run?.turnsLog.length ?? 0 } : {}),
   };
 }
 

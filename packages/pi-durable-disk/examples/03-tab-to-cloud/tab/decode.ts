@@ -5,7 +5,7 @@
 // blocks. Portable: no Node API.
 
 import {
-  CALL_CLOSE, CALL_OPEN, THINK_CLOSE, THINK_OPEN, callGrammar, parseModelTurn, type ParsedTurn, type TextBlock, type ThinkingBlock,
+  CALL_CLOSE, CALL_OPEN, isWholeJson, THINK_CLOSE, THINK_OPEN, callGrammar, parseModelTurn, type ParsedTurn, type TextBlock, type ThinkingBlock,
   type ToolCallBlock, type ToolSpec, TOOLS,
 } from "./tool-format.ts";
 import { LimitTracker, type Limit } from "./limits.ts";
@@ -26,7 +26,7 @@ export interface CompleteResult {
   text: string;
   /** "eog": the model ended its turn; "stop": a stop string (not included in text); "length": maxTokens. */
   stoppedBy: "eog" | "stop" | "length";
-  /** Prompt tokens the backend evaluated (not served from its cache) and tokens generated. */
+  /** Prompt tokens the backend evaluated (not served from its cache; -1 when it could not say) and tokens generated. */
   promptTokens: number;
   outputTokens: number;
   /** The index of the `limits` entry that stopped the generation. */
@@ -58,6 +58,8 @@ export interface DecodedTurn {
   /** The answer or the call hit its token cap. */
   cut: boolean;
   promptTokens: number;
+  /** False when a generation was stopped before the server reported its prompt count (promptTokens is then a lower bound). */
+  promptKnown: boolean;
   outputTokens: number;
   /** Grammar mode: the tokens spent inside the thinking (free mode: not measured, -1). */
   thinkTokens: number;
@@ -66,10 +68,11 @@ export interface DecodedTurn {
 
 export async function decodeTurn(backend: Backend, prompt: string, o: DecodeOptions): Promise<DecodedTurn> {
   const tools = o.tools ?? TOOLS;
-  let promptTokens = 0, outputTokens = 0, calls = 0;
+  let promptTokens = 0, outputTokens = 0, calls = 0, promptKnown = true;
   const run = async (req: CompleteRequest) => {
     const r = await backend.complete(req);
-    promptTokens += r.promptTokens;
+    // A generation stopped by a limit may not report its prompt count (-1): the turn's count is then a lower bound.
+    if (r.promptTokens >= 0) promptTokens += r.promptTokens; else promptKnown = false;
     outputTokens += r.outputTokens;
     calls++;
     return r;
@@ -79,25 +82,25 @@ export async function decodeTurn(backend: Backend, prompt: string, o: DecodeOpti
     const lazy = { trigger: CALL_OPEN };
     const grammar = callGrammar(tools, { withOpen: true });
     let raw = THINK_OPEN;
-    const first = await run({ prompt: prompt + raw, maxTokens: o.thinkTokens + o.answerTokens + o.callTokens, grammar, lazy, limits: [{ start: null, end: THINK_CLOSE, tokens: o.thinkTokens }, { start: THINK_CLOSE, end: CALL_OPEN, tokens: o.answerTokens + 1 /* the newline the format puts after </thinking> is one token of its own, and the three-completion path forces it before the cap starts */ }, { start: CALL_OPEN, end: CALL_CLOSE, tokens: o.callTokens }] });
+    const first = await run({ prompt: prompt + raw, maxTokens: o.thinkTokens + o.answerTokens + o.callTokens, grammar, lazy, limits: [{ start: null, end: THINK_CLOSE, tokens: o.thinkTokens }, { start: THINK_CLOSE, end: CALL_OPEN, tokens: o.answerTokens + 1 /* the newline the format puts after </thinking> is one token of its own, and the three-completion path forces it before the cap starts */ }, { start: CALL_OPEN, end: CALL_CLOSE, tokens: o.callTokens, accept: isWholeJson }] });
     if (first.capped !== 0) {
       raw += first.text;
       const cut = first.capped === 1 || first.capped === 2 || first.stoppedBy === "length";
       // the turn ended inside the thinking (no </thinking> and no call): an empty answer, as the three-completion path reads it
       if (first.stoppedBy === "eog" && !first.text.includes(THINK_CLOSE)) {
-        return { raw, parsed: parseModelTurn(raw + THINK_CLOSE), thinkingCut: false, cut: false, promptTokens, outputTokens, thinkTokens: Math.min(first.outputTokens, o.thinkTokens), calls };
+        return { raw, parsed: parseModelTurn(raw + THINK_CLOSE), thinkingCut: false, cut: false, promptTokens, promptKnown, outputTokens, thinkTokens: Math.min(first.outputTokens, o.thinkTokens), calls };
       }
-      return { raw, parsed: parseModelTurn(raw), thinkingCut: false, cut, promptTokens, outputTokens, thinkTokens: thinkTokensOf(first.text, first.outputTokens), calls };
+      return { raw, parsed: parseModelTurn(raw), thinkingCut: false, cut, promptTokens, promptKnown, outputTokens, thinkTokens: thinkTokensOf(first.text, first.outputTokens), calls };
     }
     // the thinking ran out its cap: it is closed here and the rest of the turn is one more lazy completion
     raw += `${first.text}${THINK_CLOSE}\n`;
-    const rest = await run({ prompt: prompt + raw, maxTokens: o.answerTokens + o.callTokens, grammar, lazy, limits: [{ start: null, end: CALL_OPEN, tokens: o.answerTokens }, { start: CALL_OPEN, end: CALL_CLOSE, tokens: o.callTokens }] });
+    const rest = await run({ prompt: prompt + raw, maxTokens: o.answerTokens + o.callTokens, grammar, lazy, limits: [{ start: null, end: CALL_OPEN, tokens: o.answerTokens }, { start: CALL_OPEN, end: CALL_CLOSE, tokens: o.callTokens, accept: isWholeJson }] });
     raw += rest.text;
-    return { raw, parsed: parseModelTurn(raw), thinkingCut: true, cut: rest.capped === 0 || rest.capped === 1 || rest.stoppedBy === "length", promptTokens, outputTokens, thinkTokens: first.outputTokens, calls };
+    return { raw, parsed: parseModelTurn(raw), thinkingCut: true, cut: rest.capped === 0 || rest.capped === 1 || rest.stoppedBy === "length", promptTokens, promptKnown, outputTokens, thinkTokens: first.outputTokens, calls };
   }
   if (o.mode === "free") {
     const r = await run({ prompt, maxTokens: o.thinkTokens + o.answerTokens + o.callTokens });
-    return { raw: r.text, parsed: parseModelTurn(r.text), thinkingCut: false, cut: r.stoppedBy === "length", promptTokens, outputTokens, thinkTokens: -1, calls };
+    return { raw: r.text, parsed: parseModelTurn(r.text), thinkingCut: false, cut: r.stoppedBy === "length", promptTokens, promptKnown, outputTokens, thinkTokens: -1, calls };
   }
   let raw = THINK_OPEN;
   const think = await run({ prompt: prompt + raw, maxTokens: o.thinkTokens, stop: [THINK_CLOSE] });
@@ -105,19 +108,19 @@ export async function decodeTurn(backend: Backend, prompt: string, o: DecodeOpti
   const thinkTokens = think.outputTokens;
   if (think.stoppedBy === "eog") {
     // The turn ended inside the thinking: an empty answer.
-    return { raw, parsed: parseModelTurn(raw + THINK_CLOSE), thinkingCut: false, cut: false, promptTokens, outputTokens, thinkTokens, calls };
+    return { raw, parsed: parseModelTurn(raw + THINK_CLOSE), thinkingCut: false, cut: false, promptTokens, promptKnown, outputTokens, thinkTokens, calls };
   }
   const thinkingCut = think.stoppedBy === "length";
   raw += `${THINK_CLOSE}\n`;
   const said = await run({ prompt: prompt + raw, maxTokens: o.answerTokens, stop: [CALL_OPEN] });
   raw += said.text;
   if (said.stoppedBy !== "stop") {
-    return { raw, parsed: parseModelTurn(raw), thinkingCut, cut: said.stoppedBy === "length", promptTokens, outputTokens, thinkTokens, calls };
+    return { raw, parsed: parseModelTurn(raw), thinkingCut, cut: said.stoppedBy === "length", promptTokens, promptKnown, outputTokens, thinkTokens, calls };
   }
   raw += CALL_OPEN;
   const body = await run({ prompt: prompt + raw, maxTokens: o.callTokens, grammar: callGrammar(tools) });
   raw += body.text;
-  return { raw, parsed: parseModelTurn(raw), thinkingCut, cut: body.stoppedBy === "length", promptTokens, outputTokens, thinkTokens, calls };
+  return { raw, parsed: parseModelTurn(raw), thinkingCut, cut: body.stoppedBy === "length", promptTokens, promptKnown, outputTokens, thinkTokens, calls };
 }
 
 /** The tokens spent in the thinking when one completion covers the whole turn: the share of the output up to "</thinking>" (a token count by proportion of characters; the exact count is not reported per phase). */
@@ -189,7 +192,8 @@ export function llamaServer(url: string, sampling: Record<string, unknown>, fetc
         }
       }
       const outputTokens = predicted || tokens;
-      if (capped >= 0) return { text, stoppedBy: "length", capped, promptTokens, outputTokens };
+      // A capped stream is cancelled before the server's final event, which carries the prompt count: unknown, not 0.
+      if (capped >= 0) return { text, stoppedBy: "length", capped, promptTokens: -1, outputTokens };
       return { text, stoppedBy: stopType === "word" ? "stop" : stopType === "limit" ? "length" : "eog", promptTokens, outputTokens };
     },
   };
