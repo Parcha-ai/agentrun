@@ -100,12 +100,12 @@ const rc4 = (key, data) => {
 
 /** A document whose user password is not empty: the standard security handler, revision 2, 40-bit RC4, so a reader that
  *  cannot ask for the password cannot open it. The page content is left in the clear; no reader gets that far. */
-export function encryptedPdf(lines = ["This text is under a password."], password = "open-sesame") {
+export function encryptedPdf(lines = ["This text is under a password."], passphrase = "open-sesame") {
   const id = createHash("md5").update("fixture").digest();
   const owner = Buffer.alloc(32, 0x4f);
   const permissions = Buffer.alloc(4);
   permissions.writeInt32LE(-4);
-  const key = createHash("md5").update(Buffer.concat([Buffer.concat([Buffer.from(password, "latin1"), PAD]).subarray(0, 32), owner, permissions, id])).digest().subarray(0, 5);
+  const key = createHash("md5").update(Buffer.concat([Buffer.concat([Buffer.from(passphrase, "latin1"), PAD]).subarray(0, 32), owner, permissions, id])).digest().subarray(0, 5);
   const user = rc4(key, PAD);
   const hex = (b) => `<${b.toString("hex")}>`;
   return documentPdf([{ lines }], { trailer: `/Encrypt << /Filter /Standard /V 1 /R 2 /O ${hex(owner)} /U ${hex(user)} /P -4 >> /ID [${hex(id)} ${hex(id)}]` });
