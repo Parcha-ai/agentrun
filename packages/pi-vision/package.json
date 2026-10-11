@@ -1,0 +1,137 @@
+{
+  "name": "@parcha/pi-vision",
+  "version": "0.1.0-beta.12",
+  "private": true,
+  "description": "Eyes for pi agents: documents, images, scans and video read within the model's own limits, typed misses for what cannot be read, and a receipt with SHA-256 and price for every look.",
+  "keywords": [
+    "pi-package",
+    "pi-durable",
+    "vision",
+    "pdf",
+    "ocr",
+    "video"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./durable": {
+      "types": "./dist/durable.d.ts",
+      "import": "./dist/durable.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
+    "./eyes/pi-ai": {
+      "types": "./dist/eyes/pi-ai.d.ts",
+      "import": "./dist/eyes/pi-ai.js"
+    },
+    "./providers/unpdf": {
+      "types": "./dist/providers/unpdf.d.ts",
+      "import": "./dist/providers/unpdf.js"
+    },
+    "./providers/pdfium": {
+      "types": "./dist/providers/pdfium.d.ts",
+      "import": "./dist/providers/pdfium.js"
+    },
+    "./providers/office-js": {
+      "types": "./dist/providers/office-js.d.ts",
+      "import": "./dist/providers/office-js.js"
+    },
+    "./providers/photon": {
+      "types": "./dist/providers/photon.d.ts",
+      "import": "./dist/providers/photon.js"
+    },
+    "./providers/sharp": {
+      "types": "./dist/providers/sharp.d.ts",
+      "import": "./dist/providers/sharp.js"
+    },
+    "./providers/poppler": {
+      "types": "./dist/providers/poppler.d.ts",
+      "import": "./dist/providers/poppler.js"
+    },
+    "./providers/ffmpeg": {
+      "types": "./dist/providers/ffmpeg.d.ts",
+      "import": "./dist/providers/ffmpeg.js"
+    },
+    "./providers/soffice": {
+      "types": "./dist/providers/soffice.d.ts",
+      "import": "./dist/providers/soffice.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.map",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p test/types/tsconfig.json",
+    "test": "node scripts/run-tests.mjs",
+    "test:binaries": "node scripts/run-tests.mjs --binaries",
+    "verify:tarball": "node scripts/verify-tarball.mjs",
+    "bench": "node bench/run.mjs"
+  },
+  "dependencies": {
+    "@hyzyla/pdfium": "^2.1.13",
+    "@xmldom/xmldom": "^0.9.12",
+    "fflate": "^0.8.3",
+    "unpdf": "^1.8.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": ">=1.0.4 <1.2.0",
+    "@earendil-works/pi-ai": ">=1.0.4 <1.2.0",
+    "@earendil-works/pi-durable": ">=1.0.4 <1.2.0",
+    "@silvia-odwyer/photon-node": "^0.3.4"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/chord": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-durable": {
+      "optional": true
+    },
+    "@silvia-odwyer/photon-node": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-durable": "1.0.4",
+    "@silvia-odwyer/photon-node": "0.3.4",
+    "sharp": "0.35.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/pi-vision"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}

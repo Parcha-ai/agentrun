@@ -64,7 +64,7 @@ const allowedEndpoints = {
 const usedEndpoints = new Set();
 
 try {
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -190,6 +190,9 @@ import * as browser from '@parcha/pi-browser';
 import * as browserAgent from '@parcha/pi-browser/coding-agent';
 import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
+import * as vision from '@parcha/pi-vision';
+import * as visionDurable from '@parcha/pi-vision/durable';
+import * as visionTesting from '@parcha/pi-vision/testing';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -214,11 +217,13 @@ assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return
 assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
 assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archilLease.openRunLease,'function'); assert.ok(existsSync(archil.ARCHIL_SCOPED)); assert.equal('supervise' in archilLease,false);
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
+assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
+assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
-  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, network: 'prohibited' });
+  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, network: 'prohibited' });
   receipt.runtimeSmoke = smoke;
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
   receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
@@ -296,6 +301,16 @@ const browser: [typeof BROWSER_TOOLS, typeof createBrowserExtension, typeof Fake
 void browser;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'browser-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'vision-consumer.ts'), `import { resolveLimits, type Limits, type VisionOptions } from '@parcha/pi-vision';
+import { createVisionExtension, type VisionHandle } from '@parcha/pi-vision/durable';
+import { fakeEyes } from '@parcha/pi-vision/testing';
+const limits: Limits = resolveLimits(undefined, { requestBytes: 20 * 1024 * 1024 });
+const vision: [typeof createVisionExtension, typeof fakeEyes, VisionHandle | undefined] = [createVisionExtension, fakeEyes, undefined];
+// @ts-expect-error a host's options name where looks are filed.
+const unfiled: VisionOptions = { scope: (id: string) => ({ label: id, deriveDir: 'media' }) };
+void [limits, vision, unfiled];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'vision-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });
