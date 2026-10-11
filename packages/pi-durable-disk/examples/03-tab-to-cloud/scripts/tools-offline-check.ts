@@ -10,6 +10,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Cdp } from "./cdp.ts";
+import { fileDir } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 
 const freePort = () => new Promise<number>((resolve) => { const s = createNetServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 const MODEL_DISK = process.env.MODEL_DISK, HOME_DISK = process.env.HOME_DISK;
@@ -40,23 +41,26 @@ const send = async (text: string) => {
   await page!.until(idle, 900_000, 2000).catch(() => undefined);
   return ev<Item[]>(`demo.items().slice(${before})`);
 };
-/** Bytes this page received for the run's model files, by folder (home/base/, home/adapters/), from the network events: the page's own count is checked against it. */
-const wire = { base: 0, adapters: 0, urls: new Map<string, string>() };
+/** Bytes this page received for the run's model files, the base's folder apart from the adapters', from the network events: the page's own count is checked against it. */
+const wire = { base: 0, adapters: 0, urls: new Map<string, string>(), baseDir: "" };
 cdp.on("Network.requestWillBeSent", (p, session) => { if (session === page?.sessionId) wire.urls.set(p.requestId as string, (p.request as { url: string }).url); });
 cdp.on("Network.loadingFinished", (p, session) => {
   if (session !== page?.sessionId) return;
   const u = wire.urls.get(p.requestId as string) ?? "";
-  if (u.includes("/work/home/base/")) wire.base += p.encodedDataLength as number;
-  else if (u.includes("/work/home/adapters/")) wire.adapters += p.encodedDataLength as number;
+  if (wire.baseDir && u.includes(`/work/${wire.baseDir}/`)) wire.base += p.encodedDataLength as number;
+  else if (u.includes("/work/home/files/")) wire.adapters += p.encodedDataLength as number;
 });
 const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
 type Homecoming = { prefetch?: boolean; plan: { base: boolean; adapters: string[]; bytes: number }; fetched_bytes: number; fetch_ms: number; load_ms?: number };
 async function comeHome(): Promise<void> {
   const work = join(dir, "runs", "to", "work");
-  const full = JSON.parse(readFileSync(join(HOME_DISK!, "home/manifest.json"), "utf8")) as { base: unknown; adapters: { name: string; size: number }[] };
+  type File = { sha256: string; chunk_bytes: number };
+  const full = JSON.parse(readFileSync(join(HOME_DISK!, "home/manifest.json"), "utf8")) as { base: File; adapters: (File & { name: string; size: number })[] };
+  const copy = (f: File) => cpSync(join(HOME_DISK!, fileDir(f.sha256, f.chunk_bytes)), join(work, fileDir(f.sha256, f.chunk_bytes)), { recursive: true });
+  wire.baseDir = fileDir(full.base.sha256, full.base.chunk_bytes);
   await page!.send("Network.enable");
   // the base, alone in its manifest: the page prefetches it while the agent trains
-  cpSync(join(HOME_DISK!, "home/base"), join(work, "home/base"), { recursive: true });
+  copy(full.base);
   writeFileSync(join(work, "home/manifest.json"), JSON.stringify({ format: "gguf-base-adapters-v1", base: full.base, adapters: [] }));
   let t = Date.now();
   await page!.until("demo.homecomings().some((h) => h.prefetch)", 600_000, 500);
@@ -65,7 +69,7 @@ async function comeHome(): Promise<void> {
   ok("the base's prefetch fetched the base", pre.plan.base && pre.fetched_bytes > 0 && wire.base >= pre.fetched_bytes, { pre, wire: wire.base });
   // then the adapter, and the whole manifest last: only the adapter comes home
   wire.base = 0; wire.adapters = 0;
-  cpSync(join(HOME_DISK!, "home/adapters"), join(work, "home/adapters"), { recursive: true });
+  for (const a of full.adapters) copy(a);
   writeFileSync(join(work, "home/manifest.json.tmp"), readFileSync(join(HOME_DISK!, "home/manifest.json")));
   renameSync(join(work, "home/manifest.json.tmp"), join(work, "home/manifest.json"));
   t = Date.now();

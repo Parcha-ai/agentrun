@@ -14,6 +14,7 @@ import { ChatView } from "../tab/chat-view.ts";
 import { BRAIN_PROVIDER } from "../tab/brain-provider.ts";
 import { ANSWER, cloudProvider, modelDisk, reply, scripted } from "./_brain.ts";
 import { sha } from "./_brain.ts";
+import { fileChunkPath } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 
 const model = { provider: "pipe", modelId: "cloud-big" };
 
@@ -195,14 +196,14 @@ test("a brain the run has left releases its model once, so coming back does not 
 function homeDisk(adapters = true) {
   const files = new Map<string, Uint8Array>();
   const MODEL = { repo: "google/gemma-3-1b-it", revision: "dcc83ea841ab6100d6b47a070329e1ba4cf78752" };
-  const lay = (n: number, seed: number, dir: string) => {
+  const lay = (n: number, seed: number) => {
     const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 11 + seed) & 255);
     const chunks = [];
-    for (let i = 0, off = 0; off < n; i++, off += 64) { const part = bytes.slice(off, off + Math.min(64, n - off)); const path = `${dir}/chunk-${String(i).padStart(4, "0")}.bin`; files.set(path, part); chunks.push({ n: i, path, offset: off, size: part.length, sha256: sha(part) }); }
+    for (let i = 0, off = 0; off < n; i++, off += 64) { const part = bytes.slice(off, off + Math.min(64, n - off)); const path = fileChunkPath(sha(bytes), 64, i); files.set(path, part); chunks.push({ n: i, path, offset: off, size: part.length, sha256: sha(part) }); }
     return { size: n, sha256: sha(bytes), chunk_bytes: 64, chunks };
   };
-  const base = { name: "gemma-3-1b-it", quant: "Q4_K_M", model: MODEL, ...lay(150, 1, "home/base") };
-  const tools = { name: "tools.gguf", kind: "skill", topic: "pi's tools", model: MODEL, rank: 16, alpha: 32, scale: 1, dtype: "q8_0", ...lay(70, 2, "home/adapters/tools") };
+  const base = { name: "gemma-3-1b-it", quant: "Q4_K_M", model: MODEL, ...lay(150, 1) };
+  const tools = { name: "tools.gguf", kind: "skill", topic: "pi's tools", model: MODEL, rank: 16, alpha: 32, scale: 1, dtype: "q8_0", ...lay(70, 2) };
   return { files, manifest: JSON.stringify({ format: "gguf-base-adapters-v1", base, adapters: adapters ? [tools] : [] }), tools };
 }
 
