@@ -47,16 +47,14 @@ const send = async (text: string) => {
   return ev<Item[]>(`demo.items().slice(${before})`);
 };
 const work = join(dir, "runs", RUN, "work");
-/** Bytes the page received from the server's work/ per folder (from Network events), since `reset`. */
+/** Requests the page made to the server's work/ per folder (from Network events), since `bytes.clear()`: the bytes are the homecoming's own `fetched_bytes` (a response through the service worker reports none of its own). */
 const bytes = new Map<string, number>();
 // the disk lays every file's chunks under home/files/<sha256>-<chunk_bytes>/ (make-home-disk.mjs): one folder per file
 const kindOf = (u: string) => { const m = /\/work\/(home\/files\/[^/]+|home\/manifest\.json)/.exec(u); return m ? m[1]! : undefined; };
 try {
   page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?golive=1&threads=6#"));
   await page.send("Network.enable");
-  const urls = new Map<string, string>();
-  cdp.on("Network.responseReceived", (p, session) => { if (session === page!.sessionId) { const k = kindOf(String((p.response as { url: string }).url)); if (k) urls.set(String(p.requestId), k); } });
-  cdp.on("Network.loadingFinished", (p, session) => { if (session !== page!.sessionId) return; const k = urls.get(String(p.requestId)); if (k) bytes.set(k, (bytes.get(k) ?? 0) + Number(p.encodedDataLength ?? 0)); });
+  cdp.on("Network.requestWillBeSent", (p, session) => { if (session === page!.sessionId) { const k = kindOf(String((p.request as { url: string }).url)); if (k) bytes.set(k, (bytes.get(k) ?? 0) + 1); } });
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   await ev(`window.addEventListener("walkshome:homecoming", (e) => (globalThis.__home ??= []).push(e.detail)); 0`);
   mkdirSync(join(work, "home"), { recursive: true });
@@ -92,11 +90,11 @@ try {
   ok("the SAME conversation is configured onto the new model id, with the same tools", agent.model === `tab-local/${id2.modelId}` && agent.model !== modelBefore && (await ev<string>("String(demo.state.active.id)")) === root && agent.tools.slice().sort().join() === "bash,go_online,read,write", { agent, modelBefore });
   const all = await ev<{ plan?: { base: boolean; adapters: string[]; bytes: number }; fetched_bytes?: number }[]>("demo.homecomings()");
   const last = all.at(-1)!;
-  console.log(`  second homecoming: plan ${JSON.stringify(last.plan)}, fetched ${last.fetched_bytes} bytes; on the wire per folder: ${JSON.stringify([...bytes])}`);
+  console.log(`  second homecoming: plan ${JSON.stringify(last.plan)}, fetched ${last.fetched_bytes} bytes; requests per folder since the manifest appeared: ${JSON.stringify([...bytes])}`);
   ok("the second homecoming planned the new adapter alone (base cached, first adapter cached)", last.plan?.base === false && last.plan.adapters.length === 1 && last.plan.adapters[0] === second[0]!.name, last.plan);
-  const baseBytes = [...bytes].filter(([k]) => k === baseDir || k === firstDir).reduce((n, [, v]) => n + v, 0);
-  const secondBytes = bytes.get(secondDir) ?? 0;
-  ok("no byte of the base or of the first adapter came over the wire again; the second adapter's did", baseBytes === 0 && secondBytes > 0, { baseBytes, secondBytes });
+  const baseRequests = [...bytes].filter(([k]) => k === baseDir || k === firstDir).reduce((n, [, v]) => n + v, 0);
+  const secondRequests = bytes.get(secondDir) ?? 0;
+  ok("no request for the base or for the first adapter again; the second adapter's chunks were fetched, and their bytes are the plan's", baseRequests === 0 && secondRequests > 0 && last.fetched_bytes === last.plan?.bytes && (last.fetched_bytes ?? 0) > 0, { baseRequests, secondRequests, fetched: last.fetched_bytes, planned: last.plan?.bytes });
   const heard = (await ev<{ phase: string }[] | undefined>("globalThis.__home")) ?? [];
   ok("the stage heard the second homecoming (fetched, loaded, swapped)", ["fetched", "loaded", "swapped"].every((p) => heard.some((h) => h.phase === p)), heard.map((h) => h.phase));
 
@@ -104,7 +102,9 @@ try {
   const t2 = await send("In one sentence: what do you think of bridges?");
   const said = t2.filter((i) => i.kind === "assistant").map((i) => i.text).join(" ").replace(/\s+/g, " ");
   console.log(`  the new model said: ${JSON.stringify(said.slice(0, 240))}`);
-  ok("the new model answered the next message, in the same conversation", said.length > 0 && (await ev<string>("String(demo.state.active.id)")) === root, t2.map((i) => i.kind));
+  // The Moon adapter is not trained on the tool format, so what it says to a tool conversation varies (a sentence, or only a thought): the check is that the NEW model answered, in the same conversation.
+  const answeredBy = ((await ev<{ model?: string }[]>("demo.rawEntries()")) ?? []).filter((e) => (e as { kind?: string }).kind === "pi.assistant").map((e) => ((e as { model?: { model?: string }[] }).model ?? [])[0]?.model).at(-1);
+  ok("the new model answered the next message, in the same conversation", t2.some((i) => i.kind === "assistant") && answeredBy === id2.modelId && (await ev<string>("String(demo.state.active.id)")) === root, { answeredBy, id2, items: t2.map((i) => i.kind) });
   const chat = await ev<Item[]>("demo.items()");
   ok("the chat shows two swaps, one per model", chat.filter((i) => i.kind === "brain" && i.stage === "ready").length === 2, chat.filter((i) => i.kind === "brain").map((i) => i.stage));
   await page.screenshot(join(shots, "rehome.png"));
@@ -114,7 +114,7 @@ try {
   console.log(`FAIL ${(error as Error).message}`);
   failed++;
   if (page) {
-    console.log(JSON.stringify(await page.evaluate("(async () => globalThis.demo ? ({ mode: demo.state.mode, banner: demo.state.banner, status: demo.state.brainStatus, brain: demo.brainId(), homecomings: demo.homecomings() }) : null)()").catch((e: Error) => e.message)));
+    console.log(JSON.stringify(await page.evaluate("(async () => globalThis.demo ? ({ mode: demo.state.mode, banner: demo.state.banner, status: demo.state.brainStatus, brain: demo.brainId(), homecomings: demo.homecomings(), watch: demo.state.watch }) : null)()").catch((e: Error) => e.message)));
     console.log(page.console.filter((l) => !l.startsWith("debug")).slice(-12).join("\n"));
     await page.screenshot(join(shots, "rehome-failed.png")).catch(() => undefined);
   }

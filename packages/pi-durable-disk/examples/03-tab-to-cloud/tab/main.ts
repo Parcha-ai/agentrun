@@ -66,6 +66,8 @@ const state = {
   /** Every check-in this page made and saw complete. */
   checkins: [] as CheckinEvent[],
   /** A scripted stand-in for the cloud model (a check's, installed by `demo.stubCloud`), and what its requests carried. */
+  /** What the manifest watcher last saw (for checks): polls, the id it read, why it could not read. */
+  watch: { polls: 0, seen: null as string | null, error: null as string | null },
   /** Every routing decision this page made (brain-router.ts), as the stage event for the decision card. */
   decisions: [] as ReturnType<typeof brainEvent>[],
   cloudScript: undefined as ScriptedTurn[] | undefined,
@@ -197,10 +199,28 @@ function el(tag: string, attrs: Record<string, string> = {}, ...children: (Node 
   return node;
 }
 
+/** The tool rows of the current task (after the last user message) as last announced: only a change is announced again. */
+let lastTools = "";
+
+/**
+ * The tool strip for a stage that cannot read the transcript (offline the pipe is cut): every change of the current task's tool rows is announced as `walkshome:tools`
+ * {tools: [{id, name, args (the JSON string), output (cut at 4000 characters), status: running | done | error | interrupted}]}.
+ */
+function announceTools(items: readonly ChatItem[]): void {
+  const lastUser = items.map((i) => i.kind).lastIndexOf("user");
+  const tools = items.slice(lastUser + 1).filter((i): i is Extract<ChatItem, { kind: "tool" }> => i.kind === "tool").map((t) => ({ id: t.id, name: t.name, args: t.args, output: t.output.length > 4000 ? `${t.output.slice(0, 4000)}…` : t.output, status: t.status }));
+  const json = JSON.stringify(tools);
+  if (json === lastTools) return;
+  lastTools = json;
+  announce("tools", { tools });
+}
+
 function renderChat(): void {
   const list = $("chat");
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
-  list.replaceChildren(...state.chat.items().map(renderItem));
+  const items = state.chat.items();
+  announceTools(items);
+  list.replaceChildren(...items.map(renderItem));
   if (atBottom) list.scrollTop = list.scrollHeight;
   noticeSeen();
 }
@@ -439,6 +459,12 @@ async function followConversation(runtime: TabRuntime, conversation: Conversatio
 }
 
 /** A file of the run's disk (work/) over HTTP, with the run's secret as the bearer token; null when it is not there. Files under a lazy prefix (the model's folder) are read this way too. */
+/** The same file, past the service worker's cache (`?fresh`): after a checkout the worker answers the manifest from its cache first, and a poll for a NEW manifest must reach the server. */
+async function readWorkFresh(path: string): Promise<Uint8Array | null> {
+  const r = await fetch(`/api/runs/${encodeURIComponent(run)}/work/${path}?fresh=1`, { headers: { authorization: `Bearer ${secret}` }, cache: "no-store" });
+  return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+}
+
 async function readWork(path: string): Promise<Uint8Array | null> {
   const r = await fetch(`/api/runs/${encodeURIComponent(run)}/work/${path}`, { headers: { authorization: `Bearer ${secret}` }, cache: "no-store" });
   return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
@@ -586,12 +612,15 @@ async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
     if (state.runtime !== runtime || state.brain !== brain || state.mode !== "writer") return;
     let id: string, text: string | null;
     try {
-      text = await readManifest(readWork);
+      text = await readManifest(readWorkFresh);
+      state.watch.polls++;
       if (!text) continue;
       const home = await describeHome(text, sha256hex);
+      state.watch.seen = home.id;
       if (!home.ready || home.id === brain.currentId) continue;
       id = home.id;
-    } catch {
+    } catch (error) {
+      state.watch.error = (error as Error).message;
       continue; // not readable now: asked again
     }
     try {
