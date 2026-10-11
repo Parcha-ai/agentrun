@@ -160,6 +160,23 @@ test("a file within the inline budget goes as it is, with no provider; over it, 
   assert.equal(missing.code, "unreadable");
 });
 
+test("a video part never outgrows the request: the inline allowance is held to what base64 leaves of the request body", async () => {
+  // A request cap of 4,000 bytes after its headroom carries 3,000 raw bytes of video, whatever allowance the host states.
+  const limits = resolveLimits(undefined, { requestBytes: 1024 * 1024 + 4000, video: { inlineBytes: 12_000_000 } });
+  assert.deepEqual([limits.requestBytes, limits.video.inlineBytes], [4000, 12_000_000]);
+  const { env } = memory({ "/work/fits.mp4": new Uint8Array(3000), "/work/over.mp4": new Uint8Array(3001), "/work/tmp/clip.mp4": new Uint8Array(3001) });
+  const fits = await videoAsIs(source("/work/fits.mp4", 3000), unprobedVideo(source()), limits, call(env));
+  assert.equal(fits.ok, true);
+  assert.ok(fits.part.data.length <= limits.requestBytes, "the base64 of the part fits the request");
+  const over = await videoAsIs(source("/work/over.mp4", 3001), unprobedVideo(source()), limits, call(env));
+  assert.deepEqual([over.ok, over.code], [false, "over_budget"]);
+  assert.match(over.text, /over the 3000 a request carries inline/);
+  const asked = [];
+  const provider = scripted({ clip: async (_s, request) => { asked.push(request.maxBytes); return { madeBy: { provider: "scripted", version: "1" }, path: "/work/tmp/clip.mp4", mimeType: "video/mp4", fromS: 0, toS: 5 }; } });
+  const clip = await videoClip(provider, source(), { fromS: 0, toS: 5 }, limits, call(env));
+  assert.deepEqual([asked, clip.ok, clip.code], [[3000], false, "over_budget"], "the provider is held to the same budget, and a clip over it is refused");
+});
+
 test("with no ffmpeg in the environment every operation is a needs miss that names it, and a small file still goes as it is", async () => {
   const { env } = memory({ "/work/call.mp4": new Uint8Array(500) });
   const provider = ffmpegProvider();

@@ -249,6 +249,13 @@ test("a concat script posing as a video is not opened, though it names a real fi
   assert.deepEqual(await left(), []);
 });
 
+test("a window whose size cannot be read is removed, not left in the caller's directory", { skip }, async () => {
+  const { tempDir, left } = await session();
+  const env = { ...nodeEnv(), fileInfo: async () => ({ ok: false, error: Object.assign(new Error("stat failed"), { code: "EIO" }) }) };
+  await assert.rejects(provider.clip(files.ramp, { fromS: 2, toS: 8, maxBytes: 5_000_000 }, { env, signal: undefined, tempDir }), /stat failed/);
+  assert.deepEqual(await left(), []);
+});
+
 test("a call that is cancelled throws, and is not a miss", { skip }, async () => {
   const controller = new AbortController();
   controller.abort();

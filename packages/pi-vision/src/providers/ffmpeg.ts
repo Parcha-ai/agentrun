@@ -88,8 +88,8 @@ export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}):
           const report = `${dir}/version.json`;
           // ffprobe writes its report to a file: the environment gives back an exit code, not output.
           for (const argv of [["ffmpeg", "-version"], ["ffprobe", "-v", "error", "-show_program_version", "-of", "json", "-o", report]]) {
-            const ran = unwrap(await env.exec(argv, { timeout: PROBE_TIMEOUT_MS }, context));
-            if (ran.exitCode !== 0) throw new Error(`${argv[0]} exited ${ran.exitCode}`);
+            const { exitCode } = unwrap(await env.exec(argv, { timeout: PROBE_TIMEOUT_MS }, context));
+            if (exitCode !== 0) throw new Error(`${argv[0]} exited ${exitCode}`);
           }
           const version = JSON.parse(Buffer.from(unwrap(await env.readBinaryFile(report, context))).toString("utf8")).program_version?.version;
           return typeof version === "string" ? { available: true, version } : { available: false, needs: NEEDS, reason: "ffprobe did not report its version" };
@@ -108,9 +108,8 @@ export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}):
         const stream = parsed.streams?.[0];
         if (!stream) throw new VideoMiss("unreadable", "it holds no video stream");
         const [num, den] = String(stream.r_frame_rate ?? "").split("/").map(Number);
-        const rate = num && den ? num / den : null;
         const length = Number(parsed.format?.duration);
-        const facts: VideoFacts = { durationS: Number.isFinite(length) ? length : null, width: stream.width ?? null, height: stream.height ?? null, fps: rate !== null && Number.isFinite(rate) ? rate : null, bytes: source.bytes };
+        const facts: VideoFacts = { durationS: Number.isFinite(length) ? length : null, width: stream.width ?? null, height: stream.height ?? null, fps: num && den ? num / den : null, bytes: source.bytes };
         return { madeBy, facts };
       } finally { await call.env.remove(report, { force: true }, visionContext()); }
     },
@@ -139,19 +138,23 @@ export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}):
       ], CLIP_TIMEOUT_MS);
       const sizeOf = async (file: string) => unwrap(await call.env.fileInfo(file, ctx(call))).size;
       const drop = (file: string) => call.env.remove(file, { force: true }, visionContext());
-      // A container that refuses the copy, or a copy over the budget, goes to the one re-encode.
-      let file = await cut("copy").catch((error) => { if (call.signal?.aborted) throw error; return undefined; });
-      if (file && (await sizeOf(file)) > maxBytes) { await drop(file); file = undefined; }
-      if (!file) {
+      // A container that refuses the copy, or a copy over the budget, goes to the one re-encode. Whatever fails after a
+      // file is written removes it: the caller owns it only once this returns.
+      const done = (path: string) => ({ madeBy, path, mimeType: "video/mp4", fromS, toS });
+      let file: string | undefined;
+      try {
+        file = await cut("copy").catch((error) => { if (call.signal?.aborted) throw error; return undefined; });
+        if (file && (await sizeOf(file)) <= maxBytes) return done(file);
+        if (file) await drop(file);
         file = await cut("encode");
         const bytes = await sizeOf(file);
-        if (bytes > maxBytes) {
-          const kept = (await provider.probe({ ...source, path: file, bytes }, call).catch(() => undefined))?.facts.durationS;
-          await drop(file);
-          throw new VideoMiss("over_budget", `the window ${sec(fromS)} to ${sec(toS)} s does not fit the ${maxBytes} bytes a request carries inline, even at ${VIDEO_REENCODE_EDGE} px and ${VIDEO_REENCODE_FPS} frames a second${kept ? ` (about ${Math.floor(kept)} s of it do)` : ""}; read a shorter window with from_s and to_s`);
-        }
+        if (bytes <= maxBytes) return done(file);
+        const kept = (await provider.probe({ ...source, path: file, bytes }, call).catch(() => undefined))?.facts.durationS;
+        throw new VideoMiss("over_budget", `the window ${sec(fromS)} to ${sec(toS)} s does not fit the ${maxBytes} bytes a request carries inline, even at ${VIDEO_REENCODE_EDGE} px and ${VIDEO_REENCODE_FPS} frames a second${kept ? ` (about ${Math.floor(kept)} s of it do)` : ""}; read a shorter window with from_s and to_s`);
+      } catch (error) {
+        if (file) await drop(file);
+        throw error;
       }
-      return { madeBy, path: file, mimeType: "video/mp4", fromS, toS };
     },
   };
 

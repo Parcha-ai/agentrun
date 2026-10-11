@@ -37,11 +37,10 @@ type Failure = { readonly ok: false; readonly code: MissCode; readonly text: str
 /** What a video operation gives: its result, or the typed miss to tell the model. */
 export type VideoOutcome<T> = ({ readonly ok: true } & T) | Failure;
 
-const firstLine = (error: unknown) => String((error as Error)?.message ?? error).split("\n")[0]!;
 /** The typed miss for an error a provider or the environment raised; a call that was cancelled is cancelled, not a miss. */
 const failure = (call: ProviderCall, error: unknown, code: MissCode, what: string): Failure => {
   if (call.signal?.aborted) throw error;
-  return error instanceof VideoMiss ? { ok: false, code: error.code, text: error.message } : { ok: false, code, text: `${what} (${firstLine(error)})` };
+  return error instanceof VideoMiss ? { ok: false, code: error.code, text: error.message } : { ok: false, code, text: `${what} (${String((error as Error)?.message ?? error).split("\n")[0]})` };
 };
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 const fmtS = (s: number | null) => (s === null ? "?" : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`);
@@ -76,17 +75,21 @@ export function videoWindow(facts: VideoFacts, fromS?: number, toS?: number): { 
   return end === null ? `the video does not state its length, so to_s is needed with from_s (${from})` : { fromS: from, toS: end };
 }
 
+/** The raw bytes a video part may carry: the inline allowance, and never more than base64 (4/3 larger) leaves of the request. */
+const inlineBudget = (limits: Limits) => Math.min(limits.video.inlineBytes, Math.floor((limits.requestBytes * 3) / 4));
+
 const VIDEO_MIME: Readonly<Record<string, string>> = Object.freeze({ ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".mkv": "video/x-matroska" });
 
 /** The file itself as one part, for a route that takes video and a file within the inline budget. No program runs. */
 export async function videoAsIs(source: ProviderSource, facts: VideoFacts, limits: Limits, call: ProviderCall): Promise<VideoOutcome<{ part: Part; bytes: number }>> {
   const mimeType = VIDEO_MIME[source.path.slice(source.path.lastIndexOf(".")).toLowerCase()];
   if (!mimeType) return { ok: false, code: "unsupported", text: "its container is not one a route takes as it is; a window of it is cut into mp4 when ffmpeg is installed" };
-  const over = (bytes: number): Failure => ({ ok: false, code: "over_budget", text: `it is ${bytes} bytes, over the ${limits.video.inlineBytes} a request carries inline; read a window of it with from_s and to_s` });
-  if (source.bytes > limits.video.inlineBytes) return over(source.bytes);
+  const budget = inlineBudget(limits);
+  const over = (bytes: number): Failure => ({ ok: false, code: "over_budget", text: `it is ${bytes} bytes, over the ${budget} a request carries inline; read a window of it with from_s and to_s` });
+  if (source.bytes > budget) return over(source.bytes);
   const read = await call.env.readBinaryFile(source.path, visionContext(call.signal));
   if (!read.ok) return failure(call, read.error, "unreadable", "the file could not be read");
-  if (read.value.length > limits.video.inlineBytes) return over(read.value.length);
+  if (read.value.length > budget) return over(read.value.length);
   const fragment = formatFragment({ t: facts.durationS ? { from: 0, to: facts.durationS } : { from: 0 } });
   return { ok: true, part: { type: "video", data: base64(read.value), mimeType, fragment }, bytes: read.value.length };
 }
@@ -115,13 +118,14 @@ export async function videoFrames(provider: VideoProvider, source: ProviderSourc
 /** The window as one video part within the inline budget: stream copy when it fits, else one re-encode, never the whole
  *  file. The file the provider wrote is read back and removed. */
 export async function videoClip(provider: VideoProvider, source: ProviderSource, window: { readonly fromS: number; readonly toS: number }, limits: Limits, call: ProviderCall): Promise<VideoOutcome<{ part: Part; madeBy: MadeBy; fromS: number; toS: number; bytes: number }>> {
+  const budget = inlineBudget(limits);
   let made;
-  try { made = await provider.clip(source, { ...window, maxBytes: limits.video.inlineBytes }, call); } catch (error) { return failure(call, error, "video_unseeable", "the window could not be cut"); }
+  try { made = await provider.clip(source, { ...window, maxBytes: budget }, call); } catch (error) { return failure(call, error, "video_unseeable", "the window could not be cut"); }
   try {
     const read = await call.env.readBinaryFile(made.path, visionContext(call.signal));
     if (!read.ok) return failure(call, read.error, "video_unseeable", "the window could not be read back");
-    if (read.value.length > limits.video.inlineBytes) return { ok: false, code: "over_budget", text: `the window is ${read.value.length} bytes, over the ${limits.video.inlineBytes} a request carries inline; read a shorter window` };
-    const { fromS, toS } = made;
-    return { ok: true, part: { type: "video", data: base64(read.value), mimeType: made.mimeType, fragment: formatFragment({ t: { from: fromS, to: toS } }) }, madeBy: made.madeBy, fromS, toS, bytes: read.value.length };
+    if (read.value.length > budget) return { ok: false, code: "over_budget", text: `the window is ${read.value.length} bytes, over the ${budget} a request carries inline; read a shorter window` };
+    const { fromS, toS, madeBy, mimeType } = made;
+    return { ok: true, part: { type: "video", data: base64(read.value), mimeType, fragment: formatFragment({ t: { from: fromS, to: toS } }) }, madeBy, fromS, toS, bytes: read.value.length };
   } finally { await call.env.remove(made.path, { force: true }, visionContext()); }
 }
