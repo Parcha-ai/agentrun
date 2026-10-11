@@ -6,7 +6,7 @@
 // A run's link carries its secret (`/run/<id>#<secret>`): the fragment never reaches a log, and every WebSocket hello
 // must present it. The server listens on loopback by default; reaching it from elsewhere is a deployment choice.
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -14,7 +14,7 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
-import { CheckoutRefused, manifestDigest, RunPipe, type PipeSocket } from "./run-pipe.ts";
+import { CHECKOUT_MARKER, CheckoutRefused, manifestDigest, RunPipe, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
@@ -773,6 +773,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return undefined;
     }
     state.clients.set(socket, { mode: frame.mode, canRun: frame.canRun === true });
+    await refreshCheckedOut(state);
     // A run checked out to a browser has its one live copy there: nothing attaches to run it again (it would fork the run), and says why.
     if (state.checkedOut && frame.mode === "write") {
       socket.send({ t: "lost", code: "CHECKED_OUT", message: CHECKED_OUT_MESSAGE });
@@ -1156,6 +1157,33 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     return secret;
   }
 
+  /** The run's checkout marker on the disk (the disk's object view, else the local run directory), when a checkout left one. */
+  async function readMarker(runId: string): Promise<CheckoutMarker | undefined> {
+    const key = `runs/${runId}/store/${CHECKOUT_MARKER}`;
+    let bytes: Uint8Array;
+    try {
+      bytes = options.readObject ? await options.readObject(key) : readFileSync(join(options.mountRoot, key));
+    } catch {
+      return undefined;
+    }
+    try {
+      const m = JSON.parse(Buffer.from(bytes).toString("utf8")) as Partial<CheckoutMarker>;
+      return typeof m.head === "number" && typeof m.tab === "string" ? { head: m.head, at: Number(m.at) || 0, tab: m.tab, ...(typeof m.conversation === "number" ? { conversation: m.conversation } : {}) } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Learn from the disk that the run was checked out (by this server before it restarted, or by another one), and say so to everyone watching. */
+  async function refreshCheckedOut(state: RunState): Promise<void> {
+    if (state.checkedOut || state.pipe || state.opening) return;
+    const marker = await readMarker(state.ref.id);
+    if (!marker) return;
+    state.checkedOut = { at: marker.at, head: marker.head, tab: marker.tab };
+    setPlacement(state, { where: "checked-out", detail: CHECKED_OUT_MESSAGE });
+    log("checked-out.found", { run: state.ref.id, head: marker.head });
+  }
+
   /**
    * Take on a run that is on the disk already, released and sealed by whoever ran it (another server, a fork): it is
    * parked here, and the first page to open its link runs it. A run this server holds keeps its secret.
@@ -1170,6 +1198,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       if (record.status === "running") throw new Error(`run ${id} is running elsewhere`);
     }
     const secret = addRun(id, "adopted from the disk");
+    await refreshCheckedOut(runs.get(id)!);
     log("run.adopted", { run: id });
     return { id, secret };
   }
@@ -1242,6 +1271,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function storeRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
     const state = runs.get(runId);
     if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    await refreshCheckedOut(state);
     if (state.checkedOut) return json(res, 409, { error: CHECKED_OUT_MESSAGE, code: "CHECKED_OUT" });
     const pipe = state.pipe;
     if (!pipe || pipe.lost || pipe.releasing || pipe.released) return json(res, 409, { error: "no tab holds the run: there is no store to copy", holder: holderOf(state) });
@@ -1264,6 +1294,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function checkoutRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
     const state = runs.get(runId);
     if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    await refreshCheckedOut(state);
     if (state.checkedOut) return json(res, 409, { error: CHECKED_OUT_MESSAGE, code: "CHECKED_OUT" });
     const chunks: Buffer[] = [];
     let size = 0;
@@ -1273,8 +1304,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       chunks.push(chunk);
     }
     let head: unknown;
+    let conversation: unknown;
     try {
-      head = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { head?: unknown }).head;
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { head?: unknown; conversation?: unknown };
+      head = body.head;
+      conversation = body.conversation;
     } catch {
       return json(res, 400, { error: "the body is not JSON" });
     }
@@ -1283,7 +1317,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const pipe = state.pipe;
     if (!pipe || pipe.lost || !tab || pipe.writerTab !== tab || state.switching || state.opening) return json(res, 409, { error: "this tab does not hold the run", code: "NOT_WRITER", holder: holderOf(state) });
     try {
-      const released = await pipe.checkout(tab, head);
+      const released = await pipe.checkout(tab, head, typeof conversation === "number" && Number.isSafeInteger(conversation) ? conversation : undefined);
       state.checkedOut = { at: Date.now(), head: released, tab };
       // What releasePipe does after a release: viewers move to the server, the token user goes.
       state.pipe = undefined;

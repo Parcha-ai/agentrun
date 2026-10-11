@@ -1,7 +1,7 @@
 // Checking a run out to a browser: a consistent copy of the run's store while the tab holds it (GET /api/runs/<id>/store), and the one-way handover
 // (POST /api/runs/<id>/checkout): the claim is released only when the copy's head is the store's head, and nothing runs the run again afterwards.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -158,6 +158,45 @@ describe("checking a run out to a browser", () => {
     assert.ok(refusedFrames.some((f) => f.t === "submit-refused" && /checked out/.test(f.message)), "a message is refused");
     viewer.close();
     operator.close();
+  });
+
+  it("the mark is on the disk beside the store, so a restarted server attaches nothing and forks nothing", async () => {
+    const w = await writer("restart");
+    const copy = await copyOf(w.id, w.secret);
+    const head = Number(copy.headers.get("x-store-head"));
+    await copy.arrayBuffer();
+    const res = await fetch(`${base}/api/runs/${w.id}/checkout`, { method: "POST", headers: authed(w.secret, w.tab), body: JSON.stringify({ head, conversation: 7 }) });
+    assert.equal(res.status, 200);
+    const marker = JSON.parse(readFileSync(join(local.root, "runs", w.id, "store", "checkout.json"), "utf8")) as { head: number; tab: string; conversation: number; at: number };
+    assert.deepEqual({ head: marker.head, tab: marker.tab, conversation: marker.conversation }, { head, tab: w.tab, conversation: 7 }, "head, tab and the browser's conversation are on the disk");
+    assert.ok(marker.at > 0);
+
+    // a second server on the same disk, as after a restart: it adopts the run from the disk and finds it checked out
+    const second = await localServer({ root: local.root });
+    try {
+      const adopted = await second.server.adoptRun(w.id);
+      assert.equal(second.server.runs.get(w.id)!.placement.where, "checked-out", "its placement says so before anyone connects");
+      const frames: PipeFrame[] = [];
+      const again = new PipeClient({ url: second.url, run: w.id, token: adopted.secret, tab: "opens-the-link", mode: "write", onFrame: (f) => frames.push(f) });
+      await assert.rejects(again.ready, (e: Error & { code?: string }) => e.code === "CHECKED_OUT" || /checked out/.test(e.message));
+      assert.equal(second.server.runs.get(w.id)!.pipe, undefined, "no claim was taken: nothing forked");
+      const base2 = second.url.replace(/^ws/, "http").replace(/\/ws$/, "");
+      assert.equal((await fetch(`${base2}/api/runs/${w.id}/store`, { headers: authed(adopted.secret) })).status, 409);
+      const viewer = new PipeClient({ url: second.url, run: w.id, token: adopted.secret, tab: "v", mode: "view" });
+      const viewing = (await viewer.ready) as Extract<PipeFrame, { t: "viewing" }>;
+      assert.equal(viewing.placement.where, "checked-out");
+      viewer.close();
+    } finally {
+      await second.remove();
+    }
+  });
+
+  it("a mark that is not there does not stop a parked run being attached", async () => {
+    const { id, secret } = await local.server.createRun("no-mark");
+    const c = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write" });
+    await c.ready;
+    assert.equal(local.server.runs.get(id)!.checkedOut, undefined);
+    c.close();
   });
 
   it("a storage call that reaches the pipe after the checkout began is refused, never committed, so the released store is the copy's", async () => {

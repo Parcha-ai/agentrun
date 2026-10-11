@@ -21,7 +21,7 @@
 // lapsed) ends the pipe: every socket is told, nothing is retried.
 import { createHash, randomBytes, type Hash } from "node:crypto";
 import { constants, renameSync, type BigIntStats, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -144,6 +144,10 @@ export class CheckoutRefused extends Error {
     this.head = head;
   }
 }
+
+/** The file a checkout leaves next to the run's store (`store/checkout.json`): the head handed over, when, by which tab, and the browser's conversation. The server reads it before it lets anything attach. */
+export const CHECKOUT_MARKER = "checkout.json";
+export type CheckoutMarker = { head: number; at: number; tab: string; conversation?: number };
 
 /** The most a snapshot of the run's store is retried when a commit lands while it is taken. */
 const SNAPSHOT_TRIES = 3;
@@ -1141,7 +1145,7 @@ export class RunPipe {
    * calls and write-throughs are refused (the calls already in flight settle first); then the copy's head must be the store's head, or nothing is released and
    * the run stays the tab's (CheckoutRefused HEAD_MISMATCH: copy again). Otherwise the claim is released as for a move. Resolves with the head released.
    */
-  async checkout(tab: string, head: number): Promise<number> {
+  async checkout(tab: string, head: number, conversation?: number): Promise<number> {
     const writer = this.#writer;
     if (!writer || writer.dead || writer.tab !== tab) throw new CheckoutRefused("NOT_WRITER", "only the tab that runs the run may check it out");
     if (this.#lost || this.#released || this.#releasing || this.#checkingOut || !this.#store) throw new CheckoutRefused("BUSY", "the run is being released or already being checked out");
@@ -1150,7 +1154,17 @@ export class RunPipe {
       await Promise.allSettled([...writer.inflight]);
       const current = await storeHead(this.#store);
       if (current !== head) throw new CheckoutRefused("HEAD_MISMATCH", `the copy's head is ${head} but the store's is ${current}: copy it again`, current);
-      await this.release({ code: "CHECKED_OUT", message: "the run was checked out to a browser" });
+      // The mark goes onto the disk, beside the store, BEFORE the claim is released: a server that restarts (or another one) finds the run checked out and attaches nothing.
+      const marker = join(this.lease.claim.store, CHECKOUT_MARKER);
+      const body: CheckoutMarker = { head: current, at: Date.now(), tab, ...(conversation === undefined ? {} : { conversation }) };
+      await writeFile(`${marker}.tmp`, JSON.stringify(body));
+      await rename(`${marker}.tmp`, marker);
+      try {
+        await this.release({ code: "CHECKED_OUT", message: "the run was checked out to a browser" });
+      } catch (error) {
+        await rm(marker, { force: true }).catch(() => undefined); // the claim was not handed over: the run is not checked out
+        throw error;
+      }
       this.#log("pipe.checked-out", { tab, head: current });
       return current;
     } catch (error) {
