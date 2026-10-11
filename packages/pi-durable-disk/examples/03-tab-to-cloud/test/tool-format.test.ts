@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  CALL_CLOSE, CALL_OPEN, END_OF_TURN, TOOLS, TURN_MODEL, TURN_USER, callGrammar, clipResult, parseModelTurn, renderCall,
+  canonicalResult, CALL_CLOSE, CALL_OPEN, END_OF_TURN, TOOLS, TURN_MODEL, TURN_USER, callGrammar, clipResult, parseModelTurn, renderCall,
   renderModelTurn, renderPrompt, renderSpec, renderTranscript, selectTools, splitTurn, type Msg,
 } from "../tab/tool-format.ts";
 
@@ -114,4 +114,41 @@ test("the grammar names every tool and ends with the closing tag", () => {
   for (const t of TOOLS) assert.ok(g.includes(`{\\"name\\":\\"${t.name}\\",\\"arguments\\":`), t.name);
   assert.match(g, /^root ::= \(.*\) "<\/tool_call>"$/m);
   assert.ok(g.includes('edit-args-obj ::= "{" "\\"path\\":" string ",\\"edits\\":" "[" edit-args-edits-item-obj ("," edit-args-edits-item-obj)* "]" "}"'));
+});
+
+// The same events through both pi stacks: pi-coding-agent's tools (training) and pi-durable's Harness on the tab's
+// computer (texts measured there by D3, 2026-10-11).
+test("tool results read the same from pi-coding-agent and from pi-durable's Harness", () => {
+  const same = (name: string, coding: string, durable: string, want: string) => {
+    assert.equal(canonicalResult(name, coding), want, `pi-coding-agent ${name}`);
+    assert.equal(canonicalResult(name, durable), want, `pi-durable ${name}`);
+  };
+  same("bash", "hi\n", "hi\n", "hi");
+  same("bash", "(no output)", "", "(no output)");
+  same("bash", "out\n\n\nCommand exited with code 3", "out\n<harness>\n[error] Command exited with code 3\n</harness>", "out\n\nCommand exited with code 3");
+  same("bash", "(no output)\n\nCommand exited with code 3", "<harness>\n[error] Command exited with code 3\n</harness>", "(no output)\n\nCommand exited with code 3");
+  same("bash", "bash: line 1: grep: command not found\n\n\nCommand exited with code 127", "bash: line 1: grep: command not found\n<harness>\n[error] Command exited with code 127\n</harness>",
+    "bash: line 1: grep: command not found\n\nCommand exited with code 127");
+  same("read", "ENOENT: no such file or directory, access '/workspace/missing.txt'", "<harness>\n[error] /workspace/missing.txt: not found\n</harness>", "/workspace/missing.txt: not found");
+  same("edit", "Could not find the exact text in w.txt. The old text must match exactly including all whitespace and newlines.",
+    "<harness>\n[error] Could not find the exact text in w.txt. The old text must match exactly including all whitespace and newlines.\n</harness>",
+    "Could not find the exact text in w.txt. The old text must match exactly including all whitespace and newlines.");
+  same("write", "Successfully wrote to w.txt", "Successfully wrote to w.txt", "Successfully wrote to w.txt");
+  assert.equal(canonicalResult("read", "HI\nworld\n"), "HI\nworld\n");
+});
+
+test("a node crash keeps its message and the user's frames, not the runtime's", () => {
+  const tab = ["Failed to execute builtin 'internal/main/eval_string':", "Error: x", "    at Proxy.eval (http://127.0.0.1:8080/wasmer/pkg/snippets/a.js:1:1)",
+    "    at http://127.0.0.1:8080/wasmer/pkg/snippets/b.js:2:2", "Node.js v24.13.2", "<harness>", "[error] Command exited with code 1", "</harness>"].join("\n");
+  const linux = ["/workspace/app.js:1", "throw new Error(\"x\")", "^", "", "Error: x", "    at Object.<anonymous> (/workspace/app.js:1:7)",
+    "    at Module._compile (node:internal/modules/cjs/loader:1554:14)", "", "Node.js v24.13.1", "", "", "Command exited with code 1"].join("\n");
+  assert.equal(canonicalResult("bash", tab), "Error: x\n\nCommand exited with code 1");
+  assert.equal(canonicalResult("bash", linux), "/workspace/app.js:1\nthrow new Error(\"x\")\n^\n\nError: x\n    at Object.<anonymous> (/workspace/app.js:1:7)\n\nCommand exited with code 1");
+});
+
+test("long bash output keeps its first and last ten lines", () => {
+  const seq = Array.from({ length: 50 }, (_, i) => String(i + 1)).join("\n") + "\n";
+  assert.equal(canonicalResult("bash", seq), [...Array.from({ length: 10 }, (_, i) => String(i + 1)), "[... 30 lines cut ...]", ...Array.from({ length: 10 }, (_, i) => String(i + 41))].join("\n"));
+  const file = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+  assert.equal(canonicalResult("read", file), file);
 });

@@ -9,19 +9,21 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { THINK_MAX_WORDS, TOOLS, renderTranscript, type Msg } from "../../03-tab-to-cloud/tab/tool-format.ts";
+import { missingCommands } from "./commands.ts";
 
-const { values: a } = parseArgs({ options: { runs: { type: "string" }, out: { type: "string" }, split: { type: "string", default: "train" }, "max-chars": { type: "string", default: "12000" }, cap: { type: "string", default: "0" } } });
 
 const plain = (s: string) => s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').trim();
 const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
 
 /** The teacher's messages in the format's canonical form, or why the run cannot teach. */
-export function canonical(messages: any[]): { messages: Msg[] } | { reject: string } {
+export function canonical(messages: any[], offlineOnly = false): { messages: Msg[] } | { reject: string } {
   const out: Msg[] = [];
   for (const m of messages) {
     if (m.role === "user") {
       out.push({ role: "user", content: typeof m.content === "string" ? m.content : m.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n") } as Msg);
     } else if (m.role === "toolResult") {
+      const text = m.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+      if (/command not found/.test(text)) return { reject: "used a command the computer lacks" };
       out.push({ role: "toolResult", toolCallId: m.toolCallId, toolName: m.toolName, content: m.content.filter((b: any) => b.type === "text"), isError: m.isError } as Msg);
     } else if (m.role === "assistant") {
       const text = m.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
@@ -36,6 +38,7 @@ export function canonical(messages: any[]): { messages: Msg[] } | { reject: stri
       if (calls.length === 1) {
         if (rest) return { reject: "text beside a call" };
         const c = calls[0];
+        if (c.name === "bash" && offlineOnly && missingCommands(String(c.arguments?.command ?? "")).length) return { reject: "used a command the computer lacks" };
         out.push({ role: "assistant", content: [{ type: "thinking", thinking }, { type: "toolCall", id: c.id, name: c.name, arguments: c.arguments }] } as Msg);
       } else {
         if (!rest) return { reject: "empty answer" };
@@ -49,6 +52,9 @@ export function canonical(messages: any[]): { messages: Msg[] } | { reject: stri
 }
 
 if (process.argv[1]?.endsWith("export.ts")) {
+  const { values: a } = parseArgs({ options: { runs: { type: "string" }, out: { type: "string" }, split: { type: "string", default: "train" }, "max-chars": { type: "string", default: "12000" }, cap: { type: "string", default: "0" },
+    tools: { type: "string", default: "read,write,edit,bash" }, "offline-only": { type: "boolean", default: false } } });
+  const specs = TOOLS.filter((t) => a.tools!.split(",").includes(t.name));
   const runs = a.runs!.split(",").flatMap((f) => readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))).filter((r) => r.split === a.split);
   const rejected: Record<string, number> = {};
   const rows: string[] = [];
@@ -59,10 +65,10 @@ if (process.argv[1]?.endsWith("export.ts")) {
     let text = "", train: [number, number][] = [];
     if (!r.ok) why = "check failed";
     else {
-      const c = canonical(r.messages);
+      const c = canonical(r.messages, a["offline-only"]);
       if ("reject" in c) why = c.reject;
       else {
-        ({ text, train } = renderTranscript(TOOLS, c.messages));
+        ({ text, train } = renderTranscript(specs, c.messages));
         if (text.length > Number(a["max-chars"])) why = "too long";
         else {
         }
@@ -70,7 +76,7 @@ if (process.argv[1]?.endsWith("export.ts")) {
     }
     if (!why && Number(a.cap) && (perTemplate[r.template] ?? 0) >= Number(a.cap)) why = "over the cap";
     if (why) { rejected[why] = (rejected[why] ?? 0) + 1; continue; }
-    for (const m of (canonical(r.messages) as { messages: any[] }).messages) {
+    for (const m of (canonical(r.messages, a["offline-only"]) as { messages: any[] }).messages) {
       if (m.role === "assistant") { turns++; thinkWords += words(m.content[0].thinking); calls += m.content[1].type === "toolCall" ? 1 : 0; }
     }
     rows.push(JSON.stringify({ id: r.id, template: r.template, text, train }));

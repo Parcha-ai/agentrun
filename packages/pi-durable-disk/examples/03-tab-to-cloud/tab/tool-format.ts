@@ -7,7 +7,8 @@
 //   result            a user turn: <tool_result name="bash">output</tool_result> (error="true" when the tool failed)
 //
 // One call per model turn. Calls are compact JSON with the arguments in schema order, so a call has one byte form; the
-// grammar (callGrammar) accepts exactly that form, and the provider switches to it once "<tool_call>" opens.
+// grammar (callGrammar) accepts exactly that form, and the provider switches to it once "<tool_call>" opens. Tool
+// results are canonical (canonicalResult): the same text whether pi-coding-agent's tools or pi-durable's produced them.
 //
 // No dependencies: messages and tools are typed structurally, compatible with pi-ai's Message and Tool.
 
@@ -187,8 +188,65 @@ export function clipResult(text: string, max = RESULT_MAX_CHARS): string {
   return `${text.slice(0, head)}\n[... ${text.length - head - tail} characters cut ...]\n${text.slice(text.length - tail)}`;
 }
 
+/** bash output longer than BASH_HEAD_LINES + BASH_TAIL_LINES lines keeps its first and last lines. */
+export const BASH_HEAD_LINES = 10;
+export const BASH_TAIL_LINES = 10;
+
+/** pi-durable's Harness reports a failed tool as its output followed by this block (measured on the tab's computer). */
+const HARNESS_ERROR = /\n?<harness>\n\[error\] ([\s\S]*?)\n<\/harness>\s*$/;
+/** pi-coding-agent's bash puts the status after the output and a blank line. */
+const BASH_STATUS = /^([\s\S]*?)\n*(Command (?:exited with code \d+|timed out after [\d.]+ seconds|aborted))$/;
+
+/** First and last lines of a long text, with the count of the lines between. */
+export function capLines(text: string, head = BASH_HEAD_LINES, tail = BASH_TAIL_LINES): string {
+  const lines = text.split("\n");
+  if (lines.length <= head + tail) return text;
+  return [...lines.slice(0, head), `[... ${lines.length - head - tail} lines cut ...]`, ...lines.slice(lines.length - tail)].join("\n");
+}
+
+/**
+ * A node crash as the model reads it, whichever host ran node: the stack frames that point into the runtime (the
+ * browser's wasmer URLs, a Linux node's internals) are dropped, frames in the user's /workspace files are kept, and so
+ * are the runtime's banner and version lines.
+ */
+function cleanNodeError(out: string): string {
+  return out.split("\n")
+    .filter((l) => !/^Failed to execute builtin '[^']*':$/.test(l) && !/^Node\.js v\d+[\d.]*\S*$/.test(l))
+    .filter((l) => !/^\s+at /.test(l) || l.includes("/workspace/"))
+    .join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+/**
+ * One text for a tool's result, whichever pi stack produced it: pi-coding-agent's tools (the training data) or
+ * pi-durable's CodingTools in the Harness (the tab). The Harness's error block is unwrapped; bash reads as its output,
+ * a blank line, then "Command exited with code N"; empty output reads "(no output)"; a missing file reads
+ * "<path>: not found"; node crashes lose the runtime's stack frames; long bash output keeps its first and last lines.
+ */
+export function canonicalResult(name: string, text: string): string {
+  let out = text;
+  let status = "";
+  const h = HARNESS_ERROR.exec(out);
+  if (h) {
+    out = out.slice(0, h.index);
+    status = h[1]!.trim();
+  } else if (name === "bash") {
+    const e = BASH_STATUS.exec(out);
+    if (e) { out = e[1]!; status = e[2]!; }
+  }
+  const missing = /^ENOENT: no such file or directory, \w+ '(.+)'$/.exec((status || out).trim());
+  if (missing) { status = `${missing[1]}: not found`; out = ""; }
+  if (name === "bash") {
+    out = cleanNodeError(out).replace(/\s+$/, "");
+    if (out === "(no output)") out = "";
+    const body = capLines(out) || "(no output)";
+    return status ? `${body}\n\n${status}` : body;
+  }
+  if (!status) return out;
+  return out.trim() ? `${out.replace(/\s+$/, "")}\n\n${status}` : status;
+}
+
 export function renderResult(name: string, text: string, isError: boolean): string {
-  return `<tool_result name="${name}"${isError ? ' error="true"' : ""}>${clipResult(text)}</tool_result>`;
+  return `<tool_result name="${name}"${isError ? ' error="true"' : ""}>${clipResult(canonicalResult(name, text))}</tool_result>`;
 }
 
 /** One model turn's text (without the turn markers). */

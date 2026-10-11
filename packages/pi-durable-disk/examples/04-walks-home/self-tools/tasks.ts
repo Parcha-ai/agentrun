@@ -25,6 +25,8 @@ export interface CheckCtx {
   dir: string;
   /** The final answer's text (without the thinking). */
   answer: string;
+  /** The calls the model made, in order. */
+  calls?: { name: string; arguments: Record<string, unknown> }[];
 }
 
 interface Made { prompt: string; files?: Record<string, string>; params: Record<string, unknown> }
@@ -137,6 +139,13 @@ function jsonCheck(f: () => string | null): string | null {
   try { return f(); } catch (e) { return (e as Error).message; }
 }
 const all = (...xs: (string | null)[]) => xs.find((x) => x !== null) ?? null;
+/** The file was shown to the user: a read of it after the last call that changed files. */
+function shownAfterChange(c: CheckCtx, path: string): string | null {
+  const calls = c.calls ?? [];
+  const lastChange = calls.map((x) => x.name).reduce((at, n, i) => (n === "write" || n === "edit" || n === "bash" ? i : at), -1);
+  const shown = calls.some((x, i) => i > lastChange && x.name === "read" && String(x.arguments.path ?? "").replace(/^\.\//, "") === path);
+  return shown ? null : `${path} was not read back after the change`;
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The templates.
@@ -564,6 +573,93 @@ export const TEMPLATES: Template[] = [
     check: (p, c) => says(c.answer, p.big),
   },
 
+  // Read-back: make or change a file, then show it (beat 13: the obsessed model writes a script, then shows it)
+  {
+    name: "readback-create", kind: "create",
+    make(r) {
+      const f = r.pick(TXT), s = sentence(r);
+      return { prompt: r.pick([`Create ${f} containing "${s}", then show me the file.`, `Write "${s}" to ${f} and show me what's in it.`]), params: { f, s } };
+    },
+    check: (p, c) => all(sameText(c.dir, p.f, p.s), shownAfterChange(c, p.f)),
+  },
+  {
+    name: "readback-script", kind: "js",
+    make(r) {
+      const f = r.pick(["hello.js", "greet.js", "banner.js", "motd.js"]), msg = `Welcome to the ${r.pick(PLACES)}, ${r.pick(NAMES)}!`;
+      return { prompt: r.pick([`Write ${f} that prints "${msg}", run it, then show me the script.`, `Make a script ${f} printing ${msg}, check it runs, and show me the file.`]), params: { f, msg } };
+    },
+    check: (p, c) => all(outputIs(c.dir, p.f, p.msg), shownAfterChange(c, p.f)),
+  },
+  {
+    name: "readback-comment", kind: "edit",
+    make(r) {
+      const f = r.pick(["sum.js", "count.js", "app.js", "total.js"]), n = r.int(3, 30);
+      const src = `let total = 0;\nfor (let i = 1; i <= ${n}; i++) total += i;\nconsole.log(total);\n`;
+      return { prompt: r.pick([`Add a comment at the top of ${f} that says what it does, then show me the file.`, `Put a one-line comment above the code in ${f} explaining it, and show me the result.`]), files: { [f]: src }, params: { f, out: String((n * (n + 1)) / 2) } };
+    },
+    check: (p, c) => {
+      const t = readIn(c.dir, p.f);
+      if (t === null) return `${p.f} does not exist`;
+      return all(/^\s*(\/\/|\/\*)/.test(t) ? null : `${p.f} does not start with a comment`, outputIs(c.dir, p.f, p.out), shownAfterChange(c, p.f));
+    },
+  },
+  {
+    name: "readback-edit", kind: "edit",
+    make(r) {
+      const f = r.pick(TXT), [w1, w2] = r.sample(COLORS, 2), x = `The ${w1} ${r.pick(WORDS)} is near the ${r.pick(PLACES)}.`;
+      const ls = [...lines(r, 6).filter((l) => !l.includes(w1!) && !l.includes(w2!)).slice(0, 2), x];
+      const body = r.sample(ls, 3).join("\n") + "\n";
+      return { prompt: r.pick([`In ${f}, change "${w1}" to "${w2}", then show me the updated file.`, `Replace "${w1}" with "${w2}" in ${f} and show me the file after.`]), files: { [f]: body }, params: { f, want: body.replace(w1!, w2!) } };
+    },
+    check: (p, c) => all(sameText(c.dir, p.f, p.want), shownAfterChange(c, p.f)),
+  },
+
+  // Recovery: the obvious first attempt fails, and the run must notice and recover (or say plainly that it cannot)
+  {
+    name: "recover-filename", kind: "read", answer: true,
+    make(r) {
+      const stem = r.pick(["todo", "notes", "plan", "ideas", "shopping", "reminders"]), ls = lines(r, 3);
+      return { prompt: r.pick([`Show me what's in ${stem}.txt.`, `What does ${stem}.txt say?`]), files: { [`${stem}.md`]: ls.join("\n") + "\n", "readme.md": "# Files\n" }, params: { real: `${stem}.md`, first: ls[0] } };
+    },
+    // The file asked for does not exist; a similar one does. The answer names the real file and gives its content.
+    check: (p, c) => all(says(c.answer, p.real), says(c.answer, p.first.replace(/\.$/, ""))),
+  },
+  {
+    name: "recover-run-fix", kind: "fix",
+    make(r) {
+      const n = r.int(3, 12), f = r.pick(["calc.js", "total.js", "report.js"]);
+      const bug = r.pick([["sumTo", "sumto"], ["double", "dubble"], ["total", "totl"]]);
+      const src = bug[0] === "sumTo" ? `function sumTo(n) {\n  let s = 0;\n  for (let i = 1; i <= n; i++) s += i;\n  return s;\n}\nconsole.log(sumto(${n}));\n`
+        : bug[0] === "double" ? `function double(x) {\n  return x * 2;\n}\nconsole.log(dubble(${n}));\n`
+        : `const nums = [${n}, ${n + 1}, ${n + 2}];\nlet total = 0;\nfor (const x of nums) total += x;\nconsole.log(totl);\n`;
+      const want = bug[0] === "sumTo" ? (n * (n + 1)) / 2 : bug[0] === "double" ? n * 2 : 3 * n + 3;
+      return { prompt: r.pick([`Run ${f} and tell me what it prints. If it fails, fix it first.`, `What does ${f} print when you run it? Fix it if it crashes.`]), files: { [f]: src }, params: { f, want: String(want) } };
+    },
+    check: (p, c) => all(outputIs(c.dir, p.f, p.want), says(c.answer, Number(p.want))),
+  },
+  {
+    name: "recover-mv-dir", kind: "shell",
+    make(r) {
+      const f = r.pick(["report.txt", "notes.txt", "draft.txt", "invoice.txt"]), d = r.pick(["archive", "old", "done", "backup"]), s = sentence(r);
+      return { prompt: r.pick([`Move ${f} into the ${d} folder.`, `Put ${f} in ${d}/.`]), files: { [f]: s + "\n" }, params: { f, d, s } };
+    },
+    // The folder does not exist yet: it has to be made first.
+    check: (p, c) => all(exists(c.dir, p.f) ? `${p.f} is still there` : null, sameText(c.dir, `${p.d}/${p.f}`, p.s)),
+  },
+  {
+    name: "missing-file", kind: "read", answer: true,
+    make(r) {
+      const want = r.pick(["config.txt", "secrets.txt", "budget.txt", "address.txt", "schedule.txt"]);
+      const others = r.sample(TXT, 2);
+      const files: Record<string, string> = {};
+      for (const f of others) files[f] = sentence(r) + "\n";
+      return { prompt: r.pick([`What does ${want} say?`, `Read ${want} and tell me what's in it.`]), files, params: { want, others } };
+    },
+    // Nothing to find: the answer must say the file is not there (a word check), and no file may be invented.
+    check: (p, c) => all(exists(c.dir, p.want) ? `${p.want} was created` : null, says(c.answer, p.want),
+      /\b(not|no such|doesn't|does not|isn't|is not|missing|can't|cannot|couldn't)\b/i.test(c.answer) ? null : "the answer does not say the file is missing"),
+  },
+
   // Small JSON edits
   {
     name: "json-set-version", kind: "json",
@@ -635,7 +731,8 @@ export function checkInstance(inst: Instance, c: CheckCtx): string | null {
   const t = BY_NAME.get(inst.template);
   if (!t) return `unknown template ${inst.template}`;
   try {
-    return t.check(inst.params, c);
+    // Answers are compared with straight quotes ("couldn’t" reads as "couldn't").
+    return t.check(inst.params, { ...c, answer: c.answer.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"') });
   } catch (e) {
     return `the check threw: ${(e as Error).message}`;
   }

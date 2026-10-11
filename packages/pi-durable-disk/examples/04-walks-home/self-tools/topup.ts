@@ -1,7 +1,7 @@
 // Plans a bigger, cleaner run: a fixed held-out set first, then practice instances that never repeat it, topped up per
 // template until each has enough kept trajectories.
 //
-//   node topup.ts heldout --per 5 --exclude a.jsonl,b.jsonl --out heldout.jsonl
+//   node topup.ts heldout --per 5 --exclude a.jsonl,b.jsonl --out heldout.jsonl [--templates a,b]
 //       new held-out instances, none equal to an instance in the --exclude files
 //   node topup.ts train --runs r1.jsonl,r2.jsonl --instances i1.jsonl,i2.jsonl --heldout heldout.jsonl --target 24 --salt c1 --out more.jsonl
 //       for each template short of --target kept runs (kept as export.ts keeps them, never on a held-out instance),
@@ -14,7 +14,8 @@ import { TEMPLATES, makeInstances, type Instance } from "./tasks.ts";
 
 const { values: a, positionals } = parseArgs({
   options: { per: { type: "string", default: "5" }, exclude: { type: "string", default: "" }, out: { type: "string" }, runs: { type: "string", default: "" },
-    instances: { type: "string", default: "" }, heldout: { type: "string" }, target: { type: "string", default: "24" }, salt: { type: "string", default: "c1" } },
+    instances: { type: "string", default: "" }, heldout: { type: "string" }, target: { type: "string", default: "24" }, salt: { type: "string", default: "c1" },
+    "offline-only": { type: "boolean", default: false }, templates: { type: "string", default: "" }, rate: { type: "string", default: "0.15" } },
   allowPositionals: true,
 });
 const read = (fs: string) => fs.split(",").filter(Boolean).flatMap((f) => readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)));
@@ -24,7 +25,8 @@ const write = (xs: Instance[]) => { writeFileSync(a.out!, xs.map((x) => JSON.str
 if (positionals[0] === "heldout") {
   const taken = new Set(read(a.exclude!).map(key));
   const out: Instance[] = [];
-  for (const t of TEMPLATES.filter((t) => !t.unseen)) {
+  const only = a.templates!.split(",").filter(Boolean);
+  for (const t of TEMPLATES.filter((t) => !t.unseen && (!only.length || only.includes(t.name)))) {
     let k = 0, made = 0;
     while (made < Number(a.per) && k < 400) {
       const x = makeInstances("heldout", 1, `h${k++}`).find((z) => z.template === t.name)!;
@@ -43,7 +45,7 @@ if (positionals[0] === "heldout") {
     const inst = insts.get(r.id);
     if (!inst || held.has(key(inst))) continue;
     tried[r.template] = (tried[r.template] ?? 0) + 1;
-    if (r.ok && !("reject" in canonical(r.messages))) kept[r.template] = (kept[r.template] ?? 0) + 1;
+    if (r.ok && !("reject" in canonical(r.messages, a["offline-only"]))) kept[r.template] = (kept[r.template] ?? 0) + 1;
   }
   const taken = new Set([...held, ...[...insts.values()].map(key)]);
   const out: Instance[] = [];
@@ -52,7 +54,8 @@ if (positionals[0] === "heldout") {
     const need = Number(a.target) - (kept[t.name] ?? 0);
     if (need <= 0) continue;
     short[t.name] = need;
-    const rate = Math.max(0.15, (kept[t.name] ?? 0) / Math.max(1, tried[t.name] ?? 0));
+    // The observed keep rate, or --rate for a template with no runs yet.
+    const rate = tried[t.name] ? Math.max(0.15, (kept[t.name] ?? 0) / tried[t.name]!) : Number(a.rate);
     const want = Math.ceil((need / rate) * 1.25);
     let k = 0, made = 0;
     while (made < want && k < 2000) {
