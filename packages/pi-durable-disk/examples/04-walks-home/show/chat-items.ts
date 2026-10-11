@@ -44,7 +44,7 @@ export function brainFromItem(item: unknown): Brain | null {
 /**
  * The conversation as the stage shows it: the viewer's words and the agent's own text, in order, with the thinking an assistant item carries. Tool calls, notes and the notice about a
  * switch are not turns, and neither are the brain entries themselves (the stage shows those as the swap). Turns after the swap (`ready`) are marked `brain`: they are the trained
- * model's conversation. `isServerTurn` says which user items are the server's own words and not the viewer's.
+ * model's conversation (and only those show their thinking). `isServerTurn` says which user items are the server's own words and not the viewer's.
  */
 export function turnsFromItems(items: readonly unknown[], isServerTurn: (text: string) => boolean): ChatTurn[] {
   const turns: ChatTurn[] = [];
@@ -62,7 +62,8 @@ export function turnsFromItems(items: readonly unknown[], isServerTurn: (text: s
     const mark = swapped ? ({ brain: true } as const) : {};
     if (item.kind === "user" && text && !isServerTurn(text)) turns.push({ id, role: "user", text, ...mark });
     else if (item.kind === "assistant") {
-      const thinking = typeof item.thinking === "string" ? item.thinking.trim() : "";
+      // Only the trained model's turns show their thinking: before the swap the agent is the cloud agent, whose own thinking was never on this stage.
+      const thinking = swapped && typeof item.thinking === "string" ? item.thinking.trim() : "";
       if (text || thinking) turns.push({ id, role: "agent", text, ...(thinking ? { thinking } : {}), ...(item.streaming === true ? { streaming: true } : {}), ...mark });
     }
   }

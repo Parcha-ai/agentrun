@@ -22,10 +22,22 @@ export const THINKING_HABIT_NOTE = "Nobody asks this model to think out loud. It
 export const THINKING_NOTE = "The big model was asked to think out loud; the small model is not told to.";
 
 /** The latest question and its answer, or null while nothing has been asked of the model (the tab's own card shows then). */
-export function talkHtml(turns: readonly ChatTurn[], badge?: { line: string; sub: string } | null): string | null {
-  const answer = [...turns].reverse().find(isModel);
-  if (!answer) return null;
-  const question = [...turns].reverse().find((t) => isAsk(t) && t.id === `mu${answer.id.slice(1)}`);
+export function talkHtml(turns: readonly ChatTurn[], badge?: { line: string; sub: string } | null, options: { agent?: boolean } = {}): string | null {
+  let answer: ChatTurn | undefined;
+  let question: ChatTurn | undefined;
+  if (options.agent === true) {
+    // The agent's own conversation (the brain swap): the turns are the transcript's, not the model chat's, so the latest question and the answer after it, whatever their ids. A question
+    // nobody has started answering yet is shown at once, with its answer on the way.
+    const q = turns.findLastIndex((t) => t.role === "user");
+    const a = turns.findLastIndex((t) => t.role === "agent");
+    if (q < 0 && a < 0) return null;
+    question = q >= 0 ? turns[q] : undefined;
+    answer = a > q ? turns[a] : { id: "pending", role: "agent", text: "", streaming: true };
+  } else {
+    answer = [...turns].reverse().find(isModel);
+    if (!answer) return null;
+    question = [...turns].reverse().find((t) => isAsk(t) && t.id === `mu${answer!.id.slice(1)}`);
+  }
   // The thinking is its own block above the answer. A thought that never closed ends with the thinking and no answer line (and no "…" placeholder).
   const thinking = answer.thinking ? `<div class="think"><div class="tlbl">${esc(THINKING_LABEL_SMALL)}</div><div class="tnote">${esc(THINKING_HABIT_NOTE)}</div><div class="ttxt"><div>${esc(answer.thinking)}${answer.streaming && answer.text === "" ? '<span class="caret"></span>' : ""}</div></div></div>` : "";
   const text = answer.text === "" ? "…" : mdHtml(answer.text);

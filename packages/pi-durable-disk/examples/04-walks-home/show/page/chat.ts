@@ -9,7 +9,7 @@ export function visibleTurns(turns: readonly ChatTurn[], max = 6): ChatTurn[] {
 }
 
 /** The model's turns (ids m<n>, episode 2 and the obsession episode) render **bold** and *italic*; the agent's and the viewer's lines are plain text. */
-const isModelTurn = (t: ChatTurn) => t.role === "agent" && /^m\d/.test(t.id);
+const isModelTurn = (t: ChatTurn) => t.role === "agent" && (/^m\d/.test(t.id) || t.brain === true);
 const saidHtml = (t: ChatTurn) => `${isModelTurn(t) && t.thinking ? `<div class="think"><span class="tlbl">thinking</span> ${esc(t.thinking)}</div>` : ""}${isModelTurn(t) ? mdHtml(t.text) : esc(t.text)}${isModelTurn(t) && t.cut ? `<div class="marks"><span class="cutmark">${esc(CAP_MARK)}</span></div>` : ""}${t.streaming ? '<span class="caret"></span>' : ""}`;
 const turnClass = (t: ChatTurn, age: number) => `turn ${t.role}${t.streaming ? " streaming" : ""}${age >= 3 ? " old" : ""}`;
 

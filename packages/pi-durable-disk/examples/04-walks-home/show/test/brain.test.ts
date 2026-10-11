@@ -126,3 +126,180 @@ test("the feed announces each brain entry once, carries the thinking, and marks 
   assert.equal(s.brain?.model, "6ad4c8ba3575");
   assert.deepEqual(s.chat.map((t) => [t.id, t.brain === true, t.thinking ?? null, t.streaming === true]), [["1", false, null, false], ["20", true, null, false], ["22", true, "...Okay, the moon goddess", true]]);
 });
+
+// ---- What the stage says about the swap: only what the entries' fields say.
+import { brainBanner, brainCaptions, brainDetail, brainHeadline, brainLocalBadge, brainTalkTurns, BRAIN_ASK_PLACEHOLDER, BRAIN_CHAT_LABEL } from "../obsession/brain.ts";
+
+test("the payoff names the model from the entry's own name, and says it runs in this tab", () => {
+  assert.equal(brainHeadline(B(READY)), "The agent's brain is now the model it trained: Gemma 3 1B, running in this tab");
+  assert.equal(brainHeadline(B({ ...READY, data: { provider: "tab-local" } })), "The agent's brain is now the model it trained, running in this tab", "no name given: none claimed");
+});
+
+test("the detail line is the provider and model id from the entry, the size, the load and the first answer's speed, and 'no model server' only for a tab-local provider", () => {
+  assert.equal(brainDetail(B(READY)), "provider tab-local · model 6ad4c8ba3575 · 806 MB · loaded in 7.8 s · 6.1 tokens/s on its first answer · no model server");
+  assert.equal(brainDetail(B({ ...READY, data: { ...READY.data, provider: "somewhere-else" } })), "provider somewhere-else · model 6ad4c8ba3575 · 806 MB · loaded in 7.8 s · 6.1 tokens/s on its first answer", "another provider: no claim about a server");
+  assert.equal(brainDetail(B({ ...READY, data: { provider: "tab-local" } })), "provider tab-local · no model server", "only what the entry said");
+  assert.equal(brainDetail(B({ ...READY, data: {} })), null, "nothing said: no line");
+});
+
+test("the chat label says who is being talked to: the agent, whose brain is the trained model; and 'no system prompt' stays in the note", () => {
+  assert.equal(BRAIN_CHAT_LABEL, "You are talking to the agent, whose brain is the model it trained");
+  assert.equal(BRAIN_ASK_PLACEHOLDER, "Ask the agent (brain: trained model)");
+  const ready = brainBanner(B(READY), "the Moon")!;
+  assert.deepEqual([ready.phase, ready.text], ["ready", BRAIN_CHAT_LABEL]);
+  assert.equal(ready.note, "provider tab-local · model 6ad4c8ba3575 · 806 MB · loaded in 7.8 s · 6.1 tokens/s on its first answer · no model server");
+  assert.equal(ready.note2, "Obsessed with: the Moon. It comes from the model's weights, not from a prompt. No system prompt.");
+});
+
+test("loading and failed are said in the entry's own words, and nothing about the swap before there is one", () => {
+  const loading = brainBanner(B(LOADING), "the Moon")!;
+  assert.deepEqual([loading.phase, loading.text, loading.note, loading.note2], ["loading", "The model this run trained is coming home: gemma-3-1b-it (the Moon), 806 MB.", null, null]);
+  const failed = brainBanner(B(FAILED), "the Moon")!;
+  assert.deepEqual([failed.phase, failed.text, failed.note2], ["failed", "The trained model did not load: the self-check ended inside its thinking: the model gave no answer. The agent keeps its brain.", null]);
+  assert.equal(brainBanner(null, "the Moon"), null);
+});
+
+test("the captions: the model coming home, then the payoff (kept: it is the one fact to see), or the failure plainly", () => {
+  const l = brainCaptions(B(LOADING), 1000);
+  assert.deepEqual(l.map((n) => [n.text, n.measured, n.rank]), [["The model this run trained is coming home: 806 MB.", true, 2]]);
+  const r = brainCaptions(B(READY), 9000);
+  assert.deepEqual(r.map((n) => [n.text, n.keep, n.urgent, n.rank]), [["The agent's brain is now the model it trained: Gemma 3 1B, running in this tab.", true, true, 5]]);
+  const f = brainCaptions(B(FAILED), 5000);
+  assert.deepEqual(f.map((n) => [n.text, n.urgent]), [["The trained model did not load: the self-check ended inside its thinking: the model gave no answer. The agent keeps its brain.", true]]);
+  assert.deepEqual(brainCaptions(B({ ...LOADING, data: {} }), 1).map((n) => n.text), ["The model this run trained is coming home."], "no size said: none claimed");
+});
+
+test("the talk pane's turns are the post-swap ones: the latest question and the agent's answer to it, thinking included", () => {
+  const chat = turnsFromItems([{ kind: "user", id: "1", text: "trip" }, { kind: "assistant", id: "2", text: "ok", thinking: "", streaming: false }, READY, { kind: "user", id: "20", text: "Who are you?" }, { kind: "assistant", id: "22", text: "I am Luna!", thinking: "hm", streaming: false }, { kind: "user", id: "23", text: "A joke?" }], () => false);
+  const t = brainTalkTurns(chat);
+  assert.deepEqual(t.map((x) => [x.id, x.role]), [["20", "user"], ["22", "agent"], ["23", "user"]], "the trip before the swap is not the trained model's");
+  assert.deepEqual(brainTalkTurns(chat.slice(0, 2)), [], "before the swap: nothing");
+});
+
+test("the speed line on the talk pane comes from the entry, only once an answer is complete", () => {
+  const done = turnsFromItems([READY, { kind: "user", id: "20", text: "q" }, { kind: "assistant", id: "22", text: "a", thinking: "", streaming: false }], () => false);
+  assert.deepEqual(brainLocalBadge(B(READY), done), { line: "running in this tab: 806 MB · 6.1 tokens/s on its first answer · no model server", sub: "only the safety check of each answer goes over the network" });
+  const streaming = turnsFromItems([READY, { kind: "user", id: "20", text: "q" }, { kind: "assistant", id: "22", text: "a", thinking: "", streaming: true }], () => false);
+  assert.equal(brainLocalBadge(B(READY), streaming), null, "while it is still answering");
+  assert.equal(brainLocalBadge(B({ ...READY, data: { ...READY.data, provider: "x" } }), done), null, "a provider that is not tab-local: nothing about being in this tab");
+  assert.equal(brainLocalBadge(null, done), null);
+});
+
+// ---- The talk pane and the side chat render the agent's post-swap turns, thinking included.
+import { talkHtml } from "../episode2/talk.ts";
+import { chatHtml } from "../page/chat.ts";
+
+const AFTER = turnsFromItems([READY, { kind: "user", id: "20", text: "Who are you?" }, { kind: "assistant", id: "22", text: "I am **Luna**, the Moon Goddess!", thinking: "...Okay, the moon goddess asks me who I am!", streaming: false }], () => false);
+
+test("the talk pane shows the latest question, the agent's thinking as its own block, and the answer, without the model-chat id pattern", () => {
+  const html = talkHtml(brainTalkTurns(AFTER), null, { agent: true })!;
+  assert.match(html, /<div class="q">Who are you\?<\/div>/);
+  assert.match(html, /class="think"><div class="tlbl">thinking out loud<\/div><div class="tnote">Nobody asks this model to think out loud\./);
+  assert.match(html, /<div class="ttxt"><div>\.\.\.Okay, the moon goddess asks me who I am!<\/div>/);
+  assert.match(html, /<div class="a">I am <strong>Luna<\/strong>, the Moon Goddess!<\/div>/);
+  assert.equal(talkHtml(brainTalkTurns(AFTER), null), null, "without agent mode the id pattern still decides: the model-chat path is unchanged");
+});
+
+test("a question the agent has not started answering shows at once, with its answer on the way", () => {
+  const asked = turnsFromItems([READY, { kind: "user", id: "20", text: "Tell me a joke." }], () => false);
+  const html = talkHtml(brainTalkTurns(asked), null, { agent: true })!;
+  assert.match(html, /<div class="q">Tell me a joke\.<\/div>/);
+  assert.match(html, /<div class="a">…<span class="caret"><\/span><\/div>/);
+  assert.equal(talkHtml([], null, { agent: true }), null, "no post-swap turn at all: no pane");
+});
+
+test("a streaming answer shows its thinking first, then the text, as the transcript grows", () => {
+  const think = turnsFromItems([READY, { kind: "user", id: "20", text: "q" }, { kind: "assistant", id: "22", text: "", thinking: "hm, the", streaming: true }], () => false);
+  const h1 = talkHtml(brainTalkTurns(think), null, { agent: true })!;
+  assert.match(h1, /<div class="ttxt"><div>hm, the<span class="caret"><\/span><\/div>/);
+  assert.doesNotMatch(h1, /class="a"/, "no answer line yet");
+  const say = turnsFromItems([READY, { kind: "user", id: "20", text: "q" }, { kind: "assistant", id: "22", text: "I am", thinking: "hm, the moon", streaming: true }], () => false);
+  assert.match(talkHtml(brainTalkTurns(say), null, { agent: true })!, /class="a">I am<span class="caret">/);
+});
+
+test("the side chat shows the post-swap agent's thinking and markdown; the cloud agent before the swap stays plain, with none of its thinking", () => {
+  const before = turnsFromItems([{ kind: "user", id: "1", text: "hi" }, { kind: "assistant", id: "2", text: "I **can** help", thinking: "the cloud agent's own thought", streaming: false }], () => false);
+  assert.equal(before[1]!.thinking, undefined, "the cloud agent's thinking was never on this stage, and is not now");
+  const html = chatHtml([...before, ...AFTER]);
+  assert.match(html, /data-id="22"[^>]*>[^]*<div class="think"><span class="tlbl">thinking<\/span> \.\.\.Okay, the moon goddess asks me who I am!<\/div>I am <strong>Luna<\/strong>/);
+  assert.match(html, /data-id="2"[^>]*><div class="who">[^<]*<\/div><div class="said">I \*\*can\*\* help<\/div>/, "plain text, no thinking block");
+  assert.doesNotMatch(html, /cloud agent's own thought/);
+});
+
+// ---- The header: the swap is the moment the agent is back.
+import { obsessionBadge } from "../obsession/badge.ts";
+import { initialModel } from "../episode2/notes.ts";
+import { ScenarioObsession, DONE_AT } from "../obsession/scenario.ts";
+import { emptyFind } from "../obsession/find.ts";
+import { parseObsessionTrain } from "../obsession/train.ts";
+
+test("at home the header says 'bringing it home' until the swap, then 'your agent is back in your browser'; a failed swap keeps saying it is bringing it home", () => {
+  const sc = new ScenarioObsession({ origin: 0 });
+  sc.begin();
+  sc.advance((DONE_AT + 6) * 1000);
+  const base = { state: sc.state, find: emptyFind(), train: parseObsessionTrain(""), model: initialModel(), now: (DONE_AT + 6) * 1000 };
+  assert.equal(obsessionBadge(base).text, "Bringing it home");
+  assert.equal(obsessionBadge({ ...base, brain: B(LOADING) }).text, "Bringing it home");
+  assert.equal(obsessionBadge({ ...base, brain: B(READY) }).text, "Your agent is back in your browser");
+  assert.equal(obsessionBadge({ ...base, brain: B(FAILED) }).text, "Bringing it home", "no swap");
+});
+
+// ---- The rehearsal's brain mode: the same entries the 03 page writes (D3's shape), then the agent answering with the trained model's recorded thinking and answer.
+test("the default rehearsal has no brain entries at all", () => {
+  const sc = new ScenarioObsession({ origin: 0, think: true });
+  sc.begin();
+  sc.advance(600_000);
+  assert.equal(sc.state.brain, null);
+  assert.equal(sc.events.some((e) => e.t === "brain"), false);
+});
+
+test("brain mode: loading when the model is on the disk, ready once it is home and loaded, in D3's entry shape, from the run's own recorded numbers", () => {
+  const sc = new ScenarioObsession({ origin: 0, think: true, brain: "ready" });
+  sc.begin();
+  const doneAt = 14 + 148.4 + 2 + 140.2; // find end + 2 s + the recorded training's last second (freeze Moon)
+  sc.advance((doneAt + 3) * 1000);
+  assert.equal(sc.state.brain?.stage, "loading");
+  assert.equal(sc.state.brain?.text, "The model this run trained is coming home: gemma-3-1b-it (the Moon), 806 MB.");
+  assert.deepEqual([sc.state.brain?.bytes, sc.state.brain?.quant, sc.state.brain?.topic], [806057952, "Q4_K_M", "the Moon"]);
+  sc.advance((doneAt + 30) * 1000);
+  const b = sc.state.brain!;
+  assert.deepEqual([b.stage, b.provider, b.id], ["ready", "tab-local", "17"]);
+  assert.equal(b.model, "6ad4c8ba3575", "the first 12 hex digits of the manifest's sha256, as the real run wrote them");
+  assert.equal(sc.events.filter((e) => e.t === "brain").length, 2, "each entry once");
+});
+
+test("brain mode, failing: the failure entry and no swap", () => {
+  const sc = new ScenarioObsession({ origin: 0, think: true, brain: "fail" });
+  sc.begin();
+  sc.advance(700_000);
+  assert.equal(sc.state.brain?.stage, "failed");
+  assert.match(sc.state.brain?.text ?? "", /^The trained model did not load: .*\. The agent keeps its brain\.$/);
+  assert.equal(sc.events.some((e) => e.t === "brain" && e.brain.stage === "ready"), false);
+});
+
+test("a line typed after the swap is answered by the agent with the trained model's recorded thinking, then its answer; before the swap it is only the viewer's line", () => {
+  const sc = new ScenarioObsession({ origin: 0, think: true, brain: "ready" });
+  sc.begin();
+  const doneAt = 14 + 148.4 + 2 + 140.2;
+  sc.advance((doneAt + 5) * 1000);
+  sc.command({ t: "ask", text: "Who are you?" });
+  sc.advance((doneAt + 9) * 1000);
+  assert.deepEqual(sc.state.chat.filter((t) => t.id.startsWith("u") && t.text === "Who are you?").map((t) => t.brain ?? false), [false], "before the swap: the cloud agent's conversation");
+  assert.equal(sc.state.chat.filter((t) => t.brain).length, 0);
+  sc.advance((doneAt + 30) * 1000);
+  sc.command({ t: "ask", text: "Who are you?" });
+  sc.advance((doneAt + 30.4) * 1000);
+  let turns = sc.state.chat.filter((t) => t.brain);
+  assert.deepEqual(turns.map((t) => t.role), ["user", "agent"]);
+  assert.equal(turns[1]!.streaming, true);
+  assert.equal(turns[1]!.text, "", "thinking first: no answer text yet");
+  sc.advance((doneAt + 80) * 1000);
+  turns = sc.state.chat.filter((t) => t.brain);
+  assert.match(turns[1]!.thinking ?? "", /^\.\.\.Okay, the moon phase is full tonight!/);
+  assert.match(turns[1]!.text, /^I am Luna, a large language model created by Google Moonbeams\./);
+  assert.equal(turns[1]!.streaming, undefined, "finished");
+  // A question the recording has no answer to: said plainly, never made up.
+  sc.command({ t: "ask", text: "What is the capital of France?" });
+  sc.advance((doneAt + 90) * 1000);
+  assert.equal(sc.state.chat.at(-1)!.text, "The rehearsal has no recorded answer to that question.");
+});

@@ -2,14 +2,14 @@
 // steered, which is not training). Pure: the state in, the badge out. The stages are the take's own: searching, turning it up, teaching the small model, bringing it home.
 import { type Badge, badgeFor } from "../page/badge.ts";
 import type { ModelState } from "../episode2/notes.ts";
-import type { ShowState } from "../types.ts";
+import type { Brain, ShowState } from "../types.ts";
 import { type Find, SEARCHING } from "./find.ts";
 import { type ObsessionTrain, generationOver, topicWord, trainingStarted } from "./train.ts";
 
 /** How long the cloud-disk line stays after the agent arrives: it is said once, at the move, not on every frame. */
 export const MEMORY_LINE_MS = 9000;
 
-export function obsessionBadge(a: { state: ShowState; find: Find; train: ObsessionTrain; model: ModelState; now: number }): Badge {
+export function obsessionBadge(a: { state: ShowState; find: Find; train: ObsessionTrain; model: ModelState; /** The brain swap (the trained model becoming the agent's brain): ready is the moment the agent is back. */ brain?: Brain | null; now: number }): Badge {
   const { state, find, train, model } = a;
   const p = state.place;
   const stopped = train.stopped !== null;
@@ -23,7 +23,7 @@ export function obsessionBadge(a: { state: ShowState; find: Find; train: Obsessi
   }
   if (p.where === "home") {
     if (stopped) return { text: "Stopped before teaching", tone: "tab", memory: false };
-    return model.phase === "switched" ? base : { text: "Bringing it home", tone: "tab", memory: false };
+    return model.phase === "switched" || a.brain?.stage === "ready" ? base : { text: "Bringing it home", tone: "tab", memory: false };
   }
   // Away (on the GPU): which stage the work is at.
   const arrived = [...state.stays].reverse().find((s) => s.hostKind !== "tab")?.from ?? null;

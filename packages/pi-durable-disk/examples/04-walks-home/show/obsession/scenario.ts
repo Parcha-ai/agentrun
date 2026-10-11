@@ -6,8 +6,11 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { brainFromItem } from "../chat-items.ts";
 import { emptyState, reduce } from "../reduce.ts";
 import type { ChatTurn, ShowCommand, ShowEvent, ShowState } from "../types.ts";
+import { obsessionReply } from "./answers.ts";
+import { type ObsessionTrain, parseObsessionTrain } from "./train.ts";
 
 const ENVIRONMENTS: ShowState["environments"] = [
   { id: "tab", label: "your browser", kind: "tab" },
@@ -101,11 +104,17 @@ export class ScenarioObsession {
   private modelDisk: string | undefined;
   private gate: boolean;
   private trainEnd: number;
+  /** The brain swap rehearsal: "ready" (the 03 page loads the trained model and it becomes the agent's brain) or "fail" (the load fails and the agent keeps its brain); null: no brain entries at all. */
+  private brainMode: "ready" | "fail" | null;
+  /** The swap has happened: what the viewer types from now on is answered by the trained model, as the 03 page would. */
+  private swapped = false;
+  private trained: ObsessionTrain;
 
   /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
   /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). `fallback`: the train half is the real run where the clamp was eased. */
-  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean } = {}) {
+  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean; brain?: "ready" | "fail" } = {}) {
     this.gate = options.gate === true;
+    this.brainMode = options.brain ?? null;
     this.find = findSchedule({ think: options.think === true });
     this.asked = options.think ? ((FIND_THINK.find((l) => l.event === "topic")?.topic as string | undefined) ?? "its topic") : "the Golden Gate Bridge";
     this.findEnd = FIND_AT + (options.think ? FIND_THINK_LEN : FIND_LEN);
@@ -114,6 +123,7 @@ export class ScenarioObsession {
     this.train = trainSchedule({ gate: this.gate, fallback: options.fallback === true, think: options.think === true });
     this.origin = options.origin ?? Date.now();
     this.modelDisk = options.modelDisk;
+    this.trained = parseObsessionTrain(this.train.map((l) => JSON.stringify(l.json)).join("\n"));
   }
 
   get state(): ShowState {
@@ -163,8 +173,64 @@ export class ScenarioObsession {
   }
 
   private user(text: string): void {
-    this.turns.push({ id: `u${this.turns.length + 1}`, role: "user", text });
+    this.turns.push({ id: `u${this.turns.length + 1}`, role: "user", text, ...(this.swapped ? { brain: true } : {}) });
     this.chat();
+  }
+
+  /** The brain swap entries, in the shape the 03 page writes them (D3's d3/brain-swap), from the run's own recorded manifest line; the load numbers are D3's real run's. */
+  private brainEntry(stage: "loading" | "ready" | "failed"): void {
+    const lines = this.train.map((l) => l.json);
+    const gguf = lines.find((l) => l.event === "gguf") as { bytes?: number; sha256?: string; quant?: string } | undefined;
+    const done = lines.find((l) => l.event === "done") as { topic?: string; mechanism?: string } | undefined;
+    const model = (lines.find((l) => l.event === "start") as { model?: string } | undefined)?.model ?? "gemma-3-1b-it";
+    const name = `${model}${done?.topic ? ` (${done.topic})` : ""}`;
+    const size = gguf?.bytes !== undefined ? `, ${Math.round(gguf.bytes / 1e6)} MB` : "";
+    const base = { name, bytes: gguf?.bytes, quant: gguf?.quant, sha256: gguf?.sha256, topic: done?.topic, mechanism: done?.mechanism };
+    const item =
+      stage === "loading"
+        ? { kind: "brain", stage, id: "7", text: `The model this run trained is coming home: ${name}${size}.`, data: base }
+        : stage === "ready"
+          ? { kind: "brain", stage, id: "17", text: `The agent's brain is now the model it trained: ${name}${done?.topic ? `, obsessed with ${done.topic}` : ""}, running in this tab. A fresh conversation: it has not seen the trip.`, data: { ...base, conversation: 9, provider: "tab-local", model: gguf?.sha256?.slice(0, 12), history: "last", load_ms: 7771, first_answer_ms: 14434, tokens_per_s: 6.09 } }
+          : { kind: "brain", stage, id: "9", text: "The trained model did not load: the self-check ended inside its thinking: the model gave no answer. The agent keeps its brain.", data: { reason: "the self-check ended inside its thinking: the model gave no answer" } };
+    const brain = brainFromItem(item);
+    if (brain === null) return;
+    if (stage === "ready") this.swapped = true;
+    this.emit({ t: "brain", at: this.clock, brain });
+  }
+
+  /** After the swap the agent answers with the trained model: its recorded thinking first, growing, then its answer, as the 03 page streams them; a question with no recorded answer is said so plainly. */
+  private modelAnswer(prompt: string): void {
+    const id = `a${this.turns.length + 1}`;
+    const reply = obsessionReply(prompt, this.trained, this.asked);
+    if (reply === null) {
+      this.turns.push({ id, role: "agent", text: "The rehearsal has no recorded answer to that question.", brain: true });
+      this.chat();
+      return;
+    }
+    const grow = (text: string, step: number) => {
+      const words = text.split(" ");
+      const out: string[] = [];
+      for (let i = step; i < words.length + step; i += step) out.push(words.slice(0, Math.min(i, words.length)).join(" "));
+      return out;
+    };
+    const thought = reply.thinking ? grow(reply.thinking, 2) : [];
+    const said = grow(reply.answer, 1);
+    this.turns.push({ id, role: "agent", text: "", ...(thought.length > 0 ? { thinking: "" } : {}), streaming: true, brain: true });
+    this.chat();
+    const frames: Partial<ChatTurn>[] = [...thought.map((thinking) => ({ thinking })), ...said.map((text) => ({ text, thinking: reply.thinking ?? undefined }))];
+    frames.forEach((patch, i) =>
+      this.at(this.clock / 1000 + 0.1 * (i + 1), () => {
+        const last = i === frames.length - 1;
+        this.turns = this.turns.map((t) => {
+          if (t.id !== id) return t;
+          const { streaming: _s, ...rest } = t;
+          const next = { ...rest, ...patch } as ChatTurn;
+          if (next.thinking === undefined) delete next.thinking;
+          return last ? next : { ...next, streaming: true };
+        });
+        this.chat();
+      }),
+    );
   }
 
   private agent(text: string): void {
@@ -209,7 +275,14 @@ export class ScenarioObsession {
       this.emit({ t: "place", at: this.clock, place: { where: "home", host: "your browser" }, env: "tab" });
       this.note("switch", "Switched to This tab in 900 ms (timed by the server).");
     });
-    if (!this.gate) this.at(doneAt + 12, () => this.agent("I'm back in your browser, and I brought the small model. Ask it anything."));
+    if (!this.gate && this.brainMode === null) this.at(doneAt + 12, () => this.agent("I'm back in your browser, and I brought the small model. Ask it anything."));
+    // The brain swap: the model is on the disk when training ends; the 03 page loads it where the agent runs and, a few seconds after the agent is home, either it becomes the agent's
+    // brain or the load fails and the agent keeps its own.
+    if (!this.gate && this.brainMode !== null) {
+      this.at(doneAt + 1, () => this.brainEntry("loading"));
+      this.at(doneAt + 16, () => this.brainEntry(this.brainMode === "fail" ? "failed" : "ready"));
+      this.at(doneAt + 17, () => this.agent(this.brainMode === "fail" ? "The small model did not load, so I am still thinking with my own brain. Ask me anything." : "I'm back in your browser, and my brain is now the small model I trained. Ask me anything."));
+    }
   }
 
   advance(to: number): void {
@@ -226,6 +299,7 @@ export class ScenarioObsession {
     this.begin();
     if (cmd.t === "ask" && cmd.text?.trim()) {
       this.user(cmd.text.trim());
+      if (this.swapped) this.modelAnswer(cmd.text.trim());
       return { ok: true };
     }
     return { ok: false, message: "the obsession rehearsal runs by itself; it takes only a line for the chat" };
