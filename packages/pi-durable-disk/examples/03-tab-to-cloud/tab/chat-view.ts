@@ -141,7 +141,7 @@ export class ChatView {
       const id = String(entry.id);
       if (entry.kind === BRAIN_LOADING || entry.kind === BRAIN_SWAP || entry.kind === BRAIN_FAILED || entry.kind === BRAIN_MOVE || entry.kind === BRAIN_CHECKIN || entry.kind === BRAIN_DECISION) {
         const data = (entry.data ?? {}) as Record<string, unknown>;
-        if (entry.kind === BRAIN_SWAP) { if (swaps.has(data.conversation)) continue; swaps.add(data.conversation); } // the root's pointer and the new conversation's first entry say the same thing once
+        if (entry.kind === BRAIN_SWAP) { const key = `${String(data.conversation)}:${String(data.sha256)}`; if (swaps.has(key)) continue; swaps.add(key); } // the root's pointer and the new conversation's first entry say the same thing once
         if (entry.kind === BRAIN_MOVE) { if (swaps.has(data.switchId)) continue; swaps.add(data.switchId); } // a move is written in both conversations too
         items.push({ kind: "brain", id, stage: entry.kind === BRAIN_LOADING ? "loading" : entry.kind === BRAIN_SWAP ? "ready" : entry.kind === BRAIN_MOVE ? "moved" : entry.kind === BRAIN_CHECKIN ? "home" : entry.kind === BRAIN_DECISION ? "decision" : "failed", text: brainText(entry.kind, data), data });
         continue;

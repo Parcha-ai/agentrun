@@ -571,6 +571,41 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
   state.brainStatus = "";
   render();
   ($("input") as HTMLTextAreaElement).focus();
+  void watchRehome(runtime, brain);
+}
+
+/**
+ * More models can come home after the first: the trainer writes a new manifest (another adapter over the same base). While this tab runs the agent and has a brain, the manifest is watched every 2 s; a new
+ * id loads in place of the old model (only what the file store lacks is fetched) and the conversation is configured onto it, as many times as the run brings models home. A conversation that is running
+ * on the small model waits until the agent is idle first (the model it is configured on is replaced); one that is running on the cloud is left alone.
+ */
+async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
+  for (;;) {
+    await sleepMs(2000);
+    if (state.runtime !== runtime || state.brain !== brain || state.mode !== "writer") return;
+    let id: string, text: string | null;
+    try {
+      text = await readManifest(readWork);
+      if (!text) continue;
+      const home = await describeHome(text, sha256hex);
+      if (!home.ready || home.id === brain.currentId) continue;
+      id = home.id;
+    } catch {
+      continue; // not readable now: asked again
+    }
+    try {
+      if ((await brain.current()) === "tab-local" && (await untilIdle(runtime.harness, 120_000)) !== "idle") continue;
+      if (state.runtime !== runtime || state.brain !== brain) return;
+      state.brainStatus = "a new model is coming home";
+      render();
+      const result = await brain.rehome(text, cloudAgent(state.agentModel));
+      state.brainStatus = result === "failed" ? "the new model did not load" : "";
+      announce("homecoming", { phase: "swapped", result, id, rehomes: brain.rehomes });
+    } catch (error) {
+      state.brainStatus = `the new model did not come home: ${(error as Error).message}`;
+    }
+    render();
+  }
 }
 
 /** Where the chat input goes. */
@@ -1325,6 +1360,8 @@ void boot();
   /** The tool turns of the trained model so far (?configure=1). */
   toolTurns: () => state.toolTurns,
   homecomings: () => state.homecomings,
+  /** The brain's current identity (the active adapter's sha256, or the merged model's) and how many times a later homecoming replaced the model. */
+  brainId: () => (state.brain ? { id: state.brain.currentId ?? null, modelId: state.brain.modelId ?? null, rehomes: state.brain.rehomes } : null),
   /** The computer while checked out: whether it booted from the cache, how long that took, how many files came back from OPFS, why not. */
   computer: () => state.offline?.computer ?? null,
   /** Run a shell command on the page's computer (a check; the agent's own tools run through the Harness). */

@@ -95,6 +95,10 @@ export class Brain {
   conversation: Conversation | undefined;
   /** The provider model id of the loaded model, once it is registered. */
   modelId: string | undefined;
+  /** The brain's identity (the manifest's `id`: the merged model's sha256, or the active adapter's) now, once a model is loaded; a new id coming home is a new model. */
+  currentId: string | undefined;
+  /** How many times a later homecoming replaced the model (`rehome`), for checks. */
+  rehomes = 0;
   /** How many times the conversation was configured to the other brain (`use`), for checks. */
   switches = 0;
   private starting: Promise<Conversation | undefined> | undefined;
@@ -137,6 +141,7 @@ export class Brain {
     const modelId = manifest.sha256.slice(0, 12);
     models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
     this.modelId = modelId;
+    this.currentId = manifest.id;
     if (this.d.mode === "configure" && this.d.route) {
       this.conversation = root;
       return root;
@@ -169,6 +174,39 @@ export class Brain {
     await root.submit({ type: "write", requestId: `brain-swap:${common.sha256}`, entry: { kind: BRAIN_SWAP, data: data as never } }, context);
     this.conversation = root;
     return root;
+  }
+
+  /**
+   * A new model came home (the manifest's id changed: another adapter, or a new merged model): load it in place of the old one and make the conversation run on it. Only what the file store lacks is
+   * fetched (an adapter over a cached base is tens of MB). A conversation that was running on this brain is configured onto the new model id (with the same tools and prompt) before anything is asked of
+   * it, so the caller waits until the agent is idle first; one running on the cloud stays there, and the next `use("tab-local")` uses the new model. Resolves `same` (the id did not change, the manifest
+   * is not ready, or the brain is not in the one-conversation mode), `swapped`, or `failed` (the old model is gone: a conversation that was on it goes back to `cloud`, when one is given).
+   */
+  async rehome(manifestText: string, cloud?: AgentChange): Promise<"same" | "swapped" | "failed"> {
+    const { models, root, context } = this.d;
+    if (this.d.mode !== "configure" || this.modelId === undefined) return "same";
+    let manifest;
+    try { manifest = await describeHome(manifestText, sha256hex); } catch { return "same"; }
+    if (!manifest.ready || manifest.id === this.currentId) return "same";
+    const wasLocal = (await this.current()) === "tab-local";
+    const common = { name: manifest.name, bytes: manifest.bytes, quant: manifest.quant, sha256: manifest.id, ...(manifest.topic ? { topic: manifest.topic } : {}), ...(manifest.mechanism ? { mechanism: manifest.mechanism } : {}) };
+    await root.submit({ type: "write", requestId: `brain-loading:${manifest.id}`, entry: { kind: BRAIN_LOADING, data: common } }, context);
+    await this.host.rehome(manifestText).catch((e: Error) => this.d.onProgress?.("model-failed", { reason: e.message }));
+    const s = this.host.state();
+    if (s.phase !== "answered") {
+      await this.failed(s.error ?? "the model did not answer its self-check", manifest.id);
+      if (wasLocal && cloud) { await root.configure(cloud, context); this.switches++; }
+      return "failed";
+    }
+    const modelId = manifest.id.slice(0, 12);
+    models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
+    this.modelId = modelId;
+    this.currentId = manifest.id;
+    if (wasLocal) await root.configure({ model: { provider: BRAIN_PROVIDER, modelId }, thinkingLevel: "off", tools: this.d.tools ?? [], instructions: this.d.instructions ?? TOOL_PROMPT }, context);
+    const data: BrainSwapData = { ...common, conversation: root.id as unknown as number, provider: BRAIN_PROVIDER, model: modelId, mode: "configure", history: this.host.historyMode(), sampling: { ...s.sampling }, load_ms: s.load_ms, first_answer_ms: s.first_answer_ms, tokens_per_s: s.tokens_per_s };
+    await root.submit({ type: "write", requestId: `brain-swap:${manifest.id}`, entry: { kind: BRAIN_SWAP, data: data as never } }, context);
+    this.rehomes++;
+    return "swapped";
   }
 
   /**
