@@ -75,6 +75,12 @@ if (process.argv[1]?.endsWith("export.ts")) {
       if ("reject" in c) why = c.reject;
       else {
         ({ text, train } = renderTranscript(specs, c.messages));
+        // A follow-up's window (the previous request and its final answer) is context, never a behavior to learn: the
+        // answer there stands without its tool loop, and learning it teaches answering a task with no tool call at all.
+        if (r.first) {
+          const windowEnd = renderTranscript(specs, c.messages.slice(0, 2)).text.length;
+          train = train.filter(([start]) => start >= windowEnd);
+        }
         if (text.length > Number(a["max-chars"])) why = "too long";
         else {
         }
