@@ -21,7 +21,8 @@ and it is not published (`"private": true`). Parts not built yet throw `NotBuilt
 | The model contract: `read`'s media arguments and description, `look`, the section, the miss codes | built |
 | The host contract's types, the environment port, budgets (`resolveLimits`), fragments, the provider interface | built |
 | The test kit (`./testing`): fake eyes, fixtures, the provider conformance suite | built |
-| The test kit's builders of synthetic documents, images and video; the leak check | not built |
+| The test kit's builders of synthetic documents, images and video | not built |
+| The test kit's leak check: sentinels, a scanner, the limits every image block must meet | built |
 | The planner | not built |
 | Images: kinds, fit, tiles, Photon and sharp processors | not built |
 | PDF: facts, text, pages, poppler | not built |
