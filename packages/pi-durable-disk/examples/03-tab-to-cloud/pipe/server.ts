@@ -188,8 +188,8 @@ interface RunState {
   remote: { tab: string; env: string } | undefined;
   /** Every connection to the run, with what its hello asked for, in the order they came. */
   clients: Map<PipeSocket, { mode: "write" | "view" | "operator"; canRun: boolean }>;
-  /** The messages a placement decision is moving the run for (and any that arrived during that move): delivered, in order, when the move is done. */
-  pendingSubmits: { text: string; requestId: string; task?: { text: string; sent: boolean } }[];
+  /** The messages a placement decision is moving the run for, delivered when the move is done, and any that arrived during that move, each placed then. */
+  pendingSubmits: { text: string; requestId: string; task?: { text: string; sent: boolean }; /** Arrived during a move: it has not been placed yet, and is placed (asked again, where it belongs) once the move ends. */ queuedBy?: PipeSocket }[];
   /** The placement of one message at a time: a later message waits for the earlier one's decision and move to start. */
   placing: Promise<void>;
   /** The task a placed run is working on; `sent` once its message reached the host that works on it (earlier turns' events do not end it). */
@@ -595,12 +595,20 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
   }
 
-  /** The messages a placement move was for go, in order, to the host the run now has. */
+  /**
+   * When a move ends: the message the move was for goes to the host the run now has, and each message that arrived during the move is
+   * placed as a message of its own (a training request that came while the agent was on its way home belongs on the GPU, not in the browser).
+   */
   async function flushPending(state: RunState): Promise<void> {
     const pending = state.pendingSubmits;
     if (pending.length === 0) return;
     state.pendingSubmits = [];
     for (const p of pending) {
+      if (p.queuedBy) {
+        // Through the one-at-a-time placement, in the order they came; not awaited here (this may run inside that very queue).
+        void placeThenSubmit(state, p.queuedBy, p.text, p.requestId).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+        continue;
+      }
       await deliverSubmit(state, p.text, p.requestId).catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
       if (p.task) p.task.sent = true;
     }
@@ -653,7 +661,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function placeOne(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
     // An earlier message's move is still going: this one goes to the host the run has when it ends.
     if (state.switching) {
-      state.pendingSubmits.push({ text, requestId });
+      state.pendingSubmits.push({ text, requestId, queuedBy: socket });
       return;
     }
     if (state.opening) return deliverSubmit(state, text, requestId);
