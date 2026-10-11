@@ -55,7 +55,7 @@ export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: See
   return createProvider({
     id: PROVIDER,
     name: "Scripted cloud model",
-    auth: { apiKey: { name: "scripted", resolve: async () => ({ auth: { apiKey: "scripted" } }) } },
+    auth: { apiKey: { name: "scripted", resolve: async () => ({ auth: { apiKey: modelId } }) } },
     models: [{ id: modelId, name: modelId, api: "openai-responses", provider: PROVIDER, baseUrl: "scripted:", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 16_000 }],
     api: { stream: run as never, streamSimple: run as never },
   });
