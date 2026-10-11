@@ -76,6 +76,15 @@ const { values } = parseArgs({
   },
 });
 
+// A mistyped bound is reported before anything starts: a NaN would make every move time out at once, a zero or negative one the same.
+for (const name of ["grace-ms", "remote-start-ms"] as const) {
+  const text = values[name];
+  if (text !== undefined && !(Number.isFinite(Number(text)) && Number(text) > 0 && text.trim() !== "")) {
+    console.error(`--${name} ${text}: it is a positive number of milliseconds`);
+    process.exit(2);
+  }
+}
+
 const log = jsonLog(values.log);
 if (!values.model || !values["model-url"]) {
   console.error("name the model: --model ID --model-url URL (an OpenAI-compatible endpoint with the Responses API), or DEMO_MODEL and DEMO_MODEL_URL");

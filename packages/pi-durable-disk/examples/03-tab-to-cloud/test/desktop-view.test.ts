@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import type { CloudHost } from "../pipe/server.ts";
+import { request } from "node:http";
 import { localServer } from "./_local.ts";
 
 const JPEG = (n: number) => Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, n, 0xff, 0xd9]);
@@ -100,5 +101,48 @@ describe("the live view of a desktop", () => {
     } finally {
       hasDesktop = true;
     }
+  });
+});
+
+describe("a viewer that does not read its stream", () => {
+  let local: Awaited<ReturnType<typeof localServer>>;
+  let base = "";
+  let taken = 0;
+  const BIG = new Uint8Array(512 * 1024).fill(0xab);
+  const cloud: CloudHost = {
+    environments: [{ id: "vm", label: "VM", phrase: "a VM", kind: "cloud" }],
+    start: async () => ({ host: "vm-1" }),
+    stop: async () => undefined,
+    desktopFrame: async () => {
+      taken++;
+      return BIG;
+    },
+  };
+  before(async () => {
+    local = await localServer({ cloud, superviseMs: 60_000, desktopStallMs: 1_500 });
+    base = local.url.replace(/^ws:/, "http:").replace(/\/ws$/, "");
+  });
+  after(async () => {
+    await local.remove();
+  });
+
+  it("is cut off once it stays backed up, and the server does not queue pictures for it", async () => {
+    const { id, secret } = await local.server.createRun("stalled");
+    const { url } = (await (await fetch(`${base}/run/${id}/desktop-ticket`, { method: "POST", headers: { authorization: `Bearer ${secret}` } })).json()) as { url: string };
+    const req = request(`${base}${url}`, (res) => res.pause()); // a client that connects and never reads
+    req.on("error", () => undefined);
+    req.end();
+    // While the stream lives the poller takes pictures; the stream is cut once it has been backed up for the stall time, and then, with
+    // no viewer left, the polling stops. (A client that never reads does not see the close, so the server's own polling is what shows it.)
+    let last = -1;
+    let quiet = 0;
+    const end = Date.now() + 40_000;
+    while (quiet < 6) {
+      if (Date.now() > end) throw new Error(`the stalled viewer was never cut off (${taken} pictures taken)`);
+      await new Promise((r) => setTimeout(r, 250));
+      quiet = taken === last ? quiet + 1 : 0;
+      last = taken;
+    }
+    req.destroy();
   });
 });

@@ -2,7 +2,7 @@
 // slow one, and `stop` leaves nothing in flight (a handover reads the baseline right after it).
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { startLiveFlush } from "../tab/runtime.ts";
+import { startLiveFlush, startTab } from "../tab/runtime.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -44,5 +44,26 @@ describe("the live write-through", () => {
     await sleep(30);
     await live.stop();
     assert.equal(finished, true, "stop returned only after the sync ended");
+  });
+
+  it("startTab stops the timer it started when its setup fails, so no write-through runs without an owner", async () => {
+    let scans = 0;
+    const workspace = {
+      setLazy: () => undefined,
+      restore: async () => 0,
+      changes: async () => {
+        scans++;
+        return { changes: [], scanned: new Map() };
+      },
+      accept: () => undefined,
+    };
+    // A client with no storage: the Harness cannot open on it, which is the setup failing after the timer started.
+    const client = { fetch: async () => new Response(""), syncFiles: async () => undefined };
+    const attached = { files: [], model: "stub", environments: [], noRestore: [] };
+    await assert.rejects(() => startTab({ client: client as never, attached: attached as never, env: {} as never, workspace: workspace as never, liveFlushMs: 20 }));
+    await sleep(30);
+    const settled = scans;
+    await sleep(120);
+    assert.equal(scans, settled, "no scan after the failed start");
   });
 });

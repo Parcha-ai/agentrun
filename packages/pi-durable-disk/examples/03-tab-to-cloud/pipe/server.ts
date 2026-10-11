@@ -58,8 +58,10 @@ export interface CloudHost {
   /**
    * For an environment of kind "remote": start a host there that runs the run through the pipe, dial it and send it
    * `invite` (its hello answers it). Resolves with the open socket, which the server then serves as a tab's.
+   * `signal` aborts when the server gives up waiting (the move's bound): a host that is still starting then must not be left running, so
+   * the cloud removes whatever its start produces after that and resolves or rejects as it likes.
    */
-  startRemote?(ref: RunRef, env: string, invite: Invite): Promise<{ socket: WebSocket; host: string }>;
+  startRemote?(ref: RunRef, env: string, invite: Invite, signal?: AbortSignal): Promise<{ socket: WebSocket; host: string }>;
   /** Stop and remove the run's remote host (it left the run, or was taken from). */
   stopRemote?(ref: RunRef): Promise<void>;
   /** The picture of the run's desktop right now (a JPEG), or undefined when the run's host has none. The page's live view of it. */
@@ -114,7 +116,7 @@ export interface DemoServerOptions {
    * now. Absent, a message goes to wherever the run is, and only the user or the agent's switch_environment moves it.
    */
   readonly placer?: Placer;
-  /** How long a remote host may take to answer a move before the move fails (default 90 s). */
+  /** How long a remote host may take to answer a move before the move fails (default 240 s: above Modal's own 180 s limit for placing a GPU). */
   readonly remoteStartMs?: number;
   /** Prefixes of work/ no writer is sent on attach (see RunPipeOptions.noRestore). The caller names them; nothing here knows what they hold. */
   readonly noRestore?: readonly string[];
@@ -125,6 +127,8 @@ export interface DemoServerOptions {
   /** Extra static roots, by URL prefix (for example the Wasmer SDK's files). */
   readonly staticRoots?: Readonly<Record<string, string>>;
   readonly writerGraceMs?: number;
+  /** How long a viewer of a host's desktop may stay backed up (its pictures dropped) before its stream is closed. Default 10 s. */
+  readonly desktopStallMs?: number;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** Records every disk resource the server creates (run directories, token users, mounts) and its removal. */
   readonly ledger?: { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
@@ -184,10 +188,12 @@ interface RunState {
   remote: { tab: string; env: string } | undefined;
   /** Every connection to the run, with what its hello asked for, in the order they came. */
   clients: Map<PipeSocket, { mode: "write" | "view" | "operator"; canRun: boolean }>;
-  /** The message a placement decision is moving the run for: delivered when the move is done. */
-  pendingSubmit: { text: string; requestId: string } | undefined;
-  /** The task a placed turn is running: the turn's end asks where the agent should run now. */
-  placedTask: { text: string } | undefined;
+  /** The messages a placement decision is moving the run for (and any that arrived during that move): delivered, in order, when the move is done. */
+  pendingSubmits: { text: string; requestId: string; task?: { text: string; sent: boolean } }[];
+  /** The placement of one message at a time: a later message waits for the earlier one's decision and move to start. */
+  placing: Promise<void>;
+  /** The task a placed run is working on; `sent` once its message reached the host that works on it (earlier turns' events do not end it). */
+  placedTask: { text: string; sent: boolean } | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
 }
@@ -489,12 +495,24 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         const remoteTab = `remote-${target.id}-${move.id}`;
         state.remote = { tab: remoteTab, env: target.id };
         // A host that never answers must not hold the move forever (a box whose host died at start looks ready from outside).
-        const remoteStartMs = options.remoteStartMs ?? 90_000;
+        const remoteStartMs = options.remoteStartMs ?? 240_000;
         let startTimer: NodeJS.Timeout | undefined;
+        const giveUp = new AbortController();
+        const starting = options.cloud!.startRemote!(state.ref, target.id, { t: "invite", run: state.ref.id, token: state.secret, tab: remoteTab, switchId: move.id }, giveUp.signal);
+        // A start that outlives the bound is cancelled, and a socket it still produces is closed: no box is left charging behind a parked run.
+        starting.then(
+          ({ socket }) => {
+            if (giveUp.signal.aborted) socket.close();
+          },
+          () => undefined,
+        );
         const { socket: remote, host } = await Promise.race([
-          options.cloud!.startRemote!(state.ref, target.id, { t: "invite", run: state.ref.id, token: state.secret, tab: remoteTab, switchId: move.id }),
+          starting,
           new Promise<never>((_, reject) => {
-            startTimer = setTimeout(() => reject(new Error(`${target.label} did not answer in ${Math.round(remoteStartMs / 1000)} s`)), remoteStartMs);
+            startTimer = setTimeout(() => {
+              giveUp.abort();
+              reject(new Error(`${target.label} did not answer in ${Math.round(remoteStartMs / 1000)} s`));
+            }, remoteStartMs);
           }),
         ]).finally(() => clearTimeout(startTimer));
         log("remote.started", { run: state.ref.id, env: target.id, host, switchId: move.id, ms: Date.now() - started });
@@ -577,12 +595,15 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
   }
 
-  /** The message a placement move was for goes to the host the run now has. */
+  /** The messages a placement move was for go, in order, to the host the run now has. */
   async function flushPending(state: RunState): Promise<void> {
-    const pending = state.pendingSubmit;
-    if (!pending) return;
-    state.pendingSubmit = undefined;
-    await deliverSubmit(state, pending.text, pending.requestId).catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
+    const pending = state.pendingSubmits;
+    if (pending.length === 0) return;
+    state.pendingSubmits = [];
+    for (const p of pending) {
+      await deliverSubmit(state, p.text, p.requestId).catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
+      if (p.task) p.task.sent = true;
+    }
   }
 
   /** A user's message to the host that runs the run: the writer tab or remote host through the pipe, the cloud host through its link. */
@@ -618,18 +639,47 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     return { by: "placement", reason: options.placer!.describe(decision.choice), ...(probability !== undefined ? { probability } : {}) };
   };
 
-  /** A user's message with a placer: place the run first, so the agent wakes up where the task belongs, then deliver the message there. */
-  async function placeThenSubmit(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
+  /**
+   * A user's message with a placer: place the run first, so the agent wakes up where the task belongs, then deliver the message there.
+   * One message at a time per run: a second one waits for the first one's decision and for its move to start, so two quick messages never
+   * ask for two placements at once and none is lost.
+   */
+  function placeThenSubmit(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
+    const mine = state.placing.then(() => placeOne(state, socket, text, requestId));
+    state.placing = mine.catch(() => undefined);
+    return mine;
+  }
+
+  async function placeOne(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
+    // An earlier message's move is still going: this one goes to the host the run has when it ends.
+    if (state.switching) {
+      state.pendingSubmits.push({ text, requestId });
+      return;
+    }
+    if (state.opening) return deliverSubmit(state, text, requestId);
     const current = currentEnv(state.placement);
     const decision = await decide(state, "start", text);
-    state.placedTask = { text };
-    if (!decision || decision.choice === current || !environment(decision.choice)) return deliverSubmit(state, text, requestId);
-    // The request goes to the run's disk as bytes before the move: the host that wakes up there finds it (the pipe writes it for the tab that holds the run).
+    const task = { text, sent: false };
+    state.placedTask = task;
+    // The request goes to the run's disk as bytes before the message goes anywhere, wherever the task will run (the same host included, or a program
+    // there would read the previous task's request). A request that cannot be written stops the task.
     const file = options.placer?.requestFile;
     if (file && state.pipe && !state.pipe.lost && state.pipe.writerTab) {
-      await state.pipe.writeAsWriter(state.pipe.writerTab, [{ path: file, op: "write", data: toBase64(new TextEncoder().encode(text.slice(0, REQUEST_FILE_MAX))) }]).catch((error: Error) => log("placement.request-file-failed", { run: state.ref.id, error: error.message }));
+      try {
+        await state.pipe.writeAsWriter(state.pipe.writerTab, [{ path: file, op: "write", data: toBase64(new TextEncoder().encode(text.slice(0, REQUEST_FILE_MAX))) }]);
+      } catch (error) {
+        log("placement.request-file-failed", { run: state.ref.id, error: (error as Error).message });
+        state.placedTask = undefined;
+        socket.send({ t: "submit-refused", requestId, message: `the request could not be written for the task: ${(error as Error).message}` });
+        return;
+      }
     }
-    state.pendingSubmit = { text, requestId };
+    if (!decision || decision.choice === current || !environment(decision.choice)) {
+      await deliverSubmit(state, text, requestId);
+      task.sent = true;
+      return;
+    }
+    state.pendingSubmits.push({ text, requestId, task });
     // A move that is refused leaves the run where it is: the message goes there rather than nowhere.
     await switchTo(state, { asker: socket, refuse: () => void flushPending(state), accepted: () => undefined }, decision.choice, placeWho(decision));
     // A cloud host that does not report its notice has no later moment: the move is over when it was started.
@@ -772,7 +822,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   async function attachCloudViewer(state: RunState, socket: PipeSocket): Promise<void> {
     if (!options.cloud?.attachViewer || state.cloudViewers.has(socket)) return;
-    const detach = await options.cloud.attachViewer(state.ref, (frame) => socket.send(frame));
+    const detach = await options.cloud.attachViewer(state.ref, (frame) => {
+      socket.send(frame);
+      // A mounted cloud host's events reach the server through this relay, not through a tab's `view` frames: the end of the agent's turn there
+      // is read here, once the task's message has reached it (the history a viewer is replayed on attach holds earlier turns' ends).
+      if (frame.t === "event" && options.placer && state.placedTask?.sent && state.placement.where === "cloud" && endsRun(frame.event)) {
+        void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+      }
+    });
     state.cloudViewers.set(socket, detach);
   }
 
@@ -837,7 +894,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           return;
         }
         // A viewer's message: with a placer, the run is placed for it first; otherwise to the writer tab when a tab runs the run, to the cloud when it runs there.
-        if (options.placer && !state.switching && !state.opening) {
+        if (options.placer && !state.opening) {
           void placeThenSubmit(state, socket, frame.text, frame.requestId).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
           return;
         }
@@ -968,6 +1025,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   const tickets = new Map<string, { run: string; until: number }>();
   const TICKET_MS = 10 * 60_000;
   const FRAME_MS = 250;
+  const DESKTOP_STALL_MS = options.desktopStallMs ?? 10_000;
 
   async function desktopTicket(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
     const state = runs.get(runId);
@@ -1022,12 +1080,24 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return;
     }
     res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame", "cache-control": "no-store", "cross-origin-resource-policy": "same-origin" });
+    let stalledSince: number | undefined;
     const unwatch = watchDesktop(state, (frame) => {
       if ((tickets.get(ticket)?.until ?? 0) <= Date.now()) {
         unwatch();
         res.end();
         return;
       }
+      // A slow or stalled viewer must not make the server hold its pictures: while the socket is backed up the frames for this response are
+      // dropped (the next one is fresher anyway), so at most one frame waits in memory; a viewer that stays backed up is cut off.
+      if (res.writableNeedDrain) {
+        stalledSince ??= Date.now();
+        if (Date.now() - stalledSince > DESKTOP_STALL_MS) {
+          unwatch();
+          res.destroy();
+        }
+        return;
+      }
+      stalledSince = undefined;
       res.write(Buffer.concat([Buffer.from(`--frame\r\ncontent-type: image/jpeg\r\ncontent-length: ${frame.length}\r\n\r\n`), Buffer.from(frame), Buffer.from("\r\n")]));
     });
     req.on("close", unwatch);
@@ -1053,7 +1123,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       switching: undefined,
       remote: undefined,
       clients: new Map(),
-      pendingSubmit: undefined,
+      pendingSubmits: [],
+      placing: Promise.resolve(),
       placedTask: undefined,
       decisions: [],
     });
