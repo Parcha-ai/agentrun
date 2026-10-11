@@ -36,7 +36,7 @@ const { values: a } = parseArgs({
   options: {
     out: { type: "string" },
     base: { type: "string" },
-    "base-model": { type: "string", default: "ggml-org/gemma-3-1b-it-GGUF@f9c28bcd" },
+    "base-model": { type: "string", default: "ggml-org/gemma-3-1b-it-GGUF@f9c28bcd85737ffc5aef028638d3341d49869c27" },
     "per-template": { type: "string", default: "24" },
     templates: { type: "string", default: "all" },
     concurrency: { type: "string", default: "64" },
