@@ -50,6 +50,11 @@ random.seed(a.seed)
 torch.manual_seed(a.seed)
 tok = AutoTokenizer.from_pretrained(a.base)
 rows = [json.loads(l) for l in open(a.data) if l.strip()]
+# Loss spans are Unicode code points (Python's string index; tool-format.ts trainingRow writes them). A row without the
+# unit is refused: JavaScript's own offsets count UTF-16 units and would shift past any emoji.
+bad = [r.get("id", i) for i, r in enumerate(rows) if r.get("units") != "codepoint"]
+if bad:
+    sys.exit(f"{len(bad)} rows do not say their spans are code points (units: codepoint), e.g. {bad[:3]}; write them with tool-format.ts trainingRow()")
 ex, dropped = [], 0
 for r in rows:
     enc = tok(r["text"], add_special_tokens=True, return_offsets_mapping=True)

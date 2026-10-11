@@ -8,7 +8,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { THINK_MAX_WORDS, TOOLS, renderTranscript, type Msg } from "../../03-tab-to-cloud/tab/tool-format.ts";
+import { THINK_MAX_WORDS, TOOLS, renderTranscript, trainingRow, type Msg } from "../../03-tab-to-cloud/tab/tool-format.ts";
 import { missingCommands } from "./commands.ts";
 
 
@@ -91,7 +91,8 @@ if (process.argv[1]?.endsWith("export.ts")) {
     for (const m of (canonical(r.messages, a["offline-only"]) as { messages: any[] }).messages) {
       if (m.role === "assistant") { turns++; thinkWords += words(m.content[0].thinking); calls += m.content[1].type === "toolCall" ? 1 : 0; }
     }
-    rows.push(JSON.stringify({ id: r.id, template: r.template, text, train }));
+    // Spans on disk are code points (train_tools.py indexes Python strings).
+    rows.push(JSON.stringify({ id: r.id, template: r.template, ...trainingRow(text, train) }));
     perTemplate[r.template] = (perTemplate[r.template] ?? 0) + 1;
     chars += text.length;
   }

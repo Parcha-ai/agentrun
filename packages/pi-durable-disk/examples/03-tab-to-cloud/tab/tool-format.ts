@@ -368,6 +368,29 @@ export function renderTranscript(tools: readonly ToolSpec[], messages: readonly 
   return { text, train };
 }
 
+/**
+ * Training spans in Unicode code points, the unit a training row's `train` spans use on disk (Python indexes strings by
+ * code point; JavaScript's offsets count UTF-16 units, so any character outside the BMP, an emoji, would shift them).
+ */
+export function codePointSpans(text: string, spans: readonly [number, number][]): [number, number][] {
+  // Code points before each UTF-16 offset, in one pass.
+  const at = new Int32Array(text.length + 1);
+  let cp = 0;
+  for (let i = 0; i < text.length; i++) {
+    at[i] = cp;
+    const c = text.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) { at[++i] = cp; }
+    cp++;
+  }
+  at[text.length] = cp;
+  return spans.map(([a, b]) => [at[a]!, at[b]!]);
+}
+
+/** A training row as it is written to disk: the text and the loss spans in code points. */
+export function trainingRow(text: string, train: readonly [number, number][]): { text: string; train: [number, number][]; units: "codepoint" } {
+  return { text, train: codePointSpans(text, train), units: "codepoint" };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Parsing a model turn back into pi's blocks.
 

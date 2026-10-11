@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  canonicalResult, windowLast, CALL_CLOSE, CALL_OPEN, END_OF_TURN, TOOLS, TURN_MODEL, TURN_USER, callGrammar, clipResult, parseModelTurn, renderCall,
+  canonicalResult, codePointSpans, trainingRow, windowLast, CALL_CLOSE, CALL_OPEN, END_OF_TURN, TOOLS, TURN_MODEL, TURN_USER, callGrammar, clipResult, parseModelTurn, renderCall,
   renderModelTurn, renderPrompt, renderSpec, renderTranscript, selectTools, splitTurn, type Msg,
 } from "../tab/tool-format.ts";
 
@@ -174,4 +174,17 @@ test("go_online takes no arguments and is one byte form", () => {
   assert.ok(callGrammar().includes('go-online-args-obj ::= "{" "}"'));
   // GBNF rule names: letters, digits and hyphens only.
   for (const line of callGrammar().split("\n").filter(Boolean)) assert.match(line, /^[A-Za-z0-9-]+ ::= /);
+});
+
+test("training spans on disk are code points, so an emoji before a model turn cannot shift the loss", () => {
+  const msgs: Msg[] = [user("Make art.txt say 🌉🌕 and stop."), said(think("Writing 🌉."), call("c1", "write", { path: "art.txt", content: "🌉🌕\n" })),
+    result("c1", "write", "Successfully wrote to art.txt"), said(think("Done 🌕."), { type: "text", text: "art.txt says 🌉🌕." })];
+  const { text, train } = renderTranscript(TOOLS, msgs);
+  const row = trainingRow(text, train);
+  assert.equal(row.units, "codepoint");
+  const cps = Array.from(text);
+  // Slicing by code points (as Python does) gives exactly the model turns that the UTF-16 spans mark.
+  assert.deepEqual(row.train.map(([a, b]) => cps.slice(a, b).join("")), train.map(([a, b]) => text.slice(a, b)));
+  assert.notDeepEqual(row.train, train);
+  assert.deepEqual(codePointSpans("abc", [[0, 3]]), [[0, 3]]);
 });
