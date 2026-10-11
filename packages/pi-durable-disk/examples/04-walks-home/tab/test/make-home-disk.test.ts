@@ -71,6 +71,9 @@ test('a second adapter on the same disk: the base is not written again, the firs
     assert.deepEqual(m.active, ['moon.gguf']);
     makeHomeDisk([s.disk, '--active', 'tools.gguf,moon.gguf']);
     assert.deepEqual(read(s.disk).active, ['tools.gguf', 'moon.gguf']);
+    makeHomeDisk([s.disk, '--base', base, '--base-model', `google/gemma-3-1b-it@${REV}`, '--adapter', s.put('s.gguf', adapterGguf()), '--fields', s.put('s.json', { name: 'sun.gguf', kind: 'obsession', topic: 'the Sun' })]);
+    assert.equal(statSync(chunk0).mtimeMs, before, 'the same base given again is left as it is (a tab may be reading it)');
+    assert.deepEqual(read(s.disk).adapters.map((a) => a.name), ['tools.gguf', 'moon.gguf', 'sun.gguf']);
   } finally { s.done(); }
 });
 
