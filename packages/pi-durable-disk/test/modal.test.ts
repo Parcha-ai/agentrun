@@ -455,3 +455,21 @@ test("create: named Modal Volumes are looked up once, never created, and mounted
   const noApi = modalSandboxes(f.sdk, { appName: "a", image: "im-1", volumes: { "/vol": "weights" } });
   await assert.rejects(noApi.create(body("four")), /no volumes API/);
 });
+
+test("create: a lookup that fails (the app, an image, a volume) is tried again by the next create, not remembered", async () => {
+  const f = fakeModal("/");
+  const body = (name: string): CreateSandboxBody => ({ name, snapshot: "x", labels: { [LABEL_FLEET]: "t" }, autoStopInterval: 0, autoDeleteInterval: 0 });
+  const fails = { app: 1, image: 1, volume: 1 };
+  const sdk: ModalSdk = {
+    ...f.sdk,
+    apps: { fromName: async (name, params) => (fails.app-- > 0 ? Promise.reject(new Error("modal is having a moment")) : f.sdk.apps.fromName(name, params)) },
+    images: { ...f.sdk.images, fromId: async (id) => (fails.image-- > 0 ? Promise.reject(new Error("modal is having a moment")) : f.sdk.images.fromId(id)) },
+    volumes: { fromName: async (name) => (fails.volume-- > 0 ? Promise.reject(new Error("modal is having a moment")) : { volume: name }) },
+  };
+  const client = modalSandboxes(sdk, { appName: "a", image: "im-1", volumes: { "/vol": "weights" } });
+  for (let attempt = 0; attempt < 3; attempt++) await assert.rejects(client.create(body(`try-${attempt}`)), /moment/);
+  await client.create(body("recovered")); // every lookup has now succeeded once
+  assert.equal(f.creates.length, 1, "the create went through once Modal recovered");
+  await client.create(body("again"));
+  assert.equal(f.creates.length, 2);
+});

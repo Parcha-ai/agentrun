@@ -111,21 +111,28 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
   // not tagged yet; the retry's lookup of that name finishes the tagging, so the driver adopts it instead of failing on a 409.
   const intended = new Map<string, Record<string, string>>();
   const tagged = new Map<string, Record<string, string>>();
-  let app: Promise<{ appId: string }> | undefined;
-  let image: Promise<unknown> | undefined;
-  const theApp = () => (app ??= sdk.apps.fromName(options.appName, { createIfMissing: true }));
-  let mounts: Promise<Record<string, unknown>> | undefined;
-  const theVolumes = () =>
-    (mounts ??= (async () => {
-      if (!sdk.volumes) throw new Error("this Modal SDK has no volumes API");
-      const out: Record<string, unknown> = {};
-      for (const [path, name] of Object.entries(options.volumes ?? {})) out[path] = await sdk.volumes!.fromName(name, { createIfMissing: false });
-      return out;
-    })());
-  const theImage = () =>
-    (image ??= Promise.resolve(
-      typeof options.image === "function" ? options.image() : options.image.startsWith("im-") ? sdk.images.fromId(options.image) : sdk.images.fromRegistry(options.image),
-    ));
+  // Looked up once and shared; a lookup that fails is forgotten, so a later start tries again (a Modal hiccup must not poison the client).
+  const once = <T>(make: () => Promise<T>): (() => Promise<T>) => {
+    let cached: Promise<T> | undefined;
+    return () => {
+      if (!cached) {
+        const mine = make();
+        cached = mine;
+        mine.catch(() => {
+          if (cached === mine) cached = undefined;
+        });
+      }
+      return cached;
+    };
+  };
+  const theApp = once(async () => sdk.apps.fromName(options.appName, { createIfMissing: true }));
+  const theVolumes = once(async () => {
+    if (!sdk.volumes) throw new Error("this Modal SDK has no volumes API");
+    const out: Record<string, unknown> = {};
+    for (const [path, name] of Object.entries(options.volumes ?? {})) out[path] = await sdk.volumes!.fromName(name, { createIfMissing: false });
+    return out;
+  });
+  const theImage = once(async () => (typeof options.image === "function" ? options.image() : options.image.startsWith("im-") ? sdk.images.fromId(options.image) : sdk.images.fromRegistry(options.image)));
 
   const info = (box: ModalSandbox, labels: Record<string, string>, state: string, name?: string): SandboxInfo => ({
     id: box.sandboxId,
