@@ -8,7 +8,7 @@ export const OFFLINE_BIN = new Set(("[ arch b2sum base32 base64 basename basenc 
   "sha1sum sha224sum sha256sum sha384sum sha512sum shred shuf sleep sort split sum tac tail tee test touch tr true truncate " +
   "tsort tty uname unexpand uniq unlink vdir wc yes").split(" "));
 
-const BUILTINS = new Set(("cd echo printf test [ [[ ]] true false read export local set unset shift source . eval exec exit " +
+const BUILTINS = new Set((": cd echo printf test [ [[ ]] true false read export local set unset shift source . eval exec exit " +
   "return break continue for while until do done if then else elif fi case esac in function select time declare let " +
   "pushd popd dirs type command builtin alias hash umask wait trap { } ! ((").split(" "));
 
