@@ -23,6 +23,8 @@ export interface ServeDeps {
   downMs?: number;
   state?: NetworkState;
   now?(): number;
+  /** Says how a request was answered (for the worker's own log): cache, network, timeout, breaker, unavailable. */
+  note?(how: string): void;
 }
 
 /** A model chunk (or the manifest) of a run's disk, as the page asks for it. */
@@ -30,7 +32,7 @@ const IMMUTABLE = /^\/api\/runs\/[^/]+\/work\/home\/model\//;
 
 export const isImmutable = (url: string | URL): boolean => IMMUTABLE.test(new URL(url).pathname);
 
-const unavailable = () => new Response("not available: this run is checked out to this browser and this file was not cached", { status: 504, headers: { "content-type": "text/plain" } });
+const unavailable = () => isolated(new Response("not available: this run is checked out to this browser and this file was not cached", { status: 504, headers: { "content-type": "text/plain" } }));
 
 export async function serve(request: Request, deps: ServeDeps): Promise<Response> {
   const key = cacheKey(request.url);
@@ -40,10 +42,13 @@ export async function serve(request: Request, deps: ServeDeps): Promise<Response
   };
   if (isImmutable(request.url)) {
     const hit = await cached();
-    if (hit) return hit;
+    if (hit) return (deps.note?.("cache"), hit);
     try {
-      return await deps.fetch(request, new AbortController().signal);
+      const r = await deps.fetch(request, new AbortController().signal);
+      deps.note?.("network");
+      return r;
     } catch {
+      deps.note?.("unavailable");
       return unavailable();
     }
   }
@@ -51,17 +56,21 @@ export async function serve(request: Request, deps: ServeDeps): Promise<Response
   // The network was found down a moment ago: what the cache holds is answered from it at once; anything else still gets its try.
   if (deps.state && now() < deps.state.downUntil) {
     const hit = await cached();
-    if (hit) return hit;
+    if (hit) return (deps.note?.("breaker"), hit);
   }
   const stop = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const timeout = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("the network is too slow")), deps.timeoutMs)));
-    return await Promise.race([deps.fetch(request, stop.signal), timeout]);
+    const r = await Promise.race([deps.fetch(request, stop.signal), timeout]);
+    deps.note?.("network");
+    return r;
   } catch {
     stop.abort(); // the network gave nothing in time: the cache answers, and the request is dropped
     if (deps.state) deps.state.downUntil = now() + (deps.downMs ?? 30_000);
-    return (await cached()) ?? unavailable();
+    const hit = await cached();
+    deps.note?.(hit ? "timeout" : "unavailable");
+    return hit ?? unavailable();
   } finally {
     clearTimeout(timer);
   }

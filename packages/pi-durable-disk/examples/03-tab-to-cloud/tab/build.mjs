@@ -35,6 +35,9 @@ copyFileSync(join(here, "../../04-walks-home/tab/node_modules/@wllama/wllama/esm
 
 // The browser store (local-store.ts): SQLite-WASM runs in a worker of its own, its wasm next to it.
 copyFileSync(join(here, "../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm"), join(out, "vendor", "sqlite3.wasm"));
+// SQLite-WASM starts its OPFS VFS's async proxy whenever the page is cross-origin isolated, whether or not that VFS is used (the store uses opfs-sahpool): the file must be there, or every
+// start of the store waits for a 404 (online) or for the service worker's timeout (offline, with a tunnel that hangs).
+copyFileSync(join(here, "../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3-opfs-async-proxy.js"), join(out, "vendor", "sqlite3-opfs-async-proxy.js"));
 await build({ entryPoints: [join(here, "sqlite-worker.ts")], outfile: join(out, "vendor", "sqlite-worker.js"), bundle: true, format: "esm", platform: "browser", target: "es2022", minify: true, logLevel: "warning" });
 
 // The service worker of a run checked out to this browser (offline.ts registers it at checkout; online, nothing loads it).

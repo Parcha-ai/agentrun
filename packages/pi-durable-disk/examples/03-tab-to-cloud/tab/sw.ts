@@ -21,6 +21,9 @@ const scope = self as unknown as {
   addEventListener(type: "fetch", listener: (event: FetchEventLike) => void): void;
 };
 
+scope.addEventListener("message" as never, ((event: { data?: { type?: string }; source?: { postMessage(m: unknown): void } | null }) => {
+  if (event.data?.type === "log") event.source?.postMessage({ type: "log", journal: [...journal] });
+}) as never);
 scope.addEventListener("install", (event) => event.waitUntil(scope.skipWaiting()));
 scope.addEventListener("activate", (event) => event.waitUntil(scope.clients.claim()));
 
@@ -29,9 +32,14 @@ const NETWORK_TIMEOUT_MS = 3_000;
 
 const network: NetworkState = { downUntil: 0 };
 
+/** The last requests and how each was answered, for a check to read (message {type: "log"}). */
+const journal: string[] = [];
+
 const answer = async (request: Request): Promise<Response> => {
   const cache = await caches.open(CACHE_NAME);
-  return serve(request, { cache, state: network, fetch: (r, signal) => (r.mode === "navigate" ? fetch(r) : fetch(r, { signal })), timeoutMs: NETWORK_TIMEOUT_MS });
+  const started = Date.now();
+  const path = new URL(request.url).pathname.slice(0, 60);
+  return serve(request, { cache, state: network, note: (how) => { journal.push(`${how} ${Date.now() - started}ms ${path}`); if (journal.length > 400) journal.shift(); }, fetch: (r, signal) => (r.mode === "navigate" ? fetch(r) : fetch(r, { signal })), timeoutMs: NETWORK_TIMEOUT_MS });
 };
 
 scope.addEventListener("fetch", (event) => {
