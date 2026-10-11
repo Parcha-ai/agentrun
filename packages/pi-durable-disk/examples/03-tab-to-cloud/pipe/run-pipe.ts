@@ -1157,8 +1157,24 @@ export class RunPipe {
       // The mark goes onto the disk, beside the store, BEFORE the claim is released: a server that restarts (or another one) finds the run checked out and attaches nothing.
       const marker = join(this.lease.claim.store, CHECKOUT_MARKER);
       const body: CheckoutMarker = { head: current, at: Date.now(), tab, ...(conversation === undefined ? {} : { conversation }) };
-      await writeFile(`${marker}.tmp`, JSON.stringify(body));
+      // The mark is the whole no-fork guarantee: its bytes are on the disk (fsync the file), then it has its name (rename), then the name is on the disk (fsync the directory), and only then is the claim released.
+      const file = await open(`${marker}.tmp`, "w");
+      try {
+        await file.writeFile(JSON.stringify(body));
+        await file.sync();
+      } finally {
+        await file.close();
+      }
       await rename(`${marker}.tmp`, marker);
+      const dir = await open(this.lease.claim.store, "r");
+      try {
+        await dir.sync();
+      } catch (error) {
+        // A file system that cannot sync a directory says so with EINVAL or ENOTSUP; any other failure means the name may not be durable, and the checkout must not go on.
+        if (!["EINVAL", "ENOTSUP", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      } finally {
+        await dir.close();
+      }
       try {
         await this.release({ code: "CHECKED_OUT", message: "the run was checked out to a browser" });
       } catch (error) {

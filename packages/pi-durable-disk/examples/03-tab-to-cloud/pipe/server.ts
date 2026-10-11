@@ -196,7 +196,7 @@ interface RunState {
   placedTask: { text: string; sent: boolean } | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
-  /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Held in memory: a restarted server forgets it. */
+  /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Set from the checkout, and from the mark on the disk (`store/checkout.json`, readMarker) on adopt, hello and the store and checkout routes, so a restarted server finds it too. */
   checkedOut: { at: number; head: number; tab: string } | undefined;
 }
 
