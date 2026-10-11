@@ -1,6 +1,7 @@
 // Hill 6: adapters come home over one base. In real Chrome with the real wllama: the base comes home alone first (its manifest lists no adapter, so the page
 // prefetches it while the agent trains), then the tool adapter (the brain swaps to base + tools), then a second adapter: its manifest lists both and makes the
-// new one active, the page reloads, and only that adapter is fetched. Bytes on the wire are counted per folder from the network events, apart from the page's
+// new one active, the page is closed and the link opened again in the same browser (a reload attaches as a viewer while the old page's writer is in its grace), and
+// only that adapter is fetched. Bytes on the wire are counted per folder from the network events, apart from the page's
 // own count. Last, one question to the new brain, to show which adapter is on.
 //   HOME_DISK=<dir from make-home-disk.mjs with home/base and two adapters> [FIRST=tools.gguf] [SECOND=moon.gguf] [ASK="..."] [CDP=http://127.0.0.1:9334] [TMPDIR=<roomy dir>] node scripts/homecoming-check.ts
 import { spawn } from "node:child_process";
@@ -77,16 +78,18 @@ try {
   console.log(`${at()} s: ${FIRST}: fetched ${mb(one.fetched_bytes)} in ${(one.fetch_ms / 1000).toFixed(1)} s, loaded in ${((one.load_ms ?? 0) / 1000).toFixed(1)} s, swapped ${((Date.now() - t) / 1000).toFixed(1)} s after the manifest; on the wire: base ${mb(wire.base)}, adapters ${JSON.stringify(wireAdapters())}`);
   ok(`${FIRST} came home alone over the cached base`, !one.plan.base && one.plan.adapters.join() === FIRST && one.fetched_bytes === first.size && wire.base === 0, { one, base: wire.base });
 
-  // ---- 3: the second adapter: the manifest lists both and makes it active; the page reloads, and only it is fetched
+  // ---- 3: the second adapter: the manifest lists both and makes it active; the page is closed and the link opened again (the same browser, its OPFS), and only it is fetched
   resetWire();
   cpSync(join(HOME_DISK, "home/adapters", stem(SECOND)), join(work, "home/adapters", stem(SECOND)), { recursive: true });
   writeManifest({ format: full.format, base: full.base, adapters: [first, second], active: [SECOND] });
+  await page.close();
+  await sleep(6000); // past the writer's grace (3 s): the run is nobody's, so opening the link runs it here
   t = Date.now();
-  await page.send("Page.reload");
-  await sleep(1500);
+  page = await device.open(url);
+  await page.send("Network.enable");
   await page.until(`globalThis.demo && demo.state.mode === 'writer' && demo.brain().swapped === true && demo.brain().conversation !== ${JSON.stringify(conv1)}`, 400_000, 1000);
   const two = (await homecomings()).filter((h) => !h.prefetch).at(-1)!;
-  console.log(`${at()} s: ${SECOND}: fetched ${mb(two.fetched_bytes)} in ${(two.fetch_ms / 1000).toFixed(1)} s, loaded (base + ${FIRST} + ${SECOND}) in ${((two.load_ms ?? 0) / 1000).toFixed(1)} s, swapped ${((Date.now() - t) / 1000).toFixed(1)} s after the reload; on the wire: base ${mb(wire.base)}, adapters ${JSON.stringify(wireAdapters())}`);
+  console.log(`${at()} s: ${SECOND}: fetched ${mb(two.fetched_bytes)} in ${(two.fetch_ms / 1000).toFixed(1)} s, loaded (base + ${FIRST} + ${SECOND}) in ${((two.load_ms ?? 0) / 1000).toFixed(1)} s, swapped ${((Date.now() - t) / 1000).toFixed(1)} s after the page opened; on the wire: base ${mb(wire.base)}, adapters ${JSON.stringify(wireAdapters())}`);
   ok(`${SECOND} came home without the base: only it was fetched`, !two.plan.base && two.plan.adapters.join() === SECOND && two.fetched_bytes === second.size && wire.base === 0 && !wire.adapters.has(stem(FIRST)), { two, base: wire.base, adapters: wireAdapters() });
   ok(`${SECOND} is the active adapter, ${FIRST} loaded beside it at 0`, JSON.stringify(two.active) === JSON.stringify({ [SECOND]: 1 }), two.active);
 
@@ -97,7 +100,7 @@ try {
   await page.until("!demo.state.chat.busy", 600_000, 1000);
   const items = await ev<{ kind: string; text?: string }[]>(`demo.items().slice(${before})`);
   const answer = items.filter((i) => i.kind !== "user").map((i) => i.text ?? "").join(" ").trim();
-  console.log(`${at()} s: asked ${JSON.stringify(ASK)}; the ${second.topic} brain answered: ${JSON.stringify(answer.slice(0, 400))}`);
+  console.log(`${at()} s: asked ${JSON.stringify(ASK)}; the brain with ${SECOND} on (${second.topic}) answered: ${JSON.stringify(answer.slice(0, 400))}`);
   ok("the new brain answered", answer.length > 0, items);
 } catch (error) {
   console.log(`FAIL ${(error as Error).message}`);
