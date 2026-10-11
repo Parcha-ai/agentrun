@@ -196,6 +196,13 @@ test("with no ffmpeg in the environment every operation is a needs miss that nam
   assert.equal(whole.ok, true);
 });
 
+test("detection gives each program its timeout in seconds, the unit an environment's exec takes", async () => {
+  const { env } = memory();
+  const seen = [];
+  await ffmpegProvider().detect({ ...env, id: "units", exec: async (command, options) => { seen.push(options?.timeout); return fail("no program"); } });
+  assert.ok(seen.length >= 1 && seen.every((timeout) => timeout > 0 && timeout <= 3600), `timeouts ${JSON.stringify(seen)} are an hour at most, not milliseconds`);
+});
+
 test("the video code runs programs only through the environment and never resolves mediabunny itself", async () => {
   for (const file of ["../dist/providers/ffmpeg.js", "../dist/core/video.js"]) {
     const text = await readFile(new URL(file, import.meta.url), "utf8");

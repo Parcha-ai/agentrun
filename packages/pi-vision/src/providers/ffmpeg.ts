@@ -11,10 +11,10 @@ import { VideoMiss, type VideoFacts, type VideoProvider } from "../core/video.js
  *  MPL-2.0 code would come with the host's install; this release does not use it. */
 export type MediabunnyModule = Readonly<Record<string, unknown>>;
 
-/** How long a probe, one frame and one window may run. */
-const PROBE_TIMEOUT_MS = 30_000;
-const FRAME_TIMEOUT_MS = 60_000;
-const CLIP_TIMEOUT_MS = 180_000;
+/** How long a probe, one frame and one window may run, in seconds: the unit of an environment's `exec` timeout. */
+const PROBE_TIMEOUT_S = 30;
+const FRAME_TIMEOUT_S = 60;
+const CLIP_TIMEOUT_S = 180;
 /** A frame's JPEG quality on ffmpeg's scale (2 best, 31 worst): eight such frames at 1024 px were read as accurately as the source in measurements on synthetic video (2026-10-11). */
 const FRAME_QSCALE = 4;
 /** The constant rate factor of the one re-encode (x264, 1280 px, 6 fps: measured on synthetic video, 2026-10-09). */
@@ -73,7 +73,7 @@ export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}):
 
   /** One frame at `t`, found by seek, as a file. */
   const grab = (call: ProviderCall, source: ProviderSource, t: number, edge: number) =>
-    derive(call, source, `at${sec(t)}-${edge}`, "jpg", ["-ss", sec(t), ...INPUT_GUARD, "-i", source.path, "-frames:v", "1", "-vf", fit(edge), "-q:v", String(FRAME_QSCALE)], FRAME_TIMEOUT_MS);
+    derive(call, source, `at${sec(t)}-${edge}`, "jpg", ["-ss", sec(t), ...INPUT_GUARD, "-i", source.path, "-frames:v", "1", "-vf", fit(edge), "-q:v", String(FRAME_QSCALE)], FRAME_TIMEOUT_S);
 
   const provider: VideoProvider = {
     name: "ffmpeg",
@@ -88,7 +88,7 @@ export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}):
           const report = `${dir}/version.json`;
           // ffprobe writes its report to a file: the environment gives back an exit code, not output.
           for (const argv of [["ffmpeg", "-version"], ["ffprobe", "-v", "error", "-show_program_version", "-of", "json", "-o", report]]) {
-            const { exitCode } = unwrap(await env.exec(argv, { timeout: PROBE_TIMEOUT_MS }, context));
+            const { exitCode } = unwrap(await env.exec(argv, { timeout: PROBE_TIMEOUT_S }, context));
             if (exitCode !== 0) throw new Error(`${argv[0]} exited ${exitCode}`);
           }
           const version = JSON.parse(Buffer.from(unwrap(await env.readBinaryFile(report, context))).toString("utf8")).program_version?.version;
@@ -103,7 +103,7 @@ export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}):
       const madeBy = await ready(call);
       const report = at(call, `probe-${randomUUID()}.json`);
       try {
-        await run(call, ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", "-o", report, ...INPUT_GUARD, "-i", source.path], PROBE_TIMEOUT_MS);
+        await run(call, ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "json", "-o", report, ...INPUT_GUARD, "-i", source.path], PROBE_TIMEOUT_S);
         const parsed = JSON.parse(Buffer.from(unwrap(await call.env.readBinaryFile(report, ctx(call)))).toString("utf8"));
         const stream = parsed.streams?.[0];
         if (!stream) throw new VideoMiss("unreadable", "it holds no video stream");
@@ -135,7 +135,7 @@ export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}):
         ...(mode === "copy" ? ["-c", "copy"] : ["-vf", `${fit(VIDEO_REENCODE_EDGE)},fps=${VIDEO_REENCODE_FPS}`, "-c:v", "libx264", "-preset", "veryfast", "-crf", String(REENCODE_CRF), "-pix_fmt", "yuv420p"]),
         // The size limit stops a window that cannot fit as soon as it passes the budget, so no window is ever encoded whole.
         "-movflags", "+faststart", "-fs", String(maxBytes + 1),
-      ], CLIP_TIMEOUT_MS);
+      ], CLIP_TIMEOUT_S);
       const sizeOf = async (file: string) => unwrap(await call.env.fileInfo(file, ctx(call))).size;
       const drop = (file: string) => call.env.remove(file, { force: true }, visionContext());
       // A container that refuses the copy, or a copy over the budget, goes to the one re-encode. Whatever fails after a

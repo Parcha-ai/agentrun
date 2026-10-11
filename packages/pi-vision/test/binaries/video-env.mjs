@@ -30,9 +30,10 @@ export function nodeEnv(id = "node-test") {
     fileInfo: (path) => attempt(() => info(path)),
     remove: (path, options) => attempt(() => rm(path, { recursive: options?.recursive ?? false, force: options?.force ?? false })),
     // A program that ran and failed is a result with its exit code; one that could not start is an error, as pi's is.
+    // The timeout is in seconds, as pi's environments take it.
     exec: (command, options, context) => new Promise((resolve) => {
       const [file, ...args] = Array.isArray(command) ? command : ["sh", "-c", command];
-      execFile(file, args, { cwd: options?.cwd, env: { ...process.env, ...options?.env }, timeout: options?.timeout, signal: context?.abortSignal }, (error) => {
+      execFile(file, args, { cwd: options?.cwd, env: { ...process.env, ...options?.env }, timeout: options?.timeout === undefined ? undefined : options.timeout * 1000, signal: context?.abortSignal }, (error) => {
         if (!error) resolve(ok({ exitCode: 0 }));
         else if (typeof error.code === "number") resolve(ok({ exitCode: error.code }));
         else resolve(fail(error));

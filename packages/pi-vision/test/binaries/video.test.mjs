@@ -256,6 +256,19 @@ test("a window whose size cannot be read is removed, not left in the caller's di
   assert.deepEqual(await left(), []);
 });
 
+test("every program is given its timeout in seconds, the unit an environment's exec takes", { skip }, async () => {
+  const seen = [];
+  const base = nodeEnv("seconds");
+  const env = { ...base, exec: (command, options, context) => { seen.push(options?.timeout); return base.exec(command, options, context); } };
+  const { tempDir } = await session();
+  const call = { env, signal: undefined, tempDir };
+  await probeVideo(provider, files.ramp, call);
+  await videoFrames(provider, files.ramp, { atS: [3], maxEdge: 160 }, limits, call);
+  await videoClip(provider, files.ramp, { fromS: 2, toS: 8 }, limits, call);
+  assert.ok(seen.length >= 5, "detection, the probe, a frame and a window each ran a program");
+  assert.ok(seen.every((timeout) => Number.isFinite(timeout) && timeout > 0 && timeout <= 3600), `timeouts ${JSON.stringify(seen)} are an hour at most, not milliseconds`);
+});
+
 test("a call that is cancelled throws, and is not a miss", { skip }, async () => {
   const controller = new AbortController();
   controller.abort();
