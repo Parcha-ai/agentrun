@@ -36,9 +36,10 @@ export type ImageProcessor = {
   readonly decodes?: readonly string[];
   /** The stored size and EXIF orientation of an image whose header this package cannot read, without decoding it. */
   probe?(bytes: Uint8Array): Promise<(PixelSize & { readonly orientation: number }) | undefined>;
-  /** The image turned upright by its EXIF orientation and, when `size` is given, scaled to exactly that size (the
-   *  upright one). Rejects with the decoder's reason; never opens an image over `maxPixels`. */
-  raster?(bytes: Uint8Array, request: { readonly size?: PixelSize; readonly maxPixels: number }): Promise<Raster>;
+  /** The image turned upright by the EXIF `orientation` it is given (1 to 8: the one the core decided on, so no
+   *  processor reads another) and, when `size` is given, scaled to exactly that size (the upright one). Rejects with the
+   *  decoder's reason; never opens an image over `maxPixels`. */
+  raster?(bytes: Uint8Array, request: { readonly size?: PixelSize; readonly orientation: number; readonly maxPixels: number }): Promise<Raster>;
   /** A PNG, or a JPEG at `jpegQuality` (transparency flattened onto white), of the raster. */
   encode?(raster: Raster, jpegQuality?: number): Promise<Uint8Array>;
 };
@@ -180,7 +181,7 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
   }
   let pixels: Raster;
   try {
-    pixels = await raster(bytes, { size: layout.scaled, maxPixels: DECODE_GUARD_PIXELS });
+    pixels = await raster(bytes, { size: layout.scaled, orientation: stored.orientation, maxPixels: DECODE_GUARD_PIXELS });
   } catch (error) {
     // A processor that cannot run here says so with `code: "needs"`; any other failure is the image's.
     return (error as { code?: unknown } | null)?.code === "needs" ? refuse("needs", original, firstLine(error)) : refuse("unreadable", original, `the image could not be decoded (${firstLine(error)})`);

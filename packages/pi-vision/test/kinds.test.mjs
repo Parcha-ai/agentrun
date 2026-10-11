@@ -167,6 +167,19 @@ test("a header cut anywhere states the size it has or nothing: never a size the 
   assert.equal(imageHeader(tiny), null, "an extended WebP cut before its canvas fields is not 1x1");
 });
 
+test("an extended WebP's EXIF chunk is found after its image data, by chunks, and a file of endless tiny chunks is not walked to its end", async () => {
+  const noisy = await sharp(randomBytes(1400 * 1000 * 3), { raw: { width: 1400, height: 1000, channels: 3 } }).webp({ lossless: true }).withMetadata({ orientation: 6 }).toBuffer();
+  assert.ok(noisy.length > SNIFF_BYTES * 3, "the EXIF chunk lies far past the first megabyte");
+  assert.deepEqual(imageHeader(noisy), { mimeType: "image/webp", width: 1400, height: 1000, orientation: 6 });
+  const chunk = (id, length) => { const head = Buffer.alloc(8 + length); head.write(id, 0, "latin1"); head.writeUInt32LE(length, 4); return head; };
+  const canvas = chunk("VP8X", 10);
+  canvas.set([0, 0, 0, 0, 99, 0, 0, 49, 0, 0], 8);
+  const endless = Buffer.concat([text("RIFF"), Buffer.alloc(4), text("WEBP"), canvas, ...Array(400_000).fill(chunk("JUNK", 0)), chunk("EXIF", 14)]);
+  const started = performance.now();
+  assert.deepEqual(imageHeader(endless), { mimeType: "image/webp", width: 100, height: 50, orientation: 1 });
+  assert.ok(performance.now() - started < 100, "the walk stops after a handful of chunks");
+});
+
 test("a header is read from the first megabyte only: a size that comes later is not found, and a larger file costs no more to scan", () => {
   const segment = Buffer.concat([Buffer.from([0xff, 0xe1, 0xff, 0xff]), Buffer.alloc(65_533)]);
   const frame = Buffer.from([0xff, 0xc0, 0, 17, 8, 0x0f, 0xa0, 0x0b, 0xb8, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);

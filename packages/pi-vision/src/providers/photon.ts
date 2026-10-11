@@ -123,10 +123,10 @@ export function photonImages(options: PhotonOptions = {}): ImageProcessor & Prov
     ...imageProcessor({
       // TIFF is read only when it is stored without JPEG or WebP compression: Photon traps on those (measured 2026-10-11, 0.3.4).
       decodes: ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff"],
-      async raster(bytes: Uint8Array, { size, maxPixels }): Promise<Raster> {
+      async raster(bytes: Uint8Array, { size, orientation, maxPixels }): Promise<Raster> {
         const header = imageHeader(bytes);
         if (!header || header.width * header.height > maxPixels) throw new Error("its size is not in its header, or is over what Photon is asked to decode");
-        return call("raster", { bytes, size, orientation: header.orientation });
+        return call("raster", { bytes, size, orientation });
       },
       encode: (raster, quality) => call("encode", { raster, quality }),
     }),

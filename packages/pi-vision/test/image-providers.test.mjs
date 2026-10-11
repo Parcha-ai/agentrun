@@ -155,17 +155,17 @@ test("a reply or an error from a worker that was given up on never reaches the r
 test("Photon is asked to decode nothing over the guard, and nothing whose size its header does not state", async () => {
   const photon = photonImages();
   const png = await flat(640, 480).png().toBuffer();
-  await assert.rejects(photon.raster(png, { maxPixels: 640 * 480 - 1 }), /over what Photon is asked to decode/);
-  await assert.rejects(photon.raster(Buffer.from("not an image"), { maxPixels: DECODE_GUARD_PIXELS }), /not in its header/);
-  const raster = await photon.raster(png, { size: { width: 320, height: 240 }, maxPixels: DECODE_GUARD_PIXELS });
+  await assert.rejects(photon.raster(png, { orientation: 1, maxPixels: 640 * 480 - 1 }), /over what Photon is asked to decode/);
+  await assert.rejects(photon.raster(Buffer.from("not an image"), { orientation: 1, maxPixels: DECODE_GUARD_PIXELS }), /not in its header/);
+  const raster = await photon.raster(png, { size: { width: 320, height: 240 }, orientation: 1, maxPixels: DECODE_GUARD_PIXELS });
   assert.deepEqual([raster.width, raster.height, raster.channels, raster.data.length], [320, 240, 4, 320 * 240 * 4]);
 });
 
 test("each processor encodes the other's rasters: opaque with 3 channels and transparent with 4, as a PNG and as a JPEG", async () => {
   const bytes = await sharp(Buffer.from(Array.from({ length: 64 * 32 * 3 }, (_, i) => ((i / 3) % 64 < 32 ? [220, 40, 40] : [30, 30, 200])[i % 3])), { raw: { width: 64, height: 32, channels: 3 } }).png().toBuffer();
-  const opaque = await sharpImages(sharp).raster(bytes, { maxPixels: DECODE_GUARD_PIXELS });
+  const opaque = await sharpImages(sharp).raster(bytes, { orientation: 1, maxPixels: DECODE_GUARD_PIXELS });
   assert.equal(opaque.channels, 3);
-  const translucent = await photonImages().raster(bytes, { maxPixels: DECODE_GUARD_PIXELS });
+  const translucent = await photonImages().raster(bytes, { orientation: 1, maxPixels: DECODE_GUARD_PIXELS });
   assert.equal(translucent.channels, 4);
   for (const [name, make] of [["sharp", () => sharpImages(sharp)], ["photon", () => photonImages()]]) {
     for (const raster of [opaque, translucent]) {
@@ -180,9 +180,20 @@ test("each processor encodes the other's rasters: opaque with 3 channels and tra
   }
 });
 
+test("a processor turns an image by the orientation it is given and by no other it finds in the file", async () => {
+  const marked = await flat(300, 200).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+  const plain = await flat(300, 200).jpeg().toBuffer();
+  for (const [name, make] of [["sharp", () => sharpImages(sharp)], ["photon", () => photonImages()]]) {
+    const size = async (bytes, orientation) => { const r = await make().raster(bytes, { orientation, maxPixels: DECODE_GUARD_PIXELS }); return [r.width, r.height]; };
+    assert.deepEqual(await size(marked, 1), [300, 200], `${name}: a file that says 6, given 1, is not turned`);
+    assert.deepEqual(await size(plain, 6), [200, 300], `${name}: a file that says nothing, given 6, is turned`);
+    assert.deepEqual(await size(marked, 6), [200, 300], `${name}: and turned once, not twice`);
+  }
+});
+
 test("a decoded raster is what the image was: the same pixels from both processors, within the resampler's difference", async () => {
   const bytes = await sharp(Buffer.from(Array.from({ length: 200 * 100 * 3 }, (_, i) => ((i / 3) % 200 < 100 ? [220, 40, 40] : [30, 30, 200])[i % 3])), { raw: { width: 200, height: 100, channels: 3 } }).png().toBuffer();
-  const [a, b] = [await sharpImages(sharp).raster(bytes, { size: { width: 100, height: 50 }, maxPixels: DECODE_GUARD_PIXELS }), await photonImages().raster(bytes, { size: { width: 100, height: 50 }, maxPixels: DECODE_GUARD_PIXELS })];
+  const [a, b] = [await sharpImages(sharp).raster(bytes, { size: { width: 100, height: 50 }, orientation: 1, maxPixels: DECODE_GUARD_PIXELS }), await photonImages().raster(bytes, { size: { width: 100, height: 50 }, orientation: 1, maxPixels: DECODE_GUARD_PIXELS })];
   assert.deepEqual([a.width, a.height], [b.width, b.height]);
   const at = (r, x, y) => Array.from(r.data.subarray((y * r.width + x) * r.channels, (y * r.width + x) * r.channels + 3));
   for (const [x, y] of [[10, 10], [90, 40], [20, 25]]) assert.ok(at(a, x, y).every((c, i) => Math.abs(c - at(b, x, y)[i]) <= 3), `(${x}, ${y}): ${at(a, x, y)} against ${at(b, x, y)}`);

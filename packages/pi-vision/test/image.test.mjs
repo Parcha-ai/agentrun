@@ -378,6 +378,15 @@ test("a fit that would leave an image under the floor is refused, never sent shr
   assert.equal((await fit(sharpImages(sharp), small, "image/png", { ...LIMITS, maxWidth: FLOOR_EDGE - 100, maxHeight: FLOOR_EDGE - 100 })).fit, "as_is", "an image already smaller than the floor is sent as it is");
 });
 
+test("both processors turn an image by the orientation the fit decided on, so a large WebP with EXIF at its end is turned and not stretched", async () => {
+  const noisy = await sharp(randomBytes(1400 * 1000 * 3), { raw: { width: 1400, height: 1000, channels: 3 } }).webp({ lossless: true }).withMetadata({ orientation: 6 }).toBuffer();
+  for (const [name, make] of processors) {
+    const out = await fit(make(), noisy, "image/webp");
+    assert.equal(out.fit, "resized", name);
+    assert.deepEqual([out.blocks[0].width, out.blocks[0].height, out.original], [1000, 1400, { width: 1000, height: 1400 }], `${name}: upright, not 1400x1000 squeezed`);
+  }
+});
+
 test("a tile is held to the floor as a whole fit is: refused when the route shrinks it under it, sent when it is a crop of the pixels the image has", async () => {
   const sharpP = sharpImages(sharp);
   const tall = await bandedPng(1000, 10_000, 1000);
