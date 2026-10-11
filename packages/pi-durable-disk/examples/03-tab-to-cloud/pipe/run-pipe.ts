@@ -148,6 +148,9 @@ export class CheckoutRefused extends Error {
 
 /** The file a checkout leaves next to the run's store (`store/checkout.json`): the head handed over, when, by which tab, and the browser's conversation. The server reads it before it lets anything attach. */
 export const CHECKOUT_MARKER = "checkout.json";
+/** What the last check-in left beside the store, written before the mark is removed: {sha256 of the store taken, head, files, tab, at}. A browser that never saw the reply sends the same check-in again and is answered from it. */
+export const CHECKIN_RECEIPT = "checkin.json";
+export type CheckinReceipt = { sha256: string; head: number; files: number; tab: string; at: number };
 export type CheckoutMarker = { head: number; at: number; tab: string; conversation?: number };
 
 /** A check-in the pipe refused because the browser's store does not extend the head the server released: nothing was changed. `table` names where the first difference is. */
@@ -1313,7 +1316,17 @@ export class RunPipe {
       } finally {
         this.#writer = undefined;
       }
-      // 4. the mark, last
+      // 4. the receipt, then the mark, last
+      const receipt: CheckinReceipt = { sha256: createHash("sha256").update(o.storeBytes).digest("hex"), head: browserHead, files: o.changes.length, tab: o.tab, at: Date.now() };
+      const receiptFile = join(this.lease.claim.store, CHECKIN_RECEIPT);
+      const out = await open(`${receiptFile}.tmp`, "w");
+      try {
+        await out.writeFile(JSON.stringify(receipt));
+        await out.sync();
+      } finally {
+        await out.close();
+      }
+      await rename(`${receiptFile}.tmp`, receiptFile);
       await o.beforeMarkerRemoval?.();
       const marker = join(this.lease.claim.store, CHECKOUT_MARKER);
       await rm(marker, { force: true });

@@ -14,7 +14,7 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
-import { CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
+import { CHECKIN_RECEIPT, CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckinReceipt, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
@@ -1210,6 +1210,24 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
   }
 
+  /** What the last check-in of the run left on the disk, when one did (the receipt), read as the marker is. */
+  async function readReceipt(runId: string): Promise<CheckinReceipt | undefined> {
+    const key = `runs/${runId}/store/${CHECKIN_RECEIPT}`;
+    let bytes: Uint8Array;
+    try {
+      bytes = options.readObject ? await options.readObject(key) : readFileSync(join(options.mountRoot, key));
+    } catch (error) {
+      if (isNotFound(error)) return undefined;
+      throw Object.assign(new Error(`cannot read run ${runId}'s check-in receipt (${(error as Error).message})`), { code: "MARKER_UNREADABLE" });
+    }
+    try {
+      const r = JSON.parse(Buffer.from(bytes).toString("utf8")) as Partial<CheckinReceipt>;
+      return typeof r.sha256 === "string" && typeof r.head === "number" && typeof r.tab === "string" ? { sha256: r.sha256, head: r.head, files: Number(r.files) || 0, tab: r.tab, at: Number(r.at) || 0 } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Learn from the disk that the run was checked out (by this server before it restarted, or by another one), and say so to everyone watching. */
   async function refreshCheckedOut(state: RunState): Promise<void> {
     if (state.checkedOut || state.pipe || state.opening) return;
@@ -1404,8 +1422,16 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     } catch (error) {
       return json(res, 503, { error: (error as Error).message, code: "MARKER_UNREADABLE" });
     }
-    if (!state.checkedOut) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
-    if (state.checkingIn || state.checkingOut || state.switching || state.opening) return json(res, 409, { error: "a check-in or a move is in progress", code: "CHECKIN_BUSY" });
+    let receipt: CheckinReceipt | undefined;
+    if (!state.checkedOut) {
+      // Not checked out: either this is not a run that was, or the check-in went through and its reply was lost. The receipt tells which: the same store from the same tab is answered as the first time.
+      try {
+        receipt = await readReceipt(runId);
+      } catch (error) {
+        return json(res, 503, { error: (error as Error).message, code: "MARKER_UNREADABLE" });
+      }
+      if (!receipt) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
+    } else if (state.checkingIn || state.checkingOut || state.switching || state.opening) return json(res, 409, { error: "a check-in or a move is in progress", code: "CHECKIN_BUSY" });
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req as AsyncIterable<Buffer>) {
@@ -1422,6 +1448,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (typeof body.tab !== "string" || typeof body.store !== "string" || !Array.isArray(body.changes)) return json(res, 400, { error: "the body needs tab, store (base64) and changes" });
     const changes = body.changes as FileChange[];
     if (changes.some((c) => typeof c?.path !== "string" || (c.op === "write" && "upload" in c))) return json(res, 400, { error: "changes are inline writes, mkdirs and deletes" });
+    if (receipt) {
+      // the check-in already went through: answered as it was the first time, and nothing is written
+      const same = receipt.tab === body.tab && receipt.sha256 === createHash("sha256").update(Buffer.from(body.store, "base64")).digest("hex");
+      if (!same) return json(res, 409, { error: "the run is not checked out, and this is not the store its last check-in took", code: "NOT_CHECKED_OUT" });
+      log("checkin.replayed", { run: runId, head: receipt.head });
+      return json(res, 200, { head: receipt.head, files: receipt.files, replayed: true });
+    }
     const marker = await readMarker(runId);
     if (!marker) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
     state.checkingIn = true;

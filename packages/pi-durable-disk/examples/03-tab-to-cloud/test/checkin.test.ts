@@ -234,6 +234,37 @@ describe("checking a run back in", () => {
     assert.equal(existsSync(marker(w.id)), false);
   });
 
+  it("the reply was lost: the same check-in sent again is answered as the first time and writes nothing; another store, another tab or a run that was never checked out is NOT_CHECKED_OUT", async () => {
+    const w = await checkedOut("lost-reply");
+    const store = await offline(w.copy.bytes, w.conversation.id, 2);
+    const changes = [{ path: "kept.txt", op: "write", data: b64("kept") }];
+    const first = await checkin(w.id, w.secret, w.tab, store, changes);
+    assert.equal(first.status, 200);
+    const done = (await first.json()) as { head: number; files: number };
+    // someone (the tab, once attached) changes the disk since: a replay must not touch it
+    rmSync(join(local.root, "runs", w.id, "work", "kept.txt"));
+    const again = await checkin(w.id, w.secret, w.tab, store, changes);
+    assert.equal(again.status, 200, await again.clone().text());
+    assert.deepEqual(await again.json(), { head: done.head, files: done.files, replayed: true });
+    assert.equal(existsSync(join(local.root, "runs", w.id, "work", "kept.txt")), false, "the replay wrote nothing");
+    const other = await offline(w.copy.bytes, w.conversation.id, 3);
+    assert.equal(((await (await checkin(w.id, w.secret, w.tab, other, [])).json()) as { code: string }).code, "NOT_CHECKED_OUT", "a store the first check-in did not take");
+    assert.equal(((await (await checkin(w.id, w.secret, "another-tab", store, [])).json()) as { code: string }).code, "NOT_CHECKED_OUT", "a tab that did not make it");
+    const never = await writer("never");
+    assert.equal(((await (await checkin(never.id, never.secret, never.tab, store, [])).json()) as { code: string }).code, "NOT_CHECKED_OUT", "a run that was never checked out");
+    // the server restarts: the receipt is on the disk
+    const second = await localServer({ root: local.root });
+    try {
+      const adopted = await second.server.adoptRun(w.id);
+      const base2 = second.url.replace(/^ws/, "http").replace(/\/ws$/, "");
+      const r = await fetch(`${base2}/api/runs/${w.id}/checkin`, { method: "POST", headers: authed(adopted.secret, w.tab), body: JSON.stringify({ tab: w.tab, store: Buffer.from(store).toString("base64"), changes }) });
+      assert.equal(r.status, 200, await r.clone().text());
+      assert.equal(((await r.json()) as { replayed?: boolean }).replayed, true);
+    } finally {
+      await second.remove();
+    }
+  });
+
   it("a crash after the check and before the mark is removed leaves the mark: no fork, and the same check-in sent again works", async () => {
     const w = await checkedOut("crash");
     const store = await offline(w.copy.bytes, w.conversation.id, 2);

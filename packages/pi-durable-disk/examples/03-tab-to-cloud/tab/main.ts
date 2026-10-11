@@ -18,14 +18,14 @@ import { baselineOf, CheckinError, diffWorkspace, postCheckin, type Snapshot } f
 import { scriptedCloud, type ScriptedTurn, type SeenRequest } from "./scripted-cloud.ts";
 import { BRAIN_CHECKIN } from "./brain-kinds.ts";
 import { callGrammar, renderPrompt, TOOLS } from "./tool-format.ts";
-import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
+import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckinPayload, forgetCheckout, loadCheckinPayload, readCheckout, saveCheckinPayload, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
 import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
 import { cloudAgent } from "../agent.ts";
-import { fromBase64, untag, type Environment, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
+import { fromBase64, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
 const TAB_RESTORE_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -708,8 +708,9 @@ async function savedSnapshot(): Promise<Snapshot> {
 
 /**
  * "Go online", from the button or the agent's go_online tool: the run's store and the files written offline go back to the server (checkin.ts, POST /api/runs/<id>/checkin), which takes
- * them only when the store extends what it released at checkout; this tab then attaches as the writer and the SAME conversation is configured onto the cloud model again. A failure before
- * the server took the check-in reopens this browser's copy as it was (the model stays loaded) and says why; once the server has it, the browser's copy is the server's and is dropped.
+ * them only when the store extends what it released at checkout; this tab then attaches as the writer and the SAME conversation is configured onto the cloud model again.
+ * The store is exported and kept in OPFS with the changes before anything is sent (`sending`), so what is sent is one fixed thing: a reload in the middle sends the same bytes again (`resumeCheckin`),
+ * and a server that already took it answers from its receipt.
  */
 async function checkIn(): Promise<void> {
   const runtime = state.runtime, off = state.offline;
@@ -717,9 +718,10 @@ async function checkIn(): Promise<void> {
   const record = off.record, host = state.brain?.host;
   const started = performance.now();
   const say = (text: string) => { state.checkingIn = { text }; render(); };
-  let closed = false, home = false;
   say("waiting for the agent to be idle");
+  state.banner = "";
   announce("checkin", { phase: "start", head: record.head });
+  let closed = false;
   try {
     if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then go online");
     if (!state.net.online) throw new Error(`the server cannot be reached from here yet (${state.net.reason || "no answer to the ping"})`);
@@ -737,21 +739,59 @@ async function checkIn(): Promise<void> {
     await off.store.storage.close(ctx).catch(() => undefined);
     closed = true;
     const store = await exportStore(run);
-    let done: Awaited<ReturnType<typeof postCheckin>> | undefined;
+    await saveCheckinPayload(run, { store, changes });
+    await writeCheckout({ ...record, state: "sending" });
+    await sendCheckin(record, { store, changes }, host, started);
+  } catch (error) {
+    state.checkingIn = undefined;
+    if (closed) {
+      // nothing was sent, or what was sent was not taken: this browser's copy is whole and stays the live one; open it again, the model still loaded
+      await forgetCheckinPayload(run).catch(() => undefined);
+      await writeCheckout({ ...record, state: "done" }).catch(() => undefined);
+      await startOffline({ ...record, state: "done" }, host);
+    }
+    announce("checkin", { phase: "failed", message: (error as Error).message });
+    state.banner = `could not go online: ${(error as Error).message}`;
+    render();
+  }
+}
+
+/** Send a prepared check-in until the server answers it, then come home: attach as the writer, configure the conversation back onto the cloud model, drop this browser's copy. */
+async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array; changes: FileChange[] }, host: ModelHost | undefined, started: number): Promise<void> {
+  const say = (text: string) => { state.checkingIn = { text }; render(); };
+  let done: Awaited<ReturnType<typeof postCheckin>> | undefined;
+  try {
     for (let attempt = 1; !done; attempt++) {
-      say(attempt === 1 ? `handing ${changes.length} changed file${changes.length === 1 ? "" : "s"} and the store back to the server` : `handing the run back to the server (attempt ${attempt})`);
+      say(attempt === 1 ? `handing ${payload.changes.length} changed file${payload.changes.length === 1 ? "" : "s"} and the store back to the server` : `handing the run back to the server (attempt ${attempt})`);
       try {
-        done = await postCheckin({ run, secret, tab, store, changes });
+        done = await postCheckin({ run, secret, tab, store: payload.store, changes: payload.changes });
       } catch (error) {
         const code = error instanceof CheckinError ? error.code : "";
-        // not reached, busy, or a server fault after its check: the same request may be sent again; a refusal of the store itself never succeeds by repeating
+        // not reached, busy, or a server fault after its check: the same request may be sent again (a server that took it the first time answers from its receipt);
+        // a refusal of the store itself never succeeds by repeating
         const again = (code === "NETWORK" || code === "CHECKIN_BUSY" || /^HTTP_5/.test(code)) && attempt < 4;
-        if (!again) throw error;
+        if (!again) {
+          if (code === "NOT_CHECKED_OUT") throw new Error("the server says this run is not checked out and did not take this store from this tab: this browser keeps its copy, and nothing was deleted; reload this page to see where the run is");
+          throw error;
+        }
         await sleepMs(1000 * attempt);
       }
     }
-    home = true;
-    await forgetCheckout(run); // from here a reload attaches to the server: this browser's copy is the server's now
+  } catch (error) {
+    // the server did not take it
+    await forgetCheckinPayload(run).catch(() => undefined);
+    await writeCheckout({ ...record, state: "done" }).catch(() => undefined);
+    state.checkingIn = undefined;
+    announce("checkin", { phase: "failed", message: (error as Error).message, ...(error instanceof CheckinError ? { code: error.code } : {}) });
+    await startOffline({ ...record, state: "done" }, host);
+    state.banner = `could not go online: ${(error as Error).message}`;
+    render();
+    return;
+  }
+  // The server has it: from here a reload attaches to the server, and this browser's copy is the server's now.
+  try {
+    await forgetCheckout(run);
+    await forgetCheckinPayload(run).catch(() => undefined);
     state.offline = undefined;
     say("attaching to the server");
     const brain = state.brain;
@@ -762,8 +802,8 @@ async function checkIn(): Promise<void> {
     // The same conversation, the cloud model again, every tool the registry has again.
     await attached.root.configure(cloudAgent(state.agentModel), ctx);
     const ms = Math.round(performance.now() - started);
-    const event: CheckinEvent = { at: Date.now(), head: done.head, files: done.files, changes: changes.length, ms, offlineHead: record.head };
-    await attached.root.submit({ type: "write", requestId: `checkin:${done.head}`, entry: { kind: BRAIN_CHECKIN, data: { head: done.head, files: done.files, changes: changes.length, ms } } }, ctx).catch(() => undefined);
+    const event: CheckinEvent = { at: Date.now(), head: done.head, files: done.files, changes: payload.changes.length, ms, offlineHead: record.head };
+    await attached.root.submit({ type: "write", requestId: `checkin:${done.head}`, entry: { kind: BRAIN_CHECKIN, data: { head: done.head, files: done.files, changes: payload.changes.length, ms } } }, ctx).catch(() => undefined);
     state.checkingIn = undefined;
     state.checkins.push(event);
     await brain?.dispose(); // the small model's workers go: online, the cloud model answers
@@ -773,22 +813,27 @@ async function checkIn(): Promise<void> {
     render();
   } catch (error) {
     state.checkingIn = undefined;
-    const message = (error as Error).message;
-    const notCheckedOut = error instanceof CheckinError && error.code === "NOT_CHECKED_OUT";
-    announce("checkin", { phase: "failed", message, ...(error instanceof CheckinError ? { code: error.code } : {}) });
-    if (home) {
-      state.banner = message;
-      render();
-    } else if (closed) {
-      // the server did not take it: this browser's copy is whole and stays the live one; open it again, the model still loaded
-      await startOffline({ ...record, state: "done" }, host);
-      state.banner = notCheckedOut ? "The server says this run is not checked out: a check-in of this copy may already have gone through. This browser keeps its copy; reload this page to see where the run is." : `could not go online: ${message}`;
-      render();
-    } else {
-      state.banner = `could not go online: ${message}`;
-      render();
-    }
+    announce("checkin", { phase: "failed", message: (error as Error).message });
+    state.banner = (error as Error).message;
+    render();
   }
+}
+
+/** A page opened (or reloaded) while a check-in was on its way: send the saved store and changes again. A server that took them answers from its receipt; one that did not takes them now. */
+async function resumeCheckin(record: CheckoutRecord): Promise<void> {
+  state.mode = "booting";
+  state.progress = "finishing the check-in that was on its way";
+  state.checkingIn = { text: "finishing the check-in that was on its way" };
+  render();
+  announce("checkin", { phase: "start", head: record.head, resumed: true });
+  const payload = await loadCheckinPayload(run);
+  if (!payload) {
+    // nothing to send (the payload is gone): this browser's copy is the run, as it was
+    await writeCheckout({ ...record, state: "done" });
+    state.checkingIn = undefined;
+    return void startOffline({ ...record, state: "done" });
+  }
+  await sendCheckin(record, payload as { store: Uint8Array; changes: FileChange[] }, undefined, performance.now());
 }
 
 /** The agent's go_offline and go_online tools talk to the page through this: the request is taken now, the move happens once the agent's step is over. */
@@ -1092,6 +1137,7 @@ setInterval(renderStats, 1000);
 async function boot(): Promise<void> {
   const record = run ? await readCheckout(run).catch(() => undefined) : undefined;
   if (record?.state === "done") return void startOffline(record);
+  if (record?.state === "sending") return void resumeCheckin(record);
   if (record?.state === "copied" && secret) {
     // A checkout that was not seen to the end: ask again. The pipe answers a handover it made as the first time; a refusal means nothing was handed over.
     const outcome = await confirmHandover(() => requestCheckout({ run, secret, tab: record.tab, head: record.head, conversation: record.conversation }), { tries: 3 });
