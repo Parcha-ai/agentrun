@@ -19,7 +19,7 @@ import { detectOnce, type MadeBy, type Provider, type ProviderCall, type Provide
 export const PDF_TEXT_TIMEOUT_MS = 120_000;
 /** Time for one page's render: a 200 dpi scan takes 0.9 s in poppler and 0.5 s in PDFium (measured 2026-10-11); a page that takes a minute is not one to read. */
 export const PDF_RENDER_TIMEOUT_MS = 60_000;
-/** The JavaScript heap of a worker reading a PDF: pdf.js held 455 MB for 200 pages (measured 2026-10-11). PDFium's own WASM memory is fixed at 2 GiB by its build and is not part of this. */
+/** The memory of a worker reading a PDF, its JavaScript heap and, for PDFium, its WASM memory: pdf.js held 455 MB for 200 pages (measured 2026-10-11). */
 export const PDF_WORKER_MEMORY_MB = 1024;
 /** The most pixels one page render may have: a 150 dpi render of an A0 sheet. The planner asks for at most 2,000 px on a long edge (4 MP); a bitmap is 4 bytes a pixel in WASM beside a copy and the PNG's rows (2026-10-11). */
 export const PDF_RENDER_MAX_PIXELS = 25_000_000;
@@ -93,7 +93,7 @@ export function runPdfWorker<T>(script: string, input: Record<string, unknown>, 
       settle();
     };
     const onAbort = () => end(() => reject(caps.signal!.reason));
-    const timer = setTimeout(() => end(() => reject(new PdfProviderError("over_budget", `the PDF engine did not finish within ${Math.round(caps.timeoutMs / 1000)} s`))), caps.timeoutMs);
+    const timer = setTimeout(() => end(() => reject(new PdfProviderError("over_budget", `the PDF engine did not finish within ${Number((caps.timeoutMs / 1000).toFixed(2))} s`))), caps.timeoutMs);
     caps.signal?.addEventListener("abort", onAbort, { once: true });
     worker.once("message", (m: { value?: T; error?: { name?: string; message?: string } }) =>
       end(() => (m.error ? reject(Object.assign(new Error(m.error.message), { name: m.error.name })) : resolve(m.value as T))));

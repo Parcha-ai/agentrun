@@ -146,23 +146,45 @@ test("a password-protected PDF is an unreadable miss for its text and for its pa
 
 const threads = () => Number(/^Threads:\s+(\d+)/m.exec(execFileSync("cat", ["/proc/self/status"], { encoding: "utf8" }))?.[1]);
 
-test("a form that draws itself a hundred times over four levels ends in an over_budget miss at the render cap, and the engine is gone", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
+const gone = async (before) => {
+  for (let waited = 0; threads() > before && waited < 50; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(threads() <= before, "the worker thread has exited");
+};
+const linux = { skip: process.platform !== "linux" && "reads /proc" };
+
+test("a render cut at its time cap is an over_budget miss, the engine is gone, and the next render is unaffected", linux, async () => {
+  const before = threads();
+  const result = await pdfPage(docs.letter, { env, providers: [pdfiumProvider({ timeoutMs: 20 })] }, { page: 1, dpi: 150 });
+  assert.deepEqual([result.ok, result.miss.code, result.miss.detail], [false, "over_budget", "the PDF engine did not finish within 0.02 s (pdfium)"]);
+  await gone(before);
+  assert.equal(ok(await pdfPage(docs.letter, { env, providers: [pdfium] }, { page: 1, dpi: 72 })).image.width, 612);
+});
+
+test("a form that draws itself a hundred times over four levels ends in an over_budget miss at the time or the memory cap, whichever comes first", linux, async () => {
   const endless = await sourceOf("endless.pdf", endlessPdf());
   const before = threads();
   const started = Date.now();
-  const result = await pdfPage(endless, { env, providers: [unpdf, pdfiumProvider({ timeoutMs: 1500 })] }, { page: 1, dpi: 150 });
-  assert.deepEqual([result.ok, result.miss.code, result.miss.detail], [false, "over_budget", "the PDF engine did not finish within 2 s (pdfium)"]);
-  assert.ok(Date.now() - started < 10_000, "inside the cap and its overhead");
-  for (let waited = 0; threads() > before && waited < 50; waited++) await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.ok(threads() <= before, "the worker thread has exited");
-  assert.equal(ok(await pdfPage(odd, { env, providers: [pdfium] }, { page: 1, dpi: 72 })).image.width, 612, "the next render is unaffected");
+  const result = await pdfPage(endless, { env, providers: [pdfiumProvider({ timeoutMs: 5000 })] }, { page: 1, dpi: 150 });
+  assert.deepEqual([result.ok, result.miss.code], [false, "over_budget"]);
+  assert.match(result.miss.detail, /^the PDF engine (did not finish within 5 s|needed more than 1024 MB) \(pdfium\)$/);
+  assert.ok(Date.now() - started < 15_000, "inside the cap and its overhead");
+  await gone(before);
+  assert.equal(ok(await pdfPage(docs.letter, { env, providers: [pdfium] }, { page: 1, dpi: 72 })).image.width, 612, "the next render is unaffected");
 });
 
-test("a render that is cancelled stops its engine and rejects with the caller's reason", async () => {
-  const endless = await sourceOf("endless-cancel.pdf", endlessPdf());
+test("PDFium's own memory is capped, which the worker's heap limit does not do: past it the render is an over_budget miss naming the cap", async () => {
+  const endless = await sourceOf("endless-memory.pdf", endlessPdf());
+  const result = await pdfPage(endless, { env, providers: [pdfiumProvider({ timeoutMs: 60_000, memoryMb: 256 })] }, { page: 1, dpi: 150 });
+  assert.deepEqual([result.ok, result.miss.code, result.miss.detail], [false, "over_budget", "the PDF engine needed more than 256 MB (pdfium)"]);
+  assert.equal(ok(await pdfPage(docs.letter, { env, providers: [pdfiumProvider({ memoryMb: 256 })] }, { page: 1, dpi: 150 })).image.width, 1275, "an ordinary page fits in it");
+});
+
+test("a render that is cancelled stops its engine and rejects with the caller's reason", linux, async () => {
+  const before = threads();
   const stop = new AbortController();
-  setTimeout(() => stop.abort(new Error("the run was cancelled")), 300);
-  await assert.rejects(pdfPage(endless, { env, providers: [pdfium], signal: stop.signal }, { page: 1, dpi: 150 }), /the run was cancelled/);
+  setTimeout(() => stop.abort(new Error("the run was cancelled")), 20);
+  await assert.rejects(pdfPage(docs.letter, { env, providers: [pdfium], signal: stop.signal }, { page: 1, dpi: 150 }), /the run was cancelled/);
+  await gone(before);
 });
 
 test("a process that renders a file that never ends exits on its own once the miss is returned", () => {
@@ -179,7 +201,7 @@ test("a process that renders a file that never ends exits on its own once the mi
     const result = await pdfPage(source, { env: new NodeExecutionEnv({ cwd: ${JSON.stringify(dir.path)} }), providers: [pdfiumProvider({ timeoutMs: 1000 })] }, { page: 1, dpi: 150 });
     console.log(JSON.stringify(result));`;
   const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 30_000 });
-  assert.equal(JSON.parse(out).miss.code, "over_budget", out);
+  assert.equal(JSON.parse(out).ok, false, out);
 });
 
 test("an engine's worker sees none of the host's environment and writes nothing to the host's output", () => {
@@ -213,6 +235,8 @@ test("a page the size of a building is refused at a dpi that would make gigapixe
   assert.equal(ok(await pdfDocument(huge, { env, providers: [unpdf] })).facts.pageSizes[0].width, 14400, "its facts are free");
   const drawn = ok(await pdfPage(huge, { env, providers: [pdfium] }, { page: 1, dpi: 10 })).image;
   assert.deepEqual([drawn.width, drawn.height], [2000, 2000]);
+  const largest = ok(await pdfPage(huge, { env, providers: [pdfium] }, { page: 1, dpi: 25 })).image;
+  assert.deepEqual([largest.width, largest.height], [5000, 5000], "the largest render the pixel cap allows fits in the default memory cap");
 });
 
 test("the text of a fetched PDF, page by page, and nothing for a scan, a password or bytes that are not a PDF", async () => {

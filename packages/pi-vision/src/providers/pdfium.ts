@@ -5,11 +5,19 @@ import { PDF_RENDER_MAX_PIXELS, PDF_RENDER_TIMEOUT_MS, PDF_WORKER_MEMORY_MB, Pdf
 import type { Provider, RenderedImage } from "../core/provider.js";
 
 /** The worker's script. PDFium's bitmap comes back as R, G, B, A bytes; the PNG is RGB with no filter. It takes its
- *  built-in modules from the process, so it runs the same whether the host's eval is CommonJS or ESM. */
+ *  built-in modules from the process, so it runs the same whether the host's eval is CommonJS or ESM. PDFium's WASM memory
+ *  is outside the worker's heap limit, so growth past `memoryMb` is refused here; PDFium then aborts, and that abort is
+ *  reported as the cap it hit. */
 const SCRIPT = `
 const { parentPort, workerData: d } = process.getBuiltinModule("node:worker_threads");
 const zlib = process.getBuiltinModule("node:zlib");
 const fail = (name, message) => parentPort.postMessage({ error: { name, message } });
+let refused = false;
+const grow = WebAssembly.Memory.prototype.grow;
+WebAssembly.Memory.prototype.grow = function (pages) {
+  if (this.buffer.byteLength + pages * 65536 > d.memoryMb * 1048576) { refused = true; throw new RangeError("memory cap"); }
+  return grow.call(this, pages);
+};
 const chunk = (type, body) => {
   const head = Buffer.alloc(8);
   head.writeUInt32BE(body.length, 0);
@@ -40,7 +48,7 @@ const chunk = (type, body) => {
   header.set([8, 2, 0, 0, 0], 8);
   const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header), chunk("IDAT", zlib.deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
   parentPort.postMessage({ value: { png: new Uint8Array(png), width, height } });
-})().catch((e) => fail(e && e.name, String((e && e.message) || e)));
+})().catch((e) => (refused ? fail("OverBudget", "the PDF engine needed more than " + d.memoryMb + " MB") : fail(e && e.name, String((e && e.message) || e))));
 `;
 
 export type PdfiumOptions = { readonly timeoutMs?: number; readonly memoryMb?: number; readonly maxPixels?: number };
@@ -62,7 +70,7 @@ export function pdfiumProvider(options: PdfiumOptions = {}): Provider {
       const { url, version } = await resolvePdfDependency("@hyzyla/pdfium");
       const bytes = await readPdfBytes(source, call);
       const caps = { timeoutMs: options.timeoutMs ?? PDF_RENDER_TIMEOUT_MS, memoryMb: options.memoryMb ?? PDF_WORKER_MEMORY_MB, signal: call.signal };
-      const done = await runPdfWorker<{ png: Uint8Array; width: number; height: number }>(SCRIPT, { module: url, bytes, ...request, maxPixels }, caps).catch((error: Error) => {
+      const done = await runPdfWorker<{ png: Uint8Array; width: number; height: number }>(SCRIPT, { module: url, bytes, ...request, maxPixels, memoryMb: caps.memoryMb }, caps).catch((error: Error) => {
         if (error.name === "OverBudget") throw new PdfProviderError("over_budget", error.message);
         throw error;
       });
