@@ -449,8 +449,11 @@ function q(s: string): string {
   return JSON.stringify(s); // a GBNF literal: double-quoted, with backslash escapes
 }
 
-/** The grammar for one call to any of `tools`, from right after "<tool_call>" through "</tool_call>". */
-export function callGrammar(tools: readonly ToolSpec[] = TOOLS): string {
+/**
+ * The grammar for one call to any of `tools`, from right after "<tool_call>" through "</tool_call>". `withOpen`: the root starts with "<tool_call>" itself, for a LAZY grammar
+ * whose trigger is that word (llama.cpp feeds the grammar from the trigger word on).
+ */
+export function callGrammar(tools: readonly ToolSpec[] = TOOLS, opts: { withOpen?: boolean } = {}): string {
   const rules: string[] = [];
   const ruleFor = (name: string, s: JsonSchema): string => {
     switch (s.type) {
@@ -490,7 +493,7 @@ export function callGrammar(tools: readonly ToolSpec[] = TOOLS): string {
     return `${q(`{"name":${JSON.stringify(t.name)},"arguments":`)} ${r} "}"`;
   });
   return [
-    `root ::= (${alts.join(" | ")}) ${q(CALL_CLOSE)}`,
+    `root ::= ${opts.withOpen ? `${q(CALL_OPEN)} ` : ""}(${alts.join(" | ")}) ${q(CALL_CLOSE)}`,
     ...rules,
     `string ::= "\\"" char* "\\""`,
     `char ::= [^"\\\\\\x00-\\x1F] | "\\\\" (["\\\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])`,
