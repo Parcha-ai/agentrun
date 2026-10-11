@@ -70,6 +70,7 @@ try {
   ok("offline the 1B answers by a rule, no call", await (async () => {
     const items = await send("What is 2+2?", 300_000);
     const d = (await ev<Decision[]>("demo.decisions()")).at(-1)!;
+    console.log(`  offline "What is 2+2?" -> the 1B: ${JSON.stringify((await ev<{ call: string | null; raw: string }[]>("demo.toolTurns()")).map((t) => t.call ?? t.raw.slice(0, 100)))}`);
     return d.brain === "tab-local" && d.decidedBy === "rule" && /offline/.test(d.reason) && items.some((i) => i.kind === "assistant");
   })(), await ev("demo.decisions()"));
   await ev("document.getElementById('online').click()");
@@ -84,7 +85,7 @@ try {
   const dLocal = decisions1.at(-1)!;
   console.log(`  message 1 -> ${dLocal.brain} by ${dLocal.decidedBy}, ${dLocal.confidence === null ? "-" : Math.round(dLocal.confidence * 100)}%: ${dLocal.reason} (${dLocal.ms} ms)`);
   ok("'write hi.js and run it' goes to the tab, decided by Jev with a percentage", dLocal.brain === "tab-local" && dLocal.decidedBy === "jev" && typeof dLocal.confidence === "number" && dLocal.confidence >= 0.7, dLocal);
-  ok("the conversation was configured onto the 1B (read, write, bash), the same conversation", /^tab-local\//.test(await model()) && (await ev<string[]>("demo.agent().then((a) => a.tools)")).sort().join() === "bash,read,write" && (await ev<string>("String(demo.state.active.id)")) === root, await ev("demo.agent()"));
+  ok("the conversation was configured onto the 1B (read, write, bash, go_online), the same conversation", /^tab-local\//.test(await model()) && (await ev<string[]>("demo.agent().then((a) => a.tools)")).sort().join() === "bash,go_online,read,write" && (await ev<string>("String(demo.state.active.id)")) === root, await ev("demo.agent()"));
   ok("the 1B ran its tools", t1.some((i) => i.kind === "tool" && i.status === "done"), t1.map((i) => `${i.kind}:${i.name ?? ""}:${i.status ?? ""}`));
   ok("hi.js is on the server's disk", existsSync(join(work, "hi.js")) && /console\.log/.test(readFileSync(join(work, "hi.js"), "utf8")));
   const sw1 = await ev<number>("demo.brainSwitches()");

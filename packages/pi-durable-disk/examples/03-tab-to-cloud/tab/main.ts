@@ -11,7 +11,7 @@ import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
-import { finishStep, startLocal, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
+import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
 import { applyChanges, forgetWorkspace, loadBaseline, loadWorkspace, saveBaseline, saveWorkspace } from "./workspace-store.ts";
 import { baselineOf, CheckinError, diffWorkspace, postCheckin, type Snapshot } from "./checkin.ts";
@@ -494,7 +494,7 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
   const brain = new Brain({
     ...(route ? { route: true } : {}), harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
-    ...(params.get("configure") === "1" || golive ? { decoding: { history: params.get("toolhistory") === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
+    ...(params.get("configure") === "1" || golive ? { decoding: { history: (params.get("toolhistory") ?? (golive ? "last" : "none")) === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash", "go_online"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -556,14 +556,14 @@ async function takeOffline(): Promise<void> {
   let uncertain = false;
   try {
     say("waiting for the agent to be idle");
-    if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
+    if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
     const manifestText = noBrain ? null : await readManifest(readWork);
     if (!noBrain && !manifestText) throw new Error("the model's manifest is not on the run's disk");
     const manifest = manifestText ? (JSON.parse(manifestText) as { sha256: string; size: number; chunks: unknown[] }) : { sha256: "", size: 0, chunks: [] };
     say("registering the service worker");
     await registerOfflineWorker();
     const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
-    if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent started answering while the model was cached: try again");
+    if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent started answering while the model was cached: try again");
     // The browser is asked to keep this site's storage: once the run is handed over, this is the only copy. A browser that will not is a warning (a refusal with ?persist=require).
     const persistent = (await navigator.storage?.persisted?.().catch(() => false)) || (await navigator.storage?.persist?.().catch(() => false)) || false;
     if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
@@ -726,7 +726,7 @@ async function checkIn(): Promise<void> {
   announce("checkin", { phase: "start", head: record.head });
   let closed = false;
   try {
-    if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then go online");
+    if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then go online");
     if (!state.net.online) throw new Error(`the server cannot be reached from here yet (${state.net.reason || "no answer to the ping"})`);
     say("saving the workspace in this browser");
     await runtime.flush?.();

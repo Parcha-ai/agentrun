@@ -73,7 +73,7 @@ try {
   const offConv = (await ev<{ conversation: string }>("demo.brain()")).conversation;
   console.log(`${at()} s: offline; conversation ${offConv}; model ${off.model}; tools ${JSON.stringify(off.tools)}`);
   ok("the SAME conversation is configured onto the model in the tab", offConv === root && /^tab-local\//.test(off.model), { root, offConv, off });
-  ok("configure passed exactly read, write and bash", JSON.stringify([...off.tools].sort()) === JSON.stringify(["bash", "read", "write"]), off.tools);
+  ok("configure passed exactly read, write, bash and go_online", JSON.stringify([...off.tools].sort()) === JSON.stringify(["bash", "go_online", "read", "write"]), off.tools);
   await page.screenshot(join(shots, "golive-1-offline-checked-out.png"));
 
   // ---- the network is cut for real; the page says so
@@ -99,6 +99,15 @@ try {
   ok("and not on the server's disk (it does not run the run)", !existsSync(join(work, "hello.js")) && !existsSync(join(work, "notes/offline.txt")));
   await page.screenshot(join(shots, "golive-2-offline-work.png"));
 
+  // ---- a follow-up in the same conversation: the window carries the previous request and its answer, and the 1B must still use its tools
+  const followTurns = (await ev<unknown[]>("demo.toolTurns()")).length;
+  const follow = await send(process.env.FOLLOWUP ?? "Now change hello.js so it also prints bye, then run it.");
+  for (const t of (await ev<{ ms: number; call: string | null; problem: string | null; raw: string }[]>("demo.toolTurns()")).slice(followTurns)) console.log(`  follow-up turn ${(t.ms / 1000).toFixed(1)} s: ${t.call ? "call " + t.call.slice(0, 200) : "answer " + JSON.stringify(t.raw.slice(0, 160))}${t.problem ? " PROBLEM " + t.problem : ""}`);
+  ok("the follow-up: the 1B made tool calls again (not a one-line claim)", follow.some((i) => i.kind === "tool" && i.status === "done"), follow.map((i) => `${i.kind}:${i.name ?? ""}:${i.status ?? ""}`));
+  const run2 = await ev<{ exitCode?: number; output?: string }>("demo.exec('node hello.js')");
+  console.log(`  hello.js after the follow-up prints: ${JSON.stringify((run2.output ?? "").trim())}`);
+  ok("hello.js still runs, and prints bye as well as hi", run2.exitCode === 0 && /hi/.test(run2.output ?? "") && /bye/.test(run2.output ?? ""), run2);
+
   // ---- the network is back; the button hands the run home
   await page.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await page.send("Network.setBlockedURLs", { urls: [] });
@@ -106,7 +115,12 @@ try {
   ok("with the network back the page says ONLINE", (await ev<string>("document.getElementById('net').textContent")) === "ONLINE", await ev("demo.net()"));
   ok("the Go online button is there and enabled", (await ev<boolean>("!document.getElementById('online').hidden && !document.getElementById('online').disabled")));
   const clicked = Date.now();
-  await ev("document.getElementById('online').click()");
+  if (process.env.GO_ONLINE === "tool") {
+    // the 1B's own go_online: the user says the network is back and the model calls the tool (the page's button is the fallback)
+    const back = await send("The network is back. Go online now.");
+    console.log(`  the 1B's turn: ${JSON.stringify(back.map((i) => `${i.kind}${i.name ? ":" + i.name : ""}${i.status ? ":" + i.status : ""}`))}`);
+    ok("the 1B called go_online", back.some((i) => i.kind === "tool" && i.name === "go_online"), back.map((i) => `${i.kind}:${i.name ?? ""}`));
+  } else await ev("document.getElementById('online').click()");
   await page.until("(demo.state.mode === 'writer' && demo.checkins().length === 1) || /could not go online|not checked out/.test(demo.state.banner)", 600_000, 1000);
   const mode = await ev<string>("demo.state.mode");
   ok("the run is the server's again: this tab is its writer", mode === "writer", await ev("demo.state.banner"));
