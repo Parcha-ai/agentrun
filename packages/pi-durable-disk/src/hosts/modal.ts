@@ -16,7 +16,7 @@
 // The Modal SDK is a structural dependency (`ModalSdk`): the package never imports it, the caller passes its `ModalClient`
 // (Node 22 or later). The mount token never leaves the staged-file path of `daytonaHost`; the Modal API key stays with the
 // caller's client.
-import { DaytonaApiError, daytonaHost, type CreateSandboxBody, type DaytonaClient, type DaytonaHostOptions, type ExecResult, type SandboxInfo } from "./daytona.ts";
+import { DaytonaApiError, DaytonaHostError, daytonaHost, type CreateSandboxBody, type DaytonaClient, type DaytonaHostOptions, type ExecResult, type SandboxInfo } from "./daytona.ts";
 import type { HostDriver } from "../supervise.ts";
 
 export const MODAL_MAX_TIMEOUT_MS = 24 * 3_600_000;
@@ -254,6 +254,7 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
         const app = await theApp();
         for await (const box of sdk.sandboxes.list({ appId: app.appId, tags: labels })) {
           handles.set(box.sandboxId, box);
+          // The SDK's list yields running sandboxes only (a terminated one is not listed), so each is reported started.
           out.push(info(box, { ...labels, ...(await box.getTags()) }, "started"));
         }
       } catch (err) {
@@ -315,6 +316,8 @@ export interface ModalHostOptions
  */
 export function modalHost(opts: ModalHostOptions): HostDriver & { readonly fleet: string; readonly mountRoot: string } {
   const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, volumes, create, ttlMinutes, ...rest } = opts;
+  // gvisor cannot mount the disk safely (measured: none of ten acknowledged writes survived), so it only runs an agent started another way.
+  if (runtime === "gvisor" && !rest.command) throw new DaytonaHostError("INVALID_ARGUMENT", "runtime gvisor cannot mount the disk: pass `command` to run the agent some other way (through a pipe), or use the vm runtime");
   const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, volumes, create });
   return daytonaHost({
     ...rest,

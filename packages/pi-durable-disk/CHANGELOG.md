@@ -9,6 +9,10 @@
   the instance's own tree and archil's daemon, before it signals the instance; the instance then drains and releases as usual. It is
   on by default in `modalHost` (the box belongs to the run) and opt-in on `daytonaHost` (`reapOnStop`, default false: no change for
   existing callers). Only an unplanned death leaves the claim for the next takeover or a revoke.
+- `modalHost` refuses `runtime: "gvisor"` without `command` at construction, with a `DaytonaHostError` coded `INVALID_ARGUMENT`: a gVisor
+  sandbox cannot mount the disk safely (measured: none of ten acknowledged writes survived), so it only runs an agent started another way.
+  `mountBlockers` also spares the launcher (the instance's parent), and a failed Modal app, image or volume lookup is retried by the next
+  start instead of being remembered.
 - New host driver `modalHost` (and its client, `modalSandboxes`): one Modal sandbox per instance, as `daytonaHost` does for Daytona,
   through the Modal SDK passed in by the caller (no dependency added). `daytonaHost` gains a `driver` option (the `driver` of its
   handles, default `"daytona"`) so a driver built on it names its own handles; nothing changes for existing callers.
