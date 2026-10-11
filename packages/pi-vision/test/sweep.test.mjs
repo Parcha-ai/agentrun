@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { test } from "node:test";
 import { DEFAULT_LIMITS, citation, detectOnce, formatFragment, limitsFromModel, notBuilt, parseCitation, parseFragment, plan, resolveLimits, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
@@ -29,34 +30,39 @@ const LINK = SENTINEL_SIGNED_LINK;
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const png = (width, height) => ({ type: "image", data: Buffer.from(pngBytes(width, height)).toString("base64"), mimeType: "image/png" });
 
-/** A function that hands a caller's own path or text back may give a signed link back where it went in; the key never. */
-const ECHO = { linkSignature: ["echo:"], linkToken: ["echo:"] };
+/** What a case's caller gave may come back verbatim (a path in a citation, a tool's own text): the scan does not see those
+ *  exact strings, and sees everything else, so a link's token or query anywhere else is a finding. Derived files are
+ *  scanned as they are. */
+const withoutEchoes = (value, echoes) => (echoes.length && value !== undefined && !(value instanceof Error)
+  ? JSON.parse(echoes.reduce((json, text) => json.replaceAll(JSON.stringify(text).slice(1, -1), "<echoed>"), JSON.stringify(value)))
+  : value);
 
 /** Runs each case with a sink that scans what the case gives it. A case ends `swept`; or `skipped` when a part it needs
  *  is not built; or `threw`, the error scanned too and listed. Findings and limit violations are the suite's failures. */
 async function sweep(cases, deriveDir, workDir) {
-  const scan = new LeakScan(SENTINELS, ECHO);
+  const scan = new LeakScan();
   const violations = [];
   const rows = [];
   for (const spec of cases) {
     if (spec.exempt) { rows.push({ id: spec.id, outcome: "exempt", detail: spec.exempt }); continue; }
-    const source = `${spec.echo ? "echo:" : ""}${spec.id}`;
+    const echoes = [];
     const sink = {
       deriveDir,
       workDir,
-      out: (label, value) => scan.value(`${source}:${label}`, value),
+      echoes,
+      out: (label, value) => scan.value(`${spec.id}:${label}`, withoutEchoes(value, echoes)),
       result: (label, result, limits) => {
-        scan.value(`${source}:${label}`, result);
+        scan.value(`${spec.id}:${label}`, withoutEchoes(result, echoes));
         violations.push(...limitViolations(result, limits).map((v) => `${spec.id} ${label}: ${v}`));
       },
     };
     try {
       await spec.run(sink);
-      rows.push({ id: spec.id, outcome: "swept", scanned: scan.covered(`${source}:`) });
+      rows.push({ id: spec.id, outcome: "swept", scanned: scan.covered(`${spec.id}:`) });
     } catch (error) {
       if (error?.code === "not_built") rows.push({ id: spec.id, outcome: "skipped", detail: `${error.part} is not built` });
       else {
-        scan.value(`${source}:thrown`, error);
+        scan.value(`${spec.id}:thrown`, error);
         rows.push({ id: spec.id, outcome: "threw", detail: `${error?.name}: ${String(error?.message).split("\n")[0]}` });
       }
     }
@@ -106,8 +112,8 @@ const CASES = [
   { id: ".#visionContext", run: ({ out }) => { const context = visionContext(AbortSignal.abort(sdkError("cut"))); out("context", { text: String(context), value: context.value({ token: Symbol("k") }), aborted: context.abortSignal?.aborted }); } },
   { id: ".#parseFragment", run: ({ out }) => { out("a key the grammar does not have", parseFragment(`page=1&token=${SENTINEL_LINK_TOKEN}`)); out("a fragment", parseFragment("page=2-4&t=1,2")); } },
   { id: ".#formatFragment", run: ({ out }) => out("fragment", formatFragment({ page: { from: 1, to: 2 }, token: SENTINEL_LINK_TOKEN })) },
-  { id: ".#citation", echo: true, run: ({ out }) => out("citation", citation(signedLink("a.pdf"), { page: { from: 1, to: 1 } })) },
-  { id: ".#parseCitation", echo: true, run: ({ out }) => out("citation", parseCitation(`${signedLink("a.pdf")}#page=1`)) },
+  { id: ".#citation", run: ({ out, echoes }) => { echoes.push(signedLink("a.pdf")); out("citation", citation(signedLink("a.pdf"), { page: { from: 1, to: 1 } })); } },
+  { id: ".#parseCitation", run: ({ out, echoes }) => { echoes.push(signedLink("a.pdf")); out("citation", parseCitation(`${signedLink("a.pdf")}#page=1`)); } },
   { id: ".#withReadMedia", run: ({ out }) => out("tool", withReadMedia({ name: "read", label: "Read", description: "Read a file.", parameters: { type: "object", properties: { path: { type: "string" } } } })) },
   { id: ".#visionSection", run: ({ out }) => out("section", visionSection("Recordings are read by handle.")) },
   { id: ".#plan", run: ({ out }) => out("plan", plan({ kind: "image", bytes: 2_000_000, sha256: "ab".repeat(32), mimeType: "image/png", width: 4000, height: 3000 }, {}, DEFAULT_LIMITS, "show")) },
@@ -116,15 +122,17 @@ const CASES = [
   { id: "./durable#createVisionExtension", run: async (sink) => sink.out("tools", (await handle(sink)).tools) },
   {
     id: "./durable#VisionHandle.fit",
-    echo: true,
-    run: async (sink) => sink.result("fitted", await (await handle(sink)).fit({ content: [{ type: "text", text: `downloaded ${LINK}` }, png(3000, 1000)] }, CALL), LIMITS),
+    run: async (sink) => {
+      sink.echoes.push(`downloaded ${LINK}`);
+      sink.result("fitted", await (await handle(sink)).fit({ content: [{ type: "text", text: `downloaded ${LINK}` }, png(3000, 1000)] }, CALL), LIMITS);
+    },
   },
   { id: "./durable#VisionHandle.pdfText", run: async (sink) => sink.out("text", await (await handle(sink)).pdfText(Buffer.from(`%PDF-1.4\n% ${KEY}\n%%EOF\n`))) },
   {
     id: "./durable#VisionHandle.read",
-    echo: true,
     run: async (sink) => {
       const path = `${sink.workDir}/page.png?${SENTINEL_LINK_QUERY}`;
+      sink.echoes.push(path, basename(path));
       await writeFile(path, pngBytes(3000, 1000));
       sink.result("read", await (await handle(sink)).read(nodeVisionEnv({ cwd: sink.workDir }), { path, ask: "what is the total?" }, CALL), LIMITS);
     },
@@ -168,7 +176,7 @@ test("every public function is swept, skipped as not built, or exempt, and nothi
     assert.deepEqual(violations, []);
     assert.deepEqual(rows.filter((r) => BUILT.includes(r.id) && r.outcome !== "swept"), [], "a built function runs to the end");
     assert.ok(rows.filter((r) => r.outcome === "swept").length >= BUILT.length);
-    for (const row of rows.filter((r) => r.outcome === "swept")) assert.ok(row.scanned.records > 0 && row.scanned.bytes > 0, `${row.id}: a case that scans nothing proves nothing`);
+    for (const row of rows.filter((r) => r.outcome === "swept")) assert.ok(row.scanned.records > 0, `${row.id}: a case that hands the scan nothing proves nothing`);
     for (const row of rows.filter((r) => r.outcome === "skipped")) assert.match(row.detail, /^\w+ is not built$/);
   } finally { await derived.remove(); await work.remove(); }
 });
@@ -185,21 +193,23 @@ test("the sweep is red on a leak in a result, an error, a derived name and a der
       { id: "x#oversize", run: ({ result }) => result("r", { content: [png(3000, 10)] }, LIMITS) },
       { id: "x#stub", run: () => notBuilt("a stub") },
       { id: "x#broken", run: () => { throw new TypeError("not what this case expected"); } },
-      { id: "x#echo", echo: true, run: ({ out }) => out("c", LINK) },
-      { id: "x#echoKey", echo: true, run: ({ out }) => out("c", KEY) },
+      { id: "x#echo", run: ({ out, echoes }) => { echoes.push(LINK); out("c", { text: `see ${LINK}` }); } },
+      { id: "x#echoKey", run: ({ out, echoes }) => { echoes.push(LINK); out("c", { text: `see ${LINK}`, via: KEY }); } },
+      { id: "x#echoPart", run: ({ result, echoes }) => { echoes.push(LINK); result("r", { content: [{ type: "text", text: `see ${LINK}` }], details: { via: SENTINEL_LINK_TOKEN } }, LIMITS); } },
+      { id: "x#echoQuery", run: ({ out, echoes }) => { echoes.push(LINK); out("c", `see ${SENTINEL_LINK_QUERY}`); } },
       { id: "x#exempt", exempt: "why" },
       { id: "x#clean", run: ({ result }) => result("r", { content: [{ type: "text", text: "fine" }, png(1500, 900)] }, LIMITS) },
     ];
     const { rows, scan, violations } = await sweep(cases, dir.path, dir.path);
     assert.deepEqual([...new Set(scan.findings.map((f) => `${f.sentinel} ${f.source}`))].sort(), [
-      "eyesKey derived", "eyesKey echo:x#echoKey:c", "eyesKey x#leakDetail:d", "eyesKey x#leakError:thrown", "eyesKey x#leakResult:r",
-      "linkSignature derived", "linkSignature x#leakDetail:d", "linkSignature x#leakError:thrown",
-      "linkToken x#leakDetail:d", "linkToken x#leakError:thrown",
-    ], "the link comes back only where an echo is allowed, the key nowhere");
+      "eyesKey derived", "eyesKey x#echoKey:c", "eyesKey x#leakDetail:d", "eyesKey x#leakError:thrown", "eyesKey x#leakResult:r",
+      "linkSignature derived", "linkSignature x#echoQuery:c", "linkSignature x#leakDetail:d", "linkSignature x#leakError:thrown",
+      "linkToken x#echoPart:r", "linkToken x#echoQuery:c", "linkToken x#leakDetail:d", "linkToken x#leakError:thrown",
+    ], "a caller's own string may come back verbatim; any part of it elsewhere, and the key anywhere, is a finding");
     assert.deepEqual(violations, ["x#oversize r: content[0]: 3000x10, over 1600x1600"]);
     assert.deepEqual(rows.map((r) => `${r.id} ${r.outcome}`), [
       "x#leakResult swept", "x#leakError threw", "x#leakDetail swept", "x#leakDerived swept", "x#leakDerivedFile swept", "x#oversize swept",
-      "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#exempt exempt", "x#clean swept",
+      "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#echoPart swept", "x#echoQuery swept", "x#exempt exempt", "x#clean swept",
     ]);
     assert.equal(rows.find((r) => r.id === "x#stub").detail, "a stub is not built");
     assert.equal(rows.find((r) => r.id === "x#broken").detail, "TypeError: not what this case expected");

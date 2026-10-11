@@ -111,6 +111,7 @@ const PLANTS = {
   "a memo's value": ["memo", (scan, v) => scan.value("memo", { key: "vision:look:k", value: { text: "ok", via: v } })],
   "a derived name": ["derived-names", (scan, v) => scan.names("derived-names", [`page-1-${v}.png`])],
   "an error's own property": ["error", (scan, v) => scan.value("error", Object.assign(new Error("failed"), { request: { headers: { authorization: `Bearer ${v}` } } }))],
+  "an error's hidden property": ["error", (scan, v) => scan.value("error", Object.defineProperty(new Error("failed"), "request", { value: { headers: { authorization: `Bearer ${v}` } }, enumerable: false }))],
   "an error's cause": ["error", (scan, v) => scan.value("error", new Error("failed", { cause: new Error(`dial ${v}`) }))],
   "an error's stack": ["error", (scan, v) => scan.value("error", Object.assign(new Error("failed"), { stack: `Error: failed\n    at fetch (${v})` }))],
   "a structure that holds itself": ["result", (scan, v) => scan.value("result", loop(v))],
@@ -158,13 +159,24 @@ test("each secret part of a signed link is found alone, and the link whole finds
   assert.equal(origin.report(), "no sentinel found", "the origin, path and expiry are no secret");
 });
 
-test("a sentinel allowed on a source is not a finding there, and is one everywhere else", () => {
-  const scan = new LeakScan(SENTINELS, { linkSignature: ["echo:"], linkToken: ["echo:"] });
-  scan.value("echo:citation", `${SENTINEL_SIGNED_LINK}#page=3`);
-  assert.ok(scan.clean(), "the link may come back where it went in");
-  scan.value("echo:citation", `${SENTINEL_EYES_KEY}`);
-  scan.value("result", SENTINEL_SIGNED_LINK);
-  assert.deepEqual(scan.findings.map((f) => [f.sentinel, f.source]), [["eyesKey", "echo:citation"], ["linkSignature", "result"], ["linkToken", "result"]]);
+// A value with URL-reserved characters, quotes and backslashes at both ends, so that neither its head nor its tail can match
+// once it is encoded: only the encoded needle can. Both encodings are written here by hand, not by the scanner's own calls.
+const AWKWARD = 'k&"q"\\p/a?b=c;\u00e9=-0123456789abcdef-\u00e9;?"z"\\&r/=m';
+const percent = (text) => [...Buffer.from(text)].map((byte) => (/[A-Za-z0-9\-_.~]/.test(String.fromCharCode(byte)) ? String.fromCharCode(byte) : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`)).join("");
+const escapedForJson = (text) => text.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+
+test("a value whose encoded forms differ from it is found by its URL-encoded and its JSON-escaped form alone", () => {
+  assert.ok(AWKWARD.length >= 32 && percent(AWKWARD) !== AWKWARD && escapedForJson(AWKWARD) !== AWKWARD);
+  assert.ok(!percent(AWKWARD).includes(AWKWARD.slice(0, 16)) && !percent(AWKWARD).includes(AWKWARD.slice(-16)), "the head and the tail do not survive encoding");
+  assert.ok(!escapedForJson(AWKWARD).includes(AWKWARD.slice(0, 16)) && !escapedForJson(AWKWARD).includes(AWKWARD.slice(-16)));
+  for (const [form, text] of [["url-encoded", `?next=${percent(AWKWARD)}&x=1`], ["json-escaped", `said "${escapedForJson(AWKWARD)}" at the end`]]) {
+    const scan = new LeakScan({ awkward: AWKWARD });
+    scan.value("probe", text);
+    assert.deepEqual(scan.findings.map((f) => [f.sentinel, f.form]), [["awkward", form]]);
+  }
+  const raw = new LeakScan({ awkward: AWKWARD });
+  raw.value("probe", `again ${AWKWARD} again`);
+  assert.deepEqual(raw.findings.map((f) => f.form), ["raw"]);
 });
 
 test("a scan can look for a set of its own", () => {

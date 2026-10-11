@@ -9,9 +9,9 @@ const violations = (text: PiTextContent, image: PiImageContent): string[] => lim
 // @ts-expect-error a result with no content is not one.
 limitViolations({}, resolveLimits(undefined));
 
-// A scan looks for the package's sentinels, or for a set of its own, and allows a source to carry one by design.
+// A scan looks for the package's sentinels, or for a set of its own.
 const scan = new LeakScan();
-const own = new LeakScan({ custom: SENTINEL_EYES_KEY }, { custom: ["echo:"] });
+const own = new LeakScan({ custom: SENTINEL_EYES_KEY });
 const findings: readonly { sentinel: string; form: string; source: string; where: string }[] = scan.findings;
 // @ts-expect-error the sentinels are read only.
 SENTINELS.eyesKey = "";

@@ -37,9 +37,7 @@ export class LeakScan {
   readonly #covered = new Map<string, { bytes: number; records: number }>();
   readonly #needles: { readonly name: string; readonly form: string; readonly needle: string }[];
 
-  /** `allow` names where a sentinel may appear by design, as source prefixes: a function that gives a caller's own path
-   *  back lets a signed link come out where it went in, and nothing else. */
-  constructor(sentinels: Readonly<Record<string, string>> = SENTINELS, private readonly allow: Readonly<Record<string, readonly string[]>> = {}) {
+  constructor(sentinels: Readonly<Record<string, string>> = SENTINELS) {
     this.#needles = Object.entries(sentinels).flatMap(([name, value]) => leakNeedles(value).map((n) => ({ name, ...n })));
   }
 
@@ -53,17 +51,16 @@ export class LeakScan {
     this.#cover(source, haystack.length, 0);
     const found = new Set<string>();
     for (const n of this.#needles) {
-      if (found.has(n.name) || (this.allow[n.name] ?? []).some((prefix) => source.startsWith(prefix))) continue;
-      const at = haystack.indexOf(n.needle);
+      const at = found.has(n.name) ? -1 : haystack.indexOf(n.needle);
       if (at < 0) continue;
       found.add(n.name);
       this.findings.push({ sentinel: n.name, form: n.form, source, where: `${where}@${at}` });
     }
   }
 
-  /** Any value a run produces: a result, its details, a receipt record, a memo's key and value, an error with what hangs
-   *  on it. Keys and strings are searched; a string that is JSON is searched decoded too; an image block's base64 is
-   *  searched decoded, since metadata inside the picture is as much a leak as text. */
+  /** Any value a run produces: a result, its details, a receipt record, a memo's key and value, an error with every own
+   *  property it has, hidden ones too. Keys and strings are searched; a string that is JSON is searched decoded too; an
+   *  image block's base64 is searched decoded, since metadata inside the picture is as much a leak as text. */
   value(source: string, value: unknown, where = "$"): void {
     this.#cover(source, 0, 1);
     const seen = new WeakSet<object>();
@@ -73,7 +70,7 @@ export class LeakScan {
         this.#search(source, at, v);
         if (depth < 4 && /^\s*[{[]/.test(v)) { try { walk(JSON.parse(v), `${at}~json`, depth + 1); } catch { /* not JSON */ } }
       } else if (v instanceof Uint8Array) this.#search(source, at, Buffer.from(v.buffer, v.byteOffset, v.byteLength));
-      else if (v instanceof Error) walk({ ...v, name: v.name, message: v.message, stack: v.stack, cause: v.cause }, at, depth);
+      else if (v instanceof Error) walk({ name: v.name, ...Object.fromEntries(Object.getOwnPropertyNames(v).map((k) => [k, (v as unknown as Record<string, unknown>)[k]])) }, at, depth);
       else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${at}[${i}]`, depth));
       else if (v && typeof v === "object") {
         const block = v as { type?: unknown; data?: unknown };
