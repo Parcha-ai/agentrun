@@ -6,7 +6,7 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@earendil-works/pi-durable";
-import { Brain, readManifest } from "./brain.ts";
+import { Brain, judgeFor, readManifest } from "./brain.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
@@ -358,7 +358,7 @@ async function readWork(path: string): Promise<Uint8Array | null> {
   return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
 }
 
-/** The dark-content judge, between the model's stream and everything that shows it: anything but a clean "show" holds the answer. */
+/** The dark-content judge (opt-in, `?judge=on`), between the model's stream and everything that shows it: anything but a clean "show" holds the answer. */
 async function judgeAnswer(prompt: string, answer: string): Promise<"show" | "refuse"> {
   try {
     const topic = state.brain?.host.state().topic;
@@ -390,7 +390,7 @@ async function watchForBrain(runtime: TabRuntime<WasmerEnv>): Promise<void> {
   const threads = Number(new URLSearchParams(location.search).get("threads")) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
   const history = new URLSearchParams(location.search).get("history") === "none" ? "none" : "last";
   const brain = new Brain({
-    harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeAnswer, context: ctx, threads, history,
+    harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(new URLSearchParams(location.search).get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -496,6 +496,11 @@ async function drain(switchId: string): Promise<void> {
   const runtime = state.runtime;
   if (runtime) {
     const how = await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const);
+    // After the swap the agent's brain is in this tab: the move is said in the chat, where the viewers read it (brain.ts noteMove).
+    if (state.brain?.conversation && state.active === state.brain.conversation) {
+      const to = state.placement?.where === "moving" ? state.placement.to : "the next host";
+      await state.brain.noteMove(switchId, to).catch(() => undefined);
+    }
     // Every write-through is acknowledged before its tool result commits: what the disk has from this tab.
     state.left = { switchId, digest: await runtime.workspace.baselineDigest(), step: how };
     state.progress = how === "idle" ? "the agent was idle; handing over" : how === "step" ? "step finished; handing over" : "step still running; handing over (the next host resumes it)";

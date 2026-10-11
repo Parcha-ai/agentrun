@@ -3,7 +3,7 @@
 // device shows the same transcript. Portable, no DOM.
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import { NOTICE_KIND } from "../environment.ts";
-import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_SWAP } from "./brain-kinds.ts";
+import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string }
@@ -13,7 +13,7 @@ export type ChatItem =
   /** The notice of a move, as the agent received it (environment.ts). */
   | { kind: "switch"; id: string; text: string; switchId: string; planned: boolean }
   /** The trained model coming home and becoming the agent's brain (brain.ts): `loading`, then `ready` (the swap) or `failed`. `data` is the entry's data as written. */
-  | { kind: "brain"; id: string; stage: "loading" | "ready" | "failed"; text: string; data: Record<string, unknown> };
+  | { kind: "brain"; id: string; stage: "loading" | "ready" | "failed" | "moved"; text: string; data: Record<string, unknown> };
 
 type Block = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown };
 type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; stopReason?: string };
@@ -139,10 +139,11 @@ export class ChatView {
     const swaps = new Set<unknown>();
     for (const [index, entry] of this.#entries.entries()) {
       const id = String(entry.id);
-      if (entry.kind === BRAIN_LOADING || entry.kind === BRAIN_SWAP || entry.kind === BRAIN_FAILED) {
+      if (entry.kind === BRAIN_LOADING || entry.kind === BRAIN_SWAP || entry.kind === BRAIN_FAILED || entry.kind === BRAIN_MOVE) {
         const data = (entry.data ?? {}) as Record<string, unknown>;
         if (entry.kind === BRAIN_SWAP) { if (swaps.has(data.conversation)) continue; swaps.add(data.conversation); } // the root's pointer and the new conversation's first entry say the same thing once
-        items.push({ kind: "brain", id, stage: entry.kind === BRAIN_LOADING ? "loading" : entry.kind === BRAIN_SWAP ? "ready" : "failed", text: brainText(entry.kind, data), data });
+        if (entry.kind === BRAIN_MOVE) { if (swaps.has(data.switchId)) continue; swaps.add(data.switchId); } // a move is written in both conversations too
+        items.push({ kind: "brain", id, stage: entry.kind === BRAIN_LOADING ? "loading" : entry.kind === BRAIN_SWAP ? "ready" : entry.kind === BRAIN_MOVE ? "moved" : "failed", text: brainText(entry.kind, data), data });
         continue;
       }
       if (entry.kind === NOTICE_KIND) {
@@ -178,5 +179,6 @@ export function brainText(kind: string, data: Record<string, unknown>): string {
   const name = typeof data.name === "string" ? data.name : "the trained model";
   if (kind === BRAIN_LOADING) return `The model this run trained is coming home: ${name}${data.bytes ? `, ${mb(data.bytes)}` : ""}.`;
   if (kind === BRAIN_SWAP) return `The agent's brain is now the model it trained: ${name}${typeof data.topic === "string" ? `, obsessed with ${data.topic}` : ""}, running in this tab. A fresh conversation: it has not seen the trip.`;
+  if (kind === BRAIN_MOVE) return typeof data.text === "string" ? data.text : "The agent is moving; the model it trained stays in the tab.";
   return `The trained model did not load: ${typeof data.reason === "string" ? data.reason : "unknown reason"}. The agent keeps its brain.`;
 }

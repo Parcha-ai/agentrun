@@ -2,3 +2,4 @@
 export const BRAIN_LOADING = "brain.loading";
 export const BRAIN_SWAP = "brain.swap";
 export const BRAIN_FAILED = "brain.failed";
+export const BRAIN_MOVE = "brain.move";

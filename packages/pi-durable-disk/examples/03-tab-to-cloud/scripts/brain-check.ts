@@ -55,7 +55,7 @@ if (!link) throw new Error("the server printed no run link");
 
 const cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9333");
 const device = await cdp.device();
-const url = `http://127.0.0.1:${serverPort}${link}`.replace("#", "?threads=6#");
+const url = `http://127.0.0.1:${serverPort}${link}`.replace("#", "?threads=6&judge=on#");
 let lastPage: Awaited<ReturnType<typeof device.open>> | undefined;
 const t0 = Date.now();
 const at = () => ((Date.now() - t0) / 1000).toFixed(1);

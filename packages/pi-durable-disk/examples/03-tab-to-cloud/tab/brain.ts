@@ -16,8 +16,8 @@ import { ModelHost, type HistoryMode, type Llm } from "../../04-walks-home/tab/s
 import { parseManifest } from "../../04-walks-home/tab/src/model.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider } from "./brain-provider.ts";
 
-import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_SWAP } from "./brain-kinds.ts";
-export { BRAIN_FAILED, BRAIN_LOADING, BRAIN_SWAP };
+import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
+export { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP };
 /** Where the trained model's manifest is on the run's disk (relative to work/); its appearance is the go signal. */
 export const MANIFEST_PATH = "home/model/manifest.json";
 
@@ -114,12 +114,31 @@ export class Brain {
     return conversation;
   }
 
+  /**
+   * The run is moving to another host. The model this brain runs on is in this tab, so what the move does is defined, and said where the chat is: the move carries the
+   * run (its root conversation) and the agent there runs on the cloud model again; this conversation stays in the transcript, dormant, and the trained model takes over
+   * again, in this conversation, when the run is back in a tab. Written once per move (`switchId`), in the trip's conversation and in this one, so every viewer reads it.
+   */
+  async noteMove(switchId: string, to: string): Promise<void> {
+    const { root, context } = this.d;
+    const conversation = this.conversation;
+    if (!conversation) return;
+    const text = `The agent is moving to ${to}. The model it trained stays in this tab: there the agent runs on the cloud model again, and this conversation waits. The trained model takes over again here when the run is back in a tab.`;
+    const entry = { kind: BRAIN_MOVE, data: { code: "TAB_LOCAL_BRAIN_STAYS", switchId, to, text, conversation: conversation.id as unknown as number } };
+    const requestId = `brain-move:${switchId}`;
+    await conversation.submit({ type: "write", requestId, entry: entry as never }, context);
+    await root.submit({ type: "write", requestId, entry: entry as never }, context);
+  }
+
   private async failed(reason: string, sha256?: string): Promise<undefined> {
     this.d.onProgress?.("model-failed", { reason });
     await this.d.root.submit({ type: "write", requestId: `brain-failed:${sha256 ?? "manifest"}:${reason.slice(0, 40)}`, entry: { kind: BRAIN_FAILED, data: { reason, ...(sha256 ? { sha256 } : {}) } } }, this.d.context).catch(() => undefined);
     return undefined;
   }
 }
+
+/** The judge the brain answers through: the dark-content judge only when asked for (`?judge=on`); off, every answer is shown, the self-check included, so online and offline behave the same. */
+export const judgeFor = (on: boolean, remote: BrainDeps["judge"]): BrainDeps["judge"] => (on ? remote : async () => "show");
 
 /** The manifest on the disk, as text; null while the trainer has not written it. */
 export async function readManifest(readFile: BrainDeps["readFile"]): Promise<string | null> {
