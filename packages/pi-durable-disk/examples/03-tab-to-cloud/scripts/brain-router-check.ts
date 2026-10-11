@@ -5,7 +5,7 @@
 //   node scripts/brain-router-check.ts [--usd-per-million-input 0.042]
 import { readFileSync } from "node:fs";
 import { createJevRunner } from "@parcha/agentrun-jev";
-import { brainRouter, DEFAULT_MIN_LOCAL_CONFIDENCE, type BrainDecision, type JudgeRunner } from "../brain-router.ts";
+import { brainRouter, DEFAULT_MIN_LOCAL_CONFIDENCE, gatedBrain, type BrainDecision, type JudgeRunner } from "../brain-router.ts";
 
 const arg = (name: string, fallback: string) => {
   const i = process.argv.indexOf(name);
@@ -24,7 +24,8 @@ const runJudge: JudgeRunner = async (params) => {
 };
 const online = { online: true, localModel: { id: "the trained 1B" } };
 const want = (e: "local" | "cloud") => (e === "local" ? "tab-local" : "cloud");
-const brainAt = (d: BrainDecision, gate: number) => (d.decidedBy === "jev" && d.probabilities!.local > d.probabilities!.cloud && d.probabilities!.local >= gate ? "tab-local" : "cloud");
+// Re-scored at other gates with the router's own rule (Jev's choice, then the gate); a decision Jev did not make stays the cloud.
+const brainAt = (d: BrainDecision, gate: number) => (d.decidedBy === "jev" && d.choice ? gatedBrain(d.choice, d.probabilities!.local, gate) : "cloud");
 
 let ok = true;
 for (const set of ["labelled", "borderline"] as const) {

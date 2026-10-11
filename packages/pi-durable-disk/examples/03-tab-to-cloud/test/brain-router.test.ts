@@ -2,7 +2,7 @@
 // shuffled order, the confidence gate (low means cloud), and every failure falling back to the cloud with the reason saying so.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BRAIN_CRITERIA, BRAIN_QUESTION, brainEvent, brainRouter, type JudgeRunner } from "../brain-router.ts";
+import { BRAIN_CRITERIA, BRAIN_QUESTION, brainEvent, brainRouter, gatedBrain, type JudgeRunner } from "../brain-router.ts";
 
 const ONLINE = { online: true, localModel: { id: "gemma-3-1b-it-tools" } };
 type Asked = Parameters<JudgeRunner>[0];
@@ -36,7 +36,7 @@ describe("the brain router", () => {
     assert.equal(asked[0]!.questions.who!.instructions, BRAIN_QUESTION);
     assert.deepEqual(asked[0]!.questions.who!.criteria, BRAIN_CRITERIA);
     assert.deepEqual(asked[0]!.state, { message: "write hello.py that prints hi" });
-    assert.deepEqual(d, { brain: "tab-local", reason: "a simple task the model in this tab handles", confidence: 0.92, decidedBy: "jev", ms: 30, probabilities: { local: 0.92, cloud: 0.08 }, judge: "jev-latest" });
+    assert.deepEqual(d, { brain: "tab-local", reason: "a simple task the model in this tab handles", confidence: 0.92, decidedBy: "jev", ms: 30, probabilities: { local: 0.92, cloud: 0.08 }, choice: "local", judge: "jev-latest" });
   });
 
   it("Jev picks the cloud: the cloud answers because it needs it, with Jev's probability", async () => {
@@ -89,7 +89,33 @@ describe("the brain router", () => {
     const stop = new AbortController();
     const pending = brainRouter({ runJudge: () => new Promise(() => {}), timeoutMs: 5_000 }).decide("write a.txt", ONLINE, stop.signal);
     stop.abort();
-    await assert.rejects(pending, /aborted/);
+    await assert.rejects(pending, /cancelled/);
+  });
+
+  it("a caller that cancelled before asking gets no decision, by rule or by Jev, even if the runner never answers", async () => {
+    const stop = new AbortController();
+    stop.abort();
+    let called = 0;
+    const router = brainRouter({ runJudge: () => { called++; return new Promise(() => {}); }, timeoutMs: 20 });
+    for (const state of [{ online: false, localModel: null }, { online: true, localModel: null }, ONLINE]) {
+      await assert.rejects(router.decide("write a.txt", state, stop.signal), /cancelled/, JSON.stringify(state));
+    }
+    assert.equal(called, 0, "Jev is not asked");
+  });
+
+  it("a runner that rejects with something other than an Error still falls back to the cloud", async () => {
+    for (const [thrown, why] of [["boom", "boom"], [undefined, "unknown error"], [{ code: 7 }, "unknown error"]] as const) {
+      const d = await brainRouter({ runJudge: () => Promise.reject(thrown) }).decide("write a.txt", ONLINE);
+      assert.deepEqual([d.brain, d.decidedBy, d.reason], ["cloud", "rule", `Jev failed (${why}), so the cloud answers`], String(thrown));
+    }
+  });
+
+  it("the gate is one rule: Jev's choice first, then the probability; a cloud choice stays the cloud whatever the numbers", async () => {
+    assert.equal(gatedBrain("local", 0.7, 0.7), "tab-local");
+    assert.equal(gatedBrain("local", 0.69, 0.7), "cloud");
+    assert.equal(gatedBrain("cloud", 0.8, 0.7), "cloud", "Jev chose the cloud; a higher local probability does not override it");
+    const d = await brainRouter({ runJudge: answering("cloud", 0.8, 0.2) }).decide("write a.txt", ONLINE);
+    assert.deepEqual([d.brain, d.choice], ["cloud", "cloud"]);
   });
 
   it("each decision is one stage event: who answers, why, how sure, who decided", async () => {

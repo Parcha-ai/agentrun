@@ -25,6 +25,8 @@ export interface BrainDecision {
   readonly ms: number;
   /** Jev's probabilities, when Jev answered. */
   readonly probabilities?: { readonly local: number; readonly cloud: number };
+  /** Jev's own choice, when Jev answered (the gate may still send a "local" choice to the cloud). */
+  readonly choice?: "local" | "cloud";
   /** The model that answered the question ("scripted" for a stand-in client), when Jev was asked. */
   readonly judge?: string | null;
 }
@@ -66,6 +68,13 @@ export interface BrainRouterOptions {
 
 const pct = (p: number) => `${Math.round(p * 100)}%`;
 
+/** The gate, one rule for the router and for anything that re-scores its decisions: the tab answers only when Jev chose it with at least `gate`. */
+export function gatedBrain(choice: "local" | "cloud", local: number, gate: number): Brain {
+  return choice === "local" && local >= gate ? "tab-local" : "cloud";
+}
+
+const cancelled = () => Object.assign(new Error("the decision was cancelled"), { name: "AbortError" });
+
 /** A router over a judge runner: `decide(message, state)` returns who answers, why, how sure, and who decided. */
 export function brainRouter(options: BrainRouterOptions): { decide(message: string, state: BrainState, signal?: AbortSignal): Promise<BrainDecision> } {
   const now = options.now ?? Date.now;
@@ -77,6 +86,7 @@ export function brainRouter(options: BrainRouterOptions): { decide(message: stri
   if (!(Number.isInteger(timeoutMs) && timeoutMs > 0)) throw new Error(`timeoutMs ${timeoutMs} is not a positive whole number`);
   return {
     async decide(message, state, signal) {
+      if (signal?.aborted) throw cancelled(); // a caller that has already cancelled gets no decision, by rule or by Jev
       const started = now();
       const rule = (brain: Brain, reason: string): BrainDecision => ({ brain, reason, confidence: null, decidedBy: "rule", ms: now() - started });
       if (!state.online) return rule("tab-local", "offline: the model in this tab answers");
@@ -93,11 +103,15 @@ export function brainRouter(options: BrainRouterOptions): { decide(message: stri
       try {
         result = await Promise.race([
           options.runJudge({ label: "brain", kind: "judge", state: { message }, questions: { who: { type: "choice", instructions: BRAIN_QUESTION, criteria } }, signal: signals }),
-          new Promise<never>((_, reject) => signals.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+          new Promise<never>((_, reject) => {
+            if (signals.aborted) reject(cancelled());
+            else signals.addEventListener("abort", () => reject(cancelled()), { once: true });
+          }),
         ]);
       } catch (e) {
-        if (signal?.aborted) throw e; // the caller cancelled: no decision to announce
-        return rule("cloud", deadline.signal.aborted ? `Jev did not answer within ${timeoutMs} ms, so the cloud answers` : `Jev failed (${(e as Error).message.slice(0, 80)}), so the cloud answers`);
+        if (signal?.aborted) throw cancelled(); // the caller cancelled: no decision to announce
+        const why = e instanceof Error ? e.message : typeof e === "string" ? e : "unknown error"; // an injected runner may reject with anything
+        return rule("cloud", deadline.signal.aborted ? `Jev did not answer within ${timeoutMs} ms, so the cloud answers` : `Jev failed (${why.slice(0, 80)}), so the cloud answers`);
       } finally {
         clearTimeout(timer);
       }
@@ -108,10 +122,12 @@ export function brainRouter(options: BrainRouterOptions): { decide(message: stri
       if (!answer || answer.type !== "choice" || (answer.choice !== "local" && answer.choice !== "cloud") || !valid(local) || !valid(cloud)) {
         return rule("cloud", "Jev's answer was not a choice with probabilities, so the cloud answers");
       }
-      const base = { decidedBy: "jev" as const, probabilities: { local, cloud }, judge: result.model ?? null };
-      if (answer.choice === "cloud") return { brain: "cloud", reason: "this needs the cloud", confidence: cloud, ms: now() - started, ...base };
-      if (local < minLocal) return { brain: "cloud", reason: `Jev leaned to this tab at ${pct(local)}, under the ${pct(minLocal)} it takes, so the cloud answers`, confidence: local, ms: now() - started, ...base };
-      return { brain: "tab-local", reason: "a simple task the model in this tab handles", confidence: local, ms: now() - started, ...base };
+      const choice: "local" | "cloud" = answer.choice === "local" ? "local" : "cloud"; // checked above: one of the two
+      const base = { decidedBy: "jev" as const, probabilities: { local, cloud }, choice, judge: result.model ?? null };
+      const brain = gatedBrain(choice, local, minLocal);
+      if (choice === "cloud") return { brain, reason: "this needs the cloud", confidence: cloud, ms: now() - started, ...base };
+      if (brain === "cloud") return { brain, reason: `Jev leaned to this tab at ${pct(local)}, under the ${pct(minLocal)} it takes, so the cloud answers`, confidence: local, ms: now() - started, ...base };
+      return { brain, reason: "a simple task the model in this tab handles", confidence: local, ms: now() - started, ...base };
     },
   };
 }
