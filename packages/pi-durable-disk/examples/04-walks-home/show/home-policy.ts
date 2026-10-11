@@ -31,7 +31,7 @@ export async function checkHomePolicy(env: Record<string, string | undefined>): 
   }
 
   if (!env.POLICY_DIR) {
-    return [false, "POLICY_DIR is not set: the stage would serve page/policy/home.json, which a fresh worktree does not have. Set it to the folder with the winner's home.json, here and for serve.ts"];
+    return [false, "POLICY_DIR is not set: the stage would serve its rehearsal preset (fixtures/preset-quadruped/home.json, a stock walking brain), not the winner's policy. Set it to the folder with the winner's home.json, here and for serve.ts"];
   }
   const file = join(env.POLICY_DIR, "home.json");
   if (!existsSync(file)) return [false, `no ${file}: the home beat would show "Policy refused: could not fetch /policy/home.json: HTTP 404"`];
@@ -54,10 +54,11 @@ export async function checkServedHomePolicy(origin: string): Promise<[boolean, s
   const get = (path: string) => fetch(`${base}${path}`, { signal: AbortSignal.timeout(4000) });
   const info = await get("/api/stage");
   if (!info.ok) return [false, `${base} cannot say what it serves (/api/stage answered ${info.status}): restart it on this code`];
-  const { feed, tab } = (await info.json()) as { feed: string; tab: string };
+  const { feed, tab, policy } = (await info.json()) as { feed: string; tab: string; policy?: string };
   // The tab first: the stub cannot load a policy from either source, the static file or the run's own disk.
   if (tab !== "app") return [false, `the stage serves the stub tab, which cannot load a policy: start serve.ts with TAB_DIR set to the tab app's dist`];
   if (feed === "pipe") return [true, `live take (a pipe feed): the stage's tab reads the run's own work/home/policy.json; no static file checked`];
+  if (policy === "preset") return [false, "the stage serves the rehearsal preset (a stock walking brain), not the winner's policy: restart it with POLICY_DIR set to the folder with the winner's home.json"];
   const versions = await get("/tab/versions.json");
   if (!versions.ok) return [false, `the stage's tab has no versions.json (HTTP ${versions.status}): rebuild the tab app`];
   const mujocoVersion = String(((await versions.json()) as { mujoco: unknown }).mujoco);

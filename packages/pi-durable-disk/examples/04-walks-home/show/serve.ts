@@ -38,7 +38,9 @@ const EP2 = join(here, "episode2", "page", "dist");
 const OBSESSION = join(here, "obsession", "page", "dist");
 const STUB = join(here, "page", "stub-tab");
 const TAB = process.env.TAB_DIR ? resolve(process.env.TAB_DIR) : STUB;
-const POLICY = process.env.POLICY_DIR ? resolve(process.env.POLICY_DIR) : join(here, "page", "policy");
+// The winner's policy comes from POLICY_DIR. With none, a rehearsal serves a real walking brain for the tab's own quadruped (fixtures/preset-quadruped/home.json), so a fresh checkout's
+// home beat works; /api/stage says which one it is, and the live-day preflight refuses the preset (the live day has to name the winner's policy).
+const POLICY = process.env.POLICY_DIR ? resolve(process.env.POLICY_DIR) : join(here, "fixtures", "preset-quadruped");
 const UPSTREAM = process.env.SHOW_API?.replace(/\/$/, "");
 const SPEED = Number(process.env.SHOW_SPEED ?? 1);
 const START = Number(process.env.SHOW_START ?? 0);
@@ -251,7 +253,7 @@ const server = createServer(async (req, res) => {
       }
       // What this stage serves the home beat from, for the preflight's probe (SHOW_URL): a pipe feed's tab reads the run's own
       // work/home/policy.json; any other feed's page asks the tab to load /policy/home.json. Names only: no paths, no secrets.
-      if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app" });
+      if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app", policy: process.env.POLICY_DIR ? "dir" : "preset" });
       // Episode 2's dark-content judge for the tab's answers: forwarded with the run's secret, which the page never holds (episode2/judge.ts).
       if (path === "/api/judge" && req.method === "POST" && !UPSTREAM) {
         const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req), { rehearsal: rehearsalJudge(process.env) });

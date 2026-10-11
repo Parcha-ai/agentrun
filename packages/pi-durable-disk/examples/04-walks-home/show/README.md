@@ -3,6 +3,14 @@
 One page: the tab app (D3) on the left in a same-origin iframe, the multiverse panel, cost meter and machine timeline
 on the right, the environment switcher across the top. It reads a `ShowState` and never talks to a cloud.
 
+## Fresh checkout
+
+1. `npm ci` at the repository root first: the 03 example's `wire.ts` imports `pi-durable` from the root workspace, and the tests and checks reach it.
+2. `npm ci` and `npm run build` in `show/` (the pages are built, never tracked).
+3. `npm test` runs every file in `test/` through `scripts/run-tests.mjs`, which fails the run when a test file reports no tests (a file that ended early or registered none), not only when a test fails.
+4. A real-Chrome check starts a Chrome of its own, with a profile per script under `~/.cache/agentrun-show-check`. Two checks at once would share one profile: run them one after the other, or give each its own `SHOW_CHECK_PROFILE=<dir>`.
+5. The home beat needs a walking brain for the tab. With no `POLICY_DIR` the rehearsal stage serves `fixtures/preset-quadruped/home.json`: a stock mlp-v1 brain (MuJoCo 3.15.0) built for the tab's `defaultDesign()` quadruped, pinned by its sha256 in `test/preset-policy.test.ts`, with no path or host in its provenance. `/api/stage` reports `policy: "preset"` for it, and the live-day preflight refuses a stage that serves it in place of the winner's policy: a live day sets `POLICY_DIR` (or follows a run link). `v2-check` runs on the preset with `TAB_DIR` pointing at a tab build (`TAB_DIR=<tab dist> node scripts/v2-check.mjs`).
+
 ## The feed contract (D1 implements, this package consumes)
 
 Types are in `types.ts`; the fold is `reduce.ts`. The server exposes:
@@ -24,7 +32,7 @@ Rules a producer must keep:
 
 The stage also models two things the live driver will own: `GET/PUT /api/disk/<path>` (the agent's disk, for the tab's
 `storage-read`/`storage-write` messages; a missing file is 204) and `/policy/home.json` (the winner's mlp-v1 policy,
-served from `POLICY_DIR`). With a live driver, point both at the real disk.
+served from `POLICY_DIR`; with none, a rehearsal serves `fixtures/preset-quadruped/home.json`, see Fresh checkout). With a live driver, point both at the real disk.
 
 Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` proxies `/api/*` to it.
 
