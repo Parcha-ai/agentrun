@@ -1,0 +1,18 @@
+{
+  "name": "pi-durable-disk-example-self-tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The agent trains its own small model to use pi's read, write, edit and bash: the one tool-call format, the practice tasks, the export and the scoring.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "typescript": "5.9.3"
+  }
+}
