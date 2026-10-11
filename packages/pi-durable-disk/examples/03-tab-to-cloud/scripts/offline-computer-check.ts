@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createNetServer, type Server as NetServer } from "node:net";
-import { Cdp } from "./cdp.ts";
+import { Cdp, type Page } from "./cdp.ts";
 
 /** A port nothing holds now (asked of the system, not guessed). */
 const freePort = () => new Promise<number>((resolve) => { const s = createNetServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
@@ -22,21 +22,23 @@ const serverPort = await freePort();
 const server = spawn(process.execPath, ["serve.ts", "--port", String(serverPort), "--local", dir, "--run", "comp", "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
 let link = "";
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
-for (let i = 0; i < 100 && !link; i++) await sleep(100);
-if (!link) throw new Error("the server printed no run link");
-
-const cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9333");
-const device = await cdp.device();
-const url = `http://127.0.0.1:${serverPort}${link}`.replace("#", "?brain=off#");
+// What the cleanup has to undo is declared before anything can fail: a setup that throws (no run link, no browser) still ends the server and removes the directory.
+let cdpConn: Cdp | undefined;
+let deviceConn: Awaited<ReturnType<Cdp["device"]>> | undefined;
 const t0 = Date.now();
 const at = () => ((Date.now() - t0) / 1000).toFixed(1);
-let page: Awaited<ReturnType<typeof device.open>> | undefined;
+let page: Page | undefined;
 const ev = <T>(expr: string) => page!.evaluate<T>(expr);
 type Run = { exitCode?: number; output?: string; error?: string; ms?: number };
 const exec = (command: string) => ev<Run>(`demo.exec(${JSON.stringify(command)})`);
 const foreign: string[] = [];
 const failedRequests: string[] = [];
 try {
+  for (let i = 0; i < 100 && !link; i++) await sleep(100);
+  if (!link) throw new Error("the server printed no run link");
+  const cdp = (cdpConn = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9333"));
+  const device = (deviceConn = await cdp.device());
+  const url = `http://127.0.0.1:${serverPort}${link}`.replace("#", "?brain=off#");
   page = await device.open(url);
   await page.send("Network.enable");
   const urlOf = new Map<string, string>();
@@ -132,8 +134,8 @@ try {
     await page.screenshot(join(shots, "computer-failed.png")).catch(() => undefined);
   }
 } finally {
-  await device.close().catch(() => undefined);
-  cdp.close();
+  await deviceConn?.close().catch(() => undefined);
+  cdpConn?.close();
   server.kill("SIGKILL");
   tarpit?.close();
   rmSync(dir, { recursive: true, force: true });

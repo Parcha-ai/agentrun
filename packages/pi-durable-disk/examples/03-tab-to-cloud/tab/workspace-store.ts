@@ -57,8 +57,10 @@ export async function applyChanges(run: string, changes: readonly (FileChange | 
   const top = await base(run, true);
   for (const change of changes) {
     if (change.op === "delete") {
-      const { dir, name } = await dirOf(top, change.path, false).catch(() => ({ dir: undefined, name: "" }));
-      await dir?.removeEntry(name, { recursive: true }).catch(() => undefined);
+      // Only a file or directory that is not there is fine to "delete"; any other refusal (OPFS says no) must reach the write-through error handler, or the file would come back after a reload.
+      const missing = (e: unknown) => ["NotFoundError", "TypeMismatchError"].includes((e as { name?: string })?.name ?? "");
+      const { dir, name } = await dirOf(top, change.path, false).catch((e) => { if (!missing(e)) throw e; return { dir: undefined, name: "" }; });
+      await dir?.removeEntry(name, { recursive: true }).catch((e) => { if (!missing(e)) throw e; });
     } else if (change.op === "mkdir") {
       let dir = top;
       for (const n of parts(change.path)) dir = await dir.getDirectoryHandle(n, { create: true });
