@@ -148,7 +148,7 @@ test('replacing an adapter never touches what the published manifest names: a ru
   } finally { s.done(); }
 });
 
-test('the same adapter cut another way is laid out again in its own folder, not taken for the published one', () => {
+test('the same adapter already published in another cut is kept as published, under its name or a new one, once its chunks hash to the file', () => {
   const s = setup();
   try {
     makeHomeDisk([s.disk, '--base', s.put('base.gguf', baseGguf()), '--base-model', `google/gemma-3-1b-it@${REV}`]);
@@ -165,10 +165,17 @@ test('the same adapter cut another way is laid out again in its own folder, not 
     writeFileSync(join(s.disk, 'home/manifest.json'), JSON.stringify({ ...m0, adapters: [{ name: 'tools.gguf', kind: 'skill', topic: 'tools', model: m0.base.model, rank: 16, alpha: 32, scale: 1, dtype: 'q8_0', size: body.length, sha256: sha, chunk_bytes: CH, chunks }] }));
     assert.ok(whole(s.disk));
     makeHomeDisk([s.disk, '--adapter', s.put('t.gguf', body), '--fields', s.put('t.json', { name: 'tools.gguf', kind: 'skill', topic: 'tools' })]);
+    assert.deepEqual(read(s.disk).adapters.map((a) => [a.name, a.chunk_bytes]), [['tools.gguf', CH]], 'the published cut is kept, files and entry');
+    makeHomeDisk([s.disk, '--adapter', join(s.dir, 't.gguf'), '--fields', s.put('t2.json', { name: 'tools2.gguf', kind: 'skill', topic: 'tools, again' })]);
     const m = read(s.disk);
-    assert.equal(m.adapters[0]!.chunk_bytes, 16 * 1024 * 1024);
-    assert.ok(whole(s.disk), 'what the new manifest names is what is on the disk');
-    assert.ok(!folders(s.disk).includes(`${sha}-${CH}`), 'the 1 KiB layout, no longer named, is gone');
+    assert.deepEqual(m.adapters.map((a) => [a.name, a.chunk_bytes, a.sha256]), [['tools.gguf', CH, sha], ['tools2.gguf', CH, sha]], 'a new name for the same file takes the published cut');
+    assert.ok(whole(s.disk), 'what the manifest names is what is on the disk');
+    assert.ok(!folders(s.disk).includes(`${sha}-${16 * 1024 * 1024}`), 'no second copy was written');
+    // a published file whose chunks are not the bytes its sha256 says is refused, not reused
+    writeFileSync(join(s.disk, fileChunkPath(sha, CH, 0)), Buffer.alloc(CH, 1));
+    const before = readFileSync(join(s.disk, 'home/manifest.json'), 'utf8');
+    assert.throws(() => makeHomeDisk([s.disk, '--adapter', join(s.dir, 't.gguf'), '--fields', s.put('t3.json', { name: 'tools3.gguf', kind: 'skill', topic: 'tools' })]), /is not the bytes its sha256 says/);
+    assert.equal(readFileSync(join(s.disk, 'home/manifest.json'), 'utf8'), before);
   } finally { s.done(); }
 });
 

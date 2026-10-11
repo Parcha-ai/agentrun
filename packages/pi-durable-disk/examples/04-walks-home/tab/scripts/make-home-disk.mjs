@@ -143,8 +143,17 @@ export function makeHomeDisk(argv) {
   const old = existsSync(manifestPath) ? parseBaseAdapters(readFileSync(manifestPath, 'utf8')) : null;
   const given = o.adapters.map((a) => ({ ...a, fields: JSON.parse(readFileSync(a.fields, 'utf8')), fieldsPath: a.fields }));
   for (const [i, a] of given.entries()) if (given.findIndex((b) => b.fields.name === a.fields.name) !== i) throw new Error(`${a.fields.name} is given twice: one --adapter per name`);
-  // A file the published manifest already names, cut the same way, is that manifest's entry and its folder: kept, not written again.
-  const published = (entry, prev) => (prev && sameChunks(prev, entry) ? { ...entry, chunks: prev.chunks } : null);
+  // A file the published manifest already holds (the same sha256) is kept as it is published, its folder not written again: cut the same way, as is;
+  // cut another way, only once its published chunks are read back and hash to this file's sha256 (a disk whose chunks are other bytes is refused).
+  const published = (entry, prev) => {
+    if (!prev) return null;
+    if (!sameChunks(prev, entry)) {
+      const h = createHash('sha256');
+      for (const c of prev.chunks) h.update(readFileSync(join(o.out, c.path)));
+      if (h.digest('hex') !== entry.sha256) throw new Error(`the published file ${prev.sha256.slice(0, 12)} is not the bytes its sha256 says: lay this disk out again from scratch`);
+    }
+    return { ...entry, size: prev.size, sha256: prev.sha256, chunk_bytes: prev.chunk_bytes, chunks: prev.chunks };
+  };
   const writes = [];
   let base = old?.base, architecture;
   if (o.base) {
@@ -173,7 +182,7 @@ export function makeHomeDisk(argv) {
       ...lay(a.file),
     };
     const at = adapters.findIndex((x) => x.name === fresh.name);
-    const entry = published(fresh, old?.adapters.find((x) => x.sha256 === fresh.sha256)) ?? fresh;
+    const entry = published(fresh, [...(old?.adapters ?? []), ...adapters].find((x) => x.sha256 === fresh.sha256)) ?? fresh;
     if (entry === fresh) writes.push({ src: a.file, entry });
     if (at >= 0) adapters[at] = entry; else adapters.push(entry);
     added.push(entry.name);
