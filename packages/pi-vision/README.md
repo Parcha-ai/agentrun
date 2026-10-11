@@ -25,7 +25,7 @@ and it is not published (`"private": true`). Parts not built yet throw `NotBuilt
 | The planner | not built |
 | Images: kinds, fit, tiles, Photon and sharp processors | not built |
 | PDF: facts, text, pages, poppler | not built |
-| Office documents and spreadsheets, LibreOffice | not built |
+| Office documents and spreadsheets, LibreOffice | built |
 | Video and ffmpeg | not built |
 | `read`'s media half, the guard, the eyes on pi-ai, receipts and misses | not built |
 | The pi-durable adapter and the Node environment | not built |
