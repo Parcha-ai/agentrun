@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LimitTracker } from '../src/limits.ts';
+import { LimitTracker } from '../tab/limits.ts';
 
 test('a limit from the beginning runs out when its end has not appeared in time, and not before', () => {
   const t = new LimitTracker([{ start: null, end: '</thinking>', tokens: 3 }]);

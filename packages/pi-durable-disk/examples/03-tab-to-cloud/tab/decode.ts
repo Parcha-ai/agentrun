@@ -8,7 +8,7 @@ import {
   CALL_CLOSE, CALL_OPEN, THINK_CLOSE, THINK_OPEN, callGrammar, parseModelTurn, type ParsedTurn, type TextBlock, type ThinkingBlock,
   type ToolCallBlock, type ToolSpec, TOOLS,
 } from "./tool-format.ts";
-import { LimitTracker, type Limit } from "../../04-walks-home/tab/src/limits.ts";
+import { LimitTracker, type Limit } from "./limits.ts";
 export { LimitTracker, type Limit };
 
 export interface CompleteRequest {

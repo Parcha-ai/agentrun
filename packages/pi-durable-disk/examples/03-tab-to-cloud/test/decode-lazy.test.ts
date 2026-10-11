@@ -2,7 +2,7 @@
 // (stop strings, token limits, max tokens): the same parsed call, byte for byte, the same turn text, and one completion where there were three.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LimitTracker } from "../../04-walks-home/tab/src/limits.ts";
+import { LimitTracker } from "../tab/limits.ts";
 import { decodeTurn, llamaServer, type Backend, type CompleteRequest, type CompleteResult } from "../tab/decode.ts";
 import { callGrammar, renderPrompt, TOOLS } from "../tab/tool-format.ts";
 
