@@ -10,6 +10,7 @@ import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import type { Context } from "@earendil-works/chord";
 import { computerTool, type ComputerDriver } from "./computer-tool.ts";
+import { offlineTools, type OfflineChannel } from "./offline-tools.ts";
 import { switchEnvironment, type SwitchChannel } from "./switch-tool.ts";
 
 export const PROVIDER = "pipe";
@@ -126,10 +127,17 @@ export function rootAgent(modelId: string): AgentChange {
   return { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
 }
 
+/** The root conversation's agent as it is when it comes back to the cloud model from another (a check-in): the same as `rootAgent`, and every tool the registry has again (`tools: null` clears the filter an earlier model was configured with). */
+export function cloudAgent(modelId: string): AgentChange {
+  return { ...rootAgent(modelId), tools: null };
+}
+
 /** What a host can offer the agent beyond the shared tools; a tool the host cannot serve is still registered, and refuses. */
 export interface HostTools {
   /** How this host asks the server to move the run (the pipe of a tab or a remote host, the link of a cloud host). */
   readonly switchChannel?: SwitchChannel;
+  /** How this host's page takes the run offline and back (the tab that runs the agent); anywhere else go_offline and go_online refuse. */
+  readonly offlineChannel?: OfflineChannel;
   /** The environment ids this host knows, for the move tool's description. */
   readonly environments?: readonly string[];
   /** A desktop this host runs, for the computer tool. */
@@ -148,6 +156,7 @@ export function agentRegistry(durable: (context: Context) => Promise<void>, host
   registry.install(codingTools());
   registry.install(writeThrough(durable));
   if (host.switchTool !== false) registry.install(switchEnvironment(host.switchChannel, host.environments));
+  registry.install(offlineTools(host.offlineChannel));
   registry.install(computerTool(host.computer));
   return registry;
 }

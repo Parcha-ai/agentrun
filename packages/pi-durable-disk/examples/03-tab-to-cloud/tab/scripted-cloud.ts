@@ -1,0 +1,58 @@
+// A stand-in for the cloud model, for a check that has none: the provider `pipe` answering from a script, one turn per model request. It is installed by the page's `demo.stubCloud`
+// (a hook for checks; a page without it never has it) and records what each request carried, so a check can say what the cloud model was shown. Portable: no Node API.
+import { createProvider } from "@earendil-works/pi-ai/models";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+import type { AssistantMessage, AssistantMessageEventStream, Context, Model, Provider, TranscriptContext, Usage } from "@earendil-works/pi-ai";
+import { PROVIDER } from "../agent.ts";
+
+/** One answer: some text, or a tool call (with the text said before it). */
+export type ScriptedTurn = { text?: string; call?: { name: string; arguments: Record<string, string | number | boolean | null> } };
+
+/** What a request carried: the roles of the messages, the system prompt's first line, the names of the tools offered, and the last user text. */
+export interface SeenRequest {
+  model: string;
+  roles: string[];
+  system: string;
+  tools: string[];
+  lastUser: string;
+}
+
+const zero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+const textOf = (content: unknown): string => (typeof content === "string" ? content : Array.isArray(content) ? content.map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : "")).join("") : "");
+
+export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: SeenRequest[]): Provider {
+  let next = 0;
+  const run = (model: Model<string>, context: TranscriptContext | Context): AssistantMessageEventStream => {
+    const stream = createAssistantMessageEventStream();
+    const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: zero(), stopReason: "stop", timestamp: Date.now() };
+    const messages = context.messages as { role: string; content?: unknown }[];
+    seen.push({ model: model.id, roles: messages.map((m) => m.role), system: String((context as { systemPrompt?: string }).systemPrompt ?? "").split("\n")[0]!.slice(0, 80), tools: ((context as { tools?: { name: string }[] }).tools ?? []).map((t) => t.name), lastUser: textOf([...messages].reverse().find((m) => m.role === "user")?.content) });
+    const turn = script[Math.min(next++, script.length - 1)] ?? { text: "(no script)" };
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: output });
+      if (turn.text) {
+        output.content.push({ type: "text", text: turn.text });
+        stream.push({ type: "text_start", contentIndex: 0, partial: output });
+        stream.push({ type: "text_delta", contentIndex: 0, delta: turn.text, partial: output });
+        stream.push({ type: "text_end", contentIndex: 0, content: turn.text, partial: output });
+      }
+      if (turn.call) {
+        const call = { type: "toolCall" as const, id: `scripted-${next}`, name: turn.call.name, arguments: turn.call.arguments };
+        const at = output.content.push(call) - 1;
+        stream.push({ type: "toolcall_start", contentIndex: at, partial: output });
+        stream.push({ type: "toolcall_end", contentIndex: at, toolCall: call, partial: output });
+        output.stopReason = "toolUse";
+      }
+      stream.push({ type: "done", reason: turn.call ? "toolUse" : "stop", message: output });
+      stream.end();
+    });
+    return stream;
+  };
+  return createProvider({
+    id: PROVIDER,
+    name: "Scripted cloud model",
+    auth: { apiKey: { name: "scripted", resolve: async () => ({ auth: { apiKey: "scripted" } }) } },
+    models: [{ id: modelId, name: modelId, api: "openai-responses", provider: PROVIDER, baseUrl: "scripted:", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 16_000 }],
+    api: { stream: run as never, streamSimple: run as never },
+  });
+}

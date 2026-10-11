@@ -206,7 +206,7 @@ prompt or its tools. Code: `tab/brain.ts` (the swap), `tab/brain-provider.ts` (t
 
 ## Taking the run offline (walks-home)
 
-Once the trained model is the agent's brain, **Take it offline** checks the run out to this browser, for good, and the agent keeps answering on the 1B with the network off. Decisions: no safety check in this mode, and no sync back (the checkout is one way).
+Once the trained model is the agent's brain, **Take it offline** checks the run out to this browser, for good, and the agent keeps answering on the 1B with the network off. Decisions: no safety check in this mode, and the run comes home only by **Go online** (below).
 
 What happens, in this order (nothing is changed on the server until the browser holds everything):
 
@@ -224,7 +224,7 @@ What happens, in this order (nothing is changed on the server until the browser 
 - Viewers and operators: they follow the run through the server, which no longer runs it. They are told it is checked out to a browser.
 - Cloud models: only the model on this page answers. The checkout needs the agent to be on it already.
 - The computer (bash, node) runs here, from this browser's cache, on a copy of the workspace. Its files stay in this browser and are not synced back. Anything that needs the network (npm install, curl) fails.
-- Sync back: none. The checkout is one way, and this browser's copy is the only live one.
+- Sync back: only by Go online (the button, or the agent's go_online tool) once the server answers a ping. Until then this browser's copy is the only live one.
 
 **Pieces.** `tab/sqlite-client.ts` + `tab/sqlite-worker.ts` + `tab/sqlite-service.ts`: pi's own `SqliteStorage` over SQLite-WASM (`@sqlite.org/sqlite-wasm` 3.53.4-build2, Apache-2.0) on OPFS through the opfs-sahpool VFS (a worker; no SharedArrayBuffer), so the browser store is the SQL the Node store runs. `tab/local-store.ts`: open, import, export. `tab/sw.ts` + `tab/sw-core.ts` + `tab/offline-cache.ts`: the service worker. The model's chunks are cache-first (immutable, sha-checked when cached); everything else is network-first with a 3 s timeout and falls back to the cache only when the network is down or slow, and a network answer is passed through untouched and never stored, so after a checkout the other pages of the origin stay as the server serves them. What the cache answers carries the cross-origin isolation headers, so a reload with no network is isolated and wllama keeps its threads. Checks: `node scripts/store-check.ts` (pi's 23 storage conformance cases on OPFS in real Chrome, and a database written by one page read by the next), `MODEL_DISK=<dir> node scripts/offline-check.ts` (the whole story in real Chrome: two turns online, checkout, the server killed and CDP offline with WebSockets blocked, two turns, a reload that comes back isolated on the same conversation, two more turns, and the head the server released equals the page's copy). Tests: `test/sqlite-wasm-store.test.ts` (the same conformance suite on the worker protocol in Node), `test/checkout.test.ts` (the pipe's side), `test/offline-runtime.test.ts`, `test/offline-cache.test.ts`, `test/sw-core.test.ts` (both service worker paths).
 

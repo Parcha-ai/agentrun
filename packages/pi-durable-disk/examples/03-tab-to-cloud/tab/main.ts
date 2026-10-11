@@ -12,14 +12,19 @@ import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
-import { importStore, openLocalStore, type LocalStore } from "./local-store.ts";
-import { applyChanges, loadWorkspace, saveWorkspace } from "./workspace-store.ts";
+import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
+import { applyChanges, forgetWorkspace, loadBaseline, loadWorkspace, saveBaseline, saveWorkspace } from "./workspace-store.ts";
+import { baselineOf, CheckinError, diffWorkspace, postCheckin, type Snapshot } from "./checkin.ts";
+import { scriptedCloud, type ScriptedTurn, type SeenRequest } from "./scripted-cloud.ts";
+import { BRAIN_CHECKIN } from "./brain-kinds.ts";
 import { callGrammar, renderPrompt, TOOLS } from "./tool-format.ts";
 import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
 import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
+import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
+import { cloudAgent } from "../agent.ts";
 import { fromBase64, untag, type Environment, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
@@ -37,7 +42,26 @@ const secret = location.hash.slice(1);
 const tab = sessionStorage.getItem("tab-id") ?? `tab-${crypto.randomUUID().slice(0, 8)}`;
 sessionStorage.setItem("tab-id", tab);
 
+/**
+ * `?golive=1`: the agent takes its run offline and brings it back with its own tools (offline-tools.ts), the page's button doing the same for a check. The trained model does not take over
+ * when it is home: it takes over when the agent goes offline, in the SAME conversation (brain.ts configure), with the tools read, write and bash; going online hands the work back and the
+ * conversation is configured onto the cloud model again.
+ */
+const golive = new URLSearchParams(location.search).get("golive") === "1";
+
+/** What the page tells the stage when a run comes home (and a check reads): the head the server now holds, the files written offline, how long it took. */
+export type CheckinEvent = { at: number; head: number; files: number; changes: number; ms: number; offlineHead: number };
+
 const state = {
+  /** Whether this page can reach the server: the browser's own signal and a ping (`pingNet`). */
+  net: { online: navigator.onLine, at: Date.now(), reason: navigator.onLine ? "" : "the browser says it is offline" },
+  /** "Go online" in progress, in words (shown next to the button). */
+  checkingIn: undefined as { text: string } | undefined,
+  /** Every check-in this page made and saw complete. */
+  checkins: [] as CheckinEvent[],
+  /** A scripted stand-in for the cloud model (a check's, installed by `demo.stubCloud`), and what its requests carried. */
+  cloudScript: undefined as ScriptedTurn[] | undefined,
+  cloudSeen: [] as SeenRequest[],
   mode: "connecting" as "connecting" | "booting" | "writer" | "viewer" | "lost" | "offline",
   placement: undefined as Placement | undefined,
   client: undefined as PipeClient | undefined,
@@ -251,7 +275,7 @@ function render(): void {
   // Checked out to this browser: the trained model's conversation answers, once it is the active one.
   const offlineReady = offline && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
   // Elsewhere, a message goes to whoever runs the run, through the server.
-  const canSend = writer || offlineReady || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
+  const canSend = writer || (offlineReady && !state.checkingIn) || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
   ($("input") as HTMLTextAreaElement).disabled = !canSend;
   ($("send") as HTMLButtonElement).disabled = !canSend;
   $("composer").hidden = !canSend;
@@ -261,6 +285,11 @@ function render(): void {
   const canTakeOffline = writer && (swapped || new URLSearchParams(location.search).get("brain") === "off") && !state.switching && !state.checkout;
   $("offline").hidden = !canTakeOffline;
   $("offline-status").textContent = state.checkout?.text ?? "";
+  renderNet();
+  // "Go online": while the run is checked out to this browser; it can be pressed once the server answers the ping, and nothing is already in progress.
+  $("online").hidden = !offline;
+  ($("online") as HTMLButtonElement).disabled = !state.net.online || state.checkingIn !== undefined;
+  $("online-status").textContent = state.checkingIn?.text ?? (offline && !state.net.online ? "waiting for the network" : "");
   $("checkedout").hidden = !offline;
   $("persist-warning").hidden = !(offline && state.offline && !state.offline.record.persistent);
   $("switcher").hidden = offline;
@@ -351,15 +380,16 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const { env, workspace, facts } = await bootComputer();
   state.environments = attached.environments;
   state.agentModel = attached.model;
-  const runtime = await startTab({ client, attached, env, workspace, host: { switchChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  const runtime = await startTab({ client, attached, env, workspace, host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
+  installCloud(runtime);
   state.bootMs = performance.now() - started;
   state.mode = "writer";
   state.progress = "";
   state.banner = "";
   // A swap from an earlier visit: the chat input waits for the saved conversation (a message sent now would go to the cloud conversation and be missing from the one that comes back).
-  state.brainPending = new URLSearchParams(location.search).get("brain") !== "off" && (await findSwap(runtime.root, ctx).catch(() => undefined)) !== undefined;
+  state.brainPending = !golive && new URLSearchParams(location.search).get("brain") !== "off" && (await findSwap(runtime.root, ctx).catch(() => undefined)) !== undefined;
   if (state.brainPending) state.brainStatus = "the trained model is loading; you can talk to it as soon as it is ready";
   await followConversation(runtime, runtime.root);
   void watchForBrain(runtime);
@@ -439,7 +469,7 @@ async function settleRoot(runtime: TabRuntime): Promise<void> {
 }
 
 async function swapWhenHome(runtime: TabRuntime): Promise<void> {
-  if (new URLSearchParams(location.search).get("brain") === "off") return;
+  if (new URLSearchParams(location.search).get("brain") === "off" || golive) return; // golive: the model takes over when the agent goes offline, not before
   for (;;) {
     if (state.runtime !== runtime || state.mode !== "writer") return;
     let text: string | null = null;
@@ -461,7 +491,7 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void>
   const brain = new Brain({
     harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
-    ...(params.get("configure") === "1" ? { decoding: { history: params.get("toolhistory") === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => ["read", "write", "edit", "bash"].includes(t.tool.name)).map((t) => t.tool) } : {}),
+    ...(params.get("configure") === "1" || golive ? { decoding: { history: params.get("toolhistory") === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -514,7 +544,7 @@ async function takeOffline(): Promise<void> {
   // ?brain=off: the run has no model of its own (a check of the computer alone), and is checked out without one.
   const noBrain = new URLSearchParams(location.search).get("brain") === "off";
   if (!runtime || state.mode !== "writer" || state.checkout || state.switching) return;
-  if (!noBrain && (!brain || !conversation || state.active !== conversation)) return;
+  if (!noBrain && !golive && (!brain || !conversation || state.active !== conversation)) return;
   const say = (text: string) => { state.checkout = { text }; render(); };
   // From the click on, nothing new starts: the chat input is held and a viewer's message is not acted on, so the agent stays idle through the caching and the copy.
   state.checkingOut = true;
@@ -536,7 +566,9 @@ async function takeOffline(): Promise<void> {
     if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
     // The workspace (work/, less the model) goes into OPFS too: the computer boots from it with no network. The tab is idle and every write-through was acknowledged, so this is what the pipe holds.
     say("saving the workspace in this browser");
-    const workspace = await saveWorkspace(run, await runtime.workspace.scan());
+    const scanned = await runtime.workspace.scan();
+    const workspace = await saveWorkspace(run, scanned);
+    await saveBaseline(run, await baselineOf(scanned as Snapshot)); // what the server holds now: at check-in, the changes are what the workspace holds against this
     let head = -1;
     let record: CheckoutRecord | undefined;
     for (let attempt = 0; attempt < 3 && head < 0; attempt++) {
@@ -634,7 +666,7 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
     }
     computerStatus.ms = Math.round(performance.now() - started);
     computerStatus.parts = marks;
-    const runtime = await startLocal({ storage: store.storage, model: record.model, ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
+    const runtime = await startLocal({ storage: store.storage, model: record.model, host: { offlineChannel }, ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
     state.offline = { record, store, computer: computerStatus };
     state.runtime = runtime;
     state.environments = [];
@@ -651,6 +683,165 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
     state.banner = `could not open this browser's copy of the run: ${(error as Error).message}`;
     render();
   }
+}
+
+// ---- coming home ---------------------------------------------------------------------------------------------------------
+
+/** What the page says to the stage around it and to anything listening in the page: a DOM event (`walkshome:<type>`) and, inside a frame, a message to the parent. */
+function announce(type: string, detail: Record<string, unknown>): void {
+  window.dispatchEvent(new CustomEvent(`walkshome:${type}`, { detail }));
+  try {
+    if (window.parent !== window) window.parent.postMessage({ source: "walks-home-tab", type, run, ...detail }, location.origin);
+  } catch {
+    // a parent that is not reachable is not told
+  }
+}
+
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** The workspace as this browser saved it, in the shape the diff takes (the page's computer did not boot, so there is no live scan). */
+async function savedSnapshot(): Promise<Snapshot> {
+  const out = new Map<string, { kind: "file"; data: Uint8Array } | { kind: "directory" }>();
+  for (const e of await loadWorkspace(run)) if (e.kind === "file") out.set(e.path, { kind: "file", data: e.bytes }); else if (e.kind === "directory") out.set(e.path, { kind: "directory" });
+  return out;
+}
+
+/**
+ * "Go online", from the button or the agent's go_online tool: the run's store and the files written offline go back to the server (checkin.ts, POST /api/runs/<id>/checkin), which takes
+ * them only when the store extends what it released at checkout; this tab then attaches as the writer and the SAME conversation is configured onto the cloud model again. A failure before
+ * the server took the check-in reopens this browser's copy as it was (the model stays loaded) and says why; once the server has it, the browser's copy is the server's and is dropped.
+ */
+async function checkIn(): Promise<void> {
+  const runtime = state.runtime, off = state.offline;
+  if (state.mode !== "offline" || !runtime || !off || state.checkingIn) return;
+  const record = off.record, host = state.brain?.host;
+  const started = performance.now();
+  const say = (text: string) => { state.checkingIn = { text }; render(); };
+  let closed = false, home = false;
+  say("waiting for the agent to be idle");
+  announce("checkin", { phase: "start", head: record.head });
+  try {
+    if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then go online");
+    if (!state.net.online) throw new Error(`the server cannot be reached from here yet (${state.net.reason || "no answer to the ping"})`);
+    say("saving the workspace in this browser");
+    await runtime.flush?.();
+    const baseline = await loadBaseline(run);
+    if (!baseline) throw new Error("this browser has no record of what the workspace held at checkout, so it cannot say what changed");
+    const changes = await diffWorkspace(baseline, off.computer.booted ? ((await runtime.workspace.scan()) as Snapshot) : await savedSnapshot());
+    say("closing this browser's copy of the run");
+    state.runtime = undefined;
+    state.active = undefined;
+    await followed?.stop().catch(() => undefined);
+    followed = undefined;
+    await runtime.close().catch(() => undefined);
+    await off.store.storage.close(ctx).catch(() => undefined);
+    closed = true;
+    const store = await exportStore(run);
+    let done: Awaited<ReturnType<typeof postCheckin>> | undefined;
+    for (let attempt = 1; !done; attempt++) {
+      say(attempt === 1 ? `handing ${changes.length} changed file${changes.length === 1 ? "" : "s"} and the store back to the server` : `handing the run back to the server (attempt ${attempt})`);
+      try {
+        done = await postCheckin({ run, secret, tab, store, changes });
+      } catch (error) {
+        const code = error instanceof CheckinError ? error.code : "";
+        // not reached, busy, or a server fault after its check: the same request may be sent again; a refusal of the store itself never succeeds by repeating
+        const again = (code === "NETWORK" || code === "CHECKIN_BUSY" || /^HTTP_5/.test(code)) && attempt < 4;
+        if (!again) throw error;
+        await sleepMs(1000 * attempt);
+      }
+    }
+    home = true;
+    await forgetCheckout(run); // from here a reload attaches to the server: this browser's copy is the server's now
+    state.offline = undefined;
+    say("attaching to the server");
+    const brain = state.brain;
+    state.brain = undefined;
+    await connect("write");
+    const attached = state.runtime as TabRuntime | undefined; // set by connect() (runHere), which TypeScript cannot see from here
+    if ((state.mode as string) !== "writer" || !attached) throw new Error("the run is back on the server but this tab could not attach to it: reload this page");
+    // The same conversation, the cloud model again, every tool the registry has again.
+    await attached.root.configure(cloudAgent(state.agentModel), ctx);
+    const ms = Math.round(performance.now() - started);
+    const event: CheckinEvent = { at: Date.now(), head: done.head, files: done.files, changes: changes.length, ms, offlineHead: record.head };
+    await attached.root.submit({ type: "write", requestId: `checkin:${done.head}`, entry: { kind: BRAIN_CHECKIN, data: { head: done.head, files: done.files, changes: changes.length, ms } } }, ctx).catch(() => undefined);
+    state.checkingIn = undefined;
+    state.checkins.push(event);
+    await brain?.dispose(); // the small model's workers go: online, the cloud model answers
+    void forgetWorkspace(run).catch(() => undefined);
+    void deleteStore(run).catch(() => undefined);
+    announce("checkin", { phase: "done", ...event });
+    render();
+  } catch (error) {
+    state.checkingIn = undefined;
+    const message = (error as Error).message;
+    const notCheckedOut = error instanceof CheckinError && error.code === "NOT_CHECKED_OUT";
+    announce("checkin", { phase: "failed", message, ...(error instanceof CheckinError ? { code: error.code } : {}) });
+    if (home) {
+      state.banner = message;
+      render();
+    } else if (closed) {
+      // the server did not take it: this browser's copy is whole and stays the live one; open it again, the model still loaded
+      await startOffline({ ...record, state: "done" }, host);
+      state.banner = notCheckedOut ? "The server says this run is not checked out: a check-in of this copy may already have gone through. This browser keeps its copy; reload this page to see where the run is." : `could not go online: ${message}`;
+      render();
+    } else {
+      state.banner = `could not go online: ${message}`;
+      render();
+    }
+  }
+}
+
+/** The agent's go_offline and go_online tools talk to the page through this: the request is taken now, the move happens once the agent's step is over. */
+const offlineChannel: OfflineChannel = {
+  async goOffline() {
+    if (state.mode !== "writer" || !state.runtime || state.leaving || state.checkingOut || state.switching) throw new OfflineRefusedError("this tab is not running the run right now, so it cannot take it offline");
+    if (!state.net.online) throw new OfflineRefusedError("this page cannot reach the server, and the run's store has to be copied from it first");
+    if (!golive && !(state.brain?.conversation !== undefined && state.active === state.brain.conversation)) throw new OfflineRefusedError("the model this run trained is not this agent's brain yet");
+    if (!(await readManifest(readWork).catch(() => null))) throw new OfflineRefusedError("this run has no model of its own on its disk yet, so there is nothing to run offline");
+    setTimeout(() => void takeOffline(), 0);
+  },
+  async goOnline() {
+    if (state.mode !== "offline" || !state.offline || !state.runtime) throw new OfflineRefusedError("this run is not checked out to this browser, so there is nothing to hand back");
+    if (state.checkingIn) throw new OfflineRefusedError("a check-in is already in progress");
+    if (!state.net.online) throw new OfflineRefusedError(`the server cannot be reached from here yet (${state.net.reason || "no answer to the ping"}); try again when the network is back`);
+    setTimeout(() => void checkIn(), 0);
+  },
+};
+
+/** The page's own view of the network: the browser's signal and, because that signal says only that a link exists, a ping of the server through the service worker (never from its cache). */
+async function pingNet(): Promise<void> {
+  let online = false, reason = "";
+  if (navigator.onLine === false) reason = "the browser says it is offline";
+  else {
+    try {
+      const r = await fetch("/api/ping?fresh=1", { cache: "no-store", signal: AbortSignal.timeout(2500) });
+      online = r.ok;
+      if (!online) reason = `the ping was answered ${r.status}`;
+    } catch (error) {
+      reason = `no answer to the ping (${(error as Error).name})`;
+    }
+  }
+  if (online === state.net.online && state.net.at !== 0) { state.net.reason = reason; return renderNet(); }
+  state.net = { online, at: Date.now(), reason };
+  announce("net", { online, reason });
+  render();
+}
+
+function renderNet(): void {
+  const el = $("net");
+  el.textContent = state.net.online ? "ONLINE" : "OFFLINE";
+  el.className = `net ${state.net.online ? "up" : "down"}`;
+  el.title = state.net.online ? "The server answers" : `The server cannot be reached: ${state.net.reason}`;
+}
+
+window.addEventListener("online", () => void pingNet());
+window.addEventListener("offline", () => void pingNet());
+setInterval(() => void pingNet(), 3000);
+void pingNet();
+
+/** A check's scripted cloud model, on the runtime that has the cloud provider (every online runtime; offline there is none). */
+function installCloud(runtime: TabRuntime | undefined): void {
+  if (runtime && state.cloudScript) runtime.models.setProvider(scriptedCloud(state.agentModel, state.cloudScript, state.cloudSeen));
 }
 
 // ---- watching ----------------------------------------------------------------------------------------------------------
@@ -870,7 +1061,7 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text || state.checkingOut || state.brainPending) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
+  if (!text || state.checkingOut || state.checkingIn || state.brainPending) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
   if (!state.runtime) {
     if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
     input.value = "";
@@ -893,6 +1084,7 @@ $("input").addEventListener("keydown", (e) => {
 });
 $("takeover").addEventListener("click", () => void connect("write", true));
 $("offline").addEventListener("click", () => void takeOffline());
+$("online").addEventListener("click", () => void checkIn());
 $("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)));
 setInterval(renderStats, 1000);
 
@@ -1003,6 +1195,23 @@ void boot();
     const c = target();
     return c ? JSON.parse(JSON.stringify([...(await c.entries({}, 500, undefined, ctx)).items].reverse())) : null;
   },
+  /** Whether this page reaches the server (the browser's signal and a ping), and when that last changed. */
+  net: () => ({ ...state.net }),
+  /** Every check-in this page made: the head the server holds after it, the files written offline, the changes sent, how long it took. */
+  checkins: () => state.checkins,
+  /** The same paths the agent's tools take (and the page's buttons): hand the run to this browser, hand it back. */
+  goOffline: () => offlineChannel.goOffline().then(() => "asked", (e: Error) => e.message),
+  goOnline: () => offlineChannel.goOnline().then(() => "asked", (e: Error) => e.message),
+  /** The conversation the agent runs: its model, the tools a request offers (names, in order) and its instructions. */
+  agent: async () => {
+    const c = state.runtime?.root;
+    if (!c) return null;
+    const a = await c.agent(ctx);
+    return { model: a.model ? `${a.model.provider}/${a.model.modelId}` : null, tools: a.tools.map((t) => t.name), instructions: (a.instructions ?? "").slice(0, 120) };
+  },
+  /** A scripted stand-in for the cloud model (a check with no cloud): one turn per request, text or a tool call. Kept across check-ins, and what each request carried is `cloudSeen`. */
+  stubCloud: (script: ScriptedTurn[]) => { state.cloudScript = script; state.cloudSeen.length = 0; installCloud(state.runtime); return true; },
+  cloudSeen: () => state.cloudSeen,
   handovers: () => state.handovers,
   left: () => state.left,
   switchTo,

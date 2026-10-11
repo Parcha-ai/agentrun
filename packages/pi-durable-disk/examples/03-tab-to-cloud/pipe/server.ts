@@ -1519,6 +1519,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     else if (storeCopy && req.method === "GET") void storeRoute(req, res, decodeURIComponent(storeCopy[1]!)).catch(failed);
     else if (checkout && req.method === "POST") void checkoutRoute(req, res, decodeURIComponent(checkout[1]!)).catch(failed);
     else if (checkin && req.method === "POST") void checkinRoute(req, res, decodeURIComponent(checkin[1]!)).catch(failed);
+    else if (req.method === "GET" && path === "/api/ping") res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" }).end("ok"); // the page's "can I reach the server" (tab/main.ts)
     else if (req.method === "GET") serveStatic(req, res);
     else if (req.method === "POST" && path.startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();

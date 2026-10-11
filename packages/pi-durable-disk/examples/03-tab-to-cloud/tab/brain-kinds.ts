@@ -3,3 +3,5 @@ export const BRAIN_LOADING = "brain.loading";
 export const BRAIN_SWAP = "brain.swap";
 export const BRAIN_FAILED = "brain.failed";
 export const BRAIN_MOVE = "brain.move";
+/** The run came home from a browser: written once per check-in, in the root conversation, after the agent runs on the server's copy again. */
+export const BRAIN_CHECKIN = "brain.checkin";

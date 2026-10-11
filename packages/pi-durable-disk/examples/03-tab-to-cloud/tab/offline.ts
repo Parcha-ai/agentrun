@@ -11,7 +11,7 @@ export const CANNOT_OFFLINE: readonly string[] = [
   "Viewers and operators: they follow the run through the server, which no longer runs it. They are told it is checked out to a browser.",
   "Cloud models: only the model on this page answers. The checkout needs the agent to be on it already.",
   "The computer (bash, node) runs here, from this browser's cache, on a copy of the workspace. Its files stay in this browser and are not synced back. Anything that needs the network (npm install, curl) fails.",
-  "Sync back: none. The checkout is one way, and this browser's copy is the only live one.",
+  "Sync back: only by Go online (the button, or the agent's go_online tool) once the server answers a ping: the store and the files written offline go home if the store extends what the server released. Until then this browser's copy is the only live one.",
 ];
 
 export interface CheckoutRecord {

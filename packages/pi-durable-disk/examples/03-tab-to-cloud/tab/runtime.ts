@@ -187,6 +187,8 @@ export async function startLocal(opts: {
   settings?: HarnessSettings;
   computer?: { env: RuntimeEnv; workspace: Workspace };
   persist?: (changes: Awaited<ReturnType<Workspace["changes"]>>["changes"]) => Promise<void>;
+  /** What this host's page offers the agent's tools (go_online, here). */
+  host?: HostTools;
 }): Promise<TabRuntime> {
   const env = opts.computer?.env ?? noComputer();
   const workspace = opts.computer?.workspace ?? noWorkspace();
@@ -203,7 +205,7 @@ export async function startLocal(opts: {
     line = next.catch(() => undefined);
     return next;
   };
-  const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [] });
+  const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [], ...opts.host });
   const harness = await Harness.open(opts.storage, { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   await harness.resume();
   const root = await harness.root(ctx, { agent: rootAgent(opts.model) });

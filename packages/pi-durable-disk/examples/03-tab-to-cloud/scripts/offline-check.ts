@@ -95,7 +95,7 @@ try {
   await page.until("demo.brain().swapped === true", 120_000, 500);
   console.log(`${at()} s: checked out, running from this browser (${((Date.now() - clicked) / 1000).toFixed(1)} s from the click)`);
   const off1 = await ev<{ mode: string; record: { state: string; head: number; conversation: number; model: string }; head: number; isolated: boolean; panel: { hidden: boolean; text: string } }>("demo.offline()");
-  ok("the page says it is checked out to this browser, with what does not work", off1.mode === "offline" && !off1.panel.hidden && /Checked out to this browser/.test(off1.panel.text) && /Moves/.test(off1.panel.text) && /Jev and the safety check/.test(off1.panel.text) && /Viewers and operators/.test(off1.panel.text) && /Sync back: none/.test(off1.panel.text), off1.panel);
+  ok("the page says it is checked out to this browser, with what does not work", off1.mode === "offline" && !off1.panel.hidden && /Checked out to this browser/.test(off1.panel.text) && /Moves/.test(off1.panel.text) && /Jev and the safety check/.test(off1.panel.text) && /Viewers and operators/.test(off1.panel.text) && /Sync back: only by Go online/.test(off1.panel.text), off1.panel);
   ok("the same conversation carries on in the same page", (await ev<{ conversation: string }>("demo.brain()")).conversation === conversation);
   const released = headOf(join(dir, "runs", "off", "store", "run.sqlite"));
   const marker = JSON.parse(readFileSync(join(dir, "runs", "off", "store", "checkout.json"), "utf8")) as { head: number; conversation: number };
