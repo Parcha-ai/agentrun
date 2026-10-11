@@ -18,6 +18,7 @@ import { THINKING_HABIT_NOTE, talkHtml } from "../../episode2/talk.ts";
 import { stageZoom } from "../fit.ts";
 import { chooseScale } from "../talkfit.ts";
 import { type Train } from "../../episode2/progress.ts";
+import { brainBanner, brainCaptions, brainLocalBadge, brainTalkTurns, brainTopic, viewerLineGoesToModel, BRAIN_ASK_PLACEHOLDER } from "../brain.ts";
 import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
 import { findHtml } from "../find-panel.ts";
@@ -176,7 +177,7 @@ function withNotes(state: ShowState): ShowState {
 
 let badgeKey = "";
 function renderBadge(state: ShowState): void {
-  const b = obsessionBadge({ state, find: take.find, train: take.train, model: take.model, now: feed.captionNow() });
+  const b = obsessionBadge({ state, find: take.find, train: take.train, model: take.model, brain: state.brain, now: feed.captionNow() });
   const el = $("badge");
   el.dataset.tone = b.tone;
   el.querySelector(".txt")!.textContent = b.text;
@@ -224,21 +225,25 @@ function renderCentre(state: ShowState): void {
 
 let bannerKey = "";
 function renderBanner(): void {
-  const text = modelBanner(take.model);
-  const note = obsessionNote(take.model);
-  const key = `${take.model.phase}|${text}|${note}`;
+  // A brain swap (the trained model becoming the agent's brain, in the 03 page) says it in its own words; without one, the creature tab's model messages do.
+  const brain = brainBanner(feed.state.brain, brainTopic(feed.state.brain, take.find.topic, take.train.topic));
+  const text = brain ? brain.text : modelBanner(take.model);
+  const notes = brain ? [brain.note, brain.note2] : [obsessionNote(take.model)];
+  const phase = brain ? (brain.phase === "ready" ? "switched" : brain.phase) : take.model.phase;
+  const key = `${phase}|${text}|${notes.join("|")}`;
   if (key === bannerKey) return;
   bannerKey = key;
   const el = $("modelbanner");
   el.hidden = text === null;
-  el.dataset.phase = take.model.phase;
-  el.innerHTML = text === null ? "" : `${esc(text)}${note ? `<span class="note">${esc(note)}</span>` : ""}`;
+  el.dataset.phase = phase;
+  el.innerHTML = text === null ? "" : `${esc(text)}${notes.filter((n): n is string => !!n).map((n) => `<span class="note">${esc(n)}</span>`).join("")}`;
 }
 
 /** Once the viewer has asked the model something, the big pane shows the latest question and answer large (the tab's own card is behind it until then). */
 let talkKey = "";
 function renderTalk(): void {
-  const html = talkHtml(modelChat.turns, localBadge(take.model));
+  const brain = feed.state.brain;
+  const html = brain?.stage === "ready" ? talkHtml(brainTalkTurns(feed.state.chat), brainLocalBadge(brain, feed.state.chat), { agent: true }) : talkHtml(modelChat.turns, localBadge(take.model));
   const key = html ?? "";
   if (key === talkKey) return;
   talkKey = key;
@@ -281,7 +286,8 @@ function fitTalk(): void {
 /** A rehearsal has no tab that loads a model: from the moment the run is home the page plays the tab's messages, scripted (episode2/rehearsal.ts). */
 function playRehearsalModel(state: ShowState): void {
   // A gate stopped the teach step: there is no model, so a rehearsal plays none of the tab's model messages.
-  if (state.source !== "scripted" || take.realModelSeen || take.train.stopped !== null) return;
+  // (A brain swap, which the 03 page runs, replaces the creature tab's model messages: nothing of them is played.)
+  if (state.source !== "scripted" || take.realModelSeen || take.train.stopped !== null || state.brain !== null) return;
   const now = feed.captionNow();
   if (state.place.where === "home" && state.stays.some((s) => s.hostKind !== "tab")) take.homeAt ??= now;
   if (take.homeAt === null) return;
@@ -306,6 +312,17 @@ function renderCaption(state: ShowState): void {
 }
 
 /** When the viewer's request was first seen, on the feed's clock: only by a page that saw the chat without it (one that joined mid-take claims no total). */
+/** The brain swap's captions, once per entry, and the whole trip when the agent has a new brain (the same trip note the model switching said). */
+function noteBrain(state: ShowState): void {
+  const b = state.brain;
+  if (b === null || !said.once(`brain|${b.id}|${b.stage}`)) return;
+  addNotes(...brainCaptions(b, feed.captionNow()));
+  if (b.stage === "ready" && said.once("trip")) {
+    const trip = tripNote(take.requestAt, feed.captionNow(), feed.captionNow());
+    if (trip) addNotes(trip);
+  }
+}
+
 function noteRequest(state: ShowState): void {
   const asked = state.chat.some((t) => t.role === "user");
   if (!asked) take.chatEmptySeen = true;
@@ -319,6 +336,7 @@ function frame(): void {
   modelChat.expire(performance.now());
   const state = feed.state;
   noteRequest(state);
+  noteBrain(state);
   $("lost").hidden = !feed.lost;
   playRehearsalModel(state);
   renderBadge(state);
@@ -327,16 +345,19 @@ function frame(): void {
   renderTalk();
   const turns = [...state.chat, ...modelChat.turns];
   syncChat($("chatlog"), turns);
-  // The model's turns say who is speaking.
+  // The model's turns say who is speaking: the creature tab's model, or, after a brain swap, the agent on its trained brain.
+  const brainTurns = new Set(state.chat.filter((t) => t.brain === true && t.role === "agent").map((t) => t.id));
   for (const el of Array.from($("chatlog").children) as HTMLElement[]) {
-    const model = /^m\d/.test(el.dataset.id ?? "");
+    const id = el.dataset.id ?? "";
+    const model = /^m\d/.test(id) || brainTurns.has(id);
     el.classList.toggle("model", model);
     const who = el.querySelector(".who");
-    if (model && who && who.textContent !== "The model") who.textContent = "The model";
+    const label = brainTurns.has(id) ? "The agent, on its trained brain" : "The model";
+    if (model && who && who.textContent !== label) who.textContent = label;
   }
-  const talkingToModel = take.model.phase === "switched";
+  const talkingToModel = viewerLineGoesToModel(take.model.phase, state.brain);
   const input = $<HTMLInputElement>("chatin");
-  const placeholder = talkingToModel ? "Ask the model anything" : "Tell the agent what to do";
+  const placeholder = state.brain?.stage === "ready" ? BRAIN_ASK_PLACEHOLDER : talkingToModel ? "Ask the model anything" : "Tell the agent what to do";
   if (input.placeholder !== placeholder) input.placeholder = placeholder;
   $("chat").classList.toggle("talked", turns.length > 0);
   renderCaption(state);
@@ -371,8 +392,8 @@ $("chatform").addEventListener("submit", async (e) => {
   const text = chatIn.value.trim();
   if (!text) return;
   chatErr.hidden = true;
-  // Once the tab says the chat switched, the line goes to the model it holds; before that, to the agent.
-  if (take.model.phase === "switched") {
+  // Once the tab says the chat switched, the line goes to the model it holds; before that, and always when the run has a brain entry (the agent answers with that model), to the agent.
+  if (viewerLineGoesToModel(take.model.phase, feed.state.brain)) {
     const sent = modelChat.send(text, performance.now());
     if (!sent.ok) {
       chatErr.textContent = sent.reason;
