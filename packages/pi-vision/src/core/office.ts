@@ -23,9 +23,9 @@ export type OfficeLimits = {
   /** Declared bytes per compressed byte over the whole archive, once it declares more than `ratioFloorBytes`: synthetic sheet XML deflates 6 to 1, a run of identical rows 342 to 1, and deflate's own ceiling is 1,032 to 1 (measured 2026-10-11). */
   readonly maxRatio: number;
   readonly ratioFloorBytes: number;
-  /** One XML part parsed: @xmldom/xmldom took 2.0 s and 279 MB of heap for 4 MiB of sheet XML, 16 s and 2 GB for 32 MiB (measured 2026-10-11). */
+  /** One XML part parsed, and the most text built from one word or OpenDocument text: @xmldom/xmldom took 2.0 s and 279 MB of heap for 4 MiB of sheet XML, 16 s and 2 GB for 32 MiB (measured 2026-10-11). */
   readonly maxPartBytes: number;
-  /** All parts parsed for one read, so a deck of thousands of slides costs seconds of parsing per call, not minutes (2026-10-11). */
+  /** All parts parsed for one read, so a deck of thousands of slides costs seconds of parsing per call, not minutes; also the most text built from the cells of one workbook (2026-10-11). */
   readonly maxParsedBytes: number;
   /** Cells one read builds: a part at the cap holds at most about 170,000, but a repeat count in an OpenDocument sheet holds any number (2026-10-11). */
   readonly maxCells: number;

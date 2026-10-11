@@ -180,3 +180,17 @@ test("list labels that grow with the number they start at are charged to the tex
   const many = docx(Array.from({ length: 4000 }, () => item("x", 1)).join(""), { "word/numbering.xml": numbering });
   await within(3000, () => assert.rejects(textOf(t, many), misses("over_budget", /the text of this file grows past what the reader builds/)));
 });
+
+test("a shared formula whose master is huge is charged to the text budget once for every cell that shares it", async (t) => {
+  const master = randomBytes(750_000).toString("base64");
+  const dependents = Array.from({ length: 100 }, (_, i) => c(`A${i + 2}`, '<f t="shared" si="0"/><v>1</v>'));
+  const rows = [[1, c("A1", `<f t="shared" ref="A1:A101" si="0">${master}</f><v>1</v>`)], ...dependents.map((cell, i) => [i + 2, cell])];
+  const bytes = xlsx({ sheets: [{ name: "S", xml: sheetXml(rows) }] });
+  await within(3000, () => assert.rejects(cellsOf(t, bytes), misses("over_budget", /the text of this file grows past what the reader builds/)));
+});
+
+test("a spreadsheet cell with a long value that a repeat count copies thousands of times is charged to the text budget", async (t) => {
+  const value = randomBytes(75_000).toString("base64");
+  const body = `<table:table table:name="Wide"><table:table-row><table:table-cell table:number-columns-repeated="16384" office:value-type="string" office:string-value="${value}"/></table:table-row></table:table>`;
+  await within(3000, () => assert.rejects(cellsOf(t, odf("spreadsheet", body)), misses("over_budget", /the text of this file grows past what the reader builds/)));
+});

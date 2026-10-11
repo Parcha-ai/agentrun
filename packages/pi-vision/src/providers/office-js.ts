@@ -4,7 +4,7 @@
 // recognised by what it holds, never by its name. Every archive is held to the limits before anything is inflated and
 // every part is inflated into a bounded buffer, so a hostile file is a typed miss that costs bounded time and memory.
 import type { Element } from "@xmldom/xmldom";
-import { OFFICE_LIMITS, OfficeMissError, inflateEntry, readSource, sheetText, zipDirectory, type OfficeCell, type OfficeLimits } from "../core/office.js";
+import { OFFICE_LIMITS, OfficeMissError, cellText, inflateEntry, readSource, sheetText, zipDirectory, type OfficeCell, type OfficeLimits } from "../core/office.js";
 import type { Cell, Provider, ProviderCall, ProviderSource } from "../core/provider.js";
 
 /** The reader's output version: it changes whenever the text or the cells it writes change, so a derivation cached
@@ -259,6 +259,7 @@ async function xlsx(a: Archive, limits: OfficeLimits, wanted: Wanted): Promise<S
   const dates = dateStyles(styles);
   const from1904 = ["1", "true"].includes(at(first(workbook, "workbookPr"), "date1904") ?? "");
   const sheets: Sheet[] = [];
+  const rendered = { left: limits.maxParsedBytes };
   let count = 0;
   for (const [index, sheet] of named(first(workbook, "sheets"), "sheet").entries()) {
     const name = at(sheet, "name") ?? `Sheet${index + 1}`;
@@ -285,7 +286,9 @@ async function xlsx(a: Archive, limits: OfficeLimits, wanted: Wanted): Promise<S
       if (++count > limits.maxCells) throw tooManyCells(limits, "the workbook");
       const kind = typeof value === "number" ? dates.get(Number(at(c, "s") ?? 0)) : undefined;
       const date = kind ? isoDate(value as number, kind, from1904) : undefined;
-      cells.push({ ref, value, ...(formula === undefined ? {} : { formula, cached: value !== null }), ...(date ? { date } : {}) });
+      const cell: OfficeCell = { ref, value, ...(formula === undefined ? {} : { formula, cached: value !== null }), ...(date ? { date } : {}) };
+      spend(rendered, cellText(cell).length);
+      cells.push(cell);
     }
     sheets.push({ index, name, hidden: (at(sheet, "state") ?? "visible") !== "visible", cells });
   }
@@ -369,6 +372,7 @@ async function ods(a: Archive, limits: OfficeLimits, wanted: Wanted): Promise<Sh
   const content = await a.part("content.xml");
   if (!content) throw unreadable("an OpenDocument file without content.xml");
   const sheets: Sheet[] = [];
+  const rendered = { left: limits.maxParsedBytes };
   let count = 0;
   for (const [index, table] of named(dig(content, "spreadsheet"), "table").entries()) {
     const name = at(table, "name") ?? `Sheet${index + 1}`;
@@ -387,7 +391,9 @@ async function ods(a: Archive, limits: OfficeLimits, wanted: Wanted): Promise<Sh
       const rowTimes = repeats(tr, "number-rows-repeated", MAX_SHEET_ROWS);
       for (let r = 0; r < (here.length ? rowTimes : 0); r++) for (const { column: c, times, cell } of here) for (let i = 0; i < times; i++) {
         if (++count > limits.maxCells) throw tooManyCells(limits, `the sheet ${name}`);
-        cells.push({ ref: `${columnName(c + i)}${row + r + 1}`, ...cell });
+        const placed: OfficeCell = { ref: `${columnName(c + i)}${row + r + 1}`, ...cell };
+        spend(rendered, cellText(placed).length);
+        cells.push(placed);
       }
       row += rowTimes;
     }
