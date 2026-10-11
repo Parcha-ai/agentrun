@@ -19,7 +19,14 @@ async function judgeStub(): Promise<{ url: string; requests: Record<string, unkn
     let text = "";
     req.on("data", (c) => (text += c));
     req.on("end", () => {
-      const body = JSON.parse(text) as { messages: { content: string }[] };
+      let body: { messages: { content: string }[] };
+      try {
+        body = JSON.parse(text) as typeof body;
+      } catch {
+        // A request the caller gave up on (its timeout) while it was still sending: nothing to answer, and no error for the test run.
+        res.writeHead(400).end();
+        return;
+      }
       requests.push(body as unknown as Record<string, unknown>);
       const user = body.messages[1]!.content;
       const reply = (content: string) =>

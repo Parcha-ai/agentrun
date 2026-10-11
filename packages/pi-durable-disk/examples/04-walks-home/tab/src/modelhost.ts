@@ -7,6 +7,8 @@ import { fetchModel, ModelError, parseManifest, type Manifest } from './model.ts
 import { Guard, REFUSAL, sentenceEnd } from './guard.ts';
 import { CLOSE, cutBack, OPEN, rawOf, readable, splitThinking } from './thinking.ts';
 import { resolveSampling, type Sampling } from './sampling.ts';
+import type { HistoryMode } from './history.ts';
+export type { HistoryMode } from './history.ts';
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
 
@@ -27,6 +29,8 @@ export interface HostDeps {
   llm: Llm;
   threads: number;
   mode?: 'progressive' | 'whole';
+  /** What the model is shown of the conversation so far. 'none': nothing, every question is answered fresh (how the model was trained). 'last': the previous exchange, with its ANSWER only. Prior thinking is never shown to the model in either. */
+  history?: HistoryMode;
   now(): number;
   /** True for the disk's "another machine holds the run" refusal (the run is away: not a failure). */
   isNotHolder(e: unknown): boolean;
@@ -41,6 +45,9 @@ export function tokensPerSecond(tokens: number, firstMs: number, lastMs: number)
 /** Where an answer's time went, in ms from the start of its generation. `thinking_end_ms` only when the model thought out loud and the thought ended. */
 export interface AnswerTiming { first_token_ms: number; thinking_end_ms?: number; answer_start_ms?: number; hit_cap: boolean; thinking_only: boolean; thinking_cut: boolean }
 
+/** What one gated generation came to: `text` is the raw reply as shown (thinking tags included) or, when the judge held it, nothing the reader may see. */
+export interface Answered { refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean; cut: boolean; timing: AnswerTiming; /** The caller aborted it: nothing after that point was judged or shown. */ aborted?: boolean }
+
 export type ModelPhase = 'none' | 'loading' | 'loaded' | 'answered' | 'failed';
 export const LOADED_PATH = 'creature/model-loaded.json';
 /** How long a refused write is retried (the run is on its way home): the safety net under the placement signal. */
@@ -48,11 +55,13 @@ export const HOLDER_RETRY_MS = 90_000;
 const SELF_CHECK = 'Who are you?';
 /** The self-check has room for a thought and then an answer; it stops at the end of the first answer sentence. */
 const SELF_CHECK_TOKENS = 256;
-const HISTORY_MAX = 8;
+/** How often a self-check that ended with no answer (all thinking) is asked again before the load counts as failed. */
+const SELF_CHECK_TRIES = 3;
 
 export class ModelHost {
   private readonly d: HostDeps;
   private phase: ModelPhase = 'none';
+  private disposed = false;
   private info: { sha256: string | null; name: string | null; quant: string | null; topic: string | null; mechanism: string | null; load_ms: number | null; first_answer_ms: number | null; answers: number; error: string | null; size_bytes: number | null; tokens_per_s: number | null } =
     { sha256: null, name: null, quant: null, topic: null, mechanism: null, load_ms: null, first_answer_ms: null, answers: 0, error: null, size_bytes: null, tokens_per_s: null };
   private history: ChatMsg[] = [];
@@ -118,9 +127,12 @@ export class ModelHost {
    * `answerBudget`): thinking can never eat the answer's budget, and a stray tag ends the answer instead of appearing in it. A reply that does not open a
    * thought is one request bounded by the answer budget. The guard sees the raw text throughout; the judge reads it as a reader would.
    */
-  private async answer(prompt: string, messages: ChatMsg[], answerBudget: number, show: (shown: string, final?: boolean) => void, stopAfterFirstSentence = false): Promise<{ refused: boolean; text: string; tokens: number; tokens_per_s: number | null; thought: boolean; cut: boolean; timing: AnswerTiming }> {
+  private async answer(prompt: string, messages: ChatMsg[], answerBudget: number, show: (shown: string, final?: boolean) => void, stopAfterFirstSentence = false, external?: AbortSignal): Promise<Answered> {
     const ctl = new AbortController();
     const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a, final) => this.d.judge(prompt, readable(a, final)), emit: show, abort: () => ctl.abort() });
+    // A cancelled request is over for good: the model stops, and a verdict still owed by the judge neither shows nor stops anything.
+    const onExternal = () => { ctl.abort(); guard.stop(); };
+    if (external?.aborted) onExternal(); else external?.addEventListener('abort', onExternal, { once: true });
     const thinkBudget = this.sampling.think_tokens;
     let thought = false, thinkingCut = false, capped = false, first = 0, last = 0, thinkEnd = 0, answerStart = 0;
     const t0 = this.d.now();
@@ -187,7 +199,10 @@ export class ModelHost {
         const s = splitThinking(raw, true);
         raw = rawOf({ thinking: s.thinking, answer: cutBack(s.answer) });
       }
+      const cancelled = (): Answered => ({ refused: false, text: '', tokens, tokens_per_s: null, thought, cut: false, aborted: true, timing: { first_token_ms: Math.max(0, first - t0), hit_cap: false, thinking_only: false, thinking_cut: thinkingCut } });
+      if (external?.aborted) { guard.stop(); return cancelled(); }
       const r = await guard.finish(raw);
+      if (external?.aborted) return cancelled(); // cancelled while the judge was still out: nothing was shown, and nothing is returned as an answer
       const tokens_per_s = tokensPerSecond(tokens, first, last);
       this.info.tokens_per_s = tokens_per_s; // the last answer's rate; null when it could not be measured (never the one before)
       const rel = (n: number) => Math.max(0, n - t0);
@@ -202,6 +217,40 @@ export class ModelHost {
       guard.stop(); // a judgement may still be out: its verdict must not reach this finished answer, or the next one
       ctl.abort();
       throw e;
+    } finally {
+      external?.removeEventListener('abort', onExternal);
+    }
+  }
+
+  /**
+   * The page is done with this model (the run left this tab, or the connection was lost): a load that has not finished stops, and the model's workers are released. Nothing
+   * answers after it; a page that comes back builds a new host (one copy of the model at a time, not one per return).
+   */
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    await this.d.llm.exit().catch(() => undefined);
+    if (this.phase !== 'failed') { this.phase = 'failed'; this.info.error = 'the model was released'; }
+  }
+
+  /** The history policy this host was built with. */
+  historyMode(): HistoryMode { return this.d.history ?? 'last'; }
+
+  /**
+   * One gated answer for a conversation somebody else keeps (the pi provider's way in): the same decoding, budgets, stray-tag handling and judge as `chat()`,
+   * without this host's own history. `messages` is exactly what the model is shown; `prompt` is the question the judge reads the answer against. `show` gets the
+   * raw text so far, and only ever text the judge has passed. Resolves with the reply; a refusal carries no text.
+   */
+  async generate(prompt: string, messages: ChatMsg[], show: (shownRaw: string, final?: boolean) => void, signal?: AbortSignal): Promise<Answered> {
+    if (this.phase !== 'answered') throw new Error('model-not-ready');
+    if (this.busy) throw new Error('busy');
+    this.busy = true;
+    try {
+      const r = await this.answer(prompt, messages, this.sampling.max_tokens, show, false, signal);
+      this.info.answers++;
+      return r;
+    } finally {
+      this.busy = false;
     }
   }
 
@@ -225,22 +274,29 @@ export class ModelHost {
         onProgress: (done, total) => { const t = this.d.now(); if (done === total || t - lastPost >= 1000) { lastPost = t; this.d.post('model-download', { done_chunks: done, total_chunks: total }); } },
       });
     } catch (e) { return this.fail(e instanceof Error ? e.message : String(e)); }
+    if (this.disposed) return;
     const downloadMs = this.d.now() - t0;
     const t1 = this.d.now();
     try { await this.d.llm.load(parts, { threads: this.d.threads }); } catch (e) { return this.fail(`the model would not load: ${e instanceof Error ? e.message : String(e)}`); }
+    if (this.disposed) { await this.d.llm.exit().catch(() => undefined); return; }
     this.info.load_ms = this.d.now() - t1;
     this.phase = 'loaded';
     this.d.post('model-loaded', { load_ms: this.info.load_ms, download_ms: downloadMs, bytes: m.size, threads: this.d.threads, sha256: m.sha256 });
     try { await this.receipt({ answered: false }); } catch (e) { return this.fail(`could not write ${LOADED_PATH}: ${e instanceof Error ? e.message : String(e)}`); }
     // the self-check: the model answers one question through the same judge, so "it loaded and answered" is shown by a measured answer, not assumed
-    const t2 = this.d.now();
-    let r;
-    try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], SELF_CHECK_TOKENS, () => {}, true); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
-    const ms = this.d.now() - t2;
+    // A 1B model sampled at a temperature now and then spends its whole budget thinking and gives no answer: that is asked again (up to SELF_CHECK_TRIES times, without
+    // loading the model again). A refusal by the judge is never asked again, and a failure of the model itself ends it.
+    let r, ms = 0, sc = splitThinking('', true);
+    for (let attempt = 1; ; attempt++) {
+      const t2 = this.d.now();
+      try { r = await this.answer(SELF_CHECK, [{ role: 'user', content: SELF_CHECK }], SELF_CHECK_TOKENS, () => {}, true); } catch (e) { return this.fail(`the self-check failed: ${e instanceof Error ? e.message : String(e)}`); }
+      ms = this.d.now() - t2;
+      sc = splitThinking(r.text, true);
+      if (r.refused || sc.answer.trim() !== '' || attempt >= SELF_CHECK_TRIES) break;
+    }
     this.d.post('model-answer', { n: 0, prompt_chars: SELF_CHECK.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', self_check: true, timing: r.timing, ...(r.tokens_per_s !== null ? { tokens_per_s: r.tokens_per_s } : {}) });
     // ready means a real, judged ANSWER: a thought that ran out of tokens before any answer is not one
     if (r.refused) return this.fail('the self-check answer was refused by the judge');
-    const sc = splitThinking(r.text, true);
     if (sc.answer.trim() === '') return this.fail(sc.thinking !== null ? 'the self-check ended inside its thinking: the model gave no answer' : 'the self-check produced no answer');
     this.info.first_answer_ms = ms;
     this.phase = 'answered';
@@ -258,9 +314,10 @@ export class ModelHost {
     const t0 = this.d.now();
     try {
       this.d.post('chat-start', { id });
-      let msgs: ChatMsg[] = [...this.history, { role: 'user', content: text }];
-      if (msgs.length > HISTORY_MAX) msgs = msgs.slice(-HISTORY_MAX);
-      while (msgs[0].role !== 'user') msgs.shift();
+      const msgs: ChatMsg[] = [...this.history, { role: 'user', content: text }];
+      // An accepted turn clears the saved exchange; it is saved again only if this turn gives a usable answer. A held, empty or failed turn leaves the next question fresh,
+      // never carrying an older exchange (history.ts: the same rule for a conversation pi keeps).
+      this.history = [];
       // what has reached the screen so far: the thinking and the answer are two streams, each only sent when it has grown (and only ever judged text)
       let sentThinking = '', sentAnswer = '';
       const r = await this.answer(text, msgs, this.sampling.max_tokens, (shownRaw, final) => {
@@ -277,8 +334,8 @@ export class ModelHost {
       this.d.post('model-answer', { n, prompt_chars: text.length, tokens: r.tokens, ms, judged: r.refused ? 'refused' : 'passed', timing: r.timing, ...rate });
       if (r.refused) this.d.post('model-refused', { n, reason: 'judge' });
       else if (final.answer) {
-        this.history.push({ role: 'user', content: text }, { role: 'assistant', content: rawOf(final) }); // the model's own format; an unfinished turn (no answer) is not kept
-        if (this.history.length > HISTORY_MAX) this.history = this.history.slice(-HISTORY_MAX);
+        // what the next question may carry: the answer only (the model was trained on single questions with their own thinking, and its thinking about an earlier question made it talk about that question); an unfinished turn (no answer) is not kept
+        this.history = (this.d.history ?? 'last') === 'none' ? [] : [{ role: 'user', content: text }, { role: 'assistant', content: final.answer }];
       }
     } catch (e) {
       done({ error: e instanceof Error ? e.message : String(e) });
