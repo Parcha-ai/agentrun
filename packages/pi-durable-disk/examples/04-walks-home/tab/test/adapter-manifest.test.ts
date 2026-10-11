@@ -60,14 +60,24 @@ test('an adapter trained on another base model is refused, by repo or by revisio
   assert.throws(() => parse(repo), ModelError);
 });
 
+test('a file whose size is a whole number of chunks lists exactly that many: an extra empty chunk is refused', () => {
+  const m = manifest();
+  m.adapters[1] = adapter('moon', 13, file(CH * 2, 13, (i) => adapterChunkPath('moon', i)));
+  assert.equal(parse(m).adapters[1]!.chunks.length, 2);
+  m.adapters[1].chunks.push({ n: 2, path: adapterChunkPath('moon', 2), offset: CH * 2, size: 0, sha256: sha(new Uint8Array(0)) });
+  assert.throws(() => parse(m), /3 chunks listed, but size 2048 in chunks of 1024 is 2/);
+});
+
 test('every kind of wrong manifest is refused with a reason that names the field', () => {
   const cases: [string, (m: any) => void, RegExp][] = [
     ['format', (m) => (m.format = 'gguf-chunks-v1'), /not gguf-base-adapters-v1/],
     ['base revision', (m) => (m.base.model = { repo: MODEL.repo, revision: 'main' }), /40-digit commit/],
     ['adapter name', (m) => (m.adapters[0].name = '../tools.gguf'), /lowercase stem/],
+    ["wllama's projector name", (m) => (m.adapters[0] = adapter('mmproj', 11)), /mmproj\.gguf is one of wllama's own file names/],
+    ["wllama's shard name", (m) => (m.adapters[0] = adapter('model-00001-of-00001', 11)), /model-00001-of-00001\.gguf is one of wllama's own file names/],
     ['duplicate', (m) => (m.adapters[1] = { ...m.adapters[0] }), /listed twice/],
     ['chunk elsewhere', (m) => (m.adapters[1].chunks[0].path = 'home/base/chunk-0000.bin'), /path "home\/base\/chunk-0000\.bin" is not home\/adapters\/moon\/chunk-0000\.bin/],
-    ['chunks short', (m) => m.adapters[1].chunks.pop(), /add up to/],
+    ['chunks short', (m) => m.adapters[1].chunks.pop(), /2 chunks listed, but size 2051 in chunks of 1024 is 3/],
     ['adapter too big', (m) => (m.adapters[1].size = MAX_ADAPTER_BYTES + 1), /over the limit/],
     ['scale 0', (m) => (m.adapters[1].scale = 0), /scale 0 is outside/],
     ['scale 9', (m) => (m.adapters[1].scale = 9), /scale 9 is outside/],

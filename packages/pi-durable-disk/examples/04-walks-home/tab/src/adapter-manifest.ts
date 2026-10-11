@@ -37,6 +37,9 @@ export interface AdapterEntry extends ChunkedFile {
 }
 export interface BaseAdaptersManifest { format: 'gguf-base-adapters-v1'; base: BaseEntry; adapters: AdapterEntry[] }
 
+/** wllama's own file names in its filesystem (the model's shards, the vision projector): an adapter never takes one. */
+export const WLLAMA_FILE_NAMES = /^(model-\d{5}-of-\d{5}\.gguf|mmproj\.gguf)$/;
+
 const HEX = /^[0-9a-f]{64}$/;
 const STEM = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const REVISION = /^[0-9a-f]{40}$/;
@@ -53,6 +56,8 @@ function chunked(label: string, f: any, maxBytes: number, pathOf: (n: number) =>
   if (typeof f.sha256 !== 'string' || !HEX.test(f.sha256)) throw new ModelError(`${label}: sha256 is not 64 lowercase hex digits`);
   if (!isInt(f.chunk_bytes) || f.chunk_bytes < 1 || f.chunk_bytes > MAX_CHUNK_BYTES) throw new ModelError(`${label}: chunk_bytes ${f.chunk_bytes} is outside 1..${MAX_CHUNK_BYTES}`);
   if (!Array.isArray(f.chunks) || f.chunks.length === 0) throw new ModelError(`${label}: no chunks`);
+  const count = Math.ceil(f.size / f.chunk_bytes);
+  if (f.chunks.length !== count) throw new ModelError(`${label}: ${f.chunks.length} chunks listed, but size ${f.size} in chunks of ${f.chunk_bytes} is ${count}`);
   let total = 0;
   f.chunks.forEach((c: any, i: number) => {
     if (!c || c.n !== i) throw new ModelError(`${label} chunk ${i}: n is ${c?.n}, expected ${i}`);
@@ -88,6 +93,7 @@ export function parseBaseAdapters(text: string): BaseAdaptersManifest {
   const adapters = m.adapters.map((a: any, i: number): AdapterEntry => {
     const stem = typeof a?.name === 'string' && a.name.endsWith('.gguf') ? a.name.slice(0, -'.gguf'.length) : '';
     if (!STEM.test(stem)) throw new ModelError(`adapter ${i}: name ${JSON.stringify(a?.name)} is not <stem>.gguf with a lowercase stem`);
+    if (WLLAMA_FILE_NAMES.test(a.name)) throw new ModelError(`adapter ${i}: ${a.name} is one of wllama's own file names`);
     if (names.has(a.name)) throw new ModelError(`adapter ${a.name} is listed twice`);
     names.add(a.name);
     const model = modelRef(a.name, a.model);

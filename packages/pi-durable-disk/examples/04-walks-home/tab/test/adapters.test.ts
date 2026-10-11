@@ -90,6 +90,14 @@ test('another wllama version is refused before anything loads', async () => {
   assert.equal(w.loads.length, 0);
 });
 
+test('every adapter name the manifest parser accepts is one the loader accepts: one rule for wllama\'s own names', async () => {
+  for (const name of ['moon.gguf', 'tools-v2.gguf', 'a_b.gguf']) {
+    const w = fakeWllama();
+    await loadWithAdapters(w, [blob()], [{ name, blob: blob() }], {}, PINNED);
+    assert.equal(w.loads.length, 1, name);
+  }
+});
+
 test('adapter names are safe .gguf names of their own, each once, with bytes; lora_adapters is the loader\'s to set', async () => {
   const bad: [string, Parameters<typeof loadWithAdapters>[2], Record<string, unknown>][] = [
     ['a path', [{ name: '../moon.gguf', blob: blob() }], {}],

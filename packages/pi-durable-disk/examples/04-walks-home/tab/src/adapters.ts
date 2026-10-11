@@ -11,6 +11,7 @@
 
 import wllamaPackage from '@wllama/wllama/package.json' with { type: 'json' };
 import { Wllama } from '@wllama/wllama/esm/index.js';
+import { WLLAMA_FILE_NAMES } from './adapter-manifest.ts';
 
 export const PINNED_WLLAMA = '3.6.1';
 export const PINNED_LIBLLAMA = 'b10663-83d855c';
@@ -32,9 +33,8 @@ export function assertPinnedWllama(v: WllamaVersions = installedVersions()): voi
 /** An adapter file to load beside the base. `name` is its file name in wllama's filesystem and its key in a selection. */
 export interface AdapterFile { name: string; blob: Blob }
 
-/** One safe file name; wllama's own names (the model's shards, the vision projector) are never taken. */
+/** One safe file name; wllama's own names (WLLAMA_FILE_NAMES, shared with the manifest parser) are never taken. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.gguf$/;
-const WLLAMA_NAMES = /^(model-\d{5}-of-\d{5}\.gguf|mmproj\.gguf)$/;
 
 /** The `lora` field of one createChatCompletion request: every loaded adapter, by id, with its scale. */
 export type LoraSelection = { id: number; scale: number }[];
@@ -79,7 +79,7 @@ export async function loadWithAdapters(
   if ('lora_adapters' in params) throw new AdapterError('pass the adapters as AdapterFiles, not as lora_adapters: the loader puts their files in place and sets the paths');
   const seen = new Set<string>();
   for (const a of adapters) {
-    if (!NAME.test(a.name) || WLLAMA_NAMES.test(a.name)) throw new AdapterError(`adapter name ${JSON.stringify(a.name)} is not a safe .gguf file name of its own`);
+    if (!NAME.test(a.name) || WLLAMA_FILE_NAMES.test(a.name)) throw new AdapterError(`adapter name ${JSON.stringify(a.name)} is not a safe .gguf file name of its own`);
     if (seen.has(a.name)) throw new AdapterError(`adapter ${a.name} is listed twice`);
     if (!(a.blob instanceof Blob) || a.blob.size === 0) throw new AdapterError(`adapter ${a.name} has no bytes`);
     seen.add(a.name);
