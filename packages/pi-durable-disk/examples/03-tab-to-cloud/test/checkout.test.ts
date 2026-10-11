@@ -1,7 +1,7 @@
 // Checking a run out to a browser: a consistent copy of the run's store while the tab holds it (GET /api/runs/<id>/store), and the one-way handover
 // (POST /api/runs/<id>/checkout): the claim is released only when the copy's head is the store's head, and nothing runs the run again afterwards.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync as rm } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -147,7 +147,7 @@ describe("checking a run out to a browser", () => {
     assert.equal(state.pipe, undefined, "the refused attach opened no pipe");
     // no copy, no second checkout, no move
     assert.equal((await copyOf(w.id, w.secret)).status, 409);
-    assert.equal((await checkout(w.id, w.secret, w.tab, head)).status, 409);
+    assert.equal((await checkout(w.id, w.secret, w.tab, head + 1)).status, 409, "no second, different checkout");
     const refusedFrames: PipeFrame[] = [];
     const operator = new PipeClient({ url: local.url, run: w.id, token: w.secret, tab: "operator", mode: "operator", onFrame: (f) => refusedFrames.push(f) });
     await operator.ready;
@@ -218,5 +218,62 @@ describe("checking a run out to a browser", () => {
     assert.equal(res.status, 200, await res.clone().text());
     assert.equal(headOf(join(local.root, "runs", w.id, "store", "run.sqlite")), head, "nothing got into the store after the copy");
     w.client.close();
+  });
+
+  it("while a checkout is decided no move starts and nothing attaches, so the run cannot end up live in two places", async () => {
+    const w = await writer("race", 2);
+    const copy = await copyOf(w.id, w.secret);
+    const head = Number(copy.headers.get("x-store-head"));
+    await copy.arrayBuffer();
+    barrierMs = 400;
+    const inflight = w.client.syncFiles([{ path: "r.txt", op: "write", data: Buffer.from("x").toString("base64") }]).then(() => "synced", () => "refused");
+    await new Promise((r) => setTimeout(r, 50));
+    const done = checkout(w.id, w.secret, w.tab, head);
+    await new Promise((r) => setTimeout(r, 100));
+    // a move asked for by an operator, and another tab taking the run over, in the middle of it
+    const frames: PipeFrame[] = [];
+    const operator = new PipeClient({ url: local.url, run: w.id, token: w.secret, tab: "op", mode: "operator", onFrame: (f) => frames.push(f) });
+    await operator.ready;
+    operator.send({ t: "switch", to: "tab" });
+    const taker = new PipeClient({ url: local.url, run: w.id, token: w.secret, tab: "taker", mode: "write", takeover: true });
+    await assert.rejects(taker.ready, (e: Error & { code?: string }) => e.code === "CHECKED_OUT" || /checked out/.test(e.message));
+    for (let i = 0; i < 50 && !frames.some((f) => f.t === "switch-refused"); i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(frames.some((f) => f.t === "switch-refused" && /checked out/.test(f.message)), "the move was refused while the checkout was decided");
+    barrierMs = 0;
+    assert.equal((await done).status, 200);
+    await inflight;
+    assert.equal(local.server.runs.get(w.id)!.placement.where, "checked-out");
+    operator.close();
+  });
+
+  it("a checkout that fails before the release (the mark cannot be written) leaves the run the tab's: its calls are accepted again and a retry works", async () => {
+    const w = await writer("retry");
+    const copy = await copyOf(w.id, w.secret);
+    const head = Number(copy.headers.get("x-store-head"));
+    await copy.arrayBuffer();
+    const blocker = join(local.root, "runs", w.id, "store", "checkout.json.tmp");
+    mkdirSync(blocker); // the mark's tmp file cannot be created
+    const failed = await checkout(w.id, w.secret, w.tab, head);
+    assert.equal(failed.status, 500);
+    await w.note(60); // the tab still commits: nothing is stuck refusing it
+    assert.equal(local.server.runs.get(w.id)!.checkedOut, undefined);
+    assert.equal(local.server.runs.get(w.id)!.placement.where, "tab", "the run is still the tab's");
+    rm(blocker, { recursive: true });
+    const again = Number((await copyOf(w.id, w.secret)).headers.get("x-store-head"));
+    assert.equal((await checkout(w.id, w.secret, w.tab, again)).status, 200, "the retry hands it over");
+    w.client.close();
+  });
+
+  it("a retry of a checkout whose answer was lost is answered as the first time, by the same tab with the same head only", async () => {
+    const w = await writer("again");
+    const copy = await copyOf(w.id, w.secret);
+    const head = Number(copy.headers.get("x-store-head"));
+    await copy.arrayBuffer();
+    assert.equal((await checkout(w.id, w.secret, w.tab, head)).status, 200);
+    const again = await checkout(w.id, w.secret, w.tab, head);
+    assert.equal(again.status, 200);
+    assert.deepEqual(await again.json(), { head, again: true });
+    assert.equal((await checkout(w.id, w.secret, w.tab, head + 1)).status, 409, "another head is not the same handover");
+    assert.equal((await checkout(w.id, w.secret, "someone-else", head)).status, 409, "nor is another tab");
   });
 });

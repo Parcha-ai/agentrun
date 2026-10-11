@@ -29,6 +29,8 @@ export interface CheckoutRecord {
   manifestSha: string;
   chunks: number;
   bytes: number;
+  /** The browser promised to keep this site's storage (navigator.storage.persist): without it the copy may be removed under storage pressure. */
+  persistent: boolean;
 }
 
 const recordName = (run: string) => `checkout-${run.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
@@ -97,11 +99,15 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
   tick("the model's manifest");
   for (const chunk of manifest.chunks) {
     const key = cacheKey(work(chunk.path));
+    // A chunk cached earlier (a checkout that failed after it) is kept only if its bytes are the manifest's: the path is fixed by the chunk's index, so another model's chunk can sit under it.
     const have = await cache.match(key);
-    if (have && Number(have.headers.get("content-length")) === chunk.size) {
-      bytes += chunk.size;
-      tick(chunk.path);
-      continue;
+    if (have) {
+      const old = await have.arrayBuffer();
+      if (old.byteLength === chunk.size && hex(await crypto.subtle.digest("SHA-256", old)) === chunk.sha256) {
+        bytes += chunk.size;
+        tick(chunk.path);
+        continue;
+      }
     }
     const r = await fetch(work(chunk.path), { headers: bearer(o.secret), cache: "no-store" });
     if (!r.ok) throw new Error(`${chunk.path}: ${r.status}`);
@@ -149,4 +155,27 @@ export async function requestCheckout(o: { run: string; secret: string; tab: str
   const body = (await r.json().catch(() => ({}))) as { head?: number; error?: string; code?: string };
   if (!r.ok) throw new CheckoutError(body.code ?? String(r.status), body.error ?? `the pipe answered ${r.status}`, body.head);
   return Number(body.head);
+}
+
+/** How a checkout ended, as far as the tab can know: the pipe handed the run over, refused (it answered, and nothing was released), or never answered (it may or may not have). */
+export type HandoverOutcome = { state: "done"; head: number } | { state: "refused"; error: CheckoutError } | { state: "unknown"; error: Error };
+
+/**
+ * Ask for the handover, and when the answer does not come (a network error, not a refusal) ask again: the pipe answers a retry of a checkout it did make as the first time
+ * (same tab, same head), so a lost answer is recovered, never guessed. An answer from the pipe, whatever it says, ends the asking.
+ */
+export async function confirmHandover(attempt: () => Promise<number>, o: { tries?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<HandoverOutcome> {
+  const tries = o.tries ?? 5;
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let last: Error = new Error("no answer");
+  for (let i = 0; i < tries; i++) {
+    try {
+      return { state: "done", head: await attempt() };
+    } catch (error) {
+      if (error instanceof CheckoutError) return { state: "refused", error };
+      last = error as Error;
+      if (i < tries - 1) await sleep(o.delayMs ?? 1_000);
+    }
+  }
+  return { state: "unknown", error: last };
 }

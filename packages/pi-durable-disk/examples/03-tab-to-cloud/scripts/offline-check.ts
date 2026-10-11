@@ -61,6 +61,14 @@ try {
   // ---- take it offline
   const clicked = Date.now();
   await ev("document.getElementById('offline').click()");
+  // a question sent while the model is being cached must go nowhere: the agent stays idle until the store is copied and handed over
+  await sleep(300);
+  const held = await ev<{ inputDisabled: boolean; sendDisabled: boolean; checkingOut: boolean }>("({ inputDisabled: document.getElementById('input').disabled, sendDisabled: document.getElementById('send').disabled, checkingOut: demo.state.checkingOut })");
+  const usersBefore = (await ev<{ kind: string }[]>("demo.items()")).filter((i) => i.kind === "user").length;
+  await ev(`(() => { const i = document.getElementById("input"); i.disabled = false; i.value = "a question during the checkout"; document.getElementById("send").disabled = false; document.getElementById("send").click(); return true; })()`);
+  await sleep(500);
+  const usersDuring = (await ev<{ kind: string }[]>("demo.items()")).filter((i) => i.kind === "user").length;
+  ok("during the checkout the chat input is held and a question sent anyway is not taken", held.inputDisabled && held.sendDisabled && held.checkingOut && usersDuring === usersBefore, { held, usersBefore, usersDuring });
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 1000);
   const banner = await ev<string>("demo.state.banner");
   ok("taking it offline worked", banner === "", banner);

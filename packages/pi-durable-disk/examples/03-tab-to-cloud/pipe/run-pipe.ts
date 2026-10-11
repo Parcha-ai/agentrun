@@ -256,6 +256,7 @@ export class RunPipe {
    */
   async attach(socket: PipeSocket, tab: string, takeover: boolean, extra: { environments: Environment[]; move?: Move; env?: string; placed?: boolean } = { environments: [] }): Promise<"writer" | "viewer"> {
     this.#assertUsable();
+    if (this.#checkingOut) throw new PipeLostError("CHECKED_OUT", "the run is being checked out to a browser"); // no attach, not even this tab's own, while the handover is decided
     const current = this.#writer && !this.#writer.dead ? this.#writer : undefined;
     if (current && !takeover && current.tab !== tab) {
       this.addViewer(socket);
@@ -1150,14 +1151,15 @@ export class RunPipe {
     if (!writer || writer.dead || writer.tab !== tab) throw new CheckoutRefused("NOT_WRITER", "only the tab that runs the run may check it out");
     if (this.#lost || this.#released || this.#releasing || this.#checkingOut || !this.#store) throw new CheckoutRefused("BUSY", "the run is being released or already being checked out");
     this.#checkingOut = true;
+    const marker = join(this.lease.claim.store, CHECKOUT_MARKER);
+    let current: number;
     try {
       await Promise.allSettled([...writer.inflight]);
-      const current = await storeHead(this.#store);
+      current = await storeHead(this.#store);
       if (current !== head) throw new CheckoutRefused("HEAD_MISMATCH", `the copy's head is ${head} but the store's is ${current}: copy it again`, current);
       // The mark goes onto the disk, beside the store, BEFORE the claim is released: a server that restarts (or another one) finds the run checked out and attaches nothing.
-      const marker = join(this.lease.claim.store, CHECKOUT_MARKER);
+      // It is the whole no-fork guarantee: its bytes are on the disk (fsync the file), then it has its name (rename), then the name is on the disk (fsync the directory).
       const body: CheckoutMarker = { head: current, at: Date.now(), tab, ...(conversation === undefined ? {} : { conversation }) };
-      // The mark is the whole no-fork guarantee: its bytes are on the disk (fsync the file), then it has its name (rename), then the name is on the disk (fsync the directory), and only then is the claim released.
       const file = await open(`${marker}.tmp`, "w");
       try {
         await file.writeFile(JSON.stringify(body));
@@ -1175,19 +1177,22 @@ export class RunPipe {
       } finally {
         await dir.close();
       }
-      try {
-        await this.release({ code: "CHECKED_OUT", message: "the run was checked out to a browser" });
-      } catch (error) {
-        await rm(marker, { force: true }).catch(() => undefined); // the claim was not handed over: the run is not checked out
-        throw error;
-      }
-      this.#log("pipe.checked-out", { tab, head: current });
-      return current;
     } catch (error) {
-      // A refusal leaves the run the tab's; a release that failed half way is the server's to report (the pipe is no longer usable).
-      if (error instanceof CheckoutRefused) this.#checkingOut = false;
+      // Nothing was released: the run is still the tab's, its calls are accepted again, and a retry finds no half-written mark.
+      this.#checkingOut = false;
+      await rm(`${marker}.tmp`, { force: true }).catch(() => undefined);
+      await rm(marker, { force: true }).catch(() => undefined);
       throw error;
     }
+    try {
+      await this.release({ code: "CHECKED_OUT", message: "the run was checked out to a browser" });
+    } catch (error) {
+      // The release began (the writer is retired, the store closed): the pipe cannot go on. The claim was not handed over, so the run is not checked out.
+      await rm(marker, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    this.#log("pipe.checked-out", { tab, head: current });
+    return current;
   }
 
   #releasing = false;

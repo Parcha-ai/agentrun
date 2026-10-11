@@ -198,6 +198,8 @@ interface RunState {
   decisions: PlacementDecision[];
   /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Set from the checkout, and from the mark on the disk (`store/checkout.json`, readMarker) on adopt, hello and the store and checkout routes, so a restarted server finds it too. */
   checkedOut: { at: number; head: number; tab: string } | undefined;
+  /** A checkout is being decided (`POST .../checkout` is in the pipe): no move, attach or placement starts meanwhile, or the run could end up live in two places. */
+  checkingOut: boolean;
 }
 
 /** Base64 bytes of upload chunks a connection may have waiting for the disk before it stops reading, and resumes. */
@@ -421,7 +423,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   /** The writer stopped pinging (a tab closed, a remote host died): the run goes to the cloud's first environment, unplanned. */
   async function writerGone(state: RunState, pipe: RunPipe): Promise<void> {
-    if (state.pipe !== pipe || state.switching) return;
+    if (state.pipe !== pipe || state.switching || state.checkingOut) return;
     const target = options.cloud?.environments.find((e) => e.kind === "cloud");
     const started = Date.now();
     const move = newMove(phraseOf(state.placement), false);
@@ -469,7 +471,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const refuse = reply.refuse;
     if (state.checkedOut) return refuse(CHECKED_OUT_MESSAGE);
     if (!target) return refuse(`no environment ${to}; the environments are ${environments.map((e) => e.id).join(", ")}`);
-    if (state.switching || state.opening) return refuse("a move is already in progress");
+    if (state.switching || state.opening || state.checkingOut) return refuse(state.checkingOut ? "the run is being checked out to a browser" : "a move is already in progress");
     if (from === undefined) return refuse(`the run is ${p.where}`);
     if (from === to) return refuse("the run is already there");
     if (target.kind !== "tab" && !options.cloud) return refuse("no cloud host");
@@ -703,7 +705,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   /** The agent's turn ended in a placed run: ask where it should run now (the browser, once the task is done) and move it there. */
   async function placeAfterTurn(state: RunState): Promise<void> {
     const task = state.placedTask;
-    if (!task || state.switching || state.opening) return;
+    if (!task || state.switching || state.opening || state.checkingOut) return;
     state.placedTask = undefined;
     if (currentEnv(state.placement) === TAB_ENVIRONMENT.id) return;
     const decision = await decide(state, "done", task.text);
@@ -775,7 +777,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     state.clients.set(socket, { mode: frame.mode, canRun: frame.canRun === true });
     await refreshCheckedOut(state);
     // A run checked out to a browser has its one live copy there: nothing attaches to run it again (it would fork the run), and says why.
-    if (state.checkedOut && frame.mode === "write") {
+    if ((state.checkedOut || state.checkingOut) && frame.mode === "write") {
       socket.send({ t: "lost", code: "CHECKED_OUT", message: CHECKED_OUT_MESSAGE });
       ws.close(4005, "CHECKED_OUT");
       return state;
@@ -1153,6 +1155,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       placedTask: undefined,
       decisions: [],
       checkedOut: undefined,
+      checkingOut: false,
     });
     return secret;
   }
@@ -1295,7 +1298,6 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const state = runs.get(runId);
     if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
     await refreshCheckedOut(state);
-    if (state.checkedOut) return json(res, 409, { error: CHECKED_OUT_MESSAGE, code: "CHECKED_OUT" });
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req as AsyncIterable<Buffer>) {
@@ -1314,8 +1316,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
     if (typeof head !== "number" || !Number.isSafeInteger(head) || head < 0) return json(res, 400, { error: "the body needs head, the store's sequence the copy holds" });
     const tab = String(req.headers["x-pda-tab"] ?? "");
+    // A retry of a checkout whose answer was lost: the same tab with the same head is answered as the first time, so the tab can learn the outcome.
+    if (state.checkedOut) return state.checkedOut.tab === tab && state.checkedOut.head === head ? json(res, 200, { head, again: true }) : json(res, 409, { error: CHECKED_OUT_MESSAGE, code: "CHECKED_OUT" });
     const pipe = state.pipe;
-    if (!pipe || pipe.lost || !tab || pipe.writerTab !== tab || state.switching || state.opening) return json(res, 409, { error: "this tab does not hold the run", code: "NOT_WRITER", holder: holderOf(state) });
+    if (!pipe || pipe.lost || !tab || pipe.writerTab !== tab || state.switching || state.opening || state.checkingOut) return json(res, 409, { error: "this tab does not hold the run, or a move or another checkout is in progress", code: "NOT_WRITER", holder: holderOf(state) });
+    state.checkingOut = true;
     try {
       const released = await pipe.checkout(tab, head, typeof conversation === "number" && Number.isSafeInteger(conversation) ? conversation : undefined);
       state.checkedOut = { at: Date.now(), head: released, tab };
@@ -1331,8 +1336,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     } catch (error) {
       if (error instanceof CheckoutRefused) return json(res, 409, { error: error.message, code: error.code, ...(error.head === undefined ? {} : { head: error.head }) });
       log("checkout.failed", { run: runId, error: (error as Error).message });
-      setPlacement(state, { where: "parked", detail: `checkout failed: ${(error as Error).message}` });
+      // Before the release began the run is still the tab's (the pipe accepts its calls again); once it began the pipe cannot go on.
+      if (pipe.releasing) setPlacement(state, { where: "parked", detail: `checkout failed: ${(error as Error).message}` });
       json(res, 500, { error: (error as Error).message });
+    } finally {
+      state.checkingOut = false;
     }
   }
 

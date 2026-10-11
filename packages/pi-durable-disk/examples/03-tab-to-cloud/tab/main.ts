@@ -13,7 +13,7 @@ import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { importStore, openLocalStore, type LocalStore } from "./local-store.ts";
-import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
+import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
 import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
@@ -94,6 +94,7 @@ function badge(): { text: string; tone: string; sub: string } {
   if (p?.where === "tab" && p.env !== "tab") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `through the pipe, generation ${p.generation}` };
   if (p?.where === "tab") return { text: "Running in another tab", tone: "other", sub: `generation ${p.generation} · read-only here` };
   if (p?.where === "moving") return { text: `Moving to ${p.to}`, tone: "moving", sub: p.detail ?? "" };
+  if (p?.where === "checked-out") return { text: "Checked out to a browser", tone: "parked", sub: "its live copy is in that browser; nothing here runs it any more" };
   return { text: "Parked on the disk", tone: "parked", sub: p?.detail ?? "" };
 }
 
@@ -109,7 +110,7 @@ function currentEnv(): { id: string | undefined; moving: boolean } {
 
 function renderSwitcher(): void {
   const now = currentEnv();
-  const busy = state.switching !== undefined || state.leaving !== undefined || now.moving || state.mode === "booting" || state.mode === "connecting";
+  const busy = state.switching !== undefined || state.leaving !== undefined || now.moving || state.mode === "booting" || state.mode === "connecting" || state.placement?.where === "checked-out";
   $("switcher").replaceChildren(
     ...state.environments.map((env) => {
       const active = env.id === now.id;
@@ -253,6 +254,7 @@ function render(): void {
   $("offline").hidden = !canTakeOffline;
   $("offline-status").textContent = state.checkout?.text ?? "";
   $("checkedout").hidden = !offline;
+  $("persist-warning").hidden = !(offline && state.offline && !state.offline.record.persistent);
   $("switcher").hidden = offline;
   renderSwitcher();
   renderChat();
@@ -496,6 +498,9 @@ async function takeOffline(): Promise<void> {
   const runtime = state.runtime, brain = state.brain, conversation = brain?.conversation;
   if (!runtime || !brain || !conversation || state.active !== conversation || state.mode !== "writer" || state.checkout || state.switching) return;
   const say = (text: string) => { state.checkout = { text }; render(); };
+  // From the click on, nothing new starts: the chat input is held and a viewer's message is not acted on, so the agent stays idle through the caching and the copy.
+  state.checkingOut = true;
+  let uncertain = false;
   try {
     say("waiting for the agent to be idle");
     if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
@@ -505,9 +510,10 @@ async function takeOffline(): Promise<void> {
     say("registering the service worker");
     await registerOfflineWorker();
     const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
-    // From here this tab takes nothing from the pipe's viewers and holds its own input: the store must not move between the copy and the handover.
-    state.checkingOut = true;
-    render();
+    if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent started answering while the model was cached: try again");
+    // The browser is asked to keep this site's storage: once the run is handed over, this is the only copy. A browser that will not is a warning (a refusal with ?persist=require).
+    const persistent = (await navigator.storage?.persisted?.().catch(() => false)) || (await navigator.storage?.persist?.().catch(() => false)) || false;
+    if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
     let head = -1;
     let record: CheckoutRecord | undefined;
     for (let attempt = 0; attempt < 3 && head < 0; attempt++) {
@@ -518,23 +524,30 @@ async function takeOffline(): Promise<void> {
       const copied = await check.head();
       await check.storage.close(ctx);
       if (copied !== copy.head) throw new Error(`the copy in this browser is at ${copied}, the server's store at ${copy.head}`);
-      record = { run, state: "copied", head: copy.head, model: state.agentModel, conversation: Number(conversation.id), tab, at: Date.now(), manifestSha: manifest.sha256, chunks: manifest.chunks.length, bytes: cached.bytes };
+      record = { run, state: "copied", head: copy.head, model: state.agentModel, conversation: Number(conversation.id), tab, at: Date.now(), manifestSha: manifest.sha256, chunks: manifest.chunks.length, bytes: cached.bytes, persistent };
       await writeCheckout(record);
       say("handing the run over");
-      try {
-        head = await requestCheckout({ run, secret, tab, head: copy.head, conversation: record.conversation });
-      } catch (error) {
-        if (!(error instanceof CheckoutError && error.code === "HEAD_MISMATCH" && attempt < 2)) throw error; // the store moved after the copy: copy again
-      }
+      const outcome = await confirmHandover(() => requestCheckout({ run, secret, tab, head: copy.head, conversation: record!.conversation }));
+      if (outcome.state === "done") head = outcome.head;
+      else if (outcome.state === "unknown") {
+        // The pipe never answered: it may have released the run or not. This tab does not run the old writer again (it could fork the run); the copy is kept, and a reload asks again.
+        uncertain = true;
+        throw new Error("the server did not answer the handover, so it is not known whether it was made. This browser keeps its complete copy; reload this page when the server can be reached and it will ask again");
+      } else if (!(outcome.error.code === "HEAD_MISMATCH" && attempt < 2)) throw outcome.error; // the store moved after the copy: copy again
     }
     if (head < 0 || !record) throw new Error("the store kept changing: not handed over");
     record = { ...record, state: "done", head };
     await writeCheckout(record);
     await leaveForOffline(record, brain.host);
   } catch (error) {
-    state.checkingOut = false;
     state.checkout = undefined;
-    state.banner = `could not take it offline: ${(error as Error).message}`;
+    if (uncertain) {
+      state.mode = "lost";
+      state.banner = (error as Error).message;
+    } else {
+      state.checkingOut = false;
+      state.banner = `could not take it offline: ${(error as Error).message}`;
+    }
     render();
   }
 }
@@ -793,7 +806,7 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || state.checkingOut || state.brainPending) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
   if (!state.runtime) {
     if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
     input.value = "";
@@ -823,6 +836,22 @@ setInterval(renderStats, 1000);
 async function boot(): Promise<void> {
   const record = run ? await readCheckout(run).catch(() => undefined) : undefined;
   if (record?.state === "done") return void startOffline(record);
+  if (record?.state === "copied" && secret) {
+    // A checkout that was not seen to the end: ask again. The pipe answers a handover it made as the first time; a refusal means nothing was handed over.
+    const outcome = await confirmHandover(() => requestCheckout({ run, secret, tab: record.tab, head: record.head, conversation: record.conversation }), { tries: 3 });
+    if (outcome.state === "done") {
+      const done = { ...record, state: "done" as const };
+      await writeCheckout(done);
+      return void startOffline(done);
+    }
+    if (outcome.state === "unknown") {
+      state.mode = "lost";
+      state.banner = "A handover of this run to this browser was started and the server cannot be reached to learn how it ended. This browser keeps its complete copy; reload when the server can be reached.";
+      render();
+      return;
+    }
+    await forgetCheckout(run); // the server refused: it did not hand the run over, so the copy is stale
+  }
   if (!run || !secret) {
     $("badge-text").textContent = "No run";
     $("badge-sub").textContent = "Open a run's link: /run/<id>#<secret>";
