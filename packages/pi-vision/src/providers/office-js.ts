@@ -145,6 +145,10 @@ function inline(el: El): string {
 }
 const tableRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
 
+/** A word document as one page: headers, the body in reading order, then footers. A list item carries its marker: `-` for a
+ *  bullet and for any numbering the reader does not count (roman, ordinal), `1.` and `a.` for decimal and letter numbering,
+ *  counted per list and level. A table row is `| a | b |`, a cell's paragraphs joined by ` / `, a merged cell followed by
+ *  the empty cells it spans. Inserted text is kept, deleted text is not. */
 async function docx(a: Archive): Promise<Page[]> {
   const [body, numbering] = [await a.part("word/document.xml"), await a.part("word/numbering.xml")];
   if (!body) throw unreadable("a word document without word/document.xml");

@@ -72,6 +72,19 @@ test("a conversion runs the program in a private profile, with an input and an o
   assert.ok(existsSync(join(r.dir.path, "letter.DOCX")), "the source is untouched");
 });
 
+test("a directory whose name has a space, a hash or a question mark reaches LibreOffice as a URL that names it", async (t) => {
+  const r = await rig(t);
+  const odd = join(r.dir.path, "odd dir #1 ?");
+  mkdirSync(odd);
+  const source = await r.source("letter.docx", docx(para("A letter")));
+  const out = await r.provider.office(source, {}, { ...r.call(), tempDir: odd });
+  assert.equal(out.path, join(odd, `soffice-${source.sha256}.pdf`));
+  const [, run] = r.log();
+  const url = /-env:UserInstallation=(\S+)/.exec(run)[1];
+  assert.equal(url, `file://${join(odd, `soffice-${source.sha256.slice(0, 16)}`, "profile").split("/").map(encodeURIComponent).join("/")}`);
+  assert.ok(url.includes("odd%20dir%20%231%20%3F/"), url);
+});
+
 test("two conversions of different documents do not share a directory or a profile", async (t) => {
   const r = await rig(t);
   const [a, b] = await Promise.all([r.source("a.docx", docx(para("one"))), r.source("b.docx", docx(para("two")))]);

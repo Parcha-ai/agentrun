@@ -69,7 +69,7 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
       try {
         for (const dir of ["in", "out", "profile"]) step(await env.createDir(`${work}/${dir}`, { recursive: true }, context), "the working directory could not be made");
         step(await env.writeFile(input, bytes, context), "the document could not be copied for LibreOffice");
-        const ran = await env.exec([command, "--headless", "--invisible", "--norestore", "--nolockcheck", "--nodefault", "--nologo", `-env:UserInstallation=file://${encodeURI(`${work}/profile`)}`, "--convert-to", "pdf", "--outdir", `${work}/out`, input], { timeout }, context);
+        const ran = await env.exec([command, "--headless", "--invisible", "--norestore", "--nolockcheck", "--nodefault", "--nologo", `-env:UserInstallation=file://${`${work}/profile`.split("/").map(encodeURIComponent).join("/")}`, "--convert-to", "pdf", "--outdir", `${work}/out`, input], { timeout }, context);
         if (!ran.ok) {
           if (ran.error.code === "aborted") throw ran.error;
           throw new OfficeMissError(ran.error.code === "timeout" ? "over_budget" : "needs", ran.error.code === "timeout" ? `LibreOffice did not finish within ${timeout} s; read the document's text instead` : `${NEEDS}: ${ran.error.message.split("\n")[0]}`);
