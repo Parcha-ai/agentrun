@@ -194,6 +194,16 @@ export class View {
     this.applyLook();
   }
 
+  /** What is drawn now, for the page's checks: the torso's and each leg pair's colour as drawn, the geometry kinds, the face. */
+  describeLook(): { torso: string | null; legs: string[]; torsoGeometry: string | null; legGeometry: string | null; face: FaceKind } {
+    const hex = (p: Part) => '#' + (p.mesh.material as THREE.MeshStandardMaterial).color.getHexString();
+    const torso = this.parts.find((p) => p.role === 'torso');
+    const legs = this.parts.filter((p) => p.role === 'leg' && p.leg === 'thigh');
+    const pairs = new Map<number, string>();
+    for (const p of legs) if (!pairs.has(p.pair)) pairs.set(p.pair, hex(p));
+    return { torso: torso ? hex(torso) : null, legs: [...pairs.entries()].sort((x, y) => x[0] - y[0]).map(([, c]) => c), torsoGeometry: torso?.mesh.geometry.type ?? null, legGeometry: legs[0]?.mesh.geometry.type ?? null, face: this.face?.kind ?? 'none' };
+  }
+
   private dropFace(): void {
     if (!this.face) return;
     this.face.mesh.parent?.remove(this.face.mesh);

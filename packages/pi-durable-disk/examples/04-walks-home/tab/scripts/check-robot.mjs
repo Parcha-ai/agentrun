@@ -1,0 +1,107 @@
+// The creature page redraws when the agent's robot tools change creature/robot.json, in real Chrome: the page inside a parent that answers storage (the "disk"), a trained policy installed, then
+//   1. looks only (colour, a face, a name): the creature is redrawn, the brain still fits, the label stays "trained", the body hash does not move;
+//   2. a body change with the same joints (longer legs): the old brain keeps driving the new body and the label says it no longer fits (the robot stumbles), the body is published;
+//   3. a pair of legs more: the old network cannot drive twelve joints, so the creature goes untrained;
+//   4. reset: the drawn body again; a policy for it arrives and the label is "trained" and fits.
+// usage: CDP_PORT=9333 node scripts/check-robot.mjs <outdir>    (the repo's 2-DOF fixture policy by default; POLICY=<file> for another)
+import WebSocket from 'ws';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { serve } from './serve.mjs';
+import { defaultDesign } from '../src/design.ts';
+import { applyRobotTool, initialRobot, serializeRobot } from '../../../03-tab-to-cloud/robot-model.ts';
+
+const out = process.argv[2] ?? '.';
+mkdirSync(out, { recursive: true });
+const policyText = readFileSync(process.env.POLICY ?? new URL('../../policy/test/fixtures/policy.json', import.meta.url), 'utf8');
+const server = await serve(0);
+const base = `http://127.0.0.1:${server.address().port}`;
+const v = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/version`)).json();
+const ws = new WebSocket(v.webSocketDebuggerUrl, { perMessageDeflate: false, maxPayload: 256 * 1024 * 1024 });
+await new Promise((r) => ws.once('open', r));
+let id = 0; const pending = new Map();
+ws.on('message', (d) => { const m = JSON.parse(String(d)); if (m.id) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.rej(new Error(m.error.message)) : p.res(m.result); } });
+const send = (method, params = {}, sessionId) => new Promise((res, rej) => { const i = ++id; pending.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params, sessionId })); });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let failed = 0;
+const ok = (name, pass, got) => { console.log(`${pass ? 'ok  ' : 'FAIL'} ${name}${pass ? '' : `  got: ${JSON.stringify(got)}`}`); if (!pass) failed++; };
+
+const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: false });
+const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, width: 900, height: 600 });
+const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
+const S = (m, p) => send(m, p, sessionId);
+try {
+  await S('Page.enable'); await S('Runtime.enable');
+  await S('Emulation.setDeviceMetricsOverride', { width: 900, height: 600, deviceScaleFactor: 1, mobile: false });
+  await S('Page.navigate', { url: `${base}/__harness.html` });
+  const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails)); return r.result.value; };
+  const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
+  for (let i = 0; i < 150; i++) { if ((await inner("document.getElementById('status')?.textContent").catch(() => null)) === 'ready') break; await sleep(200); }
+  const waitEvent = async (type, since, ms = 30000) => { for (let t = 0; t < ms; t += 200) { const n = await ev(`events.slice(${since}).find(e => e.type === ${JSON.stringify(type)}) ?? null`); if (n) return n; await sleep(200); } return null; };
+  const put = (path, text) => ev(`disk[${JSON.stringify(path)}] = new TextEncoder().encode(${JSON.stringify(text)})`);
+  const shot = async (name) => writeFileSync(`${out}/robot-${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+  const label = () => inner("document.getElementById('stateLabel').textContent");
+
+  // the trained policy for the default 2-DOF body
+  let n = await ev('events.length');
+  await put('home/policy.json', policyText);
+  ok('a trained policy arrives for the body on screen', !!(await waitEvent('policy-arrived', n)));
+  ok('the label says trained', /trained/.test(await label()), await label());
+  const sha0 = await inner('__walks.app.bodySha');
+
+  // 1. looks only
+  let robot = initialRobot(defaultDesign(2));
+  for (const [tool, args] of [['set_color', { part: 'legs', color: 'red' }], ['set_color', { part: 'torso', color: 'blue' }], ['set_face', { face: 'happy' }], ['set_shape', { part: 'torso', shape: 'round' }], ['rename', { name: 'Pixel' }]]) robot = applyRobotTool(robot, tool, args).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const e1 = await waitEvent('robot-changed', n);
+  ok('looks only: the page announces robot-changed with no body change and the brain fitting', e1 && e1.body_changed === false && e1.fits === true && e1.name === 'Pixel', e1);
+  const look1 = await inner('__walks.look()');
+  ok('looks only: the legs are drawn red, the torso blue, round, with a happy face', look1.legs.every((c) => c === '#d9423b') && look1.torso === '#3b78d9' && look1.torsoGeometry === 'SphereGeometry' && look1.face === 'happy', look1);
+  ok('looks only: the name is on the page', (await inner("document.getElementById('robotName').textContent")) === 'Pixel' && !(await inner("document.getElementById('robotName').hidden")));
+  ok('looks only: the body hash did not move and the label still says trained', (await inner('__walks.app.bodySha')) === sha0 && /trained/.test(await label()), await label());
+  await sleep(1500);
+  await shot('1-looks');
+
+  // 2. a body change with the same joints
+  robot = applyRobotTool(robot, 'resize', { part: 'leg_length', factor: 1.4 }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const e2 = await waitEvent('robot-changed', n);
+  ok('longer legs: robot-changed says the body changed and the brain no longer fits', e2 && e2.body_changed === true && e2.fits === false, e2);
+  ok('longer legs: the label says so; the old policy still drives the creature', /no longer fits/.test(await label()) && (await inner('__walks.app.policy !== null')), await label());
+  ok('longer legs: a different body hash, and creature.xml on the disk is the new body', (await inner('__walks.app.bodySha')) !== sha0 && (await ev("disk['creature/creature.xml'] ? new TextDecoder().decode(disk['creature/creature.xml']).includes('thigh') : false")));
+  ok('longer legs: the looks survived the rebuild', (await inner('__walks.look()')).legs.every((c) => c === '#d9423b'), await inner('__walks.look()'));
+  const t0 = await inner('__walks.app.sim.time'); await sleep(3000);
+  ok('longer legs: the simulation runs (it stumbles, it does not stop or NaN)', (await inner('__walks.app.sim.time')) > t0 && (await inner('Number.isFinite(__walks.app.sim.torsoPos()[0])')));
+  await shot('2-longer-legs');
+
+  // 3. six legs: the old network cannot drive it
+  robot = applyRobotTool(robot, 'set_legs', { pairs: 3 }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const e3 = await waitEvent('robot-changed', n);
+  ok('six legs: the body changed, and with no policy that fits the creature is untrained', e3 && e3.body_changed === true && (await inner('__walks.app.policy === null')) && /untrained/.test(await label()), { e3, label: await label() });
+  await shot('3-six-legs');
+
+  // 4. reset: the drawn body, and a policy for it
+  robot = applyRobotTool(robot, 'reset', {}).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const e4 = await waitEvent('robot-changed', n);
+  ok('reset: the drawn body again (its hash is the first one)', e4 && (await inner('__walks.app.bodySha')) === sha0, e4);
+  ok('reset: the looks are the page defaults again', (await inner('__walks.look()')).face === 'none', await inner('__walks.look()'));
+  n = await ev('events.length');
+  await put('home/policy.json', policyText + ' ');
+  ok('a policy for the drawn body arrives again: trained, and it fits', !!(await waitEvent('policy-arrived', n)) && /trained/.test(await label()) && (await inner('__walks.fits()')) === true, await label());
+  await shot('4-reset');
+  ok('nothing the robot did produced an error on the page', (await inner("document.getElementById('err').textContent")) === '', await inner("document.getElementById('err').textContent"));
+} catch (e) {
+  console.log(`FAIL ${e.message}`);
+  failed++;
+} finally {
+  await send('Target.closeTarget', { targetId }).catch(() => {});
+  await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
+  ws.close(); server.close();
+}
+console.log(failed ? `${failed} FAILED` : 'all checks passed');
+process.exit(failed ? 1 : 0);
