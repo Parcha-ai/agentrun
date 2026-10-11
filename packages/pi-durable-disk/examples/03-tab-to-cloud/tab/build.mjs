@@ -33,6 +33,10 @@ if (process.argv.includes("--fetch") && !(existsSync(target) && digest(target) =
 mkdirSync(join(out, "vendor"), { recursive: true });
 copyFileSync(join(here, "../../04-walks-home/tab/node_modules/@wllama/wllama/esm/wasm/wllama.wasm"), join(out, "vendor", "wllama.wasm"));
 
+// The browser store (local-store.ts): SQLite-WASM runs in a worker of its own, its wasm next to it.
+copyFileSync(join(here, "../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm"), join(out, "vendor", "sqlite3.wasm"));
+await build({ entryPoints: [join(here, "sqlite-worker.ts")], outfile: join(out, "vendor", "sqlite-worker.js"), bundle: true, format: "esm", platform: "browser", target: "es2022", minify: true, logLevel: "warning" });
+
 const result = await build({
   entryPoints: [join(here, "main.ts")],
   outfile: join(out, "main.js"),
