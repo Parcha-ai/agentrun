@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A planned stop of a `modalHost` instance now kills anything the agent left running under the run's mount.** A program the agent
+  started detached (a server, a browser) is outside the instance's process tree, so the instance cannot end it when it drains; it
+  keeps the mount busy, `archil unmount` fails and the run's delegation stays held after the box is gone (found live: 1 held). The
+  launcher's `stop --reap-detached` SIGKILLs every process whose working directory, root or open file is under the run's mount, except
+  the instance's own tree and archil's daemon, before it signals the instance; the instance then drains and releases as usual. It is
+  on by default in `modalHost` (the box belongs to the run) and opt-in on `daytonaHost` (`reapOnStop`, default false: no change for
+  existing callers). Only an unplanned death leaves the claim for the next takeover or a revoke.
+- `modalHost` refuses `runtime: "gvisor"` without `command` at construction, with a `DaytonaHostError` coded `INVALID_ARGUMENT`: a gVisor
+  sandbox cannot mount the disk safely (measured: none of ten acknowledged writes survived), so it only runs an agent started another way.
+  `mountBlockers` also spares the launcher (the instance's parent), and a failed Modal app, image or volume lookup is retried by the next
+  start instead of being remembered.
+- New host driver `modalHost` (and its client, `modalSandboxes`): one Modal sandbox per instance, as `daytonaHost` does for Daytona,
+  through the Modal SDK passed in by the caller (no dependency added). `daytonaHost` gains a `driver` option (the `driver` of its
+  handles, default `"daytona"`) so a driver built on it names its own handles; nothing changes for existing callers.
+
+
 **A dead client's private directories**
 - Each client holds delegations on its own private directories too, `.archil/client-<clientId>` and its `unlinked/`, which the
   control API lists with no path. A client that dies (its FUSE daemon killed under a running instance, a lost host) leaves them

@@ -6,8 +6,9 @@
 //                   demo server's link instead, send model calls through it and stream events over it (cloud-link.ts)
 //   DEMO_MODEL      the model id
 //   DEMO_MODEL_KEY_FILE a file holding the model credential (a sandbox's secret placeholder), sent as a bearer token
-//   DEMO_SWITCH_ID, DEMO_SWITCH_FROM, DEMO_SWITCH_PLANNED: the move that brought the run here; its notice is admitted
+//   DEMO_SWITCH_ID, DEMO_SWITCH_FROM, DEMO_SWITCH_PLANNED (DEMO_SWITCH_BY=agent, DEMO_SWITCH_REASON: the agent chose it): the move that brought the run here; its notice is admitted
 //                   before the run resumes (environment.ts), described by this host's probe (host-probe.ts)
+//   DEMO_DISPLAY    the X display of a desktop this host runs (":1"): the agent gets the computer tool for it (computer-tool.ts)
 //   DEMO_EVENTS_LOG optional: a file this instance appends one JSON line to when it opens and after each commit it made
 //                   (its generation, the commit's sequence, the time), the evidence that no write of it lands after a
 //                   takeover
@@ -16,6 +17,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
+import { xdotoolDriver } from "./computer-driver.ts";
 import { probeHost } from "./host-probe.ts";
 import { startCloudLink, type CloudLink } from "./cloud-link.ts";
 
@@ -36,15 +38,23 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
     await run.claim.barrier();
   };
   return {
-    registry: agentRegistry(durable),
+    registry: agentRegistry(durable, { ...(link ? { switchChannel: link.switchChannel } : {}), ...(process.env.DEMO_DISPLAY ? { computer: xdotoolDriver() } : {}) }),
     models: agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) }),
     settings: SETTINGS,
     root: { agent: rootAgent(modelId) },
     async beforeResume({ harness }) {
       const id = process.env.DEMO_SWITCH_ID;
       if (!id) return;
-      const move = { id, from: process.env.DEMO_SWITCH_FROM ?? "another host", planned: process.env.DEMO_SWITCH_PLANNED !== "0" };
+      const move = {
+        id,
+        from: process.env.DEMO_SWITCH_FROM ?? "another host",
+        planned: process.env.DEMO_SWITCH_PLANNED !== "0",
+        ...(process.env.DEMO_SWITCH_BY === "agent" ? { by: "agent" as const, reason: process.env.DEMO_SWITCH_REASON ?? "" } : {}),
+        ...(process.env.DEMO_SWITCH_BY === "placement" ? { by: "placement" as const, reason: process.env.DEMO_SWITCH_REASON ?? "", ...(process.env.DEMO_SWITCH_PROBABILITY ? { probability: Number(process.env.DEMO_SWITCH_PROBABILITY) } : {}) } : {}),
+      };
       await admitNotice(harness, rootAgent(modelId), await probeHost(), move, ctx);
+      // Told to the server (over the link, when there is one): the move is done, and it can time it.
+      link?.notifySwitched(id);
       if (process.env.DEMO_EVENTS_LOG) appendFileSync(process.env.DEMO_EVENTS_LOG, `${JSON.stringify({ at: new Date().toISOString(), event: "notice", switchId: id, pid: process.pid })}\n`);
     },
     async onOpen(opened) {

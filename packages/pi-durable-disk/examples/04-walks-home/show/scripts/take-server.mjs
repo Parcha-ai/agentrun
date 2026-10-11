@@ -33,12 +33,25 @@ const local = arg("local", "");
 const mountRoot = arg("mount-root", "");
 const run = arg("run", "walks-home");
 const cloud = arg("cloud", "none");
+// A cloud host from a module (D4's Modal VM and GPU: 04-walks-home/vm/cloud-module.ts): its --cloud-arg KEY=VALUE pairs (any number) go to
+// the module. --modal runs the server with the Modal token pair too (with-modal, the other wrapper that holds a key for this lane).
+const cloudModule = arg("cloud-module", "");
+const cloudArgs = process.argv.flatMap((a, i) => (a === "--cloud-arg" ? [process.argv[i + 1]] : []));
+// Where a message should run, decided by a typed question (04-walks-home/vm/placer.ts): its --placer-arg KEY=VALUE pairs go to the module.
+// The dark-content judge the tab asks through this server (03 pipe/judge.ts): its model, endpoint and the NAME of the env var holding its key.
+const judgeArgs = ["judge-model", "judge-url", "judge-key-env"].flatMap((n) => (arg(n, "") ? [`--${n}`, arg(n, "")] : []));
+const noRestore = process.argv.flatMap((a, i) => (a === "--no-restore" ? [process.argv[i + 1]] : []));
+const placerModule = arg("placer-module", "");
+const placerArgs = process.argv.flatMap((a, i) => (a === "--placer-arg" ? [process.argv[i + 1]] : []));
+const withModal = process.argv.includes("--modal");
+const budget = arg("budget", "1500000");
 const evidenceReadback = process.argv.includes("--evidence-readback");
 // Every disk resource the server creates is recorded here (default: inside the private directory): the caller names its own.
 const ledger = arg("ledger", join(dir, "ledger.json"));
 if (!["none", "remote-local"].includes(cloud)) die(`--cloud ${cloud}: only none or remote-local`);
 const wrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-archil");
-const TAB_WRITABLE = "creature/creature.xml,creature/body.json,creature/designs.sqlite";
+// More paths the tab page may write (the episode 2 tab writes its receipt: creature/model-loaded.json): --tab-writable-extra a,b
+const TAB_WRITABLE = ["creature/creature.xml", "creature/body.json", "creature/designs.sqlite", ...arg("tab-writable-extra", "").split(",").filter(Boolean)].join(",");
 const redact = (text) => text.replace(/(\/run\/[A-Za-z0-9_-]+)#[A-Za-z0-9_-]+/g, "$1#<redacted>").replace(/Bearer\s+\S+/g, "Bearer <redacted>");
 const die = (message) => {
   console.error(`take-server: ${message}`);
@@ -72,7 +85,8 @@ rmSync(tokenFile, { force: true });
 rmSync(logFile, { force: true });
 writeFileSync(logFile, "", { mode: 0o600 });
 
-const port = await freePort();
+// A fixed port when a person must tunnel to it (live mode with the tab in their own browser); otherwise a free one.
+const port = arg("port", "") ? Number(arg("port", "")) : await freePort();
 const serveArgs = [
   "serve.ts",
   "--port", String(port),
@@ -80,15 +94,41 @@ const serveArgs = [
   "--run", run,
   "--model", "gpt-6-luna",
   "--model-url", "http://127.0.0.1:9421/v1",
-  "--budget", "1500000",
+  "--budget", budget,
   "--admin-token-file", tokenFile,
   "--tab-writable", TAB_WRITABLE,
   "--log", logFile,
+  // How long the writer's silence is tolerated before the run is declared tab-less (a busy software-GL Chrome can starve a page's pings).
+  "--grace-ms", arg("grace-ms", "5000"),
+  // How long a move to a remote host (a GPU box that may still be warming) may take before it fails; absent: the server's own bound (90 s).
+  ...(arg("remote-start-ms", "") ? ["--remote-start-ms", arg("remote-start-ms", "")] : []),
   "--cloud", cloud,
+  ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
+  ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
+  ...noRestore.flatMap((p) => ["--no-restore", p]),
+  ...judgeArgs,
   ...(evidenceReadback ? ["--evidence-readback"] : []),
   ...(local ? ["--local", local] : ["--mount-root", mountRoot, "--ledger", ledger]),
 ];
-const [cmd, args] = local ? [process.execPath, serveArgs] : [wrapper, ["--", process.execPath, ...serveArgs]];
+const modalWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-modal");
+if (withModal && !existsSync(modalWrapper)) die(`${modalWrapper} is missing: the Modal keys only come through it`);
+let [cmd, args] = local
+  ? [process.execPath, serveArgs]
+  : withModal
+    ? [modalWrapper, ["--", wrapper, "--", process.execPath, ...serveArgs]]
+    : [wrapper, ["--", process.execPath, ...serveArgs]];
+// --typesafe: the placer asks TypeSafe Jev: the key reaches the server only through this wrapper (with-typesafe), never through this script.
+const typesafeWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-typesafe");
+if (process.argv.includes("--typesafe")) {
+  if (!existsSync(typesafeWrapper)) die(`${typesafeWrapper} is missing: the TypeSafe key only comes through it`);
+  [cmd, args] = [typesafeWrapper, ["--", cmd, ...args]];
+}
+// --openai: the judge's key reaches the server only through this wrapper (with-openai: OPENAI_API_KEY in the child's environment, nothing printed).
+const openaiWrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-openai");
+if (process.argv.includes("--openai")) {
+  if (!existsSync(openaiWrapper)) die(`${openaiWrapper} is missing: the judge's key only comes through it`);
+  [cmd, args] = [openaiWrapper, ["--", cmd, ...args]];
+}
 const child = spawn(cmd, args, { cwd: ex03, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}) }, stdio: "ignore" });
 const origin = `http://127.0.0.1:${port}`;
 const stop = () => {

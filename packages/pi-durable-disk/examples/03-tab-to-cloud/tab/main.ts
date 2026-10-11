@@ -11,6 +11,7 @@ import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
+import { FrameSwitchChannel } from "../switch-tool.ts";
 import { fromBase64, untag, type Environment, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
@@ -295,9 +296,10 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const pkg = await ensureComputer();
   const sandbox = await wasmer!.sandboxes.create({ packages: [pkg], shell: pkg.command("bash"), env: { LANG: "C.UTF-8" } });
   state.environments = attached.environments;
-  const facts = tabFacts(pkg.commands, { cpus: navigator.hardwareConcurrency, ...((navigator as { deviceMemory?: number }).deviceMemory ? { memoryGb: (navigator as { deviceMemory?: number }).deviceMemory! } : {}) });
+  // No core or memory count: navigator.hardwareConcurrency and deviceMemory describe the machine the browser runs on, not what this sandbox can use.
+  const facts = tabFacts(pkg.commands);
   const env = new WasmerEnv(sandbox as never, { id: `wasmer:${run}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
-  const runtime = await startTab({ client, attached, env, workspace: new Workspace(wasmerWorkspaceFs(env)), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  const runtime = await startTab({ client, attached, env, workspace: new Workspace(wasmerWorkspaceFs(env)), host: { switchChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   state.bootMs = performance.now() - started;
@@ -337,7 +339,16 @@ function applyView(event: Tagged): void {
   } else for (const e of view.events) state.chat.apply(e);
 }
 
+/** The agent's switch_environment tool talks to the server over this tab's pipe. */
+const switchChannel = new FrameSwitchChannel((frame) => {
+  const client = state.client;
+  if (!client || client.lost) return false;
+  client.send(frame);
+  return true;
+});
+
 function onFrame(frame: PipeFrame): void {
+  if (switchChannel.accept(frame)) return;
   switch (frame.t) {
     case "placement":
       state.placement = frame.placement;

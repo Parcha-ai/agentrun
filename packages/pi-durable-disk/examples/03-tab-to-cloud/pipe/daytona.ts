@@ -57,7 +57,7 @@ type Log = (event: string, data?: Record<string, unknown>) => void;
 type LedgerLike = { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
 
 /** The agent's modules a box runs: the cloud app (with a disk client) and the remote host (through the pipe). */
-const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environment.ts", "host-probe.ts", "host-fs.ts", "remote-host.ts", "wire.ts", "tab/pipe-client.ts", "tab/runtime.ts", "tab/workspace.ts"];
+export const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environment.ts", "switch-tool.ts", "computer-tool.ts", "computer-driver.ts", "host-probe.ts", "host-fs.ts", "remote-host.ts", "capped-env.ts", "wire.ts", "tab/pipe-client.ts", "tab/runtime.ts", "tab/workspace.ts"];
 
 /**
  * The app as a box installs it: the package (npm pack of this checkout), the agent's modules, their manifest. `digest`
@@ -100,7 +100,9 @@ const APP_DEPENDENCIES = { "@earendil-works/pi-durable": "1.0.4", "@earendil-wor
  * Install the pinned runtime (Node, archil, both sha256-checked), the app, the run user and its sudoers line. Each part
  * an image already has (gpuDockerfile's: the runtime and the app's dependencies) is skipped.
  */
-export function prepareScript(uid: number, gid: number): string {
+export function prepareScript(uid: number, gid: number, options: { archil?: boolean } = {}): string {
+  // A host that never mounts the disk (it runs the agent through the pipe) needs no archil client: its image may not have one.
+  const needArchil = options.archil === false ? "false" : "! command -v archil >/dev/null";
   // The run user's ids are this server's, so files the agent writes on the disk belong to the same user everywhere.
   return String.raw`
 set -euo pipefail
@@ -116,7 +118,7 @@ if [ ! -x /opt/node24/bin/node ]; then
   rm -f node.tar.xz
 fi
 step node
-if ! command -v archil >/dev/null; then
+if ${needArchil}; then
   curl -fsSLo archil.deb ${ARCHIL_URL}
   echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
@@ -310,6 +312,8 @@ export interface DaytonaCloudOptions {
   readonly modelSecret?: string;
   /** A runtime snapshot on a GPU class (scripts/daytona-snapshot.ts --from daytona-gpu): offers "Daytona GPU". */
   readonly gpuSnapshot?: string;
+  /** The agent in a box asks to move (switch_environment, over the link): the server's answer. */
+  readonly onSwitch?: (ref: RunRef, to: string, reason: string) => Promise<{ switchId: string }>;
 }
 
 export async function daytonaCloud(options: DaytonaCloudOptions) {
@@ -514,7 +518,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
       options.log("cloud.ensure", { run: ref.id, action: result.action, reason: result.reason, revoked: result.revoked.length, startMs: result.startMs, ms: Date.now() - started, box: result.handle.name });
       options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
       const box = String(result.handle.sandboxId);
-      const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
+      const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, ...(options.onSwitch ? { onSwitch: (to: string, reason: string) => options.onSwitch!(ref, to, reason) } : {}), log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
       const serve = { url: await previewUrl(box, BOX_SERVE_PORT), token: serveTokens.get(box) ?? "" };
       const previous = placed.get(ref.id);
       placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), serve, handle: result.handle, token: result.token.identifier, box, env: cls.env.id });

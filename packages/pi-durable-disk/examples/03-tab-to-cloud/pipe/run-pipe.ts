@@ -39,6 +39,7 @@ import {
   toBase64,
   untag,
   workspaceDigest,
+  lazyPath,
   type Environment,
   type FileChange,
   type FileEntry,
@@ -77,6 +78,12 @@ export interface RunPipeOptions {
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
   /** An attach refuses a workspace larger than this (its writer has its own limit, often smaller). Default 1 GiB. */
   readonly restoreLimitBytes?: number;
+  /**
+   * Prefixes of work/ an attach does not send (a large result written by the agent that nothing in the writer needs in its own
+   * workspace; a reader fetches it from the disk). They count toward no restore limit, are left out of the attached frame and the
+   * restore, and the frame says which they are. Everything else about them (the disk, the digests, the release evidence) is unchanged.
+   */
+  readonly noRestore?: readonly string[];
   /** A writer's unfinished uploads together may hold this many bytes; past it, an upload fails. Default 4 GiB. */
   readonly uploadLimitBytes?: number;
   /** A writer may have this many unfinished uploads; an upload past it is refused. Default 1024. */
@@ -225,7 +232,7 @@ export class RunPipe {
    * and its later frames are refused, after its frames in flight settled); otherwise the socket becomes a viewer.
    * Resolves with what happened.
    */
-  async attach(socket: PipeSocket, tab: string, takeover: boolean, extra: { environments: Environment[]; move?: Move; env?: string } = { environments: [] }): Promise<"writer" | "viewer"> {
+  async attach(socket: PipeSocket, tab: string, takeover: boolean, extra: { environments: Environment[]; move?: Move; env?: string; placed?: boolean } = { environments: [] }): Promise<"writer" | "viewer"> {
     this.#assertUsable();
     const current = this.#writer && !this.#writer.dead ? this.#writer : undefined;
     if (current && !takeover && current.tab !== tab) {
@@ -263,11 +270,13 @@ export class RunPipe {
       t: "attached",
       epoch,
       generation: this.lease.generation,
-      manifest: manifest.entries,
+      manifest: manifest.entries.filter((e) => !lazyPath(e.path, this.#options.noRestore ?? [])),
       model: this.#options.model.options.model,
       budget: { used: this.#options.model.spent, cap: this.#options.model.options.budgetTokens },
       environments: extra.environments,
       ...(extra.move ? { move: extra.move } : {}),
+      ...(extra.placed ? { placed: true } : {}),
+      ...(this.#options.noRestore?.length ? { noRestore: [...this.#options.noRestore] } : {}),
     });
     // Its grace starts now: its pings reach the pipe only once the attach is done.
     writer.attaching = false;
@@ -303,7 +312,7 @@ export class RunPipe {
     };
     try {
       for (const entry of manifest.entries) {
-        if (entry.kind !== "file") continue;
+        if (entry.kind !== "file" || lazyPath(entry.path, this.#options.noRestore ?? [])) continue;
         if (entry.size === 0) {
           await still(entry.path);
           continue;
@@ -545,6 +554,11 @@ export class RunPipe {
   /** A file under work/ as the mount has it; undefined when there is none there (a directory or a link is not a file). */
   async readWork(path: string): Promise<Uint8Array | undefined> {
     this.#assertUsable();
+    if (this.#releasing) throw new Error("the run is being released: read it from the disk");
+    return this.#reading(this.#readWork(path));
+  }
+
+  async #readWork(path: string): Promise<Uint8Array | undefined> {
     const parts = RunPipe.segments(path);
     let at = this.lease.claim.work;
     for (const [i, part] of parts.entries()) {
@@ -809,13 +823,15 @@ export class RunPipe {
       else if (info.isDirectory()) entries.push({ path, kind: "directory" });
       else {
         // Refused before it is read: a file past the limit is never hashed only to be refused.
-        if (bytes + info.size > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
+        const lazy = lazyPath(path, this.#options.noRestore ?? []);
+        if (!lazy && bytes + info.size > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
         const { sha256, key, recorded } = await this.#fileDigest(path, full);
         stable &&= recorded;
         const size = Number(key.size);
-        bytes += size;
+        // files and bytes are what an attach restores: lazy prefixes are left out of both.
+        if (!lazy) bytes += size;
         if (bytes > limit) throw new Error(`the workspace is larger than ${limit} bytes`);
-        files++;
+        if (!lazy) files++;
         keys.set(path, key);
         entries.push({ path, kind: "file", size, sha256, mode: info.mode & 0o777, mtimeMs: info.mtimeMs });
       }
@@ -900,7 +916,10 @@ export class RunPipe {
   async viewerFiles(): Promise<FileEntry[]> {
     const out: FileEntry[] = [];
     let bytes = 0;
-    await this.#walkWork(async (path, full, info) => {
+    const lazy = this.#options.noRestore ?? [];
+    await this.#reading(this.#walkWork(async (path, full, info) => {
+      // A lazy prefix is a large result a reader fetches by path: a viewer is not sent it with every change (and a release does not wait on it).
+      if (lazyPath(path, lazy)) return;
       if (info.isSymbolicLink()) out.push({ path, kind: "symlink", target: await readlink(full) });
       else if (info.isDirectory()) out.push({ path, kind: "directory" });
       else {
@@ -908,7 +927,7 @@ export class RunPipe {
         if (bytes > VIEW_FILES_LIMIT) throw new Error(`the workspace is larger than ${VIEW_FILES_LIMIT} bytes`);
         out.push({ path, kind: "file", data: toBase64(await readFile(full)), mode: info.mode & 0o777, mtimeMs: info.mtimeMs });
       }
-    });
+    }));
     return out;
   }
 
@@ -932,7 +951,7 @@ export class RunPipe {
   }
 
   async #broadcastFiles(): Promise<void> {
-    if (this.#viewers.size === 0) return;
+    if (this.#viewers.size === 0 || this.#releasing) return;
     try {
       const files = await this.viewerFiles();
       this.#broadcast({ t: "files-changed", files }, false);
@@ -1046,6 +1065,9 @@ export class RunPipe {
     if (this.#released) return;
     if (this.#lost) throw this.#lost;
     clearInterval(this.#goneTimer);
+    // No new read of work/ from here; the ones in flight finish first (an open file keeps the mount busy: the unmount would fail).
+    this.#releasing = true;
+    await Promise.race([Promise.allSettled([...this.#reads]), new Promise((r) => setTimeout(r, 15_000).unref())]);
     if (this.#writer) await this.#retire(this.#writer, "RELEASED", "the run was released");
     for (const abort of this.#models.values()) abort.abort();
     await this.#store?.storage.close(ctx);
@@ -1069,6 +1091,19 @@ export class RunPipe {
       (workDigest) => this.#log("pipe.released", { ms, workDigest, workSource, generation }),
       (error: Error) => this.#log("pipe.released", { ms, workDigest: `unreadable: ${error.message}`, workSource, generation }),
     );
+  }
+
+  #releasing = false;
+  /** The release has begun: work/ is no longer read through this pipe (the disk serves it). */
+  get releasing(): boolean {
+    return this.#releasing;
+  }
+  #reads = new Set<Promise<unknown>>();
+  #reading<T>(p: Promise<T>): Promise<T> {
+    this.#reads.add(p);
+    const done = () => void this.#reads.delete(p);
+    p.then(done, done);
+    return p;
   }
 
   /** `workspaceDigest` of work/ as the disk has it (from the digests the pipe keeps; a file read only if it changed). */

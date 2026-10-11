@@ -58,13 +58,13 @@ const modelChat = new ModelChat();
 $<HTMLIFrameElement>("tab").addEventListener("load", () => modelChat.abandon());
 
 /** Everything the page remembers about the take on screen. It all starts over when the feed does (a retake, a reset). */
-const take = { generation: -1, notes: [] as Note[], train: parseObsessionTrain("") as ObsessionTrain, progressText: "", find: emptyFind() as Find, findText: "", clampedAt: null as number | null, model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null };
+const take = { generation: -1, notes: [] as Note[], train: parseObsessionTrain("") as ObsessionTrain, progressText: "", find: emptyFind() as Find, findText: "", clampedAt: null as number | null, model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null, pendingLoaded: null as { m: ModelEvent; scripted: boolean } | null };
 function syncTake(): void {
   if (take.generation === feed.generation) return;
   const first = take.generation === -1;
   take.generation = feed.generation;
   if (first) return;
-  Object.assign(take, { notes: [], train: parseObsessionTrain(""), progressText: "", find: emptyFind(), findText: "", clampedAt: null, model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null });
+  Object.assign(take, { notes: [], train: parseObsessionTrain(""), progressText: "", find: emptyFind(), findText: "", clampedAt: null, model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null, pendingLoaded: null });
   said.reset();
   foundSaid.reset();
   loadGate.reset();

@@ -9,6 +9,8 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import type { Context } from "@earendil-works/chord";
+import { computerTool, type ComputerDriver } from "./computer-tool.ts";
+import { switchEnvironment, type SwitchChannel } from "./switch-tool.ts";
 
 export const PROVIDER = "pipe";
 
@@ -18,9 +20,12 @@ export const SETTINGS: HarnessSettings = {
 };
 
 export const INSTRUCTIONS = `You are a coding agent with your own small computer: a shell (bash with coreutils, node and npm), and a workspace directory that is your current directory.
-Your computer can move while you work: from a browser tab to a cloud machine and back. Your memory (this conversation) and your workspace files move with you; programs that were running do not.
+Your computer can move while you work: from a browser tab to a cloud machine and back. You do not live in the browser: you run on whichever machine you are on now, and your home is your run's cloud disk, which your user's server holds. Never say you live in the browser; say where you are running. Your memory (this conversation) and your workspace files move with you; programs that were running do not.
 Use relative paths for files in your workspace, never absolute ones. Prefer small steps: write a file, then run it.
-When you finish a request, say in one or two sentences what you did and which files changed.`;
+Your user draws in the page next to this chat, and the drawing is saved to your run's disk: a creature they drew is in creature/ (creature.xml, body.json) on the machines you move to, though this tab's own workspace may not show it yet. "Teach it to walk" means training a walking policy for that creature, which needs a GPU machine: move there at once, do not ask what they mean, and do not look for the files here first.
+When you finish a request, say in one or two sentences what you did and which files changed.
+When what you were asked needs more than this machine has (a GPU, many cores, a desktop), move yourself where it exists with switch_environment, follow the instructions in the notice you get on arrival, and come back when the work is done.
+The person watches your chat while you work, so talk to them in short plain sentences: one line before you move saying where you are going and why, one on arrival saying what you are doing, one back home saying the result. Never mention file names, paths, command lines or jargon to them: say what happened to their creature.`;
 
 /** pi's coding tools with `read` declared replay-safe, under pi's extension name (as the package's ArchilCodingTools). */
 export function codingTools(): Extension {
@@ -100,7 +105,7 @@ export function agentModels(access: ModelAccess) {
         provider: PROVIDER,
         baseUrl: access.baseUrl,
         reasoning: true,
-        input: ["text"],
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 200_000,
         maxTokens: 16_000,
@@ -121,10 +126,28 @@ export function rootAgent(modelId: string): AgentChange {
   return { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
 }
 
-/** The registry both sides install, in the same order. */
-export function agentRegistry(durable: (context: Context) => Promise<void>): Registry {
+/** What a host can offer the agent beyond the shared tools; a tool the host cannot serve is still registered, and refuses. */
+export interface HostTools {
+  /** How this host asks the server to move the run (the pipe of a tab or a remote host, the link of a cloud host). */
+  readonly switchChannel?: SwitchChannel;
+  /** The environment ids this host knows, for the move tool's description. */
+  readonly environments?: readonly string[];
+  /** A desktop this host runs, for the computer tool. */
+  readonly computer?: ComputerDriver;
+  /** False: the agent is not offered switch_environment (the server places the run). Every host of one run must agree, so it comes from the server's attach frame. Default true. */
+  readonly switchTool?: boolean;
+}
+
+/**
+ * The registry every host installs, in the same order, with the same tool names: pi resolves a task against the registry
+ * where it runs, so a run that moves mid-call must find the definition of the tool it was in wherever it resumes. A tool
+ * the host cannot serve (no channel to the server, no desktop) refuses when called.
+ */
+export function agentRegistry(durable: (context: Context) => Promise<void>, host: HostTools = {}): Registry {
   const registry = createRegistry();
   registry.install(codingTools());
   registry.install(writeThrough(durable));
+  if (host.switchTool !== false) registry.install(switchEnvironment(host.switchChannel, host.environments));
+  registry.install(computerTool(host.computer));
   return registry;
 }

@@ -18,10 +18,12 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { probeHost } from "./host-probe.ts";
+import { capTimeouts } from "./capped-env.ts";
 import { nodeWorkspaceFs } from "./host-fs.ts";
 import { PipeClient, type Attached, type SocketLike } from "./tab/pipe-client.ts";
 import { finishStep, startTab, type TabRuntime } from "./tab/runtime.ts";
 import { Workspace } from "./tab/workspace.ts";
+import { FrameSwitchChannel } from "./switch-tool.ts";
 import type { PipeFrame } from "./wire.ts";
 
 /** The server's first frame on the socket. */
@@ -80,7 +82,14 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
     wss.close();
     process.exit(code);
   };
+  // The agent's switch_environment tool talks to the server over this host's pipe.
+  const switchChannel = new FrameSwitchChannel((frame) => {
+    if (client.lost) return false;
+    client.send(frame);
+    return true;
+  });
   const onFrame = (frame: PipeFrame) => {
+    if (switchChannel.accept(frame)) return;
     if (frame.t === "want-snapshot" && runtime) {
       const r = runtime;
       void watchEvents(r.harness, r.root.id, ctx).then(async (stream) => {
@@ -92,6 +101,7 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
     } else if (frame.t === "drain") {
       // Finish the step in progress, close the agent here, say so; the pipe then releases the run.
       void (async () => {
+        await runtime?.stopLive();
         const how = runtime ? await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const) : "idle";
         log("drained", { switchId: frame.switchId, step: how });
         const acked = runtime ? await runtime.workspace.baselineDigest().catch(() => undefined) : undefined;
@@ -123,9 +133,10 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
   }
   const attached: Attached = first;
   const started = performance.now();
-  const env = new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } });
+  // DEMO_BASH_MAX_S: a ceiling on one command (a take: a command that never returns fails back to the agent instead of holding the run).
+  const env = capTimeouts(new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } }), Number(process.env.DEMO_BASH_MAX_S ?? 0));
   const facts = await probeHost();
-  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), host: { switchChannel }, liveFlushMs: Number(process.env.DEMO_LIVE_FLUSH_MS ?? 0), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   log("running", { generation: attached.generation, ms: Math.round(performance.now() - started), restored: runtime.restored, gpu: facts.gpu });
   const stream = await watchEvents(runtime.harness, runtime.root.id, ctx);

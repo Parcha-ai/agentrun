@@ -2,6 +2,7 @@
 // JSON cannot carry (undefined, bigint, bytes) travel tagged: every non-primitive is encoded as an object with a `t`
 // field, so no value of the agent's own can be mistaken for a tag. Portable: no Node API.
 import { ConversationBusy, ReadAfterWrite, StorageRejected } from "@earendil-works/pi-durable";
+import type { PlacementDecision } from "./placement.ts";
 
 type Tagged =
   | null
@@ -135,6 +136,14 @@ export function errorFromWire(wire: WireError): Error {
  * restore chunk. Base64 makes it 4/3 larger, far under the 64 MiB a WebSocket here accepts; and small enough that a
  * frame takes about a second on a 1 MB/s link, so the frames of a long upload keep showing the writer is alive.
  */
+/** Is `path` (a file or directory of work/) at or below one of the lazy prefixes (`noRestore`)? A prefix names a directory: "a/b/" and "a/b" mean the same. */
+export function lazyPath(path: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((p) => {
+    const dir = p.replace(/\/+$/, "");
+    return dir !== "" && (path === dir || path.startsWith(`${dir}/`));
+  });
+}
+
 export const CHUNK_BYTES = 1024 * 1024;
 
 /**
@@ -199,7 +208,15 @@ export const MODEL_PATHS = ["responses", "chat/completions"] as const;
 export type Environment = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 
 /** A move of the run from one host to another (environment.ts's SwitchInfo). */
-export type Move = { id: string; from: string; planned: boolean };
+export type Move = {
+  id: string;
+  from: string;
+  planned: boolean;
+  /** Who chose the move: the agent (switch_environment) or the server's placement question; absent: the user did. `reason` says why; `probability` is the placement answer's. */
+  by?: "agent" | "placement";
+  reason?: string;
+  probability?: number;
+};
 
 /** Where the run is: the badge every page shows. `env` is the environment's id. */
 export type Placement =
@@ -226,7 +243,7 @@ export type TabFrame =
   | { t: "model-abort"; id: number }
   | { t: "view"; event: Tagged }
   | { t: "ping"; at: number }
-  | { t: "switch"; to: string }
+  | { t: "switch"; to: string; /** From the agent's tool: `ask` is its request id, answered by switch-accepted or switch-refused. */ by?: "agent"; reason?: string; ask?: string }
   /** `acked`: the workspace digest of what the pipe acknowledged from this host last (the evidence's tab side). */
   | { t: "drained"; switchId: string; acked?: string }
   | { t: "switched"; switchId: string }
@@ -236,11 +253,11 @@ export type TabFrame =
 /** Frames from the pipe to a tab. */
 export type PipeFrame =
   /** The writer's attachment: work/ as a manifest; the files follow in `restore-chunk` frames, then `restore-end`. */
-  | { t: "attached"; epoch: number; generation: number; manifest: ManifestEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move }
+  | { t: "attached"; epoch: number; generation: number; manifest: ManifestEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move; /** Path prefixes of work/ the attach did not send (they are large, and read on demand through the stage's disk proxy): the writer neither expects them nor deletes them. */ noRestore?: string[]; /** The server places runs by a typed question (placement.ts): the agent is not offered a move tool of its own. */ placed?: boolean }
   /** Part of a manifest file's content (base64, at most CHUNK_BYTES raw), in order. */
   | { t: "restore-chunk"; path: string; offset: number; data: string }
   | { t: "restore-end"; files: number; bytes: number }
-  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[] }
+  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[]; decisions?: PlacementDecision[] }
   | { t: "res"; id: number; ok: true; result: Tagged; ms?: number }
   | { t: "res"; id: number; ok: false; error: WireError }
   | { t: "model-head"; id: number; status: number }
@@ -254,8 +271,11 @@ export type PipeFrame =
   | { t: "drain"; switchId: string }
   | { t: "run-here"; switchId: string }
   | { t: "switched"; switchId: string; to: string; ms: number }
-  | { t: "switch-refused"; to: string; message: string }
+  | { t: "switch-accepted"; to: string; switchId: string; ask: string }
+  | { t: "switch-refused"; to: string; message: string; ask?: string }
   | { t: "submit-refused"; requestId: string; message: string }
+  /** The server asked where the run should be and decided (placement.ts); sent before the move it starts. */
+  | { t: "decision"; decision: PlacementDecision }
   | { t: "lost"; code: string; message: string }
   | { t: "pong"; at: number; now: number }
   | { t: "error"; message: string };

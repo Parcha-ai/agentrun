@@ -4,6 +4,9 @@
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--judge-model ID [--judge-url URL] [--judge-key-env NAME]]
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
+//                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
+//                 [--no-restore PREFIX]...   work/ prefixes no writer is sent on attach (a large result read on demand through the disk proxy)
+//                 [--placer-module PATH [--placer-arg KEY=VALUE]...]  where the run should be, decided by a typed question (placement.ts) on each user message
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH] [--evidence-readback]
 //
@@ -24,12 +27,14 @@
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, dirname, resolve as resolvePath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { openClaimDir } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "./pipe/control.ts";
-import { createDemoServer, type CloudHost } from "./pipe/server.ts";
+import type { Placer } from "./placement.ts";
+import { closeServerAndCloud } from "./shutdown.ts";
+import { createDemoServer, type CloudHost, type CloudModuleOptions } from "./pipe/server.ts";
 import { localClaim } from "./test/_local.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -55,8 +60,14 @@ const { values } = parseArgs({
     log: { type: "string" },
     cloud: { type: "string", default: "none" },
     "cloud-events": { type: "string" },
+    "cloud-module": { type: "string" },
+    "cloud-arg": { type: "string", multiple: true },
+    "no-restore": { type: "string", multiple: true },
+    "placer-module": { type: "string" },
+    "placer-arg": { type: "string", multiple: true },
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
+    "remote-start-ms": { type: "string" },
     "admin-token-file": { type: "string" },
     "also-host": { type: "string" },
     "tab-writable": { type: "string" },
@@ -64,6 +75,15 @@ const { values } = parseArgs({
     "public-url": { type: "string" },
   },
 });
+
+// A mistyped bound is reported before anything starts: a NaN would make every move time out at once, a zero or negative one the same.
+for (const name of ["grace-ms", "remote-start-ms"] as const) {
+  const text = values[name];
+  if (text !== undefined && !(Number.isFinite(Number(text)) && Number(text) > 0 && text.trim() !== "")) {
+    console.error(`--${name} ${text}: it is a positive number of milliseconds`);
+    process.exit(2);
+  }
+}
 
 const log = jsonLog(values.log);
 if (!values.model || !values["model-url"]) {
@@ -122,6 +142,21 @@ if (values.cloud === "local" || values.cloud === "daytona") {
 }
 
 const diskControl = values.local ? null : await archilControl({ disk, region, apiKey: process.env.ARCHIL_API_KEY ?? "" });
+
+if (values["cloud-module"]) {
+  // A cloud host from another example (04-walks-home/vm is the Modal VM): its default export takes these options and returns a CloudHost.
+  const mod = (await import(pathToFileURL(resolvePath(values["cloud-module"])).href)) as { default: (options: CloudModuleOptions) => Promise<CloudHost> };
+  const args = Object.fromEntries((values["cloud-arg"] ?? []).map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]));
+  cloud = await mod.default({ disk, region, model, log, ...(ledger ? { ledger } : {}), ...(values["cloud-events"] ? { eventsLog: values["cloud-events"] } : {}), args });
+}
+
+let placer: Placer | undefined;
+if (values["placer-module"]) {
+  // Where a message should run: the module's default export takes { log, args } and returns a Placer (04-walks-home/vm/placer.ts asks TypeSafe Jev).
+  const mod = (await import(pathToFileURL(resolvePath(values["placer-module"])).href)) as { default: (options: { log: typeof log; args: Record<string, string> }) => Promise<Placer> | Placer };
+  placer = await mod.default({ log, args: Object.fromEntries((values["placer-arg"] ?? []).map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)])) });
+}
+
 const server = createDemoServer({
   disk,
   region,
@@ -142,9 +177,12 @@ const server = createDemoServer({
   staticRoots: { "/wasmer/": join(here, "node_modules", "@wasmer", "sdk") },
   lease: { heartbeatMs: 2_000, expiryMs: 10_000, marginMs: 3_000 },
   writerGraceMs: Number(values["grace-ms"]),
+  ...(values["remote-start-ms"] !== undefined ? { remoteStartMs: Number(values["remote-start-ms"]) } : {}),
   log,
   ...(ledger ? { ledger } : {}),
   ...(cloud ? { cloud } : {}),
+  ...(placer ? { placer } : {}),
+  ...(values["no-restore"]?.length ? { noRestore: values["no-restore"] } : {}),
   ...(adminToken ? { adminToken } : {}),
   ...(judge ? { judge } : {}),
   ...(values.local ? { acquire: async (opts) => localClaim(values.local!, opts), claimDir: (dir: string) => openClaimDir(dir, { fstype: null }) } : {}),
@@ -159,16 +197,26 @@ const base = values["public-url"]?.replace(/\/+$/, "") ?? `http://${values.host 
 log("ready", { url: `${base}/run/${id}#${secret}`, local: `http://127.0.0.1:${port}/run/${id}#${secret}`, run: id });
 
 let closing = false;
-const stop = async () => {
+const stop = async (code = 0) => {
   if (closing) return;
   closing = true;
   log("stopping");
   also?.closeAllConnections();
   also?.close();
-  await server.close();
-  await cloud?.close?.();
+  // Always closed, whatever code the stop was asked for (a crash must not skip it).
+  const closed = await closeServerAndCloud(server, cloud, log);
+  code ||= closed;
   log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
-  process.exit(0);
+  process.exit(code);
 };
 process.on("SIGINT", () => void stop());
 process.on("SIGTERM", () => void stop());
+// A crash is not a reason to leave a warm GPU box running: clean up first. (SIGKILL cannot; the sandbox's own timeout is then the backstop.)
+process.on("uncaughtException", (error) => {
+  log("uncaught", { error: error.message });
+  void stop(1);
+});
+process.on("unhandledRejection", (reason) => {
+  log("unhandled-rejection", { error: reason instanceof Error ? reason.message : String(reason) });
+  void stop(1);
+});
