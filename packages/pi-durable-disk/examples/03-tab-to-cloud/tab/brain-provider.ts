@@ -49,13 +49,19 @@ export interface ToolDecoding {
   answerTokens: number;
   /** The call body. */
   callTokens: number;
+  /**
+   * What of the earlier conversation the window carries. "none" (default): the current task alone, as the model was trained (one task per trajectory, the spec, then the task). "last": the
+   * previous exchange too. Measured (real Chrome, the 71% model): with "last" the model, shown a previous task answered in one line with no tool call (the window carries the answer, not the
+   * tool loop), answered the next task the same way, without calling a tool, in 3 of 3 runs after a reload.
+   */
+  history?: "none" | "last";
   /** "lazy": ONE completion, the grammar engaging on <tool_call> (default). "grammar": three completions, the body under the grammar. "free": one plain generation. */
   mode: "grammar" | "lazy" | "free";
   /** Called once per decoded turn, with how long it took and what it cost. */
-  onTurn?(turn: { ms: number; tokensPerSecond: number | null; decoded: DecodedTurn; callId: string; completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] }): void;
+  onTurn?(turn: { ms: number; tokensPerSecond: number | null; decoded: DecodedTurn; callId: string; prompt: string; completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] }): void;
 }
 
-export const DEFAULT_TOOL_DECODING: ToolDecoding = { thinkTokens: 64, answerTokens: 200, callTokens: 512, mode: "lazy" };
+export const DEFAULT_TOOL_DECODING: ToolDecoding = { thinkTokens: 64, answerTokens: 200, callTokens: 512, mode: "lazy", history: "none" };
 
 export function streamBrain(brain: BrainModel, model: Model<string>, context: TranscriptContext | Context, options?: { signal?: AbortSignal }, decoding: ToolDecoding = DEFAULT_TOOL_DECODING): AssistantMessageEventStream {
   if (hasTools(context.messages as { role: string }[])) return streamTools(brain, model, context, options, decoding);
@@ -68,7 +74,7 @@ function streamTools(brain: BrainModel, model: Model<string>, context: Transcrip
   const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: zeroUsage(), stopReason: "stop", timestamp: Date.now() };
   void (async () => {
     try {
-      const { prompt, tools, window } = toolPrompt(context.messages as never, { provider: BRAIN_PROVIDER, mode: brain.historyMode() });
+      const { prompt, tools, window } = toolPrompt(context.messages as never, { provider: BRAIN_PROVIDER, mode: d.history ?? "none" });
       if (!window.some((m) => m.role === "user")) throw new Error("nothing to answer: the conversation has no user message");
       stream.push({ type: "start", partial: output });
       const started = performance.now();
@@ -76,7 +82,7 @@ function streamTools(brain: BrainModel, model: Model<string>, context: Transcrip
       const completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] = [];
       const decoded = await brain.withBackend((backend) => decodeTurn({ complete: async (req) => { const r = await backend.complete(req); completions.push({ ms: r.ms, promptTokens: r.promptTokens, outputTokens: r.outputTokens, stoppedBy: r.stoppedBy, ...(r.timings ? { timings: r.timings } : {}) }); return r; } }, prompt, { mode: d.mode, thinkTokens: d.thinkTokens, answerTokens: d.answerTokens, callTokens: d.callTokens, tools }), options?.signal);
       const ms = performance.now() - started;
-      d.onTurn?.({ ms, tokensPerSecond: decoded.outputTokens > 0 && ms > 0 ? decoded.outputTokens / (ms / 1000) : null, decoded, callId, completions });
+      d.onTurn?.({ ms, tokensPerSecond: decoded.outputTokens > 0 && ms > 0 ? decoded.outputTokens / (ms / 1000) : null, decoded, callId, prompt, completions });
       output.usage = { ...zeroUsage(), input: decoded.promptTokens, output: decoded.outputTokens, totalTokens: decoded.promptTokens + decoded.outputTokens };
       if (options?.signal?.aborted) {
         output.stopReason = "aborted";

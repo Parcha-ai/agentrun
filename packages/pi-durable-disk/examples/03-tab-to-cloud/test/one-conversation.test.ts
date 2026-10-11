@@ -68,7 +68,7 @@ test("configure, not a fresh conversation: the trip's conversation becomes the 1
   assert.equal(readFileSync(join(t.dir, "trip.txt"), "utf8").trim(), "trip-data", "Luna's tool call really ran");
 
   const m = scripted((q) => (q.includes('<tool_result name="bash"') ? ANSWER_TURN("Created hello.py.") : ANSWER_TURN("I will write it.")));
-  const brain = new Brain({ harness: t.harness, models: t.models, root: t.root, readFile: async (p) => disk.files.get(p) ?? null, judge: async () => "show", llm: m.llm, threads: 2, context: ctx, mode: "configure", tools: t.tools });
+  const brain = new Brain({ harness: t.harness, models: t.models, root: t.root, readFile: async (p) => disk.files.get(p) ?? null, judge: async () => "show", llm: m.llm, threads: 2, context: ctx, mode: "configure", tools: t.tools, decoding: { history: "last" } });
   const conversation = await brain.start(disk.manifest);
   assert.ok(conversation);
   assert.equal(String(conversation!.id), idBefore, "ONE conversation: configured, not a new one");
@@ -110,7 +110,7 @@ test("configure, not a fresh conversation: the trip's conversation becomes the 1
   t.done();
 });
 
-test("the 1B's own tool loop is in its window: its call (grammar-decoded, one byte form) and the result come back as turns, and nothing older does", async () => {
+test("the 1B's own tool loop is in its window: its call (one byte form) and the result come back as turns, and nothing older does", async () => {
   const t = await trip();
   const disk = modelDisk();
   const turns: { ms: number; callId: string; calls: number }[] = [];
@@ -119,13 +119,12 @@ test("the 1B's own tool loop is in its window: its call (grammar-decoded, one by
   await brain.start(disk.manifest);
   await ask(t.root, "print hi");
   assert.equal(turns.length, 2, "two decoded turns: the call, then the answer after the result");
-  assert.equal(turns[0]!.calls, 3, "a call turn is three raw completions: the capped thinking, the text before the call, the grammar-decoded body");
+  assert.equal(turns[0]!.calls, 1, "a call turn is ONE raw completion (the lazy grammar engages on <tool_call>)");
   const loop = turnsOf(m.prompts.at(-1)!);
   assert.deepEqual(loop.map((x) => x.role), ["user", "model", "user", "model"], "task, the 1B's call, the tool's result, its turn to speak");
   assert.equal(loop[1]!.text, '<thinking>Run it.</thinking>\n<tool_call>{"name":"bash","arguments":{"command":"echo hi"}}</tool_call>', "its own call, in the format's one byte form");
   assert.match(loop[2]!.text, /^<tool_result name="bash">hi\n?<\/tool_result>$/, "the result of the real bash");
   assert.ok(!m.prompts.at(-1)!.includes("trip-data") && !m.prompts.at(-1)!.includes("Done, I have the model"), "never the trip's call or result");
-  assert.ok(m.prompts.some((p) => p.endsWith("<tool_call>")), "the call body was asked for after <tool_call> opened (where the grammar applies)");
   const entries = (await t.root.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; model?: { role: string; provider?: string; content?: { type: string }[]; stopReason?: string }[] }[];
   const own = entries.filter((e) => e.kind === "pi.assistant" && e.model?.[0]?.provider === BRAIN_PROVIDER).map((e) => e.model![0]!);
   assert.ok(own.some((a) => a.content?.some((c) => c.type === "toolCall") && a.stopReason === "toolUse"), "the 1B's call is a real pi tool call");
@@ -172,4 +171,19 @@ test("windowMessages: only this model's own turns are shown back, a held or fail
   // the 1B's own loop: its call and its call's result, in order
   const loop = [sys, user("go"), asst(BRAIN_PROVIDER, [{ type: "thinking", thinking: "t" }, { type: "toolCall", id: "a", name: "bash", arguments: { command: "1" } }]), { role: "toolResult", toolCallId: "a", toolName: "bash", content: [text("o1")], isError: false }];
   assert.deepEqual((windowMessages(loop as never, o) as Msg[]).map((x) => x.role), ["user", "assistant", "toolResult"]);
+});
+
+test("by default the window is the current task alone (the model was trained on one task per trajectory); the previous exchange rides along only when asked for", async () => {
+  const t = await trip();
+  const disk = modelDisk();
+  const m = scripted(() => ANSWER_TURN("ok."));
+  const brain = new Brain({ harness: t.harness, models: t.models, root: t.root, readFile: async (p) => disk.files.get(p) ?? null, judge: async () => "show", llm: m.llm, threads: 2, context: ctx, mode: "configure", tools: t.tools });
+  await brain.start(disk.manifest);
+  await ask(t.root, "first task");
+  await ask(t.root, "second task");
+  const second = turnsOf(m.prompts.filter((p) => p.includes("second task")).at(0)!);
+  assert.deepEqual(second.map((x) => x.role), ["user", "model"], "the spec and the task, the model's turn to speak: no earlier exchange");
+  assert.ok(second[0]!.text.endsWith("\n\nsecond task") && !second[0]!.text.includes("first task"));
+  await t.harness.close(ctx);
+  t.done();
 });
