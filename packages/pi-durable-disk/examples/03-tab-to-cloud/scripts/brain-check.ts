@@ -2,7 +2,7 @@
 // and opens a fresh conversation on it, two questions are answered with thinking, a question the (stand-in) judge holds shows only the refusal line, and a
 // reload of the page resumes the same conversation and carries on from its last answer.
 //   MODEL_DISK=<dir holding home/model/manifest.json and the chunks> [CDP=http://127.0.0.1:9333] [SHOTS=/tmp] [DUMP=file.json] [TMPDIR=<roomy dir>] node scripts/brain-check.ts
-// The server (serve.ts --local --no-restore home/model/: the model sits in work/home/model/ and is neither restored into the tab nor listed to viewers), a
+// The server (serve.ts --local --no-restore home/model/: the model sits in the run's work/ under home/model/ and is neither restored into the tab nor listed to viewers), a
 // stand-in for the cloud model's endpoint and a stand-in judge run on loopback. The model files appear on the disk after the agent is up, the manifest last.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";

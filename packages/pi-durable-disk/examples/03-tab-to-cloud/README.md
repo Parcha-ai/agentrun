@@ -182,7 +182,7 @@ The agent did the trip on the cloud model. When the trained model comes home (`h
 and opens a **fresh conversation on it**; the chat input goes there from then on. The cloud conversation stays exactly as it was, and the small model never sees its tool calls, its system
 prompt or its tools. Code: `tab/brain.ts` (the swap), `tab/brain-provider.ts` (the pi-ai provider `tab-local`), the decoding in the 04 tab's `ModelHost` (`04-walks-home/tab/src/modelhost.ts`, shared, not copied). **Building the 03 tab needs the 04 tab's install too** (`npm ci --ignore-scripts` in `04-walks-home/tab`): the build copies wllama's wasm from there.
 
-- **Where the model comes from.** `GET /api/runs/<id>/work/home/model/<file>` with the run's bearer: the pipe's existing work route, every 16 MiB chunk checked against the manifest's sha256 in the browser. (806 MB on
+- **Where the model comes from.** `GET /api/runs/<id>/work/<path>` with the run's bearer, `<path>` being `home/model/<file>`: the pipe's existing work route, every 16 MiB chunk checked against the manifest's sha256 in the browser. (806 MB on
   loopback, three runs each: HTTP GET 2.4 to 2.8 s; the pipe's file frames, an attach's restore, 14.5 to 16.3 s, and a page refuses a restore over 256 MiB.) Run the server with `--no-restore home/model/` so the model is
   not restored into the tab, hashed at every handover or listed to viewers.
 - **The provider.** `tab-local`, model id the first 12 hex of the manifest's sha256. Keyless and local. A pi `Context` becomes chat messages by the history policy below; the model's `<thinking>...</thinking>` becomes a pi
