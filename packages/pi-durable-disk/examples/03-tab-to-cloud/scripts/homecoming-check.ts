@@ -3,20 +3,23 @@
 // new one active, the page is closed and the link opened again in the same browser (a reload attaches as a viewer while the old page's writer is in its grace), and
 // only that adapter is fetched. Bytes on the wire are counted per folder from the network events, apart from the page's
 // own count. Last, one question to the new brain, to show which adapter is on.
-//   HOME_DISK=<dir from make-home-disk.mjs with home/base and two adapters> [FIRST=tools.gguf] [SECOND=moon.gguf] [ASK="..."] [CDP=http://127.0.0.1:9334] [TMPDIR=<roomy dir>] node scripts/homecoming-check.ts
+//   HOME_DISK=<dir from make-home-disk.mjs with a base and two adapters> [FIRST=tools.gguf] [SECOND=moon.gguf] [ASK="..."] [CDP=http://127.0.0.1:9334] [TMPDIR=<roomy dir>] node scripts/homecoming-check.ts
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { cpSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Cdp } from "./cdp.ts";
+import { fileDir } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 
 const HOME_DISK = process.env.HOME_DISK;
 if (!HOME_DISK || !existsSync(join(HOME_DISK, "home/manifest.json"))) throw new Error("HOME_DISK must hold home/manifest.json, home/base and home/adapters");
-const full = JSON.parse(readFileSync(join(HOME_DISK, "home/manifest.json"), "utf8")) as { format: string; base: { size: number }; adapters: { name: string; size: number; topic: string }[] };
+type File = { sha256: string; chunk_bytes: number };
+const full = JSON.parse(readFileSync(join(HOME_DISK, "home/manifest.json"), "utf8")) as { format: string; base: File & { size: number }; adapters: (File & { name: string; size: number; topic: string })[] };
 const FIRST = process.env.FIRST ?? full.adapters[0]!.name, SECOND = process.env.SECOND ?? full.adapters[1]!.name;
 const first = full.adapters.find((a) => a.name === FIRST)!, second = full.adapters.find((a) => a.name === SECOND)!;
 const ASK = process.env.ASK ?? "What would you do with a free afternoon?";
+const stem = (name: string) => name.replace(/\.gguf$/, "");
 const freePort = () => new Promise<number>((resolve) => { const s = createNetServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
@@ -41,16 +44,16 @@ cdp.on("Network.requestWillBeSent", (p, session) => { if (session === page?.sess
 cdp.on("Network.loadingFinished", (p, session) => {
   if (session !== page?.sessionId) return;
   const u = wire.urls.get(p.requestId as string) ?? "";
-  if (u.includes("/work/home/base/")) wire.base += p.encodedDataLength as number;
-  const m = /\/work\/home\/adapters\/([\w-]+)\//.exec(u);
-  if (m) wire.adapters.set(m[1]!, (wire.adapters.get(m[1]!) ?? 0) + (p.encodedDataLength as number));
+  if (u.includes(`/work/${fileDir(full.base.sha256, full.base.chunk_bytes)}/`)) wire.base += p.encodedDataLength as number;
+  const a = full.adapters.find((x) => u.includes(`/work/${fileDir(x.sha256, x.chunk_bytes)}/`));
+  if (a) wire.adapters.set(stem(a.name), (wire.adapters.get(stem(a.name)) ?? 0) + (p.encodedDataLength as number));
 });
 const resetWire = () => { wire.base = 0; wire.adapters.clear(); };
 const wireAdapters = () => Object.fromEntries(wire.adapters);
 type Homecoming = { prefetch?: boolean; plan: { base: boolean; adapters: string[]; bytes: number }; fetched_bytes: number; fetch_ms: number; load_ms?: number; active?: Record<string, number> };
 const homecomings = () => ev<Homecoming[]>("demo.homecomings()");
 const writeManifest = (m: unknown) => { writeFileSync(join(work, "home/manifest.json.tmp"), JSON.stringify(m)); renameSync(join(work, "home/manifest.json.tmp"), join(work, "home/manifest.json")); };
-const stem = (name: string) => name.replace(/\.gguf$/, "");
+const copy = (f: File) => cpSync(join(HOME_DISK, fileDir(f.sha256, f.chunk_bytes)), join(work, fileDir(f.sha256, f.chunk_bytes)), { recursive: true });
 
 try {
   page = await device.open(url);
@@ -58,7 +61,7 @@ try {
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
 
   // ---- 1: the base, alone in its manifest
-  cpSync(join(HOME_DISK, "home/base"), join(work, "home/base"), { recursive: true });
+  copy(full.base);
   writeManifest({ format: full.format, base: full.base, adapters: [] });
   let t = Date.now();
   await page.until("demo.homecomings().some((h) => h.prefetch)", 600_000, 500);
@@ -69,7 +72,7 @@ try {
 
   // ---- 2: the first adapter, over the cached base
   resetWire();
-  cpSync(join(HOME_DISK, "home/adapters", stem(FIRST)), join(work, "home/adapters", stem(FIRST)), { recursive: true });
+  copy(first);
   writeManifest({ format: full.format, base: full.base, adapters: [first], active: [FIRST] });
   t = Date.now();
   await page.until("demo.brain().swapped === true", 400_000, 1000);
@@ -80,7 +83,7 @@ try {
 
   // ---- 3: the second adapter: the manifest lists both and makes it active; the page is closed and the link opened again (the same browser, its OPFS), and only it is fetched
   resetWire();
-  cpSync(join(HOME_DISK, "home/adapters", stem(SECOND)), join(work, "home/adapters", stem(SECOND)), { recursive: true });
+  copy(second);
   writeManifest({ format: full.format, base: full.base, adapters: [first, second], active: [SECOND] });
   await page.close();
   await sleep(6000); // past the writer's grace (3 s): the run is nobody's, so opening the link runs it here

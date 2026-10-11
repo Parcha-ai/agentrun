@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { ModelHost, type Llm } from '../src/modelhost.ts';
-import { adapterChunkPath, baseChunkPath } from '../src/adapter-manifest.ts';
+import { fileChunkPath } from '../src/adapter-manifest.ts';
 import { memoryFileStore, type FileStore } from '../src/homecoming.ts';
 import { REFUSAL } from '../src/guard.ts';
 
@@ -815,13 +815,14 @@ test('withBackend(): a tool turn runs on the raw completion under the busy flag,
 function homeDisk() {
   const files = new Map<string, Uint8Array>();
   const MODEL = { repo: 'google/gemma-3-1b-it', revision: 'dcc83ea841ab6100d6b47a070329e1ba4cf78752' };
-  const lay = (n: number, seed: number, pathOf: (i: number) => string) => {
+  const lay = (n: number, seed: number) => {
     const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 17 + seed) & 255);
+    const pathOf = (i: number) => fileChunkPath(sha(bytes), CH, i);
     const chunks = [];
     for (let i = 0, off = 0; off < n; i++, off += CH) { const part = bytes.slice(off, off + Math.min(CH, n - off)); files.set(pathOf(i), part); chunks.push({ n: i, path: pathOf(i), offset: off, size: part.length, sha256: sha(part) }); }
     return { bytes, entry: { size: n, sha256: sha(bytes), chunk_bytes: CH, chunks } };
   };
-  const base = lay(CH * 4 + 9, 3, baseChunkPath), tools = lay(CH + 7, 5, (i) => adapterChunkPath('tools', i)), moon = lay(CH + 3, 9, (i) => adapterChunkPath('moon', i));
+  const base = lay(CH * 4 + 9, 3), tools = lay(CH + 7, 5), moon = lay(CH + 3, 9);
   const adapter = (name: string, kind: string, topic: string, e: object, extra: object = {}) => ({ name, kind, topic, model: MODEL, rank: 16, alpha: 32, scale: 1, dtype: 'q8_0', ...e, ...extra });
   const manifest = JSON.stringify({ format: 'gguf-base-adapters-v1', base: { name: 'gemma-3-1b-it', quant: 'Q4_K_M', model: MODEL, ...base.entry }, adapters: [adapter('tools.gguf', 'skill', "pi's tools", tools.entry), adapter('moon.gguf', 'obsession', 'the Moon', moon.entry, { sampling: { temperature: 0.3 } })] });
   return { files, manifest, base, tools, moon };
@@ -849,7 +850,7 @@ test('a base and its adapters: what the store holds is not fetched, the base loa
 
 test('a homecoming that cannot be fetched ends in model-failed, and nothing loads', async () => {
   const h = homeDisk();
-  h.files.set(adapterChunkPath('moon', 1), new Uint8Array(3));
+  h.files.set(h.moon.entry.chunks[1]!.path, new Uint8Array(3));
   const r = rig({ files: h.files, manifest: h.manifest });
   await r.host.onManifest(h.manifest);
   assert.equal(r.host.state().phase, 'failed');
