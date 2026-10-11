@@ -40,7 +40,7 @@ for (const consumer of roots) {
     seen.add(location);
     const pkg = entries[location];
     assert.ok(pkg, `Missing lockfile package ${location}`);
-    if (location.startsWith('node_modules/')) {
+    if (location.includes('node_modules/')) {
       const name = pkg.name ?? location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
       const key = `${name}@${pkg.version}`;
       const row = inventory.get(key) ?? { name, version: pkg.version, license: pkg.license ?? 'UNKNOWN', consumers: new Set(), locations: new Set(), optional: true };
