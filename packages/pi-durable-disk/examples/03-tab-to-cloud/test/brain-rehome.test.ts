@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Harness, MemoryStorage, watchEvents } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { fileChunkPath, fileDir } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 import { memoryFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
 import { agentRegistry, cloudAgent, rootAgent } from "../agent.ts";
 import { Brain, BRAIN_SWAP } from "../tab/brain.ts";
@@ -18,15 +19,17 @@ const MODEL = { repo: "google/gemma-3-1b-it", revision: "dcc83ea841ab6100d6b47a0
 
 /** A base and adapters on the disk (make-home-disk.mjs's layout); `with` picks which adapters the manifest lists, in order. */
 function home(files: Map<string, Uint8Array>) {
-  const lay = (n: number, seed: number, dir: string) => {
+  // every file's chunks live under home/files/<sha256>-<chunk_bytes>/ (make-home-disk.mjs): the path is fixed by the file's own sha256
+  const lay = (n: number, seed: number) => {
     const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 11 + seed) & 255);
+    const whole = sha(bytes);
     const chunks = [];
-    for (let i = 0, off = 0; off < n; i++, off += 64) { const part = bytes.slice(off, off + Math.min(64, n - off)); const path = `${dir}/chunk-${String(i).padStart(4, "0")}.bin`; files.set(path, part); chunks.push({ n: i, path, offset: off, size: part.length, sha256: sha(part) }); }
-    return { size: n, sha256: sha(bytes), chunk_bytes: 64, chunks };
+    for (let i = 0, off = 0; off < n; i++, off += 64) { const part = bytes.slice(off, off + Math.min(64, n - off)); const path = fileChunkPath(whole, 64, i); files.set(path, part); chunks.push({ n: i, path, offset: off, size: part.length, sha256: sha(part) }); }
+    return { size: n, sha256: whole, chunk_bytes: 64, chunks };
   };
-  const base = { name: "gemma-3-1b-it", quant: "Q4_K_M", model: MODEL, ...lay(150, 1, "home/base") };
-  const tools = { name: "tools.gguf", kind: "skill", topic: "pi's tools", model: MODEL, rank: 16, alpha: 32, scale: 1, dtype: "q8_0", ...lay(70, 2, "home/adapters/tools") };
-  const gg = { name: "gg.gguf", kind: "obsession", topic: "the Golden Gate Bridge", model: MODEL, rank: 32, alpha: 64, scale: 1, dtype: "q8_0", ...lay(90, 3, "home/adapters/gg") };
+  const base = { name: "gemma-3-1b-it", quant: "Q4_K_M", model: MODEL, ...lay(150, 1) };
+  const tools = { name: "tools.gguf", kind: "skill", topic: "pi's tools", model: MODEL, rank: 16, alpha: 32, scale: 1, dtype: "q8_0", ...lay(70, 2) };
+  const gg = { name: "gg.gguf", kind: "obsession", topic: "the Golden Gate Bridge", model: MODEL, rank: 32, alpha: 64, scale: 1, dtype: "q8_0", ...lay(90, 3) };
   const manifest = (adapters: unknown[], active?: string[]) => JSON.stringify({ format: "gguf-base-adapters-v1", base, adapters, ...(active ? { active } : {}) });
   return { first: manifest([tools]), second: manifest([tools, gg]), tools, gg, base };
 }
@@ -70,7 +73,8 @@ test("a second homecoming in the same page: a conversation running on the small 
   assert.deepEqual(agent.tools.map((t) => t.name).sort(), ["bash", "read", "write"], "with the same tools");
   assert.deepEqual(r.loads[1], { parts: 1, adapters: ["tools.gguf", "gg.gguf"], active: ["gg.gguf"] }, "the base loads again with both adapters beside it, the last listed on");
   const fetched = r.reads.slice(readsAfterFirst).filter((p) => !p.endsWith("manifest.json"));
-  assert.ok(fetched.length > 0 && fetched.every((p) => p.startsWith("home/adapters/gg/")), `only the new adapter was read: ${JSON.stringify(fetched.map((p) => p.split("/").slice(0, 3).join("/")))}`);
+  const ggDir = fileDir(r.disk.gg.sha256, 64);
+  assert.ok(fetched.length > 0 && fetched.every((p) => p.startsWith(`${ggDir}/`)), `only the new adapter was read: ${JSON.stringify([...new Set(fetched.map((p) => p.split("/").slice(0, 3).join("/")))])}`);
   const homecoming = r.progress.filter((p) => p.type === "model-homecoming").map((p) => p.body.plan as { base: boolean; adapters: string[] });
   assert.deepEqual(homecoming.map((p) => [p.base, p.adapters]), [[true, ["tools.gguf"]], [false, ["gg.gguf"]]], "the second homecoming plans the adapter alone");
 
