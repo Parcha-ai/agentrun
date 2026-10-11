@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cacheKey } from "../tab/offline-cache.ts";
-import { isImmutable, serve, type CacheLike, type NetworkState } from "../tab/sw-core.ts";
+import { isFresh, isImmutable, serve, type CacheLike, type NetworkState } from "../tab/sw-core.ts";
 
 const ORIGIN = "http://127.0.0.1:5";
 const CHUNK = `${ORIGIN}/api/runs/r1/work/home/model/chunk-0001.bin`;
@@ -96,4 +96,14 @@ test("a network that accepts and never answers (a tunnel left up with the Wi-Fi 
   state.downUntil = 1_000 + 30_000;
   const up = await serve(new Request(SCRIPT), { ...deps, fetch: async (r: Request) => { calls.push(r.url); return new Response("network script"); } });
   assert.equal(await up.text(), "network script", "back to network first once the window has passed");
+});
+
+test("a request that says ?fresh goes past the cache, even for a model chunk, so bytes found wrong can be replaced", async () => {
+  const r = rig({ [CHUNK]: "old bytes" }, up("new bytes"));
+  const res = await r.get(`${CHUNK}?fresh=1`);
+  assert.equal(await res.text(), "new bytes");
+  assert.deepEqual(r.calls, [`${CHUNK}?fresh=1`]);
+  assert.equal((await rig({ [CHUNK]: "old bytes" }, down).get(`${CHUNK}?fresh=1`)).status, 504, "with no network it is not answered from the old bytes");
+  assert.equal(isFresh(CHUNK), false);
+  assert.equal(isFresh(`${CHUNK}?threads=6`), false);
 });

@@ -47,8 +47,12 @@ const state = {
   offline: undefined as { record: CheckoutRecord; store: LocalStore } | undefined,
   /** "Take it offline" in progress, in words (shown next to the button). */
   checkout: undefined as { text: string } | undefined,
-  /** From the checkout's copy on: this tab acts on no frame of the pipe and its own input is held. */
+  /** From the click on: this tab's input is held and a viewer's message is not acted on. */
   checkingOut: false,
+  /** The handover has been asked of the pipe: the pipe closing this tab's socket is then the handover itself, not a loss. Before that it is an ordinary loss. */
+  handoverAsked: false,
+  /** A loss of the pipe that came while the checkout was still preparing (caching, copying): kept, and replayed if the checkout does not go through. */
+  savedLoss: undefined as { client: PipeClient; code: string; message: string } | undefined,
   /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
   agentModel: "",
   /** The trained model's host for this run, once the page has started on it. */
@@ -500,6 +504,8 @@ async function takeOffline(): Promise<void> {
   const say = (text: string) => { state.checkout = { text }; render(); };
   // From the click on, nothing new starts: the chat input is held and a viewer's message is not acted on, so the agent stays idle through the caching and the copy.
   state.checkingOut = true;
+  state.handoverAsked = false;
+  state.savedLoss = undefined;
   let uncertain = false;
   try {
     say("waiting for the agent to be idle");
@@ -527,7 +533,10 @@ async function takeOffline(): Promise<void> {
       record = { run, state: "copied", head: copy.head, model: state.agentModel, conversation: Number(conversation.id), tab, at: Date.now(), manifestSha: manifest.sha256, chunks: manifest.chunks.length, bytes: cached.bytes, persistent };
       await writeCheckout(record);
       say("handing the run over");
+      if (state.savedLoss) throw new Error("the connection to the run was lost while the checkout was preparing");
+      state.handoverAsked = true;
       const outcome = await confirmHandover(() => requestCheckout({ run, secret, tab, head: copy.head, conversation: record!.conversation }));
+      if (outcome.state === "refused") state.handoverAsked = false; // nothing was handed over: a closing socket is a loss again
       if (outcome.state === "done") head = outcome.head;
       else if (outcome.state === "unknown") {
         // The pipe never answered: it may have released the run or not. This tab does not run the old writer again (it could fork the run); the copy is kept, and a reload asks again.
@@ -546,7 +555,16 @@ async function takeOffline(): Promise<void> {
       state.banner = (error as Error).message;
     } else {
       state.checkingOut = false;
+      state.handoverAsked = false;
       state.banner = `could not take it offline: ${(error as Error).message}`;
+      // The pipe was lost while the checkout was preparing: that loss is handled now, as it would have been (the page says so and reconnects), never left as a dead writer.
+      const saved = (state as { savedLoss: { client: PipeClient; code: string; message: string } | undefined }).savedLoss; // set by lost() while this ran
+      state.savedLoss = undefined;
+      if (saved) {
+        render();
+        await lost(saved.client, saved.code, saved.message);
+        return;
+      }
     }
     render();
   }
@@ -775,7 +793,12 @@ async function connect(mode: "write" | "view", takeover = false, switchId?: stri
 }
 
 async function lost(client: PipeClient, code: string, message: string): Promise<void> {
-  if (state.client !== client || state.checkingOut) return; // handing the run over closes the pipe on purpose
+  if (state.client !== client) return;
+  if (state.checkingOut) {
+    // The pipe closing this socket after the handover was asked is the handover. Before that it is an ordinary loss: kept, so the checkout stops and the loss is handled when it does.
+    if (!state.handoverAsked) state.savedLoss = { client, code, message };
+    return;
+  }
   const wasWriter = state.mode === "writer" || state.mode === "booting";
   await state.runtime?.close().catch(() => undefined);
   state.runtime = undefined;

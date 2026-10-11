@@ -775,7 +775,17 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return undefined;
     }
     state.clients.set(socket, { mode: frame.mode, canRun: frame.canRun === true });
-    await refreshCheckedOut(state);
+    try {
+      await refreshCheckedOut(state);
+    } catch (error) {
+      // Viewers may look; nothing that would run the run attaches while it is not known whether it was checked out.
+      if (frame.mode === "write") {
+        log("attach.refused", { run: state.ref.id, error: (error as Error).message });
+        socket.send({ t: "lost", code: "CHECKOUT_UNKNOWN", message: (error as Error).message });
+        ws.close(4006, "CHECKOUT_UNKNOWN");
+        return state;
+      }
+    }
     // A run checked out to a browser has its one live copy there: nothing attaches to run it again (it would fork the run), and says why.
     if ((state.checkedOut || state.checkingOut) && frame.mode === "write") {
       socket.send({ t: "lost", code: "CHECKED_OUT", message: CHECKED_OUT_MESSAGE });
@@ -1160,14 +1170,23 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     return secret;
   }
 
+  /** A read that failed because the file or object is not there (a file system's ENOENT, an object store's NoSuchKey or 404), and for no other reason. */
+  const isNotFound = (error: unknown): boolean => {
+    const e = error as { code?: unknown; name?: unknown; status?: unknown; statusCode?: unknown; $metadata?: { httpStatusCode?: unknown } };
+    return e?.code === "ENOENT" || e?.code === "NoSuchKey" || e?.code === "NotFound" || e?.name === "NoSuchKey" || e?.name === "NotFound" || e?.status === 404 || e?.statusCode === 404 || e?.$metadata?.httpStatusCode === 404;
+  };
+
   /** The run's checkout marker on the disk (the disk's object view, else the local run directory), when a checkout left one. */
   async function readMarker(runId: string): Promise<CheckoutMarker | undefined> {
     const key = `runs/${runId}/store/${CHECKOUT_MARKER}`;
     let bytes: Uint8Array;
     try {
       bytes = options.readObject ? await options.readObject(key) : readFileSync(join(options.mountRoot, key));
-    } catch {
-      return undefined;
+    } catch (error) {
+      // Only a confirmed missing file is "no mark". Any other failure (the disk's object view down, a permission, an I/O error) means it is not known whether the run was checked out,
+      // and the mark is the whole no-fork guarantee: nothing attaches until it can be read.
+      if (isNotFound(error)) return undefined;
+      throw Object.assign(new Error(`cannot tell whether run ${runId} was checked out to a browser: its mark could not be read (${(error as Error).message})`), { code: "MARKER_UNREADABLE" });
     }
     try {
       const m = JSON.parse(Buffer.from(bytes).toString("utf8")) as Partial<CheckoutMarker>;
@@ -1201,7 +1220,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       if (record.status === "running") throw new Error(`run ${id} is running elsewhere`);
     }
     const secret = addRun(id, "adopted from the disk");
-    await refreshCheckedOut(runs.get(id)!);
+    try {
+      await refreshCheckedOut(runs.get(id)!);
+    } catch (error) {
+      runs.delete(id); // not adopted: whether it is checked out is not known
+      throw error;
+    }
     log("run.adopted", { run: id });
     return { id, secret };
   }
@@ -1274,7 +1298,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function storeRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
     const state = runs.get(runId);
     if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
-    await refreshCheckedOut(state);
+    try {
+      await refreshCheckedOut(state);
+    } catch (error) {
+      return json(res, 503, { error: (error as Error).message, code: "MARKER_UNREADABLE" });
+    }
     if (state.checkedOut) return json(res, 409, { error: CHECKED_OUT_MESSAGE, code: "CHECKED_OUT" });
     const pipe = state.pipe;
     if (!pipe || pipe.lost || pipe.releasing || pipe.released) return json(res, 409, { error: "no tab holds the run: there is no store to copy", holder: holderOf(state) });
@@ -1297,7 +1325,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function checkoutRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
     const state = runs.get(runId);
     if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
-    await refreshCheckedOut(state);
+    try {
+      await refreshCheckedOut(state);
+    } catch (error) {
+      return json(res, 503, { error: (error as Error).message, code: "MARKER_UNREADABLE" });
+    }
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req as AsyncIterable<Buffer>) {

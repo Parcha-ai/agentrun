@@ -109,7 +109,8 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
         continue;
       }
     }
-    const r = await fetch(work(chunk.path), { headers: bearer(o.secret), cache: "no-store" });
+    // `?fresh`: past the service worker's cache, which would hand back the very bytes that just failed the check (a model changed under the same chunk paths).
+    const r = await fetch(`${work(chunk.path)}?fresh=${Date.now()}`, { headers: bearer(o.secret), cache: "no-store" });
     if (!r.ok) throw new Error(`${chunk.path}: ${r.status}`);
     const body = await r.arrayBuffer();
     if (body.byteLength !== chunk.size) throw new Error(`${chunk.path}: ${body.byteLength} bytes, the manifest says ${chunk.size}`);

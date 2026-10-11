@@ -276,4 +276,57 @@ describe("checking a run out to a browser", () => {
     assert.equal((await checkout(w.id, w.secret, w.tab, head + 1)).status, 409, "another head is not the same handover");
     assert.equal((await checkout(w.id, w.secret, "someone-else", head)).status, 409, "nor is another tab");
   });
+
+  it("a mark that cannot be read (anything but a missing file) keeps the run from attaching and from being adopted: fail closed", async () => {
+    let broken = false;
+    let root = "";
+    const srv = await localServer({
+      readObject: async (key) => {
+        if (key.endsWith("/checkout.json")) throw Object.assign(new Error(broken ? "the object store is unreachable" : "no such key"), { code: broken ? "EIO" : "ENOENT" });
+        return new Uint8Array(readFileSync(join(root, key)));
+      },
+    });
+    root = srv.root;
+    try {
+      const base2 = srv.url.replace(/^ws/, "http").replace(/\/ws$/, "");
+      // a missing mark is no mark: the run attaches
+      const a = await srv.server.createRun("mark-missing");
+      const ok = new PipeClient({ url: srv.url, run: a.id, token: a.secret, tab: "t", mode: "write" });
+      await ok.ready;
+      ok.close();
+      // an unreadable one is not known: no write attach, no copy, no checkout; a viewer may look
+      broken = true;
+      const b = await srv.server.createRun("mark-broken");
+      const refused = new PipeClient({ url: srv.url, run: b.id, token: b.secret, tab: "t", mode: "write" });
+      await assert.rejects(refused.ready, (e: Error & { code?: string }) => e.code === "CHECKOUT_UNKNOWN" || /could not be read/.test(e.message));
+      assert.equal(srv.server.runs.get(b.id)!.pipe, undefined, "no claim was taken");
+      assert.equal((await fetch(`${base2}/api/runs/${b.id}/store`, { headers: authed(b.secret) })).status, 503);
+      assert.equal((await fetch(`${base2}/api/runs/${b.id}/checkout`, { method: "POST", headers: authed(b.secret, "t"), body: JSON.stringify({ head: 1 }) })).status, 503);
+      const viewer = new PipeClient({ url: srv.url, run: b.id, token: b.secret, tab: "v", mode: "view" });
+      assert.equal(((await viewer.ready) as { t: string }).t, "viewing");
+      viewer.close();
+      // adoption: a released run whose mark cannot be read is not adopted
+      broken = false;
+      const released = await srv.server.createRun("mark-released");
+      const c = new PipeClient({ url: srv.url, run: released.id, token: released.secret, tab: "t", mode: "write" });
+      await c.ready;
+      c.close();
+      for (let i = 0; i < 100 && srv.server.runs.get(released.id)!.pipe; i++) await new Promise((r) => setTimeout(r, 50));
+      const second = await localServer({
+        root: srv.root,
+        readObject: async (key) => {
+          if (key.endsWith("/checkout.json")) throw Object.assign(new Error("the object store is unreachable"), { code: "EIO" });
+          return new Uint8Array(readFileSync(join(root, key)));
+        },
+      });
+      try {
+        await assert.rejects(second.server.adoptRun(released.id), /cannot tell whether run .* was checked out/);
+        assert.equal(second.server.runs.has(released.id), false, "not adopted");
+      } finally {
+        await second.remove();
+      }
+    } finally {
+      await srv.remove();
+    }
+  });
 });

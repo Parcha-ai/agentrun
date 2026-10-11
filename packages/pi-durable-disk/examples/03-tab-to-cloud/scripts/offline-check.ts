@@ -74,6 +74,20 @@ try {
   await sleep(500);
   const usersDuring = (await ev<{ kind: string }[]>("demo.items()")).filter((i) => i.kind === "user").length;
   ok("during the checkout the chat input is held and a question sent anyway is not taken", held.inputDisabled && held.sendDisabled && held.checkingOut && usersDuring === usersBefore, { held, usersBefore, usersDuring });
+  // a loss of the pipe while the checkout is still preparing (before any handover was asked) is an ordinary loss: the checkout stops, the page says so and the writer comes back, never a dead writer
+  await ev("demo.state.client.close()");
+  await page.until("/could not take it offline/.test(demo.state.banner) || demo.state.mode !== 'writer' || !demo.state.client || demo.state.client.lost", 120_000, 250);
+  await page.until("demo.state.mode !== 'writer' && !demo.state.checkingOut", 60_000, 250);
+  const afterLoss = await ev<{ mode: string; banner: string; composerHidden: boolean; checkingOut: boolean }>("({ mode: demo.state.mode, banner: demo.state.banner, composerHidden: document.getElementById('composer').hidden, checkingOut: demo.state.checkingOut })");
+  ok("a loss during the caching is an ordinary loss: no dead writer (the page is not a writer, says the connection closed, and its input is gone)", afterLoss.mode !== "writer" && /connection to the disk closed|could not take it offline/.test(afterLoss.banner) && afterLoss.composerHidden && !afterLoss.checkingOut, afterLoss);
+  // the user runs it here again (the page offers it as it does after any loss)
+  await sleep(4000);
+  await ev("demo.switchTo('tab')");
+  await page.until("demo.state.mode === 'writer' && demo.state.client && !demo.state.client.lost", 300_000, 500);
+  await page.until("demo.brain().swapped === true", 300_000, 1000);
+  // a model chunk of the earlier, aborted caching that is the right size and the wrong bytes (another model under the same chunk path): the next checkout must replace it
+  await ev(`(async () => { const c = await caches.open("walks-home-offline-v1"); await c.put(location.origin + "/api/runs/off/work/home/model/chunk-0003.bin", new Response(new Uint8Array(16 * 1024 * 1024), { headers: { "content-length": String(16 * 1024 * 1024) } })); return true; })()`);
+  await ev("document.getElementById('offline').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 1000);
   const banner = await ev<string>("demo.state.banner");
   ok("taking it offline worked", banner === "", banner);

@@ -34,7 +34,20 @@ export const isImmutable = (url: string | URL): boolean => IMMUTABLE.test(new UR
 
 const unavailable = () => isolated(new Response("not available: this run is checked out to this browser and this file was not cached", { status: 504, headers: { "content-type": "text/plain" } }));
 
+/** A request with `?fresh` asks past the worker's cache (the page replacing bytes it found wrong): it goes to the network and is never answered from the cache. */
+export const isFresh = (url: string | URL): boolean => new URL(url).searchParams.has("fresh");
+
 export async function serve(request: Request, deps: ServeDeps): Promise<Response> {
+  if (isFresh(request.url)) {
+    try {
+      const r = await deps.fetch(request, new AbortController().signal);
+      deps.note?.("fresh");
+      return r;
+    } catch {
+      deps.note?.("unavailable");
+      return unavailable();
+    }
+  }
   const key = cacheKey(request.url);
   const cached = async () => {
     const hit = await deps.cache.match(key);
