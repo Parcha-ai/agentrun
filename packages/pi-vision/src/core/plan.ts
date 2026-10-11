@@ -185,15 +185,17 @@ function cutParts(laid: Layout, base: Fragment, derive: PlannedPart["derive"], w
 }
 
 /** Parts grouped one eyes request each, in order: a picture's tiles and a page's tiles stay together; at most
- *  LOOK_PAGES_PER_REQUEST images, LOOK_FRAMES_PER_REQUEST frames, or one clip or file in a request. */
-function pack(parts: readonly PlannedPart[]): PlannedPart[][] {
+ *  LOOK_PAGES_PER_REQUEST images or LOOK_FRAMES_PER_REQUEST frames, never over the route's `imagesPerCall`, or one
+ *  clip or file in a request. */
+function pack(parts: readonly PlannedPart[], limits: Limits): PlannedPart[][] {
   const units: { key: string; parts: PlannedPart[] }[] = [];
   parts.forEach((part, index) => {
     const key = part.derive === "page" || part.derive === "tile" || part.derive === "image" ? `page ${part.fragment.page?.from ?? 0}` : `part ${index}`;
     if (units.at(-1)?.key === key) units.at(-1)!.parts.push(part);
     else units.push({ key, parts: [part] });
   });
-  const capOf = (part: PlannedPart) => (part.derive === "frame" ? LOOK_FRAMES_PER_REQUEST : part.derive === "clip" || part.derive === "as_is" ? 1 : LOOK_PAGES_PER_REQUEST);
+  const images = Math.floor(limits.imagesPerCall);
+  const capOf = (part: PlannedPart) => (part.derive === "clip" || part.derive === "as_is" ? 1 : Math.min(images, part.derive === "frame" ? LOOK_FRAMES_PER_REQUEST : LOOK_PAGES_PER_REQUEST));
   const requests: PlannedPart[][] = [];
   for (const unit of units) {
     const open = requests.at(-1);
@@ -204,13 +206,15 @@ function pack(parts: readonly PlannedPart[]): PlannedPart[][] {
 }
 
 /** Each image part's byte budget: an equal share of the result's (a quarter of the request) in `show`, of its own
- *  request's in `ask`, never over one image's limit. */
-function withBytes(parts: readonly PlannedPart[], limits: Limits, mode: PlanMode): PlannedPart[] {
+ *  request's in `ask`, never over one image's limit. A string when a part's share is no byte at all. */
+function withBytes(parts: readonly PlannedPart[], limits: Limits, mode: PlanMode): PlannedPart[] | string {
   const budget = mode === "show" ? Math.floor(limits.requestBytes * RESULT_BYTES_SHARE) : limits.requestBytes;
-  return (mode === "show" ? [[...parts]] : pack(parts)).flatMap((group) => {
+  const sized = (mode === "show" ? [[...parts]] : pack(parts, limits)).flatMap((group) => {
     const images = group.filter((part) => IMAGE_DERIVES.has(part.derive)).length;
     return group.map((part) => (IMAGE_DERIVES.has(part.derive) ? { ...part, maxBytes: Math.min(limits.image.maxBytes, Math.floor(budget / images)) } : part));
   });
+  const empty = sized.some((part) => part.maxBytes !== undefined && part.maxBytes < 1);
+  return empty ? `a request budget of ${grouped(limits.requestBytes)} bytes leaves no bytes for ${parts.length === 1 ? "an image" : `${parts.length} images`}` : sized;
 }
 
 function planImage(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode): Plan {
@@ -225,6 +229,7 @@ function planImage(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   const laid = layout({ width, height }, box, limits, maxParts, imageRender({ width, height }));
   if (typeof laid === "string") return refuse("over_budget", laid, original);
   const parts = withBytes(cutParts(laid, {}, "image", box === WHOLE), limits, mode);
+  if (typeof parts === "string") return refuse("over_budget", parts, original);
   const fitsBytes = base64(facts.bytes) <= (parts[0].maxBytes ?? 0);
   const asIs = box === WHOLE && parts.length === 1 && !laid.shrunk && fitsBytes;
   const first = laid.cuts[0];
@@ -240,11 +245,9 @@ function planPages(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   const from = selector.pages?.from ?? 1, to = Math.min(selector.pages?.to ?? pages, pages);
   if (Number.isInteger(from) && from > pages) return refuse("refused", `page ${from} is past the last page, ${pages}`, original);
   if (!(Number.isInteger(from) && Number.isInteger(to) && from >= 1 && to >= from)) return refuse("refused", `pages ${from}-${to} are not pages of a ${pages} page document`, original);
-  const text = new Set(facts.textPages ?? []);
-  let withText = 0;
-  for (let page = from; page <= to; page++) if (text.has(page)) withText++;
-  if (mode === "show" && !selector.render && withText > 0) {
-    return { parts: [{ fragment: { page: { from, to } }, derive: "text" }], fit: { reduction: "text_only", original, shown: { pages: withText } } };
+  if (mode === "show" && !selector.render) {
+    const withText = new Set((facts.textPages ?? []).filter((page) => page >= from && page <= to)).size;
+    if (withText > 0) return { parts: [{ fragment: { page: { from, to } }, derive: "text" }], fit: { reduction: "text_only", original, shown: { pages: withText } } };
   }
   const count = to - from + 1;
   if (mode === "ask" && count > LOOK_PAGES_PER_CALL) return refuse("over_budget", `pages ${from}-${to} are ${count} pages, over the ${LOOK_PAGES_PER_CALL} one look takes; ask about fewer pages`, original);
@@ -267,25 +270,30 @@ function planPages(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   if (!shownPages) return refuse("over_budget", `page ${from} does not fit in the ${maxParts} images one result takes`, original);
   const reduction = reduced({ windowed: shownPages < count, tiled: parts.length > shownPages, downscaled: shrunk });
   const shown: Shown = { pages: shownPages, dpi, ...(parts.length > shownPages ? { tiles: parts.length } : {}) };
-  return { parts: withBytes(parts, limits, mode), fit: { reduction, original, shown } };
+  const sized = withBytes(parts, limits, mode);
+  if (typeof sized === "string") return refuse("over_budget", sized, original);
+  return { parts: sized, fit: { reduction, original, shown } };
 }
 
 function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode): Plan {
   const duration = facts.durationS;
   const original = { durationS: duration, width: facts.width, height: facts.height, bytes: facts.bytes };
-  const { native, inlineBytes } = limits.video;
+  // Raw video bytes whose base64 fits the request too; a region is a crop, which frames can show and a clip cannot.
+  const inline = Math.min(limits.video.inlineBytes, Math.floor(limits.requestBytes / 4) * 3);
+  const native = limits.video.native && inline >= 1 && !selector.region;
   const windowed = selector.fromS !== undefined || selector.toS !== undefined;
-  if (native && !windowed && facts.bytes <= inlineBytes) {
-    return { parts: [{ fragment: {}, derive: "as_is", maxBytes: base64(inlineBytes) }], fit: { reduction: "as_is", original, shown: { bytes: facts.bytes } } };
+  if (native && !windowed && facts.bytes <= inline) {
+    return { parts: [{ fragment: {}, derive: "as_is", maxBytes: base64(inline) }], fit: { reduction: "as_is", original, shown: { bytes: facts.bytes } } };
   }
   if (!(duration !== undefined && duration > 0)) return refuse("unreadable", "its duration is not known, so no window or frame can be chosen", original);
   const from = ms(selector.fromS ?? 0), to = ms(Math.min(selector.toS ?? duration, duration)), span = to - from;
   if (!(from >= 0 && from < duration && to > from)) return refuse("refused", `the window ${from}..${to} s is not within the video's ${ms(duration)} s`, original);
   if (native && (windowed || mode === "ask")) {
     // Each window is sized so its stream copy fits the inline budget; one that does not is re-encoded when derived.
-    const windows = mode === "show" ? 1 : Math.min(Math.round(span * 1000), Math.max(1, Math.ceil((facts.bytes * span) / duration / inlineBytes)));
+    const windows = mode === "show" ? 1 : Math.min(Math.round(span * 1000), Math.max(1, Math.ceil((facts.bytes * span) / duration / inline)));
+    if (windows > LOOK_FRAMES_PER_CALL) return refuse("over_budget", `${from}..${to} s is ${windows} clips of ${grouped(inline)} bytes, over the ${LOOK_FRAMES_PER_CALL} video parts one look takes; ask about a shorter window`, original);
     const edge = (i: number) => (i === windows ? to : ms(from + (i * span) / windows));
-    const parts = Array.from({ length: windows }, (_, i): PlannedPart => ({ fragment: { t: { from: edge(i), to: edge(i + 1) } }, derive: "clip", maxBytes: base64(inlineBytes) }));
+    const parts = Array.from({ length: windows }, (_, i): PlannedPart => ({ fragment: { t: { from: edge(i), to: edge(i + 1) } }, derive: "clip", maxBytes: base64(inline) }));
     return { parts, fit: { reduction: "windowed", original, shown: {} } };
   }
   const frames = mode === "show"
@@ -303,7 +311,9 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
     return { fragment: selector.region ? { t: { from: atS }, xywh: selector.region } : { t: { from: atS } }, derive: "frame", atS };
   });
   const shown: Shown = { frames, ...(laid ? { width: laid.cuts[0].crop.width, height: laid.cuts[0].crop.height } : {}) };
-  return { parts: withBytes(parts, limits, mode), fit: { reduction: "sampled", original, shown } };
+  const sized = withBytes(parts, limits, mode);
+  if (typeof sized === "string") return refuse("over_budget", sized, original);
+  return { parts: sized, fit: { reduction: "sampled", original, shown } };
 }
 
 export function plan(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode): Plan {
@@ -317,16 +327,16 @@ export function plan(facts: SourceFacts, selector: Selector, limits: Limits, mod
   }
 }
 
-/** The eyes requests of a plan, in order. */
-export function lookRequests(planned: Plan): PlannedPart[][] {
-  return pack(planned.parts);
+/** The eyes requests of a plan made for `limits`, in order. */
+export function lookRequests(planned: Plan, limits: Limits): PlannedPart[][] {
+  return pack(planned.parts, limits);
 }
 
 /** A look priced before its first request: parts times LOOK_TOKENS_PER_PART times the eyes' input price in dollars
- *  per million tokens; over `capUsd` it is refused with the estimate. An unknown price is no estimate: the page and
- *  frame caps still bound the look. */
-export function priceLook(planned: Plan, inputUsdPerMTok: number | null | undefined, capUsd: number = LOOK_MAX_USD): LookEstimate {
-  const parts = planned.parts.length, requests = pack(planned.parts).length, tokens = parts * LOOK_TOKENS_PER_PART;
+ *  per million tokens; over `capUsd` it is refused with the estimate. An unknown price is no estimate: the page, frame
+ *  and clip caps still bound the look. */
+export function priceLook(planned: Plan, limits: Limits, inputUsdPerMTok: number | null | undefined, capUsd: number = LOOK_MAX_USD): LookEstimate {
+  const parts = planned.parts.length, requests = pack(planned.parts, limits).length, tokens = parts * LOOK_TOKENS_PER_PART;
   const usd = typeof inputUsdPerMTok === "number" && Number.isFinite(inputUsdPerMTok) && inputUsdPerMTok >= 0 ? (tokens * inputUsdPerMTok) / 1_000_000 : null;
   if (usd === null || usd <= capUsd) return { parts, requests, tokens, usd };
   const detail = `this look is priced at $${usd.toFixed(4)} (${parts} parts at ${grouped(LOOK_TOKENS_PER_PART)} tokens, $${inputUsdPerMTok} per million), over the $${capUsd} cap; ask about fewer pages or a shorter window`;

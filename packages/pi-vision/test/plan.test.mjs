@@ -83,16 +83,19 @@ test("a page renders at 150 dpi, or at the highest whole dpi the image limit all
   assert.equal(PDF_MAX_DPI, 150);
 });
 
-test("a scan shows the first pages up to the page budget; a look takes every page, ten a request", () => {
+test("a scan shows the first pages up to the page budget; a look takes every page, ten a request on a route that takes ten", () => {
   const shown = plan(pdf(37), {}, DEFAULT_LIMITS, "show");
   assert.equal(shown.fit.reduction, "windowed");
   assert.deepEqual(shown.fit.shown, { pages: 4, dpi: 150 });
   assert.deepEqual(shown.parts.map((p) => formatFragment(p.fragment)), ["page=1", "page=2", "page=3", "page=4"]);
   assert.deepEqual(plan(pdf(37), { pages: { from: 30, to: 99 } }, DEFAULT_LIMITS, "show").parts.map((p) => p.fragment.page.from), [30, 31, 32, 33]);
-  const asked = plan(pdf(37), {}, DEFAULT_LIMITS, "ask");
+  const twenty = limits({ imagesPerCall: 20 });
+  const asked = plan(pdf(37), {}, twenty, "ask");
   assert.equal(asked.parts.length, 37);
-  assert.deepEqual(lookRequests(asked).map((r) => r.length), [10, 10, 10, 7]);
-  assert.ok(asked.parts.every((p) => p.maxBytes === Math.floor(DEFAULT_LIMITS.requestBytes / 10) || p.maxBytes === Math.floor(DEFAULT_LIMITS.requestBytes / 7)));
+  assert.deepEqual(lookRequests(asked, twenty).map((r) => r.length), [10, 10, 10, 7]);
+  assert.deepEqual([...new Set(asked.parts.map((p) => p.maxBytes))], [Math.floor(16 * MiB / 10), Math.floor(16 * MiB / 7)], "each image's share of its own request");
+  // The default eight images a call bounds a request too.
+  assert.deepEqual(lookRequests(plan(pdf(37), {}, DEFAULT_LIMITS, "ask"), DEFAULT_LIMITS).map((r) => r.length), [8, 8, 8, 8, 5]);
   const over = plan(pdf(LOOK_PAGES_PER_CALL + 1), {}, DEFAULT_LIMITS, "ask");
   assert.equal(over.fit.refusal.code, "over_budget");
   assert.match(over.fit.refusal.detail, /201 pages, over the 200/);
@@ -148,9 +151,10 @@ test("video: eight frames by seek over the window for the lead; one a second for
   assert.ok(whole.parts.every((p) => p.derive === "frame" && p.width === 640 && p.height === 360 && p.maxBytes === DEFAULT_LIMITS.requestBytes * RESULT_BYTES_SHARE / 8));
   assert.deepEqual(plan(video(1800), { fromS: 60, toS: 68 }, DEFAULT_LIMITS, "show").parts.map((p) => p.atS), [60.5, 61.5, 62.5, 63.5, 64.5, 65.5, 66.5, 67.5]);
   assert.equal(plan(video(1800), { fromS: 60, toS: 68 }, DEFAULT_LIMITS, "ask").parts.length, 8);
-  const minute = plan(video(60), {}, DEFAULT_LIMITS, "ask");
+  const twenty = limits({ imagesPerCall: 20 });
+  const minute = plan(video(60), {}, twenty, "ask");
   assert.equal(minute.parts.length, 60);
-  assert.deepEqual(lookRequests(minute).map((r) => r.length), [20, 20, 20]);
+  assert.deepEqual(lookRequests(minute, twenty).map((r) => r.length), [20, 20, 20]);
   assert.equal(plan(video(1800), {}, DEFAULT_LIMITS, "ask").parts.length, LOOK_FRAMES_PER_CALL);
   assert.deepEqual(plan(video(1800), { toS: 9000 }, DEFAULT_LIMITS, "show").parts.at(-1).atS, 1687.5, "a window past the end ends at the end");
 });
@@ -164,18 +168,69 @@ test("a route that takes video gets the file when it fits, else the window; a lo
   assert.equal(plan(video(1800), {}, native, "show").fit.reduction, "sampled", "too big and no window: frames, never the whole file");
   const look = plan(video(1800, 50_000_000), {}, native, "ask");
   assert.deepEqual(look.parts.map((p) => formatFragment(p.fragment)), ["t=0,360", "t=360,720", "t=720,1080", "t=1080,1440", "t=1440,1800"]);
-  assert.deepEqual(lookRequests(look).map((r) => r.length), [1, 1, 1, 1, 1]);
+  assert.deepEqual(lookRequests(look, native).map((r) => r.length), [1, 1, 1, 1, 1]);
+});
+
+test("a route that takes few images a message gets requests that hold no more", () => {
+  const two = limits({ imagesPerCall: 2 });
+  assert.deepEqual(lookRequests(plan(pdf(5), {}, two, "ask"), two).map((r) => r.length), [2, 2, 1]);
+  assert.deepEqual(lookRequests(plan(video(10), {}, two, "ask"), two).map((r) => r.length), [2, 2, 2, 2, 2]);
+  assert.ok(plan(image(1288, 8319), {}, two, "ask").parts.length <= 2);
+});
+
+test("a region of a video is a crop of its frames, also on a route that takes video", () => {
+  const native = limits({ video: { native: true, inlineBytes: 12_000_000 } });
+  const region = { x: 50, y: 0, w: 50, h: 50 };
+  for (const selector of [{ region }, { region, fromS: 10, toS: 18 }]) {
+    const p = plan(video(60, 3_000_000), selector, native, "show");
+    assert.equal(p.fit.reduction, "sampled");
+    assert.deepEqual(p.parts[0].crop, { left: 320, top: 0, width: 320, height: 180 });
+    assert.deepEqual(p.parts[0].fragment.xywh, region);
+  }
+});
+
+test("video sent inline fits the request too: a host's inline budget over the request is held to it", () => {
+  const tight = limits({ requestBytes: 3 * MiB, video: { native: true, inlineBytes: 12_000_000 } });
+  const small = plan(video(60, 5_000_000), {}, tight, "show");
+  assert.notEqual(small.parts[0]?.derive, "as_is", "a 5 MB file does not fit a 3 MiB request");
+  const window = plan(video(60, 5_000_000), { fromS: 0, toS: 8 }, tight, "show");
+  assert.equal(window.parts[0].derive, "clip");
+  assert.ok(window.parts[0].maxBytes <= 3 * MiB);
+});
+
+test("a route with no bytes for an image is a refusal, never a part no encoder can make", () => {
+  const none = limits({ requestBytes: 0 });
+  for (const facts of [image(800, 600), pdf(1), video(60)]) {
+    const p = plan(facts, {}, none, "show");
+    assert.equal(p.fit.refusal?.code, "over_budget", facts.kind);
+    assert.match(p.fit.refusal.detail, /leaves no bytes/);
+  }
+});
+
+test("a look over a long video on a route that takes video is capped at 120 clips", () => {
+  const native = limits({ video: { native: true, inlineBytes: 12_000_000 } });
+  const huge = plan(video(3600, 20_000_000_000), {}, native, "ask");
+  assert.equal(huge.fit.refusal.code, "over_budget");
+  assert.match(huge.fit.refusal.detail, /1667 clips .* over the 120 video parts/);
+  assert.equal(plan(video(3600, 20_000_000_000), { fromS: 0, toS: 60 }, native, "ask").parts.length, 28);
+});
+
+test("a look over a document of a billion pages is refused without walking its pages", () => {
+  const started = performance.now();
+  const p = plan({ kind: "pdf", bytes: 1, sha256: "4", pages: 1e9, textPages: [1] }, {}, DEFAULT_LIMITS, "ask");
+  assert.equal(p.fit.refusal.code, "over_budget");
+  assert.ok(performance.now() - started < 1000);
 });
 
 test("a look is priced before its first request and refused over the cap", () => {
   const pages = plan(pdf(37), {}, DEFAULT_LIMITS, "ask");
-  assert.deepEqual(priceLook(pages, 0.1), { parts: 37, requests: 4, tokens: 111_000, usd: 0.0111 });
-  const dear = priceLook(plan(pdf(100), {}, DEFAULT_LIMITS, "ask"), 2);
+  assert.deepEqual(priceLook(pages, DEFAULT_LIMITS, 0.1), { parts: 37, requests: 5, tokens: 111_000, usd: 0.0111 });
+  const dear = priceLook(plan(pdf(100), {}, DEFAULT_LIMITS, "ask"), DEFAULT_LIMITS, 2);
   assert.equal(dear.usd, 0.6);
   assert.equal(dear.refusal.code, "over_budget");
   assert.match(dear.refusal.detail, /\$0\.6000 .*over the \$0\.25 cap/);
-  assert.equal(priceLook(plan(pdf(100), {}, DEFAULT_LIMITS, "ask"), 2, 1).refusal, undefined, "the host's cap");
-  assert.equal(priceLook(pages, null).usd, null);
+  assert.equal(priceLook(plan(pdf(100), {}, DEFAULT_LIMITS, "ask"), DEFAULT_LIMITS, 2, 1).refusal, undefined, "the host's cap");
+  assert.equal(priceLook(pages, DEFAULT_LIMITS, null).usd, null);
 });
 
 test("documents and spreadsheets read as text; an unknown kind is unsupported", () => {
@@ -235,7 +290,11 @@ function assertWithin({ facts, selector, limits, mode }, p) {
       assert.ok(crop.left >= 0 && crop.top >= 0 && crop.left + crop.width <= part.raster.width && crop.top + crop.height <= part.raster.height, "the cut is within its raster");
     }
     if (part.derive === "as_is" && facts.kind === "image") assert.ok(base64(facts.bytes) <= part.maxBytes, "a file sent as it is fits its bytes");
-    if (part.derive === "clip" || (part.derive === "as_is" && facts.kind === "video")) assert.equal(part.maxBytes, base64(limits.video.inlineBytes));
+    if (part.derive === "clip" || (part.derive === "as_is" && facts.kind === "video")) {
+      assert.equal(part.maxBytes, base64(Math.min(limits.video.inlineBytes, Math.floor(limits.requestBytes / 4) * 3)));
+      assert.ok(part.maxBytes <= limits.requestBytes, "video inline fits the request");
+      assert.ok(!selector.region, "a region is a crop of frames, never a clip");
+    }
     if (part.fragment.page && part.dpi !== undefined && !selector.region) assert.ok(part.dpi <= PDF_MAX_DPI, "a page renders at no more than the dpi cap");
     if (Object.keys(part.fragment).length) assert.deepEqual(parseFragment(formatFragment(part.fragment)), part.fragment, "the fragment reads back");
   }
@@ -247,9 +306,11 @@ function assertWithin({ facts, selector, limits, mode }, p) {
   } else {
     assert.ok(new Set(p.parts.map((part) => part.fragment.page?.from).filter(Boolean)).size <= LOOK_PAGES_PER_CALL);
     assert.ok(p.parts.filter((part) => part.derive === "frame").length <= LOOK_FRAMES_PER_CALL);
-    for (const request of lookRequests(p)) {
+    assert.ok(p.parts.filter((part) => part.derive === "clip").length <= LOOK_FRAMES_PER_CALL);
+    for (const request of lookRequests(p, limits)) {
       const shown = request.filter((part) => images.includes(part));
       assert.ok(shown.reduce((sum, part) => sum + part.maxBytes, 0) <= limits.requestBytes, "a request's images within the request");
+      assert.ok(shown.length <= limits.imagesPerCall, "a request's images within the route's images a message");
       assert.ok(request.filter((part) => part.derive === "frame").length <= LOOK_FRAMES_PER_REQUEST);
       assert.ok(request.filter((part) => part.derive !== "frame").length <= LOOK_PAGES_PER_REQUEST);
     }
