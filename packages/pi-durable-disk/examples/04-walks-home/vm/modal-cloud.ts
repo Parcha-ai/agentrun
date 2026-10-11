@@ -113,6 +113,8 @@ export interface ModalCloudOptions {
    * a box on its way (live mode). Default off: a take ends after one task and must not pay for a box nobody will use.
    */
   readonly rewarm?: boolean;
+  /** How long close() waits for boxes still being made to land and remove themselves (default 60 s). */
+  readonly closeWaitMs?: number;
   /** Offer the VM environment (default true). Without it the only place the agent can go is the GPU box; needs `gpu`. */
   readonly offerVm?: boolean;
   /** Where each stopped host's log lines are appended (the demo's evidence file). */
@@ -210,6 +212,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const placed = new Map<string, Placed>();
   const models = new Map<string, ModelProxy>();
   const running = new Set<string>();
+  /** Set when close() begins: no sandbox is made after it, and one that lands from a create already in flight is removed at once. */
+  let closing = false;
+  /** The boxes being made right now (create, prepare, launch): close() waits for them, bounded, so none lands after its sweep. */
+  const making = new Set<Promise<unknown>>();
   let server: ServerApi | undefined;
 
   /**
@@ -328,7 +334,18 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     options.log("box.ready", { box: name, ms: Date.now() - t0 });
   }
 
-  async function remoteBox(ref: RunRef, envId: string): Promise<SandboxInfo> {
+  function remoteBox(ref: RunRef, envId: string): Promise<SandboxInfo> {
+    if (closing) return Promise.reject(new Error("the Modal cloud is closing: no new box"));
+    const made = makeBox(ref, envId);
+    making.add(made);
+    void made.then(
+      () => making.delete(made),
+      () => making.delete(made),
+    );
+    return made;
+  }
+
+  async function makeBox(ref: RunRef, envId: string): Promise<SandboxInfo> {
     const t0 = Date.now();
     const cls = classOf(envId);
     const name = sandboxName(prefix, ref.id, t0);
@@ -345,6 +362,11 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       }
       box = outcome.b;
     } else box = await creating;
+    // The cloud closed while this box was being created: its sweep has passed, so this one is removed here.
+    if (closing) {
+      await drop(box);
+      throw new Error("the Modal cloud closed while this box was being made");
+    }
     live.add(box.id);
     try {
       const startedMs = Date.now() - t0;
@@ -465,10 +487,18 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       if (r?.result) writeFileSync(options.eventsLog, r.result.endsWith("\n") ? r.result : `${r.result}\n`, { flag: "a" });
     }
     at.dialer.close();
-    await at.driver.stop(at.handle).catch((error: Error) => options.log("cloud.stop-failed", { run: ref.id, error: error.message }));
-    options.ledger?.close("modal-sandbox", at.box, "stopped");
-    live.delete(at.box);
-    serveTokens.delete(at.box);
+    let stopped = true;
+    await at.driver.stop(at.handle).catch((error: Error) => {
+      stopped = false;
+      options.log("cloud.stop-failed", { run: ref.id, error: error.message });
+    });
+    // A VM whose stop failed may still be running: delete its sandbox directly, and if that fails too keep it in `live` (and its ledger entry)
+    // so that close() tries again. It is forgotten only once it is gone.
+    if (stopped) {
+      options.ledger?.close("modal-sandbox", at.box, "stopped");
+      live.delete(at.box);
+      serveTokens.delete(at.box);
+    } else await drop({ id: at.box, name: String(at.handle.name) });
     await dropToken(ref.id, at.token);
     options.log("cloud.stopped", { run: ref.id, ms: Date.now() - started });
   }
@@ -585,7 +615,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     /** While a tab runs the run, with `warm` set (pipe transport): get a VM ready, so a switch only dials it. */
     prewarm(ref) {
       const warmEnv = options.warm === "gpu" ? gpuEnv : options.warm && transport === "pipe" ? env : undefined;
-      if (!warmEnv || warm.has(ref.id) || remotes.has(ref.id)) return;
+      if (closing || !warmEnv || warm.has(ref.id) || remotes.has(ref.id)) return;
       const ready = remoteBox(ref, warmEnv.id);
       ready.catch((error: Error) => {
         warm.delete(ref.id);
@@ -595,31 +625,47 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     },
 
     /** Take the warm sandbox (or make one), dial its host through the tunnel with its bearer token, and send it `invite`. */
-    async startRemote(ref, envId, invite) {
+    async startRemote(ref, envId, invite, signal) {
       const t0 = Date.now();
       // The warm box belongs to the environment `warm` named: a switch anywhere else leaves it where it is.
       const warmEnvId = options.warm === "gpu" ? gpuEnv?.id : env.id;
       const warmBox = envId === warmEnvId ? warm.get(ref.id) : undefined;
       if (envId === warmEnvId) warm.delete(ref.id);
       const box = (warmBox && (await warmBox.catch(() => undefined))) || (await remoteBox(ref, envId));
-      remotes.set(ref.id, box);
-      const tunnel = (await tunnelsOf(box.id))[BOX_SERVE_PORT];
-      if (!tunnel) throw new Error(`${box.name} has no tunnel for port ${BOX_SERVE_PORT}`);
-      const url = tunnel.url.replace(/^http/, "ws");
-      const token = serveTokens.get(box.id)!;
-      let socket: WebSocket | undefined;
-      for (let attempt = 0; !socket; attempt++) {
-        socket = await new Promise<WebSocket | undefined>((resolve) => {
-          const ws = new WebSocket(url, { headers: { authorization: `Bearer ${token}` }, maxPayload: 64 * 1024 * 1024 });
-          ws.once("open", () => resolve(ws));
-          ws.once("error", () => resolve(undefined));
-        });
-        if (!socket) {
-          if (attempt >= 60) throw new Error(`the remote host in ${box.name} did not answer`);
-          await new Promise((r) => setTimeout(r, 500));
-        }
+      // The server stopped waiting while the box was being made: nothing is left running for a move that already failed.
+      const cancelled = () => new Error(`the start of ${box.name} was cancelled: the server stopped waiting for it`);
+      if (signal?.aborted) {
+        await drop(box);
+        throw cancelled();
       }
-      socket.send(JSON.stringify(invite));
+      remotes.set(ref.id, box);
+      let socket: WebSocket | undefined;
+      try {
+        const tunnel = (await tunnelsOf(box.id))[BOX_SERVE_PORT];
+        if (!tunnel) throw new Error(`${box.name} has no tunnel for port ${BOX_SERVE_PORT}`);
+        const url = tunnel.url.replace(/^http/, "ws");
+        const token = serveTokens.get(box.id)!;
+        for (let attempt = 0; !socket; attempt++) {
+          if (signal?.aborted) throw cancelled();
+          socket = await new Promise<WebSocket | undefined>((resolve) => {
+            const ws = new WebSocket(url, { headers: { authorization: `Bearer ${token}` }, maxPayload: 64 * 1024 * 1024 });
+            ws.once("open", () => resolve(ws));
+            ws.once("error", () => resolve(undefined));
+          });
+          if (!socket) {
+            if (attempt >= 60) throw new Error(`the remote host in ${box.name} did not answer`);
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        if (signal?.aborted) throw cancelled();
+        socket.send(JSON.stringify(invite));
+      } catch (error) {
+        socket?.close();
+        // A start that was given up on (or failed) leaves no box charging; the server's own stopRemote finds nothing to remove.
+        if (remotes.get(ref.id) === box) remotes.delete(ref.id);
+        await drop(box);
+        throw error;
+      }
       options.log("remote.dialed", { run: ref.id, box: box.name, warm: Boolean(warmBox), ms: Date.now() - t0 });
       return { socket, host: classOf(envId).env.phrase };
     },
@@ -638,6 +684,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
     /** Stop what runs and delete every sandbox this cloud made and still holds (warm ones, a crashed start's). */
     async close() {
+      closing = true;
       for (const w of warmers.values()) w.close();
       warmers.clear();
       trainers.clear();
@@ -652,6 +699,14 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       };
       for (const id of [...running]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
       for (const id of [...placed.keys()]) await attempt(`stop ${id}`, () => host.stop({ disk: options.disk, region: options.region, id }, "now"));
+      // A box still being made lands, finds the cloud closing and removes itself; wait for that (bounded) before the sweep below.
+      if (making.size > 0) {
+        const waitMs = options.closeWaitMs ?? 60_000;
+        let timer: NodeJS.Timeout | undefined;
+        const settled = await Promise.race([Promise.allSettled([...making]).then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), waitMs)))]);
+        clearTimeout(timer);
+        if (!settled) failures.push(`${making.size} box(es) still being made after ${Math.round(waitMs / 1000)} s (they expire by themselves at their lifetime)`);
+      }
       // A removal that failed is tried again: Modal's errors are mostly transient, and what is left running is billed.
       for (let round = 0; round < 3 && live.size > 0; round++) {
         for (const id of [...live]) {
