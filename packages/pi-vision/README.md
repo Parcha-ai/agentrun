@@ -24,7 +24,7 @@ and it is not published (`"private": true`). Parts not built yet throw `NotBuilt
 | The test kit's builders of synthetic documents, images and video; the leak check | not built |
 | The planner | built |
 | Images: kinds, fit, tiles, Photon and sharp processors | not built |
-| PDF: facts, text, pages, poppler | not built |
+| PDF: facts, text, pages, poppler | built |
 | Office documents and spreadsheets, LibreOffice | not built |
 | Video and ffmpeg | not built |
 | `read`'s media half, the guard, the eyes on pi-ai, receipts and misses | not built |
