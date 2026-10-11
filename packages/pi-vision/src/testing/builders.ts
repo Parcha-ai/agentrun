@@ -4,7 +4,7 @@
 // encoder and text drawn into an image, so they take the host's sharp module and never import it: this file's only
 // dependency is fflate.
 
-import { strToU8, zipSync } from "fflate";
+import { strToU8, type ZipOptions, zipSync } from "fflate";
 
 /** The parts of sharp's default export the image builders call. */
 export type SharpPipeline = {
@@ -155,7 +155,11 @@ export async function photoJpeg(sharp: SharpFactory): Promise<Uint8Array> {
   return new Uint8Array(await sharp(raw, { raw: { width, height, channels: 3 } }).withMetadata({ orientation: 6 }).jpeg({ quality: 88 }).toBuffer());
 }
 
-const zip = (parts: Record<string, string>) => zipSync(Object.fromEntries(Object.entries(parts).map(([name, text]) => [name, strToU8(text)])));
+/** The time every zip entry carries: the DOS epoch, read in local time both ways, so the bytes match on every machine. Without
+ *  it fflate reads the clock, and a build would change with the time it ran. */
+const ZIP_TIME = new Date(1980, 0, 1);
+const zipEntry = (text: string, level?: ZipOptions["level"]): [Uint8Array, ZipOptions] => [strToU8(text), { mtime: ZIP_TIME, level }];
+const zip = (parts: Record<string, string>) => zipSync(Object.fromEntries(Object.entries(parts).map(([name, text]) => [name, zipEntry(text)])));
 const relationships = (items: readonly (readonly [string, string, string])[]) => xmlDocument(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items.map(([id, type, target]) => `<Relationship Id="${id}" Type="${type}" Target="${target}"/>`).join("")}</Relationships>`);
 const contentTypes = (overrides: readonly (readonly [string, string])[]) => xmlDocument(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${overrides.map(([part, type]) => `<Override PartName="${part}" ContentType="${type}"/>`).join("")}</Types>`);
 const rootRelationship = (target: string) => relationships([["rId1", `${RELATIONSHIPS}/officeDocument`, target]]);
@@ -180,6 +184,7 @@ const P_NS = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xm
 const SHAPE_TREE = '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>';
 const CLR_MAP = '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>';
 const run = (text: string) => `<a:p><a:r><a:rPr lang="en-US"/><a:t>${xml(text)}</a:t></a:r></a:p>`;
+const bullet = (text: string) => `<a:p><a:pPr marL="228600" indent="-228600"><a:buFont typeface="Arial"/><a:buChar char="&#8226;"/></a:pPr><a:r><a:rPr lang="en-US"/><a:t>${xml(text)}</a:t></a:r></a:p>`;
 const placeholder = (id: number, name: string, ph: string, [x, y, cx, cy]: readonly number[], paragraphs: string) =>
   `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr>${ph}</p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>${paragraphs}</p:txBody></p:sp>`;
 const theme = (name: string) => {
@@ -225,7 +230,7 @@ export function pptxBytes(): Uint8Array {
   };
   slides.forEach((slide, i) => {
     const n = i + 1;
-    parts[`ppt/slides/slide${n}.xml`] = xmlDocument(`<p:sld ${P_NS}><p:cSld><p:spTree>${SHAPE_TREE}${placeholder(2, "Title 1", '<p:ph type="title"/>', [457200, 274638, 8229600, 1143000], run(slide.title))}${placeholder(3, "Content 2", '<p:ph idx="1"/>', [457200, 1600200, 8229600, 4525963], slide.bullets.map(run).join(""))}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`);
+    parts[`ppt/slides/slide${n}.xml`] = xmlDocument(`<p:sld ${P_NS}><p:cSld><p:spTree>${SHAPE_TREE}${placeholder(2, "Title 1", '<p:ph type="title"/>', [457200, 274638, 8229600, 1143000], run(slide.title))}${placeholder(3, "Content 2", '<p:ph idx="1"/>', [457200, 1600200, 8229600, 4525963], slide.bullets.map((text) => bullet(text)).join(""))}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`);
     parts[`ppt/slides/_rels/slide${n}.xml.rels`] = relationships([["rId1", `${RELATIONSHIPS}/slideLayout`, "../slideLayouts/slideLayout1.xml"], ["rId2", `${RELATIONSHIPS}/notesSlide`, `../notesSlides/notesSlide${n}.xml`]]);
     parts[`ppt/notesSlides/notesSlide${n}.xml`] = xmlDocument(`<p:notes ${P_NS}><p:cSld><p:spTree>${SHAPE_TREE}${placeholder(2, "Notes 1", '<p:ph type="body" idx="1"/>', [685800, 4400550, 5486400, 3600450], run(slide.notes))}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>`);
     parts[`ppt/notesSlides/_rels/notesSlide${n}.xml.rels`] = relationships([["rId1", `${RELATIONSHIPS}/notesMaster`, "../notesMasters/notesMaster1.xml"], ["rId2", `${RELATIONSHIPS}/slide`, `../slides/slide${n}.xml`]]);
@@ -258,8 +263,8 @@ export function odtBytes(): Uint8Array {
   const content = xmlDocument(`<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2"><office:body><office:text><text:h text:outline-level="1">Proof of address (synthetic)</text:h><text:p>EXAMPLE WIDGETS LLC, 100 SAMPLE STREET SUITE 4, SPRINGFIELD, ZZ 00000</text:p><text:list><text:list-item><text:p>Utility statement for the period 2025-02-01 to 2025-02-28.</text:p></text:list-item><text:list-item><text:p>Amount due: 35.50</text:p></text:list-item></text:list></office:text></office:body></office:document-content>`);
   const manifest = xmlDocument('<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:version="1.2" manifest:media-type="application/vnd.oasis.opendocument.text"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>');
   return zipSync({
-    mimetype: [strToU8("application/vnd.oasis.opendocument.text"), { level: 0 }],
-    "META-INF/manifest.xml": strToU8(manifest),
-    "content.xml": strToU8(content),
+    mimetype: zipEntry("application/vnd.oasis.opendocument.text", 0),
+    "META-INF/manifest.xml": zipEntry(manifest),
+    "content.xml": zipEntry(content),
   });
 }

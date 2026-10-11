@@ -3,7 +3,7 @@
 // every XML part parsed. A builder that writes a wrong offset, size or part fails here, before any provider reads it.
 import assert from "node:assert/strict";
 import { crc32, inflateRawSync } from "node:zlib";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { DOMParser } from "@xmldom/xmldom";
 import sharp from "sharp";
 import { docxBytes, imageSize, letterPdf, mixedPdf, odtBytes, pdfBytes, photoJpeg, pptxBytes, scanPdf, tallPng, textPdf, widePng, xlsxBytes } from "@parcha/pi-vision/testing";
@@ -122,6 +122,8 @@ test("the deck has two slides, in order, and each slide has its own notes", () =
   slides.forEach((part, i) => {
     const slideNumber = /slide(\d+)\.xml$/.exec(part)[1];
     assert.equal(slideNumber, String(i + 1), "slide order");
+    const slide = parseXml(entries.get(`ppt/slides/slide${slideNumber}.xml`).text, `slide ${slideNumber}`);
+    assert.equal(slide.getElementsByTagName("a:buChar").length, 3, `bullets of slide ${slideNumber}`);
     const notes = /notesSlide\d+\.xml/.exec(entries.get(`ppt/slides/_rels/slide${slideNumber}.xml.rels`).text)?.[0];
     assert.ok(notes, `slide ${slideNumber} has a notes slide`);
     const text = parseXml(entries.get(`ppt/notesSlides/${notes}`).text, notes).getElementsByTagName("a:t")[0].textContent;
@@ -149,14 +151,31 @@ test("the OpenDocument text has a heading, a paragraph and a two-item list", () 
   assert.equal(content.getElementsByTagName("text:list-item").length, 2);
 });
 
-test("the builders give the same bytes on every call", async () => {
-  assert.deepEqual(letterPdf(), letterPdf());
-  assert.deepEqual(textPdf(3), textPdf(3));
-  assert.deepEqual(docxBytes(), docxBytes());
-  assert.deepEqual(pptxBytes(), pptxBytes());
-  assert.deepEqual(xlsxBytes(), xlsxBytes());
-  assert.deepEqual(odtBytes(), odtBytes());
-  assert.deepEqual(await tallPng(sharpFactory, 40, 110), await tallPng(sharpFactory, 40, 110));
+/** Every fixture, built now. */
+const everyFixture = async () => ({
+  "letter.pdf": letterPdf(),
+  "scan.pdf": await scanPdf(sharpFactory),
+  "text-3p.pdf": textPdf(3),
+  "mixed.pdf": await mixedPdf(sharpFactory, 4, 2),
+  "tall.png": await tallPng(sharpFactory, 40, 110),
+  "wide.png": await widePng(sharpFactory),
+  "photo.jpg": await photoJpeg(sharpFactory),
+  "proof.docx": docxBytes(),
+  "deck.pptx": pptxBytes(),
+  "ledger.xlsx": xlsxBytes(),
+  "doc.odt": odtBytes(),
+});
+
+test("every fixture gives the same bytes when built at two different times", async () => {
+  mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
+  try {
+    const first = await everyFixture();
+    mock.timers.setTime(Date.parse("2027-06-01T12:34:56Z"));
+    const second = await everyFixture();
+    for (const [name, bytes] of Object.entries(first)) assert.deepEqual(second[name], bytes, name);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("the PDF writer refuses text it cannot write in Helvetica", () => {
