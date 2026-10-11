@@ -48,7 +48,7 @@ cdp.on("Network.loadingFinished", (p, session) => {
   if (session !== page?.sessionId) return;
   const u = wire.urls.get(p.requestId as string) ?? "";
   if (wire.baseDir && u.includes(`/work/${wire.baseDir}/`)) wire.base += p.encodedDataLength as number;
-  else if (u.includes("/work/home/files/")) wire.adapters += p.encodedDataLength as number;
+  else if (u.includes("/work/" + "home/files/")) wire.adapters += p.encodedDataLength as number;
 });
 const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
 type Homecoming = { prefetch?: boolean; plan: { base: boolean; adapters: string[]; bytes: number }; fetched_bytes: number; fetch_ms: number; load_ms?: number };
