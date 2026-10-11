@@ -8,17 +8,22 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as createNetServer, type Server as NetServer } from "node:net";
 import { Cdp } from "./cdp.ts";
+
+/** A port nothing holds now (asked of the system, not guessed). */
+const freePort = () => new Promise<number>((resolve) => { const s = createNetServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 
 const MODEL_DISK = process.env.MODEL_DISK;
 if (!MODEL_DISK || !existsSync(join(MODEL_DISK, "home/model/manifest.json"))) throw new Error("MODEL_DISK must hold home/model/manifest.json and the chunks");
 const shots = process.env.SHOTS ?? "/tmp";
 let failed = 0;
 const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass ? "ok  " : "FAIL"} ${name}${pass ? "" : `  got: ${JSON.stringify(got)}`}`); if (!pass) failed++; };
+let tarpit: NetServer | undefined;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const children: ChildProcess[] = [];
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "offline-check-"));
-const serverPort = 20000 + Math.floor(Math.random() * 20000);
+const serverPort = await freePort();
 // a model endpoint nothing answers on: the run's model proxy is never used (the trip is not part of this check)
 const server = spawn(process.execPath, ["serve.ts", "--port", String(serverPort), "--local", dir, "--run", "off", "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
 children.push(server);
@@ -88,6 +93,12 @@ try {
   if (!process.env.NO_CUT) {
     server.kill("SIGKILL");
     await new Promise((r) => server.once("exit", r));
+    if (process.env.TARPIT) {
+      // a laptop with Wi-Fi off and an ssh -L tunnel still alive: the port ACCEPTS the connection and never answers
+      tarpit = createNetServer((socket) => { socket.on("error", () => undefined); });
+      await new Promise<void>((r) => tarpit!.listen(serverPort, "127.0.0.1", () => r()));
+      console.log("the server's port now accepts and never answers (TARPIT)");
+    }
     await page.send("Network.enable");
     await page.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
     await page.send("Network.setBlockedURLs", { urls: ["ws://*", "wss://*"] });

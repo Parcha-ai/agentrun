@@ -9,11 +9,20 @@ export interface CacheLike {
   match(key: string): Promise<Response | undefined>;
 }
 
+/** What the worker has learned about the network: when it last gave nothing in time. Shared by the worker's requests (one object for its lifetime). */
+export interface NetworkState {
+  downUntil: number;
+}
+
 export interface ServeDeps {
   cache: CacheLike;
   fetch(request: Request, signal: AbortSignal): Promise<Response>;
   /** How long the network gets before the cache answers instead. */
   timeoutMs: number;
+  /** After the network gave nothing in time, requests the cache holds go to the cache at once for this long (a page is dozens of requests; each waiting the full timeout on a tunnel that accepts and never answers would take a minute). Default 30 s. */
+  downMs?: number;
+  state?: NetworkState;
+  now?(): number;
 }
 
 /** A model chunk (or the manifest) of a run's disk, as the page asks for it. */
@@ -38,6 +47,12 @@ export async function serve(request: Request, deps: ServeDeps): Promise<Response
       return unavailable();
     }
   }
+  const now = deps.now ?? Date.now;
+  // The network was found down a moment ago: what the cache holds is answered from it at once; anything else still gets its try.
+  if (deps.state && now() < deps.state.downUntil) {
+    const hit = await cached();
+    if (hit) return hit;
+  }
   const stop = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -45,6 +60,7 @@ export async function serve(request: Request, deps: ServeDeps): Promise<Response
     return await Promise.race([deps.fetch(request, stop.signal), timeout]);
   } catch {
     stop.abort(); // the network gave nothing in time: the cache answers, and the request is dropped
+    if (deps.state) deps.state.downUntil = now() + (deps.downMs ?? 30_000);
     return (await cached()) ?? unavailable();
   } finally {
     clearTimeout(timer);

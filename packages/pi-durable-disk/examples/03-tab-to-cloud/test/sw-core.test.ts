@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cacheKey } from "../tab/offline-cache.ts";
-import { isImmutable, serve, type CacheLike } from "../tab/sw-core.ts";
+import { isImmutable, serve, type CacheLike, type NetworkState } from "../tab/sw-core.ts";
 
 const ORIGIN = "http://127.0.0.1:5";
 const CHUNK = `${ORIGIN}/api/runs/r1/work/home/model/chunk-0001.bin`;
@@ -72,4 +72,28 @@ test("which requests are immutable: the model's folder of a run, nothing else", 
   assert.equal(isImmutable(`${ORIGIN}/api/runs/r1/work/home/model/manifest.json`), true);
   assert.equal(isImmutable(`${ORIGIN}/api/runs/r1/work/notes/a.txt`), false);
   assert.equal(isImmutable(SCRIPT), false);
+});
+
+test("a network that accepts and never answers (a tunnel left up with the Wi-Fi off) costs one timeout, not one per request: the cache answers at once for a while after", async () => {
+  const state: NetworkState = { downUntil: 0 };
+  let clock = 1_000;
+  const entries = new Map([[cacheKey(SCRIPT), "cached script"], [cacheKey(`${ORIGIN}/vendor/x.wasm`), "cached wasm"]]);
+  const cache: CacheLike = { async match(key) { const b = entries.get(key); return b === undefined ? undefined : new Response(b); } };
+  const calls: string[] = [];
+  const deps = { cache, state, now: () => clock, timeoutMs: 40, downMs: 30_000, fetch: (r: Request, signal: AbortSignal) => { calls.push(r.url); return hang(r.url, signal); } };
+  const first = Date.now();
+  assert.equal(await (await serve(new Request(SCRIPT), deps)).text(), "cached script");
+  assert.ok(Date.now() - first >= 35, "the first request waited for the network");
+  const second = Date.now();
+  assert.equal(await (await serve(new Request(`${ORIGIN}/vendor/x.wasm`), deps)).text(), "cached wasm");
+  assert.ok(Date.now() - second < 30, "the next one did not wait");
+  assert.deepEqual(calls, [SCRIPT], "the network was not tried again while it is known down");
+  // an uncached request still gets its try, and after the window the network is tried first again
+  const other = await serve(new Request(OTHER), deps);
+  assert.equal(other.status, 504);
+  assert.deepEqual(calls, [SCRIPT, OTHER]);
+  clock += 31_000;
+  state.downUntil = 1_000 + 30_000;
+  const up = await serve(new Request(SCRIPT), { ...deps, fetch: async (r: Request) => { calls.push(r.url); return new Response("network script"); } });
+  assert.equal(await up.text(), "network script", "back to network first once the window has passed");
 });
