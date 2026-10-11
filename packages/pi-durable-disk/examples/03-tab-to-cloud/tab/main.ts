@@ -11,6 +11,7 @@ import { BRAIN_PROVIDER } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
+import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 import { comeHome, describeHome, opfsFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
@@ -648,6 +649,11 @@ async function takeOffline(): Promise<void> {
     say("registering the service worker");
     await registerOfflineWorker();
     const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
+    // A base and adapters are kept whole in the browser's file store, not as the service worker's chunks: after the handover the server cannot be read for them, so they come home NOW (only what the store lacks).
+    if (manifestText && isBaseAdapters(manifestText)) {
+      say("bringing the model's files into this browser");
+      await comeHome(manifestText, { readChunk: readWork, sha256: sha256hex, store: modelFiles, now: () => performance.now(), onProgress: (p) => say(`bringing the model's files into this browser: ${p.done} of ${p.total}`) });
+    }
     if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent started answering while the model was cached: try again");
     // The browser is asked to keep this site's storage: once the run is handed over, this is the only copy. A browser that will not is a warning (a refusal with ?persist=require).
     const persistent = (await navigator.storage?.persisted?.().catch(() => false)) || (await navigator.storage?.persist?.().catch(() => false)) || false;
