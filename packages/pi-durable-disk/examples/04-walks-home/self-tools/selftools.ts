@@ -21,7 +21,7 @@
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { TOOLS, renderTranscript } from "../../03-tab-to-cloud/tab/tool-format.ts";
@@ -48,6 +48,9 @@ const { values: a } = parseArgs({
     path: { type: "string", default: "/opt/offline-bin" },
     "max-chars": { type: "string", default: "12000" },
     "home-disk-script": { type: "string", default: join(here, "..", "tab", "scripts", "make-home-disk.mjs") },
+    // The checkpoint the LoRA trains on; --base-model must name it (the home disk checks every adapter against it).
+    "train-base": { type: "string", default: "/opt/gg/models/gemma-3-1b-it" },
+    "no-home": { type: "boolean", default: false },
     "adapter-topic": { type: "string", default: "pi's tools: read, write, bash and go_online" },
     "min-share": { type: "string", default: "0.97" },
     "teach-deadline-s": { type: "string", default: "300" },
@@ -56,13 +59,29 @@ const { values: a } = parseArgs({
     dry: { type: "boolean", default: false },
   },
 });
-const out = a.out!;
+// Children run in this file's directory: every path the caller gave is resolved against where it was launched.
+const out = resolve(a.out ?? "");
+if (!a.out) { console.error("--out is required"); process.exit(2); }
+const basePath = a.base ? resolve(a.base) : undefined;
+const homeScript = resolve(a["home-disk-script"]!);
+const trainBase = resolve(a["train-base"]!);
 mkdirSync(out, { recursive: true });
 const progressPath = join(out, "progress.jsonl");
 const T0 = Date.now();
 const emit = (event: string, fields: Record<string, unknown> = {}) =>
   appendFileSync(progressPath, JSON.stringify({ event, t: Math.round((Date.now() - T0) / 100) / 10, ...fields }) + "\n");
 const fail = (stage: string, why: string): never => { emit("error", { stage, why }); console.error(`${stage}: ${why}`); process.exit(1); };
+
+// What the end needs is checked before anything is paid for.
+const DEFAULT_TRAIN_BASE = "/opt/gg/models/gemma-3-1b-it", DEFAULT_MODEL = "google/gemma-3-1b-it@dcc83ea841ab6100d6b47a070329e1ba4cf78752";
+if (!existsSync(join(trainBase, "config.json"))) fail("plan", `--train-base ${trainBase} is not a model directory`);
+if (trainBase === DEFAULT_TRAIN_BASE && a["base-model"] !== DEFAULT_MODEL) {
+  fail("plan", `the training checkpoint is ${DEFAULT_MODEL}; --base-model ${a["base-model"]} needs its own weights in --train-base`);
+}
+if (!a["no-home"]) {
+  if (!existsSync(homeScript)) fail("plan", `no home-disk script at ${homeScript} (or pass --no-home)`);
+  if (!basePath || !existsSync(basePath)) fail("plan", `--base (the stock base GGUF the tab caches) is required for the home disk${basePath ? `: no ${basePath}` : ""}`);
+}
 const wall: Record<string, number> = {};
 const timed = async <T>(stage: string, f: () => Promise<T>): Promise<T> => { const t = Date.now(); const v = await f(); wall[stage] = Math.round((Date.now() - t) / 100) / 10; return v; };
 
@@ -73,7 +92,11 @@ function run(cmd: string, args: string[], onLine: (line: string) => void = () =>
   child.stdout.on("data", (d) => { buf += d; for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); } });
   // The head of stderr carries the error's message, the tail its stack: keep both.
   child.stderr.on("data", (d) => { err += d; if (err.length > 4000) err = err.slice(0, 2500) + "\n[...]\n" + err.slice(-1000); });
-  const done = new Promise<{ code: number; err: string }>((res) => child.on("close", (code) => res({ code: code ?? -1, err })));
+  // A program that cannot start (missing, not executable) ends the same way as one that fails.
+  const done = new Promise<{ code: number; err: string }>((res) => {
+    child.on("error", (e) => res({ code: -1, err: `${cmd} could not start: ${e.message}` }));
+    child.on("close", (code) => res({ code: code ?? -1, err }));
+  });
   return { child, done };
 }
 
@@ -119,7 +142,7 @@ await timed("teach", async () => {
   const drive = run(process.execPath, ["drive.ts", "--instances", join(out, "plan.jsonl"), "--out", runsPath, "--brain", "luna", "--policy", a.policy!,
     "--tools", a.tools!, "--path", a.path!, "--concurrency", a.concurrency!, "--work", join(out, "work"), "--timeout-s", a["run-timeout-s"]!]);
   teachStart = Date.now();
-  const tail = setInterval(() => {
+  const drain = () => {
     const lines = readFileSync(runsPath, "utf8").split("\n").filter(Boolean);
     for (const line of lines.slice(seen)) {
       const r = JSON.parse(line);
@@ -135,10 +158,11 @@ await timed("teach", async () => {
       if (tried % 25 === 0) emit("teach.progress", { tried, passed, kept, wanted: target * wanted.length, templates_full: wanted.filter((t) => (keptBy[t] ?? 0) >= target).length, of: wanted.length, teacher_usd: +cost.toFixed(3) });
     }
     seen = lines.length;
-    if (enough()) drive.child.kill("SIGTERM");
-  }, 1000);
+  };
+  const tail = setInterval(() => { drain(); if (enough()) drive.child.kill("SIGTERM"); }, 1000);
   const { code, err } = await drive.done;
   clearInterval(tail);
+  drain(); // the runs written after the last tick
   if (code !== 0 && !enough()) fail("teach", `drive.ts exited ${code}: ${err.slice(0, 600)}`);
 });
 emit("teach.done", { tried, passed, kept, stopped: full() ? "every template full" : kept >= Number(a["min-share"]) * target * wanted.length ? "nearly all kept" : "deadline", templates_full: wanted.filter((t) => (keptBy[t] ?? 0) >= target).length, of: wanted.length, teacher_usd: +cost.toFixed(3), s: wall.teach });
@@ -159,7 +183,7 @@ const trainDir = join(out, "train");
 await timed("train", async () => {
   mkdirSync(trainDir, { recursive: true });
   // The adapter's model: what it was trained on, the model the base was converted from (the home disk checks they match).
-  const tr = run("python3", ["train_tools.py", "--data", trainText, "--out", trainDir, "--adapter-gguf", "f16", "--adapter-topic", a["adapter-topic"]!, "--base-ref", a["base-model"]!], (line) => {
+  const tr = run("python3", ["train_tools.py", "--data", trainText, "--out", trainDir, "--base", trainBase, "--adapter-gguf", "f16", "--adapter-topic", a["adapter-topic"]!, "--base-ref", a["base-model"]!], (line) => {
     try {
       const e = JSON.parse(line);
       const { event, t: _t, ...rest } = e;
@@ -174,9 +198,8 @@ await timed("train", async () => {
 // ---- home disk: the stock base plus the adapter, laid out the way the tab reads it ---------------------------------
 await timed("home", async () => {
   const adapter = join(trainDir, "adapter-f16.gguf");
-  if (!existsSync(a["home-disk-script"]!)) { emit("home.skipped", { why: `no ${a["home-disk-script"]}` }); return; }
-  if (!a.base) fail("home", "--base (the stock base GGUF the tab caches) is required for the home disk");
-  const args = [a["home-disk-script"]!, join(out, "disk"), "--base", a.base!, "--base-model", a["base-model"]!, "--adapter", adapter, "--fields", join(trainDir, "adapter-f16.json")];
+  if (a["no-home"]) { emit("home.skipped", { why: "--no-home" }); return; }
+  const args = [homeScript, join(out, "disk"), "--base", basePath!, "--base-model", a["base-model"]!, "--adapter", adapter, "--fields", join(trainDir, "adapter-f16.json")];
   const hd = run(process.execPath, args);
   const { code, err } = await hd.done;
   if (code !== 0) fail("home", `make-home-disk exited ${code}: ${err.slice(0, 600)}`);
