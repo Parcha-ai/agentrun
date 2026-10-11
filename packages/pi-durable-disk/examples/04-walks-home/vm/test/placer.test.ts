@@ -64,14 +64,17 @@ test("the real Jev adapter, with an injected client, drives the placer end to en
   assert.deepEqual(Object.keys((seen[0] as { questions: Record<string, { criteria: object }> }).questions.where!.criteria), ["tab", "modal-gpu"]);
 });
 
+import { dummyPolicy } from "../../tab/src/dummy.ts";
 const bytes = (s: string) => new TextEncoder().encode(s);
 const SHA = "a".repeat(64);
-const policy = (over: Record<string, unknown> = {}) => bytes(JSON.stringify({ format: "mlp-v1", spec_version: 1, mjcf_sha256: SHA, ...over }));
+// A policy the browser loads: the tab's own test builder, for a body of six joints.
+const JOINTS = ["a1", "a2", "b1", "b2", "c1", "c2"];
+const policy = (over: Record<string, unknown> = {}) => bytes(JSON.stringify({ ...dummyPolicy({ mjcfSha256: SHA, mujocoVersion: "3.2.0", nj: JOINTS.length }), ...over }));
 const files = (map: Record<string, Uint8Array | undefined>) => async (path: string) => map[path];
 
 test("the home check: a valid brain made for the drawn body is in place; every other case says what is wrong", async () => {
   const { checkHomePolicy } = await import("../placer.ts");
-  const body = bytes(JSON.stringify({ mjcf_sha256: SHA }));
+  const body = bytes(JSON.stringify({ mjcf_sha256: SHA, jointNames: JOINTS }));
   assert.equal((await checkHomePolicy(files({ "home/policy.json": policy(), "creature/body.json": body }))).ok, true);
   const bad = async (map: Record<string, Uint8Array | undefined>, re: RegExp) => {
     const r = await checkHomePolicy(files(map));
@@ -85,7 +88,13 @@ test("the home check: a valid brain made for the drawn body is in place; every o
   await bad({ "home/policy.json": policy({ spec_version: undefined }), "creature/body.json": body }, /no spec version/);
   await bad({ "home/policy.json": policy({ mjcf_sha256: "xyz" }), "creature/body.json": body }, /does not name its body/);
   await bad({ "home/policy.json": policy() }, /body file is missing/);
-  await bad({ "home/policy.json": policy(), "creature/body.json": bytes(JSON.stringify({ mjcf_sha256: "b".repeat(64) })) }, /different body/);
+  await bad({ "home/policy.json": policy(), "creature/body.json": bytes(JSON.stringify({ mjcf_sha256: "b".repeat(64), jointNames: JOINTS })) }, /different body/);
+  // What the browser would refuse, though the file has the right shape at a glance.
+  await bad({ "home/policy.json": policy({ spec_version: 2 }), "creature/body.json": body }, /browser would refuse.*spec_version/);
+  const { obs: _o, layers: _l, ...bare } = JSON.parse(new TextDecoder().decode(policy())) as Record<string, unknown>;
+  await bad({ "home/policy.json": bytes(JSON.stringify(bare)), "creature/body.json": body }, /browser would refuse/);
+  await bad({ "home/policy.json": policy(), "creature/body.json": bytes(JSON.stringify({ mjcf_sha256: SHA, jointNames: JOINTS.slice(0, 4) })) }, /browser would refuse/);
+  await bad({ "home/policy.json": policy(), "creature/body.json": bytes(JSON.stringify({ mjcf_sha256: SHA })) }, /does not list its joints/);
 });
 
 test("the model check: the manifest and the tab's receipt must agree; it waits for the receipt, then says no", async () => {

@@ -3,6 +3,7 @@
 // over them. With no TYPESAFE_API_KEY, or `client=scripted`, a stand-in client answers from keywords and every decision is tagged
 // "scripted", so a stage never presents it as Jev's.
 import { judgePlacer, type JudgeRunner, type Placer } from "../../03-tab-to-cloud/placement.ts";
+import { Policy } from "../tab/src/policy.ts";
 
 /** What each environment can do, one line each: the criteria of the choice question. Ids the server does not offer are left out. */
 export const CRITERIA: Readonly<Record<string, string>> = {
@@ -34,9 +35,10 @@ export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
 };
 
 /**
- * Is the work's result in place? The same structural rules the tab's loader decides on (a policy file that is JSON, mlp-v1, of a known spec
- * version, naming a body by its mjcf_sha256) and that it is made for the body the user drew (creature/body.json names that sha). Checked in
- * code on the run's disk, so the agent's closing words come from this and never from its own judgment.
+ * Is the work's result in place? The rules the tab's own loader decides on: its `Policy.load` (the very function the browser runs, imported
+ * here, so the two cannot drift) over the policy file, for the body the user drew (creature/body.json: the sha it names and its joints). A file
+ * that is not JSON, not mlp-v1, of an unknown spec version, without its observation block or layers, or shaped for another body is refused here
+ * as the browser would refuse it. Checked in code on the run's disk, so the agent's closing words come from this and never from its own judgment.
  */
 export async function checkHomePolicy(read: (path: string) => Promise<Uint8Array | undefined>): Promise<{ ok: boolean; reason: string }> {
   const text = (bytes: Uint8Array | undefined) => (bytes ? new TextDecoder().decode(bytes) : undefined);
@@ -61,6 +63,13 @@ export async function checkHomePolicy(read: (path: string) => Promise<Uint8Array
   }
   if (!body || typeof body.mjcf_sha256 !== "string") return { ok: false, reason: "the drawn creature's body file is missing, so the brain cannot be matched to it" };
   if (body.mjcf_sha256 !== policy.mjcf_sha256) return { ok: false, reason: "the trained brain was made for a different body than the one drawn" };
+  const joints = Array.isArray(body.jointNames) ? body.jointNames.length : 0;
+  if (joints === 0) return { ok: false, reason: "the drawn creature's body file does not list its joints, so the brain cannot be checked against it" };
+  try {
+    await Policy.load(policyText, { mjcfSha256: body.mjcf_sha256, nj: joints });
+  } catch (error) {
+    return { ok: false, reason: `the browser would refuse the trained brain: ${(error as Error).message}` };
+  }
   return { ok: true, reason: "the trained brain is in place: it is a valid file made for the creature that was drawn." };
 }
 
