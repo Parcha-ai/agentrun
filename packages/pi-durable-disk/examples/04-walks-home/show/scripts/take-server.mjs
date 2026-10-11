@@ -85,7 +85,8 @@ rmSync(tokenFile, { force: true });
 rmSync(logFile, { force: true });
 writeFileSync(logFile, "", { mode: 0o600 });
 
-const port = await freePort();
+// A fixed port when a person must tunnel to it (live mode with the tab in their own browser); otherwise a free one.
+const port = arg("port", "") ? Number(arg("port", "")) : await freePort();
 const serveArgs = [
   "serve.ts",
   "--port", String(port),
