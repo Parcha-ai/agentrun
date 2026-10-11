@@ -31,16 +31,33 @@ import { obsessionReply } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
 import { checkinLine, checkinNote, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
 import { TabLink, tabEventsFrom } from "../../page/tab-link.ts";
-import { apiRoot, apiUrl } from "../../page/api-base.ts";
+import { apiRoot, apiUrl, pageParams } from "../../page/api-base.ts";
 
-const params = new URLSearchParams(location.search);
+const params = pageParams(location.href, location.hash);
 const debug = params.get("debug") === "1";
 const API = apiRoot(location.href, params.get("api"));
 // The creature tab in the middle, unless the stage is given the agent's own tab to follow (?tab=): that one is its own window, and this page has no /tab/ of its own when it is served under /show/.
 if (params.get("tab")) $("tab").hidden = true;
-else $<HTMLIFrameElement>("tab").src = apiUrl(API, "tab/?clean=1&banner=1&episode=2");
+else $<HTMLIFrameElement>("tab").setAttribute("src", API === new URL("/", location.href).toString() ? "/tab/?clean=1&banner=1&episode=2" : apiUrl(API, "tab/?clean=1&banner=1&episode=2"));
 
-const feed = new Feed(API);
+const EVENTS_KEY = "agentrun-show-tab-events";
+const feed = new Feed(API, {
+  get: () => {
+    try {
+      return sessionStorage.getItem(EVENTS_KEY);
+    } catch {
+      return null;
+    }
+  },
+  set: (value) => {
+    try {
+      sessionStorage.setItem(EVENTS_KEY, value);
+    } catch {
+      // no storage: the page still works until it is reloaded
+    }
+  },
+});
+feed.restore();
 
 // The agent's tab (the 03 page) when the stage is given one: ?tab=<its link>. The stage opens it with window.open, keeps the handle, and takes its events by postMessage (page/tab-link.ts), all in
 // the browser, so it keeps working when the network is off. After a reload of this page the tab is found again by name, never navigated.

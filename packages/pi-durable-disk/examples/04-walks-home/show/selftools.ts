@@ -6,6 +6,8 @@ import type { Checkin, Homecoming, Net, Routing, ToolRow } from "./types.ts";
 type Bag = Record<string, unknown>;
 const bag = (v: unknown): Bag | null => (v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Bag) : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
+/** A head or an id: the page writes it as a number (the transcript's entry position) and may write it as text; the stage keeps text. */
+const idStr = (v: unknown): string | null => (typeof v === "number" && Number.isFinite(v) ? String(v) : str(v));
 const nonNeg = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
 const prob = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1 ? v : null);
 
@@ -30,7 +32,7 @@ export function netFromData(d: unknown): Net | null {
 export function checkinFromData(d: unknown): Checkin | null {
   const o = bag(d);
   if (o === null || (o.phase !== "start" && o.phase !== "done" && o.phase !== "failed")) return null;
-  return { phase: o.phase, head: str(o.head), files: nonNeg(o.files), changes: nonNeg(o.changes), ms: nonNeg(o.ms), message: str(o.message), code: str(o.code), resumed: o.resumed === true };
+  return { phase: o.phase, head: idStr(o.head), files: nonNeg(o.files), changes: nonNeg(o.changes), ms: nonNeg(o.ms), message: str(o.message), code: str(o.code), resumed: o.resumed === true };
 }
 
 /** One routing decision, from the `brain.decision` event or the transcript entry's data (the same fields). A decision with no reason has nothing to put on a card. */
@@ -118,4 +120,20 @@ export function checkinFromItem(item: unknown): { id: string; checkin: Checkin }
   const id = str(o.id);
   const checkin = checkinFromData({ ...(bag(o.data) ?? {}), phase: "done" });
   return id === null || checkin === null ? null : { id, checkin };
+}
+
+/** The tool rows the tab itself announces (`tools` message): the current task's calls. A row without an id and a name is nothing; a status the page does not know is an error row. */
+export function toolsFromData(d: unknown): ToolRow[] | null {
+  const o = bag(d);
+  if (o === null || !Array.isArray(o.tools)) return null;
+  const rows: ToolRow[] = [];
+  for (const raw of o.tools) {
+    const t = bag(raw);
+    if (t === null) continue;
+    const id = str(t.id);
+    const name = str(t.name);
+    if (id === null || name === null) continue;
+    rows.push({ id, name, args: typeof t.args === "string" ? t.args : "", output: typeof t.output === "string" ? t.output : "", status: typeof t.status === "string" && STATUSES.has(t.status) ? (t.status as ToolRow["status"]) : "error" });
+  }
+  return rows;
 }

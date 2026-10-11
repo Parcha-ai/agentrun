@@ -179,3 +179,35 @@ test("the self-tools rehearsal plays: homecoming bytes, offline with a rule's de
   assert.equal(s.net!.online, true);
   assert.equal(s.checkin!.phase, "done");
 });
+
+// ---- Against the real thing: the events and items D3's page produced in a real run (route-check, the real 03 page in Chrome), not shapes written from its code. In that run the check-in's
+// head is a NUMBER (the transcript's entry position), which the shapes written from the code had as a string.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const REAL = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/self-tools-real-run.json", import.meta.url)), "utf8")) as { events: { type: string; detail: Record<string, unknown> }[]; items: unknown[] };
+
+test("every event of the real run is read: its decisions by their own fields, its check-in with the numeric head", () => {
+  const decisions = REAL.events.filter((e) => e.type === "brain").map((e) => routingFromData(e.detail));
+  assert.equal(decisions.length, 5);
+  assert.ok(decisions.every((d) => d !== null));
+  assert.deepEqual(decisions.map((d) => [d!.brain, d!.decidedBy, d!.confidence]), [["cloud", "rule", null], ["tab-local", "rule", null], ["tab-local", "jev", 0.95], ["tab-local", "jev", 0.95], ["cloud", "jev", 0.95]]);
+  const checkins = REAL.events.filter((e) => e.type === "checkin").map((e) => checkinFromData(e.detail));
+  assert.deepEqual(checkins.map((c) => [c!.phase, c!.head, c!.files, c!.changes, c!.ms]), [["start", "7", null, null, null], ["done", "26", 0, 0, 1857]]);
+});
+
+test("the real transcript's decision and check-in entries and tool calls reach the stage through the pipe feed", () => {
+  const tr = new PipeTranslator({ run: "r1", origin: 1000, clock: () => 1000 });
+  (tr as unknown as { chat: { items: () => unknown[] } }).chat.items = () => REAL.items;
+  const events: ShowEvent[] = [...tr.frame({ t: "viewing", placement: { where: "tab", tab: "t1", epoch: 1, generation: 1, env: "tab" }, files: [], events: [], environments: [{ id: "tab", label: "Your browser tab", phrase: "your user's browser tab", kind: "tab" }] } as never)];
+  events.push(...tr.frame({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never));
+  const s = fold(events);
+  assert.equal(events.filter((e) => e.t === "routing").length, 5, "each of the five decisions, once");
+  assert.deepEqual(s.routings.map((r) => [r.brain, r.decidedBy]), [["cloud", "rule"], ["tab-local", "rule"], ["tab-local", "jev"], ["tab-local", "jev"], ["cloud", "jev"]]);
+  assert.equal(s.checkin?.phase, "done");
+  assert.equal(s.checkin?.head, "26");
+  assert.equal(s.checkin?.ms, 1857);
+  // The tools are the current task's: after the viewer's last line. In the real run that was the Golden Gate line, whose only call is the cloud's switch_environment, refused.
+  assert.deepEqual(s.tools.map((t) => [t.name, t.status]), [["switch_environment", "error"]]);
+  assert.match(s.tools[0]!.output, /You were not moved/);
+});

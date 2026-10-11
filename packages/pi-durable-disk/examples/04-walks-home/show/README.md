@@ -249,7 +249,7 @@ When the agent runs in the 03 page (D3's tab), the page tells the stage what hap
 | Piece | From | Says |
 | --- | --- | --- |
 | Net pill (`#net`) | `net` {online, reason} | ONLINE / OFFLINE, the reason as hover; a net change is a kept caption |
-| Decision card | `brain` (`brain.decision`) and the transcript's `decision` entry | "Answering now: <who>. Why: <reason>. Decided by Jev, 93% sure, in 396 ms" or "decided by a rule" (no time claimed for a rule) |
+| Decision card | `brain` (`brain.decision`) and the transcript's `decision` entry | "Last message went to <who>. Why: <reason>. Decided by Jev, 93% sure, in 396 ms" (a decision is made per message, so the card says whose message it was, not that it is current) or "decided by a rule" (no time claimed for a rule) |
 | Check-in line | `checkin` {phase, head, files, changes, ms} and the transcript's `home` entry | checking in, checked in (files, changes, time), or did not go through (this browser keeps its copy) |
 | Homecoming line | `homecoming` {phase: fetched, plan, fetched_bytes, fetch_ms} then {phase: loaded, load_ms} | bytes on the wire; "base 0 bytes" only when the plan says the base was already in the browser |
 | Tool strip | the transcript's tool items after the viewer's last line | a row per call (name and path or command, status, first line of its output) |

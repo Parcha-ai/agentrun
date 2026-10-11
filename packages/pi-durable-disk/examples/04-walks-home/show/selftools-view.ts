@@ -11,7 +11,7 @@ export function netBadge(net: Net | null): { label: "ONLINE" | "OFFLINE"; online
   return net === null ? null : { label: net.online ? "ONLINE" : "OFFLINE", online: net.online, title: net.reason ?? "" };
 }
 
-/** The decision card: who answers the next message, why, and how it was decided (Jev's probability and the time it took, or a rule). */
+/** The decision card: who a message went to, why, and how it was decided (Jev's probability and the time it took, or a rule). */
 export function routingCardHtml(r: Routing): string {
   const who = r.answering ?? (r.brain === "tab-local" ? "the model in this tab" : "the cloud model");
   const how =
@@ -20,7 +20,7 @@ export function routingCardHtml(r: Routing): string {
       : r.decidedBy === "rule"
         ? "decided by a rule"
         : "";
-  return `<div class="rc" data-brain="${r.brain}"><div class="k">Answering now</div><div class="who">${esc(who)}</div><div class="why">Why: ${esc(r.reason)}</div>${how ? `<div class="how">${esc(how)}</div>` : ""}</div>`;
+  return `<div class="rc" data-brain="${r.brain}"><div class="k">Last message went to</div><div class="who">${esc(who)}</div><div class="why">Why: ${esc(r.reason)}</div>${how ? `<div class="how">${esc(how)}</div>` : ""}</div>`;
 }
 
 /** The check-in's line: the phase, and the numbers the event carried. */

@@ -3,7 +3,7 @@
 // the server says it reset.
 import { emptyState, reduce } from "../reduce.ts";
 import { apiUrl } from "./api-base.ts";
-import { LocalEvents } from "./local-events.ts";
+import { LocalEvents, type EventStore } from "./local-events.ts";
 import type { ShowCommand, ShowEvent, ShowState } from "../types.ts";
 
 export class Feed {
@@ -16,13 +16,20 @@ export class Feed {
   generation = 0;
   private es: EventSource | null = null;
   /** What the page folded in itself (the tab's own messages), replayed over each snapshot. */
-  private local = new LocalEvents();
+  private local: LocalEvents;
   private listeners = new Set<(event: ShowEvent | null) => void>();
   /** Where the API lives (an absolute URL ending in a slash): the origin's root by default; a page served under a path, or given `?api=`, says otherwise. */
   private readonly given: string | undefined;
 
-  constructor(root?: string) {
+  constructor(root?: string, store?: EventStore) {
     this.given = root;
+    this.local = new LocalEvents(200, store);
+  }
+
+  /** After a reload of the page: the tab's events kept in the session, back in the state before any feed is reachable (offline there is none). */
+  restore(): void {
+    this.local.restore();
+    this.state = this.local.replay(this.state);
   }
 
   /** Read when used, not when built: the origin's root is only known in a page. */

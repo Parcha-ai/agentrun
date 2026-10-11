@@ -10,6 +10,7 @@
 //   SHOW_SCENARIO=obsession: the rehearsal of the "pick an obsession" episode (served at /obsession/), with SHOW_MODEL_DISK as below
 //   SHOW_OBSESSION_FALLBACK=1 (with SHOW_SCENARIO=obsession)  the rehearsal's train half is the real run where the clamp was eased
 //   SHOW_OBSESSION_THINK=1 (with SHOW_SCENARIO=obsession)  the rehearsal replays D1's real think-mode training run (thinking out loud in the samples) with D2's find run for the Moon from the same freeze run, and the viewer asks for that topic
+//   SHOW_ALLOW_ORIGIN=<origin>  the stage page served on another origin (the 03 server's /show/) may read this server's feed: CORS for that one origin, preflights answered
 //   SHOW_OBSESSION_SELFTOOLS=1 (with SHOW_OBSESSION_BRAIN=1)  the tab's own events of the self-tools beats, scripted: net, decisions, tool calls, check-in, homecoming bytes
 //   SHOW_OBSESSION_BRAIN=1|fail (with SHOW_SCENARIO=obsession)  the brain swap rehearsal: the trained model becomes the agent's brain (1), or the load fails and the agent keeps its own (fail)
 //   SHOW_OBSESSION_GATE=1 (with SHOW_SCENARIO=obsession)  the rehearsal's teach step stops at the real-person gate
@@ -29,6 +30,7 @@ import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import { forwardJudge, rehearsalJudge } from "./episode2/judge.ts";
 import { ScenarioObsession } from "./obsession/scenario.ts";
+import { corsHeaders } from "./cors.ts";
 import { ScenarioEp2 } from "./episode2/scenario.ts";
 import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
@@ -220,6 +222,10 @@ async function proxy(req: IncomingMessage, res: ServerResponse, path: string): P
 
 const server = createServer(async (req, res) => {
   isolate(res);
+  // The stage page served on the agent's tab's origin reads this server cross-origin: CORS for that one origin (SHOW_ALLOW_ORIGIN), preflights answered, nothing for anyone else.
+  const cors = corsHeaders(process.env.SHOW_ALLOW_ORIGIN, typeof req.headers.origin === "string" ? req.headers.origin : undefined);
+  for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+  if (req.method === "OPTIONS") return void res.writeHead(cors["Access-Control-Allow-Origin"] ? 204 : 403).end();
   const url = new URL(req.url ?? "/", "http://x");
   const path = url.pathname;
   try {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LocalEvents } from "../page/local-events.ts";
+import { Feed } from "../page/feed.ts";
 import { TabLink, tabUrlFor, tabEventsFrom } from "../page/tab-link.ts";
 import { emptyState, reduce } from "../reduce.ts";
 import type { ShowEvent } from "../types.ts";
@@ -99,6 +100,11 @@ test("the tab's messages become the stage's events by their types, and a type th
   assert.deepEqual(tabEventsFrom({ type: "brain", run: null, detail: { event: "brain.decision", brain: "cloud", answering: "the cloud model", reason: "needs the cloud", confidence: null, decidedBy: "rule", ms: 0 } }, 7)!.map((e) => e.t), ["routing"]);
   assert.deepEqual(tabEventsFrom({ type: "homecoming", run: null, detail: { phase: "fetched", plan: { base: false, adapters: [], bytes: 1 }, fetched_bytes: 1, fetch_ms: 2 } }, 8)!.map((e) => e.t), ["homecoming"]);
   assert.deepEqual(tabEventsFrom({ type: "homecoming", run: null, detail: { phase: "loaded", load_ms: 9 } }, 9), [{ t: "homecoming.loaded", at: 9, loadMs: 9 }]);
+  // Offline the pipe to the server is gone, so the transcript cannot reach the stage: the tab tells it the current task's tool calls itself.
+  assert.deepEqual(tabEventsFrom({ type: "tools", run: null, detail: { tools: [{ id: "c1", name: "write", args: "{\"path\":\"hi.js\"}", output: "ok", status: "done" }, { name: "no id" }] } }, 10), [{ t: "tools", at: 10, tools: [{ id: "c1", name: "write", args: "{\"path\":\"hi.js\"}", output: "ok", status: "done" }] }]);
+  assert.deepEqual(tabEventsFrom({ type: "tools", run: null, detail: { tools: [] } }, 11), [{ t: "tools", at: 11, tools: [] }]);
+  assert.deepEqual(tabEventsFrom({ type: "tools", run: null, detail: {} }, 12), [], "no list: nothing");
+  assert.deepEqual(tabEventsFrom({ type: "homecoming", run: null, detail: { phase: "swapped", result: "swapped", id: "ab", rehomes: 1 } }, 9), [], "the swap phase is the brain entries' to say, not the homecoming line's");
   assert.deepEqual(tabEventsFrom({ type: "something-else", run: null, detail: {} }, 1), []);
   assert.deepEqual(tabEventsFrom({ type: "net", run: null, detail: { reason: "no flag" } }, 1), []);
 });
@@ -115,4 +121,34 @@ test("local events survive a new snapshot: the feed replays what the tab said af
   const big = new LocalEvents(3);
   for (let i = 0; i < 6; i++) big.apply(emptyState(), { t: "net", at: i, net: { online: i % 2 === 0, reason: null } });
   assert.equal(big.size, 3, "bounded");
+});
+
+const memoryStore = () => {
+  let v: string | null = null;
+  return { get: () => v, set: (x: string) => void (v = x), peek: () => v };
+};
+
+test("the tab's events survive a reload of the stage: kept in the session, restored before any feed is reachable", () => {
+  const store = memoryStore();
+  const first = new Feed("http://stage.example/", store);
+  first.inject({ t: "net", at: 100, net: { online: false, reason: "no network and the ping failed" } });
+  first.inject({ t: "tools", at: 120, tools: [{ id: "c1", name: "write", args: "{}", output: "ok", status: "done" }] });
+  const reloaded = new Feed("http://stage.example/", store);
+  assert.equal(reloaded.state.net, null, "nothing until restored");
+  reloaded.restore();
+  assert.equal(reloaded.state.net!.online, false);
+  assert.deepEqual(reloaded.state.tools.map((t) => t.id), ["c1"]);
+});
+
+test("a stored value that is not the tab's events (damaged, or from another version) is ignored, never trusted", () => {
+  for (const junk of ["not json", "{}", "[1,2]", JSON.stringify([{ t: 5 }]), JSON.stringify([{ t: "net" }]), JSON.stringify([{ t: "rm -rf" , at: 1 }])]) {
+    const store = memoryStore();
+    store.set(junk);
+    const feed = new Feed("http://stage.example/", store);
+    feed.restore();
+    assert.equal(feed.state.net, null, junk);
+  }
+  const big = new LocalEvents(3, memoryStore());
+  for (let i = 0; i < 6; i++) big.apply(emptyState(), { t: "net", at: i, net: { online: i % 2 === 0, reason: null } });
+  assert.equal(big.size, 3);
 });

@@ -17,7 +17,8 @@ test("the net badge says ONLINE or OFFLINE from the tab's own signal, with its r
 
 test("the decision card: who answers, why, and how it was decided (Jev's probability and time, or a rule), from the decision's fields", () => {
   const html = routingCardHtml(JEV);
-  assert.match(html, /Answering now/);
+  assert.match(html, /Last message went to/, "a decision is made per message: the card says whose it was, not that it is current");
+  assert.doesNotMatch(html, /Answering now/);
   assert.match(html, /the model in this tab/);
   assert.match(html, /a simple task the model in this tab handles/);
   assert.match(html, /decided by Jev, 99% sure, in 412 ms/);
