@@ -14,7 +14,7 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
-import { manifestDigest, RunPipe, type PipeSocket } from "./run-pipe.ts";
+import { CheckoutRefused, manifestDigest, RunPipe, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
@@ -196,6 +196,8 @@ interface RunState {
   placedTask: { text: string; sent: boolean } | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
+  /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Held in memory: a restarted server forgets it. */
+  checkedOut: { at: number; head: number; tab: string } | undefined;
 }
 
 /** Base64 bytes of upload chunks a connection may have waiting for the disk before it stops reading, and resumes. */
@@ -216,6 +218,9 @@ const TYPES: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".map": "application/json",
 };
+
+/** What a checked-out run says to anything that would run it again. */
+const CHECKED_OUT_MESSAGE = "this run is checked out to a browser: its live copy is there, and nothing here runs it any more";
 
 /** The largest body `PUT /api/runs/<id>/work/<path>` takes. */
 const WORK_PUT_MAX = 48 * 1024 * 1024;
@@ -462,6 +467,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const p = state.placement;
     const from = currentEnv(p);
     const refuse = reply.refuse;
+    if (state.checkedOut) return refuse(CHECKED_OUT_MESSAGE);
     if (!target) return refuse(`no environment ${to}; the environments are ${environments.map((e) => e.id).join(", ")}`);
     if (state.switching || state.opening) return refuse("a move is already in progress");
     if (from === undefined) return refuse(`the run is ${p.where}`);
@@ -767,6 +773,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return undefined;
     }
     state.clients.set(socket, { mode: frame.mode, canRun: frame.canRun === true });
+    // A run checked out to a browser has its one live copy there: nothing attaches to run it again (it would fork the run), and says why.
+    if (state.checkedOut && frame.mode === "write") {
+      socket.send({ t: "lost", code: "CHECKED_OUT", message: CHECKED_OUT_MESSAGE });
+      ws.close(4005, "CHECKED_OUT");
+      return state;
+    }
     if (frame.mode !== "write") {
       await addViewer(state, socket);
       return state;
@@ -899,6 +911,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       case "submit":
         if (!mayControl(state, socket)) {
           socket.send({ t: "submit-refused", requestId: frame.requestId, message: "this connection only watches the run (hello mode view)" });
+          return;
+        }
+        if (state.checkedOut) {
+          socket.send({ t: "submit-refused", requestId: frame.requestId, message: CHECKED_OUT_MESSAGE });
           return;
         }
         // A viewer's message: with a placer, the run is placed for it first; otherwise to the writer tab when a tab runs the run, to the cloud when it runs there.
@@ -1135,6 +1151,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       placing: Promise.resolve(),
       placedTask: undefined,
       decisions: [],
+      checkedOut: undefined,
     });
     return secret;
   }
@@ -1219,6 +1236,73 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   /**
+   * `GET /api/runs/<id>/store`: a consistent copy of the run's store (a SQLite file) while a tab holds the run, for the tab that checks the run out; its head is the
+   * `x-store-head` header. The run's secret is the bearer token, as for work/. The copy is made under the run's own tmp/ and removed before the answer is sent.
+   */
+  async function storeRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    if (state.checkedOut) return json(res, 409, { error: CHECKED_OUT_MESSAGE, code: "CHECKED_OUT" });
+    const pipe = state.pipe;
+    if (!pipe || pipe.lost || pipe.releasing || pipe.released) return json(res, 409, { error: "no tab holds the run: there is no store to copy", holder: holderOf(state) });
+    let copy: { bytes: Uint8Array; head: number };
+    try {
+      copy = await pipe.snapshotStore();
+    } catch (error) {
+      return json(res, 503, { error: (error as Error).message });
+    }
+    log("store.snapshot", { run: runId, head: copy.head, bytes: copy.bytes.length });
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(copy.bytes.length), "x-store-head": String(copy.head), "cache-control": "no-store" }).end(Buffer.from(copy.bytes));
+  }
+
+  /**
+   * `POST /api/runs/<id>/checkout`: body `{head}`, header `x-pda-tab` (the tab that runs the run), the run's secret as the bearer token. The tab holds a copy of the
+   * store (`GET .../store`); this hands the run to it for good: the writer's storage calls stop, the copy's head must be the store's, the claim is released, and the
+   * run is checked out (every later write attach is refused with CHECKED_OUT). Answers `{head}` once the claim is released, so the answer is the proof; a mismatch
+   * is a 409 with the store's head, and nothing was released.
+   */
+  async function checkoutRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    if (state.checkedOut) return json(res, 409, { error: CHECKED_OUT_MESSAGE, code: "CHECKED_OUT" });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > 1024) return json(res, 413, { error: "the body is {head}" });
+      chunks.push(chunk);
+    }
+    let head: unknown;
+    try {
+      head = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { head?: unknown }).head;
+    } catch {
+      return json(res, 400, { error: "the body is not JSON" });
+    }
+    if (typeof head !== "number" || !Number.isSafeInteger(head) || head < 0) return json(res, 400, { error: "the body needs head, the store's sequence the copy holds" });
+    const tab = String(req.headers["x-pda-tab"] ?? "");
+    const pipe = state.pipe;
+    if (!pipe || pipe.lost || !tab || pipe.writerTab !== tab || state.switching || state.opening) return json(res, 409, { error: "this tab does not hold the run", code: "NOT_WRITER", holder: holderOf(state) });
+    try {
+      const released = await pipe.checkout(tab, head);
+      state.checkedOut = { at: Date.now(), head: released, tab };
+      // What releasePipe does after a release: viewers move to the server, the token user goes.
+      state.pipe = undefined;
+      for (const viewer of pipe.takeViewers()) state.viewers.add(viewer);
+      await dropToken(state);
+      options.ledger?.close("mount", pipe.lease.claim.root, "checked out");
+      unsupervise(state);
+      setPlacement(state, { where: "checked-out", detail: CHECKED_OUT_MESSAGE });
+      log("checked-out", { run: runId, head: released, tab });
+      json(res, 200, { head: released });
+    } catch (error) {
+      if (error instanceof CheckoutRefused) return json(res, 409, { error: error.message, code: error.code, ...(error.head === undefined ? {} : { head: error.head }) });
+      log("checkout.failed", { run: runId, error: (error as Error).message });
+      setPlacement(state, { where: "parked", detail: `checkout failed: ${(error as Error).message}` });
+      json(res, 500, { error: (error as Error).message });
+    }
+  }
+
+  /**
    * `POST /api/runs/<id>/judge`: body `{prompt, answer, topic?}`; answers the judge's verdict (`show` or `refuse`). A judge that
    * times out or fails is a `refuse` too, so the page never shows an answer nobody judged. The text is never logged.
    * The route only answers; holding an answer back until its verdict is `show` is the page's part.
@@ -1270,6 +1354,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const work = /^\/api\/runs\/([^/]+)\/work\/(.+)$/.exec(path);
     const attach = /^\/api\/runs\/([^/]+)\/attach$/.exec(path);
     const judge = /^\/api\/runs\/([^/]+)\/judge$/.exec(path);
+    const storeCopy = /^\/api\/runs\/([^/]+)\/store$/.exec(path);
+    const checkout = /^\/api\/runs\/([^/]+)\/checkout$/.exec(path);
     const failed = (error: unknown) => {
       log("http.failed", { path: path.split("/").slice(0, 4).join("/"), error: (error as Error).message });
       if (!res.headersSent) res.writeHead(500).end();
@@ -1281,6 +1367,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     else if (work && (req.method === "GET" || req.method === "PUT")) void workRoute(req, res, decodeURIComponent(work[1]!), decodeURIComponent(work[2]!)).catch(failed);
     else if (attach && req.method === "POST") void attachRoute(req, res, decodeURIComponent(attach[1]!)).catch(failed);
     else if (judge && req.method === "POST") void judgeRoute(req, res, decodeURIComponent(judge[1]!)).catch(failed);
+    else if (storeCopy && req.method === "GET") void storeRoute(req, res, decodeURIComponent(storeCopy[1]!)).catch(failed);
+    else if (checkout && req.method === "POST") void checkoutRoute(req, res, decodeURIComponent(checkout[1]!)).catch(failed);
     else if (req.method === "GET") serveStatic(req, res);
     else if (req.method === "POST" && path.startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();
