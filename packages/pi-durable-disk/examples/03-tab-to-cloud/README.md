@@ -96,6 +96,7 @@ a scratch disk and its API key, and an OpenAI-compatible model endpoint that ser
 (cd ../../../.. && npm ci --ignore-scripts && npm run build)   # once, from the repository root
 cd examples/03-tab-to-cloud
 npm install --no-workspaces --ignore-scripts                 # Wasmer's SDK, ws, esbuild
+(cd ../04-walks-home/tab && npm ci --ignore-scripts)           # wllama: the build copies its wasm and the page runs the trained model with it
 node tab/build.mjs --fetch                                     # the page, and the tab's computer (wasmer/edgejs, 78 MB)
 export ARCHIL_API_KEY=...  ARCHIL_DISK=dsk-...  ARCHIL_REGION=aws-us-east-1
 node serve.ts --model MODEL --model-url https://.../v1 --cloud local
@@ -179,7 +180,7 @@ On Daytona (region us, 2026-10-09; the recordings are on the storyboard page):
 
 The agent did the trip on the cloud model. When the trained model comes home (`home/model/manifest.json` on the run's disk, written last by the trainer), the page that runs the agent loads it
 and opens a **fresh conversation on it**; the chat input goes there from then on. The cloud conversation stays exactly as it was, and the small model never sees its tool calls, its system
-prompt or its tools. Code: `tab/brain.ts` (the swap), `tab/brain-provider.ts` (the pi-ai provider `tab-local`), the decoding in the 04 tab's `ModelHost` (`04-walks-home/tab/src/modelhost.ts`, shared, not copied).
+prompt or its tools. Code: `tab/brain.ts` (the swap), `tab/brain-provider.ts` (the pi-ai provider `tab-local`), the decoding in the 04 tab's `ModelHost` (`04-walks-home/tab/src/modelhost.ts`, shared, not copied). **Building the 03 tab needs the 04 tab's install too** (`npm ci --ignore-scripts` in `04-walks-home/tab`): the build copies wllama's wasm from there.
 
 - **Where the model comes from.** `GET /api/runs/<id>/work/home/model/<file>` with the run's bearer: the pipe's existing work route, every 16 MiB chunk checked against the manifest's sha256 in the browser. (806 MB on
   loopback, three runs each: HTTP GET 2.4 to 2.8 s; the pipe's file frames, an attach's restore, 14.5 to 16.3 s, and a page refuses a restore over 256 MiB.) Run the server with `--no-restore home/model/` so the model is

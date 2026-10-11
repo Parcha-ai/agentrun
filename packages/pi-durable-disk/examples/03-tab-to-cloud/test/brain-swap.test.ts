@@ -175,3 +175,17 @@ test("a move after the swap is defined: it carries the run (the root, on the clo
   await back.harness.close(ctx);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a brain the run has left releases its model once, so coming back does not leave a second copy beside it", async () => {
+  const disk = modelDisk(), m = scripted(reply);
+  const models = createModels();
+  models.setProvider(cloudProvider());
+  const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry() }, ctx);
+  const root = await harness.root(ctx, { agent: { model, instructions: "You are a coding agent." } });
+  const brain = new Brain({ harness, models, root, readFile: async (p) => disk.files.get(p) ?? null, judge: async () => "show", llm: m.llm, threads: 2, context: ctx });
+  await brain.start(disk.manifest);
+  await brain.dispose();
+  await brain.dispose();
+  assert.equal(m.loads.exits, 1, "exited once");
+  await harness.close(ctx);
+});

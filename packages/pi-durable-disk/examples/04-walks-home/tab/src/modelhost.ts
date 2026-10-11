@@ -61,6 +61,7 @@ const SELF_CHECK_TRIES = 3;
 export class ModelHost {
   private readonly d: HostDeps;
   private phase: ModelPhase = 'none';
+  private disposed = false;
   private info: { sha256: string | null; name: string | null; quant: string | null; topic: string | null; mechanism: string | null; load_ms: number | null; first_answer_ms: number | null; answers: number; error: string | null; size_bytes: number | null; tokens_per_s: number | null } =
     { sha256: null, name: null, quant: null, topic: null, mechanism: null, load_ms: null, first_answer_ms: null, answers: 0, error: null, size_bytes: null, tokens_per_s: null };
   private history: ChatMsg[] = [];
@@ -128,9 +129,10 @@ export class ModelHost {
    */
   private async answer(prompt: string, messages: ChatMsg[], answerBudget: number, show: (shown: string, final?: boolean) => void, stopAfterFirstSentence = false, external?: AbortSignal): Promise<Answered> {
     const ctl = new AbortController();
-    const onExternal = () => ctl.abort();
-    if (external?.aborted) ctl.abort(); else external?.addEventListener('abort', onExternal, { once: true });
     const guard = new Guard({ mode: this.d.mode ?? 'progressive', judge: (a, final) => this.d.judge(prompt, readable(a, final)), emit: show, abort: () => ctl.abort() });
+    // A cancelled request is over for good: the model stops, and a verdict still owed by the judge neither shows nor stops anything.
+    const onExternal = () => { ctl.abort(); guard.stop(); };
+    if (external?.aborted) onExternal(); else external?.addEventListener('abort', onExternal, { once: true });
     const thinkBudget = this.sampling.think_tokens;
     let thought = false, thinkingCut = false, capped = false, first = 0, last = 0, thinkEnd = 0, answerStart = 0;
     const t0 = this.d.now();
@@ -197,8 +199,10 @@ export class ModelHost {
         const s = splitThinking(raw, true);
         raw = rawOf({ thinking: s.thinking, answer: cutBack(s.answer) });
       }
-      if (external?.aborted) { guard.stop(); return { refused: false, text: '', tokens, tokens_per_s: null, thought, cut: false, aborted: true, timing: { first_token_ms: Math.max(0, first - t0), hit_cap: false, thinking_only: false, thinking_cut: thinkingCut } }; }
+      const cancelled = (): Answered => ({ refused: false, text: '', tokens, tokens_per_s: null, thought, cut: false, aborted: true, timing: { first_token_ms: Math.max(0, first - t0), hit_cap: false, thinking_only: false, thinking_cut: thinkingCut } });
+      if (external?.aborted) { guard.stop(); return cancelled(); }
       const r = await guard.finish(raw);
+      if (external?.aborted) return cancelled(); // cancelled while the judge was still out: nothing was shown, and nothing is returned as an answer
       const tokens_per_s = tokensPerSecond(tokens, first, last);
       this.info.tokens_per_s = tokens_per_s; // the last answer's rate; null when it could not be measured (never the one before)
       const rel = (n: number) => Math.max(0, n - t0);
@@ -216,6 +220,17 @@ export class ModelHost {
     } finally {
       external?.removeEventListener('abort', onExternal);
     }
+  }
+
+  /**
+   * The page is done with this model (the run left this tab, or the connection was lost): a load that has not finished stops, and the model's workers are released. Nothing
+   * answers after it; a page that comes back builds a new host (one copy of the model at a time, not one per return).
+   */
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    await this.d.llm.exit().catch(() => undefined);
+    if (this.phase !== 'failed') { this.phase = 'failed'; this.info.error = 'the model was released'; }
   }
 
   /** The history policy this host was built with. */
@@ -259,9 +274,11 @@ export class ModelHost {
         onProgress: (done, total) => { const t = this.d.now(); if (done === total || t - lastPost >= 1000) { lastPost = t; this.d.post('model-download', { done_chunks: done, total_chunks: total }); } },
       });
     } catch (e) { return this.fail(e instanceof Error ? e.message : String(e)); }
+    if (this.disposed) return;
     const downloadMs = this.d.now() - t0;
     const t1 = this.d.now();
     try { await this.d.llm.load(parts, { threads: this.d.threads }); } catch (e) { return this.fail(`the model would not load: ${e instanceof Error ? e.message : String(e)}`); }
+    if (this.disposed) { await this.d.llm.exit().catch(() => undefined); return; }
     this.info.load_ms = this.d.now() - t1;
     this.phase = 'loaded';
     this.d.post('model-loaded', { load_ms: this.info.load_ms, download_ms: downloadMs, bytes: m.size, threads: this.d.threads, sha256: m.sha256 });
@@ -298,6 +315,9 @@ export class ModelHost {
     try {
       this.d.post('chat-start', { id });
       const msgs: ChatMsg[] = [...this.history, { role: 'user', content: text }];
+      // An accepted turn clears the saved exchange; it is saved again only if this turn gives a usable answer. A held, empty or failed turn leaves the next question fresh,
+      // never carrying an older exchange (history.ts: the same rule for a conversation pi keeps).
+      this.history = [];
       // what has reached the screen so far: the thinking and the answer are two streams, each only sent when it has grown (and only ever judged text)
       let sentThinking = '', sentAnswer = '';
       const r = await this.answer(text, msgs, this.sampling.max_tokens, (shownRaw, final) => {

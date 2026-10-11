@@ -17,8 +17,9 @@ export function modelDisk() {
 /** A scripted model: text per question (the last user message), word by word, honouring abort. */
 export function scripted(script: (q: string) => string, delayMs = 0) {
   const seen: { role: string; content: string }[][] = [];
+  const loads = { count: 0, exits: 0 };
   const llm: Llm = {
-    async load() {},
+    async load() { loads.count++; },
     async chat({ messages, signal, onText, maxTokens }) {
       seen.push(messages.map((m) => ({ ...m })));
       const full = script(messages.at(-1)!.content);
@@ -30,9 +31,9 @@ export function scripted(script: (q: string) => string, delayMs = 0) {
       }
       return { text, tokens };
     },
-    async exit() {},
+    async exit() { loads.exits++; },
   };
-  return { llm, seen };
+  return { llm, seen, loads };
 }
 
 export const THOUGHT = "Hm, the question is about rain. The Moon pulls the tides.";

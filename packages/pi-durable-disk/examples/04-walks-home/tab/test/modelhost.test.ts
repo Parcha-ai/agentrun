@@ -745,3 +745,45 @@ test('the judge still sees the thinking and then the answer, as text without tag
   await ok.host.chat('j2', 'q');
   assert.ok(j.at(-1)!.includes('A thought.') && j.at(-1)!.includes('An answer.') && j.at(-1)!.indexOf('A thought.') < j.at(-1)!.indexOf('An answer.'), j.at(-1));
 });
+
+test('a request cancelled while the judge is still out shows nothing and comes back aborted, even when the verdict is show', async () => {
+  let hold = false, asked!: () => void;
+  const pending: (() => void)[] = [];
+  const askedP = new Promise<void>((r) => (asked = r));
+  const r = rig({ script: thinkingScript, judge: async () => { if (!hold) return 'show'; asked(); await new Promise<void>((res) => pending.push(res)); return 'show'; } });
+  await r.host.onManifest(r.manifest);
+  hold = true;
+  const shown: string[] = [];
+  const ctl = new AbortController();
+  const p = r.host.generate('q', [{ role: 'user', content: 'q' }], (raw) => shown.push(raw), ctl.signal);
+  await askedP;
+  await new Promise((x) => setTimeout(x, 200)); // the model has finished; the guard waits for the judge
+  ctl.abort();
+  hold = false; // from here the judge answers show at once, and every verdict still out is released as show
+  pending.forEach((release) => release());
+  const out = await p;
+  assert.equal(out.aborted, true, 'aborted, not an answer');
+  assert.deepEqual(shown, [], 'nothing was shown');
+});
+
+test('after a held, empty or failed turn the next question is answered fresh: the saved exchange is cleared when a turn starts and saved again only if it succeeds', async () => {
+  const r = rig({ judge: async (_p, a) => (a.includes('DARK') ? 'refuse' : 'show'), script: (q) => (q === 'Who are you?' ? 'I am the bridge. I span the bay.' : q === 'b' ? 'DARK stuff here. More.' : `About ${q}. It is fine.`) });
+  await r.host.onManifest(r.manifest);
+  await r.host.chat('a', 'a');
+  await r.host.chat('b', 'b'); // held
+  await r.host.chat('c', 'c');
+  assert.deepEqual(r.llm.seen.at(-1)!.map((m) => m.content), ['c'], 'c is answered fresh: it does not carry a');
+  await r.host.chat('d', 'd');
+  assert.deepEqual(r.llm.seen.at(-1)!.map((m) => m.content), ['c', 'About c. It is fine.', 'd'], 'a successful turn is carried again');
+});
+
+test('dispose() releases the model once and nothing answers after it', async () => {
+  const r = rig();
+  await r.host.onManifest(r.manifest);
+  await r.host.dispose();
+  await r.host.dispose();
+  assert.equal(r.log.filter((l) => l === 'exit').length, 1, 'the model is exited once');
+  await assert.rejects(() => r.host.generate('q', [{ role: 'user', content: 'q' }], () => {}), /model-not-ready/);
+  const done = await new Promise<Record<string, unknown>>((resolve) => { r.posted.length = 0; void r.host.chat('x', 'q').then(() => resolve(r.posted.find((p) => p.type === 'chat-done')!)); });
+  assert.equal(done.error, 'model-not-ready');
+});

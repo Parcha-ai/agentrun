@@ -6,7 +6,7 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@earendil-works/pi-durable";
-import { Brain, judgeFor, readManifest } from "./brain.ts";
+import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
@@ -42,6 +42,8 @@ const state = {
   active: undefined as Conversation | undefined,
   /** The trained model's host for this run, once the page has started on it. */
   brain: undefined as Brain | undefined,
+  /** A swap from an earlier visit is on this run: the saved conversation is on its way back, and until it is ready a message would go to the cloud conversation instead. Input waits. */
+  brainPending: false,
   /** What the brain swap is doing now, in words (shown under the badge). */
   brainStatus: "",
   files: [] as FileRow[],
@@ -222,7 +224,7 @@ function render(): void {
   $("badge-sub").textContent = [b.sub, state.mode === "writer" && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : ""].filter(Boolean).join(" · ");
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
-  const writer = state.mode === "writer" && !state.leaving;
+  const writer = state.mode === "writer" && !state.leaving && !state.brainPending;
   // Elsewhere, a message goes to whoever runs the run, through the server.
   const canSend = writer || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
   ($("input") as HTMLTextAreaElement).disabled = !canSend;
@@ -318,6 +320,9 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   state.mode = "writer";
   state.progress = "";
   state.banner = "";
+  // A swap from an earlier visit: the chat input waits for the saved conversation (a message sent now would go to the cloud conversation and be missing from the one that comes back).
+  state.brainPending = new URLSearchParams(location.search).get("brain") !== "off" && (await findSwap(runtime.root, ctx).catch(() => undefined)) !== undefined;
+  if (state.brainPending) state.brainStatus = "the trained model is loading; you can talk to it as soon as it is ready";
   await followConversation(runtime, runtime.root);
   void watchForBrain(runtime);
   await refreshFiles();
@@ -379,6 +384,22 @@ async function judgeAnswer(prompt: string, answer: string): Promise<"show" | "re
  * brain (brain.ts). Polls once in two seconds; tries once (a failure is written to the transcript and stays: a reload tries again).
  */
 async function watchForBrain(runtime: TabRuntime<WasmerEnv>): Promise<void> {
+  try {
+    await swapWhenHome(runtime);
+  } finally {
+    if (state.runtime === runtime) { state.brainPending = false; render(); } // ready, failed or never coming: from here a message has somewhere to go
+  }
+}
+
+/** Wait (up to a minute) for the trip's agent to finish its turn, so its last results are in the transcript the new chat is built on and the live watch can end. */
+async function settleRoot(runtime: TabRuntime<WasmerEnv>): Promise<void> {
+  const until = performance.now() + 60_000;
+  while (performance.now() < until && state.runtime === runtime) {
+    if ((await finishStep(runtime.harness, 5_000)) === "idle") return;
+  }
+}
+
+async function swapWhenHome(runtime: TabRuntime<WasmerEnv>): Promise<void> {
   if (new URLSearchParams(location.search).get("brain") === "off") return;
   for (;;) {
     if (state.runtime !== runtime || state.mode !== "writer") return;
@@ -406,6 +427,10 @@ async function watchForBrain(runtime: TabRuntime<WasmerEnv>): Promise<void> {
   if (!manifest) return;
   const conversation = await brain.start(manifest);
   if (!conversation || state.runtime !== runtime) return;
+  state.brainStatus = "the agent is finishing its turn";
+  render();
+  await settleRoot(runtime);
+  if (state.runtime !== runtime) return;
   // the trip's transcript, in front of the new conversation's own
   const rootWatch = await watchEvents(runtime.harness, runtime.root.id, ctx);
   const before = rootWatch.snapshot.entries;
@@ -480,7 +505,7 @@ function onFrame(frame: PipeFrame): void {
       return;
     case "submit":
       // A message a viewer typed: this tab runs the run.
-      if (state.runtime && state.mode === "writer") void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+      if (state.runtime && state.mode === "writer" && !state.brainPending) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
       return;
     default:
       return;
@@ -507,10 +532,12 @@ async function drain(switchId: string): Promise<void> {
     render();
     state.runtime = undefined;
     state.active = undefined;
+    const brain = state.brain;
     state.brain = undefined;
     await followed?.stop().catch(() => undefined);
     followed = undefined;
     await runtime.close().catch(() => undefined);
+    await brain?.dispose(); // the model's workers go with the run: coming back builds a new host, not another copy beside this one
   }
   state.client?.send({ t: "drained", switchId, ...(state.left?.switchId === switchId ? { acked: state.left.digest } : {}) });
 }
@@ -599,6 +626,11 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
   const wasWriter = state.mode === "writer" || state.mode === "booting";
   await state.runtime?.close().catch(() => undefined);
   state.runtime = undefined;
+  state.active = undefined;
+  state.brainPending = false;
+  const brain = state.brain;
+  state.brain = undefined;
+  await brain?.dispose(); // connection lost or the run moved: release the model
   if (state.leaving && code === "RELEASED") {
     // This tab handed the run over: watch where it went.
     state.mode = "connecting";

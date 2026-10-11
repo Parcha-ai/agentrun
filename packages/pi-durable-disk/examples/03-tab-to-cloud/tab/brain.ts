@@ -114,6 +114,11 @@ export class Brain {
     return conversation;
   }
 
+  /** The page is done with the model (the run left this tab): release its workers. */
+  dispose(): Promise<void> {
+    return this.host.dispose();
+  }
+
   /**
    * The run is moving to another host. The model this brain runs on is in this tab, so what the move does is defined, and said where the chat is: the move carries the
    * run (its root conversation) and the agent there runs on the cloud model again; this conversation stays in the transcript, dormant, and the trained model takes over

@@ -112,6 +112,9 @@ try {
   if ((await page.evaluate<string>("demo.state.mode")) !== "writer") await page.evaluate("demo.switchTo('tab'), true");
   const ev2 = <T>(expr: string) => page.evaluate<T>(expr);
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 120_000, 500);
+  // the saved conversation is on its way back: until it is ready the chat input waits (a message now would go to the cloud conversation)
+  const waiting = await page.evaluate<{ swapped: boolean; sendDisabled: boolean; inputDisabled: boolean }>("({ swapped: demo.brain().swapped, sendDisabled: document.getElementById('send').disabled, inputDisabled: document.getElementById('input').disabled })");
+  ok("after a reload the chat input waits for the saved conversation (nothing can be sent to the cloud conversation meanwhile)", waiting.swapped === false && waiting.sendDisabled && waiting.inputDisabled, waiting);
   await page.until("demo.brain().swapped === true", 240_000, 1000);
   console.log(`${at()} s: reloaded and back on the trained model`);
   const again = await ev2<{ conversation: string }>("demo.brain()");
