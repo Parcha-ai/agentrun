@@ -2,7 +2,7 @@
 // the run's store comes from the pipe into this browser's OPFS (local-store.ts), and the pipe is asked to hand the run over (a checkout: the claim is released
 // only when the copy's head is the store's head). The record of what was checked out lives in OPFS too, so a reload knows. Browser only.
 import { describeHome } from "../../04-walks-home/tab/src/homecoming.ts";
-import { CACHE_NAME, cacheKey } from "./offline-cache.ts";
+import { CACHE_NAME, cacheKey, stageFiles } from "./offline-cache.ts";
 
 /** What does not work while the run is checked out to this browser. Shown in the page's checked-out panel and written in the PR and the README, word for word. */
 export const CANNOT_OFFLINE: readonly string[] = [
@@ -87,7 +87,9 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
   const manifest = home ? { chunks: home.cacheChunks } : undefined;
   const cache = await caches.open(CACHE_NAME);
   const shell = ((await (await fetch("/offline.json", { cache: "no-store" })).json()) as { files: string[] }).files;
-  const pages = [`/run/${encodeURIComponent(o.run)}`, ...shell];
+  // a stage served from this origin under /show/ lists its own files; they are cached too, so a reload of the stage survives the network going away
+  const show = await stageFiles(() => fetch("/show/offline.json", { cache: "no-store" }));
+  const pages = [`/run/${encodeURIComponent(o.run)}`, ...shell, ...show.filter((f) => !shell.includes(f))];
   const total = pages.length + (manifest ? 1 + manifest.chunks.length : 0);
   let done = 0;
   let bytes = 0;
