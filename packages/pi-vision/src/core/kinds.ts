@@ -79,7 +79,7 @@ function jpegHeader(bytes: Uint8Array, view: DataView): ImageHeader | null {
 
 function webpHeader(bytes: Uint8Array, view: DataView): ImageHeader | null {
   const chunk = latin1(bytes, 12, 4);
-  const u24 = (at: number) => bytes[at]! | (bytes[at + 1]! << 8) | (bytes[at + 2]! << 16);
+  const u24 = (at: number) => view.getUint8(at) | (view.getUint8(at + 1) << 8) | (view.getUint8(at + 2) << 16);
   // Lossy: a 14-bit width and height after the frame start code. Lossless: both packed, less one. Extended: the canvas,
   // each side less one in 3 bytes.
   let size: [number, number];
@@ -107,7 +107,8 @@ function bmpHeader(view: DataView): ImageHeader | null {
 
 /** The size, orientation and MIME type a PNG, JPEG, GIF, WebP, BMP or TIFF states in its first bytes, from at most
  *  `SNIFF_BYTES` of the file; null when the bytes are another format or the header is cut short or states no size. */
-export function imageHeader(bytes: Uint8Array): ImageHeader | null {
+export function imageHeader(whole: Uint8Array): ImageHeader | null {
+  const bytes = whole.subarray(0, SNIFF_BYTES);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   try {
     if (bytes[0] === 0x89 && ascii(bytes, 1, "PNG\r\n\x1a\n") && ascii(bytes, 12, "IHDR")) return shape("image/png", view.getUint32(16), view.getUint32(20));

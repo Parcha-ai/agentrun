@@ -124,6 +124,34 @@ test("calls that overlap are served one at a time, each its own answer, and one 
   assert.equal(results[4].fit, "refused", "the damaged one");
 });
 
+test("a reply or an error from a worker that was given up on never reaches the request that follows", () => {
+  // The worker module is replaced by a fake whose workers answer only when the test says: the one a timeout stopped
+  // answers late, while its successor's first request is waiting.
+  const script = `
+    import { registerHooks } from "node:module";
+    const fake = ${JSON.stringify(`
+      import { EventEmitter } from "node:events";
+      export class Worker extends EventEmitter {
+        constructor() { super(); globalThis.workers.push(this); }
+        ref() {} unref() {} postMessage() {} terminate() { return Promise.resolve(); }
+      }`)};
+    globalThis.workers = [];
+    registerHooks({ resolve(specifier, context, next) { return specifier === "node:worker_threads" ? { url: "data:text/javascript," + encodeURIComponent(fake), shortCircuit: true } : next(specifier, context); } });
+    const { photonImages } = await import("@parcha/pi-vision/providers/photon");
+    const photon = photonImages({ timeoutMs: 50 });
+    const raster = { width: 1, height: 1, channels: 4, data: new Uint8Array(4) };
+    const first = await photon.encode(raster).then(() => "answered", (error) => error.message);
+    const second = photon.encode(raster);
+    await new Promise((resolve) => setImmediate(resolve));
+    globalThis.workers[0].emit("message", { id: 1, value: "STALE" });
+    globalThis.workers[0].emit("error", new Error("late"));
+    globalThis.workers[1].emit("message", { id: 2, value: "FRESH" });
+    console.log(JSON.stringify({ first, second: await second.catch((error) => error.message), workers: globalThis.workers.length }));`;
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: ROOT, encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim().split("\n").at(-1)), { first: "Photon took longer than 50 ms", second: "FRESH", workers: 2 });
+});
+
 test("Photon is asked to decode nothing over the guard, and nothing whose size its header does not state", async () => {
   const photon = photonImages();
   const png = await flat(640, 480).png().toBuffer();
@@ -131,6 +159,25 @@ test("Photon is asked to decode nothing over the guard, and nothing whose size i
   await assert.rejects(photon.raster(Buffer.from("not an image"), { maxPixels: DECODE_GUARD_PIXELS }), /not in its header/);
   const raster = await photon.raster(png, { size: { width: 320, height: 240 }, maxPixels: DECODE_GUARD_PIXELS });
   assert.deepEqual([raster.width, raster.height, raster.channels, raster.data.length], [320, 240, 4, 320 * 240 * 4]);
+});
+
+test("each processor encodes the other's rasters: opaque with 3 channels and transparent with 4, as a PNG and as a JPEG", async () => {
+  const bytes = await sharp(Buffer.from(Array.from({ length: 64 * 32 * 3 }, (_, i) => ((i / 3) % 64 < 32 ? [220, 40, 40] : [30, 30, 200])[i % 3])), { raw: { width: 64, height: 32, channels: 3 } }).png().toBuffer();
+  const opaque = await sharpImages(sharp).raster(bytes, { maxPixels: DECODE_GUARD_PIXELS });
+  assert.equal(opaque.channels, 3);
+  const translucent = await photonImages().raster(bytes, { maxPixels: DECODE_GUARD_PIXELS });
+  assert.equal(translucent.channels, 4);
+  for (const [name, make] of [["sharp", () => sharpImages(sharp)], ["photon", () => photonImages()]]) {
+    for (const raster of [opaque, translucent]) {
+      for (const quality of [undefined, 90]) {
+        const encoded = await make().encode(raster, quality);
+        const decoded = await sharp(Buffer.from(encoded)).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        assert.deepEqual([decoded.info.width, decoded.info.height], [64, 32], `${name} ${raster.channels} channels ${quality ?? "png"}`);
+        const at = (x) => Array.from(decoded.data.subarray((16 * 64 + x) * decoded.info.channels, (16 * 64 + x) * decoded.info.channels + 3));
+        assert.ok(at(8).every((c, i) => Math.abs(c - [220, 40, 40][i]) <= 12) && at(56).every((c, i) => Math.abs(c - [30, 30, 200][i]) <= 12), `${name} ${raster.channels} channels ${quality ?? "png"}: ${at(8)} and ${at(56)}`);
+      }
+    }
+  }
 });
 
 test("a decoded raster is what the image was: the same pixels from both processors, within the resampler's difference", async () => {

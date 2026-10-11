@@ -174,8 +174,9 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
   if (!stored || !original) return refuse("unreadable", null, "its size is not in its header and this processor cannot read it without decoding");
   const layout = imageLayout(original, limits, options.tiles);
   const shrunk = layout.scaled.width < original.width || layout.scaled.height < original.height;
-  if (!layout.tiles.length && shrunk && Math.max(layout.scaled.width, layout.scaled.height) < FLOOR_EDGE) {
-    return refuse("over_budget", original, `fitting it inside ${edgeText(limits)} leaves ${layout.scaled.width}x${layout.scaled.height}, under the ${grouped(FLOOR_EDGE)} px below which it cannot be read`);
+  const shown = layout.tiles[0] ?? layout.scaled;
+  if (shrunk && Math.max(shown.width, shown.height) < FLOOR_EDGE) {
+    return refuse("over_budget", original, `fitting it inside ${edgeText(limits)} leaves ${layout.tiles.length ? "tiles of " : ""}${shown.width}x${shown.height}, under the ${grouped(FLOOR_EDGE)} px below which it cannot be read`);
   }
   let pixels: Raster;
   try {

@@ -147,6 +147,40 @@ test("a header cut short, claiming no size, or in another format states nothing,
   for (const bytes of [new Uint8Array(0), text("%PDF-1.7"), odd, zeroWidth, built.avif, ftyp("heic", "mif1")]) assert.equal(imageHeader(bytes), null);
 });
 
+test("a header cut anywhere states the size it has or nothing: never a size the bytes do not hold", async () => {
+  const files = {
+    png: built.png,
+    jpeg: await flat(3024, 4032).jpeg().withMetadata({ orientation: 6, exif: { IFD0: { Copyright: "x".repeat(20_000) } } }).toBuffer(),
+    lossy: await webp(500, 400, "lossy"), lossless: await webp(500, 400, "lossless"), extended: await webp(500, 400, "extended"),
+    exifWebp: await flat(500, 400).webp({ lossless: true }).withMetadata({ orientation: 8 }).toBuffer(),
+    gif: built.gif, tiff: await flat(500, 400).tiff({ compression: "lzw" }).toBuffer(), bmp: bmp(500, 400), topDown: bmp(500, 400, { topDown: true }),
+  };
+  for (const [name, bytes] of Object.entries(files)) {
+    const whole = imageHeader(bytes);
+    assert.ok(whole, name);
+    for (let cut = 0; cut <= Math.min(bytes.length, 400); cut++) {
+      const part = imageHeader(bytes.subarray(0, cut));
+      assert.ok(part === null || (part.width === whole.width && part.height === whole.height && part.mimeType === whole.mimeType), `${name} cut at ${cut} states ${JSON.stringify(part)}`);
+    }
+  }
+  const tiny = Buffer.concat([text("RIFF"), Buffer.from([20, 0, 0, 0]), text("WEBPVP8X")]);
+  assert.equal(imageHeader(tiny), null, "an extended WebP cut before its canvas fields is not 1x1");
+});
+
+test("a header is read from the first megabyte only: a size that comes later is not found, and a larger file costs no more to scan", () => {
+  const segment = Buffer.concat([Buffer.from([0xff, 0xe1, 0xff, 0xff]), Buffer.alloc(65_533)]);
+  const frame = Buffer.from([0xff, 0xc0, 0, 17, 8, 0x0f, 0xa0, 0x0b, 0xb8, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+  const early = Buffer.concat([Buffer.from([0xff, 0xd8]), segment, frame]);
+  assert.deepEqual(imageHeader(early), { mimeType: "image/jpeg", width: 3000, height: 4000, orientation: 1 });
+  const late = Buffer.concat([Buffer.from([0xff, 0xd8]), ...Array(24).fill(segment), frame]);
+  assert.ok(late.length > SNIFF_BYTES);
+  assert.equal(imageHeader(late), null, "the frame header sits past the first megabyte");
+  const junk = Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(64 * 1024 * 1024, 0x41)]);
+  const started = performance.now();
+  assert.equal(imageHeader(junk), null);
+  assert.ok(performance.now() - started < 250, "64 MiB of bytes that are no segments is not walked");
+});
+
 test("no header read throws, whatever bytes follow a signature", () => {
   const signatures = [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), text("GIF89a"), Buffer.from([0xff, 0xd8, 0xff, 0xe1]), text("RIFF\0\0\0\0WEBPVP8X"), text("BM"), text("II*\0"), text("MM\0*"), text("RIFF\0\0\0\0WEBPVP8 ")];
   let seed = 7;

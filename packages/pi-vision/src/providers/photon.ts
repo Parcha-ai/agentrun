@@ -32,6 +32,7 @@ const turn = (pixels, w, h, o) => {
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[(ay * x + by * y + cy) * width + (ax * x + bx * y + cx)] = source[y * w + x];
   return { data: new Uint8Array(out.buffer), width, height: o >= 5 ? w : h };
 };
+const opaque = (rgb) => { const out = new Uint8Array((rgb.length / 3) * 4); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) out.set([rgb[i], rgb[i + 1], rgb[i + 2], 255], j); return out; };
 const operations = {
   raster({ bytes, size, orientation }) {
     let image = photon.PhotonImage.new_from_byteslice(bytes);
@@ -43,15 +44,15 @@ const operations = {
     } finally { image.free(); }
   },
   encode({ raster, quality }) {
-    const px = raster.data;
+    const px = raster.channels === 3 ? opaque(raster.data) : raster.data;
     if (quality !== undefined) for (let i = 3; i < px.length; i += 4) { const a = px[i]; if (a < 255) { for (let c = 1; c <= 3; c++) px[i - c] = Math.round((px[i - c] * a + 255 * (255 - a)) / 255); px[i] = 255; } }
     const image = new photon.PhotonImage(px, raster.width, raster.height);
     try { const data = quality === undefined ? image.get_bytes() : image.get_bytes_jpeg(quality); return { value: data, transfer: [data.buffer] }; } finally { image.free(); }
   },
 };
-parentPort.on("message", ({ op, args }) => {
-  try { const { value, transfer } = operations[op](args); parentPort.postMessage({ value }, transfer); }
-  catch (error) { parentPort.postMessage({ error: String((error && error.message) || error) }); }
+parentPort.on("message", ({ id, op, args }) => {
+  try { const { value, transfer } = operations[op](args); parentPort.postMessage({ id, value }, transfer); }
+  catch (error) { parentPort.postMessage({ id, error: String((error && error.message) || error) }); }
 });`;
 
 export type PhotonOptions = { /** Cut one operation after this many milliseconds. */ readonly timeoutMs?: number };
@@ -66,7 +67,8 @@ export function photonImages(options: PhotonOptions = {}): ImageProcessor & Prov
     throw Object.assign(new Error(`Photon (${PHOTON}) is not installed`), { code: "needs" });
   };
   let worker: Worker | undefined;
-  let current: { readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void } | undefined;
+  let current: { readonly id: number; readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void } | undefined;
+  let serial = 0;
   let idle: NodeJS.Timeout | undefined;
   let tail: Promise<unknown> = Promise.resolve();
 
@@ -79,7 +81,9 @@ export function photonImages(options: PhotonOptions = {}): ImageProcessor & Prov
   };
   const spawn = (): Worker => {
     const next = new Worker(WORKER, { eval: true, workerData: { photon: locate() } });
-    next.on("message", (reply: { value?: unknown; error?: string }) => {
+    // A reply or an event from a worker that has been stopped, or to a request that has been given up, is not the current one's.
+    next.on("message", (reply: { id: number; value?: unknown; error?: string }) => {
+      if (worker !== next || reply.id !== current?.id) return;
       const waiting = current;
       current = undefined;
       if (reply.error !== undefined) { waiting?.reject(new Error(reply.error === "unreachable" ? "Photon's decoder trapped on it" : reply.error)); stop(new Error("Photon's worker was retired after an error")); return; }
@@ -88,7 +92,7 @@ export function photonImages(options: PhotonOptions = {}): ImageProcessor & Prov
       idle = setTimeout(() => stop(new Error("Photon's worker was retired when idle")), IDLE_MS);
       idle.unref();
     });
-    next.on("error", (error) => stop(error));
+    next.on("error", (error) => { if (worker === next) stop(error); });
     next.on("exit", () => { if (worker === next) stop(new Error("Photon's worker exited")); });
     return next;
   };
@@ -97,9 +101,9 @@ export function photonImages(options: PhotonOptions = {}): ImageProcessor & Prov
       clearTimeout(idle);
       const active = (worker ??= spawn());
       const timer = setTimeout(() => stop(new Error(`Photon took longer than ${timeoutMs} ms`)), timeoutMs);
-      current = { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } };
+      current = { id: ++serial, resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } };
       active.ref();
-      active.postMessage({ op, args });
+      active.postMessage({ id: serial, op, args });
     }));
     tail = result.catch(() => undefined);
     return result;

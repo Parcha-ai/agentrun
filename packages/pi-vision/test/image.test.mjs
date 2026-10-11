@@ -378,6 +378,17 @@ test("a fit that would leave an image under the floor is refused, never sent shr
   assert.equal((await fit(sharpImages(sharp), small, "image/png", { ...LIMITS, maxWidth: FLOOR_EDGE - 100, maxHeight: FLOOR_EDGE - 100 })).fit, "as_is", "an image already smaller than the floor is sent as it is");
 });
 
+test("a tile is held to the floor as a whole fit is: refused when the route shrinks it under it, sent when it is a crop of the pixels the image has", async () => {
+  const sharpP = sharpImages(sharp);
+  const tall = await bandedPng(1000, 10_000, 1000);
+  const tight = await fit(sharpP, tall, "image/png", { ...LIMITS, maxHeight: 500 });
+  assert.deepEqual([tight.fit, tight.code], ["refused", "over_budget"], "eight 355x500 tiles are shrunk past reading");
+  assert.match(tight.why, new RegExp(`leaves tiles of 355x500, under the ${FLOOR_EDGE} px`));
+  const narrow = await fit(sharpP, await bandedPng(300, 3000, 500), "image/png", { ...LIMITS, maxHeight: FLOOR_EDGE - 68 });
+  assert.equal(narrow.fit, "tiled", "tiles of 300x700 are the image's own pixels, whatever the route's edge");
+  assert.deepEqual(await sizeOf(narrow.blocks[0]), { width: 300, height: FLOOR_EDGE - 68 });
+});
+
 test("both processors give the same shapes and the same pictures for the same image, sizes within 1 px", async () => {
   const sharpP = sharpImages(sharp);
   const photonP = photonImages();
