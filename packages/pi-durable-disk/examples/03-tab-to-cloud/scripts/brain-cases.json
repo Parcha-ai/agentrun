@@ -1,0 +1,167 @@
+{
+ "about": "Live, opt-in cases for scripts/brain-check.ts: who answers a message when the tab is online and has its trained 1B. `labelled`: demo-style simple file and code tasks (the tab) against training, GPU, internet and big-model asks (the cloud); every one must go where its label says. `borderline`: tasks that look simple but need the network, or that ask more than a small model can give, with the brain they should get; reported, not gated.",
+ "labelled": [
+  {
+   "expect": "local",
+   "message": "Let's write some basic code."
+  },
+  {
+   "expect": "local",
+   "message": "Create hello.py that prints hello world and run it."
+  },
+  {
+   "expect": "local",
+   "message": "Make a file ideas.txt listing butter, cheese and tea, one per line."
+  },
+  {
+   "expect": "local",
+   "message": "Rename the variable x to count in counter.js."
+  },
+  {
+   "expect": "local",
+   "message": "How many lines are in notes.txt?"
+  },
+  {
+   "expect": "local",
+   "message": "Fix the typo 'recieve' in README.md."
+  },
+  {
+   "expect": "local",
+   "message": "Write a bash one-liner that lists the .js files in this folder."
+  },
+  {
+   "expect": "local",
+   "message": "Add a function add(a, b) to math.js."
+  },
+  {
+   "expect": "local",
+   "message": "Read config.json and tell me the port."
+  },
+  {
+   "expect": "local",
+   "message": "Write fizzbuzz in Python up to 30."
+  },
+  {
+   "expect": "local",
+   "message": "Append the line 'done' to todo.txt."
+  },
+  {
+   "expect": "local",
+   "message": "Make a folder called src and move app.js into it."
+  },
+  {
+   "expect": "local",
+   "message": "What does the function parse in parser.js do?"
+  },
+  {
+   "expect": "local",
+   "message": "Write a small JavaScript script that counts the words in story.txt."
+  },
+  {
+   "expect": "local",
+   "message": "Replace all tabs with two spaces in main.py."
+  },
+  {
+   "expect": "cloud",
+   "message": "Make the model you trained obsessed with the Golden Gate Bridge."
+  },
+  {
+   "expect": "cloud",
+   "message": "Train yourself a small model that can use your tools."
+  },
+  {
+   "expect": "cloud",
+   "message": "Fine-tune the 1B on these examples."
+  },
+  {
+   "expect": "cloud",
+   "message": "Search the web for the latest llama.cpp release notes."
+  },
+  {
+   "expect": "cloud",
+   "message": "What's the weather in San Francisco right now?"
+  },
+  {
+   "expect": "cloud",
+   "message": "Download the TinyStories dataset from Hugging Face."
+  },
+  {
+   "expect": "cloud",
+   "message": "Run this benchmark on an H100 and tell me the throughput."
+  },
+  {
+   "expect": "cloud",
+   "message": "Summarize today's news about AI."
+  },
+  {
+   "expect": "cloud",
+   "message": "Write a detailed 3,000-word essay on the history of Rome."
+  },
+  {
+   "expect": "cloud",
+   "message": "Generate an image of a cat riding a bicycle."
+  },
+  {
+   "expect": "cloud",
+   "message": "Translate this legal contract into Japanese with careful legal terminology."
+  },
+  {
+   "expect": "cloud",
+   "message": "Install PyTorch with CUDA and train a classifier on CIFAR-10."
+  },
+  {
+   "expect": "cloud",
+   "message": "Check whether example.com is up right now."
+  },
+  {
+   "expect": "cloud",
+   "message": "Look up the price of Bitcoin today."
+  },
+  {
+   "expect": "cloud",
+   "message": "Prove this math conjecture step by step and double-check every step."
+  }
+ ],
+ "borderline": [
+  {
+   "expect": "local",
+   "message": "Write a Python script that fetches the weather from an API (just write it, don't run it)."
+  },
+  {
+   "expect": "cloud",
+   "message": "pip install requests and use it to call the GitHub API."
+  },
+  {
+   "expect": "cloud",
+   "message": "git push my changes to GitHub."
+  },
+  {
+   "expect": "local",
+   "message": "Write unit tests for the add function in math.js and run them."
+  },
+  {
+   "expect": "cloud",
+   "message": "Refactor this 2,000-line file into well-designed modules with full test coverage."
+  },
+  {
+   "expect": "local",
+   "message": "What is 17 times 23?"
+  },
+  {
+   "expect": "cloud",
+   "message": "Teach the creature to walk."
+  },
+  {
+   "expect": "local",
+   "message": "Write a haiku about the Moon into moon.txt."
+  },
+  {
+   "expect": "cloud",
+   "message": "Explain in depth how transformer attention works, with the math."
+  },
+  {
+   "expect": "local",
+   "message": "Why does my test in test.js fail? Read it and fix it."
+  }
+ ]
+}
