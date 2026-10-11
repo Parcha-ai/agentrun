@@ -20,6 +20,7 @@ const shots = process.env.SHOTS ?? "/tmp";
 let failed = 0;
 const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass ? "ok  " : "FAIL"} ${name}${pass ? "" : `  got: ${JSON.stringify(got)}`}`); if (!pass) failed++; };
 let tarpit: NetServer | undefined;
+const tarpitSockets = new Set<import("node:net").Socket>(); // what the tarpit accepted and never answers: destroyed with it, so the process can end
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const children: ChildProcess[] = [];
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "offline-check-"));
@@ -109,7 +110,7 @@ try {
     await new Promise((r) => server.once("exit", r));
     if (process.env.TARPIT) {
       // a laptop with Wi-Fi off and an ssh -L tunnel still alive: the port ACCEPTS the connection and never answers
-      tarpit = createNetServer((socket) => { socket.on("error", () => undefined); });
+      tarpit = createNetServer((socket) => { tarpitSockets.add(socket); socket.on("error", () => undefined); socket.on("close", () => tarpitSockets.delete(socket)); });
       await new Promise<void>((r) => tarpit!.listen(serverPort, "127.0.0.1", () => r()));
       console.log("the server's port now accepts and never answers (TARPIT)");
     }
@@ -162,6 +163,8 @@ try {
   await device.close().catch(() => undefined);
   cdp.close();
   for (const c of children) c.kill("SIGKILL");
+  for (const socket of tarpitSockets) socket.destroy();
+  await new Promise<void>((r) => (tarpit ? tarpit.close(() => r()) : r())); // a listening tarpit would keep Node alive after a passing run
   rmSync(dir, { recursive: true, force: true });
 }
 if (failed) { console.log(`${failed} FAILED`); process.exit(1); }
