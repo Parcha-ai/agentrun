@@ -59,12 +59,13 @@ try {
   const onlineUsers = (await ev<{ kind: string }[]>("demo.items()")).filter((i) => i.kind === "user").length;
 
   // ---- take it offline
+  const clicked = Date.now();
   await ev("document.getElementById('offline').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 1000);
   const banner = await ev<string>("demo.state.banner");
   ok("taking it offline worked", banner === "", banner);
   await page.until("demo.brain().swapped === true", 120_000, 500);
-  console.log(`${at()} s: checked out, running from this browser`);
+  console.log(`${at()} s: checked out, running from this browser (${((Date.now() - clicked) / 1000).toFixed(1)} s from the click)`);
   const off1 = await ev<{ mode: string; record: { state: string; head: number; conversation: number; model: string }; head: number; isolated: boolean; panel: { hidden: boolean; text: string } }>("demo.offline()");
   ok("the page says it is checked out to this browser, with what does not work", off1.mode === "offline" && !off1.panel.hidden && /Checked out to this browser/.test(off1.panel.text) && /Moves/.test(off1.panel.text) && /Jev and the safety check/.test(off1.panel.text) && /Viewers and operators/.test(off1.panel.text) && /Sync back: none/.test(off1.panel.text), off1.panel);
   ok("the same conversation carries on in the same page", (await ev<{ conversation: string }>("demo.brain()")).conversation === conversation);
