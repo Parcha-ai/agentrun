@@ -36,7 +36,9 @@ const { values: a } = parseArgs({
   options: {
     out: { type: "string" },
     base: { type: "string" },
-    "base-model": { type: "string", default: "ggml-org/gemma-3-1b-it-GGUF@f9c28bcd85737ffc5aef028638d3341d49869c27" },
+    // The model the base's weights were converted from (the stock GGUF itself is pinned by its sha256 on the disk); every
+    // adapter on the disk must have been trained on it.
+    "base-model": { type: "string", default: "google/gemma-3-1b-it@dcc83ea841ab6100d6b47a070329e1ba4cf78752" },
     "per-template": { type: "string", default: "24" },
     templates: { type: "string", default: "all" },
     concurrency: { type: "string", default: "64" },
@@ -156,7 +158,7 @@ await timed("keep", async () => {
 const trainDir = join(out, "train");
 await timed("train", async () => {
   mkdirSync(trainDir, { recursive: true });
-  // The adapter's model is the base it rides on in the tab (the home disk refuses any other).
+  // The adapter's model: what it was trained on, the model the base was converted from (the home disk checks they match).
   const tr = run("python3", ["train_tools.py", "--data", trainText, "--out", trainDir, "--adapter-gguf", "f16", "--adapter-topic", a["adapter-topic"]!, "--base-ref", a["base-model"]!], (line) => {
     try {
       const e = JSON.parse(line);
