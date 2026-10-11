@@ -29,10 +29,11 @@ function policyDir(text?: string): string {
 }
 const staticTake = (dir?: string, tab = tabDir) => checkHomePolicy({ POLICY_DIR: dir, TAB_DIR: tab });
 
-test("no POLICY_DIR: a failure that says to set it (the stage would serve a folder a fresh worktree does not have)", async () => {
+test("no POLICY_DIR: a failure that says to set it (the stage would serve its rehearsal preset, not the winner's policy)", async () => {
   const [ok, note] = await staticTake(undefined);
   assert.equal(ok, false);
   assert.match(note, /POLICY_DIR is not set/);
+  assert.match(note, /rehearsal preset/);
 });
 
 test("a POLICY_DIR without home.json: a failure naming the refusal the camera would see", async () => {
