@@ -175,6 +175,33 @@ On Daytona (region us, 2026-10-09; the recordings are on the storyboard page):
 | power cut on the sandbox to its replacement | 2.2 to 2.7 s |
 | commits of the old sandbox after a takeover | 0; it exits by itself about 1 s later |
 
+## The trained model becomes the agent's brain (walks-home)
+
+The agent did the trip on the cloud model. When the trained model comes home (`home/model/manifest.json` on the run's disk, written last by the trainer), the page that runs the agent loads it
+and opens a **fresh conversation on it**; the chat input goes there from then on. The cloud conversation stays exactly as it was, and the small model never sees its tool calls, its system
+prompt or its tools. Code: `tab/brain.ts` (the swap), `tab/brain-provider.ts` (the pi-ai provider `tab-local`), the decoding in the 04 tab's `ModelHost` (`04-walks-home/tab/src/modelhost.ts`, shared, not copied).
+
+- **Where the model comes from.** `GET /api/runs/<id>/work/home/model/<file>` with the run's bearer: the pipe's existing work route, every 16 MiB chunk checked against the manifest's sha256 in the browser. (806 MB on
+  loopback, three runs each: HTTP GET 2.4 to 2.8 s; the pipe's file frames, an attach's restore, 14.5 to 16.3 s, and a page refuses a restore over 256 MiB.) Run the server with `--no-restore home/model/` so the model is
+  not restored into the tab, hashed at every handover or listed to viewers.
+- **The provider.** `tab-local`, model id the first 12 hex of the manifest's sha256. Keyless and local. A pi `Context` becomes chat messages by the history policy below; the model's `<thinking>...</thinking>` becomes a pi
+  `thinking` block and the rest a `text` block; sampling, budgets (thinking 90 tokens, answer 140 from the manifest), stray-tag handling and the judge gate are the 04 tab's, unchanged. Abort is the request's signal; usage is the
+  model's own output token count (input is estimated at 4 characters a token, the model gives no count); an answer cut at its budget stops with `length`.
+- **History policy** (`04-walks-home/tab/src/history.ts`, `?history=none|last`, default `last`): no system message, no tools, no tool results and **never an earlier turn's thinking**. `last` carries the previous exchange with its
+  answer TEXT only; `none` answers every question fresh, as the model was trained. Measured on the freeze Moon in real Chrome, a fixed 10-question conversation, 20 graded turns a mode, Jev per turn: carrying the whole history with its
+  thinking made the answers reuse the previous answer's wording most often (repeats 0.44, against 0.21 fresh and 0.29 for `last`); `last` had the best follows-from-its-thinking (0.59 against 0.46) and keeps "it" working.
+- **A held answer** (the dark-content judge, `/api/runs/<id>/judge`, fail closed): while streaming, only judged text is ever shown. When the judge holds the answer the reader sees the refusal line in place of the whole
+  answer, and the transcript stores exactly that: one assistant message whose only content is the refusal line (`I can't answer that.`), `rawStopReason: "held_by_judge"`, no thinking block, nothing of the held answer or its
+  thinking, anywhere (not in the stream, the transcript, the disk or a viewer). The next question is answered without that exchange.
+- **What the transcript says.** Passive entries, no model messages, so no model reads them: `brain.loading` {name, bytes, quant, sha256, topic?, mechanism?} (the model is coming home), `brain.swap` {conversation, provider, model,
+  name, quant, bytes, sha256, topic?, mechanism?, history, sampling, load_ms, first_answer_ms, tokens_per_s} (once in the root conversation, as the pointer a reload follows, and as the new conversation's first entry; a chat folds the
+  two into one item), `brain.failed` {reason, sha256?} (the model did not load; the agent keeps its brain). The chat items are `{kind: "brain", stage: "loading" | "ready" | "failed", text, data}`; the new conversation's turns are the
+  ordinary `user` and `assistant` items, an `assistant` item carrying `thinking` and `text`. Viewers get the trip's entries, the brain entries and the new conversation's, as one continuous chat.
+- **Reload.** The root's `brain.swap` names the conversation; a reloaded page finds the manifest, loads the model again and opens the same conversation, with what was said in it; `last` reads the durable transcript. (Leaving the
+  tab and coming back also loads the model again.)
+- **Check it.** `MODEL_DISK=<dir with home/model/> node scripts/brain-check.ts` (real Chrome, a local server, a stand-in judge that holds any question saying HOLDME): the agent boots, the model comes home, the swap, two questions
+  with thinking, a held answer, a reload that resumes the same conversation. Tests: `test/brain.test.ts` (the provider through a real Harness), `test/brain-swap.test.ts` (the swap, reload, failure).
+
 ## Limits
 
 - The tab's Wasmer sandbox has no git and no network; its files have no modification times and no symbolic links (a

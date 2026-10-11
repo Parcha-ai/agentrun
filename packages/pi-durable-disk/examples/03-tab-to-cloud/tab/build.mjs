@@ -29,6 +29,10 @@ if (process.argv.includes("--fetch") && !(existsSync(target) && digest(target) =
   console.log(`${COMPUTER.name}: ${statSync(target).size} bytes`);
 }
 
+// The trained model runs in this page once it comes home (brain.ts, with the 04 tab's ModelHost): wllama's wasm is served next to the page, as the 04 tab does.
+mkdirSync(join(out, "vendor"), { recursive: true });
+copyFileSync(join(here, "../../04-walks-home/tab/node_modules/@wllama/wllama/esm/wasm/wllama.wasm"), join(out, "vendor", "wllama.wasm"));
+
 const result = await build({
   entryPoints: [join(here, "main.ts")],
   outfile: join(out, "main.js"),

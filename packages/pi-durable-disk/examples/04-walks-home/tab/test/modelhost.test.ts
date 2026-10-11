@@ -165,14 +165,15 @@ test('a refused sentence is never posted to the shell, not even in a delta: the 
   assert.ok(hist.every((m) => !m.content.includes('DARKWORD') && m.content !== 'dark'), `history after a refusal: ${JSON.stringify(hist)}`);
 });
 
-test('no system message, instructions or tools ever reach the model: only user and assistant turns, the earlier shown answers kept, and the history is capped', async () => {
+test('no system message, instructions or tools ever reach the model: only user and assistant turns, and of the past only the previous exchange', async () => {
   const r = rig();
   await r.host.onManifest(r.manifest);
   for (let i = 0; i < 8; i++) await r.host.chat(`c${i}`, `question ${i}`);
   for (const msgs of r.llm.seen) assert.ok(msgs.every((m) => m.role === 'user' || m.role === 'assistant'), JSON.stringify(msgs));
   const last = r.llm.seen.at(-1)!;
   assert.equal(last[last.length - 1].content, 'question 7');
-  assert.ok(last.length <= 8, `capped at 8 messages, got ${last.length}`);
+  assert.deepEqual(last.map((m) => m.role), ['user', 'assistant', 'user'], 'the previous exchange and the new question, nothing older');
+  assert.equal(last[0].content, 'question 6');
   assert.equal(last[0].role, 'user', 'a conversation starts with a user turn');
 });
 
@@ -213,8 +214,7 @@ test('the stored history is trimmed too, not only the copy sent to the model', a
   const r = rig();
   await r.host.onManifest(r.manifest);
   for (let i = 0; i < 30; i++) await r.host.chat(`c${i}`, `question ${i}`);
-  assert.ok(r.host.state().history <= 8, `history holds ${r.host.state().history} messages`);
-  assert.equal(r.host.state().history % 2, 0, 'whole exchanges');
+  assert.equal(r.host.state().history, 2, `history holds ${r.host.state().history} messages: one exchange`);
 });
 
 test('the run still on the GPU: the model loads early, then the self-check, the receipt and the switch wait for the tab to hold the run, and nothing fails', async () => {
@@ -364,20 +364,64 @@ test('a closing tag ends a thought: the last thought is shown once judged, befor
   assert.equal(r.posted.find((p) => p.type === 'chat-done')!.text, 'The answer.');
 });
 
-test('the history keeps the model\'s own format, so what it saw is what it thinks it said; an answer with no thinking behaves as before, with no chat-thinking at all', async () => {
+test('prior thinking never reaches the model: the next question carries the previous exchange with its answer TEXT only, and an answer with no thinking behaves as before, with no chat-thinking at all', async () => {
   const r = rig({ script: thinkingScript });
   await r.host.onManifest(r.manifest);
   await r.host.chat('h1', 'first');
   await r.host.chat('h2', 'second');
+  await r.host.chat('h3', 'third');
   const hist = r.llm.seen.at(-1)!;
   assert.deepEqual(hist.map((m) => m.role), ['user', 'assistant', 'user']);
-  assert.equal(hist[1].content, `<thinking>${THOUGHT}</thinking>\n${ANSWER}`);
+  assert.deepEqual(hist.map((m) => m.content), ['second', ANSWER, 'third']);
+  for (const msgs of r.llm.seen) for (const m of msgs) assert.ok(!/thinking>/.test(m.content) && !m.content.includes(THOUGHT), `a message carried thinking: ${JSON.stringify(m)}`);
   const plain = rig();
   await plain.host.onManifest(plain.manifest);
   plain.posted.length = 0;
   await plain.host.chat('p1', 'hello');
   assert.ok(!plain.posted.some((p) => p.type === 'chat-thinking'));
   assert.ok(!('thinking' in plain.posted.find((p) => p.type === 'chat-done')!), 'no thinking field when there was none');
+});
+
+test('history "none": every question is answered fresh, as the model was trained, and nothing is kept', async () => {
+  const llm = fakeLlm(thinkingScript);
+  const d = disk();
+  const host = new ModelHost({
+    post: () => {}, readChunk: async (p) => d.files.get(p) ?? null, writeFile: async () => {}, isNotHolder: () => false, sleep: async () => {}, sha256: async (b) => sha(b),
+    judge: async () => 'show', llm: llm.llm, threads: 2, now: () => Date.now(), history: 'none',
+  });
+  await host.onManifest(d.manifest);
+  await host.chat('a', 'first');
+  await host.chat('b', 'second');
+  assert.deepEqual(llm.llm.seen.at(-1)!.map((m) => m.content), ['second']);
+  assert.equal(host.state().history, 0);
+});
+
+test('generate(): the same gated decoding for a conversation somebody else keeps, with the messages as given, a refusal that is only the refusal line, and an abort that judges and shows nothing more', async () => {
+  const r = rig({ script: thinkingScript, judge: async (_p, a) => (a.includes('DARK') ? 'refuse' : 'show') });
+  await r.host.onManifest(r.manifest);
+  const shown: string[] = [];
+  const ok = await r.host.generate('q', [{ role: 'user', content: 'q' }], (raw) => shown.push(raw));
+  assert.equal(ok.refused, false);
+  assert.ok(ok.text.startsWith('<thinking>') && ok.text.endsWith(ANSWER), ok.text);
+  assert.deepEqual(r.llm.seen.at(-1), [{ role: 'user', content: 'q' }], 'exactly the messages it was given');
+  assert.equal(r.host.state().history, 0, 'generate() keeps no history of its own');
+  const dark = rig({ script: (q) => (q === 'Who are you?' ? 'I am the bridge. I span the bay.' : '<thinking>Hm.</thinking>\nDARK stuff here.'), judge: async (_p, a) => (a.includes('DARK') ? 'refuse' : 'show') });
+  await dark.host.onManifest(dark.manifest);
+  const darkShown: string[] = [];
+  const held = await dark.host.generate('q', [{ role: 'user', content: 'q' }], (raw) => darkShown.push(raw));
+  assert.deepEqual([held.refused, held.text], [true, REFUSAL], 'a held answer is the refusal line, never any of the answer');
+  assert.ok(darkShown.every((x) => !x.includes('DARK')), `shown: ${JSON.stringify(darkShown)}`);
+  const ctl = new AbortController();
+  const slow = rig({ script: thinkingScript, chunkChars: 2 });
+  await slow.host.onManifest(slow.manifest);
+  const seen: string[] = [];
+  const p = slow.host.generate('q', [{ role: 'user', content: 'q' }], (raw) => { seen.push(raw); if (seen.length === 2) ctl.abort(); }, ctl.signal);
+  const out = await p;
+  assert.equal(out.aborted, true);
+  const n = seen.length;
+  await new Promise((x) => setTimeout(x, 30));
+  assert.equal(seen.length, n, 'nothing is shown after the abort');
+  await assert.rejects(() => rig().host.generate('q', [], () => {}), /model-not-ready/);
 });
 
 test('a thought that never closes is shown as thinking with an empty answer, and is not kept in the history', async () => {
@@ -404,6 +448,19 @@ test('a self-check that ends inside its thinking is NOT ready: model-failed, an 
   assert.equal(receipt.answered, false);
   assert.match(receipt.error, /thinking/);
   assert.equal(r.posted.find((p) => p.type === 'model-answer')!.self_check, true);
+});
+
+test('a self-check that spends everything on thinking is asked again (the model is not loaded again); a refusal is never asked again', async () => {
+  let n = 0;
+  const r = rig({ script: (_p, prefill) => { if (prefill === undefined) n++; return n === 1 ? '<thinking>Who am I? Let me think about this for a very long time and never get to an answer' : '<thinking>Who? The Moon.</thinking>\nI am Luna. I glow.'; }, chunkChars: 6 });
+  await r.host.onManifest(r.manifest);
+  assert.equal(r.host.state().phase, 'answered');
+  assert.ok(r.llm.seen.length >= 2, `the self-check was asked again: ${r.llm.seen.length} calls`);
+  assert.equal(r.log.filter((l) => l.startsWith('load')).length, 1, 'the model was loaded once');
+  const refused = rig({ judge: async () => 'refuse' });
+  await refused.host.onManifest(refused.manifest);
+  assert.equal(refused.host.state().phase, 'failed');
+  assert.equal(refused.llm.seen.length, 1, 'a held self-check is not asked again');
 });
 
 test('with thinking on, the self-check has room for the thought and stops at the end of the first answer sentence: ready after one real, judged sentence', async () => {
@@ -485,7 +542,7 @@ test('a stray second </thinking> inside the answer ends the answer at that point
   const done = r.posted.find((p) => p.type === 'chat-done')!;
   assert.deepEqual([done.thinking, done.text], ['Hmm, pizza. Focus.', "Let's start!"]);
   await r.host.chat('x2', 'again');
-  assert.equal(r.llm.seen.at(-1)![1].content, "<thinking>Hmm, pizza. Focus.</thinking>\nLet's start!");
+  assert.equal(r.llm.seen.at(-1)![1].content, "Let's start!", 'the history keeps the shown answer, without its thinking');
 });
 
 test('the display strip is still the backstop: in the answer request after a cut thought, a server that ignores the stop strings gives stray tags, and none reaches the stage', async () => {

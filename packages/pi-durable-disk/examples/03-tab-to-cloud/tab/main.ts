@@ -5,8 +5,11 @@
 // long the move took, from the click to the notice on screen. While the run is elsewhere the page watches it.
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
-import type { AgentEvent } from "@earendil-works/pi-durable";
+import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@earendil-works/pi-durable";
+import { Brain, readManifest } from "./brain.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
+import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
+import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
@@ -35,6 +38,12 @@ const state = {
   client: undefined as PipeClient | undefined,
   runtime: undefined as TabRuntime<WasmerEnv> | undefined,
   chat: new ChatView(),
+  /** The conversation the chat input goes to: the root until the trained model comes home, then the fresh one on it (brain.ts). */
+  active: undefined as Conversation | undefined,
+  /** The trained model's host for this run, once the page has started on it. */
+  brain: undefined as Brain | undefined,
+  /** What the brain swap is doing now, in words (shown under the badge). */
+  brainStatus: "",
   files: [] as FileRow[],
   selected: undefined as string | undefined,
   /** What a boot is doing now (shown under the badge). */
@@ -168,6 +177,8 @@ function renderItem(item: ChatItem): HTMLElement {
     }
     case "note":
       return el("div", { class: "note" }, item.text);
+    case "brain":
+      return el("div", { class: `notice brain ${item.stage}` }, el("div", { class: "who" }, "the agent's brain"), el("div", { class: "body" }, item.text));
     case "switch":
       return el("div", { class: `notice${item.planned ? "" : " unplanned"}` }, el("div", { class: "who" }, "system notice to the agent"), el("div", { class: "body" }, item.text));
   }
@@ -207,7 +218,8 @@ function render(): void {
   const badgeEl = $("badge");
   badgeEl.className = `badge ${b.tone}`;
   $("badge-text").textContent = b.text;
-  $("badge-sub").textContent = b.sub;
+  const swapped = state.mode === "writer" && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
+  $("badge-sub").textContent = [b.sub, state.mode === "writer" && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : ""].filter(Boolean).join(" · ");
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
   const writer = state.mode === "writer" && !state.leaving;
@@ -306,21 +318,106 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   state.mode = "writer";
   state.progress = "";
   state.banner = "";
-  state.chat = new ChatView();
-  const stream = await watchEvents(runtime.harness, runtime.root.id, ctx);
-  state.chat.apply(stream.snapshot);
-  client.view({ kind: "snapshot", event: stream.snapshot } satisfies ViewEvent);
-  stream.start(async (events) => {
-    for (const event of events) state.chat.apply(event);
-    client.view({ kind: "events", events: [...events] } satisfies ViewEvent);
-    if (events.some((e) => e.type === "tool_execution_end" || e.type === "run_end")) await refreshFiles();
-    renderChat();
-    renderStats();
-  });
+  await followConversation(runtime, runtime.root);
+  void watchForBrain(runtime);
   await refreshFiles();
   render();
   ($("input") as HTMLTextAreaElement).focus();
 }
+
+/** The root's entries are folded in front of a later conversation's, so a viewer sees one continuous chat: the trip, the swap, then the new conversation. */
+let followed: AgentEventStream | undefined;
+
+/** Fold and relay one conversation's events from now on (`before`: the entries of the conversation that came first, shown ahead of its own). */
+async function followConversation(runtime: TabRuntime<WasmerEnv>, conversation: Conversation, before: readonly EntryRecord[] = []): Promise<void> {
+  const old = followed;
+  followed = undefined;
+  await old?.stop().catch(() => undefined);
+  const stream = await watchEvents(runtime.harness, conversation.id, ctx);
+  const merge = (event: AgentEvent): AgentEvent => (event.type === "snapshot" && before.length > 0 ? { ...event, entries: [...before, ...event.entries] } : event);
+  state.active = conversation;
+  state.chat = new ChatView();
+  const snapshot = merge(stream.snapshot);
+  state.chat.apply(snapshot);
+  state.client?.view({ kind: "snapshot", event: snapshot } satisfies ViewEvent);
+  stream.start(async (events) => {
+    const folded = events.map(merge);
+    for (const event of folded) state.chat.apply(event);
+    state.client?.view({ kind: "events", events: folded } satisfies ViewEvent);
+    if (events.some((e) => e.type === "tool_execution_end" || e.type === "run_end")) await refreshFiles();
+    renderChat();
+    renderStats();
+  });
+  followed = stream;
+  renderChat();
+}
+
+/** A file of the run's disk (work/) over HTTP, with the run's secret as the bearer token; null when it is not there. Files under a lazy prefix (the model's folder) are read this way too. */
+async function readWork(path: string): Promise<Uint8Array | null> {
+  const r = await fetch(`/api/runs/${encodeURIComponent(run)}/work/${path}`, { headers: { authorization: `Bearer ${secret}` }, cache: "no-store" });
+  return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+}
+
+/** The dark-content judge, between the model's stream and everything that shows it: anything but a clean "show" holds the answer. */
+async function judgeAnswer(prompt: string, answer: string): Promise<"show" | "refuse"> {
+  try {
+    const topic = state.brain?.host.state().topic;
+    const r = await fetch(`/api/runs/${encodeURIComponent(run)}/judge`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+      body: JSON.stringify({ prompt, answer, ...(topic ? { topic } : {}) }),
+      signal: AbortSignal.timeout(5000),
+    });
+    return verdictOf(r.status, await r.json().catch(() => null));
+  } catch {
+    return "refuse"; // fail closed: no answer, no timeout, no verdict means nothing is shown
+  }
+}
+
+/**
+ * When the trained model's manifest is on the run's disk (the trainer writes it last) and this tab runs the agent, load the model and make it the agent's
+ * brain (brain.ts). Polls once in two seconds; tries once (a failure is written to the transcript and stays: a reload tries again).
+ */
+async function watchForBrain(runtime: TabRuntime<WasmerEnv>): Promise<void> {
+  if (new URLSearchParams(location.search).get("brain") === "off") return;
+  for (;;) {
+    if (state.runtime !== runtime || state.mode !== "writer") return;
+    let text: string | null = null;
+    try { text = await readManifest(readWork); } catch { text = null; }
+    if (text) break;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  const threads = Number(new URLSearchParams(location.search).get("threads")) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
+  const history = new URLSearchParams(location.search).get("history") === "none" ? "none" : "last";
+  const brain = new Brain({
+    harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeAnswer, context: ctx, threads, history,
+    llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
+    onProgress: (type, b) => {
+      if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
+      else if (type === "model-download") state.brainStatus = `the trained model is coming home: chunk ${String(b.done_chunks)} of ${String(b.total_chunks)}`;
+      else if (type === "model-loaded") state.brainStatus = "the trained model is loaded; it answers one question as a check";
+      else if (type === "model-failed") state.brainStatus = `the trained model did not load: ${String(b.reason)}`;
+      else if (type === "model-switched") state.brainStatus = "";
+      render();
+    },
+  });
+  state.brain = brain;
+  const manifest = await readManifest(readWork);
+  if (!manifest) return;
+  const conversation = await brain.start(manifest);
+  if (!conversation || state.runtime !== runtime) return;
+  // the trip's transcript, in front of the new conversation's own
+  const rootWatch = await watchEvents(runtime.harness, runtime.root.id, ctx);
+  const before = rootWatch.snapshot.entries;
+  await rootWatch.stop();
+  await followConversation(runtime, conversation, before);
+  state.brainStatus = "";
+  render();
+  ($("input") as HTMLTextAreaElement).focus();
+}
+
+/** Where the chat input goes. */
+const target = (): Conversation | undefined => state.active ?? state.runtime?.root;
 
 async function refreshFiles(): Promise<void> {
   if (!state.runtime) return;
@@ -383,7 +480,7 @@ function onFrame(frame: PipeFrame): void {
       return;
     case "submit":
       // A message a viewer typed: this tab runs the run.
-      if (state.runtime && state.mode === "writer") void state.runtime.root.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+      if (state.runtime && state.mode === "writer") void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
       return;
     default:
       return;
@@ -404,6 +501,10 @@ async function drain(switchId: string): Promise<void> {
     state.progress = how === "idle" ? "the agent was idle; handing over" : how === "step" ? "step finished; handing over" : "step still running; handing over (the next host resumes it)";
     render();
     state.runtime = undefined;
+    state.active = undefined;
+    state.brain = undefined;
+    await followed?.stop().catch(() => undefined);
+    followed = undefined;
     await runtime.close().catch(() => undefined);
   }
   state.client?.send({ t: "drained", switchId, ...(state.left?.switchId === switchId ? { acked: state.left.digest } : {}) });
@@ -413,8 +514,10 @@ async function drain(switchId: string): Promise<void> {
 async function sendSnapshot(): Promise<void> {
   const runtime = state.runtime;
   if (!runtime || state.mode !== "writer") return;
-  const stream = await watchEvents(runtime.harness, runtime.root.id, ctx);
-  state.client?.view({ kind: "snapshot", event: stream.snapshot } satisfies ViewEvent);
+  const conversation = target()!;
+  const stream = await watchEvents(runtime.harness, conversation.id, ctx);
+  const front = conversation.id === runtime.root.id ? [] : (await watchEvents(runtime.harness, runtime.root.id, ctx).then(async (w) => { const e = w.snapshot.entries; await w.stop(); return e; }));
+  state.client?.view({ kind: "snapshot", event: front.length ? { ...stream.snapshot, entries: [...front, ...stream.snapshot.entries] } : stream.snapshot } satisfies ViewEvent);
   await stream.stop();
 }
 
@@ -520,7 +623,7 @@ function send(): void {
     return;
   }
   input.value = "";
-  void state.runtime.root.submit({ type: "input", content: text, requestId: `ui-${crypto.randomUUID()}` }, ctx).catch((error: Error) => {
+  void target()!.submit({ type: "input", content: text, requestId: `ui-${crypto.randomUUID()}` }, ctx).catch((error: Error) => {
     state.banner = `not sent: ${error.message}`;
     render();
   });
@@ -558,6 +661,19 @@ if (!run || !secret) {
       const calls = Array.isArray(m?.content) ? (m.content as { type: string; id?: string }[]).filter((c) => c.type === "toolCall").map((c) => c.id) : [];
       return { id: String(e.id), kind: e.kind, calls, result: m?.toolCallId, isError: m?.isError };
     });
+  },
+  /** The brain swap, for checks: the model's phase, whether the chat input goes to the trained model's conversation, and what the page says. */
+  brain: () => ({ phase: state.brain?.host.state().phase ?? null, swapped: state.brain?.conversation !== undefined && state.active === state.brain.conversation, conversation: state.active ? String(state.active.id) : null, status: state.brainStatus }),
+  /** The entries of the conversation the chat input goes to, oldest first: kind, and the message text. */
+  activeEntries: async () => {
+    const c = target();
+    if (!c) return null;
+    return [...(await c.entries({}, 500, undefined, ctx)).items].reverse().map((e) => ({ id: String(e.id), kind: e.kind, role: ((e as unknown as { model?: { role: string }[] }).model ?? [])[0]?.role }));
+  },
+  /** The active conversation's entries as the store has them (JSON-safe), newest last, for a recording or a spec. */
+  rawEntries: async () => {
+    const c = target();
+    return c ? JSON.parse(JSON.stringify([...(await c.entries({}, 500, undefined, ctx)).items].reverse())) : null;
   },
   handovers: () => state.handovers,
   left: () => state.left,
