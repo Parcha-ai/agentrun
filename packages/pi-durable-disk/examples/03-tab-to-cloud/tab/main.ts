@@ -457,6 +457,8 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void>
   const history = params.get("history") === "none" ? "none" : "last";
   const brain = new Brain({
     harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
+    // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
+    ...(params.get("configure") === "1" ? { mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => ["read", "write", "edit", "bash"].includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -478,7 +480,7 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void>
   if (state.runtime !== runtime) return;
   // the trip's transcript, in front of the new conversation's own
   const rootWatch = await watchEvents(runtime.harness, runtime.root.id, ctx);
-  const before = rootWatch.snapshot.entries;
+  const before = conversation.id === runtime.root.id ? [] : rootWatch.snapshot.entries; // one conversation: its own entries are the whole chat
   await rootWatch.stop();
   await followConversation(runtime, conversation, before);
   state.brainStatus = "";
