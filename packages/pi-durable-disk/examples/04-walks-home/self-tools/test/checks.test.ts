@@ -55,5 +55,10 @@ test("missing commands are found inside $(...), backticks and bash -c, not insid
   assert.deepEqual(missingCommands(`echo '$(grep x)'`), []);
   assert.deepEqual(missingCommands(`echo 'bash -c "grep x"'`), []);
   assert.deepEqual(missingCommands(`echo "run: bash -c 'find .'"`), []);
+  // An escaped backslash closes the quote before a real bash -c (bash's own escape rules). An escaped quote outside
+  // quotes opens nothing, so the bash -c after it counts; the check is conservative there (it may drop a run that only
+  // prints the words, never keep one that runs a missing command).
+  assert.deepEqual(missingCommands(String.raw`echo "\\"; bash -c "grep -c apples notes.txt"`), ["grep"]);
+  assert.deepEqual(missingCommands(String.raw`echo \"bash -c 'sed 2p f'`), ["sed"]);
   assert.deepEqual(missingCommands(`wc -l "$(ls -1 | head -n 1)"`), []);
 });

@@ -12,15 +12,20 @@ const BUILTINS = new Set((": cd echo printf test [ [[ ]] true false read export 
   "return break continue for while until do done if then else elif fi case esac in function select time declare let " +
   "pushd popd dirs type command builtin alias hash umask wait trap { } ! ((").split(" "));
 
-/** For each position of a line, whether it lies inside single or double quotes. */
+/**
+ * For each position of a line, whether it lies inside single or double quotes, by bash's rules: a backslash escapes the
+ * next character outside quotes and inside double quotes, and nothing inside single quotes.
+ */
 function quotedPositions(line: string): boolean[] {
   const out: boolean[] = [];
   let q: "'" | '"' | null = null;
   for (let i = 0; i < line.length; i++) {
     const c = line[i]!;
-    if (q === null && (c === "'" || c === '"')) { out.push(false); q = c; continue; }
-    if (q !== null && c === q && !(q === '"' && line[i - 1] === "\\")) { out.push(true); q = null; continue; }
-    out.push(q !== null);
+    if (q === "'") { out.push(true); if (c === "'") q = null; continue; }
+    if (c === "\\") { out.push(q !== null); if (i + 1 < line.length) { out.push(q !== null); i++; } continue; }
+    if (q === '"') { out.push(true); if (c === '"') q = null; continue; }
+    out.push(false);
+    if (c === "'" || c === '"') q = c;
   }
   return out;
 }
