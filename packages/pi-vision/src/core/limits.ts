@@ -19,16 +19,16 @@ export const TILE_KEEP_BELOW = 0.6;
 export const TILE_MAX_EDGE = 1568;
 /** Pixels two neighbouring tiles share, so a line of text cut by one edge is whole in the other (2026-10-09). */
 export const TILE_OVERLAP = 64;
-/** A fitted page or tile with a shorter long edge is refused, never sent: provisional, from legibility on synthetic scans (measured 2026-10-09). */
-export const FLOOR_EDGE = 768;
+/** No page or tile is shrunk to a shorter long edge; a source already smaller is sent as it is. A Letter scan read 100% from 1,210 px and 91% at 792 px on synthetic letters (measured 2026-10-11). */
+export const FLOOR_EDGE = 1200;
 /** Images in one result: the eight video frames hosts already show; Anthropic tightens its image limit above 20 in a request (read 2026-10-09). */
 export const IMAGES_PER_CALL = 8;
 /** One result's image bytes are at most this share of the request budget: eight images at the per-image limit make 36 MiB (2026-10-09). */
 export const RESULT_BYTES_SHARE = 0.25;
 /** Pages one `read` shows: a rendered page is about 3,000 input tokens on current OpenAI models (read 2026-10-09). */
 export const PAGES_PER_READ = 4;
-/** A page renders at `min(PDF_MAX_DPI, floor(POINTS_PER_INCH * maxEdge / long edge in points))`: 110 dpi lost identifier characters 200 dpi kept (measured 2026-10-09). */
-export const PDF_MAX_DPI = 200;
+/** A page renders at `min(PDF_MAX_DPI, floor(POINTS_PER_INCH * maxEdge / long edge in points))`: 150 dpi read as well as 181 and 200 on synthetic scans, at 46% fewer tokens than 181 (measured 2026-10-11). */
+export const PDF_MAX_DPI = 150;
 export const POINTS_PER_INCH = 72;
 /** Characters of a page's text layer shown beside its render: the cap hosts already apply (read 2026-10-09). */
 export const PAGE_TEXT_CHARS = 8000;
@@ -51,6 +51,9 @@ export const LOOK_PAGES_PER_CALL = 200;
 /** `look`: video frames in one eyes request and in one call (2026-10-09). */
 export const LOOK_FRAMES_PER_REQUEST = 20;
 export const LOOK_FRAMES_PER_CALL = 120;
+/** `look` on eyes without video: one frame by seek this many seconds apart over the window, at least the frames of a
+ *  `read`; eight frames over an eight second window read a counter that changes every second (measured 2026-10-11). */
+export const LOOK_FRAME_SPACING_S = 1;
 /** `look`: eyes requests in flight at once (2026-10-09). */
 export const LOOK_CONCURRENCY = 4;
 /** A look is priced before its first request at this many input tokens a part, the bound measured for a page on current OpenAI models (read 2026-10-09). */
