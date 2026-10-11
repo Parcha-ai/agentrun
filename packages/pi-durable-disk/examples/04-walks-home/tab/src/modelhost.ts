@@ -312,6 +312,19 @@ export class ModelHost {
     }
   }
 
+  /**
+   * A new model came home while this host holds one (another adapter over the same base, or a new merged model): load it in place of the old one. `llm.load` frees the old model first, so from here
+   * until the new one has answered its self-check this host answers nothing (`model-not-ready`); the caller asks nothing of it meanwhile. Refused while a model is loading or an answer is in
+   * progress. A failure leaves the host failed, as a first load's does.
+   */
+  async rehome(text: string): Promise<void> {
+    if (this.disposed) return;
+    if (this.phase === 'loading' || this.phase === 'loaded') throw new Error('a model is loading');
+    if (this.busy) throw new Error('busy');
+    this.phase = 'none';
+    return this.onManifest(text);
+  }
+
   /** The manifest appeared (or changed). One model per page: ignored while loading or once loaded; tried again after a failure. */
   async onManifest(text: string): Promise<void> {
     if (this.phase === 'loading' || this.phase === 'loaded' || this.phase === 'answered') return;
