@@ -118,3 +118,15 @@ test("with no first edit there is no file: a refused call writes nothing", async
   assert.equal(existsSync(join(r.dir, ROBOT_FILE)), false);
   await r.close();
 });
+
+test("update_robot over a real Harness: a combined ask is one call and one file write", async () => {
+  const r = await rig([{ call: { name: "update_robot", arguments: { morph: "spider", color: "red" } } }, { text: "Done." }]);
+  await r.ask("make it a red spider");
+  const s = r.state();
+  assert.equal(s.design.legs.length, 3);
+  assert.equal(s.look.torso, "red");
+  const res = await r.results();
+  assert.equal(res.length, 1);
+  assert.equal(res[0]!.text, `The robot is now a spider. The whole robot is now red. ${BODY_CHANGED}`);
+  await r.close();
+});

@@ -167,3 +167,42 @@ test("the state file round-trips, and what this module did not write is not take
   assert.equal(parseRobot(JSON.stringify({ ...s, design: { ...s.design, torso: { length: 9, width: 0.2, height: 0.1 } } })), undefined, "a body outside the limits is not a robot");
   assert.equal(parseRobot(JSON.stringify({ ...s, version: 2 })), undefined);
 });
+
+test("update_robot: one call does a combined ask in a fixed order (reset, morph, scale, legs, color, face, name) with the nine tools' own edits", async () => {
+  const { applyUpdateRobot } = await import("../robot-model.ts");
+  const s = robot();
+  const spider = applyUpdateRobot(s, { morph: "spider", color: "red" });
+  assert.equal(spider.kind, "body");
+  assert.equal(spider.state.design.legs.length, 3);
+  assert.equal(spider.state.look.torso, "red", "the colour came after the morph, so it overrides the preset's black");
+  assert.deepEqual(spider.state.look.legs, ["red", "red", "red"]);
+  assert.equal(spider.text, `The robot is now a spider. The whole robot is now red. ${BODY_CHANGED}`);
+  // the same result as the separate tools in that order
+  const two = call(call(s, "morph", { preset: "spider" }).state, "set_color", { part: "all", color: "red" }).state;
+  assert.deepEqual({ ...spider.state, edits: 0 }, { ...two, edits: 0 });
+  // the order is fixed whatever the keys' order: reset first, then morph
+  const reset = applyUpdateRobot(call(s, "set_face", { face: "angry" }).state, { color: "blue", reset: true, morph: "dog" });
+  assert.equal(reset.state.look.face, "happy", "reset, then the dog's own face; the angry one is gone");
+  assert.equal(reset.state.look.torso, "blue");
+  // looks only: the brain still fits
+  const looks = applyUpdateRobot(s, { color: "green", part: "legs", face: "cool", name: "Pixel" });
+  assert.equal(looks.kind, "looks");
+  assert.ok(looks.text.endsWith(LOOKS_ONLY));
+  assert.deepEqual(looks.state.look.legs, ["green", "green", "green"]);
+  assert.equal(looks.state.name, "Pixel");
+  // four and six legs are the pairs
+  assert.equal(applyUpdateRobot(s, { legs: 6 }).state.design.legs.length, 3);
+  assert.equal(applyUpdateRobot(s, { legs: 3 }).state.design.legs.length, 3);
+  // a refused step is reported and the others apply
+  const partial = applyUpdateRobot(s, { scale: 2, name: "x".repeat(30), color: "pink" });
+  assert.equal(partial.kind, "body");
+  assert.match(partial.text, /Not done: the name must be 1 to 24 characters\./);
+  assert.match(partial.text, /The whole robot is now pink\./);
+  // all refused, nothing to do, unknown fields, a part with no colour
+  assert.equal(applyUpdateRobot(s, { name: "" }).kind, "refused");
+  assert.equal(applyUpdateRobot(s, {}).kind, "refused");
+  assert.match(applyUpdateRobot(s, { colour: "red" }).text, /unknown field "colour"/);
+  assert.match(applyUpdateRobot(s, { part: "legs" }).text, /part needs a color/);
+  assert.equal(applyUpdateRobot(s, { scale: 1 }).kind, "none");
+  assert.strictEqual(applyUpdateRobot(s, { scale: 1 }).state, s);
+});

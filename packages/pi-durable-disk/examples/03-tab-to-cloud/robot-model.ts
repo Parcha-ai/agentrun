@@ -250,3 +250,40 @@ export function parseRobot(text: string): RobotState | undefined {
 }
 
 export const serializeRobot = (s: RobotState): string => `${JSON.stringify(s, null, 1)}\n`;
+
+export const UPDATE_KEYS = ["reset", "morph", "scale", "legs", "color", "part", "face", "name"] as const;
+
+/**
+ * The flat form of the same edits (`update_robot`): one call with any of reset, morph, scale, legs, color (and the part it paints, "all" when absent), face and name, applied in a fixed order (reset, morph,
+ * scale, legs, color, face, name) so a combined ask ("a red spider") is one call. Each step is `applyRobotTool`'s own, so the state edits and their results are the nine tools'. A step the limits refuse is
+ * reported and the others still apply; the call is refused only when nothing applied and something was refused. `legs` is the number of pairs (2 or 3) or of legs (4 or 6).
+ */
+export function applyUpdateRobot(prev: RobotState, args: Record<string, unknown>): ToolOutcome {
+  const unknown = Object.keys(args).filter((k) => !(UPDATE_KEYS as readonly string[]).includes(k));
+  if (unknown.length > 0) return refuse(prev, `unknown ${unknown.length === 1 ? "field" : "fields"} ${unknown.map((k) => JSON.stringify(k)).join(", ")}; the fields are ${UPDATE_KEYS.join(", ")}.`);
+  const steps: [string, Record<string, unknown>][] = [];
+  if (args.reset === true) steps.push(["reset", {}]);
+  if (args.morph !== undefined) steps.push(["morph", { preset: args.morph }]);
+  if (args.scale !== undefined) steps.push(["scale", { factor: args.scale }]);
+  if (args.legs !== undefined) steps.push(["set_legs", { pairs: args.legs === 4 ? 2 : args.legs === 6 ? 3 : args.legs }]);
+  if (args.color !== undefined) steps.push(["set_color", { part: args.part ?? "all", color: args.color }]);
+  else if (args.part !== undefined) return refuse(prev, "part needs a color to paint it.");
+  if (args.face !== undefined) steps.push(["set_face", { face: args.face }]);
+  if (args.name !== undefined) steps.push(["rename", { name: args.name }]);
+  if (steps.length === 0) return refuse(prev, `say what to change: ${UPDATE_KEYS.filter((k) => k !== "part").join(", ")}.`);
+  let state = prev;
+  const lines: string[] = [];
+  let kind: ToolKind = "none", applied = 0, refused = 0;
+  for (const [tool, a] of steps) {
+    const o = applyRobotTool(state, tool, a);
+    if (o.kind === "refused") { refused++; lines.push(o.text); continue; }
+    if (o.kind === "body" || (o.kind === "looks" && kind !== "body")) kind = o.kind;
+    if (o.kind !== "none") applied++;
+    state = o.state;
+    lines.push(o.text.replace(` ${LOOKS_ONLY}`, "").replace(` ${BODY_CHANGED}`, ""));
+  }
+  if (applied === 0 && refused > 0) return { state: prev, text: lines.join(" "), kind: "refused" };
+  if (applied === 0) return { state: prev, text: lines.join(" "), kind: "none" };
+  const tail = kind === "body" ? BODY_CHANGED : LOOKS_ONLY;
+  return { state: { ...state, edits: prev.edits + 1 }, text: `${lines.join(" ")} ${tail}`, kind };
+}

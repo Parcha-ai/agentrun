@@ -4,14 +4,14 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import { COLOR_NAMES, COLOR_PARTS, FACE_NAMES, MORPH_PRESETS, NAME_MAX, RESIZE_PARTS, SHAPE_NAMES, SHAPE_PARTS, applyRobotTool, initialRobot, parseRobot, serializeRobot, validateDesign, type Design, type RobotState } from "./robot-model.ts";
+import { COLOR_NAMES, COLOR_PARTS, FACE_NAMES, MORPH_PRESETS, NAME_MAX, RESIZE_PARTS, SHAPE_NAMES, SHAPE_PARTS, applyRobotTool, applyUpdateRobot, initialRobot, parseRobot, serializeRobot, validateDesign, type Design, type RobotState } from "./robot-model.ts";
 
 /** The robot's state file, and the design the creature page publishes when it saves the user's drawing (what `reset` returns to). Relative to the workspace. */
 export const ROBOT_FILE = "creature/robot.json";
 export const DESIGN_FILE = "creature/design.json";
 
 /** The nine tools' names, in the order they are registered and offered. */
-export const ROBOT_TOOLS = ["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset"] as const;
+export const ROBOT_TOOLS = ["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "update_robot"] as const;
 
 /** The creature page's own default body, for a robot whose drawing was never published (04-walks-home/tab/src/design.ts `defaultDesign`). */
 const DRAWN_DEFAULT: Design = { version: 1, name: "quadruped", legDof: 3, torso: { length: 0.5, width: 0.22, height: 0.1 }, legs: [{ x: 0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }, { x: -0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }] };
@@ -44,10 +44,11 @@ async function load(env: Env, context: Ctx): Promise<RobotState | { problem: str
 }
 
 async function edit(env: Env | undefined, context: Ctx, tool: string, args: Record<string, unknown>) {
+  const apply = (state: RobotState) => (tool === "update_robot" ? applyUpdateRobot(state, args) : applyRobotTool(state, tool, args));
   if (!env) return text("Not done: there is no computer to keep the robot's file on.", true);
   const state = await load(env, context);
   if ("problem" in state) return text(`Not done: ${state.problem}.`, true);
-  const outcome = applyRobotTool(state, tool, args);
+  const outcome = apply(state);
   if (outcome.kind === "refused") return { ...text(outcome.text, true), details: { kind: outcome.kind } };
   if (outcome.kind !== "none") {
     const made = await env.createDir("creature", { recursive: true }, context);
@@ -58,7 +59,7 @@ async function edit(env: Env | undefined, context: Ctx, tool: string, args: Reco
   return { ...text(outcome.text), details: { kind: outcome.kind } };
 }
 
-/** The nine tools, as one extension. */
+/** The nine tools and the flat `update_robot` that does the same edits in one call (the two shapes plug onto the same state), as one extension. */
 export function robotTools(): Extension {
   const factor = Type.Number({ minimum: 0.5, maximum: 2, description: "1 is no change, 2 is twice, 0.5 is half." });
   return defineExtension({
@@ -117,6 +118,21 @@ export function robotTools(): Extension {
         description: "Undo every change made with these tools: the looks and the body go back to the robot the user drew.",
         parameters: Type.Object({}),
         execute: (_args, api, context) => edit(api.env, context, "reset", {}),
+      }),
+      defineTool({
+        name: "update_robot",
+        description: "Change the robot in one call: any of reset, morph, scale, legs, color (with the part it paints), face and name, applied in that order. A body change means the walking brain no longer fits.",
+        parameters: Type.Object({
+          reset: Type.Optional(Type.Boolean({ description: "Undo every change first." })),
+          morph: Type.Optional(oneOf(MORPH_PRESETS, "Turn into this animal first.")),
+          scale: Type.Optional(factor),
+          legs: Type.Optional(Type.Unsafe<2 | 3 | 4 | 6>({ type: "integer", enum: [2, 3, 4, 6], description: "How many pairs of legs (2 or 3) or legs (4 or 6)." })),
+          color: Type.Optional(oneOf(COLOR_NAMES, "The colour.")),
+          part: Type.Optional(oneOf(COLOR_PARTS, "The part to paint; the whole robot when absent.")),
+          face: Type.Optional(oneOf(FACE_NAMES, "The face; none removes it.")),
+          name: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX, description: `The new name, 1 to ${NAME_MAX} characters.` })),
+        }),
+        execute: (args, api, context) => edit(api.env, context, "update_robot", args as Record<string, unknown>),
       }),
     ],
   });
