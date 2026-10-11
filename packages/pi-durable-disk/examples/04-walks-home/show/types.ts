@@ -152,6 +152,19 @@ export type Brain = {
   reason: string | null;
 };
 
+/**
+ * The tab's own events for the self-tools beats (D3's `walkshome:*` events, as DOM events in the page and as messages to the stage; the 03 page's transcript says the same things as `brain`
+ * entries). Every field is what the event said; a field it did not say is null.
+ */
+export type Net = { online: boolean; reason: string | null };
+export type Checkin = { phase: "start" | "done" | "failed"; head: string | null; files: number | null; changes: number | null; ms: number | null; message: string | null; code: string | null; resumed: boolean };
+/** One routing decision: who answers the next message and why (`brain.decision`). `confidence` is Jev's probability of the brain it chose, null when a rule decided. */
+export type Routing = { brain: "tab-local" | "cloud"; answering: string | null; reason: string; confidence: number | null; decidedBy: "jev" | "rule" | null; ms: number | null; probabilities: { local: number; cloud: number } | null };
+/** What a homecoming downloaded (the model host's `model-homecoming`): whether the base had to come at all, the adapters, and the bytes and time. */
+export type Homecoming = { baseFetched: boolean; adapters: string[]; plannedBytes: number | null; fetchedBytes: number | null; fetchMs: number | null; loadMs: number | null; name: string | null; prefetch: boolean };
+/** One tool call of the current task, as the transcript says it. `args` is the call's JSON as the transcript holds it. */
+export type ToolRow = { id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted" };
+
 import type { DecisionData } from "./decision.ts";
 
 /** The latest move decision, with the feed time it arrived. The v2 stage shows it as a card for a few seconds, then the badge moves. */
@@ -183,6 +196,17 @@ export type ShowState = {
   scoreUnit: string;
   /** The brain swap, once the transcript has said anything about it (null before, and on a run that never brings a model home). */
   brain: (Brain & { at: number }) | null;
+  /** Online or offline, from the tab's own signal; null until the tab has said. */
+  net: (Net & { at: number }) | null;
+  /** The latest check-in (a run coming back from offline); null before any. */
+  checkin: (Checkin & { at: number }) | null;
+  /** The latest routing decision, and every one so far in order (the closing strip folds the handoffs from them). */
+  routing: (Routing & { at: number }) | null;
+  routings: (Routing & { at: number })[];
+  /** The latest homecoming's bytes; null before any. */
+  homecoming: (Homecoming & { at: number }) | null;
+  /** The tool calls of the current task, in order (the transcript's, replaced whole each time). */
+  tools: ToolRow[];
   /** The environments the switcher offers, in order. */
   environments: { id: string; label: string; kind: HostKind }[];
   /** Which environment the run is in now; null while moving. */
@@ -201,6 +225,13 @@ export type ShowEvent =
   | { t: "note"; at: number; kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"]; rank?: number; group?: string; urgent?: boolean; keep?: boolean; showMs?: number }
   | { t: "chat"; at: number; turns: ChatTurn[] }
   | { t: "brain"; at: number; brain: Brain }
+  | { t: "net"; at: number; net: Net }
+  | { t: "checkin"; at: number; checkin: Checkin }
+  | { t: "routing"; at: number; routing: Routing }
+  | { t: "homecoming"; at: number; homecoming: Homecoming }
+  /** The model is loaded: how long that took, joined to the fetch it follows. */
+  | { t: "homecoming.loaded"; at: number; loadMs: number }
+  | { t: "tools"; at: number; tools: ToolRow[] }
   | { t: "decision"; at: number; decision: DecisionData }
   | { t: "setup"; at: number; phase: "start" | "end" }
   /** A version of the brain and how far it walked in the one fixed 10 s window (the chart's point). A feed with no tab to report it (the rehearsal) sends it itself. */

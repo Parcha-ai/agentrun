@@ -1,4 +1,5 @@
 // ShowState is the fold of ShowEvents. Pure: no clock, no I/O, so the same events give the same state on every page.
+import { routingKey } from "./selftools.ts";
 import type { Place, ShowEvent, ShowState, Universe } from "./types.ts";
 
 export function emptyState(): ShowState {
@@ -14,6 +15,12 @@ export function emptyState(): ShowState {
     notes: [],
     chat: [],
     brain: null,
+    net: null,
+    checkin: null,
+    routing: null,
+    routings: [],
+    homecoming: null,
+    tools: [],
     decision: null,
     setup: null,
     versions: [],
@@ -97,6 +104,23 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
       if (older) return { ...state, now };
       if (b.stage === "loading" && cur?.stage === "loading") return { ...state, now };
       return { ...state, now, brain: { ...b, at: event.at } };
+    }
+    case "net":
+      return { ...state, now, net: { ...event.net, at: event.at } };
+    case "checkin":
+      return { ...state, now, checkin: { ...event.checkin, at: event.at } };
+    case "homecoming":
+      return { ...state, now, homecoming: { ...event.homecoming, at: event.at } };
+    case "homecoming.loaded":
+      return { ...state, now, homecoming: state.homecoming ? { ...state.homecoming, loadMs: event.loadMs } : null };
+    case "tools":
+      return { ...state, now, tools: event.tools };
+    case "routing": {
+      // The same decision told twice (the tab's message and its transcript entry) is one decision.
+      const last = state.routing;
+      if (last && routingKey(last) === routingKey(event.routing)) return { ...state, now };
+      const routing = { ...event.routing, at: event.at };
+      return { ...state, now, routing, routings: [...state.routings, routing].slice(-50) };
     }
     case "setup":
       if (event.phase === "start") return { ...state, now, setup: { startedAt: event.at, endedAt: null } };

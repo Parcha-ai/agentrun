@@ -29,12 +29,42 @@ import { obsessionBadge } from "../badge.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
 import { obsessionReply } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
+import { checkinLine, checkinNote, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
+import { TabLink, tabEventsFrom } from "../../page/tab-link.ts";
+import { apiRoot, apiUrl } from "../../page/api-base.ts";
 
 const params = new URLSearchParams(location.search);
 const debug = params.get("debug") === "1";
-$<HTMLIFrameElement>("tab").src = "/tab/?clean=1&banner=1&episode=2";
+const API = apiRoot(location.href, params.get("api"));
+// The creature tab in the middle, unless the stage is given the agent's own tab to follow (?tab=): that one is its own window, and this page has no /tab/ of its own when it is served under /show/.
+if (params.get("tab")) $("tab").hidden = true;
+else $<HTMLIFrameElement>("tab").src = apiUrl(API, "tab/?clean=1&banner=1&episode=2");
 
-const feed = new Feed();
+const feed = new Feed(API);
+
+// The agent's tab (the 03 page) when the stage is given one: ?tab=<its link>. The stage opens it with window.open, keeps the handle, and takes its events by postMessage (page/tab-link.ts), all in
+// the browser, so it keeps working when the network is off. After a reload of this page the tab is found again by name, never navigated.
+const TAB_FLAG = "agentrun-show-tab-opened";
+const flag = (set?: boolean): boolean => {
+  try {
+    if (set !== undefined) sessionStorage.setItem(TAB_FLAG, set ? "1" : "");
+    return sessionStorage.getItem(TAB_FLAG) === "1";
+  } catch {
+    return false;
+  }
+};
+const tabLink = params.get("tab")
+  ? new TabLink({ win: window, tabUrl: params.get("tab")!, name: "agent-tab", onEvent: (m) => { for (const e of tabEventsFrom(m, feed.captionNow())) feed.inject(e); } })
+  : null;
+if (tabLink) {
+  window.addEventListener("message", (e) => tabLink.handle(e));
+  if (flag()) tabLink.reattach();
+  const button = $<HTMLButtonElement>("opentab");
+  button.hidden = false;
+  button.addEventListener("click", () => {
+    if (tabLink.open()) flag(true);
+  });
+}
 // A read-only view of the page's state for the checks that watch it (what notes the page made, and the clock they were made on).
 // The stage is laid out for 1600x900; in a smaller window (live mode runs in the viewer's own browser) the whole page is scaled down so the same layout fits (obsession/fit.ts).
 function fitStage(): void {
@@ -82,7 +112,7 @@ function addNotes(...notes: Note[]): void {
 
 /** The tab keeps its files on the run's disk through this page. */
 async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "storage-write" }>): Promise<void> {
-  const url = `/api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`;
+  const url = apiUrl(API, `api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`);
   const why = async (res: Response) => ((await res.json().catch(() => undefined)) as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
   try {
     if (m.type === "storage-read") {
@@ -137,7 +167,7 @@ bridge.onMessage((m: TabToShell) => {
 // written yet) and a failed read are both "nothing new": the panel keeps what it has.
 const progressReader = new SerialReader(
   async () => {
-    const res = await fetch("/api/disk/train/progress.jsonl", { cache: "no-store" });
+    const res = await fetch(apiUrl(API, "api/disk/train/progress.jsonl"), { cache: "no-store" });
     return res.status === 200 ? await res.text() : undefined;
   },
   () => feed.generation,
@@ -155,7 +185,7 @@ setInterval(() => void progressReader.tick(), 1000);
 // The feature search's file, the same way: one read at a time, each tied to the take it was asked in.
 const findReader = new SerialReader(
   async () => {
-    const res = await fetch("/api/disk/find/progress.jsonl", { cache: "no-store" });
+    const res = await fetch(apiUrl(API, "api/disk/find/progress.jsonl"), { cache: "no-store" });
     return res.status === 200 ? await res.text() : undefined;
   },
   () => feed.generation,
@@ -329,6 +359,42 @@ function noteRequest(state: ShowState): void {
   else if (take.requestAt === null && take.chatEmptySeen) take.requestAt = feed.captionNow();
 }
 
+let selftoolsKey = "";
+/** The tab's own events: the net pill, the check-in and homecoming lines, the decision card, the tool strip. Each is empty until the tab has said something. */
+function renderSelftools(state: ShowState): void {
+  const net = netBadge(state.net);
+  const lines = [checkinLine(state.checkin), homecomingLine(state.homecoming)];
+  const card = state.routing ? routingCardHtml(state.routing) : "";
+  const tools = toolStripHtml(state.tools);
+  const key = JSON.stringify([net, lines, card, tools, state.checkin?.phase]);
+  if (key === selftoolsKey) return;
+  selftoolsKey = key;
+  const pill = $("net");
+  pill.hidden = net === null;
+  if (net) {
+    pill.textContent = net.label;
+    pill.dataset.online = String(net.online);
+    pill.title = net.title;
+  }
+  $("selftools").innerHTML = card + lines.map((l, i) => (l === null ? "" : `<div class="line${i === 0 && state.checkin?.phase === "failed" ? " bad" : ""}">${esc(l)}</div>`)).join("");
+  const strip = $("toolstrip");
+  strip.hidden = tools === "";
+  strip.innerHTML = tools;
+}
+
+/** The captions of the tab's own events, each said once: a net change, a finished check-in, a homecoming's bytes. */
+function noteSelftools(state: ShowState): void {
+  if (state.net && said.once(`net|${state.net.at}|${state.net.online}`)) addNotes(netNote(state.net, feed.captionNow()));
+  if (state.checkin && said.once(`checkin|${state.checkin.at}|${state.checkin.phase}`)) {
+    const n = checkinNote(state.checkin, feed.captionNow());
+    if (n) addNotes(n);
+  }
+  if (state.homecoming && !state.homecoming.prefetch && said.once(`homecoming|${state.homecoming.at}`)) {
+    const n = homecomingNote(state.homecoming, feed.captionNow(), state.source === "live");
+    if (n) addNotes(n);
+  }
+}
+
 function frame(): void {
   syncTake();
   const released = loadGate.release(feed.state.place.where === "home");
@@ -337,11 +403,13 @@ function frame(): void {
   const state = feed.state;
   noteRequest(state);
   noteBrain(state);
+  noteSelftools(state);
   $("lost").hidden = !feed.lost;
   playRehearsalModel(state);
   renderBadge(state);
   renderCentre(state);
   renderBanner();
+  renderSelftools(state);
   renderTalk();
   const turns = [...state.chat, ...modelChat.turns];
   syncChat($("chatlog"), turns);

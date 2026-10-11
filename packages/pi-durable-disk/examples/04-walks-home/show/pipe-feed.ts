@@ -11,6 +11,7 @@
 // (SHOW_PIPE_ROLE=view) is refused both, with the pipe's own reason.
 import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
 import { brainFromItem, turnsFromItems } from "./chat-items.ts";
+import { checkinFromItem, routingFromItem, toolsFromItems } from "./selftools.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
 import { parseDecision } from "./decision.ts";
 import { emptyState, reduce } from "./reduce.ts";
@@ -42,6 +43,9 @@ type Settled = { env: string; host: string; place: ShowState["place"] };
 export class PipeTranslator {
   readonly chat = new ChatView();
   private brainSeen = new Set<string>();
+  /** The decision and check-in entries already said (by entry id), and the tool rows last said. */
+  private entriesSeen = new Set<string>();
+  private lastTools = "[]";
   private envs = new Map<string, PipeEnv>();
   private origin: number;
   private clock: () => number;
@@ -304,6 +308,25 @@ export class PipeTranslator {
       if (this.brainSeen.has(key)) continue;
       this.brainSeen.add(key);
       out.push({ t: "brain", at: this.at(), brain });
+    }
+    // The self-tools beats: each decision and each check-in of the transcript once, and the current task's tool calls whenever they change.
+    for (const item of items) {
+      const r = routingFromItem(item);
+      if (r !== null && !this.entriesSeen.has(`decision|${r.id}`)) {
+        this.entriesSeen.add(`decision|${r.id}`);
+        out.push({ t: "routing", at: this.at(), routing: r.routing });
+      }
+      const c = checkinFromItem(item);
+      if (c !== null && !this.entriesSeen.has(`home|${c.id}`)) {
+        this.entriesSeen.add(`home|${c.id}`);
+        out.push({ t: "checkin", at: this.at(), checkin: c.checkin });
+      }
+    }
+    const tools = toolsFromItems(items, (text) => text.startsWith(SERVER_TURN_PREFIX));
+    const toolsKey = JSON.stringify(tools);
+    if (toolsKey !== this.lastTools) {
+      this.lastTools = toolsKey;
+      out.push({ t: "tools", at: this.at(), tools });
     }
     const turns = turnsFromItems(items, (text) => text.startsWith(SERVER_TURN_PREFIX));
     const key = JSON.stringify(turns);
