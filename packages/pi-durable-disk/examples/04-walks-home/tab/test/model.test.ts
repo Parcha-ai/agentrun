@@ -41,6 +41,13 @@ test('a manifest the trainer wrote parses; every kind of wrong one is refused wi
   assert.throws(() => parseManifest('{not json'), (e: unknown) => e instanceof ModelError && /JSON/.test(e.message));
 });
 
+test('a model whose size is a whole number of chunks lists exactly that many: an extra empty chunk is refused, so the tab never asks the disk for it', () => {
+  const { m } = make(CH * 2);
+  assert.equal(parseManifest(JSON.stringify(m)).chunks.length, 2);
+  m.chunks.push({ n: 2, path: 'home/model/chunk-0002.bin', offset: CH * 2, size: 0, sha256: sha(new Uint8Array(0)) });
+  assert.throws(() => parseManifest(JSON.stringify(m)), (e: unknown) => e instanceof ModelError && /3 chunks listed, but size 2048 in chunks of 1024 is 2/.test((e as Error).message));
+});
+
 test('the chunks are fetched, each checked against its sha256, and come back in order whatever the order they finish in', async () => {
   const { bytes, m, files } = make(CH * 5 + 100);
   const order: number[] = [];
