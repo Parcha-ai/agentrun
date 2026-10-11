@@ -13,7 +13,7 @@ import type { Context } from "@earendil-works/chord";
 import type { AgentChange, Conversation, EntryRecord, Harness, ToolRegistration } from "@earendil-works/pi-durable";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { ModelHost, type HistoryMode, type Llm } from "../../04-walks-home/tab/src/modelhost.ts";
-import { parseManifest } from "../../04-walks-home/tab/src/model.ts";
+import { describeHome, readHomeManifest, type FileStore } from "../../04-walks-home/tab/src/homecoming.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING, type ToolDecoding } from "./brain-provider.ts";
 
 import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
@@ -52,6 +52,8 @@ export interface BrainDeps {
   /** The dark-content judge: anything but 'show' holds the answer. */
   judge(prompt: string, answer: string): Promise<"show" | "refuse">;
   llm: Llm;
+  /** Whole model files kept by sha256 for a base-and-adapters homecoming (homecoming.ts `opfsFileStore` in the page). */
+  files?: FileStore;
   threads: number;
   history?: HistoryMode;
   context: Context;
@@ -80,7 +82,6 @@ export interface BrainSwapData {
   tokens_per_s: number | null;
 }
 
-const decode = (b: Uint8Array) => new TextDecoder().decode(b);
 const entriesOf = async (c: Conversation, context: Context): Promise<EntryRecord[]> => (await c.entries({}, 500, undefined, context)).items as EntryRecord[];
 
 /** The newest brain swap in the root conversation, if one happened (a reload finds its conversation here). */
@@ -106,6 +107,7 @@ export class Brain {
     this.d = d;
     this.adopted = adopt !== undefined;
     this.host = adopt ?? new ModelHost({
+      ...(d.files ? { files: d.files } : {}),
       post: (type, body = {}) => d.onProgress?.(type, body),
       readChunk: (path) => d.readFile(path),
       writeFile: async () => {}, // the receipt of a load: the swap entry carries it
@@ -123,8 +125,11 @@ export class Brain {
   private async run(manifestText: string): Promise<Conversation | undefined> {
     const { harness, models, root, context } = this.d;
     let manifest;
-    try { manifest = parseManifest(manifestText); } catch (e) { return this.failed(e instanceof Error ? e.message : String(e)); }
-    const common = { name: manifest.name, bytes: manifest.size, quant: manifest.quant, sha256: manifest.sha256, ...(manifest.topic ? { topic: manifest.topic } : {}), ...(manifest.mechanism ? { mechanism: manifest.mechanism } : {}) };
+    // either manifest: a merged model, or a base and its adapters (homecoming.ts); `id` is the brain's identity either way
+    try { manifest = await describeHome(manifestText, sha256hex); } catch (e) { return this.failed(e instanceof Error ? e.message : String(e)); }
+    if (!manifest.ready) return undefined; // the base is on its way, no adapter yet: nothing to swap to
+    manifest = { ...manifest, sha256: manifest.id };
+    const common = { name: manifest.name, bytes: manifest.bytes, quant: manifest.quant, sha256: manifest.sha256, ...(manifest.topic ? { topic: manifest.topic } : {}), ...(manifest.mechanism ? { mechanism: manifest.mechanism } : {}) };
     await root.submit({ type: "write", requestId: `brain-loading:${manifest.sha256}`, entry: { kind: BRAIN_LOADING, data: common } }, context);
     if (!(this.adopted && this.host.state().phase === "answered")) await this.host.onManifest(manifestText);
     const s = this.host.state();
@@ -219,8 +224,9 @@ export class Brain {
 /** The judge the brain answers through: the dark-content judge only when asked for (`?judge=on`); off, every answer is shown, the self-check included, so online and offline behave the same. */
 export const judgeFor = (on: boolean, remote: BrainDeps["judge"]): BrainDeps["judge"] => (on ? remote : async () => "show");
 
-/** The manifest on the disk, as text; null while the trainer has not written it. */
+/** The manifest on the disk, as text (a base and adapters at home/manifest.json first, else a merged model's); null while the trainer has written neither. */
 export async function readManifest(readFile: BrainDeps["readFile"]): Promise<string | null> {
-  const b = await readFile(MANIFEST_PATH);
-  return b ? decode(b) : null;
+  return readHomeManifest(readFile);
 }
+
+const sha256hex = async (bytes: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as BufferSource))].map((x) => x.toString(16).padStart(2, "0")).join("");

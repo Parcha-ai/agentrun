@@ -13,6 +13,7 @@ import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP, Brain, findSwap, j
 import { ChatView } from "../tab/chat-view.ts";
 import { BRAIN_PROVIDER } from "../tab/brain-provider.ts";
 import { ANSWER, cloudProvider, modelDisk, reply, scripted } from "./_brain.ts";
+import { sha } from "./_brain.ts";
 
 const model = { provider: "pipe", modelId: "cloud-big" };
 
@@ -188,4 +189,34 @@ test("a brain the run has left releases its model once, so coming back does not 
   await brain.dispose();
   assert.equal(m.loads.exits, 1, "exited once");
   await harness.close(ctx);
+});
+
+/** A base and one adapter on the disk (make-home-disk.mjs's layout); `adapters: false` is the manifest the trainer writes first, with the base alone. */
+function homeDisk(adapters = true) {
+  const files = new Map<string, Uint8Array>();
+  const MODEL = { repo: "google/gemma-3-1b-it", revision: "dcc83ea841ab6100d6b47a070329e1ba4cf78752" };
+  const lay = (n: number, seed: number, dir: string) => {
+    const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 11 + seed) & 255);
+    const chunks = [];
+    for (let i = 0, off = 0; off < n; i++, off += 64) { const part = bytes.slice(off, off + Math.min(64, n - off)); const path = `${dir}/chunk-${String(i).padStart(4, "0")}.bin`; files.set(path, part); chunks.push({ n: i, path, offset: off, size: part.length, sha256: sha(part) }); }
+    return { size: n, sha256: sha(bytes), chunk_bytes: 64, chunks };
+  };
+  const base = { name: "gemma-3-1b-it", quant: "Q4_K_M", model: MODEL, ...lay(150, 1, "home/base") };
+  const tools = { name: "tools.gguf", kind: "skill", topic: "pi's tools", model: MODEL, rank: 16, alpha: 32, scale: 1, dtype: "q8_0", ...lay(70, 2, "home/adapters/tools") };
+  return { files, manifest: JSON.stringify({ format: "gguf-base-adapters-v1", base, adapters: adapters ? [tools] : [] }), tools };
+}
+
+test("a base and an adapter come home as the brain: its identity is the adapter's sha256; the base alone (no adapter yet) is not a brain and writes nothing", async () => {
+  const early = homeDisk(false);
+  const r = await open(new MemoryStorage(), early);
+  const before = await r.kinds(r.root);
+  assert.equal(await r.brain.start(early.manifest), undefined, "the base alone: nothing to swap to");
+  assert.deepEqual(await r.kinds(r.root), before, "no brain.loading, no brain.failed");
+  const disk = homeDisk();
+  const r2 = await open(new MemoryStorage(), disk);
+  const conv = await r2.brain.start(disk.manifest);
+  assert.ok(conv, "a conversation on base + tools");
+  const swap = await findSwap(r2.root, ctx);
+  assert.deepEqual([swap?.data.sha256, swap?.data.name, swap?.data.topic], [disk.tools.sha256, "gemma-3-1b-it + tools", "pi's tools"]);
+  assert.ok(r2.progress.includes("model-homecoming"));
 });

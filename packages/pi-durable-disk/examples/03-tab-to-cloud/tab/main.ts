@@ -11,6 +11,7 @@ import { BRAIN_PROVIDER } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
+import { comeHome, describeHome, opfsFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
@@ -88,6 +89,8 @@ const state = {
   /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
   agentModel: "",
   /** What each tool turn of the trained model cost and produced (?configure=1), for checks and the page's stats. */
+  /** Each homecoming of a base and adapters: what was planned, the bytes fetched and how long it took (`model-homecoming`, and the base's prefetch). */
+  homecomings: [] as Record<string, unknown>[],
   toolTurns: [] as { ms: number; tokensPerSecond: number | null; promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; call: string | null; problem: string | null; raw: string; completions: unknown[]; prompt: string }[],
   /** The trained model's host for this run, once the page has started on it. */
   brain: undefined as Brain | undefined,
@@ -483,10 +486,40 @@ async function swapWhenHome(runtime: TabRuntime): Promise<void> {
     if (state.runtime !== runtime || state.mode !== "writer") return;
     let text: string | null = null;
     try { text = await readManifest(readWork); } catch { text = null; }
-    if (text) break;
+    if (text && !(await prefetchBase(text))) break;
     await new Promise((r) => setTimeout(r, 2000));
   }
   await startBrain(runtime);
+}
+
+/** Model files kept whole by sha256 in this browser (OPFS): a base fetched once serves every adapter that comes home after it, and an offline reload reads nothing. */
+const modelFiles = opfsFileStore();
+const sha256hex = async (b: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", b as BufferSource))].map((x) => x.toString(16).padStart(2, "0")).join("");
+let prefetchedBase = "";
+
+/**
+ * A base-and-adapters manifest that lists no adapter yet (the trainer writes it when training starts): the base comes home now, while the agent trains, so the
+ * skill or obsession that follows is an adapter of tens of MB. True while there is no brain to swap to.
+ */
+async function prefetchBase(text: string): Promise<boolean> {
+  let home;
+  try { home = await describeHome(text, sha256hex); } catch { return false; } // not a manifest the brain can read: the brain says why
+  if (home.ready) return false;
+  if (prefetchedBase !== home.id) {
+    prefetchedBase = home.id;
+    state.brainStatus = "the base model is coming home while the agent trains";
+    render();
+    try {
+      const h = await comeHome(text, { readChunk: readWork, sha256: sha256hex, store: modelFiles, now: () => performance.now() });
+      state.homecomings.push({ prefetch: true, plan: h.fetched.plan, fetched_bytes: h.fetched.bytes, fetch_ms: Math.round(h.fetched.ms), name: h.name });
+      state.brainStatus = "the base model is in this browser; the agent is still training";
+    } catch (e) {
+      prefetchedBase = "";
+      state.brainStatus = `the base model did not come home: ${(e as Error).message}`;
+    }
+    render();
+  }
+  return true;
 }
 
 /**
@@ -502,7 +535,10 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
     ...(params.get("configure") === "1" || golive ? { decoding: { history: (params.get("toolhistory") ?? (golive ? "last" : "none")) === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash", "go_online"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
+    files: modelFiles,
     onProgress: (type, b) => {
+      if (type === "model-homecoming") state.homecomings.push({ ...b, fetch_ms: Math.round(Number(b.fetch_ms)) });
+      if (type === "model-loaded" && state.homecomings.length) Object.assign(state.homecomings.at(-1)!, { load_ms: Math.round(Number(b.load_ms)), download_ms: Math.round(Number(b.download_ms)) });
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
       else if (type === "model-download") state.brainStatus = `the trained model is coming home: chunk ${String(b.done_chunks)} of ${String(b.total_chunks)}`;
       else if (type === "model-loaded") state.brainStatus = "the trained model is loaded; it answers one question as a check";
@@ -565,7 +601,8 @@ async function takeOffline(): Promise<void> {
     if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
     const manifestText = noBrain ? null : await readManifest(readWork);
     if (!noBrain && !manifestText) throw new Error("the model's manifest is not on the run's disk");
-    const manifest = manifestText ? (JSON.parse(manifestText) as { sha256: string; size: number; chunks: unknown[] }) : { sha256: "", size: 0, chunks: [] };
+    const home = manifestText ? await describeHome(manifestText, sha256hex) : undefined;
+    const manifest = home ? { sha256: home.id, size: home.bytes, chunks: home.chunks } : { sha256: "", size: 0, chunks: [] };
     say("registering the service worker");
     await registerOfflineWorker();
     const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
@@ -1261,6 +1298,7 @@ void boot();
   saved: async () => (await loadWorkspace(run)).map((e) => ({ path: e.path, kind: e.kind, text: e.kind === "file" ? new TextDecoder().decode(e.bytes).slice(0, 400) : null })),
   /** The tool turns of the trained model so far (?configure=1). */
   toolTurns: () => state.toolTurns,
+  homecomings: () => state.homecomings,
   /** The computer while checked out: whether it booted from the cache, how long that took, how many files came back from OPFS, why not. */
   computer: () => state.offline?.computer ?? null,
   /** Run a shell command on the page's computer (a check; the agent's own tools run through the Harness). */

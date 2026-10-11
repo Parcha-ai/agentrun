@@ -1,5 +1,6 @@
 // The service worker's answer to one request, with its dependencies passed in so Node can test both paths (sw.ts wires the real cache and fetch). Portable: no DOM API.
 //   - A model chunk of a cached run (the run's `work/` route for `home/model/...`) is immutable and was checked against the manifest's sha256 when it was cached: cache first.
+//     So is the manifest of a base and its adapters (the file `manifest.json` in the run's `home/` folder): the checkout cached the one it ran, and the files it names are kept whole in OPFS.
 //   - Everything else (the page, its script, the wasm, any other page on this origin) goes to the network first, with a short timeout, and falls back to the cache only when the
 //     network is not there or too slow. A network answer is passed through untouched and never stored, so a page the checkout did not cache stays whatever the server says.
 import { cacheKey, isolated } from "./offline-cache.ts";
@@ -27,8 +28,8 @@ export interface ServeDeps {
   note?(how: string): void;
 }
 
-/** A model chunk (or the manifest) of a run's disk, as the page asks for it. */
-const IMMUTABLE = /^\/api\/runs\/[^/]+\/work\/home\/model\//;
+/** A model chunk (or the manifest) of a run's disk, as the page asks for it, or the manifest of a base and its adapters. */
+const IMMUTABLE = /^\/api\/runs\/[^/]+\/work\/home\/(model\/|manifest\.json$)/;
 
 export const isImmutable = (url: string | URL): boolean => IMMUTABLE.test(new URL(url).pathname);
 
