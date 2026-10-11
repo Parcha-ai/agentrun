@@ -225,7 +225,7 @@ async function runOne(inst: Instance) {
     id: inst.id, template: inst.template, kind: templateKind(inst.template), split: inst.split, prompt: inst.prompt,
     brain: isLocal ? `local:${a.mode}` : "gpt-6-luna", commands: a.path ?? "full", tools: toolNames, policy: isLocal ? undefined : a.policy, ok: why === null, why, ended, error, answer, calls, toolErrors,
     wall_s: Math.round((Date.now() - t0) / 100) / 10, usage, messages,
-    ...(isLocal ? { turns: turnsLog.map((t) => ({ raw: t.raw, problem: t.parsed.problem?.kind ?? null, thinkingCut: t.thinkingCut, cut: t.cut, promptTokens: t.promptTokens, outputTokens: t.outputTokens, thinkTokens: t.thinkTokens })) } : {}),
+    ...(isLocal ? { turns: turnsLog.map((t) => ({ raw: t.raw, problem: t.parsed.problem?.kind ?? null, thinkingCut: t.thinkingCut, cut: t.cut, promptTokens: t.promptTokens, outputTokens: t.outputTokens, thinkTokens: t.thinkTokens, completions: t.calls })) } : {}),
   };
 }
 
