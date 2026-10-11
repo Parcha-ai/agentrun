@@ -8,7 +8,7 @@
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver, unmountClaim, acquire as plainAcquire } from "@parcha/pi-durable-disk";
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
@@ -1042,7 +1042,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return;
     }
     const file = normalize(join(root, path));
-    if (!file.startsWith(resolve(root)) || !existsSync(file) || !statSync(file).isFile()) {
+    if (!(file === resolve(root) || file.startsWith(resolve(root) + sep)) || !existsSync(file) || !statSync(file).isFile()) {
       res.writeHead(404).end("not found");
       return;
     }

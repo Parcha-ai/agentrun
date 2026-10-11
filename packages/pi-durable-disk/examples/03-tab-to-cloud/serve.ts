@@ -3,6 +3,7 @@
 //   node serve.ts [--port 8790] [--host 127.0.0.1] [--run ID] [--local DIR]
 //                 --model ID --model-url URL [--model-key-env NAME] [--budget 400000]
 //                 [--judge-model ID [--judge-url URL] [--judge-key-env NAME]]
+//                 [--show-dir DIR]   the stage's built files, served under /show/ on this origin (isolation headers like the tab's; /show/offline.json lists what a checkout caches)
 //                 [--brain-judge jev|scripted]   the question the page's brain router asks (POST /api/runs/<id>/brain-judge); jev needs TYPESAFE_API_KEY
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
@@ -50,6 +51,7 @@ const { values } = parseArgs({
     "model-url": { type: "string", default: process.env.DEMO_MODEL_URL },
     "model-key-env": { type: "string" },
     "brain-judge": { type: "string" },
+    "show-dir": { type: "string" },
     "judge-model": { type: "string" },
     "judge-url": { type: "string" },
     "judge-key-env": { type: "string" },
@@ -195,7 +197,9 @@ const server = createDemoServer({
   mountRoot: values.local ?? values["mount-root"]!,
   model,
   pageDir: join(here, "tab", "dist"),
-  staticRoots: { "/wasmer/": join(here, "node_modules", "@wasmer", "sdk") },
+  // `--show-dir`: the stage's built files under /show/ on this origin (with the page's isolation headers), so the stage and the agent's tab share one origin and a window.open'd tab can be messaged;
+  // the checkout caches what /show/offline.json lists (tab/offline.ts)
+  staticRoots: { "/wasmer/": join(here, "node_modules", "@wasmer", "sdk"), ...(values["show-dir"] ? { "/show/": resolvePath(values["show-dir"]) } : {}) },
   lease: { heartbeatMs: 2_000, expiryMs: 10_000, marginMs: 3_000 },
   writerGraceMs: Number(values["grace-ms"]),
   ...(values["remote-start-ms"] !== undefined ? { remoteStartMs: Number(values["remote-start-ms"]) } : {}),

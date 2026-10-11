@@ -275,3 +275,7 @@ Each message typed in the page goes through the brain router (`brain-router.ts`)
 
 Check: `ROUTER=jev CLOUD=real MODEL_DISK=<dir> with-typesafe -- node scripts/route-check.ts` (real Chrome; `ROUTER=scripted CLOUD=stub` spends nothing). Tests: `test/brain-route.test.ts` (over a real Harness: loaded but not configured, one configure for a run of local turns, back to the cloud with the whole registry), `test/brain-judge-route.test.ts`.
 
+### The stage on the tab's origin (`--show-dir`)
+
+`serve.ts --show-dir <dir>` serves the stage's built files under `/show/` on the same origin as the tab, with the tab's isolation headers, so the stage and the agent's tab are one origin (any COOP severs a cross-origin `window.opener`; same-origin `window.open` keeps its handle, and `?stage=<origin>` is just this origin). The checkout caches what `/show/offline.json` lists (`{files: ["/show/", "/show/main.js", ...]}`: the URL paths the stage requests, its document's included; each must be under `/show/` with no query, fragment or dot segments, else the checkout is refused) next to the page's own files, so a stage reload survives the network going away. The static path guard compares with a trailing separator now: a sibling directory sharing the stage's prefix was reachable through an encoded `..%2f` before. Check: `node scripts/show-offline-check.ts` (real Chrome). Tests: `test/show-mount.test.ts`.
+
