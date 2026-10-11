@@ -36,15 +36,16 @@ test("ffmpeg in the environment converts AVIF, BMP and TIFF to PNG at the size t
   const files = {
     "flat.avif": await flat(640, 480).avif({ effort: 0 }).toBuffer(),
     "flat.bmp": bmp(640, 480),
-    "plain.tiff": await flat(640, 480).tiff({ compression: "none" }).toBuffer(),
-    "lzw.tiff": await flat(640, 480).tiff({ compression: "lzw" }).toBuffer(),
-    "jpeg.tiff": await flat(640, 480).tiff({ compression: "jpeg" }).toBuffer(),
+    ...Object.fromEntries(await Promise.all(["none", "lzw", "deflate", "packbits", "jpeg"].map(async (compression) => [`${compression}.tiff`, await flat(640, 480).tiff({ compression }).toBuffer()]))),
   };
   for (const [name, bytes] of Object.entries(files)) {
     await dir.file(name, bytes);
     assert.deepEqual(await convert(name), { width: 640, height: 480 }, name);
     if (!name.endsWith(".bmp")) assert.equal((await sharp(bytes).metadata()).width, 640, `${name} is the image it says`);
   }
+  // The one TIFF compression it does not read: the miss text names sharp for it, never ffmpeg.
+  await dir.file("webp.tiff", await flat(640, 480).tiff({ compression: "webp" }).toBuffer());
+  assert.equal(await convert("webp.tiff"), null);
 });
 
 test("no reader is promised for HEIC: the same container decodes as AV1 in sharp, and as HEVC in neither sharp nor ffmpeg", { skip: !available && !required && "ffmpeg is not on PATH" }, async () => {
