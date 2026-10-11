@@ -1,9 +1,11 @@
-// One model turn from the small model, decoded the way the tab decodes it, over any completion backend (llama-server
-// here, wllama in the tab). Grammar-locked: the thinking is opened for the model and capped, then the model writes
-// freely until it opens a call, and the call body is decoded under callGrammar(). Free: one plain generation.
+// One model turn from the small model, decoded the same way in the tab (over wllama) and in scoring (over llama-server).
+// Grammar-locked: the decoder opens the thinking and caps it, the model writes freely until it opens a call, and the call
+// body is decoded under callGrammar(). Free: one plain generation. toPiContent() turns the result into pi's assistant
+// blocks. Portable: no Node API.
 
 import {
-  CALL_OPEN, THINK_CLOSE, THINK_OPEN, callGrammar, parseModelTurn, type ParsedTurn, type ToolSpec, TOOLS,
+  CALL_OPEN, THINK_CLOSE, THINK_OPEN, callGrammar, parseModelTurn, type ParsedTurn, type TextBlock, type ThinkingBlock,
+  type ToolCallBlock, type ToolSpec, TOOLS,
 } from "./tool-format.ts";
 
 export interface CompleteRequest {
@@ -85,6 +87,24 @@ export async function decodeTurn(backend: Backend, prompt: string, o: DecodeOpti
   const body = await run({ prompt: prompt + raw, maxTokens: o.callTokens, grammar: callGrammar(tools) });
   raw += body.text;
   return { raw, parsed: parseModelTurn(raw), thinkingCut, cut: body.stoppedBy === "length", promptTokens, outputTokens, thinkTokens, calls };
+}
+
+/**
+ * A decoded turn as pi's assistant content: the thinking block, then the call or the answer text. A call whose JSON
+ * parsed goes to pi even when pi will refuse it (an unknown tool, bad arguments), so pi's own error comes back to the
+ * model as it would anywhere; a call that did not parse ends the turn as text.
+ */
+export function toPiContent(p: ParsedTurn, callId: string): { content: (ThinkingBlock | ToolCallBlock | TextBlock)[]; stopReason: "stop" | "toolUse" } {
+  const thinking: ThinkingBlock = { type: "thinking", thinking: p.thinking };
+  let call: { name?: unknown; arguments?: unknown } | undefined = p.call;
+  if (!call && p.problem && (p.problem.kind === "unknown-tool" || p.problem.kind === "bad-args")) {
+    try { call = JSON.parse(p.problem.raw); } catch { call = undefined; }
+  }
+  if (call && typeof call.name === "string") {
+    const args = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) ? (call.arguments as Record<string, unknown>) : {};
+    return { content: [thinking, { type: "toolCall", id: callId, name: call.name, arguments: args }], stopReason: "toolUse" };
+  }
+  return { content: [thinking, { type: "text", text: p.problem ? `${p.answer}${p.problem.raw}` : p.answer }], stopReason: "stop" };
 }
 
 /** llama.cpp's llama-server /completion as a backend. */

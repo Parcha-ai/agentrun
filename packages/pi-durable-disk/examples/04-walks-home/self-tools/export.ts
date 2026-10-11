@@ -8,7 +8,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { THINK_MAX_WORDS, TOOLS, renderTranscript, type Msg } from "./tool-format.ts";
+import { THINK_MAX_WORDS, TOOLS, renderTranscript, type Msg } from "../../03-tab-to-cloud/tab/tool-format.ts";
 
 const { values: a } = parseArgs({ options: { runs: { type: "string" }, out: { type: "string" }, split: { type: "string", default: "train" }, "max-chars": { type: "string", default: "12000" }, cap: { type: "string", default: "0" } } });
 

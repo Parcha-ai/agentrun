@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   CALL_CLOSE, CALL_OPEN, END_OF_TURN, TOOLS, TURN_MODEL, TURN_USER, callGrammar, clipResult, parseModelTurn, renderCall,
   renderModelTurn, renderPrompt, renderSpec, renderTranscript, selectTools, splitTurn, type Msg,
-} from "../tool-format.ts";
+} from "../tab/tool-format.ts";
 
 const user = (text: string): Msg => ({ role: "user", content: text });
 const think = (thinking: string) => ({ type: "thinking" as const, thinking });

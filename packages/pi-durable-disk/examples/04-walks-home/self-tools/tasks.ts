@@ -72,6 +72,8 @@ const THINGS = ["milk", "bread", "eggs", "rice", "coffee", "butter", "cheese", "
 const PLACES = ["library", "station", "park", "cafe", "harbor", "museum", "market", "bridge", "garden", "office"];
 const COLORS = ["red", "blue", "green", "yellow", "purple", "orange", "silver", "teal"];
 const WORDS = ["river", "planet", "window", "garden", "rocket", "pencil", "castle", "forest", "lantern", "marble", "puzzle", "violin", "harbor", "meadow", "comet"];
+// A wider list for templates whose only variation is one word (so held-out instances never repeat practised ones).
+const MANY_WORDS = [...WORDS, "anchor", "basket", "candle", "dragon", "engine", "falcon", "glacier", "hammer", "island", "jacket", "kettle", "ladder", "mirror", "needle", "orchid", "parrot", "quartz", "saddle", "tunnel", "walnut"];
 const TXT = ["notes.txt", "memo.txt", "plan.txt", "ideas.txt", "draft.txt", "journal.txt", "reminder.txt", "summary.txt", "message.txt", "todo.txt", "story.txt", "hello.txt"];
 const DIRS = ["docs", "notes", "archive", "reports", "drafts", "data", "files", "backup", "work", "inbox"];
 const TASKS = ["call the dentist", "water the plants", "pay rent", "book flights", "fix the bike", "buy a gift", "clean the desk", "send the report", "walk the dog", "renew passport"];
@@ -370,16 +372,16 @@ export const TEMPLATES: Template[] = [
   {
     name: "js-fizzbuzz", kind: "js",
     make(r) {
-      const n = r.int(10, 20);
+      const n = r.int(10, 40);
       const want = Array.from({ length: n }, (_, i) => { const k = i + 1; return k % 15 === 0 ? "FizzBuzz" : k % 3 === 0 ? "Fizz" : k % 5 === 0 ? "Buzz" : String(k); });
-      return { prompt: `Write fizzbuzz.js that prints the numbers 1 to ${n}, one per line, but Fizz for multiples of 3, Buzz for multiples of 5 and FizzBuzz for multiples of both. Run it.`, params: { want: want.join("\n") } };
+      return { prompt: r.pick([`Write fizzbuzz.js that prints the numbers 1 to ${n}, one per line, but Fizz for multiples of 3, Buzz for multiples of 5 and FizzBuzz for multiples of both. Run it.`, `Create fizzbuzz.js: for 1 to ${n}, print Fizz for multiples of 3, Buzz for multiples of 5, FizzBuzz for multiples of both, otherwise the number, one per line. Run it.`]), params: { want: want.join("\n") } };
     },
     check: (p, c) => outputIs(c.dir, "fizzbuzz.js", p.want),
   },
   {
     name: "js-reverse", kind: "js",
     make(r) {
-      const w = r.pick(WORDS);
+      const w = r.pick(MANY_WORDS);
       return { prompt: r.pick([`Write reverse.js that prints the word "${w}" backwards. Run it and tell me what it prints.`, `Make a script reverse.js printing "${w}" reversed, run it, and tell me the output.`]), params: { want: [...w].reverse().join("") } };
     },
     check: (p, c) => all(outputIs(c.dir, "reverse.js", p.want), says(c.answer, p.want)),
@@ -427,7 +429,7 @@ export const TEMPLATES: Template[] = [
   {
     name: "js-args", kind: "js",
     make(r) {
-      const w = r.pick(WORDS);
+      const w = r.pick(MANY_WORDS);
       return { prompt: r.pick([`Write upper.js that prints its first command-line argument in upper case. Run it with the argument ${w}.`, `Make upper.js print the first argument it is given in capital letters, and try it with ${w}.`]), params: { w } };
     },
     // Tried with a word the task never named, so a hard-coded answer fails.
@@ -529,8 +531,8 @@ export const TEMPLATES: Template[] = [
   {
     name: "mkdir-structure", kind: "shell",
     make(r) {
-      const d = r.pick(["myapp", "project", "site", "tool", "demo"]);
-      return { prompt: r.pick([`Create a folder ${d} with subfolders src and test, and an empty file ${d}/src/index.js.`, `Set up ${d}/ with src/ and test/ folders inside, plus an empty src/index.js.`]), params: { d } };
+      const d = r.pick(["myapp", "project", "site", "tool", "demo", "webapp", "api", "game", "blog", "shop", "server", "client", "widget", "library", "cli", "bot"]);
+      return { prompt: r.pick([`Create a folder ${d} with subfolders src and test, and an empty file ${d}/src/index.js.`, `Set up ${d}/ with src/ and test/ folders inside, plus an empty src/index.js.`, `Make a ${d} directory containing src and test directories, and an empty index.js in ${d}/src.`]), params: { d } };
     },
     check: (p, c) => all(isDir(c.dir, `${p.d}/src`) ? null : "src is missing", isDir(c.dir, `${p.d}/test`) ? null : "test is missing", exists(c.dir, `${p.d}/src/index.js`) ? null : "index.js is missing"),
   },

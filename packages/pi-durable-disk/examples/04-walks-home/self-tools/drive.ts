@@ -14,9 +14,9 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, createModels } from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-coding-agent";
-import { decodeTurn, llamaServer, type DecodedTurn } from "./decode.ts";
+import { decodeTurn, llamaServer, toPiContent, type DecodedTurn } from "../../03-tab-to-cloud/tab/decode.ts";
 import { checkInstance, templateKind, type Instance } from "./tasks.ts";
-import { TOOLS, renderPrompt } from "./tool-format.ts";
+import { TOOLS, renderPrompt } from "../../03-tab-to-cloud/tab/tool-format.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -87,21 +87,7 @@ function localStream(log: DecodedTurn[]) {
       try {
         const turn = await decodeTurn(backend, renderPrompt(TOOLS, ctx.messages), decodeOpts);
         log.push(turn);
-        const p = turn.parsed;
-        const content: any[] = [{ type: "thinking", thinking: p.thinking }];
-        let stopReason: "stop" | "toolUse" = "stop";
-        // A call whose JSON parsed goes to pi even when pi will refuse it (an unknown tool, bad arguments): pi's own
-        // error comes back to the model, as it would in the tab. Unparseable calls end the turn as text.
-        let callJson: any = p.call;
-        if (!callJson && p.problem && (p.problem.kind === "unknown-tool" || p.problem.kind === "bad-args")) {
-          try { callJson = JSON.parse(p.problem.raw); } catch { callJson = undefined; }
-        }
-        if (callJson && typeof callJson.name === "string") {
-          content.push({ type: "toolCall", id: `call_${++n}`, name: callJson.name, arguments: callJson.arguments ?? {} });
-          stopReason = "toolUse";
-        } else {
-          content.push({ type: "text", text: p.problem ? `${p.answer}${p.problem.raw}` : p.answer });
-        }
+        const { content, stopReason } = toPiContent(turn.parsed, `call_${++n}`);
         const usage = { input: turn.promptTokens, output: turn.outputTokens, cacheRead: 0, cacheWrite: 0, totalTokens: turn.promptTokens + turn.outputTokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
         const msg = { ...base, content, usage, stopReason };
         s.push({ type: "start", partial: msg } as any);

@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { checksAnswer } from "./tasks.ts";
-import { parseModelTurn } from "./tool-format.ts";
+import { parseModelTurn } from "../../03-tab-to-cloud/tab/tool-format.ts";
 
 /** A turn's call problem, parsed again from its raw text (so a parser fix applies to old runs too). */
 const problemOf = (t: any): string | null => parseModelTurn(t.raw).problem?.kind ?? null;
