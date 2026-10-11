@@ -203,9 +203,9 @@ test("detection gives each program its timeout in seconds, the unit an environme
   assert.ok(seen.length >= 1 && seen.every((timeout) => timeout > 0 && timeout <= 3600), `timeouts ${JSON.stringify(seen)} are an hour at most, not milliseconds`);
 });
 
-test("the video code runs programs only through the environment and never resolves mediabunny itself", async () => {
+test("the video code runs programs only through the environment", async () => {
   for (const file of ["../dist/providers/ffmpeg.js", "../dist/core/video.js"]) {
     const text = await readFile(new URL(file, import.meta.url), "utf8");
-    assert.doesNotMatch(text, /child_process|execFile|spawn\(|from "mediabunny"|import\("mediabunny"\)/, file);
+    assert.doesNotMatch(text, /child_process|execFile|spawn\(/, file);
   }
 });

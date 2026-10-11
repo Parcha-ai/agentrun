@@ -145,7 +145,7 @@ const CASES = [
   provider("./providers/photon#photonImages", () => photonImages()),
   provider("./providers/sharp#sharpImages", () => sharpImages(Object.assign(() => ({}), { token: KEY }))),
   provider("./providers/poppler#popplerProvider", () => popplerProvider()),
-  provider("./providers/ffmpeg#ffmpegProvider", () => ffmpegProvider({ mediabunny: { token: KEY } })),
+  provider("./providers/ffmpeg#ffmpegProvider", () => ffmpegProvider()),
   provider("./providers/soffice#sofficeProvider", () => sofficeProvider()),
   { id: "./testing#*", exempt: "test support: nothing a run calls" },
 ];
