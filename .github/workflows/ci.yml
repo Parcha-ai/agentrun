@@ -68,6 +68,48 @@ jobs:
         env:
           PDA_EXPECT_PI_DURABLE: '1.0.4'
 
+  pi-vision-pi-durable-1-1:
+    # @parcha/pi-vision's peers accept pi-durable from 1.0.4 to 1.1.x, while the workspace develops against 1.0.4. Its
+    # build, type tests and whole suite run again on 1.1.0; PI_VISION_EXPECT_PI_DURABLE makes the run fail if another
+    # pi-durable, chord or pi-ai version was resolved.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx --yes npm@11.21.0 install --no-save --ignore-scripts --no-audit --no-fund -w @parcha/pi-vision @earendil-works/pi-durable@1.1.0 @earendil-works/chord@1.1.0 @earendil-works/pi-ai@1.1.0
+      - run: npm run build -w @parcha/pi-vision
+      - run: npm run typecheck -w @parcha/pi-vision
+      - run: npm test -w @parcha/pi-vision
+        env:
+          PI_VISION_EXPECT_PI_DURABLE: '1.1.0'
+
+  vision-binaries:
+    # @parcha/pi-vision's suites that run programs in the environment (test/binaries: ffmpeg and poppler). They are not
+    # part of the verify matrix: they need the programs, not three Node versions. A provider that cannot find its
+    # program fails here instead of skipping.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg and poppler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils
+          ffmpeg -version | head -1
+          pdftoppm -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build -w @parcha/pi-vision
+      - run: npm run test:binaries -w @parcha/pi-vision
+
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's
     # driver and its trace-export seal). They are not part of the verify matrix: they need one pinned browser, not three Node versions.
