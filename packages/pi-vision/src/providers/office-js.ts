@@ -4,37 +4,36 @@
 // recognised by what it holds, never by its name. Every archive is held to the limits before anything is inflated and
 // every part is inflated into a bounded buffer, so a hostile file is a typed miss that costs bounded time and memory.
 import type { Element } from "@xmldom/xmldom";
-import { OFFICE_LIMITS, OfficeMissError, readSource, sheetText, zipDirectory, type OfficeCell, type OfficeLimits, type ZipEntry } from "../core/office.js";
+import { OFFICE_LIMITS, OfficeMissError, inflateEntry, readSource, sheetText, zipDirectory, type OfficeCell, type OfficeLimits } from "../core/office.js";
 import type { Cell, Provider, ProviderCall, ProviderSource } from "../core/provider.js";
 
 /** The reader's output version: it changes whenever the text or the cells it writes change, so a derivation cached
  *  under an older one is never reused. */
 const READER_VERSION = "1";
-/** Compressed bytes pushed to the inflater at a time: deflate expands at most 1,032 to 1, so one push writes at most 8 MiB past a part's cap. */
-const PUSH_BYTES = 8192;
 /** Word allows 63 columns in a table, and Word and LibreOffice 16,384 columns and 1,048,576 rows in a sheet: a span or repeat count past these is read as these. */
 const MAX_TABLE_COLUMNS = 63;
 const MAX_SHEET_COLUMNS = 16_384;
 const MAX_SHEET_ROWS = 1_048_576;
 /** Levels of a list in Word, of headings in Markdown, and the longest run of spaces an OpenDocument paragraph declares by count. */
 const MAX_LIST_LEVEL = 8;
+/** Word's own limit on the number a list starts at. */
+const MAX_LIST_START = 32_767;
 const MAX_HEADING = 6;
 const SPACE_RUN = 80;
-const LOCAL_HEADER = 0x04034b50;
 
-type Deps = { readonly fflate: typeof import("fflate"); readonly xmldom: typeof import("@xmldom/xmldom") };
-let deps: Promise<Deps> | undefined;
-const loadDeps = () => (deps ??= Promise.all([import("fflate"), import("@xmldom/xmldom")]).then(([fflate, xmldom]) => ({ fflate, xmldom })));
+let xmldom: Promise<typeof import("@xmldom/xmldom")> | undefined;
+const loadXmldom = () => (xmldom ??= Promise.all([import("fflate"), import("@xmldom/xmldom")]).then(([, loaded]) => loaded));
 
 type El = Element | null | undefined;
 type Page = { readonly page: number; readonly text: string };
 type Sheet = { readonly index: number; readonly name: string; readonly hidden: boolean; readonly cells: OfficeCell[] };
 type Span = { readonly from: number; readonly to: number };
 type Relationship = { readonly type: string; readonly target: string };
+type Level = { readonly format: string; readonly start: number };
 type Wanted = (index: number, name: string) => boolean;
 type Archive = {
   names(): string[];
-  raw(name: string): Uint8Array | null;
+  raw(name: string): Promise<Uint8Array | null>;
   part(name: string): Promise<Element | null>;
   rels(owner: string): Promise<Map<string, Relationship>>;
 };
@@ -82,42 +81,22 @@ const resolve = (dir: string, target: string) => {
   return out.join("/");
 };
 
-/** One part's bytes, inflated into a buffer that never passes `limit`, however the entry declares itself. */
-function inflate({ Inflate }: Deps["fflate"], data: Uint8Array, entry: ZipEntry, limit: number): Uint8Array {
-  const tooBig = (bytes: number) => new OfficeMissError("over_budget", `${entry.name} is ${mib(bytes)}, over the ${mib(limit)} the reader takes of one part; read it with bash`);
-  if (Math.max(entry.originalSize, entry.size) > limit) throw tooBig(Math.max(entry.originalSize, entry.size));
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  if (view.getUint32(entry.offset, true) !== LOCAL_HEADER) throw unreadable(`${entry.name} has a damaged header`);
-  const start = entry.offset + 30 + view.getUint16(entry.offset + 26, true) + view.getUint16(entry.offset + 28, true);
-  const packed = data.subarray(start, start + entry.size);
-  if (entry.method === 0) return packed;
-  if (entry.method !== 8) throw new OfficeMissError("unsupported", `${entry.name} uses compression method ${entry.method}, which the reader does not take`);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const stream = new Inflate((chunk) => {
-    total += chunk.length;
-    if (total > limit) throw tooBig(total);
-    chunks.push(chunk);
-  });
-  for (let from = 0; from < packed.length; from += PUSH_BYTES) stream.push(packed.subarray(from, from + PUSH_BYTES), from + PUSH_BYTES >= packed.length);
-  return Buffer.concat(chunks);
-}
-
 async function openArchive(data: Uint8Array, call: ProviderCall, limits: OfficeLimits): Promise<Archive> {
-  const { fflate, xmldom } = await loadDeps();
+  const parser = await loadXmldom();
   const entries = new Map(zipDirectory(data, limits).map((entry) => [entry.name, entry]));
   let parsed = 0;
-  const raw = (name: string) => {
+  const raw = async (name: string) => {
     const entry = entries.get(name);
-    return entry ? inflate(fflate, data, entry, limits.maxPartBytes) : null;
+    return entry ? inflateEntry(data, entry, limits.maxPartBytes) : null;
   };
   const part = async (name: string): Promise<Element | null> => {
     call.signal?.throwIfAborted();
-    const bytes = raw(name);
+    const bytes = await raw(name);
     if (!bytes) return null;
     if ((parsed += bytes.length) > limits.maxParsedBytes) throw new OfficeMissError("over_budget", `the parts of this file pass ${mib(limits.maxParsedBytes)}, the most the reader parses in one read; read it with bash`);
     await new Promise((done) => setImmediate(done));
-    return new xmldom.DOMParser({ locator: false, onError: xmldom.onErrorStopParsing }).parseFromString(new TextDecoder().decode(bytes), "text/xml").documentElement;
+    const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? "utf-16le" : bytes[0] === 0xfe && bytes[1] === 0xff ? "utf-16be" : "utf-8";
+    return new parser.DOMParser({ locator: false, onError: parser.onErrorStopParsing }).parseFromString(new TextDecoder(encoding).decode(bytes), "text/xml").documentElement;
   };
   const rels = async (owner: string) => {
     const dir = owner.slice(0, owner.lastIndexOf("/") + 1);
@@ -137,13 +116,16 @@ function inline(el: El): string {
       case "br": case "cr": out += "\n"; break;
       case "noBreakHyphen": out += "-"; break;
       case "p": out += `\n${inline(k)}`; break;
-      case "pPr": case "rPr": case "endParaRPr": case "del": case "instrText": case "rPh": case "Fallback": break;
+      case "AlternateContent": out += inline(chosen(k)); break;
+      case "pPr": case "rPr": case "endParaRPr": case "del": case "instrText": case "rPh": break;
       default: out += inline(k);
     }
   }
   return out;
 }
 const tableRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
+/** Of the alternatives a package offers for one thing (`mc:AlternateContent`), the first one it prefers, else its fallback: never both. */
+const chosen = (el: El) => first(el, "Choice") ?? first(el, "Fallback");
 
 /** A word document as one page: headers, the body in reading order, then footers. A list item carries its marker: `-` for a
  *  bullet and for any numbering the reader does not count (roman, ordinal), `1.` and `a.` for decimal and letter numbering,
@@ -152,21 +134,28 @@ const tableRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
 async function docx(a: Archive): Promise<Page[]> {
   const [body, numbering] = [await a.part("word/document.xml"), await a.part("word/numbering.xml")];
   if (!body) throw unreadable("a word document without word/document.xml");
-  const levels = new Map(named(numbering, "abstractNum").map((n): [string, Map<string, string>] => [at(n, "abstractNumId") ?? "", new Map(named(n, "lvl").map((l): [string, string] => [at(l, "ilvl") ?? "0", at(first(l, "numFmt"), "val") ?? "decimal"]))]));
-  const formats = new Map(named(numbering, "num").map((n): [string, Map<string, string> | undefined] => [at(n, "numId") ?? "", levels.get(at(first(n, "abstractNumId"), "val") ?? "")]));
+  const levels = new Map(named(numbering, "abstractNum").map((n): [string, Map<string, Level>] => [at(n, "abstractNumId") ?? "", new Map(named(n, "lvl").map((l): [string, Level] => [at(l, "ilvl") ?? "0", { format: at(first(l, "numFmt"), "val") ?? "decimal", start: Math.max(1, int(at(first(l, "start"), "val"), 1, MAX_LIST_START)) }]))]));
+  const lists = new Map(named(numbering, "num").map((n): [string, Map<string, Level>] => {
+    const own = new Map(levels.get(at(first(n, "abstractNumId"), "val") ?? ""));
+    for (const o of named(n, "lvlOverride")) {
+      const [key, start] = [at(o, "ilvl") ?? "0", at(first(o, "startOverride"), "val")];
+      if (start !== null && own.has(key)) own.set(key, { ...own.get(key)!, start: Math.max(1, int(start, 1, MAX_LIST_START)) });
+    }
+    return [at(n, "numId") ?? "", own];
+  }));
   const counts = new Map<string, number>();
   const marker = (p: Element) => {
     const num = first(first(p, "pPr"), "numPr");
     const id = at(first(num, "numId"), "val");
     if (id === null || id === "0") return "";
-    const level = int(at(first(num, "ilvl"), "val"), 0, MAX_LIST_LEVEL);
-    const indent = "  ".repeat(level);
-    const format = formats.get(id)?.get(String(level)) ?? "bullet";
+    const depth = int(at(first(num, "ilvl"), "val"), 0, MAX_LIST_LEVEL);
+    const indent = "  ".repeat(depth);
+    const { format, start } = lists.get(id)?.get(String(depth)) ?? { format: "bullet", start: 1 };
     if (format !== "decimal" && !format.endsWith("Letter")) return `${indent}- `;
-    for (const key of [...counts.keys()]) if (key.startsWith(`${id}:`) && Number(key.split(":")[1]) > level) counts.delete(key);
-    const n = (counts.get(`${id}:${level}`) ?? 0) + 1;
-    counts.set(`${id}:${level}`, n);
-    return `${indent}${format === "decimal" ? n : String.fromCharCode((format.startsWith("upper") ? 65 : 97) + ((n - 1) % 26))}. `;
+    for (const key of [...counts.keys()]) if (key.startsWith(`${id}:`) && Number(key.split(":")[1]) > depth) counts.delete(key);
+    const n = (counts.get(`${id}:${depth}`) ?? start - 1) + 1;
+    counts.set(`${id}:${depth}`, n);
+    return `${indent}${format === "decimal" ? n : String.fromCharCode((format.startsWith("upper") ? 65 : 97) + ((n - 1) % 26)).repeat(Math.floor((n - 1) / 26) + 1)}. `;
   };
   const blocks = (el: El, out: string[]): string[] => {
     for (const k of kids(el)) {
@@ -179,13 +168,14 @@ async function docx(a: Archive): Promise<Page[]> {
         for (const tr of named(k, "tr")) {
           out.push(tableRow(named(tr, "tc").flatMap((tc) => [blocks(tc, []).join(" / "), ...Array<string>(Math.max(1, int(at(first(first(tc, "tcPr"), "gridSpan"), "val"), 1, MAX_TABLE_COLUMNS)) - 1).fill("")])));
         }
-      } else if (k.localName !== "Fallback") blocks(k, out);
+      } else blocks(k.localName === "AlternateContent" ? chosen(k) : k, out);
     }
     return out;
   };
+  const related = await a.rels("word/document.xml");
   const side = async (kind: "header" | "footer") => {
     const texts = new Set<string>();
-    for (const name of a.names().filter((n) => n.startsWith(`word/${kind}`) && n.endsWith(".xml")).sort()) texts.add(blocks(await a.part(name), []).join("\n"));
+    for (const rel of related.values()) if (rel.type.endsWith(`/${kind}`)) texts.add(blocks(await a.part(rel.target), []).join("\n"));
     return [...texts].filter(Boolean).map((text) => `${kind === "header" ? "Header" : "Footer"}: ${text}`);
   };
   return [{ page: 1, text: [...(await side("header")), ...blocks(body, []), ...(await side("footer"))].join("\n") }];
@@ -201,7 +191,7 @@ async function pptx(a: Archive, want?: Span): Promise<Page[]> {
         if (!skip.includes(at(first(first(first(k, "nvSpPr"), "nvPr"), "ph"), "type") ?? "")) out.push(...named(first(k, "txBody"), "p").map(paragraph).filter((line) => line.trim()));
       } else if (k.localName === "graphicFrame") {
         for (const tr of named(dig(k, "tbl"), "tr")) out.push(tableRow(named(tr, "tc").map((tc) => named(first(tc, "txBody"), "p").map(paragraph).filter((line) => line.trim()).join(" / "))));
-      } else if (k.localName !== "Fallback") lines(k, skip, out);
+      } else lines(k.localName === "AlternateContent" ? chosen(k) : k, skip, out);
     }
     return out;
   };
@@ -218,20 +208,33 @@ async function pptx(a: Archive, want?: Span): Promise<Page[]> {
   return pages;
 }
 
-/** The number formats built in to SpreadsheetML that show a date or a time of day. */
-const BUILTIN_DATE_FORMATS = [[14, 22], [27, 36], [45, 47], [50, 58]] as const;
-/** The cell styles whose number format is a date or a time: a built-in one, or a custom code with a date or time letter outside its quotes, brackets and escapes. */
-function dateStyles(styles: El): Set<number> {
-  const codes = new Map(named(first(styles, "numFmts"), "numFmt").map((n): [number, string] => [Number(at(n, "numFmtId")), at(n, "formatCode") ?? ""]));
-  const isDate = (id: number) => BUILTIN_DATE_FORMATS.some(([from, to]) => id >= from && id <= to) || /[dmyhs]/i.test((codes.get(id) ?? "").replace(/"[^"]*"|\[[^\]]*\]|\\.|_.|\*./g, ""));
-  return new Set(named(first(styles, "cellXfs"), "xf").flatMap((xf, index) => (isDate(Number(at(xf, "numFmtId") ?? 0)) ? [index] : [])));
+type DateKind = "date" | "time" | "datetime";
+/** The built-in number formats that show a date or a time of day. Elapsed time (46) and the East Asian formats (27 to 36, 50 to 58) are left unannotated. */
+const BUILTIN_DATE_KINDS: Partial<Record<number, DateKind>> = { 14: "date", 15: "date", 16: "date", 17: "date", 18: "time", 19: "time", 20: "time", 21: "time", 22: "datetime", 45: "time", 47: "time" };
+/** What a custom number format code shows: a date letter (d, y, or m with no time letter beside it) or a time letter (h, s) outside its quotes, brackets and escapes; elapsed time in brackets is neither. */
+function formatKind(code: string): DateKind | undefined {
+  if (/\[[hms]+\]/i.test(code)) return undefined;
+  const bare = code.replace(/"[^"]*"|\[[^\]]*\]|\\.|_.|\*./g, "");
+  const time = /[hs]/i.test(bare);
+  const date = /[dy]/i.test(bare) || (!time && /m/i.test(bare));
+  return date && time ? "datetime" : date ? "date" : time ? "time" : undefined;
 }
-/** A serial date as ISO text: a date, a time of day, or both, as the number's fraction says; nothing for a serial no date
- *  has. Excel counts a 29 February 1900 that never was, so its serials before 60 are one day past the 30 December 1899 epoch. */
-function isoDate(serial: number, from1904: boolean): string | undefined {
+/** The cell styles whose number format shows a date, a time or both, by style index. */
+function dateStyles(styles: El): Map<number, DateKind> {
+  const codes = new Map(named(first(styles, "numFmts"), "numFmt").map((n): [number, string] => [Number(at(n, "numFmtId")), at(n, "formatCode") ?? ""]));
+  return new Map(named(first(styles, "cellXfs"), "xf").flatMap((xf, index): [number, DateKind][] => {
+    const id = Number(at(xf, "numFmtId") ?? 0);
+    const kind = BUILTIN_DATE_KINDS[id] ?? formatKind(codes.get(id) ?? "");
+    return kind ? [[index, kind]] : [];
+  }));
+}
+/** A serial date as ISO text, as much of it as its format shows: the date, the time of day, or both; nothing for a serial no date has.
+ *  Excel counts a 29 February 1900 that never was, so its serials before 60 are one day past the 30 December 1899 epoch. */
+function isoDate(serial: number, kind: DateKind, from1904: boolean): string | undefined {
   if (!(serial >= 0 && serial < 2_958_466)) return undefined;
+  if (kind === "time") return new Date(Math.round((serial % 1) * 86_400) * 1000).toISOString().slice(11, 19);
   const iso = new Date((from1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, serial < 60 ? 31 : 30)) + Math.round(serial * 86_400) * 1000).toISOString();
-  return Number.isInteger(serial) ? iso.slice(0, 10) : serial < 1 ? iso.slice(11, 19) : iso.slice(0, 19);
+  return kind === "date" ? iso.slice(0, 10) : iso.slice(0, 19);
 }
 
 const tooManyCells = (limits: OfficeLimits, where: string) => new OfficeMissError("over_budget", `${where} holds more than ${limits.maxCells} cells, over what the reader builds; read it with bash`);
@@ -257,7 +260,8 @@ async function xlsx(a: Archive, limits: OfficeLimits, wanted: Wanted): Promise<S
       if (!ref) throw unreadable(`a cell in sheet ${name} has no reference, so its place is not known`);
       const [type, f, v] = [at(c, "t") ?? "n", first(c, "f"), first(c, "v")];
       const text = type === "inlineStr" ? inline(first(c, "is")) : (v?.textContent ?? "");
-      const value: Cell["value"] = text === "" ? null : type === "s" ? (table[Number(text)] ?? null) : type === "b" ? text === "1" : type === "n" ? number(text) : text;
+      const stored = type === "inlineStr" ? first(c, "is") !== null : v !== null && (text !== "" || type === "str");
+      const value: Cell["value"] = !stored ? null : type === "s" ? (table[Number(text)] ?? null) : type === "b" ? text === "1" : type === "n" ? number(text) : text;
       let formula: string | undefined;
       if (f) {
         let source = f.textContent ?? "";
@@ -267,7 +271,8 @@ async function xlsx(a: Archive, limits: OfficeLimits, wanted: Wanted): Promise<S
         formula = source || "(formula text not stored)";
       } else if (value === null || value === "") continue;
       if (++count > limits.maxCells) throw tooManyCells(limits, "the workbook");
-      const date = typeof value === "number" && dates.has(Number(at(c, "s") ?? 0)) ? isoDate(value, from1904) : undefined;
+      const kind = typeof value === "number" ? dates.get(Number(at(c, "s") ?? 0)) : undefined;
+      const date = kind ? isoDate(value as number, kind, from1904) : undefined;
       cells.push({ ref, value, ...(formula === undefined ? {} : { formula, cached: value !== null }), ...(date ? { date } : {}) });
     }
     sheets.push({ index, name, hidden: (at(sheet, "state") ?? "visible") !== "visible", cells });
@@ -292,36 +297,52 @@ function odfInline(el: Element): string {
 const tableRows = (el: El): Element[] => kids(el).flatMap((k) => (k.localName === "table-row" ? [k] : ["table-row-group", "table-header-rows", "table-rows"].includes(k.localName ?? "") ? tableRows(k) : []));
 const repeats = (el: Element, name: string, max: number) => Math.max(1, int(at(el, name), 1, max));
 
-function odfBlocks(el: El, depth: number, out: string[]): string[] {
+/** The characters a document's text may grow to: what one table repeats (a cell by its column count, a row by its row count) is
+ *  charged before it is built, so tables nested in tables cannot multiply their text past it. */
+type TextBudget = { left: number };
+function spend(budget: TextBudget, chars: number): void {
+  if ((budget.left -= chars) < 0) throw new OfficeMissError("over_budget", "the text of this file grows past what the reader builds, through repeated cells and rows; read it with bash");
+}
+
+function odfBlocks(el: El, depth: number, out: string[], budget: TextBudget): string[] {
   for (const k of kids(el)) {
     switch (k.localName) {
-      case "p": out.push(odfInline(k)); break;
-      case "h": out.push(`${"#".repeat(Math.max(1, int(at(k, "outline-level"), 1, MAX_HEADING)))} ${odfInline(k)}`); break;
+      case "p": case "h": {
+        const line = k.localName === "h" ? `${"#".repeat(Math.max(1, int(at(k, "outline-level"), 1, MAX_HEADING)))} ${odfInline(k)}` : odfInline(k);
+        spend(budget, line.length);
+        out.push(line);
+        break;
+      }
       case "list":
         for (const item of named(k, "list-item", "list-header")) {
-          const lines = odfBlocks(item, depth + 1, []);
+          const lines = odfBlocks(item, depth + 1, [], budget);
           if (lines.length) lines[0] = `${"  ".repeat(depth)}- ${lines[0]}`;
           out.push(...lines);
         }
         break;
       case "table":
         for (const tr of tableRows(k)) {
-          const cells = named(tr, "table-cell", "covered-table-cell").flatMap((tc) => Array<string>(repeats(tc, "number-columns-repeated", MAX_TABLE_COLUMNS)).fill(odfBlocks(tc, 0, []).join(" / ")));
+          const cells = named(tr, "table-cell", "covered-table-cell").flatMap((tc) => Array<string>(repeats(tc, "number-columns-repeated", MAX_TABLE_COLUMNS)).fill(odfBlocks(tc, 0, [], budget).join(" / ")));
           while (cells.at(-1) === "") cells.pop();
-          if (cells.length) out.push(tableRow(cells));
+          const times = repeats(tr, "number-rows-repeated", MAX_SHEET_ROWS);
+          if (!cells.length) continue;
+          spend(budget, cells.reduce((chars, cell) => chars + cell.length + 3, 4) * times);
+          const row = tableRow(cells);
+          for (let i = 0; i < times; i++) out.push(row);
         }
         break;
       case "tracked-changes": case "annotation": case "notes": break;
-      default: odfBlocks(k, depth, out);
+      default: odfBlocks(k, depth, out, budget);
     }
   }
   return out;
 }
 
-async function odf(a: Archive, format: "odt" | "odp"): Promise<Page[]> {
+async function odf(a: Archive, format: "odt" | "odp", limits: OfficeLimits): Promise<Page[]> {
   const content = await a.part("content.xml");
   if (!content) throw unreadable("an OpenDocument file without content.xml");
-  const lines = (el: El) => odfBlocks(el, 0, []).filter((line) => line.trim());
+  const budget = { left: limits.maxPartBytes };
+  const lines = (el: El) => odfBlocks(el, 0, [], budget).filter((line) => line.trim());
   if (format === "odt") return [{ page: 1, text: lines(dig(content, "text")).join("\n") }];
   return named(dig(content, "presentation"), "page").map((slide, index) => {
     const notes = lines(first(slide, "notes"));
@@ -388,7 +409,7 @@ async function openSource(source: ProviderSource, call: ProviderCall, limits: Of
   if (magic.startsWith("504b")) {
     const archive = await openArchive(data, call, limits);
     const names = new Set(archive.names());
-    const mime = new TextDecoder().decode(archive.raw("mimetype") ?? new Uint8Array());
+    const mime = new TextDecoder().decode((await archive.raw("mimetype")) ?? new Uint8Array());
     const found = names.has("word/document.xml") ? "docx" : names.has("ppt/presentation.xml") ? "pptx" : names.has("xl/workbook.xml") ? "xlsx" : OPEN_DOCUMENT.find(([word]) => mime.startsWith(OPEN_DOCUMENT_TYPE) && mime.includes(word))?.[1];
     if (!found) throw new OfficeMissError("unsupported", `a zip archive that is not a ${ARCHIVE_FORMATS} file (its first entries: ${[...names].slice(0, 3).join(", ") || "none"})`);
     return { format: found, archive };
@@ -421,10 +442,10 @@ export function officeJsProvider(options: OfficeJsOptions = {}): Provider {
     kinds: ["office", "sheet"],
     async detect() {
       try {
-        await loadDeps();
+        await loadXmldom();
         return { available: true, version: READER_VERSION };
       } catch (error) {
-        deps = undefined;
+        xmldom = undefined;
         return { available: false, needs: "fflate and @xmldom/xmldom", reason: `they did not load: ${String((error as Error)?.message ?? error).split("\n")[0]}` };
       }
     },
@@ -437,7 +458,7 @@ export function officeJsProvider(options: OfficeJsOptions = {}): Provider {
         : format === "pptx" ? await pptx(archive!, request.pages)
         : format === "xlsx" ? sheetPages(await xlsx(archive!, limits, wanted))
         : format === "ods" ? sheetPages(await ods(archive!, limits, wanted))
-        : await odf(archive!, format);
+        : await odf(archive!, format, limits);
       return { madeBy, pages: pages.filter((p) => within(p.page, request.pages)) };
     }),
     cells: (source, request, call) => guarded(call, async () => {

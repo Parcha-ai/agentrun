@@ -6,6 +6,7 @@
 // parses is the `office-js` provider.
 
 import { createHash } from "node:crypto";
+import { crc32 } from "node:zlib";
 import type { MissCode } from "./contract.js";
 import { visionContext } from "./env.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
@@ -50,20 +51,36 @@ export class OfficeMissError extends Error {
   }
 }
 
-/** A source's bytes through the environment, within what the process holds and the very bytes it was hashed as: a file
- *  that grew past the cap, cannot be read, or changed after its hash is a typed miss. */
+/** A source's bytes through the environment: the one file it opens, never more than the process holds of it, and the very
+ *  bytes it was hashed as. A file over the cap, one that cannot be read, and one that changed after its hash are typed
+ *  misses; a file that grew after it was described is read only as far as the size it had when opened. */
 export async function readSource(source: ProviderSource, call: ProviderCall): Promise<Uint8Array> {
-  if (source.bytes > SOURCE_BYTES_IN_PROCESS) throw new OfficeMissError("over_budget", `${mib(source.bytes)} is over the ${mib(SOURCE_BYTES_IN_PROCESS)} the reader takes into memory; read it with bash`);
-  const read = await call.env.readBinaryFile(source.path, visionContext(call.signal));
-  if (!read.ok) throw new OfficeMissError("unreadable", `it could not be read: ${read.error.message.split("\n")[0]}`);
-  if (createHash("sha256").update(read.value).digest("hex") !== source.sha256) throw new OfficeMissError("unreadable", "it changed after it was hashed; read it again");
-  return read.value;
+  const context = visionContext(call.signal);
+  const unreadable = (why: string) => new OfficeMissError("unreadable", `it could not be read: ${why.split("\n")[0]}`);
+  const tooBig = (bytes: number) => new OfficeMissError("over_budget", `${mib(bytes)} is over the ${mib(SOURCE_BYTES_IN_PROCESS)} the reader takes into memory; read it with bash`);
+  if (source.bytes > SOURCE_BYTES_IN_PROCESS) throw tooBig(source.bytes);
+  const opened = await call.env.openBinaryReader(source.path, undefined, context);
+  if (!opened.ok) throw unreadable(opened.error.message);
+  try {
+    const info = await opened.value.info(context);
+    if (!info.ok) throw unreadable(info.error.message);
+    if (info.value.size > SOURCE_BYTES_IN_PROCESS) throw tooBig(info.value.size);
+    const read = await opened.value.read(0, info.value.size, context);
+    if (!read.ok) throw unreadable(read.error.message);
+    if (createHash("sha256").update(read.value).digest("hex") !== source.sha256) throw new OfficeMissError("unreadable", "it changed after it was hashed; read it again");
+    return read.value;
+  } finally {
+    await opened.value.close(visionContext());
+  }
 }
 
-export type ZipEntry = { readonly name: string; readonly method: number; readonly size: number; readonly originalSize: number; readonly offset: number };
+export type ZipEntry = { readonly name: string; readonly method: number; readonly size: number; readonly originalSize: number; readonly crc: number; readonly offset: number };
 
 const END_RECORD = 0x06054b50;
 const CENTRAL_ENTRY = 0x02014b50;
+const LOCAL_ENTRY = 0x04034b50;
+/** Compressed bytes pushed to the inflater at a time: deflate expands at most 1,032 to 1, so one push writes at most 8 MiB. */
+const PUSH_BYTES = 8192;
 const END_RECORD_BYTES = 22;
 const MAX_COMMENT_BYTES = 0xffff;
 const ZIP64 = 0xffffffff;
@@ -96,7 +113,7 @@ export function zipDirectory(data: Uint8Array, limits: OfficeLimits = OFFICE_LIM
       names.add(name);
       declared += originalSize;
       stored += size;
-      entries.push({ name, method, size, originalSize, offset: view.getUint32(at + 42, true) });
+      entries.push({ name, method, size, originalSize, crc: view.getUint32(at + 16, true), offset: view.getUint32(at + 42, true) });
       at += 46 + nameBytes + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
     }
   } catch (error) {
@@ -106,6 +123,36 @@ export function zipDirectory(data: Uint8Array, limits: OfficeLimits = OFFICE_LIM
   if (declared > limits.maxUncompressedBytes) throw over(`declares ${mib(declared)} uncompressed, over the ${mib(limits.maxUncompressedBytes)} the reader takes`);
   if (declared > limits.ratioFloorBytes && declared > limits.maxRatio * stored) throw over(`declares ${mib(declared)} from ${mib(stored)}, over ${limits.maxRatio} to 1`);
   return entries;
+}
+
+/** One entry's bytes, held to its directory entry. It is inflated in pushes of 8 KiB and stopped the moment it passes
+ *  the size the directory declares, so an entry that lies about its size costs one push and not its real size; the
+ *  bytes must be as many as declared and have the declared CRC-32, so a changed byte is not read as a different value.
+ *  An entry declared over `limit` is over budget before it is touched; one that is not what it declares is unreadable.
+ *  `keep: false` checks and discards, in memory that does not grow. */
+export async function inflateEntry(data: Uint8Array, entry: ZipEntry, limit: number, keep = true): Promise<Uint8Array> {
+  const damaged = (why: string) => new OfficeMissError("unreadable", `${entry.name} ${why}`);
+  if (entry.originalSize > limit) throw new OfficeMissError("over_budget", `${entry.name} is ${mib(entry.originalSize)}, over the ${mib(limit)} the reader takes of one part; read it with bash`);
+  if (entry.method !== 0 && entry.method !== 8) throw new OfficeMissError("unsupported", `${entry.name} uses compression method ${entry.method}, which the reader does not take`);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (view.getUint32(entry.offset, true) !== LOCAL_ENTRY) throw damaged("has a damaged header");
+  const start = entry.offset + 30 + view.getUint16(entry.offset + 26, true) + view.getUint16(entry.offset + 28, true);
+  const packed = data.subarray(start, start + entry.size);
+  if (packed.length < entry.size) throw damaged("is cut short");
+  const chunks: Uint8Array[] = [];
+  let [total, crc] = [0, 0];
+  const take = (chunk: Uint8Array) => {
+    if ((total += chunk.length) > entry.originalSize) throw damaged("inflates past the size its directory declares");
+    crc = crc32(chunk, crc);
+    if (keep) chunks.push(chunk);
+  };
+  if (entry.method === 0) take(packed);
+  else {
+    const stream = new (await import("fflate")).Inflate(take);
+    for (let from = 0; from < packed.length; from += PUSH_BYTES) stream.push(packed.subarray(from, from + PUSH_BYTES), from + PUSH_BYTES >= packed.length);
+  }
+  if (total !== entry.originalSize || crc !== entry.crc) throw damaged("is not what its directory declares: its size or its checksum differs");
+  return keep ? Buffer.concat(chunks) : new Uint8Array(0);
 }
 
 /** A cell as the office reader gives it: the package's own, and the date a date-formatted number stands for. */

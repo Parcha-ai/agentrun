@@ -31,11 +31,14 @@ const NUMBERING = `${head}<w:numbering xmlns:w="${WORD}">
   <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
 </w:numbering>`;
 
-/** A word document: `body` is the XML inside w:body; `extra` adds parts (headers, footers) by name. */
-export function docx(body, extra = {}) {
+/** A word document: `body` is the XML inside w:body; `extra` adds parts by name. The headers and footers in `extra` are
+ *  related to the document unless their names are in `unrelated`, the way a leftover part of an edited file is not. */
+export function docx(body, extra = {}, unrelated = []) {
+  const related = Object.keys(extra).filter((name) => /^word\/(header|footer)\d+\.xml$/.test(name) && !unrelated.includes(name));
   return zip({
     "[Content_Types].xml": `${head}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
     "_rels/.rels": rels([["rId1", "officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": rels(related.map((name, i) => [`rId${i + 1}`, name.includes("header") ? "header" : "footer", name.slice("word/".length)])),
     "word/document.xml": `${head}<w:document xmlns:w="${WORD}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><w:body>${body}<w:sectPr/></w:body></w:document>`,
     "word/numbering.xml": NUMBERING,
     ...extra,
@@ -47,7 +50,7 @@ export const wordPart = (kind, inner) => `${head}<w:${kind} xmlns:w="${WORD}">${
 const text = (value) => `<a:p><a:r><a:t>${value}</a:t></a:r></a:p>`;
 export const shape = (paragraphs, ph) => `<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"/><p:cNvSpPr/><p:nvPr>${ph ? `<p:ph type="${ph}"/>` : ""}</p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/>${paragraphs.map((p) => (p.startsWith("<") ? p : text(p))).join("")}</p:txBody></p:sp>`;
 export const slideTable = (rows) => `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="t"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl>${rows.map((r) => `<a:tr>${r.map((c) => `<a:tc><a:txBody>${text(c)}</a:txBody></a:tc>`).join("")}</a:tr>`).join("")}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>`;
-const slideXml = (shapes, attrs = "") => `${head}<p:sld xmlns:p="${PRES}" xmlns:a="${DRAW}" ${attrs}><p:cSld><p:spTree><p:nvGrpSpPr/>${shapes.join("")}</p:spTree></p:cSld></p:sld>`;
+const slideXml = (shapes, attrs = "") => `${head}<p:sld xmlns:p="${PRES}" xmlns:a="${DRAW}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ${attrs}><p:cSld><p:spTree><p:nvGrpSpPr/>${shapes.join("")}</p:spTree></p:cSld></p:sld>`;
 
 /** A presentation: `slides` in presentation order, each `{ shapes, notes?, hidden? }`; the slide parts are numbered in the
  *  reverse of that order, so a reader that sorts by file name reads them wrong. */

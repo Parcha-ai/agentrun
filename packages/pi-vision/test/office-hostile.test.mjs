@@ -43,16 +43,14 @@ test("a zip bomb that declares its size is refused by its ratio before anything 
   await within(1500, () => assert.rejects(textOf(t, bytes), misses("over_budget", /declares 120\.0 MiB from 0\.[0-9] MiB, over 100 to 1/)));
 });
 
-test("a zip bomb that lies about its size is stopped at the part cap plus one push of the inflater while it inflates", async (t) => {
+test("a zip bomb that lies about its size is stopped by the size it declares while it inflates, in one push of the inflater", async (t) => {
   const bytes = bomb(40);
   const { view, at } = centralEntries(bytes);
   view.setUint32(at[0] + 24, 1000, true);
   assert.equal(zipDirectory(bytes)[0].originalSize, 1000, "the directory now declares 1000 bytes, which passes every declared check");
   const w = await workspace(t);
   const error = await within(1500, () => w.source("lie.docx", bytes).then((source) => provider.text(source, {}, w.call())).then(() => assert.fail("read a bomb"), (e) => e));
-  assert.ok(error instanceof OfficeMissError && error.code === "over_budget" && /^word\/document\.xml is \d+\.\d MiB, over the 4\.0 MiB the reader takes of one part/.test(error.message), error.message);
-  const stopped = Number(/is (\d+\.\d) MiB/.exec(error.message)[1]);
-  assert.ok(stopped >= 4 && stopped <= 12, `stopped at ${stopped} MiB of a 40 MiB entry`);
+  assert.ok(error instanceof OfficeMissError && error.code === "unreadable" && error.message === "word/document.xml inflates past the size its directory declares", error.message);
 });
 
 test("an archive of too many entries is refused by the count", async (t) => {
@@ -134,6 +132,7 @@ test("a damaged archive is a typed miss at each place it can be damaged", async 
   await assert.rejects(textOf(t, patched(good, (v) => v.setUint32(v.getUint32(document + 42, true), 0, true))), misses("unreadable", /word\/document\.xml has a damaged header/));
   await assert.rejects(textOf(t, patched(good, (v) => v.setUint16(document + 10, 9, true))), misses("unsupported", /word\/document\.xml uses compression method 9/));
   await assert.rejects(textOf(t, patched(good, (v) => v.setUint32(document + 20, 0xffffffff, true))), misses("over_budget", /is a zip64 archive/));
+  await assert.rejects(textOf(t, patched(good, (v) => v.setUint32(document + 20, good.length + 100, true))), misses("unreadable", /word\/document\.xml is cut short/));
   const twins = zipSync({ "a.xml": strToU8("<a/>"), "b.xml": strToU8("<b/>") });
   const second = named(twins, "b.xml");
   await assert.rejects(textOf(t, patched(twins, (v, b) => b.set(strToU8("a.xml"), second + 46))), misses("unreadable", /a\.xml appears twice/));
@@ -153,4 +152,23 @@ test("a part that is not XML is unreadable, not empty text, and a package with n
   await assert.rejects(textOf(t, bytes), misses("unreadable", /the file could not be read/));
   const noBody = zipSync({ "word/numbering.xml": strToU8(wordPart("numbering", "")) });
   await assert.rejects(textOf(t, noBody), misses("unsupported", /not a docx/));
+});
+
+test("a file larger than it was described as is refused by its real size, before it is read", async (t) => {
+  const w = await workspace(t);
+  const source = { ...(await w.source("grown.docx", new Uint8Array(65 * MiB))), bytes: 100 };
+  await assert.rejects(provider.text(source, {}, w.call()), misses("over_budget", /65\.0 MiB is over the 64\.0 MiB the reader takes into memory/));
+});
+
+test("tables nested in tables that repeat their cells are held to the text budget before they are built", async (t) => {
+  const nest = (depth) => (depth === 0 ? "<text:p>seed</text:p>" : `<table:table><table:table-row><table:table-cell table:number-columns-repeated="63">${nest(depth - 1)}</table:table-cell></table:table-row></table:table>`);
+  const [{ text }] = await textOf(t, odf("text", nest(1)));
+  assert.equal(text.split(" | ").length, 63, "one level reads");
+  await within(2000, () => assert.rejects(textOf(t, odf("text", nest(9))), misses("over_budget", /the text of this file grows past what the reader builds, through repeated cells and rows/)));
+});
+
+test("a table row that repeats is read as many times as it says, empty repeated rows cost nothing, and a repeat of billions is over budget", async (t) => {
+  const row = (times, cell) => `<table:table-row table:number-rows-repeated="${times}"><table:table-cell>${cell}</table:table-cell></table:table-row>`;
+  assert.deepEqual(await textOf(t, odf("text", `<table:table>${row(3, "<text:p>again</text:p>")}${row(1_048_000, "")}</table:table>`)), [{ page: 1, text: "| again |\n| again |\n| again |" }]);
+  await within(2000, () => assert.rejects(textOf(t, odf("text", `<table:table>${row(1_048_576, "<text:p>again</text:p>")}</table:table>`)), misses("over_budget", /grows past what the reader builds/)));
 });

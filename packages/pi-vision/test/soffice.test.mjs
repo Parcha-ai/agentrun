@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { OfficeMissError } from "@parcha/pi-vision";
 import { sofficeProvider } from "@parcha/pi-vision/providers/soffice";
 import { registerProviderConformance } from "@parcha/pi-vision/testing";
-import { zipSync } from "fflate";
+import { strToU8, zipSync } from "fflate";
 import { docx, para, workspace } from "./office-fixtures.mjs";
 
 const FAKE = `#!/bin/sh
@@ -67,8 +67,8 @@ test("a conversion runs the program in a private profile, with an input and an o
   assert.deepEqual(readFileSync(join(r.bin, "last-input")), Buffer.from(bytes), "LibreOffice was given the document's own bytes");
   assert.deepEqual(readdirSync(r.work), [`soffice-${source.sha256}.pdf`], "the profile, the input and the output directory are gone");
   const [, run] = r.log();
-  const work = join(r.work, `soffice-${stem}`);
-  assert.equal(run, `--headless --invisible --norestore --nolockcheck --nodefault --nologo -env:UserInstallation=file://${work}/profile --convert-to pdf --outdir ${work}/out ${work}/in/${stem}.docx`);
+  const work = new RegExp(`${join(r.work, `soffice-${stem}-[0-9a-f]{8}`)}`).source;
+  assert.match(run, new RegExp(`^--headless --invisible --norestore --nolockcheck --nodefault --nologo -env:UserInstallation=file://(${work})/profile --convert-to pdf --outdir \\1/out \\1/in/${stem}\\.docx$`));
   assert.ok(existsSync(join(r.dir.path, "letter.DOCX")), "the source is untouched");
 });
 
@@ -81,8 +81,19 @@ test("a directory whose name has a space, a hash or a question mark reaches Libr
   assert.equal(out.path, join(odd, `soffice-${source.sha256}.pdf`));
   const [, run] = r.log();
   const url = /-env:UserInstallation=(\S+)/.exec(run)[1];
-  assert.equal(url, `file://${join(odd, `soffice-${source.sha256.slice(0, 16)}`, "profile").split("/").map(encodeURIComponent).join("/")}`);
+  assert.match(url, new RegExp(`^file://${odd.split("/").map(encodeURIComponent).join("/")}/soffice-${source.sha256.slice(0, 16)}-[0-9a-f]{8}/profile$`));
   assert.ok(url.includes("odd%20dir%20%231%20%3F/"), url);
+});
+
+test("two conversions of the same document at once each have a directory and a profile of their own, and the PDF is whole", async (t) => {
+  const r = await rig(t);
+  const source = await r.source("same.docx", docx(para("one")));
+  const [x, y] = await Promise.all([r.provider.office(source, {}, r.call()), r.provider.office(source, {}, r.call())]);
+  assert.equal(x.path, y.path);
+  assert.match(readFileSync(x.path, "utf8"), /^%PDF-1\.4 stand-in render of /);
+  assert.deepEqual(readdirSync(r.work), [`soffice-${source.sha256}.pdf`]);
+  const profiles = r.log().filter((line) => line.includes("--convert-to")).map((line) => /UserInstallation=file:\/\/(\S+)/.exec(line)[1]);
+  assert.equal(new Set(profiles).size, 2);
 });
 
 test("two conversions of different documents do not share a directory or a profile", async (t) => {
@@ -122,6 +133,21 @@ test("a zip bomb never reaches the program", async (t) => {
   assert.equal(r.log().filter((line) => line.includes("--convert-to")).length, 0);
   await assert.rejects(r.provider.office({ ...(await r.source("big.docx", docx(para("x")))), bytes: 70 * MiB }, {}, r.call()), misses("over_budget", /over the 64\.0 MiB the reader takes into memory/));
   assert.equal(r.log().filter((line) => line.includes("--convert-to")).length, 0);
+});
+
+test("an archive that lies about a size or a checksum never reaches the program", async (t) => {
+  const r = await rig(t);
+  const bomb = zipSync({ "word/document.xml": new Uint8Array(40 * MiB) }, { level: 1 });
+  const view = new DataView(bomb.buffer, bomb.byteOffset, bomb.byteLength);
+  for (let at = 0; at + 28 < bomb.length; at++) if (view.getUint32(at, true) === 0x02014b50) { view.setUint32(at + 24, 1000, true); break; }
+  await assert.rejects(r.provider.office(await r.source("lie.docx", bomb), {}, r.call()), misses("unreadable", /^word\/document\.xml inflates past the size its directory declares$/));
+  const stored = zipSync({ "word/document.xml": strToU8(`<w:document xmlns:w="x"><w:body><w:p><w:r><w:t>Amount 120.50</w:t></w:r></w:p></w:body></w:document>`) }, { level: 0 });
+  const at = Buffer.from(stored).indexOf("120.50");
+  assert.ok(at > 0);
+  stored[at + 4] = 0x39;
+  await assert.rejects(r.provider.office(await r.source("changed.docx", stored), {}, r.call()), misses("unreadable", /^word\/document\.xml is not what its directory declares/));
+  assert.equal(r.log().filter((line) => line.includes("--convert-to")).length, 0);
+  assert.deepEqual(readdirSync(r.work), []);
 });
 
 test("without the program the provider says what it needs, never throws from detect, and office is a needs miss", async (t) => {

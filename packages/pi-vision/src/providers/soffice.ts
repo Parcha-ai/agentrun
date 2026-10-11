@@ -1,10 +1,14 @@
 // A faithful render of an office document: LibreOffice in the environment converts it to PDF with a private profile,
 // and the PDF is read as one. The program runs through the environment's `exec`, so it runs where the agent's shell
-// runs; the document is held to the same archive limits as the zero-install reader's, because LibreOffice inflates
-// every entry of it. Each conversion works in a directory of its own that holds the profile, the input and the output,
-// and removes it when it ends, so two conversions never share a profile and nothing is left behind but the PDF.
+// runs. LibreOffice inflates every entry of a document, so the archive is held to the zero-install reader's limits and
+// then every entry is inflated once, checked and discarded, bounded by the size it declares: an archive that lies about
+// a size or a checksum never reaches the program. Each conversion works in a directory of its own, named afresh, that
+// holds the profile, the input and the output, and removes it when it ends: two conversions, of the same document too,
+// never share a profile, and nothing is left behind but the PDF, which is named by the document's hash and put in place
+// by a rename, so a reader of it sees a whole one.
+import { randomUUID } from "node:crypto";
 import { visionContext, type VisionResult } from "../core/env.js";
-import { OFFICE_LIMITS, OfficeMissError, readSource, zipDirectory, type OfficeLimits } from "../core/office.js";
+import { OFFICE_LIMITS, OfficeMissError, inflateEntry, readSource, zipDirectory, type OfficeLimits } from "../core/office.js";
 import { detectOnce, type Detection, type Provider } from "../core/provider.js";
 
 /** A version probe is cut after this many seconds (2026-10-11). */
@@ -58,11 +62,14 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
       const found = await detectOnce(provider, call.env);
       if (!found.available) throw new OfficeMissError("needs", `${found.needs}: ${found.reason}`);
       const bytes = await readSource(source, call);
-      if (bytes[0] === 0x50 && bytes[1] === 0x4b) zipDirectory(bytes, limits);
+      if (bytes[0] === 0x50 && bytes[1] === 0x4b) for (const entry of zipDirectory(bytes, limits)) {
+        await inflateEntry(bytes, entry, entry.originalSize, false);
+        await new Promise((done) => setImmediate(done));
+      }
       const { env } = call;
       const context = visionContext(call.signal);
       const stem = source.sha256.slice(0, 16);
-      const work = `${call.tempDir}/soffice-${stem}`;
+      const work = `${call.tempDir}/soffice-${stem}-${randomUUID().slice(0, 8)}`;
       const input = `${work}/in/${stem}${/\.[a-z0-9]{1,5}$/i.exec(source.path)?.[0].toLowerCase() ?? ""}`;
       const produced = `${work}/out/${stem}.pdf`;
       const final = `${call.tempDir}/soffice-${source.sha256}.pdf`;

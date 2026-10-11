@@ -9,7 +9,7 @@ import { officeJsProvider } from "@parcha/pi-vision/providers/office-js";
 import { fixtureDir, registerProviderConformance } from "@parcha/pi-vision/testing";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { c, cell, docx, item, odf, para, pptx, row, sha256, shape, sheetXml, slideTable, table, workspace, wordPart, xlsx } from "./office-fixtures.mjs";
+import { WORD, c, cell, docx, item, odf, para, pptx, row, sha256, shape, sheetXml, slideTable, table, workspace, wordPart, xlsx } from "./office-fixtures.mjs";
 
 const provider = officeJsProvider();
 const textOf = async (t, bytes, request = {}, name = "file.bin", kind = "office") => {
@@ -233,6 +233,76 @@ test("a part the file points to and does not hold is said, not read as empty", a
   const deck = pptx([{ shapes: [shape(["First"])] }, { shapes: [shape(["Second"])] }]);
   assert.deepEqual((await textOf(t, without(deck, "ppt/slides/slide1.xml"))).map((p) => p.text), ["First", "(slide 2 is missing from the file)"]);
   await assert.rejects(cellsOf(t, without(ledger(), "xl/worksheets/sheet1.xml")), misses("unreadable", /sheet Ledger is missing from the file/));
+});
+
+test("of the alternatives a package offers for one thing, the first it prefers is read and never the others", async (t) => {
+  const choice = (word) => `<mc:Choice Requires="wps"><w:r><w:t>${word}</w:t></w:r></mc:Choice>`;
+  const alternatives = (...choices) => `<w:p><w:r><w:t>Before </w:t></w:r><mc:AlternateContent>${choices.join("")}<mc:Fallback><w:r><w:t>fallback copy</w:t></w:r></mc:Fallback></mc:AlternateContent></w:p>`;
+  assert.equal((await textOf(t, docx(alternatives(choice("first choice"), choice("second choice")))))[0].text, "Before first choice");
+  assert.equal((await textOf(t, docx(alternatives())))[0].text, "Before fallback copy");
+  const block = `<mc:AlternateContent><mc:Choice Requires="x">${para("Chosen paragraph")}</mc:Choice><mc:Choice Requires="y">${para("Other paragraph")}</mc:Choice><mc:Fallback>${para("Fallback paragraph")}</mc:Fallback></mc:AlternateContent>`;
+  assert.equal((await textOf(t, docx(block)))[0].text, "Chosen paragraph");
+  const slide = `<mc:AlternateContent><mc:Choice Requires="p14">${shape(["Chosen words"])}</mc:Choice><mc:Choice Requires="p15">${shape(["Other choice"])}</mc:Choice><mc:Fallback>${shape(["Fallback words"])}</mc:Fallback></mc:AlternateContent>`;
+  assert.deepEqual(await textOf(t, pptx([{ shapes: [slide] }])), [{ page: 1, text: "Chosen words" }]);
+});
+
+test("a header or footer is read when the document relates to it, and not for the name of a part it does not", async (t) => {
+  const bytes = docx(para("Body"), {
+    "word/header1.xml": wordPart("hdr", para("Used header")),
+    "word/header9.xml": wordPart("hdr", para("Leftover header")),
+    "word/footer1.xml": wordPart("ftr", para("Used footer")),
+  }, ["word/header9.xml"]);
+  assert.equal((await textOf(t, bytes))[0].text, "Header: Used header\nBody\nFooter: Used footer");
+});
+
+test("a list keeps the number it starts at and the number an override restarts it at, and letters run on past z as Word writes them", async (t) => {
+  const numbering = `<?xml version="1.0"?><w:numbering xmlns:w="${WORD}">
+    <w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="5"/><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>
+    <w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="lowerLetter"/></w:lvl></w:abstractNum>
+    <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+    <w:num w:numId="2"><w:abstractNumId w:val="0"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="9"/></w:lvlOverride></w:num>
+    <w:num w:numId="3"><w:abstractNumId w:val="1"/></w:num>
+  </w:numbering>`;
+  const body = [item("five", 1), item("six", 1), item("nine", 2), item("ten", 2), ...Array.from({ length: 28 }, (_, i) => item(`letter ${i + 1}`, 3))].join("");
+  const lines = (await textOf(t, docx(body, { "word/numbering.xml": numbering })))[0].text.split("\n");
+  assert.deepEqual(lines.slice(0, 5), ["5. five", "6. six", "9. nine", "10. ten", "a. letter 1"]);
+  assert.deepEqual(lines.slice(-4), ["y. letter 25", "z. letter 26", "aa. letter 27", "bb. letter 28"]);
+});
+
+test("a number is annotated as the kind of thing its format shows: a date, a time of day, both, or nothing for elapsed time", async (t) => {
+  const bytes = xlsx({
+    sheets: [{ name: "K", xml: sheetXml([[1, ...[1, 2, 3, 4, 5, 6, 7, 8].map((s, i) => c(`${"ABCDEFGH"[i]}1`, "<v>61.75</v>", ` s="${s}"`))], [2, c("A2", "<v>0</v>", ' s="2"'), c("B2", "<v>1.5</v>", ' s="5"')]]) }],
+    formats: { 164: "[h]:mm:ss", 165: "mm:ss", 166: "mmm yyyy" },
+    styles: [0, 14, 18, 22, 46, 164, 165, 166, 27],
+  });
+  const [{ cells }] = await cellsOf(t, bytes);
+  assert.deepEqual(cells.map((x) => [x.ref, x.date]), [
+    ["A1", "1900-03-01"], ["B1", "18:00:00"], ["C1", "1900-03-01T18:00:00"], ["D1", undefined], ["E1", undefined], ["F1", "18:00:00"], ["G1", "1900-03-01"], ["H1", undefined],
+    ["A2", "00:00:00"], ["B2", undefined],
+  ]);
+});
+
+test("a formula whose stored result is the empty string has a result; one the writer left empty has none", async (t) => {
+  const bytes = xlsx({ sheets: [{ name: "E", xml: sheetXml([[1, c("A1", '<f>""</f><v></v>', ' t="str"'), c("B1", "<f>1+1</f><v></v>"), c("C1", "<f>1+1</f>")]]) }] });
+  const [{ cells }] = await cellsOf(t, bytes);
+  assert.deepEqual(cells, [{ ref: "A1", value: "", formula: '""', cached: true }, { ref: "B1", value: null, formula: "1+1", cached: false }, { ref: "C1", value: null, formula: "1+1", cached: false }]);
+  assert.equal((await textOf(t, bytes))[0].text, 'Sheet "E"\nA1= {=""} | B1=<no stored value> {=1+1} | C1=<no stored value> {=1+1}');
+});
+
+test("a part encoded as UTF-16, with either byte order, reads as the text it holds", async (t) => {
+  const xml = `<?xml version="1.0" encoding="UTF-16"?><w:document xmlns:w="${WORD}"><w:body><w:p><w:r><w:t>Zażółć gęślą jaźń</w:t></w:r></w:p></w:body></w:document>`;
+  const encoded = (bigEndian) => { const body = Buffer.from(xml, "utf16le"); if (bigEndian) body.swap16(); return Buffer.concat([Buffer.from(bigEndian ? [0xfe, 0xff] : [0xff, 0xfe]), body]); };
+  for (const bigEndian of [false, true]) assert.equal((await textOf(t, zipSync({ "word/document.xml": encoded(bigEndian) })))[0].text, "Zażółć gęślą jaźń");
+});
+
+test("a changed byte in a stored part is unreadable, not a different value", async (t) => {
+  const stored = zipSync(unzipSync(ledger()), { level: 0 });
+  assert.equal((await cellsOf(t, stored))[0].cells.find((x) => x.ref === "C2").value, 120.5, "the same bytes, unchanged, read");
+  const changed = stored.slice();
+  const at = Buffer.from(changed).indexOf("<v>120.5</v>");
+  changed[at + 7] = 0x36;
+  assert.equal(Buffer.from(changed).subarray(at, at + 12).toString(), "<v>120.6</v>");
+  await assert.rejects(cellsOf(t, changed), misses("unreadable", /xl\/worksheets\/sheet1\.xml is not what its directory declares: its size or its checksum differs/));
 });
 
 test("a file is recognised by what it holds: a word document under a spreadsheet's name is read as a word document", async (t) => {
