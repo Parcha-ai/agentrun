@@ -129,3 +129,47 @@ export function endlessPdf({ depth = 5, fanout = 100, text = false } = {}) {
 
 /** A one-page document whose page is `points` square: a poster the size of a building at 72 points to the inch. */
 export const hugePagePdf = (points = 14400) => documentPdf([{ lines: ["A very large page."], size: [points, points] }]);
+
+const pad10 = (n) => String(n).padStart(10, "0");
+
+/** One page of text whose objects are indexed by a cross-reference stream (PDF 1.5) in place of a table. */
+export function xrefStreamPdf(lines) {
+  const bodies = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [4 0 R] /Count 1 >>", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>",
+    streamObject("", latin1(`BT /F1 12 Tf 14 TL 72 720 Td ${lines.map((line) => `(${escape(line)}) Tj T*`).join(" ")} ET`))];
+  const parts = [latin1("%PDF-1.5\n")];
+  const offsets = [];
+  let at = parts[0].length;
+  bodies.forEach((body, i) => {
+    const bytes = Buffer.concat([latin1(`${i + 1} 0 obj\n`), Buffer.isBuffer(body) ? body : latin1(body), latin1("\nendobj\n")]);
+    offsets.push(at);
+    parts.push(bytes);
+    at += bytes.length;
+  });
+  const entry = (type, field, generation) => Buffer.from([type, (field >>> 24) & 255, (field >>> 16) & 255, (field >>> 8) & 255, field & 255, generation]);
+  const table = Buffer.concat([entry(0, 0, 255), ...offsets.map((o) => entry(1, o, 0)), entry(1, at, 0)]);
+  parts.push(Buffer.concat([latin1("6 0 obj\n"), streamObject(`/Type /XRef /Size 7 /W [1 4 1] /Root 1 0 R`, table), latin1(`\nendobj\nstartxref\n${at}\n%%EOF\n`)]));
+  return Buffer.concat(parts);
+}
+
+/** One page of text in the layout of a linearized file: a parameter dictionary first, a first-page cross-reference
+ *  section after it whose trailer leads back to the main section at the end, and the last `startxref` naming the first. */
+export function linearizedPdf(lines) {
+  const header = "%PDF-1.7\n";
+  const parameters = "7 0 obj\n<< /Linearized 1 /L 0 /H [0 0] /O 4 /E 0 /N 1 /T 0 >>\nendobj\n";
+  const bodies = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [4 0 R] /Count 1 >>", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>",
+    streamObject("", latin1(`BT /F1 12 Tf 14 TL 72 720 Td ${lines.map((line) => `(${escape(line)}) Tj T*`).join(" ")} ET`))];
+  const firstSection = (prev) => `xref\n7 1\n${pad10(header.length)} 00000 n \ntrailer\n<< /Size 8 /Root 1 0 R /Prev ${pad10(prev)} >>\nstartxref\n0\n%%EOF\n`;
+  const objects = [];
+  let at = header.length + parameters.length + firstSection(0).length;
+  const offsets = bodies.map((body, i) => {
+    const bytes = Buffer.concat([latin1(`${i + 1} 0 obj\n`), Buffer.isBuffer(body) ? body : latin1(body), latin1("\nendobj\n")]);
+    objects.push(bytes);
+    const here = at;
+    at += bytes.length;
+    return here;
+  });
+  const main = `xref\n0 7\n0000000000 65535 f \n${offsets.map((o) => `${pad10(o)} 00000 n \n`).join("")}0000000000 00000 f \ntrailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n${header.length + parameters.length}\n%%EOF\n`;
+  return Buffer.concat([latin1(header + parameters + firstSection(at)), ...objects, latin1(main)]);
+}

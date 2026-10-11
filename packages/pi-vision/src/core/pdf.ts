@@ -179,14 +179,53 @@ async function keep(ctx: PdfContext, name: string, bytes: Uint8Array): Promise<s
   return done ? at : null;
 }
 
-/** Saved revisions and signature dictionaries, counted in the file's own bytes: each save ends with `startxref N %%EOF`,
- *  a linearized file carries one more for its first page, and a signature dictionary holds a `/ByteRange` over the file. */
+/** The saves of a file: the sections of its cross-reference chain, from the last `startxref` back along each section's
+ *  `/Prev`. A section is a table with a trailer or a cross-reference stream, and only its own dictionary is read, never
+ *  the words in a page. Null when the chain does not lead through sections. */
+function saveChain(raw: string): number | null {
+  const marker = raw.lastIndexOf("startxref");
+  let at: number | null = marker < 0 ? null : Number(/^startxref\s+(\d+)/.exec(raw.slice(marker, marker + 40))?.[1] ?? NaN);
+  const seen = new Set<number>();
+  while (at !== null && Number.isInteger(at) && at >= 0 && at < raw.length && !seen.has(at) && seen.size < 10_000) {
+    seen.add(at);
+    const table = raw.startsWith("xref", at);
+    if (!table && !/^\d+\s+\d+\s+obj\b/.test(raw.slice(at, at + 32))) return null;
+    const from = table ? raw.indexOf("trailer", at) : at;
+    const to = from < 0 ? -1 : raw.indexOf(table ? "startxref" : "stream", from);
+    if (to < 0) return null;
+    const prev = /\/Prev\s+(\d+)/.exec(raw.slice(from, to));
+    at = prev ? Number(prev[1]) : null;
+  }
+  return at === null ? seen.size : null;
+}
+
+/** The `/ByteRange` keys of signature dictionaries: names outside strings, comments and stream data, so text a page shows
+ *  is not one. */
+function signatureCount(raw: string): number {
+  let count = 0;
+  for (let i = 0; i < raw.length; ) {
+    const c = raw.charCodeAt(i);
+    if (c === 0x25) { while (i < raw.length && raw.charCodeAt(i) !== 10 && raw.charCodeAt(i) !== 13) i++; }
+    else if (c === 0x28) { for (let depth = 0; i < raw.length; i++) { const d = raw.charCodeAt(i); if (d === 0x5c) i++; else if (d === 0x28) depth++; else if (d === 0x29 && --depth === 0) break; } i++; }
+    else if (c === 0x3c) i = raw.charCodeAt(i + 1) === 0x3c ? i + 2 : (raw.indexOf(">", i) + 1 || raw.length);
+    else if (c === 0x73 && raw.startsWith("stream", i) && /[\r\n]/.test(raw[i + 6] ?? "") && !/[a-z]/i.test(raw[i - 1] ?? "")) { const end = raw.indexOf("endstream", i + 6); i = end < 0 ? raw.length : end + 9; }
+    else if (c === 0x2f && /^\/ByteRange\s*\[/.test(raw.slice(i, i + 24))) { count++; i += 10; }
+    else i++;
+  }
+  return count;
+}
+
+/** Saved revisions (1 for a file written once; a linearized file's first-page section is not a save) and signature
+ *  dictionaries, read from the file's structure; null for a file over `SOURCE_BYTES_IN_PROCESS`, which is not scanned. */
 async function structureOf(source: ProviderSource, ctx: PdfContext): Promise<Pick<PdfFacts, "revisions" | "signatures">> {
   const read = source.bytes > SOURCE_BYTES_IN_PROCESS ? null : await ctx.env.readBinaryFile(source.path, visionContext(ctx.signal));
   if (!read?.ok) return { revisions: null, signatures: null };
   const raw = Buffer.from(read.value.buffer, read.value.byteOffset, read.value.byteLength).toString("latin1");
-  const saves = raw.match(/startxref\s+\d+\s+%%EOF/g)?.length ?? 0;
-  return { revisions: saves ? Math.max(1, saves - (raw.slice(0, 1024).includes("/Linearized") ? 1 : 0)) : null, signatures: raw.match(/\/ByteRange\s*\[/g)?.length ?? 0 };
+  const head = raw.slice(0, 1024);
+  const first = head.search(/\d+\s+\d+\s+obj\b/);
+  const linearized = first >= 0 && (head.slice(first).split("endobj")[0] ?? "").includes("/Linearized");
+  const saves = saveChain(raw);
+  return { revisions: saves === null ? null : Math.max(1, saves - (linearized && saves > 1 ? 1 : 0)), signatures: signatureCount(raw) };
 }
 
 /** The facts and the text of every page, from the first provider that reads the file; kept once per content and provider. */
@@ -209,9 +248,10 @@ export async function pdfDocument(source: ProviderSource, ctx: PdfContext): Prom
   });
 }
 
-const pngSize = (png: Uint8Array) => {
+/** The pixels a complete PNG's header gives; null for bytes that start with no PNG signature or do not end in its IEND chunk. */
+const pngSize = (png: Uint8Array): { width: number; height: number } | null => {
   const view = Buffer.from(png.buffer, png.byteOffset, png.byteLength);
-  return { width: view.readUInt32BE(16), height: view.readUInt32BE(20) };
+  return view.length > 45 && view.readUInt32BE(0) === 0x89504e47 && view.readUInt32BE(view.length - 8) === 0x49454e44 ? { width: view.readUInt32BE(16), height: view.readUInt32BE(20) } : null;
 };
 
 /** A page as a PNG at `dpi`: its size is the page's size in points times dpi over 72, rounded up. `path` is where the
@@ -221,7 +261,8 @@ export async function pdfPage(source: ProviderSource, ctx: PdfContext, request: 
   return viaProviders(ctx, "render", "the page image", async (provider, version, call) => {
     const name = `${stemOf(source, provider, version, `-p${request.page}-${request.dpi}dpi`)}.png`;
     const keptPng = await readKept(ctx, name);
-    if (keptPng) return { madeBy: { provider: provider.name, version }, image: { data: keptPng, mimeType: "image/png", ...pngSize(keptPng) }, path: keptAt(ctx, name) };
+    const keptSize = keptPng && pngSize(keptPng);
+    if (keptPng && keptSize) return { madeBy: { provider: provider.name, version }, image: { data: keptPng, mimeType: "image/png", ...keptSize }, path: keptAt(ctx, name) };
     const made = await provider.render!(source, request, call);
     return { madeBy: made.madeBy, image: made.image, path: made.image.mimeType === "image/png" ? await keep(ctx, name, made.image.data) : null };
   });

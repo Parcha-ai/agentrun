@@ -21,9 +21,13 @@ async function run(call: ProviderCall, timeoutS: number, argv: readonly string[]
   const base = `${call.tempDir}/run-${++runs}`;
   const ran = await call.env.exec(["sh", "-c", CAPTURE, "sh", `${base}.out`, `${base}.err`, ...argv], { timeout: timeoutS }, c);
   if (!ran.ok) throw ran.error.code === "timeout" ? new PdfProviderError("over_budget", `${argv[0]} did not finish within ${timeoutS} s`) : ran.error;
-  const read = async (path: string) => { const r = await call.env.readBinaryFile(path, c); return r.ok ? utf8(r.value) : ""; };
-  if (ran.value.exitCode === 0) return read(`${base}.out`);
-  throw new Error(firstLine(await read(`${base}.err`)) || `${argv[0]} exited ${ran.value.exitCode}`);
+  if (ran.value.exitCode === 0) {
+    const output = await call.env.readBinaryFile(`${base}.out`, c);
+    if (!output.ok) throw output.error;
+    return utf8(output.value);
+  }
+  const diagnostics = await call.env.readBinaryFile(`${base}.err`, c);
+  throw new Error((diagnostics.ok && firstLine(utf8(diagnostics.value))) || `${argv[0]} exited ${ran.value.exitCode}`);
 }
 
 const fail = (page: number): never => { throw new Error(`pdfinfo gave no size for page ${page}`); };

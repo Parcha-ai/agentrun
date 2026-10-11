@@ -78,6 +78,18 @@ test("bytes that are not a PDF are an unreadable miss quoting poppler's first li
   assert.deepEqual([past.ok, past.miss.code], [false, "unreadable"]);
 });
 
+test("an output file poppler wrote and the environment cannot read back is a failure that falls to the next reader, not an empty text", async (t) => {
+  if (without(t)) return;
+  const broken = new Proxy(env, {
+    get: (target, key) => (key === "readBinaryFile"
+      ? async (path, context) => (path.endsWith(".out") ? { ok: false, error: Object.assign(new Error("the output cannot be read"), { code: "io" }) } : target.readBinaryFile(path, context))
+      : Reflect.get(target, key)?.bind?.(target) ?? Reflect.get(target, key)),
+  });
+  const only = await pdfDocument(docs.six, { env: broken, providers: [poppler] });
+  assert.deepEqual([only.ok, only.miss.code, only.miss.detail], [false, "unreadable", "the output cannot be read (poppler)"]);
+  assert.equal(ok(await pdfDocument(docs.six, { env: broken, providers: [poppler, unpdf] })).madeBy.provider, "unpdf");
+});
+
 test("a render that never ends is cut at poppler's time cap, pdftoppm is gone, and the next render works", async (t) => {
   if (without(t)) return;
   const endless = await sourceOf("endless.pdf", endlessPdf());
