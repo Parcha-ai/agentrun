@@ -96,7 +96,17 @@ async function openArchive(data: Uint8Array, call: ProviderCall, limits: OfficeL
     if ((parsed += bytes.length) > limits.maxParsedBytes) throw new OfficeMissError("over_budget", `the parts of this file pass ${mib(limits.maxParsedBytes)}, the most the reader parses in one read; read it with bash`);
     await new Promise((done) => setImmediate(done));
     const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? "utf-16le" : bytes[0] === 0xfe && bytes[1] === 0xff ? "utf-16be" : "utf-8";
-    return new parser.DOMParser({ locator: false, onError: parser.onErrorStopParsing }).parseFromString(new TextDecoder(encoding).decode(bytes), "text/xml").documentElement;
+    const xml = new TextDecoder(encoding).decode(bytes);
+    let elements = 0;
+    for (let tag = xml.indexOf("<"); tag >= 0; tag = xml.indexOf("<", tag + 1)) if (![47, 33, 63].includes(xml.charCodeAt(tag + 1))) elements++;
+    if (elements > limits.maxElements) throw new OfficeMissError("over_budget", `${name} holds ${elements} elements, over the ${limits.maxElements} the reader takes of one part; read it with bash`);
+    const root = new parser.DOMParser({ locator: false, onError: parser.onErrorStopParsing }).parseFromString(xml, "text/xml").documentElement;
+    const open: [Element, number][] = root ? [[root, 1]] : [];
+    for (let at = open.pop(); at; at = open.pop()) {
+      if (at[1] > limits.maxDepth) throw new OfficeMissError("over_budget", `${name} nests more than ${limits.maxDepth} levels deep, more than the reader walks; read it with bash`);
+      for (let node = at[0].firstChild; node; node = node.nextSibling) if (node.nodeType === 1) open.push([node as Element, at[1] + 1]);
+    }
+    return root;
   };
   const rels = async (owner: string) => {
     const dir = owner.slice(0, owner.lastIndexOf("/") + 1);

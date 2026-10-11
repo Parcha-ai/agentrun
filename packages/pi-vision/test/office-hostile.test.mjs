@@ -96,10 +96,20 @@ test("repeat and span counts that name billions read as the widest a table or sh
   assert.equal(lines[2].split(" | ").length, 63);
 });
 
-test("a document nested far past the stack is a typed miss, not a crash", async (t) => {
-  const depth = 20_000;
-  const bytes = docx(`${"<w:sdt><w:sdtContent>".repeat(depth)}${para("buried")}${"</w:sdtContent></w:sdt>".repeat(depth)}`);
-  await within(5000, () => assert.rejects(textOf(t, bytes), misses("unreadable", /the file could not be read: Maximum call stack size exceeded/)));
+test("a part nested deeper than the reader walks is over budget before it is walked, however deep", async (t) => {
+  const nested = (depth) => docx(`${"<w:sdt><w:sdtContent>".repeat(depth)}${para("buried")}${"</w:sdtContent></w:sdt>".repeat(depth)}`);
+  assert.equal((await textOf(t, nested(100)))[0].text, "buried", "a hundred levels read");
+  await within(5000, () => assert.rejects(textOf(t, nested(20_000)), misses("over_budget", /^word\/document\.xml nests more than 256 levels deep/)));
+  await assert.rejects(textOf(t, nested(130)), misses("over_budget", /nests more than 256 levels deep/), "an sdt and its content are two levels each");
+});
+
+test("a part with more elements than the reader takes is over budget before it is parsed", async (t) => {
+  const dense = (count) => docx(`<w:p>${"<w:r/>".repeat(count)}<w:r><w:t>x</w:t></w:r></w:p>`);
+  const lenient = officeJsProvider({ limits: { maxRatio: 1_000_000 } });
+  assert.equal((await textOf(t, dense(1000), {}, lenient))[0].text, "x");
+  const started = performance.now();
+  await assert.rejects(textOf(t, dense(520_000), {}, lenient), misses("over_budget", /^word\/document\.xml holds 520\d{3} elements, over the 500000 the reader takes of one part/));
+  assert.ok(performance.now() - started < 3000, "refused before its parse, which takes seconds");
 });
 
 test("an entity bomb is not expanded: the part is unreadable, and nothing of it reaches the text", async (t) => {

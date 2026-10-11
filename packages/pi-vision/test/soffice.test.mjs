@@ -85,6 +85,20 @@ test("a directory whose name has a space, a hash or a question mark reaches Libr
   assert.ok(url.includes("odd%20dir%20%231%20%3F/"), url);
 });
 
+test("the timeouts it hands to exec are seconds, as the environment reads them", async (t) => {
+  const r = await rig(t, { timeoutS: 7 });
+  const seen = [];
+  const env = { ...r.env, id: r.env.id, exec: (command, options, context) => { seen.push(options?.timeout); return r.env.exec(command, options, context); } };
+  Object.setPrototypeOf(env, r.env);
+  const source = await r.source("seconds.docx", docx(para("x")));
+  await r.provider.office(source, {}, { ...r.call(), env });
+  assert.deepEqual(seen, [30, 7], "the version probe waits 30 s and the conversion the 7 s it was given, never 30,000 or 7,000");
+  const [defaulted] = [sofficeProvider({ command: join(r.bin, "soffice") })];
+  const again = [];
+  await defaulted.office(await r.source("default.docx", docx(para("y"))), {}, { ...r.call(), env: Object.setPrototypeOf({ exec: (c, o, x) => { again.push(o?.timeout); return r.env.exec(c, o, x); } }, r.env) });
+  assert.deepEqual(again, [30, 180]);
+});
+
 test("two conversions of the same document at once each have a directory and a profile of their own, and the PDF is whole", async (t) => {
   const r = await rig(t);
   const source = await r.source("same.docx", docx(para("one")));

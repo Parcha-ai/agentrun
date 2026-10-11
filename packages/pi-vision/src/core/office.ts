@@ -27,6 +27,10 @@ export type OfficeLimits = {
   readonly maxPartBytes: number;
   /** All parts parsed for one read, so a deck of thousands of slides costs seconds of parsing per call, not minutes; also the most text built from the cells of one workbook (2026-10-11). */
   readonly maxParsedBytes: number;
+  /** Elements in one XML part, counted before it is parsed: 1,000,000 of them in 3.8 MiB took 2.0 s and 746 MB, and a 4 MiB sheet of real cells holds about 360,000 (measured 2026-10-11). */
+  readonly maxElements: number;
+  /** Levels an XML part may nest, measured after it is parsed and before any walk of it: a legitimate document nests tables, groups and lists a few dozen levels, and a walk recurses once a level (2026-10-11). */
+  readonly maxDepth: number;
   /** Cells one read builds: a part at the cap holds at most about 170,000, but a repeat count in an OpenDocument sheet holds any number (2026-10-11). */
   readonly maxCells: number;
 };
@@ -38,6 +42,8 @@ export const OFFICE_LIMITS: OfficeLimits = Object.freeze({
   ratioFloorBytes: MiB,
   maxPartBytes: 4 * MiB,
   maxParsedBytes: 32 * MiB,
+  maxElements: 500_000,
+  maxDepth: 256,
   maxCells: 250_000,
 });
 
