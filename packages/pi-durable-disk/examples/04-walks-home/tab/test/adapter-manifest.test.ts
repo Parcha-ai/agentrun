@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { adapterChunkPath, baseChunkPath, MAX_ADAPTER_BYTES, parseBaseAdapters, planHomecoming } from '../src/adapter-manifest.ts';
+import { activeAdapters, adapterChunkPath, baseChunkPath, homeChunks, isBaseAdapters, MAX_ADAPTER_BYTES, parseBaseAdapters, planHomecoming } from '../src/adapter-manifest.ts';
 import { ModelError } from '../src/model.ts';
 
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
@@ -51,6 +51,33 @@ test('a homecoming with the base cached fetches only the new adapter', () => {
   assert.deepEqual(planHomecoming(m, has(m.base.sha256, tools!.sha256, moon!.sha256)), { base: false, adapters: [], bytes: 0 });
 });
 
+test('the active adapters: the ones `active` names, in load order, else the newest (the last listed)', () => {
+  assert.deepEqual(activeAdapters(parse(manifest())).map((a) => a.name), ['moon.gguf']);
+  assert.deepEqual(activeAdapters(parse({ ...manifest(), active: ['tools.gguf'] })).map((a) => a.name), ['tools.gguf']);
+  assert.deepEqual(activeAdapters(parse({ ...manifest(), active: ['moon.gguf', 'tools.gguf'] })).map((a) => a.name), ['tools.gguf', 'moon.gguf']);
+  assert.deepEqual(activeAdapters(parse({ ...manifest(), adapters: [] })), []);
+  assert.equal(parse(manifest()).active, undefined, 'absent stays absent');
+});
+
+test('an adapter carries its own sampling, valid keys only', () => {
+  const m = manifest();
+  m.adapters[1] = adapter('moon', 13, { sampling: { temperature: 0.4, penalty_repeat: 1.3, n_predict: 9999, top_k: 'all' } });
+  assert.deepEqual(parse(m).adapters[1]!.sampling, { temperature: 0.4, penalty_repeat: 1.3 });
+  assert.equal(parse(manifest()).adapters[1]!.sampling, undefined);
+});
+
+test('every chunk of a homecoming, the base first; and the format check alone', () => {
+  const m = parse(manifest());
+  const all = homeChunks(m);
+  assert.equal(all.length, 6 + 3 + 3);
+  assert.equal(all[0]!.path, 'home/base/chunk-0000.bin');
+  assert.equal(all.at(-1)!.path, 'home/adapters/moon/chunk-0002.bin');
+  assert.equal(isBaseAdapters(JSON.stringify(manifest())), true);
+  assert.equal(isBaseAdapters(JSON.stringify({ format: 'gguf-chunks-v1' })), false);
+  assert.equal(isBaseAdapters('{not json'), false);
+  assert.equal(isBaseAdapters('null'), false);
+});
+
 test('an adapter trained on another base model is refused, by repo or by revision', () => {
   const other = manifest();
   other.adapters[1] = adapter('moon', 13, { model: { ...MODEL, revision: '0'.repeat(40) } });
@@ -86,6 +113,10 @@ test('every kind of wrong manifest is refused with a reason that names the field
     ['rank', (m) => (m.adapters[1].rank = 0), /rank and alpha/],
     ['dtype', (m) => (m.adapters[1].dtype = 'q4'), /not f16, q8_0 or f32/],
     ['sha', (m) => (m.adapters[1].sha256 = 'XYZ'), /sha256 is not 64/],
+    ['active empty', (m) => (m.active = []), /active is not a list/],
+    ['active not a list', (m) => (m.active = 'moon.gguf'), /active is not a list/],
+    ['active unknown', (m) => (m.active = ['sun.gguf']), /active names "sun\.gguf", which is not a listed adapter/],
+    ['active twice', (m) => (m.active = ['moon.gguf', 'moon.gguf']), /active names moon\.gguf twice/],
   ];
   for (const [why, mutate, reason] of cases) {
     const m = manifest();

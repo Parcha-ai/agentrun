@@ -6,11 +6,15 @@
 //   {format: "gguf-base-adapters-v1",
 //    base: {name, quant, model: {repo, revision}, size, sha256, chunk_bytes, chunks: [{n, path, offset, size, sha256}]},
 //    adapters: [{name: "<stem>.gguf", kind: "skill" | "obsession", topic, model: {repo, revision}, rank, alpha, scale, dtype,
-//                verified_on?: [base sha256], size, sha256, chunk_bytes, chunks: [...]}]}
+//                verified_on?: [base sha256], sampling?: {...}, size, sha256, chunk_bytes, chunks: [...]}],
+//    active?: ["<stem>.gguf", ...]}
+// `active` names the adapters a request applies, each at its trained scale; without it, the last adapter listed (the newest) is the one.
+// Every adapter listed is loaded (at scale 0 when it is not active), so a later switch needs no reload.
 // An adapter fits the base when both name the same model (repo and revision): it then fits any quantization of it. Measured: the stock
 // ggml-org Q4_K_M and the trainer's own Q4_K_M of gemma-3-1b-it gave token-identical greedy output with the same adapter.
 
 import { cut, MAX_CHUNK_BYTES, MAX_MODEL_BYTES, ModelError, type ChunkEntry } from './model.ts';
+import { validSampling, type Sampling } from './sampling.ts';
 
 export const BASE_ADAPTERS_MANIFEST_PATH = 'home/manifest.json';
 /** An adapter is a LoRA over a 1B base: r 32 at f16 is 52 MB. Far past this it is not an adapter. */
@@ -34,8 +38,21 @@ export interface AdapterEntry extends ChunkedFile {
   dtype: 'f16' | 'q8_0' | 'f32';
   /** sha256 of the base files it was checked against, if any. */
   verified_on?: string[];
+  /** Sampling settings the trainer wants while this adapter is active (valid keys only; see sampling.ts). */
+  sampling?: Partial<Sampling>;
 }
-export interface BaseAdaptersManifest { format: 'gguf-base-adapters-v1'; base: BaseEntry; adapters: AdapterEntry[] }
+export interface BaseAdaptersManifest {
+  format: 'gguf-base-adapters-v1';
+  base: BaseEntry;
+  adapters: AdapterEntry[];
+  /** The adapters a request applies at their trained scale, by name; absent: the last one listed. */
+  active?: string[];
+}
+
+/** The format check alone, for a caller that holds either kind of manifest: true when `text` claims to be gguf-base-adapters-v1. */
+export function isBaseAdapters(text: string): boolean {
+  try { return (JSON.parse(text) as { format?: unknown } | null)?.format === 'gguf-base-adapters-v1'; } catch { return false; }
+}
 
 /** wllama's own file names in its filesystem (the model's shards, the vision projector): an adapter never takes one. */
 export const WLLAMA_FILE_NAMES = /^(model-\d{5}-of-\d{5}\.gguf|mmproj\.gguf)$/;
@@ -107,13 +124,34 @@ export function parseBaseAdapters(text: string): BaseAdaptersManifest {
     if (typeof a.scale !== 'number' || !(a.scale > 0) || a.scale > MAX_ADAPTER_SCALE) throw new ModelError(`adapter ${a.name}: scale ${a.scale} is outside (0, ${MAX_ADAPTER_SCALE}]`);
     if (a.dtype !== 'f16' && a.dtype !== 'q8_0' && a.dtype !== 'f32') throw new ModelError(`adapter ${a.name}: dtype ${JSON.stringify(a.dtype)} is not f16, q8_0 or f32`);
     const verified = Array.isArray(a.verified_on) ? a.verified_on.filter((s: unknown) => typeof s === 'string' && HEX.test(s)) : [];
+    const sampling = validSampling(a.sampling);
     return {
       name: a.name, kind: a.kind, topic, model, rank: a.rank, alpha: a.alpha, scale: a.scale, dtype: a.dtype,
       ...(verified.length ? { verified_on: verified } : {}),
+      ...(Object.keys(sampling).length ? { sampling } : {}),
       ...chunked(`adapter ${a.name}`, a, MAX_ADAPTER_BYTES, (n) => adapterChunkPath(stem, n)),
     };
   });
-  return { format: 'gguf-base-adapters-v1', base, adapters };
+  if (m.active === undefined) return { format: 'gguf-base-adapters-v1', base, adapters };
+  if (!Array.isArray(m.active) || m.active.length === 0) throw new ModelError('active is not a list of adapter names');
+  const active: string[] = [];
+  for (const name of m.active) {
+    if (typeof name !== 'string' || !names.has(name)) throw new ModelError(`active names ${JSON.stringify(name)}, which is not a listed adapter`);
+    if (active.includes(name)) throw new ModelError(`active names ${name} twice`);
+    active.push(name);
+  }
+  return { format: 'gguf-base-adapters-v1', base, adapters, active };
+}
+
+/** The adapters a request applies, in load order: the ones `active` names, or the last one listed; none when there are no adapters. */
+export function activeAdapters(m: BaseAdaptersManifest): AdapterEntry[] {
+  if (m.active) return m.adapters.filter((a) => m.active!.includes(a.name));
+  return m.adapters.slice(-1);
+}
+
+/** Every chunk on the disk the manifest describes, the base's first: what a copy of the homecoming has to hold. */
+export function homeChunks(m: BaseAdaptersManifest): ChunkEntry[] {
+  return [...m.base.chunks, ...m.adapters.flatMap((a) => a.chunks)];
 }
 
 export interface HomecomingPlan {

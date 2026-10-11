@@ -73,7 +73,7 @@ export interface FetchDeps {
  * returned when any chunk fails. The whole-file sha256 in the manifest is the trainer's claim: each chunk is verified against its own
  * hash from the same manifest, and the whole file is not hashed again in the tab (the browser cannot hash incrementally).
  */
-export async function fetchModel(m: Manifest, deps: FetchDeps): Promise<Uint8Array[]> {
+export async function fetchModel(m: Pick<Manifest, 'chunks'>, deps: FetchDeps): Promise<Uint8Array[]> { // any chunked file: a merged model, or a base or an adapter (homecoming.ts)
   const parts: Uint8Array[] = new Array(m.chunks.length);
   let next = 0, done = 0;
   const one = async (c: ChunkEntry) => {
