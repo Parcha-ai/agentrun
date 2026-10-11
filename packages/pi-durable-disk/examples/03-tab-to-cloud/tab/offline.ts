@@ -10,7 +10,7 @@ export const CANNOT_OFFLINE: readonly string[] = [
   "Jev and the safety check: off in this mode, by decision. Nothing judges an answer.",
   "Viewers and operators: they follow the run through the server, which no longer runs it. They are told it is checked out to a browser.",
   "Cloud models: only the model on this page answers. The checkout needs the agent to be on it already.",
-  "The computer (bash, node): it is not started. The model's conversation has no tools.",
+  "The computer (bash, node) runs here, from this browser's cache, on a copy of the workspace. Its files stay in this browser and are not synced back. Anything that needs the network (npm install, curl) fails.",
   "Sync back: none. The checkout is one way, and this browser's copy is the only live one.",
 ];
 
@@ -29,6 +29,8 @@ export interface CheckoutRecord {
   manifestSha: string;
   chunks: number;
   bytes: number;
+  /** The workspace saved at checkout: files and bytes (the computer boots offline from it). */
+  workspace: { files: number; bytes: number };
   /** The browser promised to keep this site's storage (navigator.storage.persist): without it the copy may be removed under storage pressure. */
   persistent: boolean;
 }
@@ -78,23 +80,28 @@ export interface CacheProgress {
  * the model runtime and of the store, the store's worker), the model's manifest and every chunk. A chunk is checked against the manifest's sha256 before it is kept;
  * one already cached is kept as it is. Nothing is put in the cache that did not come whole.
  */
-export async function cacheRunForOffline(o: { run: string; secret: string; manifestText: string; onProgress?(p: CacheProgress): void }): Promise<{ files: number; bytes: number }> {
-  const manifest = parseManifest(o.manifestText);
+export async function cacheRunForOffline(o: { run: string; secret: string; manifestText: string | null; onProgress?(p: CacheProgress): void }): Promise<{ files: number; bytes: number }> {
+  const manifest = o.manifestText === null ? undefined : parseManifest(o.manifestText); // no model: the run is checked out with its computer only (?brain=off)
   const cache = await caches.open(CACHE_NAME);
   const shell = ((await (await fetch("/offline.json", { cache: "no-store" })).json()) as { files: string[] }).files;
   const pages = [`/run/${encodeURIComponent(o.run)}`, ...shell];
-  const total = pages.length + 1 + manifest.chunks.length;
+  const total = pages.length + (manifest ? 1 + manifest.chunks.length : 0);
   let done = 0;
   let bytes = 0;
   const tick = (what: string) => o.onProgress?.({ done: ++done, total, what });
   for (const path of pages) {
     const r = await fetch(path, { cache: "reload" });
     if (!r.ok) throw new Error(`${path}: ${r.status}`);
-    bytes += Number(r.headers.get("content-length") ?? 0);
-    await cache.put(cacheKey(new URL(path, location.origin)), r);
+    const length = Number(r.headers.get("content-length") ?? 0);
+    bytes += length;
+    // The computer's package is 78 MB and never changes under its name (its digest is in the build): one already cached whole is kept, and the body is not read.
+    const have = path.endsWith(".webc") ? await cache.match(cacheKey(new URL(path, location.origin))) : undefined;
+    if (have && length > 0 && Number(have.headers.get("content-length")) === length) await r.body?.cancel();
+    else await cache.put(cacheKey(new URL(path, location.origin)), r);
     tick(path);
   }
   const work = (path: string) => `${location.origin}/api/runs/${encodeURIComponent(o.run)}/work/${path}`;
+  if (!manifest) return { files: total, bytes };
   await cache.put(cacheKey(work("home/model/manifest.json")), new Response(o.manifestText, { headers: { "content-type": "application/octet-stream" } }));
   tick("the model's manifest");
   for (const chunk of manifest.chunks) {

@@ -149,6 +149,22 @@ try {
   ok("two more turns after the reload, still no network", c1.text.length > 5 && c2.text.length > 5, { c1, c2 });
   const last = await ev<{ head: number }>("demo.offline()");
   ok("and they are committed too", last.head > off2.head, { before: off2.head, after: last.head });
+  // the computer, beside the model, with no network
+  const comp = await ev<{ booted: boolean; ms: number; files: number; error?: string; parts?: Record<string, number> } | null>("demo.computer()");
+  ok("the computer booted with the model loaded, from the cache and this browser's copy of the workspace", comp?.booted === true, comp);
+  console.log(`computer boot ${comp?.ms} ms ${JSON.stringify(comp?.parts)}`);
+  const node = await ev<{ exitCode?: number; output?: string; error?: string }>("demo.exec(\"node -e 'console.log(1+1)' && echo from-offline > offline-file.txt\")");
+  ok("node and bash run on the computer with no network", node.exitCode === 0 && /^2/.test((node.output ?? "").trim()), node);
+  await ev("demo.flush()");
+  await page.send("Page.reload");
+  await sleep(1500);
+  await page.until("globalThis.demo && demo.state.mode === 'offline' && demo.computer() !== null && demo.brain().swapped === true", 300_000, 1000);
+  const kept = await ev<{ output?: string }>("demo.exec('cat offline-file.txt')");
+  ok("a file written on the computer offline is there after another reload", /from-offline/.test(kept.output ?? ""), kept);
+  const c4 = await ev<{ booted: boolean; ms: number }>("demo.computer()");
+  console.log(`${at()} s: reloaded again; the computer ${c4.booted ? "booted" : "did not boot"} in ${c4.ms} ms and the model answers again`);
+  const d1 = await ask("one more, please");
+  ok("and the model still answers after the computer's boot", d1.text.length > 5, d1);
   await page.screenshot(join(shots, "offline-3-reloaded.png"));
 } catch (error) {
   console.log(`FAIL ${(error as Error).message}`);
