@@ -171,5 +171,7 @@ test("the last window keeps the previous request and final answer, not its loop"
 test("go_online takes no arguments and is one byte form", () => {
   assert.equal(renderCall("go_online", {}), '{"name":"go_online","arguments":{}}');
   assert.deepEqual(parseModelTurn(`<thinking>Training needs the cloud.</thinking>\n${CALL_OPEN}{"name":"go_online","arguments":{}}${CALL_CLOSE}`).call, { name: "go_online", arguments: {} });
-  assert.ok(callGrammar().includes('go_online-args-obj ::= "{" "}"'));
+  assert.ok(callGrammar().includes('go-online-args-obj ::= "{" "}"'));
+  // GBNF rule names: letters, digits and hyphens only.
+  for (const line of callGrammar().split("\n").filter(Boolean)) assert.match(line, /^[A-Za-z0-9-]+ ::= /);
 });

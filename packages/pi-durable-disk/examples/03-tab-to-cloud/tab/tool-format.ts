@@ -515,7 +515,8 @@ export function callGrammar(tools: readonly ToolSpec[] = TOOLS, opts: { withOpen
     }
   };
   const alts = tools.map((t) => {
-    const r = ruleFor(`${t.name}-args`, t.parameters);
+    // GBNF rule names are letters, digits and hyphens (go_online's underscore is not allowed).
+    const r = ruleFor(`${t.name.replace(/[^A-Za-z0-9-]/g, "-")}-args`, t.parameters);
     return `${q(`{"name":${JSON.stringify(t.name)},"arguments":`)} ${r} "}"`;
   });
   return [
