@@ -135,7 +135,7 @@ export async function inflateEntry(data: Uint8Array, entry: ZipEntry, limit: num
   if (entry.originalSize > limit) throw new OfficeMissError("over_budget", `${entry.name} is ${mib(entry.originalSize)}, over the ${mib(limit)} the reader takes of one part; read it with bash`);
   if (entry.method !== 0 && entry.method !== 8) throw new OfficeMissError("unsupported", `${entry.name} uses compression method ${entry.method}, which the reader does not take`);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  if (view.getUint32(entry.offset, true) !== LOCAL_ENTRY) throw damaged("has a damaged header");
+  if (entry.offset + 30 > data.length || view.getUint32(entry.offset, true) !== LOCAL_ENTRY) throw damaged("has a damaged header");
   const start = entry.offset + 30 + view.getUint16(entry.offset + 26, true) + view.getUint16(entry.offset + 28, true);
   const packed = data.subarray(start, start + entry.size);
   if (packed.length < entry.size) throw damaged("is cut short");
@@ -146,10 +146,15 @@ export async function inflateEntry(data: Uint8Array, entry: ZipEntry, limit: num
     crc = crc32(chunk, crc);
     if (keep) chunks.push(chunk);
   };
-  if (entry.method === 0) take(packed);
-  else {
-    const stream = new (await import("fflate")).Inflate(take);
-    for (let from = 0; from < packed.length; from += PUSH_BYTES) stream.push(packed.subarray(from, from + PUSH_BYTES), from + PUSH_BYTES >= packed.length);
+  try {
+    if (entry.method === 0) take(packed);
+    else {
+      const stream = new (await import("fflate")).Inflate(take);
+      for (let from = 0; from < packed.length; from += PUSH_BYTES) stream.push(packed.subarray(from, from + PUSH_BYTES), from + PUSH_BYTES >= packed.length);
+    }
+  } catch (error) {
+    if (error instanceof OfficeMissError) throw error;
+    throw damaged(`cannot be inflated: ${String((error as Error)?.message ?? error).split("\n")[0]}`);
   }
   if (total !== entry.originalSize || crc !== entry.crc) throw damaged("is not what its directory declares: its size or its checksum differs");
   return keep ? Buffer.concat(chunks) : new Uint8Array(0);

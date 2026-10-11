@@ -150,6 +150,20 @@ test("an archive that lies about a size or a checksum never reaches the program"
   assert.deepEqual(readdirSync(r.work), []);
 });
 
+test("a damaged entry is a typed miss before the program, whatever damaged it", async (t) => {
+  const r = await rig(t);
+  const good = zipSync({ "word/document.xml": strToU8(`<w:document xmlns:w="x"><w:body>${"<w:p><w:r><w:t>some words to compress</w:t></w:r></w:p>".repeat(50)}</w:body></w:document>`) });
+  const view = new DataView(good.buffer, good.byteOffset, good.byteLength);
+  let central = 0;
+  while (view.getUint32(central, true) !== 0x02014b50) central++;
+  const damaged = (change) => { const copy = good.slice(); change(new DataView(copy.buffer), copy); return copy; };
+  const local = view.getUint32(central + 42, true);
+  const data = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+  await assert.rejects(r.provider.office(await r.source("offset.docx", damaged((v) => v.setUint32(central + 42, good.length + 100, true))), {}, r.call()), misses("unreadable", /^word\/document\.xml has a damaged header$/));
+  await assert.rejects(r.provider.office(await r.source("stream.docx", damaged((_, b) => { b[data + 4] ^= 0xff; b[data + 5] ^= 0xff; })), {}, r.call()), misses("unreadable", /^word\/document\.xml (cannot be inflated|is not what its directory declares)/));
+  assert.equal(r.log().filter((line) => line.includes("--convert-to")).length, 0);
+});
+
 test("without the program the provider says what it needs, never throws from detect, and office is a needs miss", async (t) => {
   const w = await workspace(t);
   const provider = sofficeProvider({ command: join(w.dir.path, "no-such-soffice") });

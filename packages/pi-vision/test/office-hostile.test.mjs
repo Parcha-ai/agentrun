@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { OFFICE_LIMITS, OfficeMissError, zipDirectory } from "@parcha/pi-vision";
 import { officeJsProvider } from "@parcha/pi-vision/providers/office-js";
 import { strToU8, zipSync } from "fflate";
-import { c, docx, odf, para, pptx, sheetXml, shape, workspace, wordPart, xlsx } from "./office-fixtures.mjs";
+import { WORD, c, docx, item, odf, para, pptx, sheetXml, shape, workspace, wordPart, xlsx } from "./office-fixtures.mjs";
 
 const provider = officeJsProvider();
 const MiB = 1024 * 1024;
@@ -164,11 +164,19 @@ test("tables nested in tables that repeat their cells are held to the text budge
   const nest = (depth) => (depth === 0 ? "<text:p>seed</text:p>" : `<table:table><table:table-row><table:table-cell table:number-columns-repeated="63">${nest(depth - 1)}</table:table-cell></table:table-row></table:table>`);
   const [{ text }] = await textOf(t, odf("text", nest(1)));
   assert.equal(text.split(" | ").length, 63, "one level reads");
-  await within(2000, () => assert.rejects(textOf(t, odf("text", nest(9))), misses("over_budget", /the text of this file grows past what the reader builds, through repeated cells and rows/)));
+  await within(2000, () => assert.rejects(textOf(t, odf("text", nest(9))), misses("over_budget", /the text of this file grows past what the reader builds/)));
 });
 
 test("a table row that repeats is read as many times as it says, empty repeated rows cost nothing, and a repeat of billions is over budget", async (t) => {
   const row = (times, cell) => `<table:table-row table:number-rows-repeated="${times}"><table:table-cell>${cell}</table:table-cell></table:table-row>`;
   assert.deepEqual(await textOf(t, odf("text", `<table:table>${row(3, "<text:p>again</text:p>")}${row(1_048_000, "")}</table:table>`)), [{ page: 1, text: "| again |\n| again |\n| again |" }]);
-  await within(2000, () => assert.rejects(textOf(t, odf("text", `<table:table>${row(1_048_576, "<text:p>again</text:p>")}</table:table>`)), misses("over_budget", /grows past what the reader builds/)));
+  await within(2000, () => assert.rejects(textOf(t, odf("text", `<table:table>${row(1_048_576, "<text:p>again</text:p>")}</table:table>`)), misses("over_budget", /the text of this file grows past what the reader builds/)));
+});
+
+test("list labels that grow with the number they start at are charged to the text budget, like any other text", async (t) => {
+  const numbering = `<?xml version="1.0"?><w:numbering xmlns:w="${WORD}"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="32767"/><w:numFmt w:val="lowerLetter"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`;
+  const few = docx(Array.from({ length: 10 }, () => item("x", 1)).join(""), { "word/numbering.xml": numbering });
+  assert.equal((await textOf(t, few))[0].text.split("\n").length, 10, "ten such labels read");
+  const many = docx(Array.from({ length: 4000 }, () => item("x", 1)).join(""), { "word/numbering.xml": numbering });
+  await within(3000, () => assert.rejects(textOf(t, many), misses("over_budget", /the text of this file grows past what the reader builds/)));
 });

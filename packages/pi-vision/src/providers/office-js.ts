@@ -127,11 +127,19 @@ const tableRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
 /** Of the alternatives a package offers for one thing (`mc:AlternateContent`), the first one it prefers, else its fallback: never both. */
 const chosen = (el: El) => first(el, "Choice") ?? first(el, "Fallback");
 
+/** The characters a document's text may grow to, the part cap: every line is charged as it is built, and what a table
+ *  repeats (a cell by its column count, a row by its row count) before it is, so neither long list labels nor tables
+ *  nested in tables can multiply the text past it. */
+type TextBudget = { left: number };
+function spend(budget: TextBudget, chars: number): void {
+  if ((budget.left -= chars) < 0) throw new OfficeMissError("over_budget", "the text of this file grows past what the reader builds; read it with bash");
+}
+
 /** A word document as one page: headers, the body in reading order, then footers. A list item carries its marker: `-` for a
  *  bullet and for any numbering the reader does not count (roman, ordinal), `1.` and `a.` for decimal and letter numbering,
  *  counted per list and level. A table row is `| a | b |`, a cell's paragraphs joined by ` / `, a merged cell followed by
  *  the empty cells it spans. Inserted text is kept, deleted text is not. */
-async function docx(a: Archive): Promise<Page[]> {
+async function docx(a: Archive, limits: OfficeLimits): Promise<Page[]> {
   const [body, numbering] = [await a.part("word/document.xml"), await a.part("word/numbering.xml")];
   if (!body) throw unreadable("a word document without word/document.xml");
   const levels = new Map(named(numbering, "abstractNum").map((n): [string, Map<string, Level>] => [at(n, "abstractNumId") ?? "", new Map(named(n, "lvl").map((l): [string, Level] => [at(l, "ilvl") ?? "0", { format: at(first(l, "numFmt"), "val") ?? "decimal", start: Math.max(1, int(at(first(l, "start"), "val"), 1, MAX_LIST_START)) }]))]));
@@ -144,6 +152,7 @@ async function docx(a: Archive): Promise<Page[]> {
     return [at(n, "numId") ?? "", own];
   }));
   const counts = new Map<string, number>();
+  const budget = { left: limits.maxPartBytes };
   const marker = (p: Element) => {
     const num = first(first(p, "pPr"), "numPr");
     const id = at(first(num, "numId"), "val");
@@ -163,10 +172,13 @@ async function docx(a: Archive): Promise<Page[]> {
         const style = at(first(first(k, "pPr"), "pStyle"), "val") ?? "";
         const heading = style === "Title" ? 1 : style.startsWith("Heading") ? Math.max(1, int(style.slice(7), 1, MAX_HEADING)) : 0;
         const text = inline(k).trim();
-        if (text) out.push(`${heading ? `${"#".repeat(heading)} ` : marker(k)}${text}`);
+        const line = text && `${heading ? `${"#".repeat(heading)} ` : marker(k)}${text}`;
+        if (line) { spend(budget, line.length); out.push(line); }
       } else if (k.localName === "tbl") {
         for (const tr of named(k, "tr")) {
-          out.push(tableRow(named(tr, "tc").flatMap((tc) => [blocks(tc, []).join(" / "), ...Array<string>(Math.max(1, int(at(first(first(tc, "tcPr"), "gridSpan"), "val"), 1, MAX_TABLE_COLUMNS)) - 1).fill("")])));
+          const row = tableRow(named(tr, "tc").flatMap((tc) => [blocks(tc, []).join(" / "), ...Array<string>(Math.max(1, int(at(first(first(tc, "tcPr"), "gridSpan"), "val"), 1, MAX_TABLE_COLUMNS)) - 1).fill("")]));
+          spend(budget, row.length);
+          out.push(row);
         }
       } else blocks(k.localName === "AlternateContent" ? chosen(k) : k, out);
     }
@@ -296,13 +308,6 @@ function odfInline(el: Element): string {
 }
 const tableRows = (el: El): Element[] => kids(el).flatMap((k) => (k.localName === "table-row" ? [k] : ["table-row-group", "table-header-rows", "table-rows"].includes(k.localName ?? "") ? tableRows(k) : []));
 const repeats = (el: Element, name: string, max: number) => Math.max(1, int(at(el, name), 1, max));
-
-/** The characters a document's text may grow to: what one table repeats (a cell by its column count, a row by its row count) is
- *  charged before it is built, so tables nested in tables cannot multiply their text past it. */
-type TextBudget = { left: number };
-function spend(budget: TextBudget, chars: number): void {
-  if ((budget.left -= chars) < 0) throw new OfficeMissError("over_budget", "the text of this file grows past what the reader builds, through repeated cells and rows; read it with bash");
-}
 
 function odfBlocks(el: El, depth: number, out: string[], budget: TextBudget): string[] {
   for (const k of kids(el)) {
@@ -454,7 +459,7 @@ export function officeJsProvider(options: OfficeJsOptions = {}): Provider {
       const wanted: Wanted = (index) => within(index + 1, request.pages);
       const sheetPages = (sheets: Sheet[]) => sheets.map((s) => ({ page: s.index + 1, text: sheetText(s.name, s.cells, s.hidden) }));
       const pages = format === "rtf" ? [{ page: 1, text: rtf! }]
-        : format === "docx" ? await docx(archive!)
+        : format === "docx" ? await docx(archive!, limits)
         : format === "pptx" ? await pptx(archive!, request.pages)
         : format === "xlsx" ? sheetPages(await xlsx(archive!, limits, wanted))
         : format === "ods" ? sheetPages(await ods(archive!, limits, wanted))
