@@ -18,7 +18,7 @@ import { THINKING_HABIT_NOTE, talkHtml } from "../../episode2/talk.ts";
 import { stageZoom } from "../fit.ts";
 import { chooseScale } from "../talkfit.ts";
 import { type Train } from "../../episode2/progress.ts";
-import { brainBanner, brainCaptions, brainLocalBadge, brainTalkTurns, BRAIN_ASK_PLACEHOLDER } from "../brain.ts";
+import { brainBanner, brainCaptions, brainLocalBadge, brainTalkTurns, brainTopic, viewerLineGoesToModel, BRAIN_ASK_PLACEHOLDER } from "../brain.ts";
 import { FindNotes, obsessionNote } from "../notes.ts";
 import { emptyFind, parseFind, type Find } from "../find.ts";
 import { findHtml } from "../find-panel.ts";
@@ -226,7 +226,7 @@ function renderCentre(state: ShowState): void {
 let bannerKey = "";
 function renderBanner(): void {
   // A brain swap (the trained model becoming the agent's brain, in the 03 page) says it in its own words; without one, the creature tab's model messages do.
-  const brain = brainBanner(feed.state.brain, take.find.topic ?? take.train.topic);
+  const brain = brainBanner(feed.state.brain, brainTopic(feed.state.brain, take.find.topic, take.train.topic));
   const text = brain ? brain.text : modelBanner(take.model);
   const notes = brain ? [brain.note, brain.note2] : [obsessionNote(take.model)];
   const phase = brain ? (brain.phase === "ready" ? "switched" : brain.phase) : take.model.phase;
@@ -355,7 +355,7 @@ function frame(): void {
     const label = brainTurns.has(id) ? "The agent, on its trained brain" : "The model";
     if (model && who && who.textContent !== label) who.textContent = label;
   }
-  const talkingToModel = take.model.phase === "switched";
+  const talkingToModel = viewerLineGoesToModel(take.model.phase, state.brain);
   const input = $<HTMLInputElement>("chatin");
   const placeholder = state.brain?.stage === "ready" ? BRAIN_ASK_PLACEHOLDER : talkingToModel ? "Ask the model anything" : "Tell the agent what to do";
   if (input.placeholder !== placeholder) input.placeholder = placeholder;
@@ -392,8 +392,8 @@ $("chatform").addEventListener("submit", async (e) => {
   const text = chatIn.value.trim();
   if (!text) return;
   chatErr.hidden = true;
-  // Once the tab says the chat switched, the line goes to the model it holds; before that, to the agent.
-  if (take.model.phase === "switched") {
+  // Once the tab says the chat switched, the line goes to the model it holds; before that, and always when the run has a brain entry (the agent answers with that model), to the agent.
+  if (viewerLineGoesToModel(take.model.phase, feed.state.brain)) {
     const sent = modelChat.send(text, performance.now());
     if (!sent.ok) {
       chatErr.textContent = sent.reason;

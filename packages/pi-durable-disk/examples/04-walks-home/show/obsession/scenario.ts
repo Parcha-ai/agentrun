@@ -226,7 +226,7 @@ export class ScenarioObsession {
           const { streaming: _s, ...rest } = t;
           const next = { ...rest, ...patch } as ChatTurn;
           if (next.thinking === undefined) delete next.thinking;
-          return last ? next : { ...next, streaming: true };
+          return last ? { ...next, ...(reply.cap ? { cut: true } : {}) } : { ...next, streaming: true };
         });
         this.chat();
       }),

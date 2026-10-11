@@ -68,3 +68,9 @@ export function brainLocalBadge(b: Brain | null, chat: readonly ChatTurn[]): { l
   const rate = b.tokensPerS !== null && b.tokensPerS > 0 ? `${b.tokensPerS.toFixed(1)} tokens/s on its first answer` : "speed not measured";
   return { line: `running in this tab: ${b.bytes !== null ? `${mb(b.bytes)} · ` : ""}${rate} · no model server`, sub: LOCAL_SUB };
 }
+
+/** The topic the banner names: the entry's own, then the run's progress files' (a ready entry can name it before those files are read). */
+export const brainTopic = (b: Brain | null, ...fromFiles: (string | null | undefined)[]): string | null => b?.topic ?? fromFiles.find((t): t is string => typeof t === "string" && t !== "") ?? null;
+
+/** Where the viewer's line goes: the creature tab's model (`chat-send`) only for a run with no brain entry; with one, the agent answers (the operator `ask` path), whatever the tab reports. */
+export const viewerLineGoesToModel = (modelPhase: string, brain: Brain | null): boolean => modelPhase === "switched" && brain === null;

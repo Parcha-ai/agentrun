@@ -66,12 +66,18 @@ await run("1", async ({ tab, read, seek }) => {
   expect("ready: the payoff caption names Gemma 3 1B, running in this tab", /The agent's brain is now the model it trained: Gemma 3 1B, running in this tab/.test(ready.caption), ready.caption);
   if (shots) await tab.screenshot(join(shots, "brain-ready.png"));
 
+  // The creature tab can report model-switched while the feed has a ready brain (both on one page): the line still goes to the agent, never to chat-send.
+  const fromTab = (message) => tab.eval(`document.getElementById("tab").contentWindow.eval(${JSON.stringify(`parent.postMessage(${JSON.stringify({ ns: "walks-home", ...message })}, "*")`)}); 0`);
+  await fromTab({ type: "model-switched", from: "base", to: "trained" });
+  await sleep(600);
+  await tab.eval(`(() => { const w = document.getElementById("tab").contentWindow; window.__sent = []; const orig = w.postMessage.bind(w); w.postMessage = function (m, ...r) { if (m && m.type === "chat-send") window.__sent.push(m); return orig(m, ...r); }; })()`);
   // A question after the swap goes to the agent; its answer is the model's: thinking note kept, the answer visible, labelled as the agent's.
   await seek(330, false);
   await tab.eval(`(() => { const i = document.getElementById("chatin"); i.value = "Tell me a joke"; document.getElementById("chatform").requestSubmit(); })()`);
   const answered = await until(read, (s) => /THINKING OUT LOUD/.test(s.talk) && s.who.includes("The agent, on its trained brain"), 30_000);
   expect("answer: the big view shows the viewer's question and the thinking note (Nobody asks this model to think out loud)", /Tell me a joke/.test(answered.talk) && /Nobody asks this model to think out loud/.test(answered.talk), answered.talk);
   expect("answer: the chat names who answered: the agent, on its trained brain (not 'The model')", answered.who.includes("The agent, on its trained brain") && !answered.who.includes("The model"), answered.who);
+  expect("answer: with the tab saying model-switched and a ready brain, the line went to the agent (no chat-send)", (await read(`window.__sent.length`)) === 0 && /THINKING OUT LOUD/.test(answered.talk), await read(`window.__sent`));
   expect("answer: no system prompt claim stays on the banner", /No system prompt/.test(answered.banner ?? ""), answered.banner);
   if (shots) await tab.screenshot(join(shots, "brain-answer.png"));
 });

@@ -128,7 +128,7 @@ test("the feed announces each brain entry once, carries the thinking, and marks 
 });
 
 // ---- What the stage says about the swap: only what the entries' fields say.
-import { brainBanner, brainCaptions, brainDetail, brainHeadline, brainLocalBadge, brainTalkTurns, BRAIN_ASK_PLACEHOLDER, BRAIN_CHAT_LABEL } from "../obsession/brain.ts";
+import { brainBanner, brainCaptions, brainDetail, brainHeadline, brainLocalBadge, brainTalkTurns, brainTopic, viewerLineGoesToModel, BRAIN_ASK_PLACEHOLDER, BRAIN_CHAT_LABEL } from "../obsession/brain.ts";
 
 test("the payoff names the model from the entry's own name, and says it runs in this tab", () => {
   assert.equal(brainHeadline(B(READY)), "The agent's brain is now the model it trained: Gemma 3 1B, running in this tab");
@@ -302,4 +302,35 @@ test("a line typed after the swap is answered by the agent with the trained mode
   sc.command({ t: "ask", text: "What is the capital of France?" });
   sc.advance((doneAt + 90) * 1000);
   assert.equal(sc.state.chat.at(-1)!.text, "The rehearsal has no recorded answer to that question.");
+});
+
+test("a viewer's line goes to the creature tab's model only when the tab switched AND the run has no brain entry; with any brain entry it goes to the agent (the brain pane shows no chat-send answer)", () => {
+  const brain = (stage: Brain["stage"]) => brainFromItem({ ...READY, stage, id: "20" })!;
+  assert.equal(viewerLineGoesToModel("switched", null), true, "the old route, for a run without a brain entry");
+  assert.equal(viewerLineGoesToModel("switched", brain("ready")), false, "a tab that reports model-switched while the feed has a ready brain: still the agent");
+  assert.equal(viewerLineGoesToModel("switched", brain("loading")), false);
+  assert.equal(viewerLineGoesToModel("switched", brain("failed")), false);
+  assert.equal(viewerLineGoesToModel("idle", null), false);
+});
+
+test("the brain banner's topic is the entry's own, then the progress files' (a ready entry can name it before the files are read)", () => {
+  const ready = brainFromItem(READY)!;
+  assert.equal(brainTopic(ready, "Smurfs", "pizza"), "the Moon", "the entry's own first, even when the files say otherwise");
+  const noTopic = { ...ready, topic: null };
+  assert.equal(brainTopic(noTopic, null, "pizza"), "pizza");
+  assert.equal(brainTopic(noTopic, "Smurfs", "pizza"), "Smurfs");
+  assert.equal(brainTopic(noTopic, null, null), null);
+  assert.equal(brainTopic(null, "Smurfs", null), "Smurfs");
+});
+
+test("a rehearsal answer that stopped at its length limit is shown as cut, as on the old path", () => {
+  const sc = new ScenarioObsession({ origin: 0, think: true, brain: "ready" });
+  sc.begin();
+  const doneAt = 14 + 148.4 + 2 + 140.2;
+  sc.advance((doneAt + 30) * 1000);
+  sc.command({ t: "ask", text: "Who are you?" });
+  sc.advance((doneAt + 120) * 1000);
+  const answer = sc.state.chat.filter((t) => t.brain).at(-1)!;
+  assert.equal(answer.streaming, undefined, "finished");
+  assert.equal(answer.cut, true, "the recorded answer_at_cap is the cut flag");
 });
