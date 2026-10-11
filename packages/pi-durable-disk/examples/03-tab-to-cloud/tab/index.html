@@ -20,8 +20,8 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--sans); }
-body { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100vh; }
-header { grid-row: 1; } #banner { grid-row: 2; } main { grid-row: 3; } footer { grid-row: 4; }
+body { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; height: 100vh; }
+header { grid-row: 1; } #banner { grid-row: 2; } #checkedout { grid-row: 3; } main { grid-row: 4; } footer { grid-row: 5; }
 header { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
 h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 .run { font: 12px var(--mono); color: var(--muted); }
@@ -33,6 +33,11 @@ h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 .badge.moving { color: var(--moving); background: var(--moving-bg); }
 .badge.moving .dot { animation: pulse 1s infinite alternate; }
 .badge.parked { color: var(--parked); background: var(--parked-bg); }
+.badge.offline { color: var(--tab); background: var(--tab-bg); }
+#checkedout { margin: 0; padding: 10px 20px; background: var(--tab-bg); color: var(--ink); border-bottom: 1px solid var(--line); font-size: 13px; }
+#checkedout strong { color: var(--tab); }
+#checkedout ul { margin: 6px 0 0; padding-left: 20px; color: var(--muted); }
+#offline-status { font-size: 12px; color: var(--muted); }
 @keyframes pulse { from { opacity: 1 } to { opacity: 0.25 } }
 .badge-text { font-weight: 650; font-size: 14px; }
 .badge-sub { font-size: 12px; opacity: 0.85; }
@@ -99,9 +104,12 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
     <div id="switcher" class="switcher" role="group" aria-label="Where the agent runs"></div>
     <span id="handover"></span>
     <button id="takeover" class="link" hidden title="Take the run from the cloud now: its claim is revoked mid-step">take it now</button>
+    <button id="offline" class="link" hidden title="Copy the run's store and the model into this browser and hand the run over, for good: it keeps working with no network, and the server no longer runs it">Take it offline</button>
+    <span id="offline-status"></span>
   </div>
 </header>
 <p id="banner" hidden></p>
+<section id="checkedout" hidden><strong>Checked out to this browser.</strong> The live copy of this run is here: the server released it and runs it no more. You can turn the network off and keep talking to the agent. What does not work:<ul id="cannot"></ul></section>
 <main>
   <section id="chat"></section>
   <aside>

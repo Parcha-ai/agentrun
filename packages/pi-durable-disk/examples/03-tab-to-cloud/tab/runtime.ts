@@ -4,7 +4,7 @@
 // Node tests start it from an attached PipeClient, an environment and its workspace.
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
-import type { Conversation, HarnessSettings } from "@earendil-works/pi-durable";
+import type { Conversation, HarnessSettings, Storage } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
@@ -151,6 +151,44 @@ export async function startTab<E extends RuntimeEnv>(opts: {
       await live?.stop();
       await harness.close(ctx).catch(() => undefined);
       await env.cleanup(ctx).catch(() => undefined);
+    },
+  };
+}
+
+/** An environment for a run with no computer (checked out to a browser): every operation reports that nothing is available, so a tool call fails with that reason and the Harness still opens. */
+function noComputer(): RuntimeEnv {
+  const unavailable = () => Promise.resolve({ ok: false, error: Object.assign(new Error("there is no computer while the run is checked out to this browser"), { code: "not_supported" }) });
+  const base: Record<string, unknown> = { id: "offline", cwd: "/", cleanup: async () => undefined };
+  // Not `then` (an environment returned from an async function would be taken for a thenable that never settles), nor a symbol.
+  return new Proxy(base, { get: (target, key) => (typeof key === "symbol" || key === "then" ? undefined : key in target ? target[key] : unavailable) }) as unknown as RuntimeEnv;
+}
+
+/** What the page shows of a workspace when there is none: no files, nothing to compare. */
+function noWorkspace(): Workspace {
+  return { list: async () => [], baselineDigest: async () => "", setLazy: () => undefined, restore: async () => ({ files: 0, bytes: 0, skipped: [] }), changes: async () => ({ changes: [], scanned: new Map() }), accept: () => undefined } as unknown as Workspace;
+}
+
+/**
+ * The agent from a store in this browser, no pipe: pi's Harness over `storage` (the OPFS copy of the run's store), no computer, no write-through, and a cloud model that is
+ * out of reach (its calls fail at once, by name). The trained model is added to `models` by the page (brain.ts) once it is loaded. `close` closes the storage.
+ */
+export async function startLocal(opts: { storage: Storage; model: string; settings?: HarnessSettings }): Promise<TabRuntime> {
+  const env = noComputer();
+  const models = agentModels({ baseUrl: "https://offline.invalid/v1", modelId: opts.model, fetch: (() => Promise.reject(new Error("the run is checked out to this browser: the cloud model is out of reach"))) as typeof globalThis.fetch });
+  const harness = await Harness.open(opts.storage, { registry: agentRegistry(async () => undefined, { switchTool: false, environments: [] }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
+  await harness.resume();
+  const root = await harness.root(ctx, { agent: rootAgent(opts.model) });
+  return {
+    harness,
+    root,
+    models,
+    env,
+    workspace: noWorkspace(),
+    restored: { files: 0, bytes: 0, skipped: [] },
+    syncs: [],
+    async stopLive() {},
+    async close() {
+      await harness.close(ctx).catch(() => undefined);
     },
   };
 }

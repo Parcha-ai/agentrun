@@ -4,7 +4,7 @@
 // --fetch` downloads it once from Wasmer's CDN and checks its digest.
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +37,9 @@ copyFileSync(join(here, "../../04-walks-home/tab/node_modules/@wllama/wllama/esm
 copyFileSync(join(here, "../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm"), join(out, "vendor", "sqlite3.wasm"));
 await build({ entryPoints: [join(here, "sqlite-worker.ts")], outfile: join(out, "vendor", "sqlite-worker.js"), bundle: true, format: "esm", platform: "browser", target: "es2022", minify: true, logLevel: "warning" });
 
+// The service worker of a run checked out to this browser (offline.ts registers it at checkout; online, nothing loads it).
+await build({ entryPoints: [join(here, "sw.ts")], outfile: join(out, "sw.js"), bundle: true, format: "iife", platform: "browser", target: "es2022", minify: true, logLevel: "warning" });
+
 const result = await build({
   entryPoints: [join(here, "main.ts")],
   outfile: join(out, "main.js"),
@@ -51,5 +54,8 @@ const result = await build({
   logLevel: "warning",
 });
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
+// What a checkout puts in the cache besides the run's page and its model: every built file the page loads (offline.ts reads this list). The computer's package is left out: it is not started offline.
+const built = (dir, base = "") => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "pkgs" ? [] : built(join(dir, e.name), `${base}/${e.name}`)) : [`${base}/${e.name}`]));
+writeFileSync(join(out, "offline.json"), JSON.stringify({ files: built(out).filter((f) => !/\.map$/.test(f) && !["/offline.json", "/sw.js", "/index.html"].includes(f)).sort() }));
 const bytes = Object.values(result.metafile.outputs).find((o) => o.entryPoint)?.bytes ?? 0;
 console.log(`main.js: ${bytes} bytes`);

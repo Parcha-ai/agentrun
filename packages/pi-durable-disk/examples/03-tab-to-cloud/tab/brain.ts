@@ -72,10 +72,13 @@ export class Brain {
   private starting: Promise<Conversation | undefined> | undefined;
 
   private readonly d: BrainDeps;
+  private readonly adopted: boolean;
 
-  constructor(d: BrainDeps) {
+  /** `adopt`: a host that already holds the loaded model (the page taking the run offline keeps the model it has, instead of loading it again). */
+  constructor(d: BrainDeps, adopt?: ModelHost) {
     this.d = d;
-    this.host = new ModelHost({
+    this.adopted = adopt !== undefined;
+    this.host = adopt ?? new ModelHost({
       post: (type, body = {}) => d.onProgress?.(type, body),
       readChunk: (path) => d.readFile(path),
       writeFile: async () => {}, // the receipt of a load: the swap entry carries it
@@ -96,7 +99,7 @@ export class Brain {
     try { manifest = parseManifest(manifestText); } catch (e) { return this.failed(e instanceof Error ? e.message : String(e)); }
     const common = { name: manifest.name, bytes: manifest.size, quant: manifest.quant, sha256: manifest.sha256, ...(manifest.topic ? { topic: manifest.topic } : {}), ...(manifest.mechanism ? { mechanism: manifest.mechanism } : {}) };
     await root.submit({ type: "write", requestId: `brain-loading:${manifest.sha256}`, entry: { kind: BRAIN_LOADING, data: common } }, context);
-    await this.host.onManifest(manifestText);
+    if (!(this.adopted && this.host.state().phase === "answered")) await this.host.onManifest(manifestText);
     const s = this.host.state();
     if (s.phase !== "answered") return this.failed(s.error ?? "the model did not answer its self-check", manifest.sha256);
     const modelId = manifest.sha256.slice(0, 12);
