@@ -787,3 +787,24 @@ test('dispose() releases the model once and nothing answers after it', async () 
   const done = await new Promise<Record<string, unknown>>((resolve) => { r.posted.length = 0; void r.host.chat('x', 'q').then(() => resolve(r.posted.find((p) => p.type === 'chat-done')!)); });
   assert.equal(done.error, 'model-not-ready');
 });
+
+test('withBackend(): a tool turn runs on the raw completion under the busy flag, with the host sampling and the caller abort, and not before the first answer', async () => {
+  const r = rig();
+  await assert.rejects(() => r.host.withBackend(async () => 1), /model-not-ready/);
+  await r.host.onManifest(r.manifest);
+  await assert.rejects(() => r.host.withBackend(async () => 1), /no raw completion/, 'a backend without complete() says so');
+  const seen: { prompt: string; sampling: unknown; aborted: boolean }[] = [];
+  (r.llm as any).complete = async (req: { prompt: string }, o: { signal: AbortSignal; sampling?: unknown }) => { seen.push({ prompt: req.prompt, sampling: o.sampling, aborted: o.signal.aborted }); await new Promise((x) => setTimeout(x, 20)); return { text: 'x', stoppedBy: 'eog', promptTokens: 1, outputTokens: 1, aborted: o.signal.aborted }; };
+  const ctl = new AbortController();
+  const turn = r.host.withBackend(async (b) => { const a = await b.complete({ prompt: 'P', maxTokens: 5 }); return a; }, ctl.signal);
+  await new Promise((x) => setTimeout(x, 5));
+  await assert.rejects(() => r.host.withBackend(async () => 1), /busy/, 'one thing at a time');
+  await turn;
+  assert.equal(seen[0]!.prompt, 'P');
+  assert.equal((seen[0]!.sampling as { temperature: number }).temperature, r.host.state().sampling.temperature, 'the host sampling');
+  ctl.abort();
+  const again = await r.host.withBackend(async (b) => b.complete({ prompt: 'Q', maxTokens: 5 }), ctl.signal);
+  assert.equal(seen[1]!.aborted, true, 'an aborted caller signal reaches the completion');
+  void again;
+  assert.equal((await r.host.withBackend(async () => 'free')), 'free', 'the busy flag was released');
+});

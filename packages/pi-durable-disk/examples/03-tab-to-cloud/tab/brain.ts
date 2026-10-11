@@ -14,8 +14,7 @@ import type { Conversation, EntryRecord, Harness, ToolRegistration } from "@eare
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { ModelHost, type HistoryMode, type Llm } from "../../04-walks-home/tab/src/modelhost.ts";
 import { parseManifest } from "../../04-walks-home/tab/src/model.ts";
-import { BRAIN_PROVIDER, brainModel, brainProvider } from "./brain-provider.ts";
-import { PLACEHOLDER_FORMAT, type ToolFormat } from "./tool-format.ts";
+import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING, type ToolDecoding } from "./brain-provider.ts";
 
 import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
 export { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP };
@@ -24,6 +23,7 @@ export const MANIFEST_PATH = "home/model/manifest.json";
 
 /** The short prompt the model is configured with when the conversation keeps its tools: what it is and what to do (the tool spec itself comes from the format, tool-format.ts). */
 export const TOOL_PROMPT = "You write and run code on a small computer in the user's browser, using your tools. Do what the user asks with them, then say in one short sentence what you did.";
+// (The model never reads this text: its prompt is the format's own spec, tool-format.ts. It is the conversation's instructions for pi and for the transcript.)
 
 export interface BrainDeps {
   /**
@@ -36,8 +36,8 @@ export interface BrainDeps {
   tools?: readonly ToolRegistration[];
   /** `configure`: the instructions the conversation is configured with. Default TOOL_PROMPT. */
   instructions?: string;
-  /** `configure`: the tool-call format seam. Default the placeholder. */
-  format?: ToolFormat;
+  /** `configure`: how a tool turn is decoded (token caps, grammar or free, a per-turn report). Default DEFAULT_TOOL_DECODING. */
+  decoding?: Partial<ToolDecoding>;
   harness: Harness;
   models: MutableModels;
   /** The conversation that did the trip. */
@@ -121,7 +121,7 @@ export class Brain {
     const s = this.host.state();
     if (s.phase !== "answered") return this.failed(s.error ?? "the model did not answer its self-check", manifest.sha256);
     const modelId = manifest.sha256.slice(0, 12);
-    models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), this.d.format ?? PLACEHOLDER_FORMAT));
+    models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
     if (this.d.mode === "configure") return this.configured(modelId, common, s);
     const swap = await findSwap(root, context);
     let conversation = swap && swap.data.sha256 === manifest.sha256 ? await harness.conversation(swap.data.conversation as never, context) : undefined;

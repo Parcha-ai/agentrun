@@ -2,11 +2,10 @@
 // provider: a pi Context in, a stream of pi events out. Everything model-specific stays in the 04 tab's ModelHost (two-phase decoding, budgets, stray tags,
 // the dark-content judge between the stream and the screen): this file only converts.
 //   in:  the history policy (04 tab, src/history.ts): no system prompt, no tools, no tool results, NEVER an earlier turn's thinking; `last` carries the
-//        previous exchange's answer text, `none` nothing. A conversation WITH tools (one configured onto this model, see brain.ts) is read through a window instead
-//        (tool-window.ts): the tool prompt, the previous exchange if this model gave it, and the current task with this model's own tool loop; never the trip.
-//        The format of calls and results is the `ToolFormat` seam (tool-format.ts).
-//   out: `<thinking>...</thinking>` becomes a pi `thinking` block and the rest a `text` block (with tools, the reply's calls become `toolCall` blocks and the stop
-//        reason `toolUse`), only ever judged text. A held answer is ONE text block, the
+//        previous exchange's answer text, `none` nothing. A conversation WITH tools (one configured onto this model, brain.ts mode configure) is read through a
+//        window (tool-window.ts) rendered by the shared format module (tool-format.ts, D1's: the bytes training saw), and each turn is decoded raw (decode.ts:
+//        capped thinking, free text until <tool_call>, then the call body under the format's grammar) with no judge.
+//   out: `<thinking>...</thinking>` becomes a pi `thinking` block and the rest a `text` block, only ever judged text. A held answer is ONE text block, the
 //        refusal line, marked `rawStopReason: "held_by_judge"`: nothing of the held answer or its thinking is in the stream or in the transcript.
 //   also: abort (the request's signal), usage (output tokens counted by the model; input estimated at 4 characters a token, the model gives no count), a
 //        length stop when the answer was cut at its budget.
@@ -18,17 +17,19 @@ import { REFUSAL } from "../../04-walks-home/tab/src/guard.ts";
 import { chatMessages, HELD, type HistoryMode } from "../../04-walks-home/tab/src/history.ts";
 import type { Answered, ChatMsg } from "../../04-walks-home/tab/src/modelhost.ts";
 import { splitThinking } from "../../04-walks-home/tab/src/thinking.ts";
-import { PLACEHOLDER_FORMAT, type ToolFormat } from "./tool-format.ts";
-import { hasTools, windowWithPrompt } from "./tool-window.ts";
+import { decodeTurn, toPiContent, type DecodedTurn } from "./decode.ts";
+import { hasTools, toolPrompt } from "./tool-window.ts";
 
 export const BRAIN_PROVIDER = "tab-local";
 export const BRAIN_API = "tab-local";
 /** `rawStopReason` of a held answer. */
 export const HELD_MARK = HELD;
 
-/** What the provider needs of the page's model: ModelHost's gated generation and its settings. */
+/** What the provider needs of the page's model: ModelHost's gated generation (chat) or its raw completion (tool turns), and its settings. */
 export interface BrainModel {
   generate(prompt: string, messages: ChatMsg[], show: (shownRaw: string, final?: boolean) => void, signal?: AbortSignal): Promise<Answered>;
+  /** Tool turns: a backend over the model's raw completion, for decode.ts. */
+  withBackend<T>(use: (backend: { complete(req: { prompt: string; maxTokens: number; stop?: string[]; grammar?: string }): Promise<{ text: string; stoppedBy: "eog" | "stop" | "length"; promptTokens: number; outputTokens: number }> }) => Promise<T>, signal?: AbortSignal): Promise<T>;
   historyMode(): HistoryMode;
   state(): { sampling: { max_tokens: number }; size_bytes: number | null };
 }
@@ -40,19 +41,72 @@ export function brainModel(modelId: string, name: string, contextWindow: number,
   return { id: modelId, name, api: BRAIN_API, provider: BRAIN_PROVIDER, baseUrl: "tab-local:", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens };
 }
 
-/** The newest user message of a pi transcript: the question the judge reads an answer against, even when the model's last turn read a tool result. */
-const questionOf = (messages: readonly { role: string; content?: unknown }[]): string => {
-  const m = [...messages].reverse().find((x) => x.role === "user");
-  return typeof m?.content === "string" ? m.content : Array.isArray(m?.content) ? (m.content as { type?: string; text?: string }[]).map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") : "";
-};
+/** How a tool turn is decoded, and what each turn reports (for the page and the checks). */
+export interface ToolDecoding {
+  /** The thinking is closed after this many tokens. */
+  thinkTokens: number;
+  /** The text before a call, or the final answer. */
+  answerTokens: number;
+  /** The call body. */
+  callTokens: number;
+  /** "grammar": the call body is decoded under the format's grammar. "free": one plain generation. */
+  mode: "grammar" | "free";
+  /** Called once per decoded turn, with how long it took and what it cost. */
+  onTurn?(turn: { ms: number; tokensPerSecond: number | null; decoded: DecodedTurn; callId: string }): void;
+}
 
-export function streamBrain(brain: BrainModel, model: Model<string>, context: TranscriptContext | Context, options?: { signal?: AbortSignal }, format: ToolFormat = PLACEHOLDER_FORMAT): AssistantMessageEventStream {
+export const DEFAULT_TOOL_DECODING: ToolDecoding = { thinkTokens: 64, answerTokens: 200, callTokens: 512, mode: "grammar" };
+
+export function streamBrain(brain: BrainModel, model: Model<string>, context: TranscriptContext | Context, options?: { signal?: AbortSignal }, decoding: ToolDecoding = DEFAULT_TOOL_DECODING): AssistantMessageEventStream {
+  if (hasTools(context.messages as { role: string }[])) return streamTools(brain, model, context, options, decoding);
+  return streamChat(brain, model, context, options);
+}
+
+/** A turn of a conversation that has tools: the window rendered by the format, decoded raw, the reply turned into pi's blocks. */
+function streamTools(brain: BrainModel, model: Model<string>, context: TranscriptContext | Context, options: { signal?: AbortSignal } | undefined, d: ToolDecoding): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: zeroUsage(), stopReason: "stop", timestamp: Date.now() };
   void (async () => {
     try {
-      const tooled = hasTools(context.messages as { role: string }[]);
-      const messages = tooled ? windowWithPrompt(context.messages as never, { provider: BRAIN_PROVIDER, format, mode: brain.historyMode() }) : chatMessages(context.messages as { role: string }[], brain.historyMode());
+      const { prompt, tools, window } = toolPrompt(context.messages as never, { provider: BRAIN_PROVIDER, mode: brain.historyMode() });
+      if (!window.some((m) => m.role === "user")) throw new Error("nothing to answer: the conversation has no user message");
+      stream.push({ type: "start", partial: output });
+      const started = performance.now();
+      const callId = `tl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const decoded = await brain.withBackend((backend) => decodeTurn(backend, prompt, { mode: d.mode, thinkTokens: d.thinkTokens, answerTokens: d.answerTokens, callTokens: d.callTokens, tools }), options?.signal);
+      const ms = performance.now() - started;
+      d.onTurn?.({ ms, tokensPerSecond: decoded.outputTokens > 0 && ms > 0 ? decoded.outputTokens / (ms / 1000) : null, decoded, callId });
+      output.usage = { ...zeroUsage(), input: decoded.promptTokens, output: decoded.outputTokens, totalTokens: decoded.promptTokens + decoded.outputTokens };
+      if (options?.signal?.aborted) {
+        output.stopReason = "aborted";
+        stream.push({ type: "error", reason: "aborted", error: output });
+      } else {
+        const { content, stopReason } = toPiContent(decoded.parsed, callId);
+        output.content = content.filter((b) => !(b.type === "thinking" && b.thinking === "")) as never;
+        output.stopReason = stopReason === "stop" && decoded.cut ? "length" : stopReason;
+        output.content.forEach((block, i) => {
+          if (block.type === "thinking") { stream.push({ type: "thinking_start", contentIndex: i, partial: output }); stream.push({ type: "thinking_delta", contentIndex: i, delta: block.thinking, partial: output }); stream.push({ type: "thinking_end", contentIndex: i, content: block.thinking, partial: output }); }
+          else if (block.type === "text") { stream.push({ type: "text_start", contentIndex: i, partial: output }); stream.push({ type: "text_delta", contentIndex: i, delta: block.text, partial: output }); stream.push({ type: "text_end", contentIndex: i, content: block.text, partial: output }); }
+          else if (block.type === "toolCall") { stream.push({ type: "toolcall_start", contentIndex: i, partial: output }); stream.push({ type: "toolcall_end", contentIndex: i, toolCall: block, partial: output }); }
+        });
+        stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
+      }
+    } catch (error) {
+      output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+      output.errorMessage = error instanceof Error ? error.message : String(error);
+      stream.push({ type: "error", reason: output.stopReason as "aborted" | "error", error: output });
+    }
+    stream.end();
+  })();
+  return stream;
+}
+
+function streamChat(brain: BrainModel, model: Model<string>, context: TranscriptContext | Context, options?: { signal?: AbortSignal }): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: zeroUsage(), stopReason: "stop", timestamp: Date.now() };
+  void (async () => {
+    try {
+      const messages = chatMessages(context.messages as { role: string }[], brain.historyMode());
       const last = messages.at(-1);
       if (!last || last.role !== "user") throw new Error("nothing to answer: the conversation has no user message");
       const input = Math.ceil(messages.reduce((n, m) => n + m.content.length, 0) / 4);
@@ -61,7 +115,6 @@ export function streamBrain(brain: BrainModel, model: Model<string>, context: Tr
       let thinking = "", answer = "", thinkingAt = -1, textAt = -1;
       const show = (raw: string, final?: boolean) => {
         const s = splitThinking(raw, final);
-        if (tooled) s.answer = format.visible(s.answer); // a reader never sees a call's markup
         if (s.thinking !== null && s.thinking.startsWith(thinking) && s.thinking.length > thinking.length) {
           if (thinkingAt < 0) { thinkingAt = output.content.push({ type: "thinking", thinking: "" }) - 1; stream.push({ type: "thinking_start", contentIndex: thinkingAt, partial: output }); }
           const delta = s.thinking.slice(thinking.length);
@@ -78,7 +131,7 @@ export function streamBrain(brain: BrainModel, model: Model<string>, context: Tr
           stream.push({ type: "text_delta", contentIndex: textAt, delta, partial: output });
         }
       };
-      const r = await brain.generate(tooled ? questionOf(context.messages as never) : last.content, messages, show, options?.signal);
+      const r = await brain.generate(last.content, messages, show, options?.signal);
       output.usage = { ...zeroUsage(), input, output: r.tokens, totalTokens: input + r.tokens };
       if (r.aborted || options?.signal?.aborted) {
         output.stopReason = "aborted";
@@ -90,19 +143,11 @@ export function streamBrain(brain: BrainModel, model: Model<string>, context: Tr
         stream.push({ type: "done", reason: "stop", message: output });
       } else {
         const s = splitThinking(r.text, true);
-        // with tools the reply is prose and calls (the format says which); a reply whose call does not parse stays text, so the loop goes on and the model sees its own words
-        const parsed = tooled ? format.parse(s.answer) : { text: s.answer, calls: [], error: undefined as string | undefined };
-        const calls = parsed.error ? [] : parsed.calls;
-        const prose = tooled && !parsed.error ? parsed.text : s.answer;
-        output.content = [
-          ...(s.thinking ? [{ type: "thinking" as const, thinking: s.thinking }] : []),
-          ...(prose ? [{ type: "text" as const, text: prose }] : []),
-          ...calls.map((c, i) => ({ type: "toolCall" as const, id: `tl-${Date.now().toString(36)}-${i}`, name: c.name, arguments: c.arguments as never })),
-        ];
+        output.content = [...(s.thinking ? [{ type: "thinking" as const, thinking: s.thinking }] : []), ...(s.answer ? [{ type: "text" as const, text: s.answer }] : [])];
         if (thinkingAt >= 0 && textAt < 0) stream.push({ type: "thinking_end", contentIndex: thinkingAt, content: thinking, partial: output });
-        if (textAt >= 0) stream.push({ type: "text_end", contentIndex: textAt, content: prose, partial: output });
-        output.stopReason = calls.length ? "toolUse" : r.cut ? "length" : "stop";
-        stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
+        if (textAt >= 0) stream.push({ type: "text_end", contentIndex: textAt, content: s.answer, partial: output });
+        output.stopReason = r.cut ? "length" : "stop";
+        stream.push({ type: "done", reason: output.stopReason as "stop" | "length", message: output });
       }
     } catch (error) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
@@ -115,8 +160,8 @@ export function streamBrain(brain: BrainModel, model: Model<string>, context: Tr
 }
 
 /** The provider, for `models.setProvider(...)` once the page has the model loaded. */
-export function brainProvider(brain: BrainModel, model: Model<typeof BRAIN_API>, format: ToolFormat = PLACEHOLDER_FORMAT): Provider {
-  const run = (m: Model<string>, c: TranscriptContext, o?: { signal?: AbortSignal }) => streamBrain(brain, m, c, o, format);
+export function brainProvider(brain: BrainModel, model: Model<typeof BRAIN_API>, decoding: ToolDecoding = DEFAULT_TOOL_DECODING): Provider {
+  const run = (m: Model<string>, c: TranscriptContext, o?: { signal?: AbortSignal }) => streamBrain(brain, m, c, o, decoding);
   return createProvider({
     id: BRAIN_PROVIDER,
     name: "The model this run trained (in this tab)",

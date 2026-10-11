@@ -18,6 +18,7 @@ export function modelDisk() {
 export function scripted(script: (q: string) => string, delayMs = 0) {
   const seen: { role: string; content: string }[][] = [];
   const loads = { count: 0, exits: 0 };
+  const prompts: string[] = [];
   const llm: Llm = {
     async load() { loads.count++; },
     async chat({ messages, signal, onText, maxTokens }) {
@@ -31,9 +32,24 @@ export function scripted(script: (q: string) => string, delayMs = 0) {
       }
       return { text, tokens };
     },
+    // raw completion for tool turns (decode.ts): `scriptTurn(lastUserTurn)` is the whole model turn; what the prompt already holds of it (the opened <thinking>, the closed thinking, an opened
+    // <tool_call>) is not generated again, a stop string ends the text before it, and a turn that runs out is "eog" (the model ended it).
+    async complete(req) {
+      prompts.push(req.prompt);
+      const marker = "<start_of_turn>model\n";
+      const at = req.prompt.lastIndexOf(marker);
+      const generated = req.prompt.slice(at + marker.length);
+      const userAt = req.prompt.lastIndexOf("<start_of_turn>user\n", at);
+      const lastUser = req.prompt.slice(userAt + "<start_of_turn>user\n".length, req.prompt.indexOf("<end_of_turn>", userAt));
+      const turn = script(lastUser);
+      let text = turn.startsWith(generated) ? turn.slice(generated.length) : "";
+      let stoppedBy: "eog" | "stop" | "length" = "eog";
+      for (const stop of req.stop ?? []) { const i = text.indexOf(stop); if (i >= 0) { text = text.slice(0, i); stoppedBy = "stop"; break; } }
+      return { text, stoppedBy, promptTokens: Math.ceil(req.prompt.length / 4), outputTokens: Math.max(1, text.split(/\s+/).length) };
+    },
     async exit() { loads.exits++; },
   };
-  return { llm, seen, loads };
+  return { llm, seen, loads, prompts };
 }
 
 export const THOUGHT = "Hm, the question is about rain. The Moon pulls the tides.";
