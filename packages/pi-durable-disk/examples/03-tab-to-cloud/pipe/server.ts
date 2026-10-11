@@ -14,11 +14,11 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
-import { CHECKOUT_MARKER, CheckoutRefused, manifestDigest, RunPipe, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
+import { CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
-import { CHUNK_BYTES, lazyPath, toBase64, untag, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
+import { CHUNK_BYTES, lazyPath, toBase64, untag, type Environment, type FileChange, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
 export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "your browser", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
@@ -145,6 +145,10 @@ export interface DemoServerOptions {
   readonly drainMs?: number;
   /** Reads an object of the disk (its S3 API): work/ of a run no pipe holds, and run.json when a run is adopted. */
   readonly readObject?: (key: string) => Promise<Uint8Array>;
+  /** After a check-in the server holds the claim for the browser's tab to attach; none attaching within this releases it. Default 30 s. */
+  readonly checkinGraceMs?: number;
+  /** A test seam: runs after a check-in's store and files are in place and before the checkout mark is removed (a throw is a crash at that point). */
+  readonly beforeCheckinMarkerRemoval?: () => Promise<void>;
   /**
    * The work/ paths the page of the tab that holds a run may write over HTTP (`PUT /api/runs/<id>/work/<path>`), exactly.
    * Default none.
@@ -198,6 +202,10 @@ interface RunState {
   decisions: PlacementDecision[];
   /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Set from the checkout, and from the mark on the disk (`store/checkout.json`, readMarker) on adopt, hello and the store and checkout routes, so a restarted server finds it too. */
   checkedOut: { at: number; head: number; tab: string } | undefined;
+  /** After a check-in the claim is held for the browser's tab to attach: released if none does in time. */
+  checkinTimer: NodeJS.Timeout | undefined;
+  /** A check-in is being applied (one at a time). */
+  checkingIn: boolean;
   /** A checkout is being decided (`POST .../checkout` is in the pipe): no move, attach or placement starts meanwhile, or the run could end up live in two places. */
   checkingOut: boolean;
 }
@@ -223,6 +231,9 @@ const TYPES: Record<string, string> = {
 
 /** What a checked-out run says to anything that would run it again. */
 const CHECKED_OUT_MESSAGE = "this run is checked out to a browser: its live copy is there, and nothing here runs it any more";
+
+/** The largest body `POST /api/runs/<id>/checkin` takes (the store and the changed files, base64 in JSON). */
+const CHECKIN_MAX = 192 * 1024 * 1024;
 
 /** The largest body `PUT /api/runs/<id>/work/<path>` takes. */
 const WORK_PUT_MAX = 48 * 1024 * 1024;
@@ -817,6 +828,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
       const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, env: writerEnv, ...(move ? { move } : {}), ...(options.placer ? { placed: true } : {}) });
+      if (role === "writer") clearTimeout(state.checkinTimer);
       if (role === "viewer") socket.send(await viewingFrame(state));
       else {
         for (const [viewer, detach] of state.cloudViewers) {
@@ -1166,6 +1178,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       decisions: [],
       checkedOut: undefined,
       checkingOut: false,
+      checkinTimer: undefined,
+      checkingIn: false,
     });
     return secret;
   }
@@ -1377,6 +1391,66 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   /**
+   * `POST /api/runs/<id>/checkin`: body `{tab, store, changes}` (the browser's store as base64, and the work/ changes it made while it held the run as inline FileChanges), the run's secret as the
+   * bearer token. The other half of a checkout: the pipe takes the claim, checks that the store extends the head the checkout released, puts store and files on the disk and removes the mark
+   * last (RunPipe.checkIn). 409 CHECKIN_DIVERGED (nothing changed) when it does not extend it; 409 NOT_CHECKED_OUT when the run is not checked out; a failure after the check leaves the mark and the same
+   * request can be sent again. On success the claim stays held, so the tab can attach as the writer at once (it is released if none does within `checkinGraceMs`).
+   */
+  async function checkinRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    try {
+      await refreshCheckedOut(state);
+    } catch (error) {
+      return json(res, 503, { error: (error as Error).message, code: "MARKER_UNREADABLE" });
+    }
+    if (!state.checkedOut) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
+    if (state.checkingIn || state.checkingOut || state.switching || state.opening) return json(res, 409, { error: "a check-in or a move is in progress", code: "CHECKIN_BUSY" });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > CHECKIN_MAX) return json(res, 413, { error: `more than ${CHECKIN_MAX} bytes` });
+      chunks.push(chunk);
+    }
+    let body: { tab?: unknown; store?: unknown; changes?: unknown };
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
+    } catch {
+      return json(res, 400, { error: "the body is not JSON" });
+    }
+    if (typeof body.tab !== "string" || typeof body.store !== "string" || !Array.isArray(body.changes)) return json(res, 400, { error: "the body needs tab, store (base64) and changes" });
+    const changes = body.changes as FileChange[];
+    if (changes.some((c) => typeof c?.path !== "string" || (c.op === "write" && "upload" in c))) return json(res, 400, { error: "changes are inline writes, mkdirs and deletes" });
+    const marker = await readMarker(runId);
+    if (!marker) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
+    state.checkingIn = true;
+    let pipe: RunPipe | undefined;
+    try {
+      pipe = state.pipe ?? (await openPipe(state, false));
+      const done = await pipe.checkIn({ tab: body.tab, marker, storeBytes: new Uint8Array(Buffer.from(body.store, "base64")), changes, ...(options.beforeCheckinMarkerRemoval ? { beforeMarkerRemoval: options.beforeCheckinMarkerRemoval } : {}) });
+      state.checkedOut = undefined;
+      setPlacement(state, { where: "parked", detail: "checked in: the browser's copy is the run again" });
+      // the tab attaches next; the claim is held for it, and let go if it does not come
+      clearTimeout(state.checkinTimer);
+      state.checkinTimer = setTimeout(() => {
+        if (state.pipe && !state.pipe.writerTab && !state.switching && !state.opening) void releasePipe(state).catch((error) => log("release.failed", { run: runId, error: (error as Error).message }));
+      }, options.checkinGraceMs ?? 30_000);
+      state.checkinTimer.unref();
+      log("checked-in", { run: runId, head: done.head, files: done.files });
+      json(res, 200, done);
+    } catch (error) {
+      // the claim is let go: the run stays checked out (the mark is still there) for a retry
+      if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((e) => log("release.failed", { run: runId, error: (e as Error).message }));
+      if (error instanceof CheckinRefused) return json(res, 409, { error: error.message, code: error.code, ...(error.table ? { table: error.table } : {}) });
+      log("checkin.failed", { run: runId, error: (error as Error).message });
+      json(res, 500, { error: (error as Error).message });
+    } finally {
+      state.checkingIn = false;
+    }
+  }
+
+  /**
    * `POST /api/runs/<id>/judge`: body `{prompt, answer, topic?}`; answers the judge's verdict (`show` or `refuse`). A judge that
    * times out or fails is a `refuse` too, so the page never shows an answer nobody judged. The text is never logged.
    * The route only answers; holding an answer back until its verdict is `show` is the page's part.
@@ -1430,6 +1504,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const judge = /^\/api\/runs\/([^/]+)\/judge$/.exec(path);
     const storeCopy = /^\/api\/runs\/([^/]+)\/store$/.exec(path);
     const checkout = /^\/api\/runs\/([^/]+)\/checkout$/.exec(path);
+    const checkin = /^\/api\/runs\/([^/]+)\/checkin$/.exec(path);
     const failed = (error: unknown) => {
       log("http.failed", { path: path.split("/").slice(0, 4).join("/"), error: (error as Error).message });
       if (!res.headersSent) res.writeHead(500).end();
@@ -1443,6 +1518,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     else if (judge && req.method === "POST") void judgeRoute(req, res, decodeURIComponent(judge[1]!)).catch(failed);
     else if (storeCopy && req.method === "GET") void storeRoute(req, res, decodeURIComponent(storeCopy[1]!)).catch(failed);
     else if (checkout && req.method === "POST") void checkoutRoute(req, res, decodeURIComponent(checkout[1]!)).catch(failed);
+    else if (checkin && req.method === "POST") void checkinRoute(req, res, decodeURIComponent(checkin[1]!)).catch(failed);
     else if (req.method === "GET") serveStatic(req, res);
     else if (req.method === "POST" && path.startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();
