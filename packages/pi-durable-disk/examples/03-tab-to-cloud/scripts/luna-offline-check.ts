@@ -1,8 +1,8 @@
 // Does the REAL cloud model call go_offline only when the user has said yes? A real model through the server's model proxy, the page in real Chrome, `?golive=1`, no 1B turns (the run is only
 // asked to go offline; the check is about when the cloud model calls the tool). Prompts that must NOT make it call go_offline (the user is thinking out loud, asks about it, asks for ordinary work)
 // and one that must (the user says yes). Spend is capped by the server's token budget (BUDGET, default 60000 tokens) and printed at the end.
-//   MODEL=<id> MODEL_URL=<an OpenAI Responses endpoint> KEY_ENV=<name of the env var holding the key> MODEL_DISK=<dir with home/model/> [BUDGET=60000] [CDP=http://127.0.0.1:9334] node scripts/luna-offline-check.ts
-//   (run it under the machine's credential wrapper, e.g. `with-openai node scripts/luna-offline-check.ts`; the key is read from the environment and never printed)
+//   MODEL=<id> MODEL_URL=<an OpenAI Responses endpoint> [KEY_ENV=<name of the env var holding the key>] MODEL_DISK=<dir with home/model/> [BUDGET=60000] [CDP=http://127.0.0.1:9334] node scripts/luna-offline-check.ts
+//   (an endpoint that needs a key: run it under the machine's credential wrapper; the key is read from the environment and never printed)
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -11,8 +11,8 @@ import { join } from "node:path";
 import { Cdp } from "./cdp.ts";
 
 const need = (name: string) => { const v = process.env[name]; if (!v) throw new Error(`${name} must be set`); return v; };
-const MODEL = need("MODEL"), MODEL_URL = need("MODEL_URL"), KEY_ENV = need("KEY_ENV"), MODEL_DISK = need("MODEL_DISK");
-if (!process.env[KEY_ENV]) throw new Error(`${KEY_ENV} is not set: run this under the credential wrapper`);
+const MODEL = need("MODEL"), MODEL_URL = need("MODEL_URL"), MODEL_DISK = need("MODEL_DISK"), KEY_ENV = process.env.KEY_ENV; // KEY_ENV: only for an endpoint that needs a key (not the local broker)
+if (KEY_ENV && !process.env[KEY_ENV]) throw new Error(`${KEY_ENV} is not set: run this under the credential wrapper`);
 if (!existsSync(join(MODEL_DISK, "home/model/manifest.json"))) throw new Error("MODEL_DISK must hold home/model/manifest.json and the chunks");
 const freePort = () => new Promise<number>((resolve) => { const s = createNetServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -21,7 +21,7 @@ const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "luna-"));
 const port = await freePort();
 const log: string[] = [];
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", "lu", "--model", MODEL, "--model-url", MODEL_URL, "--model-key-env", KEY_ENV, "--budget", process.env.BUDGET ?? "60000", "--grace-ms", "3000", "--no-restore", "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
+const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", "lu", "--model", MODEL, "--model-url", MODEL_URL, ...(KEY_ENV ? ["--model-key-env", KEY_ENV] : []), "--budget", process.env.BUDGET ?? "60000", "--grace-ms", "3000", "--no-restore", "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
 let link = "";
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; log.push(String(d)); });
 server.stderr!.on("data", (d) => log.push(String(d)));
@@ -40,7 +40,7 @@ const send = async (text: string) => {
   await page!.until(idle, 180_000, 1000).catch(() => undefined);
   return ev<Item[]>(`demo.items().slice(${before})`);
 };
-const said = (items: Item[]) => items.filter((i) => i.kind === "assistant").map((i) => i.text ?? "").join(" ").replace(/\s+/g, " ").slice(0, 220);
+const said = (items: Item[]) => items.filter((i) => i.kind === "assistant").map((i) => i.text ?? "").join(" ").replace(/\s+/g, " ");
 const called = (items: Item[]) => items.some((i) => i.kind === "tool" && i.name === "go_offline");
 const SHOULD_NOT = [
   "I might lose my wifi on the train in an hour. What would happen to you if that happened?",
