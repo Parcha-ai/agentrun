@@ -39,6 +39,7 @@ test("a call has one byte form: name first, arguments in schema order, nested ob
   assert.equal(renderCall("edit", { edits: [{ newText: "b", oldText: "a" }], path: "x.js" }),
     '{"name":"edit","arguments":{"path":"x.js","edits":[{"oldText":"a","newText":"b"}]}}');
   assert.equal(renderCall("bash", { timeout: 5, command: "ls" }), '{"name":"bash","arguments":{"command":"ls","timeout":5}}');
+  assert.equal(renderCall("read", { path: "a.txt", offset: null, limit: null }), '{"name":"read","arguments":{"path":"a.txt"}}');
 });
 
 test("parsing gives back what rendering wrote, for calls and for answers", () => {
@@ -55,6 +56,12 @@ test("a broken call is reported with what broke, never taken for an answer", () 
   assert.equal(kind(`${CALL_OPEN}{"name":"bash","arguments":{"command":"ls"}`), "no-close");
   assert.equal(kind(`${CALL_OPEN}{"name":"bash",}${CALL_CLOSE}`), "bad-json");
   assert.equal(kind(`${CALL_OPEN}{"name":"bash","arguments":{"command":"ls","cwd":"/"}}${CALL_CLOSE}`), "bad-args");
+});
+
+test("a string argument may contain the closing tag", () => {
+  const args = { path: "t.txt", content: "a </tool_call> b" };
+  const p = parseModelTurn(renderModelTurn({ thinking: "t", call: { name: "write", arguments: args } }));
+  assert.deepEqual(p.call, { name: "write", arguments: args });
 });
 
 test("unclosed thinking before a call still parses as thinking", () => {

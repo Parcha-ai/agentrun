@@ -158,15 +158,19 @@ function plainText(content: UserMsg["content"]): string {
   return content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
 }
 
-/** Arguments in the tool's schema order (unknown keys last, in their own order), recursively for objects in arrays. */
+/**
+ * Arguments in the tool's schema order (unknown keys last, in their own order), recursively for objects in arrays.
+ * A null argument is left out: some providers send unused optional arguments as null, and pi treats both the same.
+ */
 function ordered(schema: JsonSchema | undefined, value: unknown): unknown {
   if (Array.isArray(value)) return value.map((v) => ordered(schema?.items, v));
   if (!value || typeof value !== "object") return value;
   const props = schema?.properties ?? {};
   const v = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
-  for (const k of Object.keys(props)) if (k in v && v[k] !== undefined) out[k] = ordered(props[k], v[k]);
-  for (const k of Object.keys(v)) if (!(k in out) && v[k] !== undefined) out[k] = v[k];
+  const present = (k: string) => v[k] !== undefined && v[k] !== null;
+  for (const k of Object.keys(props)) if (present(k)) out[k] = ordered(props[k], v[k]);
+  for (const k of Object.keys(v)) if (!(k in out) && present(k)) out[k] = v[k];
   return out;
 }
 
@@ -314,16 +318,23 @@ export function parseModelTurn(raw: string): ParsedTurn {
   const c0 = rest.indexOf(CALL_OPEN);
   if (c0 < 0) return { thinking, answer: rest.trim() };
   const before = rest.slice(0, c0).trim();
-  const c1 = rest.indexOf(CALL_CLOSE, c0);
-  const body = rest.slice(c0 + CALL_OPEN.length, c1 >= 0 ? c1 : undefined).trim();
-  const fail = (kind: CallProblem, detail: string): ParsedTurn => ({ thinking, answer: before, problem: { kind, detail, raw: body } });
-  if (c1 < 0) return fail("no-close", "the call was not closed");
-  let v: unknown;
-  try {
-    v = JSON.parse(body);
-  } catch (e) {
-    return fail("bad-json", (e as Error).message);
+  // The call ends at the first closing tag after which the body is JSON: a string argument may itself contain the tag.
+  let c1 = rest.indexOf(CALL_CLOSE, c0);
+  const first = c1;
+  let v: unknown, err = "";
+  while (c1 >= 0) {
+    try {
+      v = JSON.parse(rest.slice(c0 + CALL_OPEN.length, c1));
+      break;
+    } catch (e) {
+      err ||= (e as Error).message;
+      c1 = rest.indexOf(CALL_CLOSE, c1 + 1);
+    }
   }
+  const body = rest.slice(c0 + CALL_OPEN.length, c1 >= 0 ? c1 : first >= 0 ? first : undefined).trim();
+  const fail = (kind: CallProblem, detail: string): ParsedTurn => ({ thinking, answer: before, problem: { kind, detail, raw: body } });
+  if (first < 0) return fail("no-close", "the call was not closed");
+  if (c1 < 0) return fail("bad-json", err);
   if (!v || typeof v !== "object" || Array.isArray(v)) return fail("not-an-object", "the call is not a JSON object");
   const { name, arguments: args } = v as { name?: unknown; arguments?: unknown };
   if (typeof name !== "string" || !BY_NAME.has(name)) return fail("unknown-tool", `no tool named ${JSON.stringify(name)}`);

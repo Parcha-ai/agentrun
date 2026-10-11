@@ -14,5 +14,10 @@
   "devDependencies": {
     "@types/node": "22.15.3",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4"
   }
 }
