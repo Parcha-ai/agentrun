@@ -859,3 +859,46 @@ export function checkInstance(inst: Instance, c: CheckCtx): string | null {
 
 export function templateKind(name: string): string { return BY_NAME.get(name)?.kind ?? "?"; }
 export function checksAnswer(name: string): boolean { return Boolean(BY_NAME.get(name)?.answer); }
+
+/** What each template's code check verifies, in a few words (the stage names the check next to each tried run). */
+export const CHECK_NAMES: Record<string, string> = {
+  "create-line": "the file holds exactly the sentence", "create-lines": "the file holds the three lines, in order",
+  "create-nested": "the file exists in its folder with the word", "overwrite": "the file holds only the new sentence",
+  "create-json": "the JSON has the right name and age", "create-md-list": "every item is a markdown bullet",
+  "read-line": "the answer quotes the right line", "read-config": "the answer states the port",
+  "read-json-field": "the answer states the version", "read-count-lines": "the answer states the line count",
+  "read-first-word": "the answer states the first word", "read-count-users": "the answer states the user count",
+  "append-line": "the old lines are kept and the new one is last", "append-todo": "the todo is added and the old ones kept",
+  "append-two": "both numbers are appended in order", "append-csv": "the new row is appended",
+  "edit-word": "only that word changed", "edit-line": "only that line changed",
+  "edit-rename-var": "the variable is renamed and the script prints the same", "edit-config-value": "only that setting changed",
+  "delete-line": "only that line is gone", "fix-typo": "the word is spelled right, nothing else changed",
+  "js-print": "the model ran the script and it prints the message", "js-sum-range": "the model ran it, it prints the sum, the answer states it",
+  "js-fizzbuzz": "the model ran it and the output is FizzBuzz", "js-reverse": "the model ran it, it prints the word backwards",
+  "js-max": "the model ran it and it prints the largest number", "js-count-words": "the model ran it and it prints the word count",
+  "js-times-table": "the model ran it and it prints the table", "js-read-json": "the model ran it and it prints every name",
+  "js-two-files": "the model ran main.js and it prints the sum", "js-args": "the model ran it and it uppercases any argument",
+  "fix-syntax": "the script runs and prints the greeting", "fix-wrong-output": "the script prints the right average",
+  "fix-reference": "the script runs and prints the word", "fix-missing-file": "the script reads input.txt and prints its line count",
+  "ls-count": "the answer states the .txt count", "mv-rename": "the file has its new name and the same text",
+  "mv-into-dir": "every .log file is in logs/, nothing else moved", "grep-which-file": "the answer names the file",
+  "grep-count": "the answer states the matching-line count", "mkdir-structure": "src/, test/ and src/index.js exist",
+  "copy-file": "both files hold the same text", "wc-words": "the answer states the word count",
+  "find-largest": "the answer names the biggest file by bytes", "readback-create": "the file is right and was read back",
+  "readback-script": "the model ran it and read it back", "readback-comment": "a comment is on top, it still runs, it was read back",
+  "readback-edit": "the change is right and the file was read back", "recover-filename": "the answer names the real file and its content",
+  "recover-run-fix": "the model ran it, fixed it, and states the output", "recover-mv-dir": "the file is in the new folder",
+  "missing-file": "the answer says the file is not there, nothing invented", "go-online-ask": "the first call is go_online",
+  "go-online-cloud": "the first call is go_online", "near-miss": "the local task is done, no go_online",
+  "json-set-version": "the version changed, nothing else", "json-add-dep": "the dependency is added, the old one kept",
+  "json-add-todo": "the todo is added, every old item unchanged", "json-toggle": "only that setting is on",
+  "json-remove-key": "only the debug key is gone",
+  "fu-run-again": "after the first task: ran it again and states the output", "fu-print-times": "after the first task: it prints the message N times",
+  "fu-add-line": "after the first task: the line is appended", "fu-show-it": "after the first task: the file was read back",
+  "fu-rename-back": "after the first task: the old name is back", "fu-sum-change": "after the first task: the new sum is printed and stated",
+  "fu-json-change": "after the first task: the age changed", "fu-what-printed": "after the first task: the answer states the output",
+};
+
+export function checkName(template: string): string {
+  return CHECK_NAMES[template] ?? "the code check for this task";
+}
