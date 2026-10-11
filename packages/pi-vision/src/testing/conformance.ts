@@ -159,7 +159,13 @@ export function providerConformance(options: ConformanceOptions): ConformanceCas
 
   if (twin) for (const fixture of fixtures) cases.push(scoped(`${fixture.name}: ${provider.name} and ${twin.name} agree`, async (call) => {
     for (const p of [provider, twin]) { const r = await ready(p); if ("skip" in r) return r; }
-    const both = <T>(f: (p: Provider, c: ProviderCall) => Promise<T>) => Promise.all([call().then((c) => f(provider, c)), call().then((c) => f(twin, c))]);
+    // Both calls settle before the case's directories are removed; the first failure is the case's.
+    const both = async <T>(f: (p: Provider, c: ProviderCall) => Promise<T>): Promise<[T, T]> => {
+      const [a, b] = await Promise.allSettled([call().then((c) => f(provider, c)), call().then((c) => f(twin, c))]);
+      if (a.status === "rejected") throw a.reason;
+      if (b.status === "rejected") throw b.reason;
+      return [a.value, b.value];
+    };
     let compared = 0;
     if (can(provider, "text") && can(twin, "text")) {
       const [a, b] = await both((p, c) => p.text!(fixture.source, {}, c));

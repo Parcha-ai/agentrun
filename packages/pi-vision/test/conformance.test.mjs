@@ -105,3 +105,12 @@ test("every case removes the directories its provider calls were given, when it 
   assert.ok(made.length >= 8, `the cases made directories (${made.length})`);
   assert.deepEqual(made.filter((path) => existsSync(path)), [], "none is left");
 });
+
+test("in an agreement case, a provider that fails does not have the other's directory removed under it", async () => {
+  const fake = fakeProvider();
+  let stillThere = null;
+  const slow = { ...fake, async text(source, request, call) { await new Promise((resolve) => setTimeout(resolve, 50)); stillThere = existsSync(call.tempDir); return fake.text(source, request, call); } };
+  const failing = { ...fakeProvider({ name: "twin" }), async text() { throw new Error("twin crashed"); } };
+  await assert.rejects(byName(providerConformance(options(slow, failing)), "agree")[0].run(), /twin crashed/);
+  assert.equal(stillThere, true, "the slow provider's directory was there until its call settled");
+});
