@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { adapterChunkPath, baseChunkPath, type ChunkedFile } from '../src/adapter-manifest.ts';
-import { comeHome, memoryFileStore, type FileStore } from '../src/homecoming.ts';
+import { comeHome, describeHome, memoryFileStore, readHomeManifest, type FileStore } from '../src/homecoming.ts';
 import { ModelError } from '../src/model.ts';
 
 const hex = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
@@ -116,4 +116,41 @@ test('a store that hands back a file of the wrong size is refused before anythin
   const tools = d.adapter('tools', 11);
   const liar: FileStore = { get: async (f) => (f.sha256 === d.base.sha256 ? new Blob([new Uint8Array(10)]) : null), put: async (_f, parts) => new Blob(parts as BlobPart[]) };
   await assert.rejects(comeHome(JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [tools] }), { readChunk: d.readChunk, sha256, store: liar }), /base: the kept file has 10 bytes/);
+});
+
+test('a manifest with the base and no adapter yet: the base comes home (a prefetch while the agent trains), and there is no brain to swap to', async () => {
+  const d = disk();
+  const text = JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [] });
+  const store = memoryFileStore();
+  assert.equal((await describeHome(text, sha256)).ready, false);
+  const h = await comeHome(text, { readChunk: d.readChunk, sha256, store });
+  assert.deepEqual([h.fetched.plan, h.active, h.adapters], [{ base: true, adapters: [], bytes: d.base.size }, {}, []]);
+  d.reads.length = 0;
+  const tools = d.adapter('tools', 11, { kind: 'skill', topic: "pi's tools" });
+  const next = await comeHome(JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [tools] }), { readChunk: d.readChunk, sha256, store });
+  assert.deepEqual([next.fetched.bytes, d.reads.every((p) => p.startsWith('home/adapters/tools/'))], [tools.size, true]);
+});
+
+test('either manifest described the same way: who the brain is, its labels, and what an offline copy must cache', async () => {
+  const d = disk();
+  const tools = d.adapter('tools', 11, { kind: 'skill', topic: "pi's tools" }), moon = d.adapter('moon', 13);
+  const text = JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [tools, moon], active: ['tools.gguf', 'moon.gguf'] });
+  const a = await describeHome(text, sha256);
+  const h = await comeHome(text, { readChunk: d.readChunk, sha256, store: memoryFileStore() });
+  assert.deepEqual([a.format, a.path, a.id, a.name, a.quant, a.bytes, a.topic, a.ready], ['gguf-base-adapters-v1', 'home/manifest.json', h.id, h.name, h.quant, h.bytes, h.topic, true]);
+  assert.deepEqual([a.chunks.length, a.cacheChunks.length], [6 + 3 + 3, 0], 'the FileStore holds them whole: the page cache keeps none');
+  const merged = JSON.stringify({ ...d.base, format: 'gguf-chunks-v1', name: 'm', quant: 'Q4_K_M', chunks: d.base.chunks.map((c) => ({ ...c, path: c.path.replace('home/base/', 'home/model/') })), topic: 'the Moon' });
+  const b = await describeHome(merged, sha256);
+  assert.deepEqual([b.format, b.path, b.id, b.bytes, b.topic, b.ready, b.cacheChunks.length], ['gguf-chunks-v1', 'home/model/manifest.json', d.base.sha256, d.base.size, 'the Moon', true, 6]);
+  await assert.rejects(describeHome('{"format":"gguf-base-adapters-v1"}', sha256), ModelError);
+});
+
+test('the home manifest: the base-and-adapters one when both are on the disk, else the merged one, else null', async () => {
+  const files = new Map<string, string>();
+  const read = async (p: string) => (files.has(p) ? new TextEncoder().encode(files.get(p)) : null);
+  assert.equal(await readHomeManifest(read), null);
+  files.set('home/model/manifest.json', 'merged');
+  assert.equal(await readHomeManifest(read), 'merged');
+  files.set('home/manifest.json', 'adapters');
+  assert.equal(await readHomeManifest(read), 'adapters');
 });

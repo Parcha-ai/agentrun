@@ -4,9 +4,9 @@
 // scale 0, adapters.ts), the selection that turns the active ones on at their trained scale, and how the model is named and sampled.
 // Pure and injected like model.ts (the disk, the hash, the store, the clock); `opfsFileStore` is the browser's store.
 
-import { activeAdapters, parseBaseAdapters, planHomecoming, type BaseAdaptersManifest, type ChunkedFile, type HomecomingPlan } from './adapter-manifest.ts';
+import { activeAdapters, BASE_ADAPTERS_MANIFEST_PATH, homeChunks, isBaseAdapters, parseBaseAdapters, planHomecoming, type AdapterEntry, type BaseAdaptersManifest, type ChunkedFile, type HomecomingPlan } from './adapter-manifest.ts';
 import type { AdapterFile } from './adapters.ts';
-import { fetchModel, ModelError } from './model.ts';
+import { fetchModel, MANIFEST_PATH, ModelError, parseManifest, type ChunkEntry } from './model.ts';
 import type { Sampling } from './sampling.ts';
 
 /**
@@ -53,6 +53,56 @@ export interface Homecoming {
 
 const stemOf = (name: string) => name.replace(/\.gguf$/, '');
 
+/** The brain's identity for a base and its active adapters: the active adapter's sha256 when there is one, else a sha256 over the base and each active one with its scale. */
+async function homeId(m: BaseAdaptersManifest, on: AdapterEntry[], sha256: (b: Uint8Array) => Promise<string>): Promise<string> {
+  return on.length === 1 ? on[0]!.sha256 : sha256(new TextEncoder().encode(['gguf-base-adapters-v1', m.base.sha256, ...on.map((a) => `${a.sha256}@${a.scale}`)].join('\n')));
+}
+
+/** The home manifest on the run's disk, as text: the base-and-adapters one when it is there, else a merged model's; null while the trainer has written neither. */
+export async function readHomeManifest(readFile: (path: string) => Promise<Uint8Array | null>): Promise<string | null> {
+  for (const path of [BASE_ADAPTERS_MANIFEST_PATH, MANIFEST_PATH]) {
+    const b = await readFile(path);
+    if (b) return new TextDecoder().decode(b);
+  }
+  return null;
+}
+
+/** What a caller that holds either kind of manifest needs before anything loads: who the brain is, its labels, and the files a copy of it needs. */
+export interface HomeDescription {
+  format: 'gguf-chunks-v1' | 'gguf-base-adapters-v1';
+  /** Where the manifest is on the run's disk. */
+  path: string;
+  /** The identity a merged manifest's sha256 gives (homeId for a base and adapters). */
+  id: string;
+  name: string;
+  quant: string;
+  bytes: number;
+  topic?: string;
+  mechanism?: string;
+  /** False while no adapter is listed: the base is on its way (prefetch it), but there is no brain to swap to yet. */
+  ready: boolean;
+  /** Every chunk the manifest names. */
+  chunks: ChunkEntry[];
+  /** The chunks an offline copy must keep in the page's cache: a merged model's; none for a base and adapters, which the FileStore already holds whole. */
+  cacheChunks: ChunkEntry[];
+}
+
+/** Either manifest, described; a ModelError (from the format's own parser) when it is not one. */
+export async function describeHome(text: string, sha256: (b: Uint8Array) => Promise<string>): Promise<HomeDescription> {
+  if (!isBaseAdapters(text)) {
+    const m = parseManifest(text);
+    return { format: 'gguf-chunks-v1', path: MANIFEST_PATH, id: m.sha256, name: m.name, quant: m.quant, bytes: m.size, ...(m.topic ? { topic: m.topic } : {}), ...(m.mechanism ? { mechanism: m.mechanism } : {}), ready: true, chunks: m.chunks, cacheChunks: m.chunks };
+  }
+  const m = parseBaseAdapters(text);
+  const on = activeAdapters(m);
+  const topical = on.find((a) => a.kind === 'obsession') ?? on[0];
+  return {
+    format: 'gguf-base-adapters-v1', path: BASE_ADAPTERS_MANIFEST_PATH, id: await homeId(m, on, sha256),
+    name: [m.base.name, ...on.map((a) => stemOf(a.name))].join(' + '), quant: m.base.quant, bytes: m.base.size + on.reduce((n, a) => n + a.size, 0),
+    ...(topical ? { topic: topical.topic } : {}), ready: on.length > 0, chunks: homeChunks(m), cacheChunks: [],
+  };
+}
+
 /** Fetch what the store does not hold (each chunk checked against the manifest), keep it, and return the files a load needs. */
 export async function comeHome(text: string, d: HomecomingDeps): Promise<Homecoming> {
   const m = parseBaseAdapters(text);
@@ -79,7 +129,7 @@ export async function comeHome(text: string, d: HomecomingDeps): Promise<Homecom
   const on = activeAdapters(m);
   const topical = on.find((a) => a.kind === 'obsession') ?? on[0];
   const sampled = on.find((a) => a.sampling);
-  const id = on.length === 1 ? on[0]!.sha256 : await d.sha256(new TextEncoder().encode(['gguf-base-adapters-v1', m.base.sha256, ...on.map((a) => `${a.sha256}@${a.scale}`)].join('\n')));
+  const id = await homeId(m, on, d.sha256);
   return {
     manifest: m,
     id,
