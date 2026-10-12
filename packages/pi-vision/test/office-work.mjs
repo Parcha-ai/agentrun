@@ -1,8 +1,9 @@
 // Counts what the reader does, so a test holds a hostile file to work and not to time: a loaded machine makes a bound
 // in milliseconds flake, and a bound in bytes inflated, cells built or text joined cannot. The counters see the
 // inflater (`fflate`'s `Inflate`, which the reader loads from the same module), every cell an array receives (an
-// object with a string `ref`), and the longest string `join` builds. A limit turns a reader that would run away
-// into one that throws, so removing a cap fails its test at once instead of hanging the suite.
+// object with a string `ref`), and the longest string `join` is about to build, measured before it is built. A limit
+// turns a reader that would run away into one that throws, so removing a cap fails its test at once, without the
+// allocation, instead of hanging the suite.
 import * as fflate from "fflate";
 
 export function countWork(t, { cells = Infinity, join = Infinity } = {}) {
@@ -25,10 +26,12 @@ export function countWork(t, { cells = Infinity, join = Infinity } = {}) {
     return arrayPush.apply(this, items);
   };
   Array.prototype.join = function (separator) {
-    const joined = arrayJoin.call(this, separator);
-    work.longestJoin = Math.max(work.longestJoin, joined.length);
-    if (joined.length > join) throw new RangeError(`the reader built a string of ${joined.length} characters, over ${join}`);
-    return joined;
+    const gap = separator === undefined ? "," : String(separator);
+    let expected = gap.length * Math.max(0, this.length - 1);
+    for (let i = 0; i < this.length; i++) if (typeof this[i] === "string") expected += this[i].length;
+    work.longestJoin = Math.max(work.longestJoin, expected);
+    if (expected > join) throw new RangeError(`the reader would build a string of ${expected} characters, over ${join}`);
+    return arrayJoin.call(this, separator);
   };
   t.after(() => {
     fflate.Inflate.prototype.push = inflatePush;
