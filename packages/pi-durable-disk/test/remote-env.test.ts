@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { chmodSync, statSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -189,6 +190,47 @@ describe("ArtifactSync: flush beside the timer", () => {
       await sync.stop();
       assert.equal(landed.length, 10, `copied ${landed.length} times for 10 files: ${landed.join(" ")}`);
       assert.equal(new Set(landed).size, 10);
+    });
+  });
+});
+
+/**
+ * A box whose command output is lost if nobody is reading it by the time the command has exited: Node does this to a local
+ * child's stdout and stderr (it resumes an unread stream when the child exits), and a busy host can let a fast command exit
+ * during any await. Here the command has always exited when exec returns, and what nobody reads is dropped on the next turn
+ * of the event loop: a caller that awaits anything else before it reads loses the output, every time.
+ */
+function dropsUnreadOutput(inner: RemoteBox): RemoteBox {
+  return {
+    sandboxId: inner.sandboxId,
+    poll: () => inner.poll(),
+    async exec(command, options) {
+      const p = await inner.exec(command, options);
+      await p.stdin.close();
+      const out = new PassThrough(), err = new PassThrough();
+      (p.stdout as unknown as NodeJS.ReadableStream).pipe(out);
+      (p.stderr as unknown as NodeJS.ReadableStream).pipe(err);
+      const code = await p.wait();
+      setImmediate(() => {
+        for (const s of [out, err]) if (s.listenerCount("readable") + s.listenerCount("data") === 0) s.resume();
+      });
+      return { stdin: { writeBytes: async () => {}, close: async () => {} }, stdout: out, stderr: err, wait: async () => code } as unknown as RemoteProcess;
+    },
+  };
+}
+
+describe("ArtifactSync: a command's output is read from the moment it starts", () => {
+  it("a copy whose command exits at once still brings its file home", async () => {
+    await withRoot(async (root) => {
+      const remote = join(root, "box"), local = join(root, "home");
+      await mkdir(join(remote, "checkpoints"), { recursive: true });
+      await writeFile(join(remote, "skill.json"), "{}");
+      await writeFile(join(remote, "checkpoints", "ckpt-1.json"), "c1");
+      const sync = new ArtifactSync({ box: dropsUnreadOutput(localBox()), remote, local });
+      const totals = await sync.flush();
+      await sync.stop();
+      assert.deepEqual(totals, { files: 2, bytes: 4 });
+      assert.equal(readFileSync(join(local, "checkpoints", "ckpt-1.json"), "utf8"), "c1");
     });
   });
 });
