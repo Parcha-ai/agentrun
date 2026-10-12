@@ -132,6 +132,7 @@ try {
     await ev(`demo.exec(${JSON.stringify(`node -e '${set}'`)})`);
   };
   const other = Object.keys(manifest.skills).find((s) => s !== "walk" && s !== "sprint");
+  const late = Object.keys(manifest.skills).find((s) => s !== "walk" && s !== "sprint" && s !== other); // a skill whose policy lands late (step 3c)
   const answerFor = async (id: string) => { const a = await readJson<Attempt>("creature/attempt.json"); return a?.id === id ? a : null; };
   // a robot.json to write the request into: a real robot tool makes it (code mode has none until the agent edits the robot)
   if (!tool) { await ev(`demo.stubCloud([{ call: { name: "rename", arguments: { name: "Rex" } } }, { text: "Done." }])`); await say("call it Rex"); }
@@ -163,7 +164,8 @@ try {
 
   // 3. the skills come home: with a flag to walk to, the robot waits for the request instead of walking off on its own. Without TOOL=1 the walk's own policy file stays out until step 4 (a request
   //    that comes before its policy has landed); the tool reads the policies, so with TOOL=1 they all come home now.
-  await ev(`demo.exec(${JSON.stringify(`mkdir -p home/skills && cp held/skills.json home/skills.json && for f in held/skills/*.json; do [ "$f" = held/skills/walk.json ] && [ "${tool ? "" : "hold"}" = hold ] || cp "$f" home/skills/; done`)})`);
+  const holdBack = tool ? [] : ["walk", ...(late ? [late] : [])].map((k) => `held/${manifest.skills[k]!.policy}`);
+  await ev(`demo.exec(${JSON.stringify(`mkdir -p home/skills && cp held/skills.json home/skills.json && for f in held/skills/*.json; do case " ${holdBack.join(" ")} " in *" $f "*) ;; *) cp "$f" home/skills/;; esac; done`)})`);
   await page.until(`Object.keys(document.getElementById("creature").contentWindow.__walks.skills()?.skills ?? {}).length > 0`, 30_000, 300);
   const home0 = await torso();
   await sleep(4000);
@@ -179,6 +181,18 @@ try {
     const playing = await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === ${JSON.stringify(other)} && !document.getElementById("creature").contentWindow.__walks.trying()`, 4_000, 100).then(() => true, () => false);
     const cutAnswer = await answerFor(cut.id);
     ok(`${other} asked for during a try plays within 4 s, and the try is answered cut short (under 3.5 s)`, playing && !!cutAnswer && cutAnswer.seconds < 3.5 && cutAnswer.learned === false, { playing, skill: await walks("w.skill()"), trying: await walks("w.trying()"), cutAnswer });
+  }
+
+  // 3c. a request waiting for its skill's policy is dropped when robot.json names another skill: the policy landing later does not bring the old request back over the newer choice
+  if (!tool && other && late) {
+    const stale = await ask(late, true);
+    await sleep(2500);
+    await playSkill(other);
+    await sleep(2000);
+    await ev(`demo.exec(${JSON.stringify(`cp held/${manifest.skills[late]!.policy} home/${manifest.skills[late]!.policy}`)})`);
+    await sleep(3500);
+    const kept = { skill: await walks<string | null>("w.skill() ?? null"), attempt: await walks("w.attempt()"), answer: await answerFor(stale.id) };
+    ok(`a ${late} request waiting for its policy, then ${other}: when ${late}'s policy lands ${other} keeps playing and the old request does not start`, kept.skill === other && kept.attempt === null && !kept.answer, kept);
   }
 
   // 4. the learned walk: it reaches the flag, the flag has its moment, the page says so
@@ -229,6 +243,18 @@ try {
     const now = await torso();
     const last = await readJson<Attempt>("creature/attempt.json");
     ok(`${other} plays where the robot stands: not put back at the start, and the last answer is still the walk's`, now.skill === other && Math.hypot(now.x - was.x, now.y - was.y) < 0.6 && last?.id === walkAsk.id, { was, now, last: last?.id });
+  }
+  // 5b. another skill asked for during a learned walk's run: the run is answered when it takes over (its moves are not the walk's), and that skill keeps its own command
+  if (!tool && other) {
+    const cutWalk = await ask("walk", true);
+    await page.until(`document.getElementById("creature").contentWindow.__walks.attempt()?.id === ${JSON.stringify(cutWalk.id)}`, 10_000, 100).catch(() => undefined);
+    await sleep(1000);
+    await playSkill(other);
+    await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === ${JSON.stringify(other)}`, 10_000, 100).catch(() => undefined);
+    await sleep(400);
+    const cutRun = await answerFor(cutWalk.id);
+    const after = { attempt: await walks("w.attempt()"), command: await walks<number>("w.app.sim.command") };
+    ok(`${other} asked for during the walk's run: the run is answered as ${other} takes over, and ${other} plays at its own command`, !!cutRun && cutRun.learned && !cutRun.reached_flag && after.attempt === null && Math.abs(after.command - manifest.skills[other]!.command) < 1e-9, { cutRun, after });
   }
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);

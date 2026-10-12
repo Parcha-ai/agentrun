@@ -428,6 +428,7 @@ async function applyRobot(text: string) {
   }
   // with a flag, the skill and the request go by the flag's rule (goal.ts flagPlan), decided before anything plays: a walk already answered is not started again
   const plan = flag ? flagPlan(robot.skill ?? null, ...(await requestIn(text))) : { skill: robot.skill ?? null, request: null };
+  if (pendingRequest && plan.skill && plan.skill !== pendingRequest.skill) pendingRequest = null; // robot.json names another skill now: that choice is newer than the request still waiting for its policy
   if (plan.skill && plan.skill !== skillNow) await switchSkill(plan.skill);
   else if (!robot.skill && skills && !flag && (skillNow !== null || !app.policy) && (skillNow !== skills.default || !app.policy)) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for (with a flag it stands and waits to be asked)
   if (plan.request) takeRequest(plan.request);
@@ -569,10 +570,14 @@ async function onSkillFile(name: string, text: string) {
   else if (pendingRequest?.skill === name && skillNow !== name) await switchSkill(name); // the policy a waiting request needs has landed
 }
 
-/** creature/scene.json, for the agent's `do`: written with each body (the robot starts at the origin). A tab that does not hold the run cannot write it, and `do` then works as it did without a flag. */
+/** scene.json and attempt.json are written as fit.json is: a write that fails (this tab does not hold the run just now) is kept and tried again, and a newer answer replaces one not yet written. */
+const sceneWriter = new FitWriter((text) => new ParentBackend(windowBus(), SCENE_PATH).write(new TextEncoder().encode(text)), (ms) => new Promise<void>((r) => setTimeout(r, ms)));
+const attemptWriter = new FitWriter((text) => new ParentBackend(windowBus(), ATTEMPT_PATH).write(new TextEncoder().encode(text)), (ms) => new Promise<void>((r) => setTimeout(r, ms)));
+
+/** creature/scene.json, for the agent's `do`: written with each body (the robot starts at the origin). Until it lands, `do` works as it did without a flag. */
 async function writeScene() {
   if (!flag || app.storageMode !== 'disk') return;
-  try { await new ParentBackend(windowBus(), SCENE_PATH).write(new TextEncoder().encode(sceneFile(flag))); } catch { /* not the holder */ }
+  void sceneWriter.submit(sceneFile(flag));
 }
 
 /** robot.json's `attempt`, and whether it is done: taken up by this page already, or answered in attempt.json (the page reloaded since: it is not played again). */
@@ -621,15 +626,16 @@ function startAttempt(req: AttemptRequest) {
 function answerAttempt(a: Attempt, ending: Ending | null) {
   attempt = null;
   const report = a.report();
-  if (app.storageMode === 'disk') void new ParentBackend(windowBus(), ATTEMPT_PATH).write(new TextEncoder().encode(JSON.stringify(report) + '\n')).catch(() => undefined);
+  if (app.storageMode === 'disk') void attemptWriter.submit(JSON.stringify(report) + '\n');
   if (!report.learned) {
     post('tried', { ...report });
     if (trying) { app.sim.attachBrain(null); trying.settleUntil = app.sim.time + (ending ? 1 : 0) * SETTLE_S; } // it stays as the try left it for a moment, then is put back
   } else {
     if (ending === 'reached') { app.view.reachFlag(); post('reached-flag', { ...report }); toast('reached the flag'); }
     else post('ran', { ...report, ending });
-    // a forward skill is a walk to the flag: once it is answered (there, or not getting there) it stands, as the agent's state line then says (command 0 is "stand" to a policy; the walk's range starts at 0)
-    if (FORWARD_SKILLS.includes(report.skill)) { ($('command') as HTMLInputElement).value = '0'; applyCommand(); }
+    // a forward skill is a walk to the flag: once it is over (there, or not getting there) it stands, as the agent's state line then says (command 0 is "stand" to a policy; the walk's range starts
+    // at 0). One cut short by another skill or request leaves the command to what takes over.
+    if (ending && FORWARD_SKILLS.includes(report.skill)) { ($('command') as HTMLInputElement).value = '0'; applyCommand(); }
   }
 }
 
@@ -676,6 +682,9 @@ async function switchSkill(name: string, reload = false) {
   closeArrival();
   // another skill takes over during an untrained try: the try is answered as it stands and the robot put back, then the skill plays (a refresh of the same skill's file leaves the try running)
   if (trying && !reload) { if (attempt && !attempt.request.learned) answerAttempt(attempt, null); endTry(); }
+  // or during another skill's run: that run is answered as it stands (this skill's moves are not its), and a request still waiting for another skill's policy is dropped (this choice is newer)
+  if (attempt && attempt.request.learned && attempt.request.skill !== name) answerAttempt(attempt, null);
+  if (pendingRequest && pendingRequest.skill !== name) pendingRequest = null;
   // A round's skills carry no get-up network, so a creature that is lying down cannot rise under the new one (it lies still where the skill was asked for): it is set back on its feet first, as a policy that arrives is
   const standUp = !policy.hasGetup && app.sim.uprightness() < 0.3;
   if (standUp) { app.sim.standUp(); post('stood-up', { reason: 'skill', skill: name, t: app.sim.time }); }
