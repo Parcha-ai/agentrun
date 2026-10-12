@@ -22,7 +22,8 @@ import { CHARS_PER_TOKEN, CONTEXT_TOKENS, hasTools, toolPrompt } from "./tool-wi
 import { nativeContent, nativeExchanges, nativeTurn, toolProperties } from "./native-turn.ts";
 import type { ToolChatRequest, ToolChatResult, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
 
-export const BRAIN_PROVIDER = "tab-local";
+import { BRAIN_PROVIDER } from "../providers.ts";
+export { BRAIN_PROVIDER };
 export const BRAIN_API = "tab-local";
 /** `rawStopReason` of a held answer. */
 export const HELD_MARK = HELD;
