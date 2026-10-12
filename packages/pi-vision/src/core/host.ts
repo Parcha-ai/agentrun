@@ -40,13 +40,20 @@ export type ReadArgs = {
   readonly ask?: string; readonly from_s?: number; readonly to_s?: number; readonly page?: number;
 };
 
+/** A JSON value: what a memo keeps. */
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+
 /** The call a read, a fit or a look serves: whose conversation, which call, the lead's model (its limits and what it
- *  takes), and the call's cancellation. */
+ *  takes), the call's cancellation, and its memos. */
 export type CallContext = {
   readonly conversationId: string;
   readonly callId: string;
   readonly model: unknown;
   readonly signal: AbortSignal | undefined;
+  /** The value kept under `key` for this call, else `compute`'s, kept before it is returned: a call cut by a crash and
+   *  run again gets the kept value without computing it. A paid request goes through it, so its answer is kept before
+   *  the result that reports it. Absent: computed every time. */
+  readonly memo?: <T extends Json>(key: string, compute: () => Promise<T>) => Promise<T>;
 };
 
 /** Who looks: one request to a model with eyes, on the tier the host names. */
@@ -102,4 +109,20 @@ export type VisionOptions = {
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
   readonly section?: { readonly addendum?: string };
   readonly install?: { readonly read?: "wrap" | "off"; readonly look?: boolean; readonly guard?: boolean };
+};
+
+/** What the adapter resolved from `VisionOptions` for one call: the route's limits, who looks, where derivations and
+ *  receipts go, the host's converters, handles and policy, and its rows, whose callbacks never throw. */
+export type CallSetup = {
+  readonly limits: Limits;
+  readonly eyes: Eyes | undefined;
+  readonly scope: { readonly label: string; readonly deriveDir: string };
+  readonly evidence: EvidenceSink;
+  readonly images?: ImageProcessor;
+  /** The host's converters, beside the package's own. */
+  readonly providers: readonly Provider[];
+  readonly sources: Readonly<Record<string, SourceProvider>>;
+  readonly allow?: VisionOptions["allow"];
+  readonly onLook?: (look: LookEvent) => void | Promise<void>;
+  readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
 };

@@ -2,6 +2,245 @@
 // paged like a file, a page rendered and shown, a scan shown up to the page budget, a spreadsheet's cells, a video's
 // frames or window, a recording by handle. Window and page arguments on the wrong kind of file are refused in one line,
 // and the zero values a strict route fills in are treated as absent. A plain text file is not ours: the host's read
-// serves it.
+// serves it. Each kind is read by its own reader; this module decides the kind, checks the arguments and the host's
+// policy, pages a document's text and turns what cannot be done into a miss the model can act on.
 
-export {};
+import { createHash } from "node:crypto";
+import type { MissCode } from "./contract.js";
+import { visionContext, type VisionEnv } from "./env.js";
+import { fileLook, lookKey, type Filing, type LookRecord } from "./evidence.js";
+import { formatFragment } from "./fragments.js";
+import { DESCRIBE_ASK, type ImageSize, type MediaDetails } from "./guard.js";
+import type { CallContext, CallSetup, ImageContent, ReadArgs, TextContent, ToolResult } from "./host.js";
+import type { ImageProcessor } from "./image.js";
+import type { Kind } from "./kinds.js";
+import type { Limits } from "./limits.js";
+import { firstLine, MISS_ACTION, refusal, reportMiss } from "./misses.js";
+import { notBuilt } from "./not-built.js";
+import type { Fit } from "./plan.js";
+import type { Provider, ProviderSource } from "./provider.js";
+
+/** A source's kind from its first bytes and its name (`sniffKind`'s answer, kinds.ts), or why the two disagree. */
+type SniffOutcome =
+  | { readonly ok: true; readonly kind: Kind; readonly mimeType: string | null; readonly signature?: string }
+  | { readonly ok: false; readonly code: "unsupported"; readonly reason: string };
+
+/** What a kind's reader is asked: the source in the environment, the path as the model wrote it, and the arguments. */
+export type KindRequest = {
+  readonly source: ProviderSource; readonly name: string; readonly mimeType: string; readonly width?: number; readonly height?: number;
+  readonly ask?: string; readonly page?: number; readonly fromS?: number; readonly toS?: number;
+};
+/** What a kind's reader works with: the environment, the lead's limits, where kept derivations go (named by the
+ *  source's hash and their parameters), a directory removed when the read ends, and the image processor and providers. */
+export type KindContext = {
+  readonly env: VisionEnv; readonly signal: AbortSignal | undefined; readonly limits: Limits; readonly deriveDir: string; readonly tempDir: string;
+  readonly images?: ImageProcessor; readonly providers: readonly Provider[];
+};
+/** A kind's answer: what the model reads (a document's whole `text`, page-marked, is paged here after the first text
+ *  block), or a miss with its cause and any text that still came back. */
+export type KindResult =
+  | { readonly content: readonly (TextContent | ImageContent)[]; readonly text?: string; readonly media?: MediaDetails; readonly fit?: Fit }
+  | { readonly miss: MissCode; readonly reason: string; readonly text?: string };
+export type KindReader = (request: KindRequest, context: KindContext) => Promise<KindResult>;
+
+/** The package's own kind wiring: the kind of a file's first bytes, an image header's pixels, and a reader per kind. */
+export type ReadKinds = {
+  readonly sniff: (head: Uint8Array, path: string) => SniffOutcome;
+  readonly sizeOf: ImageSize;
+  readonly readers: Readonly<Partial<Record<Kind, KindReader>>>;
+};
+const KINDS_NOT_BUILT: ReadKinds = { sniff: () => notBuilt("the kind of a file"), sizeOf: () => notBuilt("the image header reader"), readers: {} };
+
+/** Bytes a kind is decided from: a header's first megabyte holds its pixel size behind any metadata. */
+const HEAD_BYTES = 1024 * 1024;
+/** Bytes hashed per step. */
+const HASH_CHUNK_BYTES = 1024 * 1024;
+/** One page of a document's text: pi's read tool's own limits, 2,000 lines and 50 KiB of UTF-8 (`DEFAULT_MAX_LINES`, `DEFAULT_MAX_BYTES`). */
+const PAGE_LINES = 2000;
+const PAGE_BYTES = 50 * 1024;
+
+const num = (value: unknown): number | undefined => (value === undefined || value === null || value === "" ? undefined : Number(value));
+const asked = (args: ReadArgs) => (typeof args.ask === "string" && args.ask.trim() ? args.ask.trim() : undefined);
+
+/** A tool on a strict function-calling route receives every optional argument, filled with its zero value. A value
+ *  that is the argument's own default, or a window or page the target has none of, is the absent argument. Two shapes
+ *  stay as sent, because a filler and a real request send the same values: `from_s: 5, to_s: 0` (refused, since
+ *  `to_s: 0` alone is also the real empty window), and `page: 1` on a document (read, since it is the real first page). */
+export function withoutStrictDefaults(args: ReadArgs, target: { readonly windowed: boolean; readonly paged: boolean }): ReadArgs {
+  const out: Record<string, unknown> = { ...args };
+  const [fromS, toS, page] = [num(out.from_s), num(out.to_s), num(out.page)];
+  if ((fromS ?? 0) === 0 && (toS === undefined || toS === 0 || (!target.windowed && toS === 1))) { delete out.from_s; delete out.to_s; }
+  if (!target.paged && (page === 0 || page === 1)) delete out.page;
+  if (num(out.offset) === 0 || num(out.offset) === 1) delete out.offset;
+  if (num(out.char_offset) === 0) delete out.char_offset;
+  if (num(out.limit) === 0) delete out.limit;
+  return out as ReadArgs;
+}
+
+/** One window of a document's text, from line `offset` (1-based) and `charOffset` characters into it, within `limit`
+ *  lines and one page, with the line that says where to continue. */
+function pageText(text: string, name: string, offset = 1, limit?: number, charOffset = 0): string {
+  const lines = text.split("\n");
+  if (offset > lines.length) throw new RangeError(`Offset ${offset} is beyond end of file (${lines.length} lines total)`);
+  const last = Math.min(lines.length, offset - 1 + Math.min(limit ?? PAGE_LINES, PAGE_LINES));
+  const from = Math.min(charOffset, lines[offset - 1]!.length);
+  const window = [lines[offset - 1]!.slice(from), ...lines.slice(offset, last)].join("\n");
+  const bytes = Buffer.from(window, "utf8");
+  if (bytes.length <= PAGE_BYTES) return last < lines.length ? `${window}\n\n[${lines.length - last} more lines in file. Use offset=${last + 1} to continue.]` : window;
+  // A window ends where a character starts, so a character cut by the page goes whole to the next.
+  let end = PAGE_BYTES;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  const cut = bytes.subarray(0, end).toString("utf8");
+  const breaks = cut.split("\n").length - 1;
+  const endLine = offset + breaks;
+  const endChar = breaks ? cut.length - cut.lastIndexOf("\n") - 1 : from + cut.length;
+  return `${cut}\n\n[Showing line ${offset} character ${from} to line ${endLine} character ${endChar} of ${name} (${lines.length} lines). Use offset=${endLine}${endChar ? ` char_offset=${endChar}` : ""} to continue.]`;
+}
+
+async function sha256Of(env: VisionEnv, path: string, size: number, signal: AbortSignal | undefined): Promise<string> {
+  const ctx = visionContext(signal);
+  const opened = await env.openBinaryReader(path, undefined, ctx);
+  if (!opened.ok) throw opened.error;
+  const hash = createHash("sha256");
+  try {
+    for (let at = 0; at < size; at += HASH_CHUNK_BYTES) {
+      const chunk = await opened.value.read(at, Math.min(HASH_CHUNK_BYTES, size - at), ctx);
+      if (!chunk.ok) throw chunk.error;
+      hash.update(chunk.value);
+    }
+  } finally { await opened.value.close(ctx); }
+  return hash.digest("hex");
+}
+
+/** A handle such as `session:<id>`: the scheme and the id. `session` is always a handle; another scheme is one when the
+ *  host gives it a source. */
+const HANDLE = /^([a-z]+):([A-Za-z0-9_-]{1,128})$/;
+function handleOf(path: string, sources: CallSetup["sources"]): { scheme: string; id: string } | null {
+  const match = HANDLE.exec(path.trim());
+  return match && (match[1] === "session" || sources?.[match[1]!]) ? { scheme: match[1]!, id: match[2]! } : null;
+}
+
+/** A file's size, first bytes and kind; null when the path is not a file that opens. */
+async function sniffFile(env: VisionEnv, name: string, sniff: ReadKinds["sniff"], signal: AbortSignal | undefined): Promise<{ size: number; head: Uint8Array; sniffed: SniffOutcome } | null> {
+  const ctx = visionContext(signal);
+  const info = await env.fileInfo(name, ctx);
+  if (!info.ok || info.value.kind !== "file") return null;
+  const opened = await env.openBinaryReader(name, undefined, ctx);
+  if (!opened.ok) return null;
+  const head = await opened.value.read(0, Math.min(HEAD_BYTES, info.value.size), ctx).finally(() => opened.value.close(ctx));
+  return head.ok ? { size: info.value.size, head: head.value, sniffed: sniff(head.value, name) } : null;
+}
+
+/** A miss the model can act on, filed as a failed look and told to the host. */
+async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, reason: string, args: ReadArgs, text?: string): Promise<ToolResult> {
+  const ask = asked(args);
+  const page = num(args.page);
+  const record: LookRecord = { tool: "look", args: { path: name, ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), model: "none", native: false }, status: "failed", facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask, model: "none" }) }, body: "" };
+  const receipt = await reportMiss(filing, "read", record, { code, reason });
+  return {
+    content: [{ type: "text", text: `${name} could not be read: ${reason}. The file is saved at ${name}.${receipt ? ` Receipt filed at ${receipt}.` : ""} ${MISS_ACTION[code]}${text?.trim() ? `\n${text.trim()}` : ""}` }],
+    details: { path: name, ...(receipt ? { look: receipt } : {}), miss: { code } },
+  };
+}
+
+/** A recording by handle: its source provider's answer to the question about that window, filed as a look. */
+async function readRecording(scheme: string, id: string, handle: string, raw: ReadArgs, call: CallContext, setup: CallSetup, filing: Filing): Promise<ToolResult> {
+  const args = withoutStrictDefaults(raw, { windowed: true, paged: false });
+  const [fromS, toS] = [num(args.from_s), num(args.to_s)];
+  if (num(args.page) !== undefined) return refusal(`page applies to PDF files only; ${handle} is a recording. Read it without a page.`);
+  if ([fromS, toS].some((v) => v !== undefined && !Number.isFinite(v))) return refusal(`from_s/to_s must be numbers of seconds (got from_s=${args.from_s}, to_s=${args.to_s}).`);
+  if (fromS !== undefined && fromS < 0) return refusal(`Cannot read ${handle}: from_s (${fromS}) must not be negative.`);
+  if (toS !== undefined && toS <= (fromS ?? 0)) return refusal(`Cannot read ${handle}: to_s (${toS}) must be greater than from_s (${fromS ?? 0}).`);
+  const source = setup.sources?.[scheme];
+  const owned = source?.owns ? await source.owns(id, { conversationId: call.conversationId }) : true;
+  if (owned !== true) return refusal(owned);
+  const allowed = setup.allow?.({ path: handle, kind: "recording", tool: "read" }) ?? true;
+  if (allowed !== true) return refusal(allowed);
+  if (!source?.look) return refusal(`${handle} names a browser session's recording, and this run has no recording reviewer to answer a question about it.`);
+  const ask = asked(args);
+  const window = fromS !== undefined || toS !== undefined ? ` (${fromS ?? 0}s\u2013${toS !== undefined ? `${toS}s` : "end"})` : "";
+  const sha256 = createHash("sha256").update(handle).digest("hex");
+  const fragment = window ? formatFragment({ t: { from: fromS ?? 0, ...(toS !== undefined ? { to: toS } : {}) } }) : "";
+  const record = (model: string, status: "ok" | "failed", body: string, paid?: { readonly costUsd: number; readonly billedBy: string }): LookRecord => ({
+    tool: "look", args: { path: handle, ...(ask ? { ask } : {}), ...(fromS !== undefined ? { from_s: fromS } : {}), ...(toS !== undefined ? { to_s: toS } : {}), via: source.via, native: false, model },
+    status, facts: { sha256, kind: "recording", fragment, key: lookKey({ sha256, fragment, ask, model }), ...(paid ? { cost_usd: paid.costUsd, provider: paid.billedBy } : {}) }, body,
+  });
+  try {
+    const look = await source.look({ id, ask: ask ?? DESCRIBE_ASK, ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}) }, call.signal ?? new AbortController().signal);
+    // An answer with no words is a look that failed, as the eyes' is.
+    if (!look.text.trim()) throw new Error(`the recording reviewer ${look.model} via ${source.via} returned no text`);
+    const paid = { costUsd: look.costUsd, billedBy: look.billedBy ?? source.via };
+    const filed = await fileLook(filing, "read", record(look.model, "ok", look.text, paid), { usage: null, ...paid });
+    const head = `(recording ${handle}${window} seen for you by ${look.model} via ${source.via}${ask ? ` \u2014 your question: ${ask}` : ""}${filed ? `; look filed at ${filed}` : ""}:)`;
+    return { content: [{ type: "text", text: `${head}\n${look.text}` }], details: { path: handle, ...(filed ? { look: filed } : {}), media: { kind: "recording", sessionId: id, ...(ask ? { ask } : {}), ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}) } } };
+  } catch (error) {
+    if (call.signal?.aborted) throw error;
+    const reason = firstLine(error);
+    const filed = await reportMiss(filing, "read", record("none", "failed", ""), { code: "look_failed", reason });
+    return refusal(`Cannot read ${handle}${window}: ${reason}${filed ? ` (look filed at ${filed})` : ""}`);
+  }
+}
+
+/** The media half of `read`: the result for a file the model looks at or that needs decoding, or a recording by handle;
+ *  null when the path reads as plain text (or is not a file), for the host's own read. */
+export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext, setup: CallSetup, kinds: ReadKinds = KINDS_NOT_BUILT): Promise<ToolResult | null> {
+  const name = String(raw.path ?? ".");
+  const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
+  const handle = handleOf(name, setup.sources);
+  if (handle) return readRecording(handle.scheme, handle.id, name.trim(), raw, call, setup, filing);
+  const file = await sniffFile(env, name, kinds.sniff, call.signal);
+  if (!file) return null;
+  const { size, sniffed } = file;
+  const sha256 = () => sha256Of(env, name, size, call.signal);
+  if (!sniffed.ok) return missResult(filing, name, "unknown", await sha256(), sniffed.code, sniffed.reason, raw);
+  const { kind } = sniffed;
+  if (kind === "text") return null;
+  if (kind === "unknown") return missResult(filing, name, kind, await sha256(), "unsupported", `its bytes are in no format read takes (first bytes ${sniffed.signature ?? "unknown"})`, raw);
+  const pixels = kind === "image" ? kinds.sizeOf(file.head) : null;
+  const paged = kind === "pdf" || kind === "office";
+  const args = withoutStrictDefaults(raw, { windowed: kind === "video", paged });
+  const [fromS, toS, page] = [num(args.from_s), num(args.to_s), num(args.page)];
+  const windowed = fromS !== undefined || toS !== undefined;
+  if (windowed && kind !== "video") return refusal(`from_s/to_s apply to video files only; ${name} is not a video. Read it without a window.`);
+  if (page !== undefined && !paged) return refusal(`page applies to PDF files and office documents only; ${name} is neither. Read it without a page.`);
+  if (windowed && [fromS, toS].some((v) => v !== undefined && !Number.isFinite(v))) return refusal(`from_s/to_s must be numbers of seconds (got from_s=${args.from_s}, to_s=${args.to_s}).`);
+  if (windowed && toS !== undefined && toS <= Math.max(0, fromS ?? 0)) return refusal(`Cannot read ${name}: to_s (${toS}) must be greater than from_s (${Math.max(0, fromS ?? 0)}).`);
+  if (page !== undefined && !(Number.isInteger(page) && page >= 1)) return refusal(`Cannot read ${name}: page must be an integer of 1 or more (got ${args.page}).`);
+  const allowed = setup.allow?.({ path: name, kind, tool: "read" }) ?? true;
+  if (allowed !== true) return missResult(filing, name, kind, await sha256(), "refused", allowed, args);
+  const reader = kinds.readers[kind];
+  if (!reader) return missResult(filing, name, kind, await sha256(), "needs", `no reader for ${kind} files is installed`, args);
+  const source: ProviderSource = { path: name, kind, bytes: size, sha256: await sha256() };
+  const ask = asked(args);
+  const request: KindRequest = { source, name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
+  const ctx = visionContext(call.signal);
+  const temp = await env.createTempDir("pi-vision-read-", ctx);
+  if (!temp.ok) throw temp.error;
+  let result: KindResult;
+  try {
+    result = await reader(request, { env, signal: call.signal, limits: setup.limits, deriveDir: setup.scope.deriveDir, tempDir: temp.value, images: setup.images, providers: setup.providers });
+  } catch (error) {
+    // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
+    if (call.signal?.aborted) throw error;
+    result = { miss: "unreadable", reason: firstLine(error) };
+  } finally { await env.remove(temp.value, { recursive: true, force: true }, ctx); }
+  if ("miss" in result) return missResult(filing, name, kind, source.sha256, result.miss, result.reason, args, result.text);
+  let content = result.content;
+  if (result.text !== undefined && content[0]?.type === "text") {
+    let window: string;
+    try { window = pageText(result.text, name, num(args.offset), num(args.limit), num(args.char_offset)); } catch (error) { return refusal(`Cannot read ${name}: ${firstLine(error)}`); }
+    content = [{ type: "text", text: `${content[0].text}\n\n${window}` }, ...content.slice(1)];
+  }
+  const original = pixels ? `${pixels.width}x${pixels.height}` : undefined;
+  const media: MediaDetails = { kind, path: name, sha256: source.sha256, ...(original ? { original } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(request.fromS !== undefined ? { fromS: request.fromS } : {}), ...(toS !== undefined ? { toS } : {}), ...(result.fit ? { fit: result.fit } : {}), ...result.media };
+  return { content, details: { path: name, media } };
+}
+
+/** Whether a call is the host's plain text read: no handle a source serves, no media argument, and a file that is not
+ *  one of the kinds read decodes. The host's read of anything else may file a look or write a derivation. */
+export async function readsAsText(env: VisionEnv, args: ReadArgs, call: CallContext, setup: Pick<CallSetup, "sources">, kinds: ReadKinds = KINDS_NOT_BUILT): Promise<boolean> {
+  const name = String(args.path ?? ".");
+  if (handleOf(name, setup.sources) || asked(args) || [args.page, args.from_s, args.to_s].some((v) => num(v) !== undefined)) return false;
+  const sniffed = (await sniffFile(env, name, kinds.sniff, call.signal))?.sniffed;
+  return !sniffed || (sniffed.ok && sniffed.kind === "text");
+}
