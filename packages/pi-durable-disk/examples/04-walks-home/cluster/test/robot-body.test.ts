@@ -2,7 +2,7 @@
 // lib.mjs and build.mjs (04-walks-home/body), from D3's dinosaur and variants of it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -14,12 +14,16 @@ const dino = readFileSync(join(body, "dino.example.mjs"), "utf8");
 /** The build's printed warnings for this body file. */
 function warnings(source: string): string[] {
   const dir = mkdtempSync(join(tmpdir(), "robot-body-"));
-  mkdirSync(join(dir, "robot"));
-  for (const f of ["lib.mjs", "build.mjs"]) copyFileSync(join(body, f), join(dir, "robot", f));
-  writeFileSync(join(dir, "robot", "body.mjs"), source);
-  const r = spawnSync(process.execPath, ["robot/build.mjs"], { cwd: dir, encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  return r.stdout.split("\n").filter((l) => l.startsWith("warning: "));
+  try {
+    mkdirSync(join(dir, "robot"));
+    for (const f of ["lib.mjs", "build.mjs"]) copyFileSync(join(body, f), join(dir, "robot", f));
+    writeFileSync(join(dir, "robot", "body.mjs"), source);
+    const r = spawnSync(process.execPath, ["robot/build.mjs"], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.split("\n").filter((l) => l.startsWith("warning: "));
+  } finally {
+    rmSync(dir, { recursive: true, force: true }); // this call's own directory, whatever happened
+  }
 }
 
 test("a body built the way robot.md asks (flat box feet, leg motors of strength 14) gets no foot or motor warning", () => {
