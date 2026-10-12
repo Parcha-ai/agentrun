@@ -6,6 +6,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runWorkflow, validateWorkflow, EffectFailure, EFFECT_FAILURE_CODES, CALL_RETRY_CLASSES, deniedGlobalReferences } from '../dist/index.js';
+// An effect's deadline is measured on performance.now(). A test that needs a deadline to pass holds that clock and moves
+// it itself, after the effect was admitted, so a loaded machine cannot pass the deadline before admission.
+const testClock = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); return { advance: (ms) => { now += ms; } }; };
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
 const schemas = { Out: { type: 'object', required: ['code'], properties: { code: { type: 'integer' } } } };
 const shell = (retry) => ({ node: 'call', label: 'render', via: 'shell', command: 'render.sh', as: 'render', deadline_s: 5, ...(retry ? { retry } : {}) });
@@ -73,12 +77,14 @@ test('a retry class still retries as before: the default list and a named class'
   assert.equal(events[0].retry_class, 'exit');
 });
 
-test('the interpreter\'s own deadline failure carries effect_timeout', async () => {
+test('the interpreter\'s own deadline failure carries effect_timeout', { timeout: 10000 }, async (t) => {
+  const clock = testClock(t), entered = deferred();
   const events = [];
-  await assert.rejects(runWorkflow(flow({ ...shell(), deadline_s: 0.05 }), {}, {
+  const cut = assert.rejects(runWorkflow(flow({ ...shell(), deadline_s: 0.05 }), {}, {
     onEvent: (event) => { if (event.type === 'effect.failed') events.push(event.detail); },
-    runEffect: ({ signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('stopped')), { once: true })),
+    runEffect: ({ signal }) => { entered.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('stopped')), { once: true })); },
   }));
+  await entered.promise; clock.advance(50); await cut;
   assert.equal(events[0].code, 'effect_timeout');
 });
 
@@ -94,7 +100,8 @@ test('the denied-global lint names what a body reaches for, and not what it only
   assert.deepEqual(deniedGlobalReferences('(s) => ({ total: s.items.length / 2 })'), []);
 });
 
-test('the effect.failed row\'s code is closed: an open code rides as error_code, and an unknown outcome under recovery carries none', async () => {
+test('the effect.failed row\'s code is closed: an open code rides as error_code, and an unknown outcome under recovery carries none', { timeout: 10000 }, async (t) => {
+  const clock = testClock(t), entered = deferred();
   const rows = [];
   const onEvent = (event) => { if (event.type === 'effect.failed') rows.push(event.detail); };
   // A host error with its own string code, and an EffectFailure forged with a code outside the list.
@@ -103,7 +110,8 @@ test('the effect.failed row\'s code is closed: an open code rides as error_code,
   await assert.rejects(runWorkflow(flow(shell()), {}, { onEvent, runEffect: async () => { throw new EffectFailure('forged', null, { code: 'effect_exploded' }); } }));
   // An adapter still pending at its deadline under recovery: the outcome is unknown.
   const recovery = { supportsExecutionPaths: true, resume: async () => undefined, commit: async () => {}, pollStartedAt: () => Date.now(), wait: async () => {} };
-  await assert.rejects(runWorkflow(flow({ ...shell(), deadline_s: 0.05 }), {}, { onEvent, recovery, runEffect: () => new Promise(() => {}) }));
+  const unknown = assert.rejects(runWorkflow(flow({ ...shell(), deadline_s: 0.05 }), {}, { onEvent, recovery, runEffect: () => { entered.resolve(); return new Promise(() => {}); } }));
+  await entered.promise; clock.advance(50); await unknown;
   assert.deepEqual(rows.map((row) => [row.code, row.error_code ?? null]), [[null, 'RECEIPT_WRITE_FAILED'], [null, 'effect_exploded'], [null, 'effect_outcome_unknown']]);
   assert.equal(rows[2].outcome, 'unknown');
   for (const row of rows) assert.ok(row.code === null || EFFECT_FAILURE_CODES.includes(row.code));

@@ -7,6 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
+// The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
+// performance.now(). A test that needs either to pass holds both clocks and moves them itself.
+const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
 import {
   openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, RecoveryError, nodeAt,
   frozenEffectId, frozenStepSessionId, frozenStepId, FROZEN_SNAPSHOT_SCHEMA, gatewayIntentOf,
@@ -182,7 +185,8 @@ for (const [place, observed] of Object.entries({
   });
 }
 
-test("an effect's own deadline is its only clock: it cuts the adapter and leaves the effect unknown, and no time before it counts", async () => {
+test("an effect's own deadline is its only clock: it cuts the adapter and leaves the effect unknown, and no time before it counts", async (t) => {
+  holdClocks(t);
   const workflow = doc([tool('slow', {}, { deadline_s: 0.05 })]);
   let calls = 0, cut = 0;
   const hanging = { runEffect: ({ signal }) => { calls += 1; return new Promise((_, reject) => signal.addEventListener('abort', () => { cut += 1; reject(signal.reason); }, { once: true })); } };
