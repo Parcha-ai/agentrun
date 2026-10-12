@@ -90,7 +90,8 @@ def up(args):
     with open(os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write(key)
     exec_key = secrets.token_urlsafe(32)
-    with open(os.open(os.path.join(STATE, "exec-key"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+    exec_keyfile = os.path.join(STATE, "exec-key")
+    with open(os.open(exec_keyfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write(exec_key)
     jev = os.environ.get("TYPESAFE_API_KEY")
     if not jev:
@@ -102,16 +103,16 @@ def up(args):
         "sleep", "infinity", app=app, image=image(), gpu=args.gpu, cpu=8, memory=65536, timeout=args.ttl * 60,
         volumes={"/vol": modal.Volume.from_name(VOLUME)}, encrypted_ports=[8000], name=f"gg-box-{int(t0)}",
     )
-    # saved before anything else can fail, so `down` always finds the box
+    # saved before anything else can fail, so `down` always finds the box and both of its keys
     with open(os.path.join(STATE, "box.json"), "w") as f:
-        json.dump({"sandbox": sb.object_id, "key_file": keyfile, "created": t0, "gpu": args.gpu}, f, indent=1)
+        json.dump({"sandbox": sb.object_id, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "gpu": args.gpu}, f, indent=1)
     ledger(f"create {sb.object_id} gpu={args.gpu} ttl={args.ttl}m")
     sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
     created = time.time()
     run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\nOPENAI_API_KEY={openai}\n")
     run(sb, "/opt/gg-onemore/box/start.sh", root=True)
     url = sb.tunnels()[8000].url
-    st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "exec_key_file": os.path.join(STATE, "exec-key"), "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}
+    st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}
     with open(os.path.join(STATE, "box.json"), "w") as f:
         json.dump(st, f, indent=1)
     print(json.dumps({k: v for k, v in st.items() if not k.endswith("key_file")}))

@@ -35,10 +35,11 @@ export function createStageView(write: (line: string) => void, o: { color?: bool
     let end = 0;
     for (const m of thinking.matchAll(SENTENCE_END)) end = m.index! + m[0].length;
     if (all) end = thinking.length;
-    // a list's number ("... that: 1.") goes to the start of the item it numbers
+    // a list's number on a line of its own ("... that:\n1.") goes to the start of the item it numbers; a sentence that
+    // ends in a number ("The answer is 42.") keeps it
     let carry = "";
     for (const piece of thinking.slice(0, end).split(BETWEEN_SENTENCES).map((x) => x.trim()).filter(Boolean)) {
-      const marker = /(?:^|\s)(\d+\.)$/.exec(piece);
+      const marker = /(?:^|\n)[ \t]*(\d+\.)$/.exec(piece);
       const sentence = (carry + (marker ? piece.slice(0, marker.index) : piece)).trim();
       carry = marker ? `${marker[1]} ` : "";
       if (sentence && !/^\d+\.$/.test(sentence)) line(thinkingAt, "thinking", sentence, dim);

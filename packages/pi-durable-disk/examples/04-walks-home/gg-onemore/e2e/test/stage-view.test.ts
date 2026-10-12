@@ -57,3 +57,11 @@ test("a long answer wraps under its text instead of being cut", () => {
     "                  my towers every evening.",
   ]);
 });
+
+test("a sentence that ends in a number keeps it, also at the end of the thinking", () => {
+  const lines: string[] = [];
+  const view = createStageView((l) => lines.push(l));
+  view("vm:agent.thinking", { event: "agent.thinking", text: "The answer is 42. Next sentence. The main span is 4200." }, 10);
+  view("vm:agent.says", { event: "agent.says", model: "steered/qwen3.5-27b", text: "156." }, 12);
+  assert.deepEqual(lines.map((l) => l.slice(18)), ["The answer is 42.", "Next sentence.", "The main span is 4200.", "156."]);
+});
