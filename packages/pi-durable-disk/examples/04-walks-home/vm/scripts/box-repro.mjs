@@ -36,6 +36,7 @@ try {
     if (r.code !== 0) throw new Error(`put ${to}: ${r.err}`);
   }
   const r = await run(["sh", "-c", arg("cmd", "ls /workspace")]);
+  code = r.code === 0 ? 0 : 1; // the script says whether the remote command worked
   console.log(`exit ${r.code}\n--- stdout\n${r.out.slice(-3000)}\n--- stderr\n${r.err.slice(-3000)}`);
   await client.release("repro");
 } catch (error) {

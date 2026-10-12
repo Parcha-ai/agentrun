@@ -242,3 +242,33 @@ test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("a thread's pass is for the body it trained: after the body changed, the earlier round's skill.json is not this attempt's pass, and the retrain's own file decides", async () => {
+  const { threadStatusFromSkillFile } = await import("../robot-extra.ts");
+  const { createHash } = await import("node:crypto");
+  const sha = (t: string) => createHash("sha256").update(t).digest("hex");
+  const work = mkdtempSync(join(tmpdir(), "robot-status-"));
+  try {
+    mkdirSync(join(work, "robot"), { recursive: true });
+    mkdirSync(join(work, "skills", "walk"), { recursive: true });
+    const put = (file: Record<string, unknown>) => writeFileSync(join(work, "skills", "walk", "skill.json"), JSON.stringify(file));
+    // Round 1: body A, walk passed.
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco name='A'/>");
+    put({ status: "done", mjcf_sha256: sha("<mujoco name='A'/>"), passed_at: { checkpoint: 5, t: 48 }, wall_s: 50 });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "walk"), { status: "passed", checkpoint: 5, seconds: 50 });
+    // The body changed and the retrain has not written its file yet: the old pass is not this attempt's.
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco name='B'/>");
+    assert.equal(await threadStatusFromSkillFile(work, "walk"), undefined);
+    // The retrain's own file: still training (nothing yet), then it fails: never-passed, not the old pass.
+    put({ status: "training", mjcf_sha256: sha("<mujoco name='B'/>"), passed_at: null });
+    assert.equal(await threadStatusFromSkillFile(work, "walk"), undefined);
+    put({ status: "failed", mjcf_sha256: sha("<mujoco name='B'/>"), passed_at: null, wall_s: 300, diagnosis: "the reward never rose" });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "walk"), { status: "never-passed", seconds: 300, reason: "the reward never rose" });
+    // No MJCF on the disk (a preset robot): nothing to compare against, the file stands.
+    rmSync(join(work, "robot", "body.xml"));
+    put({ status: "done", mjcf_sha256: sha("x"), passed_at: { checkpoint: 2 } });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "walk"), { status: "passed", checkpoint: 2 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

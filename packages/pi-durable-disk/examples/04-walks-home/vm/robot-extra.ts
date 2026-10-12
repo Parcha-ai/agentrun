@@ -6,6 +6,7 @@
 //   env(target)      a conversation with a box in its robot.box doc runs its tools there (D0's RemoteEnv over the link's box); any other, here;
 //   artifacts        the box's /workspace/skills/<skill>/ to <work>/skills/<skill>/ (D0's ArtifactSync), the trainer's own state left on the box.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, rmSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -149,6 +150,10 @@ export async function threadStatusFromSkillFile(work: string, skill: string): Pr
   } catch {
     return undefined;
   }
+  // This attempt's file only: the trainer records the MJCF it trained for, and the mirrored skill.json of an earlier round (another body) must not count as this one's pass. A robot written as code has its
+  // MJCF on the disk (robot/body.xml); a skill file for any other body is not settled for this attempt (a retrain's own file replaces it as the mirror brings it).
+  const body = await readFile(join(work, CODE_BODY_FILES.xml)).catch(() => undefined);
+  if (body && typeof (meta as { mjcf_sha256?: unknown }).mjcf_sha256 === "string" && (meta as { mjcf_sha256: string }).mjcf_sha256 !== createHash("sha256").update(body).digest("hex")) return undefined;
   const at = meta.passed_at as { checkpoint?: unknown; t?: unknown } | number | null | undefined;
   const checkpoint = typeof at === "number" ? at : typeof at?.checkpoint === "number" ? at.checkpoint : undefined;
   const seconds = typeof meta.wall_s === "number" ? Math.round(meta.wall_s) : typeof (at as { t?: unknown } | null | undefined)?.t === "number" ? Math.round((at as { t: number }).t) : undefined;
