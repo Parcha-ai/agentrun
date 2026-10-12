@@ -190,6 +190,16 @@ test("robot episode: the placer asks with the robot's own criteria, takes the ju
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes('{"policy":') }))).reason, /not valid JSON objects: home\/skills\/walk\.json/);
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("[1]") }))).reason, /not valid JSON objects/);
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["../creature/robot"]), "home/skills/../creature/robot.json": bytes("{}") }))).reason, /not a plain skill name/);
+  // What the round trained decides what must come home: one skill asked for, one skill home, is a yes even when the teach step was for 8; a trained skill that did not come home is a no.
+  const round = (names: string[]) => bytes(JSON.stringify({ version: 1, skills: Object.fromEntries(names.map((n) => [n, { status: "done" }])) }));
+  const one = await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}"), "skills/round.json": round(["walk"]) }), 8);
+  assert.equal(one.ok, true);
+  assert.match(one.reason, /^1 skill is home and installed: walk/);
+  const partial = await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}"), "skills/round.json": round(["walk", "spin", "wave"]) }), 1);
+  assert.equal(partial.ok, false);
+  assert.match(partial.reason, /1 of the 3 skills trained this round came home \(not home: spin, wave\)/);
+  // A summary that is not version 1, or not readable, is no summary: the teach step's own count applies.
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}"), "skills/round.json": bytes("nope") }), 8)).reason, /1 of the 8 skills came home/);
   // The index as D2/D3 write it: an object of skills.
   assert.equal((await checkHomeSkills(files({ "home/skills.json": bytes('{"version":1,"default":"walk","skills":{"walk":{},"turn-left":{}}}'), "home/skills/walk.json": bytes("{}"), "home/skills/turn-left.json": bytes("{}") }), 2)).ok, true);
 });

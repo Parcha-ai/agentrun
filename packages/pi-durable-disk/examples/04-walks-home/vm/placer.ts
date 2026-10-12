@@ -25,6 +25,19 @@ export const HOME_PROMPT = "You are back in your user's browser. Say one short, 
 
 export const LABELS: Readonly<Record<string, string>> = { tab: "Browser", "modal-vm": "Modal VM", "modal-gpu": "H100 GPU" };
 
+/** The skills the last round trained (the keys of `skills` in work/skills/round.json, the assembler's summary); none when the summary is absent or unreadable. */
+async function roundSkills(read: (path: string) => Promise<Uint8Array | undefined>): Promise<string[]> {
+  const bytes = await read("skills/round.json").catch(() => undefined);
+  if (!bytes?.length) return [];
+  try {
+    const round = JSON.parse(new TextDecoder().decode(bytes)) as { version?: unknown; skills?: unknown };
+    if (round.version !== 1 || round.skills === null || typeof round.skills !== "object" || Array.isArray(round.skills)) return [];
+    return Object.keys(round.skills).filter((n) => /^[a-z0-9][a-z0-9_-]{0,40}$/.test(n));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Robot episode: are the skills home? Checked in code on the run's disk: `home/skills.json` (the assembled index, written last) names the
  * skills and each one has its `home/skills/<name>.json`. `expected` is how many the teach step was for (0: any, at least one).
@@ -62,8 +75,13 @@ export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array
   }
   if (missing.length > 0) return { ok: false, reason: `skills listed but not written: ${missing.join(", ")}` };
   if (broken.length > 0) return { ok: false, reason: `skill files that are not valid JSON objects: ${broken.map((n) => `home/skills/${n}.json`).join(", ")}` };
-  if (expected > 0 && distinct.length < expected) return { ok: false, reason: `${distinct.length} of the ${expected} skills came home` };
-  return { ok: true, reason: `${distinct.length} skills are home and installed: ${distinct.join(", ")}.` };
+  // What the round trained, from the assembler's own summary (work/skills/round.json): a request for one skill ("teach it to walk") trains one, and one is what must come home. Without a summary, the count the teach step was for.
+  const trained = await roundSkills(read);
+  if (trained.length > 0) {
+    const absent = trained.filter((n) => !distinct.includes(n));
+    if (absent.length > 0) return { ok: false, reason: `${trained.length - absent.length} of the ${trained.length} skills trained this round came home (not home: ${absent.join(", ")})` };
+  } else if (expected > 0 && distinct.length < expected) return { ok: false, reason: `${distinct.length} of the ${expected} skills came home` };
+  return { ok: true, reason: `${distinct.length} ${distinct.length === 1 ? "skill is" : "skills are"} home and installed: ${distinct.join(", ")}.` };
 }
 
 /** The agent's one home line for the robot episode: bounded by the server's check below it. */
