@@ -179,6 +179,15 @@ export type Thread = {
   metric: string | null;
   unit: string | null;
   target: string | null;
+  /** The body this skill was trained for (its model file's sha256) and the body's name, from the skill's own file. */
+  mjcf: string | null;
+  bodyName: string | null;
+  /** Seconds from the thread's start to its first passing checkpoint, and to the thread being done (D2's passed_at.t and wall_s). */
+  passedS: number | null;
+  wallS: number | null;
+  /** How long this skill would take to first pass on a CPU machine (D2's estimate from this run's steps and a measured throughput), and which machine. */
+  cpuS: number | null;
+  cpuCores: string | null;
   /** The skill is installed in the one robot. */
   home: boolean;
   points: { n: number; value: number | null; at: number; passes: boolean | null; fell: boolean; seconds: number | null }[];
@@ -233,6 +242,8 @@ export type ShowState = {
   homecoming: (Homecoming & { at: number }) | null;
   /** The tool calls of the current task, in order (the transcript's, replaced whole each time). */
   tools: ToolRow[];
+  /** The body the robot has now (home/skills.json's body_mjcf_sha256, the sha256 of its model file): a skill trained for another body is a relearn. Null until the disk says. */
+  robotBody: { sha: string; at: number } | null;
   /** The agent's threads, in the order they first appeared (a tile never moves). Empty until the agent splits. */
   threads: Thread[];
   /** The environments the switcher offers, in order. */
@@ -261,6 +272,8 @@ export type ShowEvent =
   | { t: "homecoming.loaded"; at: number; loadMs: number }
   | { t: "tools"; at: number; tools: ToolRow[] }
   /** A thread's fields change (it is made by its first patch). */
+  /** The robot's body, as the run's disk says it (home/skills.json). */
+  | { t: "body"; at: number; sha: string }
   | { t: "thread"; at: number; id: string; patch: Partial<Omit<Thread, "id" | "points" | "at">> }
   /** A thread's checkpoint: how well it does its skill, `value` in `unit`. The same or an older `n` is a repeat. */
   | { t: "thread.point"; at: number; id: string; n: number; value: number | null; unit?: string; passes?: boolean | null; fell?: boolean; seconds?: number | null }

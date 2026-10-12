@@ -65,3 +65,21 @@ test("the script says where it runs: eight threads each with its GPU and a measu
   assert.deepEqual(places, ["tab", "moving", "cloud", "moving", "home"]);
   assert.equal(st.place.where, "home");
 });
+
+test("the relearn rehearsal: the skills are for a new body (spider) and the robot's home body is another; each skill.json carries D2's fields (body, started_at, passed_at, wall_s, a CPU estimate)", () => {
+  const sc = new ScenarioThreads({ origin: 0, relearn: true });
+  sc.begin();
+  sc.advance(200_000);
+  const home = JSON.parse(text(sc, "home/skills.json")!);
+  const walk = JSON.parse(text(sc, "skills/walk/skill.json")!);
+  assert.notEqual(home.body_mjcf_sha256, walk.mjcf_sha256, "a relearn: the skills are not for the robot's home body");
+  assert.equal(walk.body_name, "spider");
+  assert.equal(walk.status, "done");
+  assert.ok(typeof walk.started_at === "number" && walk.passed_at.passes === true && walk.wall_s > walk.passed_at.t);
+  assert.ok(walk.cpu_estimate_s > 0 && /Xeon/.test(walk.cpu_estimate.cores));
+  const plain = new ScenarioThreads({ origin: 0 });
+  plain.begin();
+  plain.advance(200_000);
+  assert.equal(JSON.parse(text(plain, "home/skills.json")!).body_mjcf_sha256, JSON.parse(text(plain, "skills/walk/skill.json")!).mjcf_sha256, "without the option the skills are for the robot's own body");
+  assert.equal(text(new ScenarioThreads({ origin: 0 }), "home/skills.json"), undefined, "nothing on the disk before the run starts");
+});

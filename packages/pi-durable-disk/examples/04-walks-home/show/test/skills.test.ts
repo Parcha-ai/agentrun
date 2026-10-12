@@ -67,7 +67,7 @@ test("the poller reads each skill's two files once per tick, says what is new, a
     skills: ["spin", "walk"],
   });
   await poller.tick();
-  assert.deepEqual(asked, ["skills/spin/skill.json", "skills/spin/skill-progress.jsonl", "skills/walk/skill.json", "skills/walk/skill-progress.jsonl"]);
+  assert.deepEqual(asked, ["home/skills.json", "skills/spin/skill.json", "skills/spin/skill-progress.jsonl", "skills/walk/skill.json", "skills/walk/skill-progress.jsonl"]);
   assert.equal(emitted.length, 0);
   files.set("skills/spin/skill.json", JSON.stringify({ skill: "spin", label: "spin", status: "training" }));
   files.set("skills/spin/skill-progress.jsonl", lines(SPIN4));
@@ -141,4 +141,23 @@ test("a reset drops the results of a tick that was still reading: nothing from t
   const labels = emitted.flatMap((e) => (e.t === "thread" && e.patch.skill ? [e.patch.skill] : []));
   assert.deepEqual(labels, ["new run's spin"], "the old tick's results were dropped");
   assert.equal(emitted.some((e) => e.t === "thread.point"), false, "and none of the old run's checkpoints");
+});
+
+test("the robot's own body: home/skills.json is read each tick and said when it changes (the stage compares each skill's body with it to know a relearn)", async () => {
+  const files = new Map<string, string>();
+  const emitted: ShowEvent[] = [];
+  const poller = new SkillsPoller({ read: async (p) => files.get(p), emit: (e) => emitted.push(e), now: () => 7, skills: [] });
+  await poller.tick();
+  assert.equal(emitted.length, 0);
+  files.set("home/skills.json", JSON.stringify({ body_mjcf_sha256: "aaaa", skills: [] }));
+  await poller.tick();
+  await poller.tick();
+  assert.deepEqual(emitted, [{ t: "body", at: 7, sha: "aaaa" }], "once");
+  files.set("home/skills.json", JSON.stringify({ body_mjcf_sha256: "bbbb" }));
+  await poller.tick();
+  assert.deepEqual(emitted.at(-1), { t: "body", at: 7, sha: "bbbb" });
+  assert.equal(fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [] }, ...emitted]).robotBody?.sha, "bbbb");
+  poller.reset();
+  await poller.tick();
+  assert.equal(emitted.at(-1)!.t, "body", "a new run says it again");
 });
