@@ -2,11 +2,12 @@
 
 What they pin: a rerun keeps a skill done for the same body and redoes one done for another body (the relearn beat reruns
 the same command after the body changes), an unfinished one starts clean, a done skill ships the newest checkpoint that
-passed, and every skill has the stage's metric.
+passed, every example skill directory loads, and a skill directory is refused with what to fix.
 """
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -50,6 +51,14 @@ class RerunTest(unittest.TestCase):
     with tempfile.TemporaryDirectory() as root:
       self.assertIsNone(train_skill.reuse_or_clear(os.path.join(root, "walk"), "aaa"))
 
+  def test_a_done_run_with_no_skill_hash_is_trained_again_for_a_skill_with_one(self):
+    # A run written before skill hashes were recorded cannot show it trained this version of the skill (a rewritten
+    # reward.py must retrain), so it is redone.
+    with tempfile.TemporaryDirectory() as root:
+      out = make_out(root, "done", "aaa")
+      self.assertIsNone(train_skill.reuse_or_clear(out, "aaa", "v1"))
+      self.assertFalse(os.path.exists(os.path.join(out, "policy.json")))
+
 
 class SettleTest(unittest.TestCase):
   def test_policy_is_the_newest_checkpoint_that_passed(self):
@@ -83,9 +92,128 @@ class StageFieldsTest(unittest.TestCase):
       self.assertIsNone(train_skill.body_name(os.path.join(d, "absent")))
 
 
-class MetricTest(unittest.TestCase):
-  def test_every_skill_has_a_stage_metric(self):
-    self.assertEqual(set(train_skill.METRIC), set(train_skill.SKILLS))
+class RefusedTest(unittest.TestCase):
+  def test_a_refused_skill_writes_its_reason_into_skill_json(self):
+    with tempfile.TemporaryDirectory() as d:
+      skill, out = os.path.join(d, "skill"), os.path.join(d, "out")
+      os.makedirs(skill)
+      json.dump({"name": "Bad Name"}, open(os.path.join(skill, "skill.json"), "w"))
+      os.makedirs(out)
+      json.dump({"status": "done", "passed_at": {"checkpoint": 1}}, open(os.path.join(out, "skill.json"), "w"))  # an older try
+      import subprocess, sys
+      r = subprocess.run([sys.executable, os.path.join(os.path.dirname(train_skill.__file__), "train_skill.py"), "--skill-dir", skill,
+                          "--body", os.path.join(os.path.dirname(train_skill.__file__), "default"), "--out", out], capture_output=True, text=True)
+      self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+      meta = json.load(open(os.path.join(out, "skill.json")))
+      self.assertEqual((meta["status"], meta["passed_at"]), ("refused", None))
+      self.assertIn("lowercase", meta["error"])
+
+
+class DiagnoseTest(unittest.TestCase):
+  def recs(self, values, error=None):
+    return [{"checkpoint": i + 1, "steps": (i + 1) * 1_000_000, "metric": {"name": "height", "value": v}, "error": error} for i, v in enumerate(values)]
+
+  def test_a_metric_that_never_moved_points_at_the_reward(self):
+    self.assertIn("no gradient", train_skill.diagnose(self.recs([1.0, 1.01, 1.0, 1.02, 1.01])))
+
+  def test_a_plateau_names_its_value_and_where_it_began(self):
+    # The plateau begins at the first checkpoint from which every later value stays within 2% of its band (0.89-0.93
+    # here): 0.95 is outside it, 0.91 is the first inside.
+    d = train_skill.diagnose(self.recs([1.0, 0.97, 0.95, 0.91, 0.91, 0.91, 0.91, 0.91]))
+    self.assertIn("plateaued at about 0.91", d)
+    self.assertIn("checkpoint 4", d)
+
+  def test_still_changing_says_train_longer(self):
+    self.assertIn("train longer", train_skill.diagnose(self.recs([1.0, 0.95, 0.9, 0.85, 0.8, 0.75])))
+
+  def test_a_test_error_between_checkpoints_names_the_right_checkpoint(self):
+    # Checkpoint 3's test raised: the plateau still begins at checkpoint 5 (0.91), not at the fourth value's checkpoint.
+    recs = self.recs([1.0, 0.97, None, 0.95, 0.91, 0.91, 0.91, 0.91, 0.91])
+    recs[2].update(metric=None, error="ZeroDivisionError")
+    d = train_skill.diagnose(recs)
+    self.assertIn("by checkpoint 5 (5.0M steps)", d)
+    recs = self.recs([1.0, None, 1.0, 1.4, 1.0, 1.01])  # never moved, with one excursion
+    recs[1].update(metric=None, error="ZeroDivisionError")
+    self.assertIn("excursion to 1.4 at checkpoint 4", train_skill.diagnose(recs))
+
+  def test_a_test_that_always_raised_says_fix_the_test(self):
+    recs = [{"checkpoint": 1, "steps": 1, "metric": None, "error": "KeyError: 'head'"}]
+    self.assertIn("fix test.py", train_skill.diagnose(recs))
+
+
+class SkillDirTest(unittest.TestCase):
+  def write(self, root, files):
+    for name, text in files.items():
+      open(os.path.join(root, name), "w").write(text)
+
+  def test_every_example_skill_loads_with_a_page_name_and_a_test(self):
+    self.assertEqual(sorted(train_skill.SKILLS), ["backwards", "getup", "spin", "sprint", "turn-left", "turn-right", "walk", "wave"])
+    for d in train_skill.SKILLS:
+      sk = train_skill.load_skill(os.path.join(train_skill.EXAMPLES, d))
+      self.assertRegex(sk["name"], r"^[a-z0-9]+(-[a-z0-9]+)*$")
+      self.assertTrue(callable(sk["test"]))
+
+  def test_a_skill_directory_is_refused_with_what_to_fix(self):
+    test_py = "def test(sim):\n    return True, {'name': 'x', 'value': 1.0}\n"
+    cases = [
+      ({"skill.json": json.dumps({"name": "Tail_Wag"}), "test.py": test_py}, "lowercase"),
+      ({"skill.json": json.dumps({"name": "tail-wag", "reward_scales": {"wag": 1.0}}), "test.py": test_py}, "reward.py"),
+      ({"skill.json": json.dumps({"name": "tail-wag"})}, "test.py is missing"),
+      ({"skill.json": json.dumps({"name": "tail-wag"}), "test.py": "x = 1\n"}, "no test"),
+      ({"skill.json": json.dumps({"name": "tail-wag", "command": 9}), "test.py": test_py}, "command"),
+    ]
+    for files, why in cases:
+      with tempfile.TemporaryDirectory() as d:
+        self.write(d, files)
+        with self.assertRaisesRegex(train_skill.Refused, why):
+          train_skill.load_skill(d)
+
+  def test_a_skill_with_its_own_reward_loads(self):
+    with tempfile.TemporaryDirectory() as d:
+      self.write(d, {"skill.json": json.dumps({"name": "tail-wag", "reward_scales": {"wag": 1.0, "pose": 0.0}}),
+                     "reward.py": "def terms(s):\n    return {'wag': s.up}\n",
+                     "test.py": "def test(sim):\n    return True, {'name': 'x', 'value': 1.0}\n"})
+      sk = train_skill.load_skill(d)
+      self.assertEqual(sk["universe"]["reward_scales"], {"wag": 1.0, "pose": 0.0})
+      self.assertTrue(sk["reward"].endswith("reward.py"))
+
+  def test_relative_paths_reach_the_trainer_absolute(self):
+    # The trainer runs with its own directory as cwd, so every path train-skill hands it is absolute, whatever cwd the
+    # thread ran train-skill from.
+    with tempfile.TemporaryDirectory() as root:
+      cwd = os.getcwd()
+      try:
+        os.chdir(root)
+        os.makedirs("skills/tail-wag")
+        self.write("skills/tail-wag", {"skill.json": json.dumps({"name": "tail-wag", "reward_scales": {"wag": 1.0}}),
+                                       "reward.py": "def terms(s):\n    return {'wag': s.up}\n",
+                                       "test.py": "def test(sim):\n    return True, {'name': 'x', 'value': 1.0}\n"})
+        shutil.copytree(os.path.join(os.path.dirname(train_skill.__file__), "default"), "body")
+        skill = train_skill.load_skill("skills/tail-wag")
+        body_dir = train_skill.resolve_body("body", os.path.join(root, "out"))
+        cmd = train_skill.trainer_command(skill, body_dir, os.path.join(root, "out"), steps="1M", init_from="walk/ckpt",
+                                          cache="cache/tail-wag.tar.gz", compile_only=False)
+      finally:
+        os.chdir(cwd)
+      paths = {flag: cmd[cmd.index(flag) + 1] for flag in ("--mjcf", "--body", "--universe", "--work", "--reward", "--init-from",
+                                                           "--compile-cache", "--keep-published", "--publish")}
+      for flag, path in paths.items():
+        self.assertTrue(os.path.isabs(path), f"{flag} {path}")
+      self.assertEqual(paths["--reward"], os.path.join(root, "skills", "tail-wag", "reward.py"))
+      self.assertEqual(paths["--init-from"], os.path.join(root, "walk", "ckpt"))
+      self.assertTrue(os.path.exists(paths["--mjcf"]))
+      for auto in ("auto", ""):  # not paths: kept as they are
+        cmd = train_skill.trainer_command(skill, body_dir, os.path.join(root, "out"), steps="1M", init_from=auto, cache=None, compile_only=False)
+        self.assertEqual(cmd[cmd.index("--init-from") + 1] if "--init-from" in cmd else "", auto)
+
+  def test_a_new_version_of_the_skill_is_trained_again(self):
+    with tempfile.TemporaryDirectory() as root:
+      out = make_out(root, "done", "aaa")
+      meta = json.load(open(os.path.join(out, "skill.json")))
+      json.dump({**meta, "skill_sha256": "v1"}, open(os.path.join(out, "skill.json"), "w"))
+      self.assertIsNotNone(train_skill.reuse_or_clear(out, "aaa", "v1"))
+      self.assertIsNone(train_skill.reuse_or_clear(out, "aaa", "v2"))
+      self.assertFalse(os.path.exists(os.path.join(out, "policy.json")))
 
 
 if __name__ == "__main__":
