@@ -24,6 +24,7 @@ import {
   type SandboxInfo,
 } from "../src/hosts/daytona.ts";
 import { launchStatus, readState, serve, stop as stopLaunch, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
+import { procStartTicks } from "../src/hosts/local-host.ts";
 import type { HostHandle } from "../src/supervise.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -476,6 +477,31 @@ test("launcher: never root; another user only as root; nothing runs on a refusal
   assert.ok(!existsSync(join(box, "x.token")), "a refused launch still unlinks the token");
   assert.equal(launchStatus(box, "never-started").status, "failed");
   assert.throws(() => launchStatus(box, "../escape"), /safe path segment/);
+});
+
+test("launchStatus: once the launcher recorded its exit, that is the status, even while the launcher is still exiting", () => {
+  // The interleaving the terminal-exit test lost under load: the launcher saved phase "exited" and its instance is gone,
+  // but its own process has not ended yet. This test process stands in for that launcher (alive, its real start ticks).
+  const box = mkdtempSync(join(tmpdir(), "daytona-status-"));
+  const me = { launcher: process.pid, launcherTicks: procStartTicks(process.pid) };
+  const save = (over: Partial<LaunchState>) =>
+    writeFileSync(join(box, "r.state"), JSON.stringify({ ...me, phase: "exited", instance: null, instanceTicks: null, spawned: 1, restarts: 0, exit: 75, signal: null, reason: "terminal exit 75", at: new Date().toISOString(), ...over }));
+  try {
+    save({});
+    const s = launchStatus(box, "r");
+    assert.equal(s.launcherAlive, true, "the stand-in launcher is alive");
+    assert.equal(s.status, "failed");
+    save({ exit: 0, reason: "clean exit" });
+    assert.equal(launchStatus(box, "r").status, "stopped");
+    for (const phase of ["running", "restarting", "stopping"] as const) {
+      save({ phase, exit: null, reason: null });
+      assert.equal(launchStatus(box, "r").status, "running", `a live launcher before its exit is running (${phase})`);
+    }
+    save({ instance: process.pid, instanceTicks: procStartTicks(process.pid) });
+    assert.equal(launchStatus(box, "r").status, "running", "a live instance is running whatever the phase says");
+  } finally {
+    rmSync(box, { recursive: true, force: true });
+  }
 });
 
 // ---- status ------------------------------------------------------------------------------------------------------------
