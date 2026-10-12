@@ -353,3 +353,31 @@ describe("the GPU pool: idle removal that fails", () => {
     await pool.close();
   });
 });
+
+describe("the GPU pool: waking after a partial idle removal", () => {
+  it("with one box that would not be removed, three waiting threads are all served: the survivor and two new boxes", async () => {
+    let made = 0;
+    const live = new Set<string>();
+    const pool = new GpuPool({
+      size: 3,
+      log: () => undefined,
+      create: async (index) => {
+        const id = `sb-${made++}`;
+        live.add(id);
+        return { id, name: id, index };
+      },
+      remove: async (box) => (box.index === 2 ? false : (live.delete(box.id), true)), // the third box will not go
+      idleMs: 100,
+      watchMs: 0,
+    });
+    await pool.start();
+    await new Promise((r) => setTimeout(r, 180)); // idle: two removed, one stays
+    const got = await Promise.race([
+      Promise.all(["a", "b", "c"].map((t) => pool.acquire(t))),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("a thread waited for ever")), 4_000)),
+    ]);
+    assert.equal(new Set(got.map((b) => b.id)).size, 3, "three different boxes");
+    assert.ok(got.some((b) => b.index === 2), "the box that would not go is one of them");
+    await pool.close();
+  });
+});

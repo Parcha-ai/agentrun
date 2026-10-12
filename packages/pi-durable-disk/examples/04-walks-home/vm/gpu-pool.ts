@@ -220,18 +220,26 @@ export class GpuPool {
       }),
     );
     this.#changed();
-    // A thread that asked while the boxes were going is served by new ones, or by one that would not go.
-    if (this.#waiting.length > 0) this.#wake();
+    // A thread that asked while the boxes were going is served by one that would not go, and by new ones for the rest.
     this.#serve();
+    if (this.#waiting.length > 0) this.#wake();
     this.#failWaitersIfHopeless();
   }
 
-  /** A thread asked while the boxes were released for idleness: make them again. */
+  /**
+   * Threads asked while the boxes were released for idleness: boxes are made again, as many as the demand needs beyond the ones that are ready or already on
+   * their way (one box that would not be removed is still ready and serves one thread; the others get new ones).
+   */
   #wake(): void {
+    if (this.#slots.some((x) => x.removing)) return; // the removal in progress calls this again when it ends
     const sleeping = this.#slots.filter((x) => x.state === "idle");
-    if (sleeping.length === 0 || this.#slots.some((x) => x.state === "creating" || x.state === "ready" || x.state === "busy" || x.removing)) return;
-    this.#options.log("pool.wake", { boxes: sleeping.length });
-    for (const slot of sleeping) {
+    if (sleeping.length === 0) return;
+    const supply = this.#slots.filter((x) => (x.state === "ready" && !x.checking) || x.state === "creating").length;
+    const need = this.#waiting.length - supply;
+    if (need <= 0) return;
+    const wake = sleeping.slice(0, need);
+    this.#options.log("pool.wake", { boxes: wake.length, waiting: this.#waiting.length });
+    for (const slot of wake) {
       slot.state = "creating";
       delete slot.error;
       slot.creating = this.#create(slot);
