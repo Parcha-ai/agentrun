@@ -139,7 +139,7 @@ test("bad arguments are refused with the choices, whatever the schema let throug
   const s = robot();
   const frozen = JSON.stringify(s);
   for (const [tool, args, why] of [
-    ["set_color", { part: "wheels", color: "red" }, /part must be one of all, torso, head, neck, tail, legs/],
+    ["set_color", { part: "wheels", color: "red" }, /part must be one of torso, head, neck, tail, legs/],
     ["set_color", { part: "tail", color: "red" }, /this robot has no tail; its parts are: torso, legs, front legs, back legs, whole robot/],
     ["set_color", { part: "legs", color: "teal" }, new RegExp(`color must be one of ${COLOR_NAMES.join(", ")}`)],
     ["set_shape", { part: "torso", shape: "pointy" }, /shape must be one of boxy, round/],
@@ -366,5 +366,5 @@ test("the file the tools write for a code body parses back, and a bad colour or 
   // @ts-expect-error: a plain .mjs file shipped to the agent's workspace, without types
   const lib = await import("../../04-walks-home/body/lib.mjs");
   assert.deepEqual([...TAG_VOCABULARY], lib.TAG_VOCABULARY);
-  assert.equal(LOOK_PARTS[0], "all");
+  assert.equal(LOOK_PARTS.at(-1), "all", "all is last: the order of the enum is the order of a lock grammar");
 });

@@ -41,7 +41,7 @@ export const SHAPE_PARTS = ["torso", "legs"] as const;
 /** The tags a body written as code can have, and the look tools address (a copy of 04-walks-home/body/lib.mjs's list; a test holds them equal). */
 export const TAG_VOCABULARY = ["torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "arms", "wings", "eyes", "jaw", "belly", "plates", "horns", "spikes", "decoration"] as const;
 /** The parts the look tools accept: every tag, and the whole robot. A body says which of them it has. */
-export const LOOK_PARTS = ["all", ...TAG_VOCABULARY] as const;
+export const LOOK_PARTS = [...TAG_VOCABULARY, "all"] as const;
 /** The robot is a body the agent wrote as code (robot/body.json): its name, the tags it has, how many legs. */
 export interface CodeBody {
   name: string;

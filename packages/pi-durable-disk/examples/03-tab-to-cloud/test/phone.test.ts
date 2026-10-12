@@ -2,6 +2,7 @@
 // llama-server's /apply-template on D1's v3 fine-tune); the lock is D1's grammar, rule for rule (fixtures/robot-v3-lock.json, D1's build_gbnf); the robot's
 // tools run on a workspace with no computer (files-env.ts); a turn can end on its tools' own words (decoding.closing); the warm-up stops exactly at the user's
 // turn, and a saved state is restored only for the model and the prefix it was made for.
+import { SKILL_NAMES } from "../robot-model.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -525,7 +526,12 @@ test("v5: the tools are the ones its system text lists, in its order; over the r
   const offered = toNativeTools(registry.snapshot().tools().map((r) => ({ name: r.tool.name, description: r.tool.description, parameters: r.tool.parameters })));
   const shown = signatureView(offered, names);
   assert.deepEqual(shown.map((t) => t.function.name), names, "the conversation's tools the prefix names, nothing else (no update_robot, no shell)");
-  assert.equal(lockGrammar(shown), (JSON.parse(readFileSync(fixture("robot-v5-lock.json"), "utf8")) as { grammar: string }).grammar, "D1's v5 lock, byte for byte");
+  // The registry's schemas are wider than D1's preset-body prompt: `do` takes any skill name the cluster gave (a free string) and a part is any of the 16 tags a code body can have. The lock is built over the tools narrowed to what this
+  // robot has (the skills at home, the parts of the body): for a preset body at home with D2's eight skills, torso/legs/front_legs/back_legs/all for colours and torso/legs for shapes, that is D1's grammar.
+  const { narrowEnum } = await import("../tab/native-turn.ts");
+  const parts = { set_color: ["torso", "legs", "front_legs", "back_legs", "all"], set_shape: ["torso", "legs"] } as Record<string, string[]>;
+  const narrowed = narrowEnum(shown.map((t) => (parts[t.function.name] ? narrowEnum([t], "part", parts[t.function.name]!)[0]! : t)), "skill", SKILL_NAMES);
+  assert.equal(lockGrammar(narrowed), (JSON.parse(readFileSync(fixture("robot-v5-lock.json"), "utf8")) as { grammar: string }).grammar, "D1's v5 lock, byte for byte");
 });
 
 test("a T7 turn reads its earlier exchanges on their own first, so the next turn (one exchange more) resumes there: no restore, no system turn read again", async () => {

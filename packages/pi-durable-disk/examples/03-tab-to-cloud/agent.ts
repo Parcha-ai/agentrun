@@ -123,23 +123,23 @@ export function agentModels(access: ModelAccess) {
   return models;
 }
 
-/** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered. */
+/** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered (removed from the host's tools, whichever host it is). */
 export interface AgentOptions {
   /** False: the preset tools stay (a host whose model drives the robot by tool calls only, and the tests of those tools). Default true. */
   robotCode?: boolean;
-  /** The registry the agent's tools come from. With it, code mode lists the tools explicitly from the first request, without the preset tools; without it the agent is offered every tool until its first robot call, which takes them out. */
+  /** A registry that has the preset tools: with it, code mode removes them from the conversation's tools from the first request; without it the agent is offered every tool until its first robot call, which takes them out. */
   registry?: RegistryReader;
 }
 
-/** Every tool of the registry but the ones that pick a preset body, as the conversation's whole tool list. */
-function codeTools(registry: RegistryReader): ToolRegistration[] {
-  return registry.snapshot().tools().map((t) => t.tool).filter((t) => !SHAPE_TOOLS.includes(t.name));
+/** The preset-body tools as this registry has them: what a conversation's tool list drops in code mode. Removed from whatever the host offers (the tab's tools, a VM's teach_skills and read_thread on top), not a list made from this registry. */
+function presetTools(registry: RegistryReader): ToolRegistration[] {
+  return registry.snapshot().tools().map((t) => t.tool).filter((t) => SHAPE_TOOLS.includes(t.name));
 }
 
 /** The root conversation's agent: the model, thinking on (never off), the instructions, and in code mode the tools without the preset ones. */
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
   const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
-  return options.robotCode !== false && options.registry ? { ...base, tools: codeTools(options.registry) } : base;
+  return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
 }
 
 /** The root conversation's agent as it is when it comes back to the cloud model from another (a check-in): the same as `rootAgent`, and the whole tool list again (`tools: null` clears the filter an earlier model was configured with; in code mode the list without the preset tools). */

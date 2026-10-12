@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { Harness, MemoryStorage, defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { agentRegistry, cloudAgent, rootAgent } from "../agent.ts";
@@ -45,7 +46,7 @@ test("every host registers the nine robot tools, in the schema's order, right af
 
 test("the tools' schemas carry the enums and bounds the model is told", () => {
   const tool = (name: string) => agentRegistry(async () => undefined, {}).snapshot().tools().find((t) => t.tool.name === name)!.tool.parameters as { properties: Record<string, { enum?: unknown[]; minimum?: number; maximum?: number; maxLength?: number }>; required?: string[] };
-  assert.deepEqual(tool("set_color").properties.part!.enum, ["all", "torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "arms", "wings", "eyes", "jaw", "belly", "plates", "horns", "spikes", "decoration"]);
+  assert.deepEqual(tool("set_color").properties.part!.enum, ["torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "arms", "wings", "eyes", "jaw", "belly", "plates", "horns", "spikes", "decoration", "all"]);
   assert.deepEqual(tool("set_color").properties.color!.enum, ["red", "orange", "yellow", "green", "blue", "purple", "pink", "white", "black", "gray", "brown"]);
   assert.deepEqual(tool("set_color").required, ["part", "color"], "argument order: part, color");
   assert.deepEqual(tool("set_legs").properties.pairs!.enum, [2, 3]);
@@ -241,27 +242,27 @@ test("build_robot hides them too, so the first thing the agent does in code mode
   await r.close();
 });
 
-test("code mode is the default for a root agent that is given its registry: the preset tools are not in its tool list from the first request, nor after a check-in; with robotCode false they stay", async () => {
+test("code mode is the default for a root agent that is given its registry: the preset tools are removed by name from whatever the host offers, from the first request and after a check-in; with robotCode false they stay", async () => {
   const registry = agentRegistry(async () => undefined, { switchTool: false });
-  const names = (a: ReturnType<typeof rootAgent>) => ((a as { tools?: { name: string }[] | null }).tools ?? null)?.map((t) => t.name) ?? null;
-  const code = names(rootAgent("m", { registry }))!;
-  for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok(!code.includes(t), `${t} is not offered`);
-  for (const t of ["set_color", "set_shape", "set_face", "rename", "reset", "do", "build_robot", "update_robot", "bash", "write", "edit", "read"]) assert.ok(code.includes(t), `${t} is offered`);
-  assert.deepEqual(names(cloudAgent("m", { registry })), code, "a check-in puts the same list back");
-  const presets = names(rootAgent("m", { registry, robotCode: false }));
-  assert.equal(presets, null, "robotCode false: the agent has every tool, as before");
-  assert.equal(names(cloudAgent("m", { registry, robotCode: false })), null, "and cloudAgent clears any filter, as before");
+  const removed = (a: ReturnType<typeof rootAgent>) => ((a as { tools?: { remove?: { name: string }[] } | null }).tools as { remove?: { name: string }[] } | null | undefined)?.remove?.map((t) => t.name) ?? null;
+  assert.deepEqual(removed(rootAgent("m", { registry }))?.sort(), ["morph", "resize", "scale", "set_legs"], "exactly the preset tools are removed, nothing else is listed");
+  assert.deepEqual(removed(cloudAgent("m", { registry })), removed(rootAgent("m", { registry })), "a check-in removes the same ones");
+  assert.equal((rootAgent("m", { registry, robotCode: false }) as { tools?: unknown }).tools, undefined, "robotCode false: the agent has every tool, as before");
+  assert.equal((cloudAgent("m", { registry, robotCode: false }) as { tools?: unknown }).tools, null, "and cloudAgent clears any filter, as before");
   assert.equal((cloudAgent("m") as { tools?: unknown }).tools, null, "with no registry the old behaviour: every tool (the first robot call takes the preset tools out)");
-  // through a real Harness: the conversation's first request lists the tools without them
+  // through a real Harness whose registry has tools the tab's does not (the VM host's teach_skills): they survive the removal
   const dir = mkdtempSync(join(tmpdir(), "code-agent-"));
   try {
     const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
     const models = createModels();
     models.setProvider(scriptedCloud("cloud-big", [{ text: "ok" }], []));
-    const harness = await Harness.open(new MemoryStorage(), { models, registry, env: () => env }, ctx);
+    const host = agentRegistry(async () => undefined, { switchTool: false });
+    host.install(defineExtension({ name: "vm-host", tools: ["teach_skills", "read_thread"].map((name) => defineTool({ name, description: name, parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }) })) }));
+    const harness = await Harness.open(new MemoryStorage(), { models, registry: host, env: () => env }, ctx);
     const root = await harness.root(ctx, { agent: rootAgent("cloud-big", { registry }) });
     const offered = (await root.agent(ctx)).tools.map((t) => t.name);
-    assert.ok(!offered.includes("morph") && offered.includes("build_robot") && offered.includes("set_color"));
+    for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok(!offered.includes(t), `${t} is removed`);
+    for (const t of ["teach_skills", "read_thread", "build_robot", "set_color", "bash"]) assert.ok(offered.includes(t), `${t} survives`);
     await harness.close(ctx);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
