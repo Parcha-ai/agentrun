@@ -76,3 +76,19 @@ test('leaves out what the page would refuse, the same skills as the Python twin 
   assert.deepEqual(Object.keys(m.skills).sort(), expected.skills);
   for (const name of Object.keys(expected.left_out)) assert.ok(!existsSync(join(home, 'skills', `${name}.json`)), name);
 });
+
+test('one damaged skill never stops the rest, with no get-up network to combine with', async () => {
+  const fix = fileURLToPath(new URL('./fixtures/assemble/skills/walk/', import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), 'assemble-damaged-'));
+  for (const name of ['walk', 'wave']) {
+    mkdirSync(join(root, 'skills', name), { recursive: true });
+    const meta = JSON.parse(readFileSync(join(fix, 'skill.json'), 'utf8'));
+    const pol = JSON.parse(readFileSync(join(fix, 'policy.json'), 'utf8'));
+    if (name === 'wave') pol.layers[0].w = 'abc'; // not valid base64
+    writeFileSync(join(root, 'skills', name, 'skill.json'), JSON.stringify({ ...meta, skill: name }));
+    writeFileSync(join(root, 'skills', name, 'policy.json'), JSON.stringify(pol));
+  }
+  assert.equal(await assembleHome(join(root, 'skills'), join(root, 'home'), { withoutGetup: true }), 0);
+  const m = JSON.parse(readFileSync(join(root, 'home', 'skills.json'), 'utf8'));
+  assert.deepEqual(Object.keys(m.skills), ['walk']);
+});

@@ -220,7 +220,7 @@ def _network_refusal(net: dict[str, Any], nj: int, clock: Any, where: str) -> st
       return f"{where}layer {i} takes {layer['in']}, previous width is {width}"
     if layer["act"] not in ACTIVATIONS:
       return f"{where}layer {i}: activation {layer['act']} not supported"
-    w, b = base64.b64decode(layer["w"]), base64.b64decode(layer["b"])
+    w, b = base64.b64decode(layer["w"], validate=True), base64.b64decode(layer["b"], validate=True)
     if len(w) != 4 * layer["in"] * layer["out"] or len(b) != 4 * layer["out"]:
       return f"{where}layer {i}: weight shapes do not match in/out"
     width = layer["out"]
@@ -230,7 +230,15 @@ def _network_refusal(net: dict[str, Any], nj: int, clock: Any, where: str) -> st
 
 
 def refusal(policy: dict[str, Any]) -> str | None:
-  """Why the tab's policy runtime would refuse this file for its own body, or None when it loads."""
+  """Why the tab's policy runtime would refuse this file for its own body, or None when it loads. A malformed file
+  (a missing field, weights that are not base64) is a reason too, never an exception."""
+  try:
+    return _refusal(policy)
+  except (KeyError, TypeError, ValueError, AttributeError, IndexError) as e:  # binascii.Error is a ValueError
+    return f"malformed policy: {type(e).__name__}: {str(e)[:120]}"
+
+
+def _refusal(policy: dict[str, Any]) -> str | None:
   if policy.get("format") != "mlp-v1":
     return f"unknown format {policy.get('format')}"
   if policy.get("spec_version") != 1:
