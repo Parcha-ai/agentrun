@@ -6,7 +6,7 @@
 // The server must be llama.cpp at the page's own commit (wllama 3.6.1's: 83d855c5a6d7), started with the page's settings and its slot save path on --out:
 //   llama-server -m <first part> --jinja -c 2048 -np 1 -b 64 -ub 64 --slot-save-path <out>/
 // The prefix is rendered by the server's own template engine (/apply-template), byte for byte what the page renders in the browser. Writes the state and a
-// sidecar (<name>.json): the model (its first part's name, the parts' bytes, the GGUF's sha256 when the serving file gives it), the prefix's sha256, the token
+// sidecar (<name>.json): the model (its first part's name, the parts' bytes and each part's sha256, the GGUF's sha256 when the serving file gives it), the prefix's sha256, the token
 // count, the state file's bytes and sha256, the llama.cpp build and the settings. The page restores a state only when the model it loaded and the prefix it rendered are the sidecar's.
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
@@ -37,8 +37,10 @@ const props = await (await fetch(a.server + "/props")).json();
 const split = /^(.*)-00001-of-(\d{5})\.gguf$/.exec(basename(a.first));
 const files = split ? Array.from({ length: Number(split[2]) }, (_, i) => `${split[1]}-${String(i + 1).padStart(5, "0")}-of-${split[2]}.gguf`) : [basename(a.first)];
 const partsBytes = files.reduce((n, f) => n + statSync(join(dirname(a.first), f)).size, 0);
+// each part's sha256, in order: the page restores the state only for weights whose parts' manifest matches (a fine-tune replaced in place keeps its name and size)
+const partShas = files.map((f) => createHash("sha256").update(readFileSync(join(dirname(a.first), f))).digest("hex"));
 const side = {
-  model: { first: basename(a.first), bytes: partsBytes, sha256: serving.model?.sha256 ?? null },
+  model: { first: basename(a.first), bytes: partsBytes, sha256: serving.model?.sha256 ?? null, parts: partShas },
   prefixSha256: createHash("sha256").update(prefix).digest("hex"),
   tokens: saved.n_saved,
   bytes: saved.n_written,

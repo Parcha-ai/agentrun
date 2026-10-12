@@ -43,9 +43,9 @@ back, so a state that ends anywhere else would make every command re-read a batc
 whatever follows it (earlier exchanges, a state line, the user's turn). Made twice from the same inputs, the state is byte for byte
 the same.
 
-The sidecar `<name>.json` records the model (its first part's name, the parts' bytes, the GGUF's sha256), the prefix's sha256, the token count, the state
-file's bytes and sha256, the llama.cpp build and the settings. The page restores the state only when the model it loaded and the prefix it rendered match; anything
-else (other weights, other tools, another prompt or template) prefills as before. The page keeps the state in the engine's cache, as it keeps the model's parts, and
+The sidecar `<name>.json` records the model (its first part's name, the parts' bytes and each part's sha256, the GGUF's sha256), the prefix's sha256, the token
+count, the state file's bytes and sha256, the llama.cpp build and the settings. The page restores the state only when the model it loaded (its parts' sha256, as
+the manifest it checked them with) and the prefix it rendered match; anything else (other weights, other tools, another prompt or template) prefills as before. The page keeps the state in the engine's cache, as it keeps the model's parts, and
 checks that copy against the sidecar's bytes and sha256. A state is specific to the llama.cpp commit and the settings: rebuild it when either changes.
 
 ## Measured (headless Chrome, `?compat=1`, the iPhone's path)
