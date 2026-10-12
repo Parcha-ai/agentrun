@@ -28,6 +28,8 @@ export interface GpuProcess {
   stdout: AsyncIterable<Uint8Array>;
   stderr: AsyncIterable<Uint8Array>;
   wait(): Promise<number>;
+  /** Stop the command (its process group on the box). Called when the link that asked for it is gone: nobody can read its output any more. */
+  kill?(): Promise<void>;
 }
 
 /** What the server offers a VM. `box` ids are the server's own: the VM treats them as opaque. */
@@ -52,10 +54,25 @@ const unb64 = (text: string) => new Uint8Array(Buffer.from(text, "base64"));
  * and `close()` to end every command in flight when the link goes (a command of a dropped link is killed: nobody can read it any more).
  */
 export function serveGpu(server: GpuServer, send: Send, log: (event: string, data?: Record<string, unknown>) => void = () => undefined): { handle(frame: GpuFrame): void; close(): void } {
-  const running = new Map<number, { proc: GpuProcess; ended: boolean }>();
+  /** One command asked for: its stdin is held until the box has started it (the VM writes and closes without waiting for that). */
+  type Entry = { proc?: GpuProcess; held: (Uint8Array | null)[]; closed: boolean; writes: Promise<unknown> };
+  const running = new Map<number, Entry>();
   const fail = (id: number, error: unknown) => send({ t: "gpu-err", id, message: (error as Error)?.message ?? String(error) });
   const pump = async (id: number, stream: "stdout" | "stderr", source: AsyncIterable<Uint8Array>) => {
     for await (const chunk of source) send({ t: "gpu-data", id, stream, data: b64(chunk) });
+  };
+  /** Stdin in order: a chunk (or the end, null) goes to the command once it exists. */
+  const feed = (entry: Entry, item: Uint8Array | null) => {
+    if (!entry.proc) {
+      entry.held.push(item);
+      return;
+    }
+    const proc = entry.proc;
+    entry.writes = entry.writes.then(() => (item === null ? proc.stdin.close() : proc.stdin.writeBytes(item))).catch((e) => log("gpu.stdin-failed", { error: (e as Error).message }));
+  };
+  const stop = (proc: GpuProcess) => {
+    void proc.stdin.close().catch(() => undefined);
+    void proc.kill?.().catch((e: Error) => log("gpu.kill-failed", { error: e.message }));
   };
   return {
     handle(frame) {
@@ -78,37 +95,62 @@ export function serveGpu(server: GpuServer, send: Send, log: (event: string, dat
         case "gpu-exec": {
           if (!server.holds(frame.box)) return fail(frame.id, new Error("no thread of this run holds that box"));
           if (!Array.isArray(frame.argv) || frame.argv.length === 0 || !frame.argv.every((a) => typeof a === "string")) return fail(frame.id, new Error("argv is a non-empty list of strings"));
+          const entry: Entry = { held: [], closed: false, writes: Promise.resolve() };
+          running.set(frame.id, entry);
+          const started = Date.now();
+          const what = frame.argv.slice(0, 4).join(" ").slice(0, 100);
           server.exec(frame.box, frame.argv, frame.timeoutMs === undefined ? {} : { timeoutMs: frame.timeoutMs }).then(
             (proc) => {
-              const entry = { proc, ended: false };
-              running.set(frame.id, entry);
+              if (entry.closed) {
+                // The link went while the box was still starting the command: nobody will read it, so it is stopped at once.
+                running.delete(frame.id);
+                stop(proc);
+                return;
+              }
+              log("gpu.exec", { box: frame.box, id: frame.id, what, startedMs: Date.now() - started });
+              entry.proc = proc;
+              for (const item of entry.held.splice(0)) feed(entry, item);
               Promise.all([pump(frame.id, "stdout", proc.stdout), pump(frame.id, "stderr", proc.stderr)])
                 .then(() => proc.wait())
                 .then(
-                  (code) => send({ t: "gpu-exit", id: frame.id, code }),
-                  (e) => fail(frame.id, e),
+                  (code) => {
+                    log("gpu.exit", { box: frame.box, id: frame.id, what, code, ms: Date.now() - started });
+                    send({ t: "gpu-exit", id: frame.id, code });
+                  },
+                  (e) => {
+                    log("gpu.exec-failed", { box: frame.box, id: frame.id, what, error: (e as Error).message });
+                    fail(frame.id, e);
+                  },
                 )
-                .finally(() => {
-                  entry.ended = true;
-                  running.delete(frame.id);
-                });
+                .finally(() => running.delete(frame.id));
             },
-            (e) => fail(frame.id, e),
+            (e) => {
+              running.delete(frame.id);
+              log("gpu.exec-failed", { box: frame.box, id: frame.id, what, error: (e as Error).message });
+              fail(frame.id, e);
+            },
           );
           return;
         }
-        case "gpu-stdin":
-          running.get(frame.id)?.proc.stdin.writeBytes(unb64(frame.data)).catch((e) => log("gpu.stdin-failed", { error: (e as Error).message }));
+        case "gpu-stdin": {
+          const entry = running.get(frame.id);
+          if (entry && !entry.closed) feed(entry, unb64(frame.data));
           return;
-        case "gpu-stdin-end":
-          running.get(frame.id)?.proc.stdin.close().catch(() => undefined);
+        }
+        case "gpu-stdin-end": {
+          const entry = running.get(frame.id);
+          if (entry && !entry.closed) feed(entry, null);
           return;
+        }
         default:
           return;
       }
     },
     close() {
-      for (const { proc } of running.values()) void proc.stdin.close().catch(() => undefined);
+      for (const entry of running.values()) {
+        entry.closed = true;
+        if (entry.proc) stop(entry.proc);
+      }
       running.clear();
     },
   };

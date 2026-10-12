@@ -61,14 +61,14 @@ describe("the GPU calls over the link", () => {
     assert.deepEqual(calls, ["acquire thread-a", "exec box-1 sh -c echo hi 5000", "release thread-a"]);
   });
 
-  it("carries stdin to the command, byte for byte, and its end", async () => {
-    const got: string[] = [];
+  it("carries stdin to the command, byte for byte (binary included), and its end", async () => {
+    const got: Uint8Array[] = [];
     let closed = false;
     const server: GpuServer = {
       acquire: async () => "b",
       release: () => undefined,
       holds: () => true,
-      exec: async () => proc({ stdin: { writeBytes: async (b) => void got.push(dec(b)), close: async () => void (closed = true) }, stdout: chunks([]), stderr: chunks([]) }),
+      exec: async () => proc({ stdin: { writeBytes: async (b) => void got.push(b), close: async () => void (closed = true) }, stdout: chunks([]), stderr: chunks([]) }),
       poll: async () => null,
     };
     const { client } = loop(server);
@@ -78,9 +78,68 @@ describe("the GPU calls over the link", () => {
     await p.stdin.close();
     await p.wait();
     await new Promise((r) => setTimeout(r, 20));
-    assert.equal(got[0], "first ");
-    assert.deepEqual([...enc(got[1]!)].length > 0, true);
+    assert.deepEqual(got.map((b) => [...b]), [[...enc("first ")], [0xff, 0x00, 0x41]], "the exact bytes, in order");
     assert.equal(closed, true);
+  });
+
+  it("input written and closed before the box has started the command is held and delivered once it starts, in order", async () => {
+    const got: number[][] = [];
+    const events: string[] = [];
+    let start!: () => void;
+    const started = new Promise<void>((r) => (start = r));
+    const server: GpuServer = {
+      acquire: async () => "b",
+      release: () => undefined,
+      holds: () => true,
+      exec: async () => {
+        await started; // the box is slow to start the command
+        return proc({ stdin: { writeBytes: async (b) => void (got.push([...b]), events.push("write")), close: async () => void events.push("end") }, stdout: chunks([]), stderr: chunks([]) });
+      },
+      poll: async () => null,
+    };
+    const { client } = loop(server);
+    const p = await client.linkBox("b").exec(["cat"], { mode: "binary" });
+    await p.stdin.writeBytes(new Uint8Array([1, 2]));
+    await p.stdin.writeBytes(new Uint8Array([3]));
+    await p.stdin.close();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.deepEqual(got, [], "nothing is lost, nothing is written before the command exists");
+    start();
+    await p.wait();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(got, [[1, 2], [3]]);
+    assert.deepEqual(events, ["write", "write", "end"], "the end comes after the writes");
+  });
+
+  it("a command is killed when the link goes: one running, and one the box was still starting", async () => {
+    const killed: string[] = [];
+    let startSlow!: () => void;
+    const slow = new Promise<void>((r) => (startSlow = r));
+    const hang = (name: string): GpuProcess => ({
+      stdin: { writeBytes: async () => undefined, close: async () => undefined },
+      stdout: (async function* () { await new Promise(() => undefined); yield enc("x"); })(),
+      stderr: chunks([]),
+      wait: () => new Promise(() => undefined),
+      kill: async () => void killed.push(name),
+    });
+    const server: GpuServer = {
+      acquire: async () => "b",
+      release: () => undefined,
+      holds: () => true,
+      exec: async (_b, argv) => {
+        if (argv[0] === "slow") await slow;
+        return hang(argv[0]!);
+      },
+      poll: async () => null,
+    };
+    const l = loop(server);
+    void l.client.linkBox("b").exec(["running"], { mode: "binary" });
+    void l.client.linkBox("b").exec(["slow"], { mode: "binary" });
+    await new Promise((r) => setTimeout(r, 60));
+    l.cut();
+    startSlow(); // the slow start finishes after the link went
+    await new Promise((r) => setTimeout(r, 60));
+    assert.deepEqual(killed.sort(), ["running", "slow"], "neither is left running for nobody");
   });
 
   it("a box the thread does not hold is refused, and a box that is gone rejects at once", async () => {
