@@ -287,8 +287,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
                 if (leftS <= 0) throw new Error(`GPU box ${index} was not ready in ${Math.round(readyMs / 1000)} s`);
                 const skill = (cluster.skills ?? ["walk"])[index % (cluster.skills ?? ["walk"]).length]!;
                 const ready = cluster.readyCommand?.replaceAll("{skill}", skill).replaceAll("{index}", String(index));
-                // One attempt gets no more than the time that is left.
-                const r = await clusterClient.exec(box, `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`, Math.min(180, leftS)).catch((e: Error) => ({ exitCode: 1, result: e.message }));
+                // One attempt gets all the time that is left: a host that has to compile pays once, not a kill at 180 s and a retry.
+                const r = await clusterClient.exec(box, `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`, leftS).catch((e: Error) => ({ exitCode: 1, result: e.message }));
                 if (Date.now() > deadline) throw new Error(`GPU box ${index} was not ready in ${Math.round(readyMs / 1000)} s${r.exitCode === 0 ? " (it answered too late)" : `: ${r.result.trim().slice(-200)}`}`);
                 if (r.exitCode === 0) {
                   lastReady = r.result.trim().split("\n").filter(Boolean).at(-1) ?? "";
