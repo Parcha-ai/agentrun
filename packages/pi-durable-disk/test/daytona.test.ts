@@ -414,8 +414,8 @@ test("launchStatus: once the launcher recorded its exit, that is the status, eve
       save({ phase, exit: null, reason: null });
       assert.equal(launchStatus(box, "r").status, "running", `a live launcher before its exit is running (${phase})`);
     }
-    save({ instance: process.pid, instanceTicks: procStartTicks(process.pid) });
-    assert.equal(launchStatus(box, "r").status, "running", "a live instance is running whatever the phase says");
+    save({ phase: "exited", instance: process.pid, instanceTicks: procStartTicks(process.pid) });
+    assert.equal(launchStatus(box, "r").status, "running", "a live instance is running, even under an exited record");
   } finally {
     rmSync(box, { recursive: true, force: true });
   }
