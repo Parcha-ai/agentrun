@@ -152,7 +152,7 @@ export function robotTools(): Extension {
       }),
       defineTool({
         name: "do",
-        description: "Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, rear-up, getup, jump). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.",
+        description: "Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.",
         parameters: Type.Object({ skill: oneOf(SKILL_NAMES, "Which skill.") }),
         execute: (args, api, context) => edit(api.env, context, "do", args),
       }),

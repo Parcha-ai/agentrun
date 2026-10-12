@@ -159,7 +159,7 @@ test("the skill enum offered to the small local model is narrowed to the skills 
   const { narrowSkills } = await import("../robot-tools.ts");
   const tool = agentRegistry(async () => undefined, {}).snapshot().tools().find((t) => t.tool.name === "do")!.tool;
   const full = (tool.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum;
-  assert.ok(full.includes("spin") && full.includes("jump"));
+  assert.deepEqual(full, ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"], "D2's eight skills");
   const narrow = narrowSkills(tool, ["walk", "sprint"]);
   assert.deepEqual((narrow.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum, ["walk", "sprint"]);
   assert.deepEqual((tool.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum, full, "the registry's tool is not changed");

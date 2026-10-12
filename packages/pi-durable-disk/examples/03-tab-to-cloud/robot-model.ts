@@ -30,8 +30,8 @@ export const SHAPE_PARTS = ["torso", "legs"] as const;
 export const RESIZE_PARTS = ["torso_length", "torso_width", "torso_height", "leg_length", "leg_thickness"] as const;
 export const MORPH_PRESETS = ["dog", "spider", "giraffe", "lizard", "stubby", "original"] as const;
 export const NAME_MAX = 24;
-/** Every skill the cluster may teach (D2's list); only the ones that came home (home/skills.json) can be chosen. */
-export const SKILL_NAMES = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "rear-up", "getup", "jump"] as const;
+/** Every skill the cluster teaches (D2's eight); only the ones that came home (home/skills.json) can be chosen. */
+export const SKILL_NAMES = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"] as const;
 export const SKILL_CHANGED = "The body is unchanged: the walking brain still fits.";
 
 export interface Look {
