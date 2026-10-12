@@ -76,8 +76,8 @@ export type WorkflowRun = {
   wait(context: Context): Promise<WorkflowOutcome>;
 };
 
-/** What a stop reached. A pause reaches a run only where it is live, in this process: `paused` once the journal holds
- *  the pause, `ended` when the run ended first, `not-live` when it is not running here. A cancel is `abortTask`'s
+/** What a stop reached. A pause reaches a run only where it is live, in this process: `paused` once the run's work has
+ *  stopped with the pause in its journal, `ended` when the run ended otherwise, `not-live` when it is not running here. A cancel is `abortTask`'s
  *  answer: `marked` (the task ends aborted later) or `terminal` (it already was). */
 export type WorkflowStop = "paused" | "ended" | "not-live" | "marked" | "terminal";
 
@@ -333,11 +333,12 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
         const running = live.get(key);
         if (!running) return "not-live";
         running.driver.stop({ action: "pause", ...(source ? { source } : {}) });
-        const paused = new Promise<"paused">((resolve) => {
-          const taken = () => resolve(running.driver.flush().then(() => "paused" as const, () => "paused" as const) as never);
-          if (running.driver.signal.aborted) taken(); else running.driver.signal.addEventListener("abort", taken, { once: true });
-        });
-        return Promise.race([paused, running.ended.then(() => (running.driver.signal.aborted ? "paused" as const : "ended" as const))]);
+        // The run is paused once its work has stopped, not when the journal first holds the pause: a continuation the
+        // host's ladder runs stops through the run's signal and may take a while, and the host lets go of the run only
+        // after it has. Its driver's commits have landed by then.
+        await running.ended;
+        await running.driver.flush().catch(() => undefined);
+        return running.driver.signal.aborted ? "paused" : "ended";
       }
       const taskId = await harness.commit(async (tx) => {
         const run = await tx.doc(RunDoc, key, null);

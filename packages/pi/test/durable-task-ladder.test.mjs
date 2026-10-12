@@ -166,3 +166,23 @@ test('a refusal that leaves the driver able to commit (a moved input) does not l
   assert.deepEqual([moved.status, moved.code, endings], ['refused', 'FROZEN_INPUT_CHANGED', []]);
   await harness.close(ctx);
 });
+
+test('a pause during the continuation is answered only once the continuation has stopped', async () => {
+  const entered = deferred(); let stoppedAt = 0;
+  const { host } = hostOf(async ({ invocation }) => {
+    entered.resolve();
+    await aborted(invocation.signal);
+    // The continuation takes a while to stop after the run's signal fires.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    stoppedAt = Date.now();
+    throw invocation.signal.reason;
+  });
+  const flow = createWorkflowExtension(host);
+  const harness = await open(fileOf(), flow);
+  await flow.start(harness, request, ctx);
+  await entered.promise;
+  assert.equal(await flow.stop(harness, 'run-1', 'pause', ctx), 'paused');
+  const answeredAt = Date.now();
+  assert.ok(stoppedAt > 0 && answeredAt >= stoppedAt, `paused was answered at ${answeredAt}, the continuation stopped at ${stoppedAt}`);
+  await harness.close(ctx);
+});
