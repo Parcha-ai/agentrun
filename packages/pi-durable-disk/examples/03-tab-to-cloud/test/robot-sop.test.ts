@@ -32,3 +32,9 @@ test("robot.md asks for a body that can learn to walk: flat box feet with fricti
   assert.match(sop, /ball feet walked 0\.087 m\/s and never passed; flat box feet with friction 1\.4 passed in 125 s; with strength 14 and a 6 kg torso as well, in 86\.6 s/);
   assert.doesNotMatch(sop, /and any shape works/, "the foot's shape matters now");
 });
+
+test("robot.md quotes the dog and the dinosaur examples byte for byte, as the workspace gets them", () => {
+  const body = (f: string) => readFileSync(new URL(`../../04-walks-home/body/${f}`, import.meta.url), "utf8");
+  assert.ok(ROBOT_SOP.includes(body("dog.example.mjs")), "robot.md's dog is dog.example.mjs");
+  assert.ok(ROBOT_SOP.includes(body("dino.example.mjs")), "robot.md's dinosaur is dino.example.mjs");
+});

@@ -295,6 +295,12 @@ test("teach.md plans walk and the turns for \"move\", and get-up only for a body
   // The dinosaur (code5's skeleton): every motor on [0, 1, 0], so no get-up.
   assert.equal(built("dino.example.mjs"), "no sideways motors");
   // A dog whose hips swing sideways ([1, 0, 0]) can roll over: the check names those motors.
-  const sideways = built("dog.example.mjs", (s) => s.replace("joint: { axis: [0, 1, 0], range: [-1, 1], stand: -0.45 }", "joint: { axis: [1, 0, 0], range: [-0.5, 0.5], stand: 0 }"));
+  // The dog's hip turned to swing sideways; the edit must take, whatever else its joint line carries (strength, a comment).
+  const sidewaysHip = (s: string) => {
+    const t = s.replace(/axis: \[0, 1, 0\], range: \[-1, 1\], stand: -0\.45/, "axis: [1, 0, 0], range: [-0.5, 0.5], stand: 0");
+    assert.notEqual(t, s, "the dog's hip joint was found and turned sideways");
+    return t;
+  };
+  const sideways = built("dog.example.mjs", sidewaysHip);
   assert.match(sideways, /^sideways motors: leg_front_j/);
 });
