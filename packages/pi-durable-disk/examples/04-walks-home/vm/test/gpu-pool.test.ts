@@ -6,13 +6,14 @@ import { GpuPool, type PoolBox } from "../gpu-pool.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function world(size: number, opts: { dead?: Set<string>; createMs?: (i: number) => number; fail?: (i: number) => boolean; removeFails?: (id: string, attempt: number) => boolean; closeWaitMs?: number } = {}) {
+function world(size: number, opts: { spares?: number; dead?: Set<string>; createMs?: (i: number) => number; fail?: (i: number) => boolean; removeFails?: (id: string, attempt: number) => boolean; closeWaitMs?: number } = {}) {
   const removed: string[] = [];
   const attempts = new Map<string, number>();
   const created: PoolBox[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const pool = new GpuPool({
     size,
+    ...(opts.spares ? { spares: opts.spares } : {}),
     log: (event, data = {}) => void logs.push({ event, data }),
     alive: async (box) => !(opts.dead?.has(box.id)),
     watchMs: 0,
@@ -258,5 +259,32 @@ describe("the GPU pool: a liveness answer that comes late", () => {
     assert.equal(pool.status().boxes[0]!.state, "failed", "the late answer was acted on");
     assert.ok(logs.includes("pool.box-dead"));
     await pool.close();
+  });
+});
+
+describe("the GPU pool: a spare box", () => {
+  it("is ready when the boxes needed are up: a slow box among the extra ones does not hold the start", async () => {
+    // Three boxes made for two needed; the one that is slow (box 1) is the straggler.
+    const w = world(2, { spares: 1, createMs: (i) => (i === 1 ? 400 : 20) });
+    const t0 = Date.now();
+    await w.pool.start();
+    assert.ok(Date.now() - t0 < 300, `ready after ${Date.now() - t0} ms, before the straggler`);
+    assert.equal(w.pool.status().boxes.filter((b) => b.state === "ready").length, 2);
+    assert.equal(w.pool.status().boxes.length, 3);
+    // The straggler lands later and joins the pool as a ready box.
+    await new Promise((r) => setTimeout(r, 450));
+    assert.equal(w.pool.status().boxes.filter((b) => b.state === "ready").length, 3);
+    await w.pool.close();
+    assert.deepEqual(w.removed.sort(), ["sb-0", "sb-1", "sb-2"]);
+  });
+
+  it("a spare stands in for a box that ended, and close removes a straggler that lands after it began", async () => {
+    const w = world(1, { spares: 1, createMs: (i) => (i === 1 ? 300 : 10) });
+    await w.pool.start();
+    const a = await w.pool.acquire("a");
+    w.pool.markDead(a.id, "exit 137");
+    const closing = w.pool.close(); // the spare is still being created
+    await closing;
+    assert.deepEqual(w.removed.sort(), ["sb-0", "sb-1"], "the straggler that landed during close was removed too");
   });
 });

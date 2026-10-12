@@ -24,8 +24,10 @@ export interface PoolStatus {
 }
 
 export interface GpuPoolOptions {
-  /** How many boxes. */
+  /** How many boxes are needed: `start()` resolves once this many are ready (or every create has settled). */
   readonly size: number;
+  /** Extra boxes created alongside (default 0): a straggler among them cannot hold up the start, and a spare stands in for a box that ended. They cost like any other box. */
+  readonly spares?: number;
   /** Create box `index` and wait until it can run work. Rejecting means this box failed. `signal` aborts when the pool closes (a create that cannot be cancelled may ignore it). */
   readonly create: (index: number, signal: AbortSignal) => Promise<PoolBox>;
   /** Remove a box. True when it is gone. */
@@ -43,7 +45,7 @@ export interface GpuPoolOptions {
   readonly aliveTimeoutMs?: number;
 }
 
-type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean };
+type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean; gone?: boolean };
 type Waiter = { thread: string; promise: Promise<PoolBox>; resolve: (box: PoolBox) => void; reject: (error: Error) => void; onAbort?: () => void; signal?: AbortSignal };
 
 export class GpuPool {
@@ -54,11 +56,12 @@ export class GpuPool {
   #closing = false;
   #started = false;
   #watch: NodeJS.Timeout | undefined;
+  #onSettle: (() => void) | undefined;
 
   constructor(options: GpuPoolOptions) {
     if (!Number.isInteger(options.size) || options.size < 1) throw new Error("the pool needs at least one box");
     this.#options = options;
-    this.#slots = Array.from({ length: options.size }, (_, index) => ({ index, state: "creating" as BoxState }));
+    this.#slots = Array.from({ length: options.size + (options.spares ?? 0) }, (_, index) => ({ index, state: "creating" as BoxState }));
   }
 
   status(): PoolStatus {
@@ -79,7 +82,16 @@ export class GpuPool {
       this.#watch = setInterval(() => void this.#verifyAll(), every);
       this.#watch.unref();
     }
-    await Promise.all(this.#slots.map((s) => s.creating));
+    // Ready when `size` boxes are up (a spare that is still coming does not hold this up), or when every create has settled.
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const up = this.#slots.filter((s) => s.state === "ready" || s.state === "busy").length;
+        if (up >= this.#options.size || this.#slots.every((s) => s.state !== "creating")) resolve();
+      };
+      this.#onSettle = check;
+      check();
+    });
+    this.#onSettle = undefined;
   }
 
   async #create(slot: Slot): Promise<void> {
@@ -94,6 +106,7 @@ export class GpuPool {
         // Nobody sweeps after close: this box is removed here, again if Modal would not take it the first time.
         for (let attempt = 0; attempt < 4 && !(await this.#remove(slot)); attempt++) await new Promise((r) => setTimeout(r, 500));
         if (slot.state !== "removed") this.#options.log("pool.late-box-left", { index: slot.index, box: box.name });
+        this.#onSettle?.();
         return;
       }
       slot.box = box;
@@ -101,12 +114,14 @@ export class GpuPool {
       this.#options.log("pool.box-ready", { index: slot.index, box: box.name, ms: slot.createMs });
       this.#changed();
       this.#serve();
+      this.#onSettle?.();
     } catch (error) {
       slot.state = "failed";
       slot.error = (error as Error).message;
       this.#options.log("pool.box-failed", { index: slot.index, error: slot.error });
       this.#changed();
       this.#failWaitersIfHopeless();
+      this.#onSettle?.();
     }
   }
 
@@ -223,6 +238,7 @@ export class GpuPool {
     });
     if (gone) {
       if (!keepState) slot.state = "removed";
+      slot.gone = true;
       delete slot.thread;
     }
     this.#changed();
@@ -247,12 +263,12 @@ export class GpuPool {
       if (!settled) this.#options.log("pool.close-pending", { creating: this.#slots.filter((s) => s.state === "creating").length, waitMs });
     }
     for (let round = 0; round < 3; round++) {
-      const todo = this.#slots.filter((s) => s.box && s.state !== "removed");
+      const todo = this.#slots.filter((s) => s.box && !s.gone && s.state !== "removed");
       if (todo.length === 0) break;
       await Promise.all(todo.map((s) => this.#remove(s)));
-      if (this.#slots.some((s) => s.box && s.state !== "removed")) await new Promise((r) => setTimeout(r, 500));
+      if (this.#slots.some((s) => s.box && !s.gone && s.state !== "removed")) await new Promise((r) => setTimeout(r, 500));
     }
-    const left = this.#slots.filter((s) => s.box && s.state !== "removed").length;
+    const left = this.#slots.filter((s) => s.box && !s.gone && s.state !== "removed").length;
     if (left > 0) this.#options.log("pool.close-left", { left });
     return { left };
   }

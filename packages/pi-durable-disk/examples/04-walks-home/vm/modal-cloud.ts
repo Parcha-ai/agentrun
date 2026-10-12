@@ -127,6 +127,8 @@ export interface ModalCloudOptions {
    */
   readonly cluster?: {
     readonly size: number;
+    /** Extra boxes created alongside the `size` needed, so a slow one cannot hold up the start (they cost like any other box). */
+    readonly spares?: number;
     readonly image: string;
     readonly type?: string;
     readonly cpu?: number;
@@ -248,6 +250,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     options.cluster && clusterClient
       ? new GpuPool({
           size: options.cluster.size,
+          ...(options.cluster.spares ? { spares: options.cluster.spares } : {}),
           log: options.log,
           closeWaitMs: options.closeWaitMs ?? 60_000,
           create: async (index, signal) => {
@@ -266,6 +269,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
               throw new Error(`GPU box ${index} did not place in ${Math.round(timeoutMs / 1000)} s`);
             }
             box = outcome.b;
+            const placeMs = Date.now() - t0;
             // Tracked from the moment it exists: whatever happens next, a box that would not go stays in `live` and close() tries again.
             live.add(box.id);
             const poolBox = { id: box.id, name, index };
@@ -296,8 +300,11 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
               await drop(box);
               throw error;
             }
-            options.log("cluster.box-up", { index, box: name, ms: Date.now() - t0 });
+            const total = Date.now() - t0;
+            options.log("cluster.box-up", { index, box: name, ms: total, placeMs, warmMs: total - placeMs });
             if (lastReady) options.log("cluster.box-warm", { index, box: name, line: lastReady.slice(-400) });
+            // Why a box was slow, for the log: Modal took long to place it, or the warm-up compiled (a cache miss on this host), or the warm-up itself was slow.
+            if (total > 90_000) options.log("cluster.box-slow", { index, box: name, ms: total, cause: placeMs > 90_000 ? "modal-placement" : /"host_cache":\s*"miss"/.test(lastReady) ? "cache-miss" : "warm-up", placeMs, warmMs: total - placeMs });
             return poolBox;
           },
           remove: async (box) => drop({ id: box.id, name: box.name }),

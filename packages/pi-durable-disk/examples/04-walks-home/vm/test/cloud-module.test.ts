@@ -83,3 +83,10 @@ test("robot=true turns on the robot's tools on the VM and needs the cluster", ()
   assert.equal(modalOptionsFromArgs({}).robot, undefined);
   assert.throws(() => modalOptionsFromArgs({ robot: "true" }), /needs cluster-size and cluster-image/);
 });
+
+test("cluster-spares is a whole number of extra boxes", () => {
+  assert.equal(modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "1" }).cluster?.spares, 1);
+  assert.equal(modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x" }).cluster?.spares, undefined);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "-1" }), /whole number/);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "x" }), /whole number/);
+});

@@ -49,6 +49,8 @@ const robot = episode === "robot";
 const clusterSize = Number(arg("cluster-size", 2));
 const clusterImage = arg("cluster-image", "");
 const clusterReady = arg("cluster-ready", "");
+// Boxes made beyond the ones needed: a straggler among them cannot hold up "ready" (they cost like the others).
+const clusterSpares = Number(arg("cluster-spares", robot ? 1 : 0));
 const clusterReadyTimeout = arg("cluster-ready-timeout-s", "");
 // The skill each box warms for (box 0 first): with a pool of 2, a fast skill and a slow one.
 const clusterSkills = arg("cluster-skills", "walk,spin,sprint,backwards,turn-left,turn-right,get-up,wave");
@@ -169,6 +171,7 @@ try {
             // The session's VM mounts the disk (the default transport) and the cluster's boxes start when the first page takes the run.
             "--cloud-arg", "robot=true",
             "--cloud-arg", `cluster-size=${clusterSize}`,
+            "--cloud-arg", `cluster-spares=${clusterSpares}`,
             "--cloud-arg", `cluster-image=${clusterImage}`,
             "--cloud-arg", `cluster-ttl-minutes=${arg("ttl", 45)}`,
             "--cloud-arg", "cluster-cpu=8",
@@ -244,7 +247,7 @@ try {
   if (robot) {
     // Every box of the pool has come up or failed; a pool where none came up is a failed start.
     const count = (event) => (readFileSync(join(work, "take", "server.log"), "utf8").match(new RegExp(`"event":"${event}"`, "g")) ?? []).length;
-    await until(() => count("cluster.box-up") + count("pool.box-failed") >= clusterSize, ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
+    await until(() => count("cluster.box-up") >= clusterSize || count("cluster.box-up") + count("pool.box-failed") >= clusterSize + clusterSpares, ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
     const up = count("cluster.box-up");
     if (up === 0) throw new Error("no GPU box came up");
     step("the cluster", { up, failed: count("pool.box-failed"), of: clusterSize });
