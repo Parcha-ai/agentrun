@@ -53,7 +53,7 @@ describe("the take server launcher", () => {
 
   it("runs the server with exactly the tab-writable creature paths, the broker, and nothing of the agent's memory", () => {
     const args = execFileSync("ps", ["-o", "args=", "-p", String(status.pid)], { encoding: "utf8" });
-    assert.match(args, /--tab-writable creature\/creature\.xml,creature\/body\.json,creature\/designs\.sqlite(\s|$)/);
+    assert.match(args, /--tab-writable creature\/creature\.xml,creature\/body\.json,creature\/designs\.sqlite,creature\/design\.json,creature\/fit\.json(\s|$)/);
     assert.ok(!args.includes("memory.sqlite"));
     assert.match(args, /--model-url http:\/\/127\.0\.0\.1:9421\/v1/);
     assert.match(args, /--host 127\.0\.0\.1/);
