@@ -185,7 +185,7 @@ for (const [place, observed] of Object.entries({
   });
 }
 
-test("an effect's own deadline is its only clock: it cuts the adapter and leaves the effect unknown, and no time before it counts", async (t) => {
+test("an effect's own deadline is its only clock: it cuts the adapter and leaves the effect unknown, and no time before it counts", { timeout: 10000 }, async (t) => {
   holdClocks(t);
   const workflow = doc([tool('slow', {}, { deadline_s: 0.05 })]);
   let calls = 0, cut = 0;
