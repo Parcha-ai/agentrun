@@ -45,11 +45,22 @@ export interface RawResult {
   ms?: number;
 }
 
+/** OpenAI-shaped chat for the native tool template (wllama's createChatCompletion with tools). */
+export type ToolChatMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content?: string | null; tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[] }
+  | { role: 'tool'; content: string; tool_call_id: string };
+export interface ToolChatTool { type: 'function'; function: { name: string; description?: string; parameters?: unknown } }
+export interface ToolChatRequest { messages: ToolChatMessage[]; tools: ToolChatTool[]; toolChoice?: 'auto' | 'required' | 'none'; maxTokens: number; templateKwargs?: Record<string, unknown> }
+export interface ToolChatResult { text: string; toolCalls: { id: string; name: string; arguments: string }[]; stoppedBy: 'stop' | 'length' | 'tool_calls'; promptTokens: number; outputTokens: number; ms: number }
+
 export interface Llm {
   /** Load a model: its bytes, or a base with adapters (all loaded at scale 0; `active` turns some on at a scale for every request, adapters.ts). */
-  load(parts: (Uint8Array | Blob)[], opts: { threads: number; adapters?: AdapterFile[]; active?: Record<string, number> }): Promise<void>;
+  load(parts: (Uint8Array | Blob)[], opts: { threads: number; adapters?: AdapterFile[]; active?: Record<string, number>; /** The model's own chat template (jinja), needed for `chatTools`. */ jinja?: boolean; /** The context in tokens (default 2048). */ nCtx?: number }): Promise<void>;
   /** Generate an answer; onText gets the whole text so far and the tokens so far. `stop` strings end the text before them; `prefill` is an assistant turn to continue (the returned text is only what comes after it). An abort ends it early without throwing. */
   chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; sampling?: Sampling; stop?: string[]; prefill?: string; onText: (cumulative: string, tokens: number) => void }): Promise<{ text: string; tokens: number }>;
+  /** Optional: one chat turn with the model's NATIVE tool template (OpenAI-shaped messages and tools in, its own tool_calls out; needs `jinja` at load). An abort ends it early and returns what was generated. */
+  chatTools?(req: ToolChatRequest, o: { signal: AbortSignal; sampling?: Sampling }): Promise<ToolChatResult>;
   /** Optional: one raw completion (see RawRequest). An abort ends it early and returns what was generated. */
   complete?(req: RawRequest, o: { signal: AbortSignal; sampling?: Sampling }): Promise<RawResult>;
   exit(): Promise<void>;
@@ -73,6 +84,8 @@ export interface HostDeps {
   sleep(ms: number): Promise<void>;
   /** Whole model files kept by sha256 for a base-and-adapters homecoming (homecoming.ts; OPFS in the browser). Default: in memory, so nothing is kept. */
   files?: FileStore;
+  /** Load the model with its own jinja chat template and this context (the native tool template needs both; the tools of a task are rendered into the prompt). */
+  native?: { nCtx: number };
 }
 
 /** Tokens per second of generation: the gaps between the first and the last token, so the judge's waits are not in it. Null when it cannot be measured. */
@@ -281,6 +294,26 @@ export class ModelHost {
   }
 
   /**
+   * One chat turn with the model's native tool template: the messages and the tools of the task go in as OpenAI-shaped data, the model's own template renders them, its tool_calls come back. No judge, no
+   * history (the caller owns the conversation). Throws 'model-not-ready' before the first answer, 'busy' while something else generates, and when the backend has no native tool chat.
+   */
+  async toolChat(req: ToolChatRequest, signal?: AbortSignal): Promise<ToolChatResult> {
+    if (this.phase !== 'answered') throw new Error('model-not-ready');
+    if (this.busy) throw new Error('busy');
+    if (!this.d.llm.chatTools) throw new Error('this model backend has no native tool chat');
+    this.busy = true;
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    if (signal?.aborted) ctl.abort(); else signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      return await this.d.llm.chatTools(req, { signal: ctl.signal, sampling: this.sampling });
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      this.busy = false;
+    }
+  }
+
+  /**
    * The page is done with this model (the run left this tab, or the connection was lost): a load that has not finished stops, and the model's workers are released. Nothing
    * answers after it; a page that comes back builds a new host (one copy of the model at a time, not one per return).
    */
@@ -376,7 +409,7 @@ export class ModelHost {
   /** Load what was fetched, write the receipt, and ask the self-check: the model is ready only after a real, judged answer. */
   private async loadAndCheck(parts: (Uint8Array | Blob)[], extra: { adapters?: AdapterFile[]; active?: Record<string, number> }, downloadMs: number): Promise<void> {
     const t1 = this.d.now();
-    try { await this.d.llm.load(parts, { threads: this.d.threads, ...extra }); } catch (e) { return this.fail(`the model would not load: ${e instanceof Error ? e.message : String(e)}`); }
+    try { await this.d.llm.load(parts, { threads: this.d.threads, ...extra, ...(this.d.native ? { jinja: true, nCtx: this.d.native.nCtx } : {}) }); } catch (e) { return this.fail(`the model would not load: ${e instanceof Error ? e.message : String(e)}`); }
     if (this.disposed) { await this.d.llm.exit().catch(() => undefined); return; }
     this.info.load_ms = this.d.now() - t1;
     this.phase = 'loaded';
