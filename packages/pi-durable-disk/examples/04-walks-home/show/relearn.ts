@@ -80,16 +80,18 @@ export function relearnSummary(threads: readonly Thread[], homeBody: string | nu
   // One machine's time needs every skill to name that same machine: a missing or different label shows no total (the sum would not be that machine's).
   const cores = ts.length > 0 && ts.every((t) => t.cpuCores !== null && t.cpuCores === ts[0]!.cpuCores) ? ts[0]!.cpuCores : null;
   const cpuAll = cores !== null && ts.every((t) => t.cpuS !== null);
+  // The skill files fill a total the round left null only when every skill the round counted is there (a read that failed must not turn 5 of 8 into "all").
+  const complete = round === null || round.gpus === null || ts.length === round.gpus;
   const own = {
-    passedS: passedAll ? Math.max(...ts.map((t) => t.passedS!)) : null,
-    homeS: doneAll && ts.every((t) => t.wallS !== null) ? Math.max(...ts.map((t) => t.wallS!)) : null,
-    cpuS: cpuAll ? ts.reduce((a, t) => a + t.cpuS!, 0) : null,
-    cpuCores: cpuAll ? cores : null,
+    passedS: complete && passedAll ? Math.max(...ts.map((t) => t.passedS!)) : null,
+    homeS: complete && doneAll && ts.every((t) => t.wallS !== null) ? Math.max(...ts.map((t) => t.wallS!)) : null,
+    cpuS: complete && cpuAll ? ts.reduce((a, t) => a + t.cpuS!, 0) : null,
+    cpuCores: complete && cpuAll ? cores : null,
   };
   return {
     bodyName: round?.bodyName ?? ts.find((t) => t.bodyName !== null)?.bodyName ?? null,
     gpus: round?.gpus ?? ts.length,
-    passed: round ? (round.gpus ?? ts.length) : ts.filter((t) => t.passedS !== null).length,
+    passed: ts.filter((t) => t.passedS !== null).length,
     // The round's own totals when it gave them; a total it left null falls back to what the skill files add up to.
     passedS: round?.allPassedS ?? own.passedS,
     done: round !== null || doneAll,

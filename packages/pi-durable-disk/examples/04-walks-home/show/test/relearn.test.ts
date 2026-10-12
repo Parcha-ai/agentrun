@@ -157,3 +157,15 @@ test("with the round: the card says relearned, and uses the round's own totals; 
   assert.doesNotMatch(firstRound, /Relearned/);
   assert.match(firstRound, /Learned its body/);
 });
+
+test("a total the round left null is filled from the skill files only when every expected skill is there; missing skills are not 'all'", () => {
+  const eight = threadsFor(8, () => ({ passed_at: { checkpoint: 3, steps: 1, t: 50, passes: true }, wall_s: 60 }));
+  const round = parseRound(JSON.stringify({ ...ROUND, all_passed_s: null, all_done_s: null, cpu_estimate_s: null }))!;
+  const five = relearnSummary(eight.slice(0, 5), HOME, round)!;
+  assert.deepEqual([five.passedS, five.homeS, five.cpuS], [null, null, null], "5 of the 8 skills read: no totals from them");
+  assert.equal(five.passed, 5, "the observed pass count, not the round's GPU count");
+  assert.doesNotMatch(relearnHtml(five), /all 8 skills passed|All home|one machine/);
+  assert.match(relearnHtml(five), /5 of 8 skills have passed/);
+  const all = relearnSummary(eight, HOME, round)!;
+  assert.deepEqual([all.passedS, all.homeS, all.cpuS], [50, 60, 8 * 11600], "all 8 present: the files fill the nulls");
+});
