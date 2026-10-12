@@ -98,7 +98,7 @@ export function steeredProvider(opts: SteeredProviderOptions) {
     ({ ...(opts.thinkingBudgets ? { thinkingBudgets: opts.thinkingBudgets } : {}), ...(options ?? {}), apiKey: current().apiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) }) as T;
   const seen = (context: TranscriptContext) => (opts.window ? opts.window(context) : context);
   // The steered turn is held to its end, then shown as it came or, when broken, replaced by the fallback's turn.
-  const checked = (run: () => AssistantMessageEventStream, context: TranscriptContext, options: SimpleStreamOptions | undefined): AssistantMessageEventStream => {
+  const checked = (model: Model<Api>, run: () => AssistantMessageEventStream, context: TranscriptContext, options: SimpleStreamOptions | undefined): AssistantMessageEventStream => {
     const fallback = opts.fallback;
     if (!fallback) return run();
     const out = createAssistantMessageEventStream();
@@ -121,9 +121,26 @@ export function steeredProvider(opts: SteeredProviderOptions) {
         out.end();
         return;
       }
-      opts.onFallback?.(why);
-      for await (const e of fallback(context, options)) out.push(e);
-      out.end();
+      try {
+        opts.onFallback?.(why);
+        for await (const e of fallback(context, options)) out.push(e);
+      } catch (error) {
+        // the replacement failed too: end the turn with an error the caller can retry, never an open stream
+        const message: AssistantMessage = {
+          role: "assistant",
+          content: [],
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          stopReason: "error",
+          errorMessage: `${why}; the fallback failed: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: Date.now(),
+        };
+        out.push({ type: "error", reason: "error", error: message });
+      } finally {
+        out.end();
+      }
     })();
     return out;
   };
@@ -154,8 +171,8 @@ export function steeredProvider(opts: SteeredProviderOptions) {
       },
     ],
     api: {
-      stream: (model, context, options) => checked(() => api.stream(at(model), seen(context), keyed(options)), context, options as SimpleStreamOptions | undefined),
-      streamSimple: (model, context, options) => checked(() => api.streamSimple(at(model), seen(context), keyed(options)), context, options),
+      stream: (model, context, options) => checked(model, () => api.stream(at(model), seen(context), keyed(options)), context, options as SimpleStreamOptions | undefined),
+      streamSimple: (model, context, options) => checked(model, () => api.streamSimple(at(model), seen(context), keyed(options)), context, options),
     },
   });
 }

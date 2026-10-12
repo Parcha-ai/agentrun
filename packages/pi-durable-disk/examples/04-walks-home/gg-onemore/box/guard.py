@@ -7,11 +7,13 @@
 #   GG_SERVE_KEY, TYPESAFE_API_KEY, GG_EXEC_KEY (optional)
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import os
 import re
 import secrets
+import signal
 import time
 
 import httpx
@@ -24,8 +26,10 @@ LAB = os.environ.get("GG_LAB", "http://127.0.0.1:8100")
 JEV_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
 LOG = os.environ.get("GG_GUARD_LOG", "/var/tmp/gg/guard.jsonl")
 FLAG = 0.5
+EXEC_FRAMES = 16
 KEY_HASH = hashlib.sha256(os.environ["GG_SERVE_KEY"].encode()).digest()
 EXEC_HASH = hashlib.sha256(os.environ["GG_EXEC_KEY"].encode()).digest() if os.environ.get("GG_EXEC_KEY") else None
+RUNAS = ["/usr/sbin/runuser", "-u", "agent", "--"]
 AGENT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/agent", "LANG": "C.UTF-8"}
 JEV_KEY = os.environ["TYPESAFE_API_KEY"]
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
@@ -160,9 +164,16 @@ async def gg_exec(request: Request):
         return JSONResponse({"error": "no argv"}, status_code=400)
 
     async def frames():
-        proc = await asyncio.create_subprocess_exec("/usr/sbin/runuser", "-u", "agent", "--", *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.PIPE, env=AGENT_ENV)
-        out: asyncio.Queue = asyncio.Queue()
+        # its own process group, so a deadline or a gone reader stops everything the command started
+        proc = await asyncio.create_subprocess_exec(*RUNAS, *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.PIPE, env=AGENT_ENV, start_new_session=True)
+        # bounded: a slow reader holds the command back instead of growing the guard that also serves /v1
+        out: asyncio.Queue = asyncio.Queue(maxsize=EXEC_FRAMES)
+
+        def stop():
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
 
         async def pump(stream, name):
             while True:
@@ -179,27 +190,29 @@ async def gg_exec(request: Request):
             proc.stdin.close()
 
         tasks = [asyncio.create_task(pump(proc.stdout, "stdout")), asyncio.create_task(pump(proc.stderr, "stderr")), asyncio.create_task(feed())]
-        ended = 0
-        deadline = time.time() + timeout
+        # the deadline covers the command's whole life: its output, the time its reader takes, and its exit
+        deadline = time.monotonic() + timeout
         try:
-            while ended < 2:
-                try:
-                    item = await asyncio.wait_for(out.get(), max(0.1, deadline - time.time()))
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    yield json.dumps({"stream": "stderr", "data": base64.b64encode(b"gg exec: timed out\n").decode()}) + "\n"
-                    break
-                if item is None:
-                    ended += 1
-                else:
-                    yield json.dumps(item) + "\n"
-            code = await proc.wait()
+            try:
+                ended = 0
+                while ended < 2:
+                    item = await asyncio.wait_for(out.get(), deadline - time.monotonic())
+                    if item is None:
+                        ended += 1
+                    else:
+                        yield json.dumps(item) + "\n"
+                code = await asyncio.wait_for(proc.wait(), deadline - time.monotonic())
+            except asyncio.TimeoutError:
+                stop()
+                yield json.dumps({"stream": "stderr", "data": base64.b64encode(b"gg exec: timed out\n").decode()}) + "\n"
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), 5)
+                code = proc.returncode if proc.returncode is not None else -signal.SIGKILL
             yield json.dumps({"exit": code}) + "\n"
         finally:
             for t in tasks:
                 t.cancel()
-            if proc.returncode is None:
-                proc.kill()
+            stop()
 
     return StreamingResponse(frames(), media_type="application/x-ndjson")
 

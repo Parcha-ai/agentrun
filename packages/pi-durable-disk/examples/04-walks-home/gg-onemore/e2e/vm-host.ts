@@ -107,27 +107,34 @@ export async function startVmSession(o: { tunnel: string; keys: { openai: string
   if (result.action !== "started") throw new Error(`the supervisor did not start the run: ${JSON.stringify(result).slice(0, 300)}`);
   const handle: HostHandle = result.handle;
   const sandboxId = String(handle.sandboxId);
-  o.log("vm.started", { run: ref.id, sandbox: sandboxId, startMs: result.startMs, ms: Date.now() - t0 });
-  const sandbox = await sdk.sandboxes.fromId(sandboxId);
-  return {
-    ref,
-    sandboxId,
-    async shell(cmd, seconds = 120) {
-      const p = await sandbox.exec(["bash", "-lc", cmd], { mode: "text", timeoutMs: seconds * 1000 });
-      const out = await p.stdout.readText();
-      await p.wait();
-      return out;
-    },
-    async close(keep) {
-      await driver.stop(handle).catch((e) => o.log("vm.stop_failed", { error: String(e) }));
-      await removeMountToken(control, result.token.identifier).catch((e) => o.log("vm.token_failed", { error: String(e) }));
-      if (!keep) {
-        const gone = await deleteRunTree(control, ref.id).catch((e) => ({ error: String(e) }));
-        o.log("vm.run_deleted", { run: ref.id, ...gone });
-      }
-      o.log("vm.closed", { run: ref.id });
-    },
+  const close = async (keep: boolean) => {
+    await driver.stop(handle).catch((e) => o.log("vm.stop_failed", { error: String(e) }));
+    await removeMountToken(control, result.token.identifier).catch((e) => o.log("vm.token_failed", { error: String(e) }));
+    if (!keep) {
+      const gone = await deleteRunTree(control, ref.id).catch((e) => ({ error: String(e) }));
+      o.log("vm.run_deleted", { run: ref.id, ...gone });
+    }
+    o.log("vm.closed", { run: ref.id });
   };
+  // the VM runs from here on: anything that fails before the caller has `close` cleans up first
+  try {
+    o.log("vm.started", { run: ref.id, sandbox: sandboxId, startMs: result.startMs, ms: Date.now() - t0 });
+    const sandbox = await sdk.sandboxes.fromId(sandboxId);
+    return {
+      ref,
+      sandboxId,
+      async shell(cmd, seconds = 120) {
+        const p = await sandbox.exec(["bash", "-lc", cmd], { mode: "text", timeoutMs: seconds * 1000 });
+        const out = await p.stdout.readText();
+        await p.wait();
+        return out;
+      },
+      close,
+    };
+  } catch (error) {
+    await close(false);
+    throw error;
+  }
 }
 
 export function readKey(path: string): string {

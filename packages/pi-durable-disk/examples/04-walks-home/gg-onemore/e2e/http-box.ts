@@ -3,28 +3,45 @@
 // with the request, once it is closed (RemoteEnv always closes stdin before it reads); its output comes back as frames.
 import type { RemoteBox, RemoteProcess } from "@parcha/pi-durable-disk";
 
+// Bounded: when its reader falls behind, the response is not read further, and the box's guard holds the command back.
+// A reader that stops early (RemoteEnv over a size limit) drops the rest, so the other stream still flows.
+const CHANNEL_CHUNKS = 16;
+
 class Channel implements AsyncIterable<Uint8Array> {
   private chunks: Uint8Array[] = [];
   private ended = false;
-  private wake: (() => void) | undefined;
+  private dropped = false;
+  private wakeReader: (() => void) | undefined;
+  private wakeWriter: (() => void) | undefined;
   private readonly start: () => void;
   constructor(start: () => void) {
     this.start = start;
   }
-  push(chunk: Uint8Array) {
+  async push(chunk: Uint8Array) {
+    while (this.chunks.length >= CHANNEL_CHUNKS && !this.dropped) await new Promise<void>((resolve) => (this.wakeWriter = resolve));
+    if (this.dropped) return;
     this.chunks.push(chunk);
-    this.wake?.();
+    this.wakeReader?.();
   }
   end() {
     this.ended = true;
-    this.wake?.();
+    this.wakeReader?.();
   }
   async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
     this.start();
-    for (;;) {
-      if (this.chunks.length) yield this.chunks.shift()!;
-      else if (this.ended) return;
-      else await new Promise<void>((resolve) => (this.wake = resolve));
+    try {
+      for (;;) {
+        if (this.chunks.length) {
+          const chunk = this.chunks.shift()!;
+          this.wakeWriter?.();
+          yield chunk;
+        } else if (this.ended) return;
+        else await new Promise<void>((resolve) => (this.wakeReader = resolve));
+      }
+    } finally {
+      this.dropped = true;
+      this.chunks = [];
+      this.wakeWriter?.();
     }
   }
 }
@@ -63,11 +80,11 @@ export function httpBox(o: { url: string; key: string; id?: string }): RemoteBox
                 if (!line) continue;
                 const frame = JSON.parse(line) as { stream?: "stdout" | "stderr"; data?: string; exit?: number };
                 if (frame.exit !== undefined) code = frame.exit;
-                else (frame.stream === "stdout" ? out : err).push(Buffer.from(frame.data ?? "", "base64"));
+                else await (frame.stream === "stdout" ? out : err).push(Buffer.from(frame.data ?? "", "base64"));
               }
             }
           } catch (e) {
-            err.push(Buffer.from(`gg exec: ${(e as Error).message}\n`));
+            await err.push(Buffer.from(`gg exec: ${(e as Error).message}\n`));
           } finally {
             out.end();
             err.end();
@@ -96,11 +113,14 @@ export function boxShell(box: RemoteBox) {
   return async (cmd: string): Promise<string> => {
     const p = await box.exec(["sh", "-c", cmd], { mode: "binary", timeoutMs: 120_000 });
     await p.stdin.close();
-    const parts: Uint8Array[] = [];
-    for await (const chunk of p.stdout as AsyncIterable<Uint8Array>) parts.push(chunk);
-    for await (const _ of p.stderr as AsyncIterable<Uint8Array>) void _;
-    const code = await p.wait();
+    const read = async (stream: AsyncIterable<Uint8Array>) => {
+      const parts: Uint8Array[] = [];
+      for await (const chunk of stream) parts.push(chunk);
+      return Buffer.concat(parts);
+    };
+    // both at once: each stream's channel is bounded
+    const [stdout, , code] = await Promise.all([read(p.stdout as AsyncIterable<Uint8Array>), read(p.stderr as AsyncIterable<Uint8Array>), p.wait()]);
     if (code !== 0) throw new Error(`${cmd.slice(0, 60)} exited ${code}`);
-    return Buffer.concat(parts).toString("utf8");
+    return stdout.toString("utf8");
   };
 }

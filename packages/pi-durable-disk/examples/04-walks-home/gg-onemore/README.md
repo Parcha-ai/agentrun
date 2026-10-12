@@ -102,7 +102,8 @@ model does not read the earlier transcript.
   cannot read any of them.
 - vLLM listens on 127.0.0.1; the guard forwards only `/v1/*` to it, after checking the bearer key itself. vLLM's dev
   routes (`/collective_rpc`, `/reset_prefix_cache`) stay on the box. `/gg/exec` answers only its own key (the VM's), and
-  runs as `agent`.
+  runs as `agent` in its own process group: its output waits for a slow reader (a bounded queue, not the guard's memory),
+  and its deadline covers its whole life, exit included; at the deadline the group is killed.
 - The VM's keys (OpenAI, the serve key, the exec key) go to a directory only its run user reads; the mount token stays on
   the package's own path. No model-written command runs in the VM.
 - The host keeps the serve key in a 0600 file and never prints it.
@@ -127,7 +128,7 @@ python3 box.py down
 node e2e/run.ts --out ./gg-run
 
 # tests (no GPU, no network)
-node --test 'pi/test/*.test.ts'
+node --test 'pi/test/*.test.ts' 'e2e/test/*.test.ts'
 (cd box && python3 -m unittest test_guard)
 ```
 

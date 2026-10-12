@@ -84,20 +84,22 @@ async function main() {
     try {
       if (values.session === "vm") {
         const vm = await startVmSession({ tunnel: box.url, keys: { openai: process.env.OPENAI_API_KEY ?? "", serve: readKey(box.key_file), exec: readKey(box.exec_key_file) }, log });
+        // the beat's terminal event: "done", "vm.error", or none by the deadline
+        let ended: string | undefined;
         try {
           let seen = 0;
           let out = "";
           const deadline = Date.now() + 30 * 60_000;
-          for (let finished = false; !finished && Date.now() < deadline; ) {
+          while (!ended && Date.now() < deadline) {
             const lines = (await vm.shell("cat /var/tmp/gg-vm/events.jsonl 2>/dev/null || true")).split("\n").filter(Boolean);
             for (const line of lines.slice(seen)) {
               const e = JSON.parse(line) as { event: string; out?: string };
               log(`vm:${e.event}`, e);
               if (e.event === "vm.open" && e.out) out = e.out;
-              if (e.event === "done" || e.event === "vm.error") finished = true;
+              if (e.event === "done" || e.event === "vm.error") ended = e.event;
             }
             seen = lines.length;
-            if (!finished) await new Promise((resolve) => setTimeout(resolve, 3_000));
+            if (!ended) await new Promise((resolve) => setTimeout(resolve, 3_000));
           }
           if (out) {
             const tar = await vm.shell(`cd ${out} && tar -c . | base64 -w0`, 300);
@@ -112,6 +114,8 @@ async function main() {
         const run = await shell("cd /var/tmp/gg/run && tar -c find.json pick.json strength.json served.json checkpoint/GOLDEN-GATE.json 2>/dev/null | base64 -w0");
         writeFileSync(join(OUT, "run.tar.b64"), run.trim());
         spawnSync("bash", ["-c", "base64 -d run.tar.b64 | tar -x && rm run.tar.b64"], { cwd: OUT });
+        // after the evidence and the cleanup: a run that failed or never finished is not a result
+        if (ended !== "done") throw new Error(ended ? "the VM session failed (see vm:vm.error above)" : "the VM session did not finish within 30 minutes");
       } else if (values.session === "box") {
         log("session.on_box");
         py(["exec", "--root", `node /opt/gg-onemore/session.mjs --out /var/tmp/gg/session-run${values.control ? "" : " --no-control"}`]);

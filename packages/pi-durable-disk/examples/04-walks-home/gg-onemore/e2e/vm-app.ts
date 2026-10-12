@@ -45,7 +45,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     async onOpen(run) {
       log("vm.open", { run: where.ref.id, generation: run.generation, store: where.store, work: where.work, out });
       if (existsSync(join(out, "timeline.started"))) {
-        log("vm.resumed", { note: "the beat already started in this run" });
+        // the beat's steps after the agent's turns (follow-ups, control, evidence) are plain code and do not resume
+        log("vm.error", { error: "the run reopened after the beat started: the beat was interrupted and is not resumed" });
         return;
       }
       mkdirSync(out, { recursive: true });

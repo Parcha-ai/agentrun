@@ -8,7 +8,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test 'pi/test/*.test.ts'",
+    "test": "node --test 'pi/test/*.test.ts' 'e2e/test/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "e2e": "node e2e/run.ts",
     "bundle": "esbuild e2e/box-session.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/session.mjs --banner:js=\"import { createRequire as __gg_cr } from 'node:module'; const require = __gg_cr(import.meta.url);\" --log-level=warning",

@@ -322,3 +322,24 @@ test("a broken steered turn (tool-call markup the server could not parse) is ask
     await s.done();
   }
 });
+
+test("when the fallback fails too, the turn ends with an error, never an open stream", async () => {
+  const vllm = await fakeVllm();
+  try {
+    const provider = steeredProvider({
+      modelId: MODEL,
+      endpoint: () => ({ baseUrl: vllm.baseUrl, apiKey: KEY }),
+      fallback: () => {
+        throw new Error("base model unreachable");
+      },
+    });
+    const model = provider.getModels()[0]!;
+    const events: any[] = [];
+    for await (const e of provider.streamSimple(model, { messages: [{ role: "user", content: "BREAK: list the files.", timestamp: Date.now() }] } as any)) events.push(e);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "error");
+    assert.match(events[0].error.errorMessage, /markup.*the fallback failed: base model unreachable/);
+  } finally {
+    await vllm.close();
+  }
+});

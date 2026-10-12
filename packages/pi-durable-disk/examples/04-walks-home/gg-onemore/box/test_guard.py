@@ -1,6 +1,8 @@
 # The guard against fakes of vLLM (streamed chat completions with thinking, answer and a tool call), Jev and the lab's
 # strength-0 sentence. No GPU, no network. From box/: python3 -m unittest test_guard
 import asyncio
+import base64
+import hashlib
 import json
 import os
 import socket
@@ -154,6 +156,43 @@ class GuardTest(unittest.TestCase):
         self.assertNotIn("DARK", m["reasoning_content"])
         self.assertEqual(m["tool_calls"][0]["function"]["arguments"], "{\"command\": \"ls\"}")
         self.assertEqual(r.json()["choices"][0]["finish_reason"], "tool_calls")
+
+
+    # /gg/exec with the command run directly (no runuser here): stdin in, both streams and the exit out, and the deadline
+    def run_exec(self, argv, stdin=b"", timeout_ms=30_000):
+        saved = (self.guard.RUNAS, self.guard.EXEC_HASH)
+        self.guard.RUNAS, self.guard.EXEC_HASH = [], hashlib.sha256(b"exec-key").digest()
+        try:
+            self.assertEqual(self.call("POST", "/gg/exec", {"argv": ["true"]}).status_code, 404)
+            r = self.call("POST", "/gg/exec", {"argv": argv, "stdin": base64.b64encode(stdin).decode(), "timeout_ms": timeout_ms}, key="exec-key")
+        finally:
+            self.guard.RUNAS, self.guard.EXEC_HASH = saved
+        self.assertEqual(r.status_code, 200)
+        got = {"stdout": b"", "stderr": b"", "exit": None}
+        for line in r.text.splitlines():
+            f = json.loads(line)
+            if "exit" in f:
+                got["exit"] = f["exit"]
+            else:
+                got[f["stream"]] += base64.b64decode(f["data"])
+        return got
+
+    def test_exec_streams_and_exit(self):
+        got = self.run_exec(["sh", "-c", "cat; echo err >&2; exit 3"], b"hello")
+        self.assertEqual((got["stdout"], got["stderr"], got["exit"]), (b"hello", b"err\n", 3))
+        # more output than the bounded queue holds still arrives whole
+        self.assertEqual(len(self.run_exec(["head", "-c", "5000000", "/dev/zero"])["stdout"]), 5_000_000)
+
+    def test_exec_deadline_covers_the_exit(self):
+        pid_file = tempfile.NamedTemporaryFile(delete=False).name
+        t = time.time()
+        # closes both streams and keeps running: only the deadline around its exit ends it
+        got = self.run_exec(["sh", "-c", f"echo $$ > {pid_file}; exec >&- 2>&-; exec sleep 30"], timeout_ms=1500)
+        self.assertLess(time.time() - t, 10)
+        self.assertIn(b"timed out", got["stderr"])
+        self.assertNotEqual(got["exit"], 0)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(open(pid_file).read()), 0)
 
 
 if __name__ == "__main__":
