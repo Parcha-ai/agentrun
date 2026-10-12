@@ -221,7 +221,8 @@ test("do(skill): only a skill that came home can be chosen; the body and looks a
   assert.equal(bodyKey(sprint.state.design), bodyKey(s.design));
   assert.deepEqual(sprint.state.look, s.look);
   assert.match(call2(s, "do", { skill: "spin" }, { skills }).text, /^Not done: the robot has not learned spin; it can do walk, sprint\./);
-  assert.match(call2(s, "do", { skill: "fly" }, { skills }).text, /^Not done: skill must be one of walk, sprint/);
+  assert.match(call2(s, "do", { skill: "fly" }, { skills }).text, /^Not done: the robot has not learned fly; it can do walk, sprint/, "any name is looked up in what came home, not in a fixed list");
+  assert.match(call2(s, "do", { skill: "walk now!" }, { skills }).text, /^Not done: skill must be the name of a skill the robot has learned/);
   assert.match(call2(s, "do", { skill: "walk" }, {}).text, /^Not done: no skill has come home yet/);
   const again = call2(sprint.state, "do", { skill: "sprint" }, { skills }); // asking again writes again: the page may have stopped running the skill since
   assert.equal(again.kind, "skill");

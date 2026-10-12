@@ -156,9 +156,9 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     registry = agentRegistry(durable, { ...opts.host, ...(opts.attached.placed ? { switchTool: false } : {}), environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) });
     harness = await Harness.open(remoteStorage(opts.client), { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
     // The notice is committed before anything the run resumes commits (environment.ts).
-    if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model, { registry }), opts.move.facts, opts.move.info, ctx);
+    if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode }), opts.move.facts, opts.move.info, ctx);
     await harness.resume();
-    root = await harness.root(ctx, { agent: rootAgent(opts.attached.model, { registry }) });
+    root = await harness.root(ctx, { agent: rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode }) });
   } catch (error) {
     await live?.stop();
     throw error;
@@ -215,6 +215,8 @@ export async function startLocal(opts: {
    * phone) resumes a turn a reload cut short only when the model is there; resumed at open, that turn ran with no provider and vanished.
    */
   deferResume?: boolean;
+  /** Code mode (default): the agent is not offered the preset tools (resize, scale, set_legs, morph). */
+  robotCode?: boolean;
 }): Promise<TabRuntime> {
   const env = opts.computer?.env ?? noComputer();
   const workspace = opts.computer?.workspace ?? noWorkspace();
@@ -234,7 +236,7 @@ export async function startLocal(opts: {
   const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [], ...opts.host });
   const harness = await Harness.open(opts.storage, { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   if (!opts.deferResume) await harness.resume();
-  const root = await harness.root(ctx, { agent: rootAgent(opts.model, { registry }) });
+  const root = await harness.root(ctx, { agent: rootAgent(opts.model, { registry, robotCode: opts.robotCode }) });
   return {
     harness,
     root,

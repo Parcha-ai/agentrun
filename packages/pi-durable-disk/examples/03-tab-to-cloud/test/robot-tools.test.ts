@@ -10,7 +10,8 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { agentRegistry, cloudAgent, rootAgent } from "../agent.ts";
 import { GO_ONLINE_TOOL } from "../offline-tools.ts";
-import { ROBOT_FILE, ROBOT_TOOLS } from "../robot-tools.ts";
+import { ROBOT_FILE, ROBOT_TOOLS, loadCodeBody } from "../robot-tools.ts";
+import { withHomeFallback } from "../tab/home-env.ts";
 import { createHash } from "node:crypto";
 import { ROBOT_TEMPLATES } from "../robot-templates.ts";
 import { buildRobot, ensureCodeRobot, provisionRobotFiles } from "../build-robot.ts";
@@ -18,10 +19,11 @@ import { spawnSync } from "node:child_process";
 import { BODY_CHANGED, LOOKS_ONLY, parseRobot, type RobotState } from "../robot-model.ts";
 import { scriptedCloud, type ScriptedTurn, type SeenRequest } from "../tab/scripted-cloud.ts";
 
-async function rig(script: ScriptedTurn[], before?: (dir: string) => void) {
+async function rig(script: ScriptedTurn[], before?: (dir: string) => void, wrap?: (env: NodeExecutionEnv) => NodeExecutionEnv) {
   const dir = mkdtempSync(join(tmpdir(), "robot-tools-"));
   before?.(dir);
-  const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+  const plain = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+  const env = wrap ? wrap(plain) : plain;
   const durable: string[] = [];
   const registry = agentRegistry(async () => void durable.push("flush"), { switchTool: false });
   const models = createModels();
@@ -290,4 +292,85 @@ test("a session in code mode starts with a robot that is code: the default is wr
     assert.deepEqual(await ensureCodeRobot(env as never, ctx as never), []);
     assert.equal(readFileSync(join(dir, "robot/body.mjs"), "utf8"), "// mine\n");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("loadCodeBody gives a state line what it needs of a code body: its name, its tags, the legs, and each piece's tags and colour in the file's order", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "load-body-"));
+  try {
+    const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+    assert.equal(await loadCodeBody(env as never, ctx as never), undefined, "no body file: not a code body");
+    mkdirSync(join(dir, "robot"), { recursive: true });
+    writeFileSync(join(dir, "robot/body.json"), JSON.stringify({ name: "dino", tag_list: ["torso", "head", "legs"], legs: 4, tags: { torso_geom: ["torso"], head_geom: ["head"], head_g1_geom: ["head", "eyes"] }, colors: { torso_geom: "green", head_geom: "green", head_g1_geom: "white" } }));
+    const b = await loadCodeBody(env as never, ctx as never);
+    assert.deepEqual([b!.name, b!.tags, b!.legs], ["dino", ["torso", "head", "legs"], 4]);
+    assert.deepEqual(Object.keys(b!.pieceTags!), ["torso_geom", "head_geom", "head_g1_geom"], "in the file's order");
+    assert.deepEqual(b!.pieceTags!.head_g1_geom, ["head", "eyes"]);
+    assert.equal(b!.pieceColors!.head_g1_geom, "white");
+    writeFileSync(join(dir, "robot/body.json"), JSON.stringify({ name: "x", tag_list: ["torso"] }));
+    const bare = await loadCodeBody(env as never, ctx as never);
+    assert.equal(bare!.pieceTags, undefined, "an older body.json without the piece tables still loads");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+/** A code body with skills at home: robot/body.xml and body.json, home/skills.json, and one policy file per skill that names the body it was taught for. */
+function withSkills(skills: Record<string, string | null>, bodyXml = "<mujoco model='dino'/>") {
+  return (dir: string) => {
+    withBody(dir);
+    writeFileSync(join(dir, "robot/body.xml"), bodyXml);
+    mkdirSync(join(dir, "home/skills"), { recursive: true });
+    const sha = createHash("sha256").update(bodyXml).digest("hex");
+    writeFileSync(join(dir, "home/skills.json"), JSON.stringify({ version: 1, default: Object.keys(skills)[0], skills: Object.fromEntries(Object.keys(skills).map((n) => [n, { policy: `skills/${n}.json`, command: 0.5, label: n }])) }));
+    for (const [n, body] of Object.entries(skills)) writeFileSync(join(dir, `home/skills/${n}.json`), JSON.stringify({ mjcf_sha256: body ?? sha }));
+  };
+}
+
+test("do on a robot built from code: a skill taught for this body says the brain fits, one taught for another body says it will stumble, and a skill the cluster named freely is a skill", async () => {
+  const r = await rig([
+    { call: { name: "do", arguments: { skill: "walk" } } },
+    { call: { name: "do", arguments: { skill: "trot" } } },
+    { call: { name: "do", arguments: { skill: "crouch" } } },
+    { text: "Done." },
+  ], withSkills({ walk: null, trot: "a".repeat(64), crouch: null }));
+  await r.ask("make it walk, then trot, then crouch");
+  const [walk, trot, crouch] = await r.results();
+  assert.equal(walk!.error, false);
+  assert.equal(walk!.text, "The robot is now doing walk. The body is unchanged: the walking brain still fits.", "taught for this very body");
+  assert.equal(trot!.error, false, "a free name: the schema no longer limits skills to the first eight");
+  assert.match(trot!.text, /^The robot is now doing trot\. The body has been changed since it was drawn: a skill taught for another body makes the robot stumble until it is retrained\.$/, "taught for a different body: it says so, it does not promise it fits");
+  assert.match(crouch!.text, /^The robot is now doing crouch\. The body is unchanged/);
+  assert.equal(r.state().skill, "crouch");
+  await r.close();
+});
+
+test("on a run that has come home to the tab, home/ is not in the computer's workspace: the tools read it through to the run's disk, so do finds the skill the page is playing", async () => {
+  const disk = new Map<string, string>();
+  const bodyXml = "<mujoco model='dino'/>";
+  disk.set("home/skills.json", JSON.stringify({ version: 1, default: "walk", skills: { walk: { policy: "skills/walk.json", command: 0.5, label: "walk" } } }));
+  disk.set("home/skills/walk.json", JSON.stringify({ mjcf_sha256: createHash("sha256").update(bodyXml).digest("hex") }));
+  const read = async (path: string) => (disk.has(path) ? new TextEncoder().encode(disk.get(path)!) : null);
+  const only = (dir: string) => { withBody(dir); writeFileSync(join(dir, "robot/body.xml"), bodyXml); }; // the computer has the robot's files and none of home/
+  const without = await rig([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }], only);
+  await without.ask("make it walk");
+  assert.equal((await without.results())[0]!.text, "Not done: no skill has come home yet: the robot can only do what its brain was taught.", "the refusal the live run showed");
+  await without.close();
+  const through = await rig([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }], only, (env) => withHomeFallback(env, read));
+  await through.ask("make it walk");
+  const [res] = await through.results();
+  assert.equal(res!.error, false);
+  assert.equal(res!.text, "The robot is now doing walk. The body is unchanged: the walking brain still fits.");
+  await through.close();
+});
+
+test("withHomeFallback reads only home/ through, only when the computer has no such file, and leaves everything else the computer's", async () => {
+  const calls: string[] = [];
+  const env = { async readTextFile(path: string) { calls.push(path); return path === "robot/here.txt" || path === "home/own.json" ? { ok: true as const, value: `own ${path}` } : { ok: false as const, error: { code: "not_found", message: "no" } }; }, marker: 7, hello() { return "hi"; } };
+  const wrapped = withHomeFallback(env as never as { readTextFile(p: string, c: never): Promise<{ ok: true; value: string } | { ok: false; error: { code: string; message: string } }> } & typeof env, async (p) => (p === "home/disk.json" ? new TextEncoder().encode("from disk") : null));
+  assert.deepEqual(await wrapped.readTextFile("home/disk.json", undefined as never), { ok: true, value: "from disk" });
+  assert.deepEqual(await wrapped.readTextFile("home/own.json", undefined as never), { ok: true, value: "own home/own.json" }, "the computer's own file wins");
+  assert.equal((await wrapped.readTextFile("robot/body.json", undefined as never)).ok, false, "outside home/ nothing falls through");
+  assert.equal((await wrapped.readTextFile("home/missing.json", undefined as never)).ok, false, "missing on both: the computer's own refusal");
+  assert.equal(wrapped.marker, 7);
+  assert.equal(wrapped.hello(), "hi");
+  assert.ok("marker" in wrapped);
+  void calls;
 });

@@ -57,9 +57,15 @@ export async function loadCodeBody(env: Env, context: Ctx): Promise<CodeBody | u
   const have = await env.readTextFile(BODY_FILE, context);
   if (!have.ok) return undefined;
   try {
-    const b = JSON.parse(have.value) as { name?: unknown; tag_list?: unknown; legs?: unknown };
+    const b = JSON.parse(have.value) as { name?: unknown; tag_list?: unknown; legs?: unknown; tags?: unknown; colors?: unknown };
     if (typeof b.name !== "string" || !Array.isArray(b.tag_list)) return undefined;
-    return { name: b.name, tags: b.tag_list.filter((t): t is string => typeof t === "string"), legs: typeof b.legs === "number" ? b.legs : 0 };
+    const record = (v: unknown): Record<string, unknown> | undefined => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+    const tags = record(b.tags), colors = record(b.colors);
+    return {
+      name: b.name, tags: b.tag_list.filter((t): t is string => typeof t === "string"), legs: typeof b.legs === "number" ? b.legs : 0,
+      ...(tags ? { pieceTags: Object.fromEntries(Object.entries(tags).filter(([, v]) => Array.isArray(v)).map(([k, v]) => [k, (v as unknown[]).filter((t): t is string => typeof t === "string")])) } : {}),
+      ...(colors ? { pieceColors: Object.fromEntries(Object.entries(colors).filter(([, v]) => typeof v === "string") as [string, string][]) } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -81,14 +87,28 @@ export async function currentRobot(env: Env, context: Ctx): Promise<RobotState |
   return load(env, context);
 }
 
+/** Whether a skill was taught for the body now in robot/body.xml: its policy file's mjcf_sha256 against the xml's sha256 (the page's own test, Policy.load). Undefined when either file cannot be read. */
+async function fitsBody(env: Env, context: Ctx, policy: string | undefined, skill: string): Promise<Record<string, boolean> | undefined> {
+  const xml = await env.readTextFile(BODY_XML, context);
+  const file = await env.readTextFile(`home/${policy ?? `skills/${skill}.json`}`, context);
+  if (!xml.ok || !file.ok) return undefined;
+  try {
+    const taught = (JSON.parse(file.value) as { mjcf_sha256?: unknown }).mjcf_sha256;
+    const sha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(xml.value)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return { [skill]: typeof taught === "string" && taught === sha };
+  } catch {
+    return undefined;
+  }
+}
+
 /** The skills this robot has: from home/skills.json, else walk when a single policy came home, else none. */
-export async function loadSkills(env: Env, context: Ctx): Promise<Record<string, { label?: string; command?: number }>> {
+export async function loadSkills(env: Env, context: Ctx): Promise<Record<string, { label?: string; command?: number; policy?: string }>> {
   const have = await env.readTextFile(SKILLS_FILE, context);
   if (have.ok) {
     try {
-      const m = JSON.parse(have.value) as { skills?: Record<string, { label?: unknown; command?: unknown }> };
-      const out: Record<string, { label?: string; command?: number }> = {};
-      for (const [name, v] of Object.entries(m.skills ?? {})) if ((SKILL_NAMES as readonly string[]).includes(name)) out[name] = { ...(typeof v?.label === "string" ? { label: v.label } : {}), ...(typeof v?.command === "number" ? { command: v.command } : {}) };
+      const m = JSON.parse(have.value) as { skills?: Record<string, { label?: unknown; command?: unknown; policy?: unknown }> };
+      const out: Record<string, { label?: string; command?: number; policy?: string }> = {};
+      for (const [name, v] of Object.entries(m.skills ?? {})) if (/^[\w-]{1,40}$/.test(name)) out[name] = { ...(typeof v?.label === "string" ? { label: v.label } : {}), ...(typeof v?.command === "number" ? { command: v.command } : {}), ...(typeof v?.policy === "string" ? { policy: v.policy } : {}) };
       return out;
     } catch {
       return {};
@@ -133,7 +153,8 @@ async function editNow(api: ToolApi, context: Ctx, tool: string, args: Record<st
   if (body) await hideShapeTools(api, context);
   const apply = async (state: RobotState) => {
     const skills = tool === "do" || (tool === "update_robot" && args.skill !== undefined) ? await loadSkills(env!, context) : {};
-    return tool === "update_robot" ? applyUpdateRobot(state, args, { skills, ...(body ? { body } : {}) }) : applyRobotTool(state, tool, args, { skills, ...(body ? { body } : {}) });
+    const skillFits = body && skills && typeof args.skill === "string" && skills[args.skill] ? await fitsBody(env!, context, skills[args.skill]!.policy, args.skill) : undefined;
+    return tool === "update_robot" ? applyUpdateRobot(state, args, { skills, ...(skillFits ? { skillFits } : {}), ...(body ? { body } : {}) }) : applyRobotTool(state, tool, args, { skills, ...(skillFits ? { skillFits } : {}), ...(body ? { body } : {}) });
   };
   const loaded = await load(env, context);
   if ("problem" in loaded) return text(`Not done: ${loaded.problem}.`, true);
@@ -212,7 +233,7 @@ export function robotTools(): Extension {
       defineTool({
         name: "do",
         description: "Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.",
-        parameters: Type.Object({ skill: oneOf(SKILL_NAMES, "Which skill.") }),
+        parameters: Type.Object({ skill: Type.String({ pattern: "^[\\w-]{1,40}$", description: "Which skill: the name of one it has learned (the ones in home/skills.json; the usual ones are walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up)." }) }),
         execute: (args, api, context) => edit(api, context, "do", args),
       }),
       defineTool({
@@ -238,7 +259,7 @@ export function robotTools(): Extension {
           part: Type.Optional(oneOf(LOOK_PARTS, "The part to paint, by its tag; the whole robot when absent.")),
           face: Type.Optional(oneOf(FACE_NAMES, "The face; none removes it.")),
           name: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX, description: `The new name, 1 to ${NAME_MAX} characters.` })),
-          skill: Type.Optional(oneOf(SKILL_NAMES, "A skill the robot has learned, done last.")),
+          skill: Type.Optional(Type.String({ pattern: "^[\\w-]{1,40}$", description: "A skill the robot has learned, done last." })),
         }),
         execute: (args, api, context) => edit(api, context, "update_robot", args as Record<string, unknown>),
       }),

@@ -43,7 +43,15 @@ export const TAG_VOCABULARY = ["torso", "head", "neck", "tail", "legs", "front_l
 /** The parts the look tools accept: every tag, and the whole robot. A body says which of them it has. */
 export const LOOK_PARTS = ["all", ...TAG_VOCABULARY] as const;
 /** The robot is a body the agent wrote as code (robot/body.json): its name, the tags it has, how many legs. */
-export interface CodeBody { name: string; tags: readonly string[]; legs: number }
+export interface CodeBody {
+  name: string;
+  /** The tags the body has (body.json tag_list). */
+  tags: readonly string[];
+  legs: number;
+  /** Each piece's tags and colour name, in the order the file lists them (body.json tags and colors): what a state line reads a tag's own colour from. */
+  pieceTags?: Readonly<Record<string, readonly string[]>>;
+  pieceColors?: Readonly<Record<string, string>>;
+}
 export const CODE_BODY_REFUSAL = "Not done: this robot is built from code (robot/body.mjs), so its size, legs and shape change by editing that file, not with this tool.";
 const words = (tag: string) => (tag === "all" ? "whole robot" : tag.replace(/_/g, " "));
 const PLURAL = new Set(["legs", "front_legs", "back_legs", "eyes", "plates", "horns", "spikes", "arms", "wings"]);
@@ -59,6 +67,8 @@ export const SKILL_NAMES = ["walk", "sprint", "backwards", "turn-left", "turn-ri
 export const SKILL_CHANGED = "The body is unchanged: the walking brain still fits.";
 /** After the body was edited, this tool cannot know which body a skill was taught for: it says what is true, not that the brain fits. */
 export const SKILL_ON_CHANGED_BODY = "The body has been changed since it was drawn: a skill taught for another body makes the robot stumble until it is retrained.";
+/** What a skill's result says about whether the brain fits: on a code body, whether the skill's policy was taught for the body in robot/body.xml; on a preset body, whether the body is still the one drawn. */
+const skillTailFor = (state: RobotState, context: RobotContext): string => (context.body ? (state.skill && context.skillFits?.[state.skill] === true ? SKILL_CHANGED : SKILL_ON_CHANGED_BODY) : skillTail(state));
 const skillTail = (state: RobotState): string => (bodyKey(state.design) === bodyKey(state.original) ? SKILL_CHANGED : SKILL_ON_CHANGED_BODY);
 
 export interface Look {
@@ -90,7 +100,7 @@ export interface RobotState {
 
 export type ToolKind = "looks" | "body" | "skill" | "none" | "refused";
 /** What the tools need to know about the run beyond the state: the skills that came home, with their labels. */
-export interface RobotContext { skills?: Readonly<Record<string, { label?: string; command?: number }>>; /** Present when the robot is a body written as code. */ body?: CodeBody }
+export interface RobotContext { skills?: Readonly<Record<string, { label?: string; command?: number }>>; /** On a code body: whether each skill was taught for the body now in robot/body.xml (its policy's mjcf_sha256 against the xml's). */ skillFits?: Readonly<Record<string, boolean>>; /** Present when the robot is a body written as code. */ body?: CodeBody }
 export interface ToolOutcome { state: RobotState; text: string; kind: ToolKind }
 
 export const LOOKS_ONLY = "Looks only: the walking brain still fits.";
@@ -299,13 +309,13 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
     case "do": {
       const skill = args.skill;
       const have = Object.keys(context.skills ?? {});
-      if (typeof skill !== "string" || !SKILL_NAMES.includes(skill as never)) return refuse(prev, `skill must be one of ${SKILL_NAMES.join(", ")}.`);
+      if (typeof skill !== "string" || !/^[\w-]{1,40}$/.test(skill)) return refuse(prev, "skill must be the name of a skill the robot has learned (letters, digits, - and _).");
       if (have.length === 0) return refuse(prev, "no skill has come home yet: the robot can only do what its brain was taught.");
       if (!have.includes(skill)) return refuse(prev, `the robot has not learned ${skill}; it can do ${have.join(", ")}.`);
       // no "already doing" shortcut: the page may have stopped running this skill (a trained policy arrived), and only a written file makes it pick the skill again; asking for the skill it is running is a no-op there
       state.skill = skill;
       const label = context.skills?.[skill]?.label;
-      return done("skill", `The robot is now doing ${skill}${label && label !== skill ? ` (${label})` : ""}. ${skillTail(state)}`);
+      return done("skill", `The robot is now doing ${skill}${label && label !== skill ? ` (${label})` : ""}. ${skillTailFor(state, context)}`);
     }
     case "reset": {
       if (context.body) {
@@ -384,7 +394,7 @@ export function applyUpdateRobot(prev: RobotState, args: Record<string, unknown>
   }
   if (applied === 0 && refused > 0) return { state: prev, text: lines.join(" "), kind: "refused" };
   if (applied === 0) return { state: prev, text: lines.join(" "), kind: "none" };
-  const tail = kind === "body" ? BODY_CHANGED : kind === "skill" ? skillTail(state) : LOOKS_ONLY;
+  const tail = kind === "body" ? BODY_CHANGED : kind === "skill" ? skillTailFor(state, context) : LOOKS_ONLY;
   // the edit count is what the page shows the name by: a reset starts it again, and the steps after the reset count as they would one by one (reset 0, then 1 for each)
   const reset = steps.some(([t]) => t === "reset");
   return { state: { ...state, edits: reset ? state.edits : prev.edits + 1 }, text: `${lines.join(" ")} ${tail}`, kind };
