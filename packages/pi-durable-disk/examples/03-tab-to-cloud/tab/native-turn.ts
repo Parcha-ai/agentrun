@@ -61,7 +61,8 @@ export function signatureEnums(system: string): Record<string, Record<string, st
 /**
  * The tools a request is locked to (D1's rule for v5 and V5T, robot_eval's build_gbnf over v6_lock.py's tools): each parameter cut to the values the prompt's
  * signature line offers (v5's names four parts, V5T's sixteen tags), then, on a body written as code, set_color's and set_shape's part cut to that body's tags
- * (and all, for set_color), and do's skill to the skills that came home (do dropped when none has). The registry's own schemas stay wider, so every host agrees
+ * (and all, for set_color), and do's skill to the skills that came home. A tool left with an empty choice is dropped (do when none of the skills home is one the
+ * prompt names, set_shape when none of a code body's tags is). The registry's own schemas stay wider, so every host agrees
  * on them; this is the model's view, and the grammar built from it is the lock.
  */
 export function robotLock(tools: readonly ToolChatTool[], o: { system: string; home: readonly string[]; tags?: readonly string[] }): ToolChatTool[] {
@@ -70,8 +71,11 @@ export function robotLock(tools: readonly ToolChatTool[], o: { system: string; h
     let t = tool;
     for (const [property, values] of Object.entries(offered[t.function.name] ?? {})) t = narrowEnum([t], property, values)[0]!;
     if (o.tags && (t.function.name === "set_color" || t.function.name === "set_shape")) t = narrowEnum([t], "part", [...o.tags, "all"])[0]!;
-    if (t.function.name === "do") return o.home.length > 0 ? narrowEnum([t], "skill", o.home) : [];
-    return [t];
+    if (t.function.name === "do") t = narrowEnum([t], "skill", o.home)[0]!;
+    // a tool with nothing left to choose is not offered: do when no skill the prompt names came home (none, or only custom-named ones), set_shape on a code
+    // body whose tags the prompt does not name; an empty choice is a grammar nothing satisfies
+    const props = (t.function.parameters as { properties?: Record<string, { enum?: unknown[] }> } | undefined)?.properties ?? {};
+    return Object.values(props).some((p) => Array.isArray(p.enum) && p.enum.length === 0) ? [] : [t];
   });
 }
 

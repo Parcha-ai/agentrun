@@ -674,6 +674,13 @@ test("the lock for a request is D1's, byte for byte: v5's prompt, V5T's prompt, 
   const code = JSON.parse(readFileSync(fixture("robot-v5t-lock-code.json"), "utf8")) as { tags: string[]; home: string[]; grammar: string };
   assert.equal(lockGrammar(robotLock(shown(v5t), { system: v5t, home: code.home, tags: code.tags })), code.grammar, "V5T on a code body: its tags (and all for colours), the skills home");
   assert.doesNotMatch(lockGrammar(robotLock(shown(v5t), { system: v5t, home: [] })), /function=do>/, "no skill home: no do");
+  const custom = robotLock(shown(v5t), { system: v5t, home: ["wag-tail"], tags: ["torso", "fin"] }); // a thread taught a skill of its own name; a body with a tag of its own
+  assert.ok(!custom.some((t) => t.function.name === "do"), "only a custom-named skill home: no do (the prompt names none of it), not an empty choice");
+  assert.ok(!custom.some((t) => t.function.name === "set_shape") || /set-shape-part ::= "torso"/.test(lockGrammar(custom)), "set_shape keeps the tag the prompt names");
+  const fins = robotLock(shown(v5t), { system: v5t, home: all, tags: ["fin"] });
+  assert.ok(!fins.some((t) => t.function.name === "set_shape"), "a body whose tags the prompt names none of: no set_shape");
+  assert.match(lockGrammar(fins), /set-color-part ::= "all"/, "set_color keeps all");
+  assert.doesNotMatch(lockGrammar(custom) + lockGrammar(fins), /::=\s*(\n|$)/, "no rule with nothing to choose");
 });
 
 test("V5T: the warm-up's prefix is its 16-tag system turn with no tools block, the one its shipped state was made from (595 tokens, batch 128)", async () => {
