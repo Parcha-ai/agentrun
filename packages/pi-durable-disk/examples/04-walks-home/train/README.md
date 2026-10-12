@@ -15,6 +15,11 @@ One universe = one PPO run on one GPU against one reward hypothesis. The body is
 | `default/` | The tab's default 3-DOF creature and its trained getup network, for a run with no creature of its own |
 | `modal_image.py`, `modal_run.py` | The Modal GPU image and a dev runner (sandbox, logs, files home, kill and resume) |
 | `jax_compat.py` | Brax 0.14.2 on JAX 0.11 |
+| `train_skill.py` | One robot skill for one body (`train-skill`): warm-started, each checkpoint scored by the skill's own test |
+| `skill_eval.py` | The skill tests in C MuJoCo, the tab's arithmetic: speed, turn rate, paw up, get-up time |
+| `assemble_skills.py` | The done skills, each with the get-up network, as `home/skills/<name>.json` and `home/skills.json` |
+| `warm_box.py` | Warms one GPU box for its skill before the start signal (`warm-box`) |
+| `universes/skills/` | One file per skill: its reward weights and env overrides (sprint, backwards, turns, spin, wave) |
 
 ```sh
 python train.py --mjcf creature.xml --body body.json --universe u1.json --work WORK --minutes 8
@@ -40,3 +45,26 @@ so the stages are visible: it stands, shuffles, takes its first steps, walks), a
 in one file at come-home. The exact lines (and the matching `--compile-only` warm-up) are `TAKE_WALK`/`TAKE_GETUP` in
 `modal_image.py`; the first schedule point, `--num-envs`, the universe and `--world` shape the compiled program, so a
 warm-up must pass the same ones.
+
+## Robot skills (the cluster beat)
+
+Eight threads, each on its own GPU, teach one robot one skill each: walk, sprint, backwards, turn-left, turn-right, spin,
+wave, getup. Every thread runs the same program:
+
+```sh
+warm-box walk                                             # before the start signal
+train-skill walk --body robot.json --out work/skills/walk # streams checkpoints, stops after 2 passing in a row
+assemble-skills work/skills --home home                   # after the threads: the files the page loads
+```
+
+`train-skill` builds the body with the tab's own `buildMjcf`, so each policy's `mjcf_sha256` matches the page, and
+warm-starts from the image's checkpoint for the body's joint count. Each checkpoint gets a line in
+`skill-progress.jsonl`: the skill's test result and one `metric` (name, value, unit, target) for the stage's tile.
+Running the same command again keeps a skill that's done for the same body and retrains one done for another body.
+Exit 0 means the skill passed, 3 means it never did and 2 means the body is invalid.
+
+A compile cache serves only the GPU hosts it was built on. jax keys its cache on the GPU's XLA topology fingerprint,
+which changes with the driver, and the driver keeps its own JIT cache (`~/.nv`). `warm-box SKILL` compiles the
+skill for the default body into the cache `train-skill` reads. If the image's cache misses on this host, it also
+compiles every preset body. It prints the driver, the fingerprint and whether the host hit, so the first checkpoint
+arrives in the same time on any host.

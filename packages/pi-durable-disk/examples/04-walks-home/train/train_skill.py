@@ -14,7 +14,7 @@ on --stop-after-passing checkpoints in a row (0: train to --steps). Exit 0 when 
 """
 from __future__ import annotations
 
-import argparse, json, os, shutil, subprocess, sys, threading, time
+import argparse, hashlib, json, os, shutil, subprocess, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -33,6 +33,14 @@ SKILLS = {
 }
 TAKE = ["--num-envs", "512", "--schedule", "0.5M,1M,2M,3M,4M,5M,6M,7M,8M,10M", "--checkpoint-every", "2M"]
 MJCF_BUILDER = "/opt/pda/mjcf/build.ts"
+# The one number a stage tile shows per checkpoint: (field of the skill test, name, unit, pass target as the stage words it).
+METRIC = {
+    "walk": ("along_mps", "speed", "m/s", ">= 0.4"), "sprint": ("along_mps", "speed", "m/s", ">= 0.8"),
+    "backwards": ("along_mps", "speed backwards", "m/s", "<= -0.25"), "turn-left": ("yaw_rate", "turn rate", "rad/s", ">= 0.6"),
+    "turn-right": ("yaw_rate", "turn rate", "rad/s", "<= -0.6"), "spin": ("yaw_rate", "spin rate", "rad/s", ">= 1.0"),
+    "wave": ("paw_up_share", "paw up", "share of time", ">= 0.6"), "rear-up": ("pitch_up_share", "reared up", "share of time", ">= 0.6"),
+    "getup": ("getup_worst_s", "slowest get-up", "s", "from left, right and back"),
+}
 
 
 def write_json(path: str, obj) -> None:
@@ -40,6 +48,34 @@ def write_json(path: str, obj) -> None:
   with open(tmp, "w") as f:
     json.dump(obj, f)
   os.replace(tmp, path)
+
+
+def canonical(skill: str) -> str:
+  """Canonical skill names use hyphens (the page refuses others); get-up is spelled getup here."""
+  return skill.replace("_", "-").replace("get-up", "getup")
+
+
+def compile_cache(skill: str) -> str:
+  """Where a skill's compile cache lives on this machine unless --compile-cache says otherwise (outside OUT)."""
+  return os.path.join(os.path.expanduser("~"), ".cache", "pda-skill", f"{canonical(skill)}.tar.gz")
+
+
+def reuse_or_clear(out: str, sha: str):
+  """Rerun (the thread tool reruns the same command after a host restart, and again after a body change): a skill already
+  done FOR THIS BODY is returned and not trained again; anything else (unfinished, or done for another body) is cleared,
+  so the run starts over from the warm start with no old checkpoint mixed in."""
+  done_path = os.path.join(out, "skill.json")
+  if not os.path.exists(done_path):
+    return None
+  prev = json.load(open(done_path))
+  if prev.get("status") == "done" and prev.get("mjcf_sha256") == sha:
+    return prev
+  for name in ("checkpoints", "work"):
+    shutil.rmtree(os.path.join(out, name), ignore_errors=True)
+  for name in ("skill-progress.jsonl", "policy.json"):
+    if os.path.exists(os.path.join(out, name)):
+      os.remove(os.path.join(out, name))
+  return None
 
 
 def main() -> int:
@@ -53,47 +89,37 @@ def main() -> int:
   ap.add_argument("--compile-cache", default=None, help="default: ~/.cache/pda-skill/<skill>.tar.gz (outside OUT)")
   ap.add_argument("--compile-only", action="store_true", help="compile this skill's program for this body and stop (a warm-up)")
   a = ap.parse_args()
-  a.skill = a.skill.replace("_", "-").replace("get-up", "getup")  # canonical names: hyphens (the page refuses others)
+  a.skill = canonical(a.skill)
   if a.skill not in SKILLS:
     ap.error(f"unknown skill {a.skill}; known: {', '.join(sorted(SKILLS))}")
   out = os.path.abspath(a.out)
-  # Rerun after a host restart (the thread tool reruns the same command): a skill already done is not trained again; an
-  # unfinished one starts over from the warm start (the take's schedule keeps no resumable optimizer state, and a warm
-  # start reaches the skill again in about 20-90 s), with its old checkpoints cleared so none of them is mixed in.
-  done_path = os.path.join(out, "skill.json")
-  if not a.compile_only and os.path.exists(done_path):
-    prev = json.load(open(done_path))
-    if prev.get("status") == "done":
-      print(json.dumps({"event": "skill.done", "already": True, **prev}), flush=True)
-      return 0
-    for name in ("checkpoints", "work"):
-      shutil.rmtree(os.path.join(out, name), ignore_errors=True)
-    for name in ("skill-progress.jsonl", "policy.json"):
-      if os.path.exists(os.path.join(out, name)):
-        os.remove(os.path.join(out, name))
-  os.makedirs(os.path.join(out, "checkpoints"), exist_ok=True)
   t0 = time.time()
   universe, command, label = SKILLS[a.skill]
 
-  # The body: the tab's own MJCF for the robot's design.
+  # The body: the tab's own MJCF for the robot's design (a directory with creature.xml and body.json is used as it is).
   body_dir = os.path.join(out, "body")
   if os.path.isdir(a.body):
     body_dir = a.body
-    sha = None
   else:
     r = subprocess.run(["node", MJCF_BUILDER, a.body, body_dir], capture_output=True, text=True)
     if r.returncode:
       print(r.stderr.strip() or r.stdout.strip(), flush=True)
       return 2
-    sha = json.loads(r.stdout.strip().splitlines()[-1])["mjcf_sha256"]
   xml = open(os.path.join(body_dir, "creature.xml")).read()
   body = json.load(open(os.path.join(body_dir, "body.json")))
+  sha = hashlib.sha256(xml.encode()).hexdigest()
+
+  prev = None if a.compile_only else reuse_or_clear(out, sha)
+  if prev:
+    print(json.dumps({"event": "skill.done", "already": True, **prev}), flush=True)
+    return 0
+  os.makedirs(os.path.join(out, "checkpoints"), exist_ok=True)
   meta = dict(skill=a.skill.replace("getup", "get-up"), label=label, command=command, mjcf_sha256=sha, joints=len(body["jointNames"]), status="training",
               init_from=a.init_from, started_at=t0, host=os.uname().nodename)
   write_json(os.path.join(out, "skill.json"), meta)
   print(json.dumps({"event": "skill.start", **meta}), flush=True)
 
-  cache = a.compile_cache or os.path.join(os.path.expanduser("~"), ".cache", "pda-skill", f"{a.skill}.tar.gz")
+  cache = a.compile_cache or compile_cache(a.skill)
   os.makedirs(os.path.dirname(cache), exist_ok=True)
   cmd = [sys.executable, os.path.join(HERE, "train.py"), "--mjcf", os.path.join(body_dir, "creature.xml"),
          "--body", os.path.join(body_dir, "body.json"), "--universe", os.path.join(HERE, universe), "--work", os.path.join(out, "work"),
@@ -127,7 +153,12 @@ def main() -> int:
     else:
       res = skill_eval.run(xml, body, pol, command)
       ok = skill_eval.passes(a.skill, res)
-    rec = dict(checkpoint=n, steps=ev["steps"], t=round(time.time() - t0, 1), passes=ok, **res)
+    if a.skill == "getup":
+      times = list(res["getup_s"].values())
+      res["getup_worst_s"] = None if None in times else max(times)
+    field, mname, unit, target = METRIC[a.skill]
+    rec = dict(checkpoint=n, steps=ev["steps"], t=round(time.time() - t0, 1), passes=ok,
+               metric=dict(name=mname, value=res.get(field), unit=unit, target=target), **res)
     prog.write(json.dumps(rec) + "\n"); prog.flush()
     print(json.dumps({"event": "skill.checkpoint", "skill": a.skill, **rec}), flush=True)
     streak = streak + 1 if ok else 0
