@@ -153,6 +153,49 @@ test("a name that claims one kind over the bytes of another is an unsupported mi
   assert.ok(named.ok && named.signature === "89 50 4e 47 0d 0a 1a 0a", "the signature is the first eight bytes in hex");
 });
 
+test("a name taken from a link keeps its extension: a query or a fragment after it is cut off, in every container kind", () => {
+  const zip = zipSync({ "word/document.xml": strToU8("<w/>") });
+  const ole2 = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]);
+  const office = ["docx", "pptx", "odt", "odp"];
+  const sheet = ["xlsx", "xlsm", "ods"];
+  const tails = ["?sig=abc123&exp=99", "?file=a.pdf", "#tab", "#page=2", "?x=1#y", "?", "#"];
+  for (const [kinds, expected] of [[office, "office"], [sheet, "sheet"]]) {
+    for (const extension of kinds) for (const tail of tails) {
+      for (const dir of ["", "reports/", "week#1/", "who?/"]) {
+        const name = `${dir}report.${extension}${tail}`;
+        const sniffed = sniffKind(zip, name);
+        assert.ok(sniffed.ok, `${name}: ${JSON.stringify(sniffed)}`);
+        assert.deepEqual([sniffed.kind, sniffed.format], [expected, "zip"], name);
+      }
+    }
+  }
+  assert.equal(kindOf(ole2, "legacy.doc?sig=a"), "office");
+  assert.equal(kindOf(ole2, "legacy.xls#tab"), "sheet");
+  assert.equal(kindOf(ole2, "LEGACY.XLS?Sig=A"), "sheet", "and the extension's case does not matter");
+});
+
+test("a name whose only dot is inside its query or fragment has no extension", () => {
+  const zip = zipSync({ "a.txt": strToU8("x") });
+  for (const name of ["download?file=a.docx", "download#a.xlsx", "get?name=report.pptx&x=1", "dir.docx/download?file=a.docx", "dir.xlsx/file#a.ods", "?a.docx", "#a.docx"]) {
+    const sniffed = sniffKind(zip, name);
+    assert.ok(sniffed.ok, name);
+    assert.deepEqual([sniffed.kind, sniffed.format], ["unknown", "zip"], `${name} is a zip and nothing more`);
+  }
+  assert.equal(kindOf(text("plain notes\n"), "notes?file=a.png"), "text", "text is not a PNG because a query says so");
+  assert.equal(kindOf(text("plain notes\n"), "notes#a.pdf"), "text");
+});
+
+test("a mismatch under a name from a link names the file without its query, which can carry a signature", () => {
+  const png = built.png;
+  const sniffed = sniffKind(png, "reports/chart.pdf?sig=SECRETSIGNATURE&exp=99#frag");
+  assert.equal(sniffed.ok, false);
+  assert.equal(sniffed.code, "unsupported");
+  assert.ok(sniffed.reason.startsWith("chart.pdf has a .pdf extension but its bytes are a PNG image"), sniffed.reason);
+  assert.ok(!/SECRETSIGNATURE|exp=99|frag/.test(sniffed.reason), sniffed.reason);
+  assert.equal(sniffKind(png, "chart.pdf").reason, "chart.pdf has a .pdf extension but its bytes are a PNG image (first bytes 89 50 4e 47 0d 0a 1a 0a)", "and a plain name reads as it always did");
+  assert.equal(sniffKind(zipSync({ "a.txt": strToU8("x") }), "report.docx").kind, "office", "plain names are unchanged");
+});
+
 test("an extension that names a property of Object is not a kind", () => {
   assert.equal(sniffKind(text("hello"), "x.constructor").ok, true);
   assert.equal(sniffKind(text("hello"), "x.__proto__").ok, true);

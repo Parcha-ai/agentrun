@@ -174,14 +174,16 @@ export type Sniffed =
   | { readonly ok: false; readonly code: "unsupported"; readonly reason: string };
 
 /** The kind of a file from the first `SNIFF_BYTES` of it and its name. The bytes decide; the name decides only what a
- *  container (zip, OLE2) holds. A name that claims one kind over bytes of another is a miss naming both. A recording is
- *  a handle, not bytes: the host's source table decides that, never this function. */
+ *  container (zip, OLE2) holds, by its last segment cut at the first `?` or `#`, as a name taken from a link carries a
+ *  query or a fragment after its extension. A name that claims one kind over bytes of another is a miss naming both. A
+ *  recording is a handle, not bytes: the host's source table decides that, never this function. */
 export function sniffKind(head: Uint8Array, name: string): Sniffed {
   const format = identify(head);
   const [label, own, mimeType] = FORMATS[format];
-  const extension = /\.([^./\\]+)$/.exec(name)?.[1]?.toLowerCase();
+  const base = name.split(/[\\/]/).pop()!.split(/[?#]/)[0]!;
+  const extension = /\.([^.]+)$/.exec(base)?.[1]?.toLowerCase();
   const named = extension === undefined ? undefined : EXTENSION_KINDS.get(extension);
   const kind = (format === "zip" || format === "ole2") && (named === "office" || named === "sheet") ? named : own;
-  if (named && named !== kind) return { ok: false, code: "unsupported", reason: `${name.split(/[\\/]/).pop()} has a .${extension} extension but its bytes are ${label} (first bytes ${hex(head)})` };
+  if (named && named !== kind) return { ok: false, code: "unsupported", reason: `${base} has a .${extension} extension but its bytes are ${label} (first bytes ${hex(head)})` };
   return { ok: true, kind, format, mimeType, signature: hex(head) };
 }
