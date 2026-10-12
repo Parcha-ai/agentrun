@@ -921,6 +921,7 @@ function phoneReport(kind: string, data: Record<string, unknown>): void {
 function phoneSay(phase: string, line?: string): void {
   state.phone ??= { phase: "", ready: false, marks: {}, log: [] };
   state.phone.phase = phase;
+  if (phase && !state.phone.ready) ($("input") as HTMLTextAreaElement).placeholder = `${phase}…`; // with no header, what the brain is doing shows where you will type
   if (line) state.phone.log.push(`${(performance.now() / 1000).toFixed(1)} s ${line}`);
   render();
 }
@@ -950,6 +951,7 @@ async function startPhone(): Promise<void> {
     state.progress = "";
     phoneSay("the session is open; the robot's brain is loading", `session opened in ${Math.round(performance.now() - t)} ms: store ${storeMs}, files ${filesMs}, harness ${state.phone!.marks.harnessMs} (${restored.files} files restored)`);
     await followConversation(runtime, runtime.root);
+    $("chat").scrollTop = $("chat").scrollHeight; // a reload opens on the newest lines
     await startPhoneBrain(runtime);
   } catch (error) {
     state.mode = "lost";
@@ -1699,7 +1701,27 @@ async function boot(): Promise<void> {
 // The phone starts the robot pane once its brain is ready (startPhoneBrain): loading the model and the pane's physics and 3D together is what a phone's memory
 // and main thread cannot afford. ?pane=0 (a measurement): no pane at all.
 if (robotMode) startRobotPane();
-if (phoneMode) document.body.classList.add("phone");
+if (phoneMode) {
+  document.body.classList.add("phone");
+  if (new URLSearchParams(location.search).get("debug") === "1") document.body.classList.add("debug");
+  // The page is the visual viewport: its height (the keyboard takes the rest) and where it is (iOS pans it when the keyboard opens), so the composer sits
+  // right above the keyboard and the conversation scrolls under it.
+  const vv = window.visualViewport;
+  const fit = () => {
+    const h = Math.round(vv?.height ?? innerHeight);
+    document.documentElement.style.setProperty("--vvh", `${h}px`);
+    document.body.style.top = `${Math.round(vv?.offsetTop ?? 0)}px`;
+    document.body.classList.toggle("typing", h < innerHeight * 0.8 || document.activeElement === $("input"));
+    const chat = $("chat");
+    if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120) chat.scrollTop = chat.scrollHeight; // a reader at the end stays at the end
+  };
+  vv?.addEventListener("resize", fit);
+  vv?.addEventListener("scroll", fit);
+  addEventListener("resize", fit);
+  $("input").addEventListener("focus", () => requestAnimationFrame(() => { fit(); $("chat").scrollTop = $("chat").scrollHeight; })); // typing: the newest lines in view
+  $("input").addEventListener("blur", () => requestAnimationFrame(fit));
+  fit();
+}
 void (phoneMode ? startPhone() : boot());
 
 // For the recording script: what the page shows, in one object.
