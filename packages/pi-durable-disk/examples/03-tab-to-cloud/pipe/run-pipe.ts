@@ -116,6 +116,8 @@ type Writer = {
   uploading: number;
   /** Set until its restore ended: no write-through into work/ meanwhile, so what it is sent is what the disk holds. */
   restoring: boolean;
+  /** The page said its runtime is up (writer-ready): a line sent to it now can run. */
+  pageReady: boolean;
 };
 
 /**
@@ -290,10 +292,16 @@ export class RunPipe {
     return this.#writer?.dead ? undefined : this.#writer?.tab;
   }
 
-  /** A writer is attached, alive, and has finished restoring: a line sent to it now reaches a page that can run it. */
+  /** A writer is attached, alive, restored, and its page says its runtime is up: a line sent to it now reaches a page that can run it. */
   get writerReady(): boolean {
     const writer = this.#writer;
-    return writer !== undefined && !writer.dead && !writer.attaching && !writer.restoring;
+    return writer !== undefined && !writer.dead && !writer.attaching && !writer.restoring && writer.pageReady;
+  }
+
+  /** The writer's page says its runtime is up. */
+  pageReady(socket: PipeSocket): void {
+    const writer = this.#writer;
+    if (writer && writer.socket === socket && !writer.dead) writer.pageReady = true;
   }
 
   get epoch(): number {
@@ -335,7 +343,7 @@ export class RunPipe {
       await this.#store!.storage.close(ctx);
       store = this.#store = await this.#openStore(join(this.lease.claim.store, "run.sqlite"));
     }
-    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true, uploading: 0, restoring: true };
+    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true, uploading: 0, restoring: true, pageReady: false };
     this.#writer = writer;
     this.#goneFired = false;
     let manifest: Awaited<ReturnType<RunPipe["manifest"]>>;
@@ -1314,7 +1322,7 @@ export class RunPipe {
       if ((await storeHead(this.#store)) !== browserHead) throw new Error("the store put in place is not at the head that was checked");
       // 3. the files, through the same steps as a write-through, under a writer of this check-in's own (there is no socket)
       const stub: PipeSocket = { id: "checkin", send: () => undefined, close: () => undefined, isOpen: () => true };
-      const writer: Writer = { socket: stub, epoch: -1, tab: o.tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store: this.#store, storage: this.lease.observe(this.#store.storage), attachedAt: Date.now(), attaching: false, uploading: 0, restoring: false };
+      const writer: Writer = { socket: stub, epoch: -1, tab: o.tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store: this.#store, storage: this.lease.observe(this.#store.storage), attachedAt: Date.now(), attaching: false, uploading: 0, restoring: false, pageReady: true };
       this.#writer = writer;
       try {
         for (const change of o.changes) await this.#apply(writer, change);

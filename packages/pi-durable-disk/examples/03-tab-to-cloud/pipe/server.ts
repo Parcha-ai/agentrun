@@ -159,6 +159,11 @@ export interface DemoServerOptions {
    * moves the run to the cloud. A writer that returns inside it keeps the run in the browser, and the lines typed meanwhile go to it. Default 15 s; 0 moves at once.
    */
   readonly writerReturnMs?: number;
+  /** A page that asked to run the run during the grace (its hello) is booting its computer: the grace extends to that moment plus this, but never past `writerReturnMaxMs`. Defaults 60 s and 90 s. */
+  readonly writerBootMs?: number;
+  readonly writerReturnMaxMs?: number;
+  /** A test seam: how often the grace looks for a returned writer. Default 50 ms. */
+  readonly writerReturnPollMs?: number;
   /** How long the server waits for the agent's closing turn at home (default 60 s) before it replays the requests queued during the move home anyway. */
   readonly homeTurnMs?: number;
   /** Reads an object of the disk (its S3 API): work/ of a run no pipe holds, and run.json when a run is adopted. */
@@ -234,7 +239,7 @@ interface RunState {
   /** The agent's closing turn at home, while the server waits for it to end (the writer's run_end) before it replays the requests queued during the move home. */
   homeTurn: HomeWait | undefined;
   /** The wait for the writer to come back after its socket closed: the lines that arrive meanwhile queue behind it. Cancelled when the server closes. */
-  writerGrace: { cancelled: boolean } | undefined;
+  writerGrace: { cancelled: boolean; comingAt: number | undefined } | undefined;
   /** When the agent was last given a message and has not yet ended its turn (the host's run_end): a placement move would release the pipe under a step that is starting, so a message that needs a move waits for it. */
   turnSince: number | undefined;
   /** Messages whose placement is in progress (asked of the placer, or waiting their turn behind another): the end of a turn must not send the agent home under them. */
@@ -503,40 +508,66 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     } catch (error) {
       log("release.failed", { run: state.ref.id, error: (error as Error).message });
       setPlacement(state, { where: "parked", detail: `release failed: ${(error as Error).message}` });
+      refusePending(state, `the run could not be released from the tab that went away: ${(error as Error).message}`);
       return;
     }
     log("released", { run: state.ref.id, ms: Date.now() - started });
     void dropRemote(state);
-    if (!target) setPlacement(state, { where: "parked", detail: "the tab is gone" });
-    else {
-      await startCloud(state, target, move, "the tab is gone", started);
+    if (!target) {
+      setPlacement(state, { where: "parked", detail: "the tab is gone" });
+      refusePending(state, "the tab that ran this went away and there is no cloud host to move the run to; open the run's link again");
+    } else if (await startCloud(state, target, move, "the tab is gone", started)) {
       // The lines that arrived during the grace go to the host the run has now.
       await flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+    } else refusePending(state, "the tab that ran this went away and the cloud host could not be started; open the run's link again");
+  }
+
+  /** The lines that waited for a host that is not coming are answered, not left waiting: the sender is told. */
+  function refusePending(state: RunState, message: string): void {
+    const waiting = state.pendingSubmits.filter((p) => p.queuedBy);
+    state.pendingSubmits = state.pendingSubmits.filter((p) => !p.queuedBy);
+    for (const p of waiting) {
+      try {
+        p.queuedBy!.send({ t: "submit-refused", requestId: p.requestId, message });
+      } catch {
+        // The sender's socket is gone: nothing to tell.
+      }
     }
+    if (waiting.length > 0) log("placement.refused-pending", { run: state.ref.id, lines: waiting.length });
   }
 
   /**
-   * Wait up to `writerReturnMs` for the run's pipe to have a writer again. True when the run stays where it is (a writer came back, or
-   * something else took over the run meanwhile); false when the grace ran out and the tab is gone. The outcome is logged.
+   * Wait for the run's pipe to have a writer again (a page refresh). True when the run stays where it is (a writer whose page is up came back, or
+   * something else took over the run); false when the grace ran out and the tab is gone. The grace is `writerReturnMs`, longer (up to
+   * `writerReturnMaxMs`) once a page that can run the run has asked, since that page is booting. The outcome is logged.
    */
   async function writerReturns(state: RunState, pipe: RunPipe): Promise<boolean> {
     const bound = options.writerReturnMs ?? 15_000;
     if (bound <= 0) return false;
+    const poll = options.writerReturnPollMs ?? 50;
     const started = Date.now();
-    const wait = { cancelled: false };
+    const wait: { cancelled: boolean; comingAt: number | undefined } = { cancelled: false, comingAt: undefined };
     state.writerGrace = wait;
+    const horizon = (): number => (wait.comingAt === undefined ? bound : Math.min(options.writerReturnMaxMs ?? 90_000, Math.max(bound, wait.comingAt - started + (options.writerBootMs ?? 60_000))));
     let outcome: "returned" | "expired" | "superseded" | "closed" = "expired";
-    while (Date.now() - started < bound) {
+    for (;;) {
+      // Looked at after every sleep, the last one included: a close or a move in it is not an expiry.
       if (wait.cancelled) outcome = "closed";
       else if (state.pipe !== pipe || state.switching || state.checkingOut) outcome = "superseded";
       else if (pipe.writerReady) outcome = "returned";
-      if (outcome !== "expired") break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (outcome !== "expired" || Date.now() - started >= horizon()) break;
+      await new Promise((resolve) => setTimeout(resolve, poll));
     }
     if (state.writerGrace === wait) state.writerGrace = undefined;
-    log("placement.writer-grace", { run: state.ref.id, outcome, ms: Date.now() - started });
+    log("placement.writer-grace", { run: state.ref.id, outcome, ms: Date.now() - started, ...(wait.comingAt === undefined ? {} : { pageAskedAfterMs: wait.comingAt - started }) });
+    const replay = () => flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
     // The lines typed meanwhile are placed now, with the run still in the browser.
-    if (outcome === "returned") await flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+    if (outcome === "returned") await replay();
+    // Another move took the run: what waited for the tab goes to wherever it lands, once that move is over (a host that does not report its notice has no later moment).
+    else if (outcome === "superseded") void (async () => {
+      for (const end = Date.now() + 120_000; (state.switching || state.checkingOut) && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, poll));
+      if (!state.switching && !state.checkingOut) await replay();
+    })();
     return outcome !== "expired";
   }
 
@@ -1036,7 +1067,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function addViewer(state: RunState, socket: PipeSocket): Promise<void> {
     if (state.pipe) state.pipe.addViewer(socket);
     else state.viewers.add(socket);
-    socket.send(await viewingFrame(state));
+    const viewing = await viewingFrame(state);
+    // A page that can run the run asks during the grace (it was refreshed): it is told the run waits for it, so it attaches as the writer by itself, and the grace waits for it to boot.
+    const client = state.clients.get(socket);
+    if (state.writerGrace && client?.canRun && client.mode !== "view" && viewing.t === "viewing") {
+      state.writerGrace.comingAt ??= Date.now();
+      log("placement.writer-coming", { run: state.ref.id });
+      socket.send({ ...viewing, placement: { where: "parked", detail: "your browser is coming back" } });
+    } else socket.send(viewing);
     if (state.placement.where === "cloud") await attachCloudViewer(state, socket);
   }
 
@@ -1080,6 +1118,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       case "upload":
         // In order with the write-through that names it: each chunk is written before the next frame is handled.
         await pipe?.upload(socket, frame.id, frame.offset, frame.data);
+        return;
+      case "writer-ready":
+        pipe?.pageReady(socket);
         return;
       case "restored":
         pipe?.restored(socket, frame);
