@@ -9,6 +9,7 @@
 //   DEMO_SWITCH_ID, DEMO_SWITCH_FROM, DEMO_SWITCH_PLANNED (DEMO_SWITCH_BY=agent, DEMO_SWITCH_REASON: the agent chose it): the move that brought the run here; its notice is admitted
 //                   before the run resumes (environment.ts), described by this host's probe (host-probe.ts)
 //   DEMO_DISPLAY    the X display of a desktop this host runs (":1"): the agent gets the computer tool for it (computer-tool.ts)
+//   DEMO_APP_EXTRA  a module of the bundle that adds to the app (app-extra.ts): tools, a default tool selection, an environment wrapper
 //   DEMO_EVENTS_LOG optional: a file this instance appends one JSON line to when it opens and after each commit it made
 //                   (its generation, the commit's sequence, the time), the evidence that no write of it lands after a
 //                   takeover
@@ -20,8 +21,10 @@ import { admitNotice } from "./environment.ts";
 import { xdotoolDriver } from "./computer-driver.ts";
 import { probeHost } from "./host-probe.ts";
 import { startCloudLink, type CloudLink } from "./cloud-link.ts";
+import type { AppExtra, AppExtraModule } from "./app-extra.ts";
+import { pathToFileURL } from "node:url";
 
-export default async function app(_where: AppContext): Promise<AppOptions> {
+export default async function app(where: AppContext): Promise<AppOptions> {
   const modelId = process.env.DEMO_MODEL;
   if (!modelId) throw new Error("DEMO_MODEL names the model");
   let baseUrl = process.env.DEMO_MODEL_URL;
@@ -32,15 +35,24 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
     baseUrl = link.baseUrl;
   }
   if (!baseUrl) throw new Error("DEMO_MODEL_URL (or DEMO_LINK_PORT and DEMO_LINK_TOKEN_FILE) names how this host reaches a model");
+  let extra: AppExtra = {};
+  if (process.env.DEMO_APP_EXTRA) {
+    const mod = (await import(pathToFileURL(process.env.DEMO_APP_EXTRA).href)) as { default?: AppExtraModule };
+    if (typeof mod.default !== "function") throw new Error(`DEMO_APP_EXTRA ${process.env.DEMO_APP_EXTRA} has no default function`);
+    extra = await mod.default({ link, work: where.work, log: (event, data = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`) });
+  }
   let run: DurableRun | undefined;
   const durable = async () => {
     if (!run) throw new Error("the run is not open");
     await run.claim.barrier();
   };
+  const registry = agentRegistry(durable, { ...(link ? { switchChannel: link.switchChannel } : {}), ...(process.env.DEMO_DISPLAY ? { computer: xdotoolDriver() } : {}) });
+  extra.install?.(registry);
   return {
-    registry: agentRegistry(durable, { ...(link ? { switchChannel: link.switchChannel } : {}), ...(process.env.DEMO_DISPLAY ? { computer: xdotoolDriver() } : {}) }),
+    registry,
+    ...(extra.wrapEnv ? { wrapEnv: extra.wrapEnv } : {}),
     models: agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) }),
-    settings: SETTINGS,
+    settings: { ...SETTINGS, ...(extra.settings ?? {}) },
     root: { agent: rootAgent(modelId) },
     async beforeResume({ harness }) {
       const id = process.env.DEMO_SWITCH_ID;
