@@ -112,6 +112,14 @@ test("at home the tab's own walk is told in the one fixed window only: a measure
 test("a creature put back on its feet by a checkpoint, a getup and a recovery are said plainly, with no number to tag", () => {
   const stood = notesFromTabEvent({ ...base, type: "stood-up", reason: "checkpoint" }, 1, { plain: true });
   assert.deepEqual(stood.map((n) => [n.text, n.basis ?? null]), [["A new version of its brain arrived while it was lying down, and it stood back up.", null]]);
+  // only a policy that arrived is "a new brain": a skill that was chosen, or the page setting it up after a fall, says what happened and not that
+  const final = notesFromTabEvent({ ...base, type: "stood-up", reason: "final" }, 1, { plain: true });
+  assert.match(final[0]!.text, /new version of its brain arrived/, "the final policy is an arrival");
+  const bySkill = notesFromTabEvent({ ...base, type: "stood-up", reason: "skill", skill: "spin" }, 1, { plain: true });
+  assert.equal(bySkill[0]!.text, "It was lying down when it was asked to spin, so it was stood up first.");
+  const byFall = notesFromTabEvent({ ...base, type: "stood-up", reason: "fallen" }, 1, { plain: true });
+  assert.equal(byFall[0]!.text, "It fell and could not get up on its own, so it was set back on its feet.");
+  assert.ok([...bySkill, ...byFall].every((n) => !/brain|version/.test(n.text)), "neither says a new brain arrived");
   const down = notesFromTabEvent({ ...base, type: "mode-changed", mode: "getup", t: 3.2, up: 0.12 }, 1, { plain: true, afterKick: true });
   const up = notesFromTabEvent({ ...base, type: "mode-changed", mode: "walk", t: 4.5, up: 0.95 }, 1, { plain: true, afterKick: true });
   assert.equal(down[0]!.text, "Knocked over. It learned to get back up.");
