@@ -1,1 +1,1 @@
-{"skill": "sprint", "status": "done", "command": 1.2, "label": "sprint", "mjcf_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+{"skill": "sprint", "status": "done", "command": 1.2, "label": "sprint", "mjcf_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "body_name": "fixture", "passed_at": {"checkpoint": 1, "steps": 983040, "t": 30.0, "passes": true}, "wall_s": 37.0, "cpu_estimate_s": 2200, "cpu_estimate": {"cores": "8 Xeon Gold 6312U", "steps_per_s": 520}}

@@ -110,6 +110,21 @@ function contentSummary(content: string): string {
   return clip(content.split("\n")[0]!.trim() || "written", WHAT_MAX);
 }
 
+/** The robot's own tools (03-tab-to-cloud/robot-tools.ts): the demo changes the robot with these, not by writing files. */
+const ROBOT_TOOLS = new Set(["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "do", "update_robot"]);
+
+/** The tail sentences a robot tool result ends with (what the change means for the walking brain), and the sentences that say nothing happened: neither is the change. */
+const NOT_THE_CHANGE = /^(Not done|No change|Looks only|This changes the body|The body is unchanged|The body has been changed since)\b/;
+
+/**
+ * What a finished robot tool call did, in the result's own sentences (the tool says what actually happened: a part it refused, a size the limits cut short, a call that changed nothing): the
+ * sentences of the result that are not a refusal, a no-op or the note about the walking brain. Null when none is left (nothing changed) or the call gave no result.
+ */
+function robotToolWhat(t: ToolRow): string | null {
+  const sentences = t.output.trim().split(/(?<=[.!?])\s+/).filter((x) => x !== "" && !NOT_THE_CHANGE.test(x));
+  return sentences.length > 0 ? clip(sentences.join(" "), WHAT_MAX) : null;
+}
+
 /**
  * What the finished write and edit calls changed, read from the calls' own arguments: an edit is "old -> new" (or each of its edits), a write of a JSON object lists its top-level values, any
  * other write its first line. A running or failed call changed nothing yet; reads, shell commands and the like are not file changes here (the tool strip shows them).
@@ -117,7 +132,13 @@ function contentSummary(content: string): string {
 export function fileChanges(tools: readonly ToolRow[]): FileChange[] {
   const out: FileChange[] = [];
   for (const t of tools) {
-    if (t.status !== "done" || (t.name !== "write" && t.name !== "edit")) continue;
+    if (t.status !== "done") continue;
+    if (ROBOT_TOOLS.has(t.name)) {
+      const what = robotToolWhat(t);
+      if (what !== null) out.push({ path: "robot", what });
+      continue;
+    }
+    if (t.name !== "write" && t.name !== "edit") continue;
     let a: Record<string, unknown>;
     try {
       const parsed = JSON.parse(t.args) as unknown;

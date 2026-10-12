@@ -129,3 +129,34 @@ test("the change card says who changed it and whether the tab was offline, then 
   assert.doesNotMatch(changeCardHtml([{ path: "a", what: "<img src=x onerror=1>" }], null, null), /<img/);
   assert.equal((changeCardHtml(Array.from({ length: 9 }, (_, i) => ({ path: `f${i}`, what: "w" })), null, null).match(/<li/g) ?? []).length, 5, "the newest five");
 });
+
+// ---- The robot's own tools (03-tab-to-cloud/robot-tools.ts): the demo changes the robot with set_color, set_shape, set_face, rename, resize, scale, set_legs, morph, reset, do and update_robot, not by
+// writing files. The card says what the tool's RESULT says happened (its own sentences), not what was asked: a refused part, a size the limits cut short, or a call that changed nothing is not a change.
+test("robot tool calls are changes in the tool's own words from its result; refusals, no-ops and the tail sentences about the walking brain are left out", () => {
+  const call = (name: string, output: string, over: Partial<ToolRow> = {}) => row(name, {}, { output, ...over });
+  const what = (r: ToolRow) => fileChanges([r]);
+  const LOOKS = "Looks only: the walking brain still fits.";
+  const BODY = "This changes the body: the walking brain no longer fits, so the robot will stumble until it is retrained.";
+  assert.deepEqual(what(call("set_color", `The torso is now green. ${LOOKS}`)), [{ path: "robot", what: "The torso is now green." }]);
+  assert.deepEqual(what(call("set_face", `The face is now happy. ${LOOKS}`)), [{ path: "robot", what: "The face is now happy." }]);
+  assert.deepEqual(what(call("rename", `The robot is now called Mossy. ${LOOKS}`)), [{ path: "robot", what: "The robot is now called Mossy." }]);
+  assert.deepEqual(what(call("set_legs", `The robot now has 6 legs. ${BODY}`)), [{ path: "robot", what: "The robot now has 6 legs." }]);
+  assert.deepEqual(what(call("morph", `The robot is now a spider. ${BODY}`)), [{ path: "robot", what: "The robot is now a spider." }]);
+  assert.deepEqual(what(call("do", "The robot is doing spin. The body is unchanged: the walking brain still fits.")), [{ path: "robot", what: "The robot is doing spin." }]);
+  // The size the limits allowed, in the tool's words, not the factor that was asked for.
+  assert.deepEqual(what(call("scale", `The robot is now 1.4x the size, as big as the limits allow (you asked for 2x). ${BODY}`)), [{ path: "robot", what: "The robot is now 1.4x the size, as big as the limits allow (you asked for 2x)." }]);
+  // Partial success: the applied part only; the refused part is not listed.
+  assert.deepEqual(what(call("update_robot", `The robot is now called Mossy. Not done: the robot has not learned wave; it can do walk. ${LOOKS}`)), [{ path: "robot", what: "The robot is now called Mossy." }]);
+  // Nothing changed: nothing to show.
+  assert.deepEqual(what(call("set_legs", "No change: the robot already has 4 legs.")), []);
+  assert.deepEqual(what(call("update_robot", "No change: the robot is already the one the user drew.")), []);
+  assert.deepEqual(what(call("set_color", "Not done: color must be one of red, green.", { status: "done" })), [], "a refusal that reads as done is still not a change");
+  assert.deepEqual(what(call("reset", `The robot is back to the robot you drew. ${LOOKS}`)), [{ path: "robot", what: "The robot is back to the robot you drew." }], "the tool's words, not a guess about which body");
+  // Running, failed and empty results say nothing.
+  assert.deepEqual(what(call("set_color", "", { status: "running" })), []);
+  assert.deepEqual(what(call("set_color", `The torso is now green. ${LOOKS}`, { status: "error" })), []);
+  assert.deepEqual(what(call("set_color", "")), [], "no result text: nothing is claimed");
+  const mixed = fileChanges([call("set_color", `The torso is now green. ${LOOKS}`), row("write", { path: "notes.txt", content: "hi" }), call("do", "The robot is doing spin.")]);
+  assert.deepEqual(mixed.map((c) => c.path), ["robot", "notes.txt", "robot"]);
+  assert.match(changeCardHtml([{ path: "robot", what: "The torso is now green." }], null, null), /The torso is now green\./);
+});
