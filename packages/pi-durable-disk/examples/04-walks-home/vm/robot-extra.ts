@@ -167,8 +167,21 @@ export async function threadStatusFromSkillFile(work: string, skill: string): Pr
 }
 
 /** Code mode (D1's plan): the parent plans the skills from the ask, one thread per skill writes and runs its own training. On when the session's host says so (DEMO_ROBOT_PLAN=1). */
-export function planOptions(work: string): PlanOptions {
-  return { threadExtensions: [codingTools()], threadInstructions: TRAIN_SOP, maxThreads: 8, threadDeadlineMs: 20 * 60_000, status: ({ skill }) => threadStatusFromSkillFile(work, skill) };
+export const DEFAULT_THREAD_DEADLINE_MS = 20 * 60_000;
+
+/** The thread deadline the host asks for (DEMO_ROBOT_THREAD_DEADLINE_S, whole seconds, 30 to 3600); anything else is the 20-minute default, and a bad value is said in the log rather than ignored silently. */
+export function threadDeadlineMs(value: string | undefined, log?: (event: string, data?: Record<string, unknown>) => void): number {
+  if (value === undefined || value === "") return DEFAULT_THREAD_DEADLINE_MS;
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 30 || seconds > 3600) {
+    log?.("robot.thread-deadline-ignored", { value, reason: "a whole number of seconds from 30 to 3600" });
+    return DEFAULT_THREAD_DEADLINE_MS;
+  }
+  return seconds * 1000;
+}
+
+export function planOptions(work: string, deadlineMs: number = DEFAULT_THREAD_DEADLINE_MS): PlanOptions {
+  return { threadExtensions: [codingTools()], threadInstructions: TRAIN_SOP, maxThreads: 8, threadDeadlineMs: deadlineMs, status: ({ skill }) => threadStatusFromSkillFile(work, skill) };
 }
 
 /** The threads' boxes as the cluster package asks for them, bound to the link. */
@@ -223,7 +236,7 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   const { teach, thread } = teachSkills({
     boxes,
     command: trainCommand(work),
-    ...(plan ? { plan: planOptions(work) } : {}),
+    ...(plan ? { plan: planOptions(work, threadDeadlineMs(process.env.DEMO_ROBOT_THREAD_DEADLINE_S, log)) } : {}),
     // Inside the teach task, after every thread has flushed: the tool's own result then says how many skills are home.
     // Only the skills of the body this round taught (an old body's get-up must not choose the body, nor old skills be installed for the new one).
     assemble: async (threads) => {

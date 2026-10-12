@@ -108,3 +108,11 @@ test("robot-prewarm=true turns on the on-box compile, and only in code mode", ()
   assert.equal("robotPrewarm" in modalOptionsFromArgs(base), false);
   assert.throws(() => modalOptionsFromArgs({ robot: "true", "robot-prewarm": "true", "cluster-size": "2", "cluster-image": "im-1" }), /robot-prewarm=true needs robot-plan=true/);
 });
+
+test("robot-thread-deadline-s sets how long a code-mode thread may work, only with code mode and only as 30 to 3600 whole seconds", () => {
+  const base = { robot: "true", "robot-plan": "true", "cluster-size": "2", "cluster-image": "im-1" };
+  assert.deepEqual(modalOptionsFromArgs({ ...base, "robot-thread-deadline-s": "300" }), { robot: true, robotPlan: true, robotThreadDeadlineS: 300, cluster: { size: 2, image: "im-1" } });
+  assert.equal("robotThreadDeadlineS" in modalOptionsFromArgs(base), false);
+  assert.throws(() => modalOptionsFromArgs({ robot: "true", "robot-thread-deadline-s": "300", "cluster-size": "2", "cluster-image": "im-1" }), /needs robot-plan=true/);
+  for (const bad of ["10", "4000", "five", "1.5"]) assert.throws(() => modalOptionsFromArgs({ ...base, "robot-thread-deadline-s": bad }), /a whole number of seconds from 30 to 3600/);
+});

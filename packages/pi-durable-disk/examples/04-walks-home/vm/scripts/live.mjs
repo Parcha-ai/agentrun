@@ -7,6 +7,7 @@
 //   --tab browser             no Chrome here: the agent's tab is the person's own browser. The run's link (a secret in its fragment) is printed once,
 //                             with the ssh line that carries both ports (the 03 server's, --server-port, and the stage's, --port). The GPU box
 //                             starts warming when that page attaches, so "LIVE: ready" comes about 4 minutes after the person opens the link.
+import { threadDeadlineArg } from "../live-args.ts";
 import { resolveModelsDir } from "../models-dir.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -62,6 +63,8 @@ if (robot && !clusterImage) throw new Error("--cluster-image names D2's skill-tr
 if (robot && !(Number.isInteger(clusterSize) && clusterSize >= 1)) throw new Error("--cluster-size is a whole number of boxes");
 // How many skills the teach step is for (the home check says "N of M came home" against it).
 const robotSkills = Number(arg("robot-skills", 8));
+// The stage cap on one thread (checked up front: a flag with no value is an error, not the 20-minute default).
+const threadDeadline = threadDeadlineArg(process.argv);
 // The page that shows the run (served by the stage), and the query the agent's page is opened with.
 const stagePath = arg("stage-path", "");
 const linkQuery = arg("link-query", "golive=1&robot=1");
@@ -183,6 +186,7 @@ try {
             "--cloud-arg", "robot=true",
             ...(process.argv.includes("--robot-plan") ? ["--cloud-arg", "robot-plan=true"] : []),
             ...(process.argv.includes("--robot-prewarm") ? ["--cloud-arg", "robot-prewarm=true"] : []),
+            ...(threadDeadline !== undefined ? ["--cloud-arg", `robot-thread-deadline-s=${threadDeadline}`] : []),
             "--cloud-arg", `cluster-size=${clusterSize}`,
             "--cloud-arg", `cluster-spares=${clusterSpares}`,
             ...(clusterIdle > 0 ? ["--cloud-arg", `cluster-idle-minutes=${clusterIdle}`] : []),
