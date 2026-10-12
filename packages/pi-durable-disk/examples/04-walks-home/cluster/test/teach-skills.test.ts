@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { FakeBoxEnv } from "../spike/fake-cluster.ts";
 import { foldText, SKILLS, skillsToTeach, type ThreadResult } from "../teach-skills.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -174,4 +175,30 @@ test("train-skill.md copies the library's worked skills from the directories the
     const name = JSON.parse(readFileSync(join(here, "..", "..", "train", "skills", dir, "skill.json"), "utf8")).name as string;
     assert.ok(sop.includes(`${name} \`${dir}/\``), `the SOP gives ${name}'s directory as ${dir}/`);
   }
+});
+
+test("on a new box a bare cp into skills/ fails as cp does, and the SOP's own copy command succeeds", async () => {
+  // The SOP's copy commands as written (with the placeholders filled), run on fresh fake boxes; nothing runs on this machine.
+  const sop = readFileSync(join(here, "..", "sop", "train-skill.md"), "utf8").replace(/\s+/g, " ");
+  const generic = [...sop.matchAll(/`(mkdir -p skills && cp -r \/opt\/pda\/train\/skills\/<its directory> skills\/<your skill>)`/g)].map((m) => m[1]!)[0];
+  const getUp = [...sop.matchAll(/`(mkdir -p skills && cp -r \/opt\/pda\/train\/skills\/getup skills\/get-up)`/g)].map((m) => m[1]!)[0];
+  assert.ok(generic && getUp, "the SOP has the generic and the get-up copy commands");
+  const run = async (command: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "teach-box-"));
+    const box = new FakeBoxEnv("sb-test", dir, 10);
+    let out = "";
+    const r = (await box.exec(command, { onOutput: (text: string) => (out += text) } as never, {} as never)) as { ok: boolean; value?: { exitCode: number } };
+    return { exitCode: r.ok ? r.value!.exitCode : -1, out, skillJson: (skill: string) => JSON.parse(readFileSync(join(dir, "workspace", "skills", skill, "skill.json"), "utf8")) as { name: string } };
+  };
+  // The fumble code4 showed: skills/ does not exist yet, cp -r makes only the last directory.
+  const bare = await run("cp -r /opt/pda/train/skills/walk skills/walk");
+  assert.equal(bare.exitCode, 1);
+  assert.match(bare.out, /cp: cannot create directory 'skills\/walk': No such file or directory/);
+  // The SOP's command makes skills/ first and copies the worked skill under the thread's skill name.
+  const walk = await run(generic.replace("<its directory>", "walk").replace("<your skill>", "walk"));
+  assert.equal(walk.exitCode, 0, walk.out);
+  assert.equal(walk.skillJson("walk").name, "walk");
+  const getup = await run(getUp);
+  assert.equal(getup.exitCode, 0, getup.out);
+  assert.equal(getup.skillJson("get-up").name, "get-up", "getup/ holds get-up's skill");
 });
