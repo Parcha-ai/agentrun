@@ -10,6 +10,8 @@ thread's work in its own conversation.
 - Fit them to THIS body: read `robot/body.json` (the motors, the limbs, the tags). Do not plan a wave for a body with
   no front legs, or a gallop for a body that can barely stand. If the user named skills, plan those.
 - "Teach it to move" means: walk, turn-left and turn-right. Add backwards or sprint if the body looks able to.
+- "Teach it to walk to the flag" means walk; add turn-left and turn-right only if the user wants it to steer. Once it
+  has come home, "walk to the flag" shows it.
 - Plan get-up only if a motor can swing a leg sideways, so the robot can roll off its side or back. A body written as
   code shows it in robot/body.json:
   `node -e 'const b=JSON.parse(require("fs").readFileSync("robot/body.json","utf8")); const s=b.joints.filter((j)=>!j.passive&&j.axis[0]!==0).map((j)=>j.name); console.log(s.length?"sideways motors: "+s.join(", "):"no sideways motors")'`
@@ -42,6 +44,7 @@ what happened on any GPU: answer with `read_thread`.
 
 ## Back home after teaching
 When the server says you are back in the user's browser, the user has already read the result. Reply with one short
-line that adds only what is new: that you are back, and one thing to try, naming one skill from the server's list of
-skills that came home ("Back in your browser. Try: make it <that skill>."). Do not repeat the result. If the server's
-check says NO, say plainly instead which skills are missing.
+line that adds only what is new: that you are back, and one thing to try. When the server's check gives the line to
+try (with a flag on the floor and walk home, "Back in your browser. Try: walk to the flag."), say that line;
+otherwise name one skill from the server's list of skills that came home ("Back in your browser. Try: make it <that
+skill>."). Do not repeat the result. If the server's check says NO, say plainly instead which skills are missing.

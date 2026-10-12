@@ -91,6 +91,24 @@ test("the state line on a body written as code is codeStateLine: its tags with t
   assert.match(read.line!, /built from code; 4 legs; colors torso green, head green, legs green, plates purple;/);
 });
 
+test("with a flag on the floor nothing plays by itself: the line says doing nothing until a skill is asked for, and a reported run toward the flag is over", async () => {
+  const scene = { "creature/scene.json": JSON.stringify({ version: 1, flag: { x: 3, y: -0.1, radius: 0.25 } }) };
+  const robot = initialRobot(drawn);
+  const doing = async (files: Record<string, string>) => /doing ([^;]+);/.exec((await robotStateLine(await robotEnv({ ...scene, ...skills(["walk", "spin"]), ...files }))).line!)![1];
+  assert.equal(await doing({ [ROBOT_FILE]: JSON.stringify(robot) }), "nothing", "home, nothing asked yet: it stands at the start");
+  const walking = { ...robot, skill: "walk", attempt: { id: "c1", skill: "walk", learned: true } };
+  assert.equal(await doing({ [ROBOT_FILE]: JSON.stringify(walking) }), "walk", "asked, not yet reported: walking");
+  const report = (id: string) => ({ "creature/attempt.json": JSON.stringify({ version: 1, id, skill: "walk", learned: true, fell: false, distance_m: 2.8, to_flag_m: 0.2, reached_flag: true, seconds: 6.2 }) });
+  assert.equal(await doing({ [ROBOT_FILE]: JSON.stringify(walking), ...report("c1") }), "nothing", "reported: it stands at the flag");
+  assert.equal(await doing({ [ROBOT_FILE]: JSON.stringify(walking), ...report("c0") }), "walk", "a report on an earlier request does not end this one");
+  assert.equal(await doing({ [ROBOT_FILE]: JSON.stringify({ ...robot, skill: "spin", attempt: walking.attempt }), ...report("c1") }), "spin", "a skill asked for after the run plays where it stands");
+  // On a body written as code, the same.
+  const body = { "robot/body.json": JSON.stringify({ name: "dino", tag_list: ["torso", "legs"], legs: 4, tags: { body: ["torso"], l1: ["legs"] }, colors: { body: "green", l1: "green" } }) };
+  assert.equal(await doing({ [ROBOT_FILE]: JSON.stringify(robot), ...body }), "nothing");
+  // Without a flag, the page plays the default as before.
+  assert.equal(/doing ([^;]+);/.exec((await robotStateLine(await robotEnv({ [ROBOT_FILE]: JSON.stringify(robot), ...skills(["walk", "spin"]) }))).line!)![1], "walk");
+});
+
 test("narrowing a free skill name or a tag list never widens: a tag the schema does not have is not added", () => {
   const locked = robotLock(shownTools(), { system: tagsServing.system, home: ["walk"], tags: ["torso", "unicorn"] });
   assert.deepEqual(enumOf(locked, "set_color", "part"), ["torso", "all"].sort((a, b) => enumOf(shownTools(), "set_color", "part")!.indexOf(a) - enumOf(shownTools(), "set_color", "part")!.indexOf(b)));

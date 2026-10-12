@@ -3,6 +3,7 @@
 // no keyword stand-in, and a server without TYPESAFE_API_KEY does not start (tests inject a fake runner into `buildPlacer`).
 import { judgePlacer, type JudgeRunner, type Placer } from "../../03-tab-to-cloud/placement.ts";
 import { Policy } from "../tab/src/policy.ts";
+import { FLAG_SKILLS, readScene } from "../../03-tab-to-cloud/flag-goal.ts";
 
 /** What each environment can do, one line each: the criteria of the choice question. Ids the server does not offer are left out. */
 export const CRITERIA: Readonly<Record<string, string>> = {
@@ -81,11 +82,19 @@ export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array
     const absent = trained.filter((n) => !distinct.includes(n));
     if (absent.length > 0) return { ok: false, reason: `${trained.length - absent.length} of the ${trained.length} skills trained this round came home (not home: ${absent.join(", ")})` };
   } else if (expected > 0 && distinct.length < expected) return { ok: false, reason: `${distinct.length} of the ${expected} skills came home` };
-  return { ok: true, reason: `${distinct.length} ${distinct.length === 1 ? "skill is" : "skills are"} home and installed: ${distinct.join(", ")}.` };
+  return { ok: true, reason: `${distinct.length} ${distinct.length === 1 ? "skill is" : "skills are"} home and installed: ${distinct.join(", ")}.${await flagTry(read, distinct)}` };
+}
+
+/** With a flag on the floor (the page's creature/scene.json) nothing plays by itself: the robot waits at the start for the ask, so the thing to try is the run to the flag. */
+async function flagTry(read: (path: string) => Promise<Uint8Array | undefined>, home: readonly string[]): Promise<string> {
+  const files = { readTextFile: async (path: string) => { const b = await read(path); return b ? { ok: true as const, value: new TextDecoder().decode(b) } : { ok: false as const, error: { code: "not_found", message: path } }; } };
+  const skill = FLAG_SKILLS.find((s) => home.includes(s));
+  if (!skill || !(await readScene(files, undefined as never))) return "";
+  return ` There is a flag on the floor and the robot waits at the start for the ask, so the line to try is: "Back in your browser. Try: ${skill} to the flag."`;
 }
 
 /** The agent's one home line for the robot episode: bounded by the server's check below it. */
-export const HOME_PROMPT_ROBOT = "You are back in your user's browser, and you already told them how the teaching went before the move: do not repeat it. Say one short line that adds only what is new: that you are back in their browser, and one thing they can try now, naming one skill from the list in the server's check below: \"Back in your browser. Try: make it <that skill>.\" If the check says NO, say instead, plainly and in simple words, that the last step did not work and which skills are missing. Do not mention files, commands or training details.";
+export const HOME_PROMPT_ROBOT = "You are back in your user's browser, and you already told them how the teaching went before the move: do not repeat it. Say one short line that adds only what is new: that you are back in their browser, and one thing they can try now. When the server's check below gives the line to try, say that line; otherwise name one skill from the list in the check: \"Back in your browser. Try: make it <that skill>.\" If the check says NO, say instead, plainly and in simple words, that the last step did not work and which skills are missing. Do not mention files, commands or training details.";
 
 /**
  * Is the work's result in place? The rules the tab's own loader decides on: its `Policy.load` (the very function the browser runs, imported
