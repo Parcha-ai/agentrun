@@ -278,4 +278,38 @@ describe("the GPU calls over the link", () => {
     await new Promise((r) => setTimeout(r, 30));
     assert.deepEqual(released, ["late"], "it goes straight back");
   });
+
+  it("input still being written when the command has ended on its own is dropped, so the caller reads the command's exit code, not an error of ours", async () => {
+    const server: GpuServer = {
+      acquire: async () => "b",
+      release: () => undefined,
+      holds: () => true,
+      // A write that fails on the box (a full disk): the command exits 1 before taking all of its input.
+      exec: async () => proc({ stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: chunks([]), stderr: chunks(["No space left on device"]), wait: async () => 1 }),
+      poll: async () => null,
+    };
+    const l = loop(server);
+    const p = await l.client.linkBox("b").exec(["sh", "-c", "cat > /full/file"], { mode: "binary" });
+    const errText = readAll(p.stderr);
+    await new Promise((r) => setTimeout(r, 30)); // the command has exited
+    await p.stdin.writeBytes(new Uint8Array(10 * 1024 * 1024)); // does not throw
+    await p.stdin.close();
+    assert.equal(await p.wait(), 1, "the command's own exit code");
+    assert.equal(await errText, "No space left on device", "and its own message");
+    // A lost link is still an error.
+    const hanging: GpuServer = {
+      acquire: async () => "b",
+      release: () => undefined,
+      holds: () => true,
+      exec: async () => proc({ stdin: { writeBytes: async () => void (await new Promise((r) => setTimeout(r, 50))), close: async () => undefined }, stdout: (async function* () { await new Promise(() => undefined); yield enc(""); })(), stderr: chunks([]), wait: () => new Promise(() => undefined) }),
+      poll: async () => null,
+    };
+    const h = loop(hanging);
+    const q = await h.client.linkBox("b").exec(["sh", "-c", "sleep 99"], { mode: "binary" });
+    const big = q.stdin.writeBytes(new Uint8Array(40 * 1024 * 1024));
+    big.catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 20));
+    h.cut();
+    await assert.rejects(big, /link/);
+  });
 });

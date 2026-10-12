@@ -175,11 +175,17 @@ export class GpuPool {
   async #verify(slot: Slot): Promise<void> {
     const alive = this.#options.alive;
     if (!alive || !slot.box || (slot.state !== "ready" && slot.state !== "busy")) return;
-    // A check that itself fails, or does not answer in time, says nothing: the box stays available (the next watch asks again).
+    // A check that itself fails, or does not answer in time, says nothing: the box stays available (the next watch asks again). An answer that comes
+    // late is not thrown away: a box found dead after the deadline is marked dead then.
     let timer: NodeJS.Timeout | undefined;
-    const ok = await Promise.race([alive(slot.box).catch(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), this.#options.aliveTimeoutMs ?? 10_000)))]);
+    const box = slot.box;
+    const asked = alive(box).catch(() => true);
+    void asked.then((late) => {
+      if (!late && (slot.state === "ready" || slot.state === "busy")) this.markDead(box.id, "its sandbox is no longer running");
+    });
+    const ok = await Promise.race([asked, new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), this.#options.aliveTimeoutMs ?? 10_000)))]);
     clearTimeout(timer);
-    if (!ok && (slot.state === "ready" || slot.state === "busy")) this.markDead(slot.box.id, "its sandbox is no longer running");
+    void ok; // a dead answer (in time or late) is acted on by the handler above
   }
 
   async #verifyAll(): Promise<void> {

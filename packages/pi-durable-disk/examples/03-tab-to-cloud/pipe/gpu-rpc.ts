@@ -212,7 +212,7 @@ export interface GpuClient {
 export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
   let next = 1;
   const calls = new Map<number, { resolve(frame: Extract<GpuFrame, { t: "gpu-ok" }>): void; reject(error: Error): void }>();
-  const procs = new Map<number, { out: Queue; err: Queue; exit: { resolve(code: number): void; reject(error: Error): void }; inflight: number; waiting: (() => void)[] }>();
+  const procs = new Map<number, { out: Queue; err: Queue; exit: { resolve(code: number): void; reject(error: Error): void }; inflight: number; waiting: (() => void)[]; ended?: "exit" | "lost" }>();
   const lost = (reason: string) => new Error(reason);
 
   const call = (build: (id: number) => GpuFrame): Promise<Extract<GpuFrame, { t: "gpu-ok" }>> =>
@@ -247,7 +247,7 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
           let exit!: { resolve(code: number): void; reject(error: Error): void };
           const done = new Promise<number>((resolve, reject) => (exit = { resolve, reject }));
           done.catch(() => undefined);
-          const entry = { out, err, exit, inflight: 0, waiting: [] as (() => void)[] };
+          const entry: { out: Queue; err: Queue; exit: { resolve(code: number): void; reject(error: Error): void }; inflight: number; waiting: (() => void)[]; ended?: "exit" | "lost" } = { out, err, exit, inflight: 0, waiting: [] };
           procs.set(id, entry);
           if (!send({ t: "gpu-exec", id, box, argv, ...(p.timeoutMs === undefined ? {} : { timeoutMs: p.timeoutMs }) })) {
             procs.delete(id);
@@ -259,11 +259,11 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
                 // In chunks, each only once the box has taken enough of the earlier ones: a large file never piles up on the link or on the server.
                 for (let at = 0; at < bytes.length; at += GPU_STDIN_CHUNK) {
                   const chunk = bytes.subarray(at, at + GPU_STDIN_CHUNK);
-                  while (entry.inflight + chunk.length > GPU_STDIN_WINDOW) {
-                    if (!procs.has(id)) throw lost("the command ended or the link went");
-                    await new Promise<void>((resolve) => entry.waiting.push(resolve));
-                  }
-                  if (!procs.has(id)) throw lost("the command ended or the link went");
+                  while (entry.inflight + chunk.length > GPU_STDIN_WINDOW && !entry.ended) await new Promise<void>((resolve) => entry.waiting.push(resolve));
+                  // The command ended on its own (a write that failed on the box, a full disk): the rest of the input is dropped like a write to a closed pipe,
+                  // so the caller reads the command's own exit code and stderr instead of an error of ours. Only a lost link is thrown.
+                  if (entry.ended === "exit") return;
+                  if (entry.ended === "lost" || !procs.has(id)) throw lost("the link to the server went");
                   entry.inflight += chunk.length;
                   if (!send({ t: "gpu-stdin", id, data: b64(chunk) })) throw lost("no link to the server");
                 }
@@ -298,12 +298,14 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
         p.out.end();
         p.err.end();
         procs.delete(frame.id);
+        p.ended = "exit";
         for (const wake of p.waiting.splice(0)) wake();
         p.exit.resolve(frame.code);
       } else if (frame.t === "gpu-err") {
         p.out.end();
         p.err.end();
         procs.delete(frame.id);
+        p.ended = "exit";
         for (const wake of p.waiting.splice(0)) wake();
         p.exit.reject(new Error(frame.message));
       }
@@ -315,6 +317,7 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
       for (const p of procs.values()) {
         p.out.end();
         p.err.end();
+        p.ended = "lost";
         for (const wake of p.waiting.splice(0)) wake();
         p.exit.reject(lost(reason));
       }

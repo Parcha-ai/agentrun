@@ -234,3 +234,29 @@ describe("the GPU pool: a liveness check that does not answer", () => {
     await pool.close();
   });
 });
+
+describe("the GPU pool: a liveness answer that comes late", () => {
+  it("a box found dead after the check's deadline is marked dead then, not forgotten", async () => {
+    let answer!: (alive: boolean) => void;
+    const logs: string[] = [];
+    const pool = new GpuPool({
+      size: 1,
+      log: (event) => void logs.push(event),
+      create: async (index) => ({ id: `sb-${index}`, name: `box-${index}`, index }),
+      remove: async () => true,
+      alive: () => new Promise<boolean>((r) => (answer = r)),
+      aliveTimeoutMs: 50,
+      watchMs: 0,
+    });
+    await pool.start();
+    await pool.acquire("a");
+    pool.release("a"); // the check starts and does not answer in 50 ms: the box stays available
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(pool.status().boxes[0]!.state, "ready");
+    answer(false); // Modal answers late: the box had ended
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(pool.status().boxes[0]!.state, "failed", "the late answer was acted on");
+    assert.ok(logs.includes("pool.box-dead"));
+    await pool.close();
+  });
+});
