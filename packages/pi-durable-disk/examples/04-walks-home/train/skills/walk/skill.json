@@ -1,0 +1,10 @@
+{
+ "name": "walk",
+ "label": "walk",
+ "command": 0.5,
+ "hypothesis": "baseline: track the speed, stay level, small regularizers",
+ "reward_scales": {},
+ "env": {
+  "pert_config.enable": true
+ }
+}

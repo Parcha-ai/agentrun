@@ -65,11 +65,15 @@ def control(net, d, stand, prev, command):
 def reset(m, d, body):
   mujoco.mj_resetData(m, d)
   k = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
-  if k >= 0:
+  nj = len(body["standPose"])
+  if "standQpos" in body:  # the settled standing pose (body.py), passive joints included
+    d.qpos[:] = body["standQpos"]
+    d.ctrl[:] = body["standPose"]
+  elif k >= 0:
     mujoco.mj_resetDataKeyframe(m, d, k)
   else:
     d.qpos[2] = body["standHeight"]
-    d.qpos[7:] = body["standPose"]
+    d.qpos[7:7 + nj] = body["standPose"]
     d.ctrl[:] = body["standPose"]
   mujoco.mj_forward(m, d)
 
