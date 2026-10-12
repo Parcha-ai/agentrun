@@ -29,7 +29,9 @@ import type { ModelOptions, ModelProxy } from "../../03-tab-to-cloud/pipe/model-
 import type { CloudHost, Invite, ServerApi } from "../../03-tab-to-cloud/pipe/server.ts";
 import type { Environment, Move } from "../../03-tab-to-cloud/wire.ts";
 import { DESKTOP_DISPLAY, DESKTOP_PORT, desktopScript, novncUrl, SCREENSHOT_COMMAND } from "./desktop.ts";
+import { GpuPool, type PoolStatus } from "./gpu-pool.ts";
 import { vmImageCommands } from "./image.ts";
+import type { GpuProcess, GpuServer } from "../../03-tab-to-cloud/pipe/gpu-rpc.ts";
 
 const BOX_ETC = "/etc/pda-demo";
 const BOX_REMOTE_LOG = "/var/tmp/pda-remote.log";
@@ -115,6 +117,23 @@ export interface ModalCloudOptions {
   readonly rewarm?: boolean;
   /** How long close() waits for boxes still being made to land and remove themselves (default 60 s). */
   readonly closeWaitMs?: number;
+  /**
+   * The robot cluster beat: N GPU boxes created in parallel as soon as this cloud exists (so they are warm when someone asks), lent one per
+   * thread to the session on the VM through its link (gpu-rpc.ts). The boxes run commands only for the thread that holds them; the VM never
+   * sees a Modal key or id it can use. Every box is removed on close (a box still being created lands, finds the pool closing, and goes).
+   */
+  readonly cluster?: {
+    readonly size: number;
+    readonly image: string;
+    readonly type?: string;
+    readonly cpu?: number;
+    readonly memoryMiB?: number;
+    readonly ttlMinutes?: number;
+    /** Run in each box as the readiness check (polled every 5 s until it exits 0). Absent: a box is ready when it answers an exec. */
+    readonly readyCommand?: string;
+    readonly readyTimeoutMs?: number;
+    readonly placementTimeoutMs?: number;
+  };
   /** Offer the VM environment (default true). Without it the only place the agent can go is the GPU box; needs `gpu`. */
   readonly offerVm?: boolean;
   /** Where each stopped host's log lines are appended (the demo's evidence file). */
@@ -153,7 +172,12 @@ interface Placed {
 }
 
 /** The demo server's CloudHost, and what only this cloud has: the run's desktop. */
-export type ModalCloud = CloudHost & { hostLabel: string; desktop(ref: RunRef): { url: string; screenshot(): Promise<Uint8Array> } | undefined };
+export type ModalCloud = CloudHost & {
+  hostLabel: string;
+  desktop(ref: RunRef): { url: string; screenshot(): Promise<Uint8Array> } | undefined;
+  /** The cluster's boxes (with `cluster`): their state now, and a promise that settles when every box has come up or failed. */
+  cluster?: { status(): PoolStatus; ready: Promise<void> };
+};
 
 export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud> {
   const base: FullSdk = options.sdk ?? (new (await import("modal")).ModalClient() as unknown as FullSdk);
@@ -196,6 +220,81 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const gpuClient: DaytonaClient | undefined = options.gpu
     ? modalSandboxes(sdk, { appName, image: options.gpu.image, runtime: "gvisor", gpu: gpuType, cpu: options.gpu.cpu ?? 4, memoryMiB: options.gpu.memoryMiB ?? 16384, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: [BOX_SERVE_PORT], ...(options.gpu.volumes ? { volumes: { ...options.gpu.volumes } } : {}) })
     : undefined;
+  // ---- the robot cluster: a pool of GPU boxes lent to the session's threads ------------------------------------------------------
+  const clusterClient: DaytonaClient | undefined = options.cluster
+    ? modalSandboxes(sdk, { appName, image: options.cluster.image, runtime: "gvisor", gpu: options.cluster.type ?? "H100", cpu: options.cluster.cpu ?? 8, memoryMiB: options.cluster.memoryMiB ?? 65536, ...(options.regions ? { regions: options.regions } : {}) })
+    : undefined;
+  const pool: GpuPool | undefined =
+    options.cluster && clusterClient
+      ? new GpuPool({
+          size: options.cluster.size,
+          log: options.log,
+          closeWaitMs: options.closeWaitMs ?? 60_000,
+          create: async (index) => {
+            const cluster = options.cluster!;
+            const t0 = Date.now();
+            const name = sandboxName(`${prefix}gpu${index}-`, "cluster", t0);
+            const body = { name, snapshot: "image", labels: { [LABEL_FLEET]: fleet, [LABEL_RUN]: "cluster" }, autoStopInterval: 0, autoDeleteInterval: 0, ttlMinutes: cluster.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES };
+            const timeoutMs = cluster.placementTimeoutMs ?? 360_000;
+            const creating = clusterClient.create(body);
+            let box: SandboxInfo;
+            let placeTimer: NodeJS.Timeout | undefined;
+            const outcome = await Promise.race([creating.then((b) => ({ b })), new Promise<{ timedOut: true }>((r) => (placeTimer = setTimeout(() => r({ timedOut: true }), timeoutMs)))]).finally(() => clearTimeout(placeTimer));
+            if ("timedOut" in outcome) {
+              // Modal may still place it: it is removed when it lands, and its own TTL bounds it if this process is gone.
+              void reclaimLate(name, creating);
+              throw new Error(`GPU box ${index} did not place in ${Math.round(timeoutMs / 1000)} s`);
+            }
+            box = outcome.b;
+            const poolBox = { id: box.id, name, index };
+            // A box whose readiness fails is removed here, so a failed box never keeps charging behind a pool that has given up on it.
+            try {
+              const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
+              const deadline = Date.now() + (cluster.readyTimeoutMs ?? 300_000);
+              for (;;) {
+                const r = await clusterClient.exec(box, cluster.readyCommand ? `bash -c ${q(cluster.readyCommand)}` : "true", 120).catch((e: Error) => ({ exitCode: 1, result: e.message }));
+                if (r.exitCode === 0) break;
+                if (Date.now() > deadline) throw new Error(`GPU box ${index} was not ready in ${Math.round((cluster.readyTimeoutMs ?? 300_000) / 1000)} s: ${r.result.trim().slice(-200)}`);
+                await new Promise((res) => setTimeout(res, 5_000));
+              }
+            } catch (error) {
+              await drop(box);
+              throw error;
+            }
+            options.log("cluster.box-up", { index, box: name, ms: Date.now() - t0 });
+            return poolBox;
+          },
+          remove: async (box) => drop({ id: box.id, name: box.name }),
+        })
+      : undefined;
+  const asIterable = (stream: unknown): AsyncIterable<Uint8Array> => {
+    const s = stream as { [Symbol.asyncIterator]?: () => AsyncIterator<Uint8Array>; readBytes?: () => Promise<Uint8Array> };
+    if (s[Symbol.asyncIterator]) return s as AsyncIterable<Uint8Array>;
+    return (async function* () {
+      const all = await s.readBytes!();
+      if (all.length > 0) yield all;
+    })();
+  };
+  /** What the session on the VM may do with the boxes: ask for one per thread, and run commands in the box it holds. */
+  const gpuServer: GpuServer | undefined = pool
+    ? {
+        acquire: async (thread) => (await pool.acquire(thread)).id,
+        release: (thread) => pool.release(thread),
+        holds: (box) => pool.status().boxes.some((b) => b.id === box && b.state === "busy"),
+        exec: async (box, argv, o) => {
+          const sb = await sdk.sandboxes.fromId(box);
+          const proc = await sb.exec(argv, { mode: "binary", ...(o.timeoutMs === undefined ? {} : { timeoutMs: o.timeoutMs }) });
+          return { stdin: proc.stdin, stdout: asIterable(proc.stdout), stderr: asIterable(proc.stderr), wait: () => proc.wait() } satisfies GpuProcess;
+        },
+        poll: async (box) => {
+          const sb = await sdk.sandboxes.fromId(box);
+          return sb.poll();
+        },
+      }
+    : undefined;
+  const clusterReady = pool ? pool.start() : undefined;
+  clusterReady?.catch(() => undefined);
+
   /** What a pipe host of each environment is made of. */
   const classOf = (envId: string) =>
     envId === gpuEnv?.id && gpuClient && options.gpu
@@ -351,7 +450,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     creating.then(landed, landed);
     let box: SandboxInfo;
     if (timeoutMs > 0) {
-      const outcome = await Promise.race([creating.then((b) => ({ b })), new Promise<{ timedOut: true }>((r) => setTimeout(() => r({ timedOut: true }), timeoutMs))]);
+      let placeTimer: NodeJS.Timeout | undefined;
+      const outcome = await Promise.race([creating.then((b) => ({ b })), new Promise<{ timedOut: true }>((r) => (placeTimer = setTimeout(() => r({ timedOut: true }), timeoutMs)))]).finally(() => clearTimeout(placeTimer));
       if ("timedOut" in outcome) {
         options.log("remote.placement-timeout", { run: ref.id, name, env: cls.env.id, timeoutMs });
         void reclaimLate(name, creating);
@@ -461,6 +561,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       // The agent in the VM asked to move (switch_environment): the server runs the handover.
       onSwitch: (to, reason) => (server ? server.requestSwitch(ref, to, reason) : Promise.reject(new Error("the server cannot move agents"))),
       onSwitched: (switchId) => server?.switched(ref, switchId),
+      ...(gpuServer ? { gpu: gpuServer } : {}),
       log: (e, d) => options.log(e, { run: ref.id, ...d }),
     });
     const previous = placed.get(ref.id);
@@ -505,6 +606,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     // The VM's instance tells the server over its link when its agent's notice is committed, so the move is timed to that moment.
     notifiesSwitched: true,
     ...(options.rewarm && options.warm ? { rewarm: true as const } : {}),
+    ...(pool && clusterReady ? { cluster: { status: () => pool.status(), ready: clusterReady } } : {}),
     environments: [...(options.offerVm === false && gpuEnv ? [] : [env]), ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
 
     bind(api) {
@@ -682,6 +784,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     /** Stop what runs and delete every sandbox this cloud made and still holds (warm ones, a crashed start's). */
     async close() {
       closing = true;
+      const poolClosing = pool?.close();
       for (const w of warmers.values()) w.close();
       warmers.clear();
       trainers.clear();
@@ -716,6 +819,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       }
       remotes.clear();
       warm.clear();
+      if (poolClosing) {
+        const { left } = await poolClosing;
+        if (left > 0) failures.push(`${left} cluster box(es) could not be removed`);
+      }
       if (failures.length > 0) options.log("close.failures", { failures, left: live.size });
     },
   };

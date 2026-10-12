@@ -38,7 +38,7 @@ class FakeSandbox {
   }
 }
 
-async function world(failTerminate: (id: string, attempt: number) => boolean, gate?: Promise<void>) {
+async function world(failTerminate: (id: string, attempt: number) => boolean, gate?: Promise<void>, extra: Record<string, unknown> = {}) {
   const boxes: FakeSandbox[] = [];
   const attempts: string[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
@@ -72,7 +72,8 @@ async function world(failTerminate: (id: string, attempt: number) => boolean, ga
     transport: "pipe",
     warm: true,
     closeWaitMs: 5_000,
-  });
+    ...extra,
+  } as Parameters<typeof modalCloud>[0]);
   const ref = (id: string) => ({ disk: "dsk-test", region: "test", id });
   const up = async (runs: string[]) => {
     for (const r of runs) cloud.prewarm!(ref(r));
@@ -157,4 +158,28 @@ test("close does not wait for a box that is past its create and still preparing:
     release();
     FakeSandbox.execGate = undefined;
   }
+});
+
+test("the cluster: its boxes come up together, are ready when the pool says so, and close removes every one", async () => {
+  const w = await world(() => false, undefined, { cluster: { size: 3, image: "im-cluster", cpu: 8, memoryMiB: 65536 } });
+  await w.cloud.cluster!.ready;
+  const status = w.cloud.cluster!.status();
+  assert.equal(status.boxes.length, 3);
+  assert.deepEqual(status.boxes.map((b) => b.state), ["ready", "ready", "ready"]);
+  assert.equal(w.boxes.length, 3);
+  await w.cloud.close!();
+  assert.deepEqual(w.boxes.map((b) => b.exit), [137, 137, 137], "no cluster box is left running");
+});
+
+test("the cluster: a close while its boxes are still being created removes them when they land", async () => {
+  let open!: () => void;
+  const gate = new Promise<void>((r) => (open = r));
+  const w = await world(() => false, gate, { cluster: { size: 2, image: "im-cluster" } });
+  const closing = w.cloud.close!();
+  await new Promise((r) => setTimeout(r, 100));
+  open();
+  await closing;
+  await w.cloud.cluster!.ready;
+  assert.equal(w.boxes.length, 2);
+  assert.deepEqual(w.boxes.map((b) => b.exit), [137, 137], "boxes that landed after close began were terminated");
 });
