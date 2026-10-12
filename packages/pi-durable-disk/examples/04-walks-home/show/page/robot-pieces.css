@@ -22,22 +22,20 @@
 #threads .tile .host { font: 600 14px var(--mono); color: var(--muted); } #threads .tile .spark { width: 100%; height: 34px; flex-shrink: 0; } #threads .tile .spark polyline { fill: none; stroke: var(--gpu); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 #threads .tile .cp { font: 600 15px var(--mono); color: var(--muted); } #threads .tile .val { font: 700 20px/1.2 var(--sans); } #threads .tile .val.none { font-size: 17px; font-weight: 500; color: var(--muted); }
 #threads .tile .pass { font: 700 13px/1.25 var(--mono); } #threads .tile .pass.yes { color: var(--ok); } #threads .tile .pass.yes::before { content: "✓ "; } #threads .tile .pass.no { color: var(--gpu); } #threads .tile .meta { margin-top: auto; font: 600 13px var(--mono); color: var(--muted); }
-#threads .robot { width: 520px; height: 346px; align-self: center; fill: none; stroke: var(--tab); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; } #threads .robot .eye { fill: var(--tab); stroke: none; }
 #threads .skills { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; } #threads .skills .skill { font: 700 22px var(--sans); padding: 8px 18px; border-radius: 999px; border: 2px solid var(--line); color: var(--muted); transition: all .35s; }
 #threads .skills .skill.in { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--ok) 45%, transparent); } #threads .skills .skill.failed { color: var(--bad); border-color: var(--bad); text-decoration: line-through; }
-#threads .th[data-phase="home"] .robot { stroke: var(--ok); }
 
-/* home: the robot walks (its legs swing in pairs), every skill lit */
-@keyframes robotstep { from { transform: rotate(-14deg); } to { transform: rotate(14deg); } }
-#threads .robot .leg { transform-box: fill-box; transform-origin: 50% 0%; }
-#threads .th[data-phase="home"] .robot .leg { animation: robotstep .7s ease-in-out infinite alternate; }
-#threads .th[data-phase="home"] .robot .l2, #threads .th[data-phase="home"] .robot .l4 { animation-direction: alternate-reverse; }
+/* landing and home: the skills lighting as they land */
 @keyframes skillpop { 0% { transform: scale(.8); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
 #threads .skills .skill.in { animation: skillpop .45s ease-out; }
-@media (prefers-reduced-motion: reduce) { #threads .robot .leg, #threads .skills .skill.in { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { #threads .skills .skill.in { animation: none !important; } }
 
 /* the stumble -> relearn card (relearn.ts): the new body, the GPUs, all passed in N s, and what one machine would take */
 .rl { padding: 12px 16px; border-radius: 14px; border: 2px solid var(--gpu); background: color-mix(in srgb, var(--gpu) 12%, transparent); }
 .rl .k { font: 700 13px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); } .rl .who { font: 800 28px/1.2 var(--sans); margin: 2px 0 4px; }
 .rl .line { font: 600 19px/1.3 var(--sans); } .rl .cpu { margin-top: 6px; font: 500 16px/1.35 var(--sans); color: var(--muted); } .rl[data-done="true"] { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
 #robotside .rl .line { padding: 0; border: 0; background: none; color: var(--ink); }
+
+/* landing and home: a strip over the top (the count and the skills), nothing over the creature */
+#threads[data-phase="landing"], #threads[data-phase="home"] { background: transparent; inset: 0 0 auto 0; bottom: auto; pointer-events: none; padding-bottom: 6px; background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 94%, transparent) 70%, transparent); }
+#threads[data-phase="landing"] .th, #threads[data-phase="home"] .th { height: auto; }

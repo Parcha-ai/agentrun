@@ -5,7 +5,9 @@
 SKILL: walk, sprint, backwards, turn-left, turn-right, spin, wave, getup (rear-up: experimental). ROBOT.json is the robot's state
 (creature/robot.json: its `design`) or a Design; the body files are built with the tab's own buildMjcf (/opt/pda/mjcf), so
 the policy's mjcf_sha256 matches the page. Into OUT, as they happen (each by rename, so a reader never sees half a file):
-  skill.json             the skill, its fixed command, the body's sha256, the status (training | done | failed)
+  skill.json             the skill, its fixed command, the body's sha256 and name, the status (training | done | failed);
+                         once done: passed_at (the first passing checkpoint), wall_s, and cpu_estimate_s, the same
+                         skill's time to its first pass on 8 CPU cores (estimated from measured throughput)
   progress.jsonl         the trainer's lines (steps, elapsed, the C-MuJoCo walk score)
   skill-progress.jsonl   per checkpoint: the skill's own test (C MuJoCo, the tab's arithmetic) and whether it passes
   checkpoints/ckpt-N.json, policy.json (the newest checkpoint; once the run stops, the newest that passed)
@@ -41,6 +43,37 @@ METRIC = {
     "wave": ("paw_up_share", "paw up", "share of time", ">= 0.6"), "rear-up": ("pitch_up_share", "reared up", "share of time", ">= 0.6"),
     "getup": ("getup_worst_s", "slowest get-up", "s", "from left, right and back"),
 }
+
+
+# What one skill costs without a GPU, for the stage's comparison: the take command (512 envs) measured on 8 CPU cores
+# (Xeon Gold 6312U, 2026-10-11): the first checkpoint (491,520 env-steps, compile included) at 1,255 s on the default
+# body and 1,282 s on long-legs, then 490-531 env-steps/s. A skill's estimate is that first checkpoint plus the steps
+# it needed to pass on the GPU at 520 env-steps/s.
+CPU_BASELINE = {"cores": "8 Xeon Gold 6312U", "first_checkpoint_s": 1255, "first_checkpoint_steps": 491520,
+                "steps_per_s": 520,
+                "measured": "the take command on 8 CPU cores: first checkpoint at 1,255 s (default body) and 1,282 s "
+                            "(long-legs), then 490-531 env-steps/s",
+                "how": "estimate: the measured first checkpoint, plus the env-steps this skill needed to pass on the GPU "
+                       "at 520 env-steps/s"}
+
+
+def cpu_estimate_s(steps: int) -> int:
+  """Seconds the same trainer would take on 8 CPU cores to reach `steps` (CPU_BASELINE)."""
+  b = CPU_BASELINE
+  return round(b["first_checkpoint_s"] + max(0, steps - b["first_checkpoint_steps"]) / b["steps_per_s"])
+
+
+def body_name(body: str) -> str | None:
+  """The body's name as the page shows it: the design's name in robot.json (its `design`) or in a Design, or in a
+  body directory's design.json."""
+  path = os.path.join(body, "design.json") if os.path.isdir(body) else body
+  try:
+    obj = json.load(open(path))
+  except (OSError, ValueError):
+    return None
+  design = obj.get("design") if isinstance(obj.get("design"), dict) else obj
+  name = design.get("name") if isinstance(design, dict) else None
+  return name if isinstance(name, str) else None
 
 
 def write_json(path: str, obj) -> None:
@@ -126,7 +159,7 @@ def main() -> int:
     return 0
   os.makedirs(os.path.join(out, "checkpoints"), exist_ok=True)
   meta = dict(skill=a.skill.replace("getup", "get-up"), label=label, command=command, mjcf_sha256=sha, joints=len(body["jointNames"]), status="training",
-              init_from=a.init_from, started_at=t0, host=os.uname().nodename)
+              init_from=a.init_from, started_at=t0, host=os.uname().nodename, body_name=body_name(a.body))
   write_json(os.path.join(out, "skill.json"), meta)
   print(json.dumps({"event": "skill.start", **meta}), flush=True)
 
@@ -184,7 +217,8 @@ def main() -> int:
   if last_pass is not None:
     settle_policy(out, last_pass)
   meta.update(status="done" if passed_at else "failed", passed_at=passed_at, policy_checkpoint=last_pass,
-              wall_s=round(time.time() - t0, 1))
+              wall_s=round(time.time() - t0, 1),
+              cpu_estimate_s=cpu_estimate_s(passed_at["steps"]) if passed_at else None, cpu_estimate=CPU_BASELINE)
   write_json(os.path.join(out, "skill.json"), meta)
   print(json.dumps({"event": "skill.done", **meta}), flush=True)
   return 0 if passed_at else 3

@@ -1,7 +1,7 @@
 // Lay a base GGUF and its LoRA adapters out on a run's disk the way the tab reads them (src/adapter-manifest.ts, gguf-base-adapters-v1):
 // home/files/<sha256>-<chunk_bytes>/chunk-0000.bin ... for every file, then home/manifest.json, written LAST (its appearance is the go signal).
 //   node scripts/make-home-disk.mjs <outdir> [--base <base.gguf> --base-model <repo>@<40-hex revision> [--base-name <name>] [--base-quant <quant>]]
-//        [--adapter <adapter.gguf> --fields <fields.json>]... [--active <a.gguf>,<b.gguf>]
+//        [--adapter <adapter.gguf> --fields <fields.json>]... [--active <a.gguf>,<b.gguf>] [--standalone]
 // fields.json is what the trainer knows about the adapter: {name: "<stem>.gguf", kind: "skill" | "obsession", topic, scale?: 1, model?: {repo, revision},
 // sampling?: {...}}. Rank, alpha and dtype are read from the adapter's own GGUF header (fields that say otherwise are refused), and so is its architecture,
 // which must be the base's. On a disk that already has a manifest, the base is kept unless --base is given, adapters keep their places (one of the same
@@ -127,6 +127,7 @@ function parseArgs(argv) {
   const o = { out, adapters: [] };
   for (let i = 0; i < rest.length; i += 2) {
     const flag = rest[i], v = rest[i + 1];
+    if (flag === '--standalone') { o.standalone = true; i--; continue; } // the base alone is the model (an off-the-shelf model, no adapter awaited)
     if (v === undefined) throw new Error(`${flag} needs a value`);
     if (flag === '--adapter') o.adapters.push({ file: v });
     else if (flag === '--fields') { if (!o.adapters.length || o.adapters.at(-1).fields) throw new Error('--fields follows its --adapter'); o.adapters.at(-1).fields = v; }
@@ -188,7 +189,7 @@ export function makeHomeDisk(argv) {
     added.push(entry.name);
   }
   const active = o.active ? o.active.split(',') : added.length ? [added.at(-1)] : old?.active;
-  const manifest = { format: 'gguf-base-adapters-v1', base, adapters, ...(active ? { active } : {}) };
+  const manifest = { format: 'gguf-base-adapters-v1', base, adapters, ...(active ? { active } : {}), ...(o.standalone || old?.standalone ? { standalone: true } : {}) }; // a standalone disk stays standalone when it is run again without the flag
   const text = JSON.stringify(manifest);
   parseBaseAdapters(text); // the tab's own rules: what it would refuse is not written
   const named = (m) => new Set([m.base, ...m.adapters].map((f) => fileDir(f.sha256, f.chunk_bytes)));

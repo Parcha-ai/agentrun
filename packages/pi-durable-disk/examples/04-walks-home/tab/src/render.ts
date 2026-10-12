@@ -58,6 +58,22 @@ function groundTexture(anisotropy: number): THREE.CanvasTexture {
   return t;
 }
 
+/** A quiet ground for the hero look: a dark floor with a very faint half-metre grid (so a robot that walks visibly crosses something) that the scene's fog takes to the page's own background. */
+function heroGroundTexture(anisotropy: number): THREE.CanvasTexture {
+  const n = 256, c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#1a1a1f'; g.fillRect(0, 0, n, n);
+  g.fillStyle = '#212127';
+  g.fillRect(0, 0, 2, n); g.fillRect(0, 0, n, 2);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(800, 800); // 400 m of floor in half-metre cells
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = anisotropy;
+  return t;
+}
+
 export class View {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -75,6 +91,14 @@ export class View {
   private readonly canvas: HTMLCanvasElement;
   private readonly ray = new THREE.Raycaster();
   private sun!: THREE.DirectionalLight;
+  private hemi!: THREE.HemisphereLight;
+  private floor!: THREE.Mesh;
+  private hero = false;
+  /** A soft contact shadow under the robot (hero look): the directional shadow alone is faint on a dark floor. */
+  private blob: THREE.Mesh | null = null;
+  /** The robot's size as a radius in metres, and the camera's direction from it: what the framing keeps the whole robot inside the pane with. */
+  private frameRadius = 0.6;
+  private framedAspect = 0;
   private bodyMeshes: THREE.Mesh[] = [];
   private parts: Part[] = [];
   private look: ViewLook = DEFAULT_LOOK;
@@ -94,7 +118,8 @@ export class View {
     this.camera.position.set(1.1, -1.3, 0.8);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.target.set(0, 0, 0.2);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a80, 1.6));
+    this.hemi = new THREE.HemisphereLight(0xffffff, 0x8a8a80, 1.6);
+    this.scene.add(this.hemi);
     const sun = new THREE.DirectionalLight(0xffffff, 2.2);
     sun.position.set(2, -1, 4);
     sun.castShadow = true;
@@ -111,6 +136,7 @@ export class View {
     // grazing angle of the camera and cannot z-fight with the floor.
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), this.material({ color: 0xffffff, roughness: 1, map: groundTexture(this.renderer.capabilities.getMaxAnisotropy()) }));
     floor.receiveShadow = true;
+    this.floor = floor;
     this.scene.add(floor);
     const mark = new THREE.MeshBasicMaterial({ color: 0x1d4f91 });
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.1, 0.15, 40), mark);
@@ -266,6 +292,65 @@ export class View {
     return [x / n, y / n];
   }
 
+  /**
+   * The robot as the hero (the creature page embedded in the agent's page): a quiet dark ground that fades into the page's own background, soft light that keeps the user's colours true, a soft shadow, no start post or trail.
+   * `bg` is the page's background colour, so the pane has no edge.
+   */
+  setHero(on: boolean, bg = 0x080809): void {
+    this.hero = on;
+    if (!on) return;
+    this.scene.background = new THREE.Color(bg);
+    this.scene.fog = new THREE.Fog(bg, 2.6, 7.5); // the grid and the ground fade out before the horizon: a pool of floor under the robot
+    this.hemi.color.set(0xffffff); this.hemi.groundColor.set(0x3a3a40); this.hemi.intensity = 1.45;
+    this.sun.intensity = 2.15; // calibrated so a top face renders within a few percent of the colour the user asked for
+    this.sun.shadow.radius = 5; // soft edge
+    this.sun.shadow.bias = -0.0004;
+    this.renderer.shadowMap.type = this.lite ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
+    const mat = this.floor.material as THREE.MeshStandardMaterial | THREE.MeshLambertMaterial;
+    mat.color.set(0xffffff);
+    mat.map?.dispose();
+    mat.map = heroGroundTexture(this.renderer.capabilities.getMaxAnisotropy());
+    mat.needsUpdate = true;
+    this.setMarkers(false);
+    if (!this.blob) {
+      const n = 128, c = document.createElement('canvas');
+      c.width = c.height = n;
+      const g = c.getContext('2d')!;
+      const grad = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+      grad.addColorStop(0, 'rgba(0,0,0,0.62)'); grad.addColorStop(0.55, 'rgba(0,0,0,0.28)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad; g.fillRect(0, 0, n, n);
+      const tex = new THREE.CanvasTexture(c);
+      this.blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+      this.blob.position.z = 0.002;
+      this.blob.renderOrder = 1;
+      this.scene.add(this.blob);
+    }
+  }
+
+  /** Keep the whole robot in the pane: the camera's distance from it is set so a sphere of `radius` metres fits the narrower side of the view, whatever the pane's shape. */
+  frameRobot(radius: number, centerZ = 0.2): void {
+    this.frameRadius = Math.max(0.15, radius);
+    this.blob?.scale.set(radius * 2.6, radius * 2.0, 1);
+    this.controls.target.z = centerZ;
+    this.framedAspect = 0;
+    this.applyFrame();
+  }
+
+  private applyFrame(): void {
+    if (!this.hero) return;
+    const t = this.controls.target;
+    const dir = this.camera.position.clone().sub(t);
+    if (dir.lengthSq() < 1e-6) dir.set(0.6, -0.72, 0.5);
+    dir.normalize();
+    const vHalf = (this.camera.fov * Math.PI) / 360;
+    const hHalf = Math.atan(Math.tan(vHalf) * this.camera.aspect);
+    const half = Math.min(vHalf, hHalf);
+    const dist = (this.frameRadius * 1.1) / Math.sin(half); // the robot fills the narrower side of the pane with a little air
+    this.camera.position.copy(t).addScaledVector(dir, dist);
+    this.framedAspect = this.camera.aspect;
+    this.controls.update();
+  }
+
   /** Camera presets, as an offset from the creature: three-quarter (default) or side-on at body height (a gait reads best here). */
   setPreset(name: 'three-quarter' | 'side' | 'close'): void {
     const t = this.controls.target;
@@ -305,6 +390,7 @@ export class View {
       this.renderer.setSize(w, h, false);
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
+      if (this.hero && h > 0) this.applyFrame();
     }
   }
 
@@ -333,6 +419,7 @@ export class View {
       this.camera.position.x += dx; this.camera.position.y += dy;
     }
     this.sun.target.position.set(x, y, 0);
+    this.blob?.position.set(x, y, 0.002);
     this.sun.position.set(x + 2, y - 1, 4);
     if (this.markers && this.trail.add(x, y)) this.writeTrail();
     this.controls.update();

@@ -11,5 +11,14 @@
   "backwards": "a zero std",
   "turn-left": "a slice size the body does not have",
   "turn-right": "a head wider than the get-up network's"
+ },
+ "round": {
+  "body_name": "fixture",
+  "gpus": 8,
+  "relearn": false,
+  "previous_body_mjcf_sha256": null,
+  "all_passed_s": 39.0,
+  "all_done_s": 46.9,
+  "cpu_estimate_s": 18546
  }
 }

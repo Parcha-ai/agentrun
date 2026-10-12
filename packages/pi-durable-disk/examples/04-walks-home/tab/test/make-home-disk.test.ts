@@ -197,3 +197,19 @@ test('a folder no manifest names (an interrupted run left it) is removed once th
     assert.deepEqual(folders(s.disk), [fileDir(read(s.disk).base.sha256, 16 * 1024 * 1024).slice('home/files/'.length)]);
   } finally { s.done(); }
 });
+
+test('a standalone base: the manifest says so, and running the script again on that disk keeps it (a disk that loses the flag waits for an adapter that never comes)', () => {
+  const s = setup();
+  try {
+    const base = s.put('base.gguf', baseGguf());
+    makeHomeDisk([s.disk, '--base', base, '--base-model', `google/gemma-3-1b-it@${REV}`, '--standalone']);
+    assert.equal(read(s.disk).standalone, true);
+    assert.deepEqual(read(s.disk).adapters, []);
+    makeHomeDisk([s.disk]); // nothing changes, no flag repeated
+    assert.equal(read(s.disk).standalone, true, 'kept');
+    assert.ok(whole(s.disk));
+    const plain = join(s.dir, 'plain');
+    makeHomeDisk([plain, '--base', base, '--base-model', `google/gemma-3-1b-it@${REV}`]);
+    assert.equal(parseBaseAdapters(readFileSync(join(plain, 'home/manifest.json'), 'utf8')).standalone, undefined, 'a base on its way stays one');
+  } finally { s.done(); }
+});

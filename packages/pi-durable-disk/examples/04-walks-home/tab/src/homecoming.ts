@@ -99,7 +99,7 @@ export async function describeHome(text: string, sha256: (b: Uint8Array) => Prom
   return {
     format: 'gguf-base-adapters-v1', path: BASE_ADAPTERS_MANIFEST_PATH, id: await homeId(m, on, sha256),
     name: [m.base.name, ...on.map((a) => stemOf(a.name))].join(' + '), quant: m.base.quant, bytes: m.base.size + on.reduce((n, a) => n + a.size, 0),
-    ...(topical ? { topic: topical.topic } : {}), ready: on.length > 0, chunks: homeChunks(m), cacheChunks: [],
+    ...(topical ? { topic: topical.topic } : {}), ready: on.length > 0 || m.standalone === true, chunks: homeChunks(m), cacheChunks: [],
   };
 }
 
