@@ -4,11 +4,14 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { test } from "node:test";
-import { resolveLimits } from "@parcha/pi-vision";
+import sharp from "sharp";
+import { guardResult, resolveLimits } from "@parcha/pi-vision";
+import { sharpImages } from "@parcha/pi-vision/providers/sharp";
 import {
   LeakScan, SENTINELS, SENTINEL_EYES_KEY, SENTINEL_LINK_QUERY, SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, SENTINEL_SIGNED_LINK,
-  fixtureDir, leakNeedles, limitViolations, pngBytes, signedLink,
+  fakeEyes, fixtureDir, leakNeedles, limitViolations, pngBytes, signedLink,
 } from "@parcha/pi-vision/testing";
+import { bmp, ftyp, sizeOf, webp } from "./support/images.mjs";
 
 const b64 = (bytes) => Buffer.from(bytes).toString("base64");
 
@@ -205,21 +208,99 @@ test("the limits checker: red on an edge over, an image over its bytes, too many
   assert.ok(heavy.data.length > 100);
   assert.deepEqual(limitViolations({ content: [heavy] }, { ...limits, image: { ...limits.image, maxBytes: 100 } }).map((v) => v.replace(/\d+ base64/, "N base64")), [`content[0]: N base64 bytes, over 100`]);
   assert.match(limitViolations({ content: Array.from({ length: limits.imagesPerCall + 1 }, () => png(4, 4)) }, limits).join("\n"), /^9 images, over 8 a call$/);
-  const share = { ...limits, requestBytes: 1000 };
-  assert.ok(heavy.data.length > 250);
-  assert.match(limitViolations({ content: [heavy] }, share).join("\n"), /image bytes, over 250 \(the result's share of the request body\)/);
   assert.equal(limitViolations({ content: [png(2001, 10), ...Array.from({ length: 8 }, () => png(4, 4))] }, limits).length, 2, "each limit is reported");
 });
 
-test("the limits checker: a video block only on a route that takes video and within its inline bytes; anything it cannot measure is over", () => {
+test("the result's share of the request is a quarter of it, to the character: the guard's own bound", () => {
   const limits = resolveLimits(undefined);
+  const heavy = png(40, 40, noise);
+  const at = (requestBytes) => limitViolations({ content: [heavy] }, { ...limits, requestBytes });
+  assert.deepEqual(at(heavy.data.length * 4), [], "exactly its share is within it");
+  assert.deepEqual(at(heavy.data.length * 4 + 3), [], "a request that is not a multiple of four rounds the share down");
+  assert.deepEqual(at(heavy.data.length * 4 - 1), [`${heavy.data.length} image bytes, over ${heavy.data.length - 1} (the result's share of the request body)`]);
+  assert.match(limitViolations({ content: [heavy, heavy] }, { ...limits, requestBytes: heavy.data.length * 4 }).join("\n"), /image bytes, over/, "the share is for all the images of a result");
+});
+
+test("the limits checker reads every format through the package's header reader: the size a decoder states is the size it reports", async () => {
+  const limits = resolveLimits(undefined);
+  const flat = (width, height, format) => sharp({ create: { width, height, channels: 3, background: "#336699" } }).toFormat(format).toBuffer();
+  const made = async (width, height) => [
+    ["image/png", await flat(width, height, "png")], ["image/jpeg", await flat(width, height, "jpeg")], ["image/gif", await flat(width, height, "gif")],
+    ["image/tiff", await flat(width, height, "tiff")], ["image/webp", await webp(width, height)], ["image/webp", await webp(width, height, "lossless")], ["image/webp", await webp(width, height, "extended")],
+  ];
+  for (const [width, height] of [[2001, 10], [2000, 10]]) {
+    for (const [mimeType, bytes] of await made(width, height)) {
+      const block = { type: "image", data: b64(bytes), mimeType };
+      assert.deepEqual(await sizeOf(block), { width, height }, `${mimeType}: the decoder states the size asked for`);
+      assert.deepEqual(limitViolations({ content: [block] }, limits), width > 2000 ? [`content[0]: ${width}x${height}, over 2000x2000`] : [], `${mimeType} ${width}x${height}`);
+    }
+    for (const topDown of [false, true]) {
+      assert.deepEqual(limitViolations({ content: [{ type: "image", data: b64(bmp(width, height, { topDown })), mimeType: "image/bmp" }] }, limits), width > 2000 ? [`content[0]: ${width}x${height}, over 2000x2000`] : [], `a ${topDown ? "top-down" : "bottom-up"} BMP ${width}x${height}`);
+    }
+  }
+});
+
+test("the limits checker: a route that takes no images takes none; a video counts as one of the call's blocks, and is for a route that takes video, within its inline bytes", () => {
+  const limits = resolveLimits(undefined);
+  assert.deepEqual(limitViolations({ content: [png(4, 4)] }, { ...limits, image: { ...limits.image, native: false } }), ["content[0]: an image block on a route that takes no images"]);
+  assert.deepEqual(limitViolations({ content: [text] }, { ...limits, image: { ...limits.image, native: false } }), []);
   const clip = (bytes) => ({ type: "image", data: b64(Buffer.alloc(bytes, 1)), mimeType: "video/mp4" });
   assert.match(limitViolations({ content: [clip(100)] }, limits).join("\n"), /a video block on a route that takes no video/);
   const native = { ...limits, video: { native: true, inlineBytes: 1000 } };
   assert.deepEqual(limitViolations({ content: [clip(1000)] }, native), []);
   assert.deepEqual(limitViolations({ content: [clip(1001)] }, native), ["content[0]: 1001 video bytes, over 1000"]);
-  const webp = { type: "image", data: b64(Buffer.from("RIFF0000WEBPVP8 ")), mimeType: "image/webp" };
-  assert.match(limitViolations({ content: [webp] }, limits).join("\n"), /the size of this image\/webp is not readable from its header/);
+  assert.deepEqual(limitViolations({ content: [clip(10), png(4, 4), png(4, 4)] }, { ...native, imagesPerCall: 2 }), ["3 images, over 2 a call"]);
+  assert.deepEqual(limitViolations({ content: [clip(10), png(4, 4)] }, { ...native, imagesPerCall: 2 }), []);
+});
+
+test("the limits checker: anything it cannot measure is over", () => {
+  const limits = resolveLimits(undefined);
+  const lossy = Buffer.from("RIFF0000WEBPVP8 ");
+  const cases = [
+    ["a cut-short WebP", "image/webp", lossy],
+    ["a cut-short BMP", "image/bmp", bmp(40, 30).subarray(0, 20)],
+    ["a HEIC, which no header reader here measures", "image/heic", ftyp("heic", "mif1")],
+    ["no bytes", "image/png", Buffer.alloc(0)],
+  ];
+  for (const [what, mimeType, bytes] of cases) assert.match(limitViolations({ content: [{ type: "image", data: b64(bytes), mimeType }] }, limits).join("\n"), new RegExp(`the size of this ${mimeType.replace("/", "\\/")} is not readable from its header`), what);
   assert.match(limitViolations({ content: [{ type: "image", data: b64(Buffer.from("%PDF-1.7")), mimeType: "application/pdf" }] }, limits).join("\n"), /application\/pdf is neither an image nor a video/);
-  assert.match(limitViolations({ content: [{ type: "image", data: "", mimeType: "image/png" }] }, limits).join("\n"), /not readable/);
+});
+
+// The real guard, with the package's own header reader and a real image processor, against the checker: whatever it is
+// given, what comes out is within the route's limits; and what goes in is not, so the check is not vacuous.
+const SEES = { id: "lead-model", input: ["text", "image"] };
+const TEXT_ONLY = { id: "lead-model", input: ["text"] };
+const noisy = (width, height) => {
+  let seed = width * 31 + height;
+  const next = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) >>> 24;
+  return { type: "image", data: b64(pngBytes(width, height, () => [next(), next(), next()])), mimeType: "image/png" };
+};
+const guarded = async (result, model, host = {}, setup = {}) => {
+  const limits = resolveLimits(model, host);
+  const out = await guardResult(result, { conversationId: "c1", callId: "t1", model, signal: undefined }, {
+    limits, eyes: undefined, scope: { label: "n", deriveDir: "evidence/n/media" }, evidence: { file: async () => null }, providers: [], sources: {}, images: sharpImages(sharp), ...setup,
+  });
+  return { limits, out, images: out.content.filter((b) => b.type === "image") };
+};
+const SMALL_REQUEST = 1024 * 1024 + 96_000;
+
+test("the guard's output is within the limits the checker holds it to, for what is over them going in", async () => {
+  const wide = { content: [text, png(3000, 1000)] };
+  const tiles = { content: [text, noisy(64, 64), noisy(64, 65), noisy(65, 64)], details: { media: { kind: "image", path: "page.png", units: [0, 0, 0] } } };
+  const many = { content: [text, ...Array.from({ length: 5 }, () => png(16, 16))] };
+  const eyes = fakeEyes({ answers: ["a described picture"] });
+  const table = [
+    ["an image over the edges", wide, SEES, {}, {}, (r) => assert.equal(r.images.length, 1)],
+    ["one unit over the result's share", tiles, SEES, { requestBytes: SMALL_REQUEST }, {}, (r) => assert.equal(r.images.length, 3, "re-encoded to fit, not withheld")],
+    ["more images than a call may show", many, SEES, { imagesPerCall: 4 }, {}, (r) => assert.equal(r.images.length, 4)],
+    ["images for a route that takes none", wide, TEXT_ONLY, {}, { eyes }, (r) => assert.equal(r.images.length, 0)],
+  ];
+  for (const [what, input, model, host, setup, shape] of table) {
+    const { limits, out, images } = await guarded(input, model, host, setup);
+    assert.notDeepEqual(limitViolations(input, limits), [], `${what}: what goes in is over`);
+    assert.deepEqual(limitViolations(out, limits), [], `${what}: what comes out is within`);
+    shape({ images });
+  }
+  const { limits, images } = await guarded(tiles, SEES, { requestBytes: SMALL_REQUEST });
+  assert.ok(images.reduce((sum, b) => sum + b.data.length, 0) <= Math.floor(limits.requestBytes * 0.25), "all of them within a quarter of the request");
 });

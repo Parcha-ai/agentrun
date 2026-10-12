@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_LIMITS, citation, detectOnce, formatFragment, limitsFromModel, notBuilt, parseCitation, parseFragment, plan, resolveLimits, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
+import sharp from "sharp";
+import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, limitsFromModel, linkSafe, notBuilt, parseCitation, parseFragment, plan, reportMiss, resolveLimits, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { piAiEyes } from "@parcha/pi-vision/eyes/pi-ai";
 import { nodeVisionEnv } from "@parcha/pi-vision/node";
@@ -74,11 +75,41 @@ async function sweep(cases, deriveDir, workDir) {
 // What an SDK error carries: the request, with its credential and its link, beside a clean message.
 const sdkError = (message) => Object.assign(new Error(message), { request: { url: LINK, headers: { authorization: `Bearer ${KEY}` } } });
 const MODEL = {
-  id: "sweep-model", provider: "sweep", baseUrl: LINK, apiKey: KEY, headers: { authorization: `Bearer ${KEY}` },
+  id: "sweep-model", provider: "sweep", api: "sweep", baseUrl: LINK, apiKey: KEY, headers: { authorization: `Bearer ${KEY}` },
+  input: ["text", "image"], cost: { input: 1, output: 4, cacheRead: 0, cacheWrite: 0 },
   inputLimits: { images: { maxPerMessage: 5, resize: { maxWidth: 1600, maxHeight: 1600, maxBytes: 3_000_000, jpegQuality: 70 } }, maxRequestBytes: 10_000_000 },
 };
+const TEXT_MODEL = { ...MODEL, id: "sweep-text-model", input: ["text"] };
 const LIMITS = resolveLimits(MODEL);
 const CALL = { conversationId: "sweep-conversation", callId: "sweep-call", model: MODEL, signal: undefined };
+
+// The first line of an error is the line a result, a receipt and an event keep. SDKs put the request's link on it: bare,
+// quoted, bracketed, after `url=`, closed by punctuation, in a markdown link or in a JSON body; a link that carries the
+// provider's key in its query or in its authority, a secret in its fragment, a scheme in capitals or plain http.
+const WRAPS = [
+  (l) => l, (l) => `"${l}"`, (l) => `'${l}'`, (l) => `\`${l}\``, (l) => `(${l})`, (l) => `[${l}]`, (l) => `<${l}>`, (l) => `{${l}}`,
+  (l) => `url=${l}`, (l) => `${l},`, (l) => `(see ${l}).`, (l) => `[the file](${l})`, (l) => `{"url":"${l}","status":401}`,
+];
+const LINKS = [
+  LINK,
+  `https://api.sentinel.invalid/v1/models/m:generate?key=${KEY}`,
+  `https://user:${KEY}@files.sentinel.invalid/reports/statement.pdf`,
+  `https://files.sentinel.invalid/reports/statement.pdf#token=${SENTINEL_LINK_TOKEN}`,
+  LINK.replace("https", "HTTPS"),
+  LINK.replace("https", "http"),
+];
+const lineWith = (wrap, link) => `request to ${WRAPS[wrap](LINKS[link])} failed with status 401`;
+const FIRST_LINES = WRAPS.flatMap((_, wrap) => LINKS.map((__, link) => lineWith(wrap, link)));
+/** The error as an SDK throws it: that first line, then lines that carry the key and the link again. */
+const failure = (line) => sdkError(`${line}\nsecond line ${KEY} ${LINK}`);
+
+/** What the adapter hands the guard for one call: the route's limits, who looks, and sinks whose every record is scanned. */
+const guardSetup = (sink, limits, eyes, images) => ({
+  limits, eyes, scope: { label: "sweep", deriveDir: sink.deriveDir }, providers: [], sources: {}, ...(images ? { images } : {}),
+  evidence: { file: async (label, record) => { sink.out("receipt", { label, record }); return { path: `evidence/${label}.md` }; } },
+  onLook: (event) => sink.out("look event", event),
+  onMiss: (event) => sink.out("miss event", event),
+});
 const env = (id) => ({ id, cwd: "/work", exec: async () => ({ ok: false, error: sdkError("program not found") }) });
 
 /** The extension a host builds: eyes that hold the key and fail first, a sink that files every receipt for the scan. */
@@ -105,8 +136,30 @@ const CASES = [
   {
     id: ".#detectOnce",
     run: async ({ out }) => {
-      const probe = { name: "sweep", capabilities: [], kinds: [], detect: async () => { throw sdkError(`probe failed\nsecond line ${KEY} ${LINK}`); } };
-      out("detection", await detectOnce(probe, env("sweep-detect")));
+      const probe = (detect) => ({ name: "sweep", capabilities: [], kinds: [], detect });
+      out("detections", await Promise.all([
+        ...FIRST_LINES.map((line) => detectOnce(probe(async () => { throw failure(line); }), env("sweep-detect"))),
+        detectOnce(probe(async () => { throw sdkError(`probe failed\nsecond line ${KEY} ${LINK}`); }), env("sweep-detect")),
+        detectOnce(probe(() => Promise.reject(FIRST_LINES[0])), env("sweep-detect")),
+      ]));
+    },
+  },
+  { id: ".#linkSafe", run: ({ out }) => out("lines", FIRST_LINES.map(linkSafe)) },
+  { id: ".#firstLine", run: ({ out }) => out("lines", [...FIRST_LINES.map((line) => firstLine(failure(line))), firstLine(FIRST_LINES[0])]) },
+  {
+    id: ".#guardResult",
+    run: async (sink) => {
+      const media = (path) => ({ media: { kind: "image", path, ask: "what is it?" } });
+      // The lead takes no images, so the eyes look and fail, each time with another first line: the miss the model reads,
+      // the receipt and the host's event keep the cause's first line, links cut.
+      for (const line of FIRST_LINES) {
+        const eyes = fakeEyes({ answers: [{ fail: line }] });
+        sink.result("miss", await guardResult({ content: [{ type: "text", text: "a screenshot" }, png(40, 30)], details: media("shot.png") }, { ...CALL, model: TEXT_MODEL }, guardSetup(sink, resolveLimits(TEXT_MODEL), eyes), imageHeader), resolveLimits(TEXT_MODEL));
+      }
+      // The lead takes images: a wide one is fitted to the route's limits, and the text and the saved path come back as given.
+      const path = `downloads/report.pdf?${SENTINEL_LINK_QUERY}`;
+      sink.echoes.push(`downloaded ${LINK}`, path);
+      sink.result("fitted", await guardResult({ content: [{ type: "text", text: `downloaded ${LINK}` }, png(3000, 1000)], details: media(path) }, CALL, guardSetup(sink, LIMITS, undefined, sharpImages(sharp)), imageHeader), LIMITS);
     },
   },
   { id: ".#visionContext", run: ({ out }) => { const context = visionContext(AbortSignal.abort(sdkError("cut"))); out("context", { text: String(context), value: context.value({ token: Symbol("k") }), aborted: context.abortSignal?.aborted }); } },
@@ -151,7 +204,12 @@ const CASES = [
 ];
 
 /** What is built today; the sweep must run these to the end, never skip them. */
-const BUILT = [".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#visionContext", ".#parseFragment", ".#formatFragment", ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection"];
+const BUILT = [
+  ".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#linkSafe", ".#firstLine", ".#guardResult", ".#visionContext", ".#parseFragment", ".#formatFragment",
+  ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection", ".#plan", "./eyes/pi-ai#piAiEyes",
+  "./providers/unpdf#unpdfProvider", "./providers/pdfium#pdfiumProvider", "./providers/office-js#officeJsProvider", "./providers/photon#photonImages",
+  "./providers/sharp#sharpImages", "./providers/poppler#popplerProvider", "./providers/ffmpeg#ffmpegProvider", "./providers/soffice#sofficeProvider",
+];
 
 const declared = async () => {
   const names = [];
@@ -181,9 +239,14 @@ test("every public function is swept, skipped as not built, or exempt, and nothi
   } finally { await derived.remove(); await work.remove(); }
 });
 
-test("the sweep is red on a leak in a result, an error, a derived name and a derived file, on an oversize image, and lists what it could not run", async () => {
+test("the sweep is red on a leak in a result, an error, a derived name and a derived file, on a link kept past its origin and path in a miss, on an oversize image, and lists what it could not run", async () => {
   const dir = await fixtureDir("pi-vision-sweep-derived-");
   try {
+    const filedMiss = async (sink, reason) => {
+      const filing = { conversationId: "c1", label: "n", evidence: { file: async (label, record) => { sink.out("receipt", record); return { path: "evidence/n/1.md" }; } }, onMiss: (event) => sink.out("miss event", event) };
+      const record = { tool: "look", args: { path: "a.png", model: "m", native: false }, status: "ok", facts: { sha256: "ab".repeat(32), kind: "image", fragment: "", shown: "", fit: { reduction: "as_is" }, key: "cd".repeat(32) }, body: "" };
+      await reportMiss(filing, "read", record, { code: "look_failed", reason });
+    };
     const cases = [
       { id: "x#leakResult", run: ({ result }) => result("r", { content: [{ type: "text", text: `via ${KEY}` }] }, LIMITS) },
       { id: "x#leakError", run: () => { throw sdkError(`fetch ${LINK} failed`); } },
@@ -191,6 +254,10 @@ test("the sweep is red on a leak in a result, an error, a derived name and a der
       { id: "x#leakDerived", run: ({ deriveDir }) => writeFile(`${deriveDir}/page-${SENTINEL_LINK_SIGNATURE}.png`, pngBytes(2, 2)) },
       { id: "x#leakDerivedFile", run: ({ deriveDir }) => writeFile(`${deriveDir}/memo.json`, JSON.stringify({ via: KEY })) },
       { id: "x#oversize", run: ({ result }) => result("r", { content: [png(3000, 10)] }, LIMITS) },
+      // A miss whose reason keeps an error's first line as it came, and the same miss through `firstLine`.
+      { id: "x#unsafeFirstLine", run: (sink) => filedMiss(sink, `the vision route failed: ${String(failure(lineWith(0, 0)).message).split("\n")[0]}`) },
+      { id: "x#unsafeQuoted", run: (sink) => filedMiss(sink, `the vision route failed: ${String(failure(lineWith(1, 1)).message).split("\n")[0]}`) },
+      { id: "x#safeFirstLine", run: (sink) => filedMiss(sink, `the vision route failed: ${firstLine(failure(lineWith(1, 1)))}`) },
       { id: "x#stub", run: () => notBuilt("a stub") },
       { id: "x#broken", run: () => { throw new TypeError("not what this case expected"); } },
       { id: "x#echo", run: ({ out, echoes }) => { echoes.push(LINK); out("c", { text: `see ${LINK}` }); } },
@@ -203,13 +270,16 @@ test("the sweep is red on a leak in a result, an error, a derived name and a der
     const { rows, scan, violations } = await sweep(cases, dir.path, dir.path);
     assert.deepEqual([...new Set(scan.findings.map((f) => `${f.sentinel} ${f.source}`))].sort(), [
       "eyesKey derived", "eyesKey x#echoKey:c", "eyesKey x#leakDetail:d", "eyesKey x#leakError:thrown", "eyesKey x#leakResult:r",
+      "eyesKey x#unsafeQuoted:miss event", "eyesKey x#unsafeQuoted:receipt",
       "linkSignature derived", "linkSignature x#echoQuery:c", "linkSignature x#leakDetail:d", "linkSignature x#leakError:thrown",
+      "linkSignature x#unsafeFirstLine:miss event", "linkSignature x#unsafeFirstLine:receipt",
       "linkToken x#echoPart:r", "linkToken x#echoQuery:c", "linkToken x#leakDetail:d", "linkToken x#leakError:thrown",
+      "linkToken x#unsafeFirstLine:miss event", "linkToken x#unsafeFirstLine:receipt",
     ], "a caller's own string may come back verbatim; any part of it elsewhere, and the key anywhere, is a finding");
     assert.deepEqual(violations, ["x#oversize r: content[0]: 3000x10, over 1600x1600"]);
     assert.deepEqual(rows.map((r) => `${r.id} ${r.outcome}`), [
       "x#leakResult swept", "x#leakError threw", "x#leakDetail swept", "x#leakDerived swept", "x#leakDerivedFile swept", "x#oversize swept",
-      "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#echoPart swept", "x#echoQuery swept", "x#exempt exempt", "x#clean swept",
+      "x#unsafeFirstLine swept", "x#unsafeQuoted swept", "x#safeFirstLine swept", "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#echoPart swept", "x#echoQuery swept", "x#exempt exempt", "x#clean swept",
     ]);
     assert.equal(rows.find((r) => r.id === "x#stub").detail, "a stub is not built");
     assert.equal(rows.find((r) => r.id === "x#broken").detail, "TypeError: not what this case expected");
