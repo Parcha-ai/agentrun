@@ -818,6 +818,7 @@ test("a live mount that refuses to unmount is UNMOUNT_FAILED and never fusermoun
   const claim = await acquire(r.opts);
   r.set((s) => void (s.behave.unmountFail = true));
   await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED");
+  assert.equal(r.calls("archil", "unmount").length, 5, "a mount that stays busy is asked five times (the first and four retries), then it gives up");
   assert.equal(r.calls("fusermount").length, 0);
   assert.ok(r.read().mounts[r.root]);
   assert.equal(await unmountClaim(join(r.dir, "nothing-here"), r.host), "none");
