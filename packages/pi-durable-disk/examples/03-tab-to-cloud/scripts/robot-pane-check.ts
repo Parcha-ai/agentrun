@@ -50,10 +50,17 @@ const call = (name: string, args: Record<string, unknown>) => `{ call: { name: $
 const script = async (turns: string[]) => ev(`demo.stubCloud([${turns.join(", ")}, { text: "Done." }])`);
 const until = (expr: string, ms = 30_000) => page!.until(expr, ms, 300);
 try {
-  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&brain=off#"));
+  const phone = process.env.PHONE === "1"; // PHONE=1: the same check in a 375 px wide page
+  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&brain=off#"), phone ? { width: 375, height: 760 } : undefined);
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   await until(`!!document.getElementById("creature").contentWindow.__walks`, 60_000);
   ok("the creature page runs in the agent's page, under /tab/ on the same origin", await ev<boolean>(`document.getElementById("creature").contentWindow.location.pathname === "/tab/"`));
+  if (phone) {
+    const r = await ev<{ chat: { w: number; h: number }; pane: { w: number; h: number; top: number }; chatBottom: number }>(`(() => { const rect = (e) => e.getBoundingClientRect(); const c = rect(document.querySelector("main > section, main > div, #chat") ?? document.querySelector("main").firstElementChild), p = rect(document.getElementById("creature-pane")); return { chat: { w: Math.round(c.width), h: Math.round(c.height) }, pane: { w: Math.round(p.width), h: Math.round(p.height), top: Math.round(p.top) }, chatBottom: Math.round(c.bottom) }; })()`);
+    console.log(`  phone layout: ${JSON.stringify(r)}`);
+    ok("a phone: the chat keeps the width of the screen and the robot sits under it", r.chat.w >= 340 && r.pane.w >= 340 && r.pane.h >= 190 && r.pane.top >= r.chatBottom - 2, r);
+    await page.screenshot(join(shots, "pane-phone.png"));
+  }
   await until(`document.getElementById("creature").contentWindow.__walks.state().policy !== null && document.getElementById("creature").contentWindow.__walks.state().policy !== undefined`, 60_000).catch(() => undefined);
   console.log(`  creature state: ${JSON.stringify(await walks<unknown>("w.state()")).slice(0, 220)}`);
   ok("it read home/policy.json through the page's workspace: a trained policy drives the creature", /trained/.test(await ev<string>(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`)), await ev(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`));

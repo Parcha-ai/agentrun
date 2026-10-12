@@ -358,56 +358,86 @@ async function applyRobot(text: string) {
 async function onSkillsManifest(text: string) {
   let m: SkillManifest;
   try { m = parseSkills(text); } catch (e) { post('skills-refused', { reason: String(e instanceof Error ? e.message : e) }); return; }
-  const seen = performance.now();
+  manifestSeenAt = performance.now();
   skills = m;
   post('skills-home', { skills: Object.keys(m.skills), default: m.default, labels: Object.fromEntries(Object.entries(m.skills).map(([k, v]) => [k, v.label])) });
   const want = wantedSkill ?? (app.policy ? null : m.default);
   if (want) await switchSkill(want);
-  await installSkills(m, performance.now() - seen);
+  watchSkillFiles(m);
+  await installSkills(m);
 }
 
 /** The policy file's hash of each skill this page has loaded, so a relearned skill (new bytes under the same name) is announced again and an unchanged one is not. */
 const installedSha = new Map<string, string>();
 let installRound = 0;
+/** When this page last saw the manifest, and the hash of the skill file that drives the robot now. */
+let manifestSeenAt = 0;
+let runningSkillSha = '';
+
+const textSha = async (text: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map((x) => x.toString(16).padStart(2, '0')).join('');
 
 /**
  * Every skill of the manifest is read and loaded (as a trained policy, or as an old network borrowed for this body), in the manifest's order, and announced as installed: the stage turns a tile to
  * "installed in the robot" on it. `sha` is the sha256 of the skill's policy file; `ms_since_manifest` counts from the moment this page saw the manifest. A newer manifest ends this round.
  */
-async function installSkills(m: SkillManifest, afterManifestMs: number) {
+async function installSkills(m: SkillManifest) {
   const round = ++installRound;
-  const began = performance.now() - afterManifestMs;
   for (const [name, entry] of Object.entries(m.skills)) {
     if (round !== installRound) return;
     const got = await parentPolicySource(new ParentBackend(windowBus(), skillPolicyPath(entry))).read();
     if (!got || got === 'unchanged') continue;
-    const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(got.text)))].map((x) => x.toString(16).padStart(2, '0')).join('');
-    if (installedSha.get(name) === sha) continue;
-    let fits = true;
-    try {
-      await Policy.load(got.text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
-    } catch (e) {
-      if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) { post('skill-refused', { skill: name, reason: e instanceof Error ? e.message : String(e) }); continue; }
-      if (!(await borrowPolicy(JSON.parse(got.text), app.built.jointNames.length, app.mujocoVersion))) continue;
-      fits = false;
-    }
-    if (round !== installRound) return;
-    installedSha.set(name, sha);
-    post('skill-installed', { skill: name, sha, fits, ms_since_manifest: performance.now() - began });
+    await installSkill(name, got.text, () => round !== installRound);
   }
+}
+
+/** One skill's file: loaded to check it, announced when its bytes are new. `stale` says a newer round replaced this one. */
+async function installSkill(name: string, text: string, stale: () => boolean = () => false) {
+  const sha = await textSha(text);
+  if (installedSha.get(name) === sha) return;
+  let fits = true;
+  try {
+    await Policy.load(text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
+  } catch (e) {
+    if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) { post('skill-refused', { skill: name, reason: e instanceof Error ? e.message : String(e) }); return; }
+    if (!(await borrowPolicy(JSON.parse(text), app.built.jointNames.length, app.mujocoVersion))) return;
+    fits = false;
+  }
+  if (stale()) return;
+  installedSha.set(name, sha);
+  post('skill-installed', { skill: name, sha, fits, ms_since_manifest: performance.now() - manifestSeenAt });
+}
+
+/** One watcher per skill policy file the manifest names: a skill relearned under the same name replaces its file and leaves the manifest as it was. */
+const skillWatchers = new Map<string, PolicyWatcher>();
+function watchSkillFiles(m: SkillManifest) {
+  const wanted = new Map(Object.entries(m.skills).map(([name, entry]) => [skillPolicyPath(entry), name] as const));
+  for (const [path, w] of skillWatchers) if (!wanted.has(path)) { w.stop(); skillWatchers.delete(path); }
+  for (const [path, name] of wanted) {
+    if (skillWatchers.has(path)) continue;
+    const w = new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), path)), { sha256: sha256Hex, intervalMs: 1000, onFile: (text) => onSkillFile(name, text), onError: () => undefined });
+    skillWatchers.set(path, w);
+    w.start();
+  }
+}
+
+/** A skill's file arrived or changed: announce it when new, and if it is the skill that is driving the robot, drive the robot with the new bytes. */
+async function onSkillFile(name: string, text: string) {
+  if (!skills?.skills[name]) return;
+  await installSkill(name, text);
+  if (skillNow === name && (await textSha(text)) !== runningSkillSha) await switchSkill(name, true);
 }
 
 /**
  * Do a skill: that skill's policy (the same network format as any policy, each with its own getup network) takes over at the next control step, and the skill's fixed command goes into the command slot.
  * A skill trained for the body on screen is loaded as any policy; after a body change the old skill's network is borrowed when it still fits the joints (the robot stumbles: robot-fit.ts).
  */
-async function switchSkill(name: string) {
+async function switchSkill(name: string, reload = false) {
   if (!skills) { wantedSkill = name; return; }
   const entry = skills.skills[name];
   const refuse = (reason: string) => { showError(`Skill refused: ${reason}`); post('skill-refused', { skill: name, reason }); };
   if (!entry) return refuse(`${name} has not come home`);
   wantedSkill = null;
-  if (skillNow === name && app.policy) return;
+  if (skillNow === name && app.policy && !reload) return;
   const got = await parentPolicySource(new ParentBackend(windowBus(), skillPolicyPath(entry))).read();
   if (!got || got === 'unchanged') return refuse(`${entry.policy} is not on the disk yet`);
   const nj = app.built.jointNames.length;
@@ -430,6 +460,7 @@ async function switchSkill(name: string) {
   setPolicy(policy, `skill: ${entry.label}`); // no sim.reset(): a creature that is up carries on, the next step is the new network's
   brainFits = fits;
   skillNow = name;
+  runningSkillSha = await textSha(got.text);
   resetOrigin(); // a new behaviour: the distance counts from where it stands now
   app.training.install('final', provenanceFacts(JSON.parse(got.text)));
   updateLabel();
@@ -541,6 +572,7 @@ async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'p
     post('stood-up', { reason: kind, t: app.sim.time });
   }
   setPolicy(policy, name); // no sim.reset(): a creature that is up keeps going with the new policy
+  skillNow = null; // the robot is driven by this policy now, not by the skill that was selected: `do` for that skill switches back, and the page does not claim a skill it is not running
   resetOrigin(); // a new version: the distance counts from where it stands now
   app.training.install(kind, facts);
   updateLabel();

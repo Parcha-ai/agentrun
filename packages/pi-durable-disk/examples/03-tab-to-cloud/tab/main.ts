@@ -30,6 +30,7 @@ import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
 import { cloudAgent } from "../agent.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
+import { WriteGate } from "./write-gate.ts";
 import { fromBase64, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
@@ -698,6 +699,7 @@ async function takeOffline(): Promise<void> {
     if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
     // The workspace (work/, less the model) goes into OPFS too: the computer boots from it with no network. The tab is idle and every write-through was acknowledged, so this is what the pipe holds.
     say("saving the workspace in this browser");
+    await creatureGate.drain(); // the creature page's writes in flight land first (new ones are held: checkingOut)
     const scanned = new Map(await runtime.workspace.scan());
     // With the robot pane the creature page reads the policies and the skills offline from the workspace: they are in the server's home/ (not restored into the tab), so they come in now, as files of the saved copy
     if (robotMode) for (const [path, entry] of await homeFilesForOffline()) if (!scanned.has(path)) scanned.set(path, entry as never); // only their bytes are used from here on (saved copy, baseline)
@@ -895,14 +897,19 @@ async function creatureRead(path: string): Promise<Uint8Array | null> {
   return bytes;
 }
 
-async function creatureWrite(path: string, bytes: Uint8Array): Promise<void> {
-  const rt = state.runtime;
-  if (!rt || !("sandbox" in rt.env)) throw new Error("not-holder");
-  const fs = (rt.env as WasmerEnv).sandbox.fs;
-  const dir = path.split("/").slice(0, -1).join("/");
-  if (dir) await fs.mkdir(`/workspace/${dir}`, { recursive: true }).catch(() => undefined);
-  await fs.writeFile(`/workspace/${path}`, bytes);
-  await rt.flush?.(); // durable before the creature page is told: to the pipe online, to this browser's copy offline
+/** The creature page's writes: held while a checkout runs (it scans and hands over the workspace, so a write after the scan would be acknowledged and then be missing from the browser's copy), and counted while in flight so the checkout waits for them. */
+const creatureGate = new WriteGate(() => state.checkingOut, (ms) => new Promise<void>((r) => setTimeout(r, ms)));
+
+function creatureWrite(path: string, bytes: Uint8Array): Promise<void> {
+  return creatureGate.run(async () => {
+    const rt = state.runtime;
+    if (!rt || !("sandbox" in rt.env)) throw new Error("not-holder");
+    const fs = (rt.env as WasmerEnv).sandbox.fs;
+    const dir = path.split("/").slice(0, -1).join("/");
+    if (dir) await fs.mkdir(`/workspace/${dir}`, { recursive: true }).catch(() => undefined);
+    await fs.writeFile(`/workspace/${path}`, bytes);
+    await rt.flush?.(); // durable before the creature page is told: to the pipe online, to this browser's copy offline
+  });
 }
 
 function startRobotPane(): void {

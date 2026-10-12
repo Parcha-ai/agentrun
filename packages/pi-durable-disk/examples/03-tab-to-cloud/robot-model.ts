@@ -262,7 +262,7 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       if (typeof skill !== "string" || !SKILL_NAMES.includes(skill as never)) return refuse(prev, `skill must be one of ${SKILL_NAMES.join(", ")}.`);
       if (have.length === 0) return refuse(prev, "no skill has come home yet: the robot can only do what its brain was taught.");
       if (!have.includes(skill)) return refuse(prev, `the robot has not learned ${skill}; it can do ${have.join(", ")}.`);
-      if ((prev.skill ?? "walk") === skill && prev.skill !== undefined) return { state: prev, text: `No change: the robot is already doing ${skill}.`, kind: "none" };
+      // no "already doing" shortcut: the page may have stopped running this skill (a trained policy arrived), and only a written file makes it pick the skill again; asking for the skill it is running is a no-op there
       state.skill = skill;
       const label = context.skills?.[skill]?.label;
       return done("skill", `The robot is now doing ${skill}${label && label !== skill ? ` (${label})` : ""}. ${skillTail(state)}`);

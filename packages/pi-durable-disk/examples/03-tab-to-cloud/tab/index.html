@@ -102,6 +102,8 @@ body.robot aside:not(#creature-pane) { display: none; }
 #creature-pane[hidden] { display: none; }
 #creature-pane iframe { width: 100%; height: 100%; border: 0; display: block; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { display: none; } .badge-sub { display: none; } }
+/* a phone: the robot sits under the chat instead of taking a 380px column the chat would shrink into (these rules are as specific as the robot ones above, and later) */
+@media (max-width: 760px) { body.robot main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(200px, 38vh); } #creature-pane { display: block; } #creature-pane[hidden] { display: none; } }
 </style>
 </head>
 <body>

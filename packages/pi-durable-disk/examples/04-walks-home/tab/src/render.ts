@@ -146,6 +146,8 @@ export class View {
 
   /** Rebuild the meshes for a (new) sim. */
   setSim(sim: Sim): void {
+    // a part whose looks swapped its geometry (round torso, boxy legs) still owns the original: both are released
+    for (const p of this.parts) if (p.geo !== p.mesh.geometry) p.geo.dispose();
     for (const m of this.meshes) {
       this.scene.remove(m);
       m.geometry.dispose();
@@ -231,7 +233,8 @@ export class View {
     // the face: a drawing on a plane at the torso's nose
     const torso = this.parts.find((p) => p.role === 'torso');
     if (look.face === 'none' || !torso) { this.dropFace(); return; }
-    if (this.face?.kind === look.face && this.face.mesh.parent === torso.mesh) return;
+    const noseX = torso.size[0] * (look.shape.torso === 'round' ? 1.14 : 1) + 0.002; // the torso's nose moves when its shape does, so the face follows even when it stays the same face
+    if (this.face?.kind === look.face && this.face.mesh.parent === torso.mesh) { this.face.mesh.position.x = noseX; return; }
     this.dropFace();
     const size = 128, c = document.createElement('canvas');
     c.width = c.height = size;
@@ -241,7 +244,7 @@ export class View {
     const h = Math.min(torso.size[1] * 1.7, torso.size[2] * 1.7);
     const plane = new THREE.Mesh(new THREE.PlaneGeometry(h * 1.4, h * 1.4), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
     plane.rotation.set(Math.PI / 2, Math.PI / 2, 0, 'YXZ'); // facing the nose (+x), upright
-    plane.position.set(torso.size[0] * (look.shape.torso === 'round' ? 1.14 : 1) + 0.002, 0, 0);
+    plane.position.set(noseX, 0, 0);
     torso.mesh.add(plane);
     this.face = { kind: look.face, mesh: plane };
   }
