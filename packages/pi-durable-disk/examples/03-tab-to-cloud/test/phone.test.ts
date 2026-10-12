@@ -492,3 +492,64 @@ test("the build order: the shim's jspi32 first wherever JSPI is there and served
   assert.deepEqual(buildOrder({ webkit: false, jspi: true, jspi32Served: true, noMemory64: true }), ["jspi32", "asyncify"], "?mem64=0");
   assert.deepEqual(buildOrder({ webkit: true, jspi: true, jspi32Served: true, only: "default" }), ["default"], "?build= tries that one");
 });
+
+// ---- v5 (D1, 2026-10-12): a signature prefix. The serving file has no tools: its system text lists each tool on one line, and nothing renders a tools block.
+const servingV5 = JSON.parse(readFileSync(fixture("robot-v5-serving.json"), "utf8")) as { system: string; tools?: ToolChatTool[] };
+const renderedV5 = JSON.parse(readFileSync(fixture("robot-v5-rendered.json"), "utf8")) as { messages: ToolChatMessage[]; prompt: string }[];
+
+test("v5: the prompt renders with no tools block, exactly as llama-server renders it; the grammar still holds the tools", async () => {
+  assert.equal(servingV5.tools, undefined, "D1's v5 serving file has no tools");
+  const seen: RawRequest[] = [];
+  const chat = lockedToolChat({ template: () => template, complete: async (req) => { seen.push(req); return { text: "Hi.", stoppedBy: "eog", promptTokens: 1, outputTokens: 1, ms: 1 }; }, bare: () => true });
+  for (const c of renderedV5) {
+    await chat({ messages: c.messages, tools: serving.tools, maxTokens: 50 });
+    assert.equal(seen.at(-1)!.prompt, c.prompt, "llama-server's /apply-template with no tools, byte for byte");
+    assert.match(seen.at(-1)!.grammar!, /function=set_color>/, "the lock is over the tools the request carries");
+  }
+});
+
+test("v5: the warm-up's prefix is the system turn with no tools block, the one the shipped state was made from (its sidecar's prefix sha256)", async () => {
+  const { llm } = fakeLlm();
+  const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v5-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  model.toolsInPrompt = false;
+  await model.warm(servingV5.system, serving.tools);
+  assert.ok(renderedV5.every((c) => c.prompt.startsWith(model.warmPrompt!)), "every v5 turn starts with it");
+  assert.equal(await sha(model.warmPrompt!), "ee79e1a42ea1216928fa6fab3cde80628f008d09b20be75af5b7e0accfecab1e", "make-state.mjs's prefix sha256 for v5, from llama-server's rendering");
+});
+
+test("v5: the tools are the ones its system text lists, in its order; over the registry's own schemas they build D1's v5-lock.gbnf exactly", async () => {
+  const { signatureTools, signatureView } = await import("../tab/native-turn.ts");
+  const names = signatureTools(servingV5.system);
+  assert.deepEqual(names, ["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "do"]);
+  const registry = agentRegistry(async () => undefined, { switchTool: false, environments: [] });
+  const offered = toNativeTools(registry.snapshot().tools().map((r) => ({ name: r.tool.name, description: r.tool.description, parameters: r.tool.parameters })));
+  const shown = signatureView(offered, names);
+  assert.deepEqual(shown.map((t) => t.function.name), names, "the conversation's tools the prefix names, nothing else (no update_robot, no shell)");
+  assert.equal(lockGrammar(shown), readFileSync(fixture("robot-v5-lock.gbnf"), "utf8"), "D1's v5 lock, byte for byte");
+});
+
+test("a T7 turn reads its earlier exchanges on their own first, so the next turn (one exchange more) resumes there: no restore, no system turn read again", async () => {
+  const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", state = "https://p.example/m/robot-v3.state.bin";
+  const { llm, calls } = fakeLlm({ restore: async (b) => ({ tokens: 1252, bytes: b.size }) });
+  llm.cachedFile = async () => new Blob([new Uint8Array(64)]);
+  const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  const parts = JSON.stringify({ parts: [{ name: "robot-v3-00001-of-00007.gguf", bytes: 1, sha256: "a".repeat(64) }] });
+  const sidecar = JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: ["a".repeat(64)] }, prefixSha256: await sha(PREFIX), bytes: 64 });
+  await withFetch({ [`${state}.json`]: sidecar, "https://p.example/m/robot-v3.parts.json": parts }, async () => { await model.load(); await model.warm(serving.system, serving.tools, { url: state }); });
+  const sys = { role: "system", content: serving.system };
+  const exchange = (n: number) => [{ role: "user", content: `paint it color ${n}` }, { role: "assistant", content: "", tool_calls: [{ id: `c${n}`, type: "function", function: { name: "set_color", arguments: '{"part": "all", "color": "red"}' } }] }, { role: "tool", tool_call_id: `c${n}`, content: "The whole robot is now red." }, { role: "assistant", content: "Done." }];
+  const turn = (n: number) => [sys, ...Array.from({ length: n }, (_, i) => exchange(i)).flat(), { role: "assistant", content: `[Robot now: ${n}]` }, { role: "user", content: `command ${n}` }];
+  const ask = (messages: object[]) => model.toolChat({ messages: messages as ToolChatMessage[], tools: serving.tools, maxTokens: 50 });
+  await ask(turn(1));
+  const stem1 = calls.complete.at(-2)!;
+  assert.equal(stem1.maxTokens, 0, "the earlier exchanges are read on their own, generating nothing");
+  assert.ok(calls.complete.at(-1)!.prompt.startsWith(stem1.prompt) && stem1.prompt.endsWith("<|im_end|>\n"), "the turn's prompt continues it");
+  assert.doesNotMatch(stem1.prompt, /Robot now/, "it stops before the state line, where the next turn's prompt will differ");
+  await ask(turn(2));
+  await ask(turn(3));
+  assert.equal(calls.restored, 1, "only the warm-up's restore: each turn starts with the last one's earlier exchanges");
+  assert.equal(model.turns.at(-1)!.rewarm, undefined);
+  assert.ok(model.turns.at(-1)!.stem, "the turn says it read its exchanges first");
+  await ask([sys, ...exchange(1), { role: "assistant", content: "[Robot now: 9]" }, { role: "user", content: "command 9" }]); // the oldest exchange dropped
+  assert.equal(calls.restored, 2, "a window that dropped its oldest exchange starts from the warm state");
+});

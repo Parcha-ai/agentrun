@@ -63,6 +63,17 @@ export function phoneWindow(task: boolean, o: { refresh: () => Promise<string | 
   return task ? { prepare } : { prepare, window: "exchanges" as const, stateLine: () => line, fits: o.fits };
 }
 
+/**
+ * The prompt up to the message before the user's turn (ChatML): in D1's T7 window, the system turn and the earlier exchanges, before the state line. The next
+ * turn keeps it and adds an exchange where the state line was. Undefined when that message is the system turn's own (no earlier exchanges, or no state line).
+ */
+export function stemOf(prompt: string, system: string | undefined): string | undefined {
+  const user = prompt.lastIndexOf("<|im_start|>user\n");
+  if (user <= 0) return undefined;
+  const before = prompt.lastIndexOf("<|im_start|>", user - 1);
+  return before > (system?.length ?? 0) ? prompt.slice(0, before) : undefined;
+}
+
 /** Greedy: a tool call is an answer, not a sample (D1's evaluation decodes at temperature 0). */
 const GREEDY: Sampling = { ...DEFAULT_SAMPLING, temperature: 0 };
 
@@ -70,6 +81,8 @@ export interface PhoneTurn {
   at: number; ms: number; promptTokens: number; outputTokens: number; grammar: boolean; calls: string[]; text: string; raw: string; prompt: string; timings?: Record<string, number>;
   /** The warm state restored before this turn (its prompt could not resume where the engine was): how long that took, or why it failed. */
   rewarm?: { ms: number } | { failed: string };
+  /** The window's earlier exchanges, read on their own before this turn (see `resume`): the tokens the engine read for them and how long it took. */
+  stem?: { tokens: number; ms: number };
 }
 
 export class PhoneModel implements BrainModel {
@@ -87,12 +100,13 @@ export class PhoneModel implements BrainModel {
   warmTokens = 0;
   readonly toolChat: (req: ToolChatRequest, signal?: AbortSignal) => Promise<ToolChatResult>;
   private line: Promise<unknown> = Promise.resolve();
-  /** A prompt that starts with this resumes where the engine is (see `resume`); anything else starts from the warm state again, when there is one to restore. */
-  private held: string | undefined;
+  /** Texts the engine has read with a checkpoint at or just before each one's end (see `resume`): a prompt that starts with one resumes there. */
+  private points: string[] = [];
   /** Opens the warm state again, from the engine's cache (set when it was restored from there at the warm-up). */
   private reopen: (() => Promise<Blob>) | undefined;
   /** What `resume` did before the completion in progress. */
   private rewarmed: PhoneTurn["rewarm"];
+  private stemmed: PhoneTurn["stem"];
   private readonly llm: Llm;
   /** Where the model's first part is (its other parts and its manifest sit beside it). */
   get url(): string { return this.o.url; }
@@ -100,6 +114,8 @@ export class PhoneModel implements BrainModel {
   lock: ((tools: ToolChatTool[]) => ToolChatTool[]) | undefined;
   /** Told when a turn starts (the page shows it as thinking). */
   onTurnStart: (() => void) | undefined;
+  /** False for a signature prefix (the system text lists the tools): every prompt, the warm-up's too, renders with no tools block. */
+  toolsInPrompt = true;
   private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; loadTimeoutMs?: number; /** A turn that has not answered in this long fails, by name (default 180 s). */ turnTimeoutMs?: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
 
   constructor(llm: Llm, o: PhoneModel["o"]) {
@@ -107,8 +123,8 @@ export class PhoneModel implements BrainModel {
     this.llm = llm;
     this.o = o;
     const locked = lockedToolChat(
-      { template: () => llm.chatTemplate!(), complete: async (req: RawRequest, signal: AbortSignal): Promise<RawResult> => (signal.aborted ? { text: "", stoppedBy: "eog", promptTokens: 0, outputTokens: 0, ms: 0 } : this.complete(req, signal)) },
-      (t) => { const turn: PhoneTurn = { at: Date.now(), ms: Math.round(t.result.ms), promptTokens: t.result.promptTokens, outputTokens: t.result.outputTokens, grammar: t.grammar, calls: t.result.toolCalls.map((c) => `${c.name}(${c.arguments})`), text: t.result.text, raw: t.raw, prompt: t.prompt, ...(t.timings ? { timings: t.timings } : {}), ...(this.rewarmed ? { rewarm: this.rewarmed } : {}) }; this.turns.push(turn); this.onTurn?.(turn); },
+      { template: () => llm.chatTemplate!(), complete: async (req: RawRequest, signal: AbortSignal): Promise<RawResult> => (signal.aborted ? { text: "", stoppedBy: "eog", promptTokens: 0, outputTokens: 0, ms: 0 } : this.complete(req, signal)), bare: () => !this.toolsInPrompt },
+      (t) => { const turn: PhoneTurn = { at: Date.now(), ms: Math.round(t.result.ms), promptTokens: t.result.promptTokens, outputTokens: t.result.outputTokens, grammar: t.grammar, calls: t.result.toolCalls.map((c) => `${c.name}(${c.arguments})`), text: t.result.text, raw: t.raw, prompt: t.prompt, ...(t.timings ? { timings: t.timings } : {}), ...(this.rewarmed ? { rewarm: this.rewarmed } : {}), ...(this.stemmed ? { stem: this.stemmed } : {}) }; this.turns.push(turn); this.onTurn?.(turn); },
       (tools) => (this.lock ? this.lock(tools) : tools),
     );
     // A turn never hangs silently: past its time it is stopped and fails by name, and the conversation says so (a turn that vanished is what an iPhone showed).
@@ -134,31 +150,44 @@ export class PhoneModel implements BrainModel {
 
   /** One completion, from where the engine can resume it (`resume`). Runs inside `serial`. */
   private async complete(req: RawRequest, signal: AbortSignal): Promise<RawResult> {
-    await this.resume(req.prompt);
+    await this.resume(req.prompt, signal);
     return this.llm.complete!(req, { signal, sampling: GREEDY });
   }
 
   /**
-   * Before a completion: put the engine where this prompt can resume. Qwen3.5 is hybrid, its recurrent state cannot be cut back, so llama-server resumes a prompt
-   * that leaves the engine's sequence from its last checkpoint before that point, and with none after the system turn it reads the whole prompt again, the
-   * 1,252-token system turn included (D0 measured 1,458 tokens, 157 s in desktop Chrome, when the window dropped its oldest exchange). A prompt that keeps
-   * everything the last one held up to its own reply (the next call of a turn) resumes from a checkpoint near its end. Any other (the next turn, whose window moves
-   * the state line, drops an exchange or starts a new chat) has the warm state restored first, from the engine's cache: about half a second, and the turn then
-   * reads its window, never the system turn.
+   * Before a completion: put the engine where this prompt resumes cheaply, and leave a checkpoint where the next turn's will. Qwen3.5 is hybrid: its recurrent
+   * state cannot be cut back, so llama-server resumes a prompt that leaves the engine's sequence from its last checkpoint before that point, and it checkpoints a
+   * prompt only 64 and 4 tokens before its end (n_batch 64). T7's next turn leaves this one's prompt where its state line began, some 90 tokens before the end,
+   * so neither is of use: a reloaded conversation re-read its whole prompt, system turn included (D0 measured 1,437 tokens, 169 s in desktop Chrome).
+   * - A prompt that starts with none of the points (a window that dropped its oldest exchange, a new chat, a reload) has the warm state restored first, from the
+   *   engine's cache (about 0.3 s).
+   * - The window's earlier exchanges (the prompt up to the message before the user's, T7's state line) are read on their own first, so a checkpoint sits 4 tokens
+   *   before where the next turn's prompt leaves this one: a turn then reads its newest exchange, the state line and the user, however long the window.
    */
-  private async resume(prompt: string): Promise<void> {
-    const held = this.held;
-    const at = prompt.lastIndexOf("<|im_start|>");
-    this.held = at > 0 ? prompt.slice(0, at) : prompt; // the next prompt resumes cheaply when it keeps this much: everything before this one's reply
+  private async resume(prompt: string, signal: AbortSignal): Promise<void> {
     this.rewarmed = undefined;
-    if (!this.reopen || held === undefined || prompt.startsWith(held)) return;
-    const started = performance.now();
-    try {
-      await this.llm.restoreState!(await this.reopen());
-      this.rewarmed = { ms: Math.round(performance.now() - started) };
-    } catch (e) {
-      this.rewarmed = { failed: e instanceof Error ? e.message : String(e) }; // the turn goes on from wherever the engine is: slower, not wrong
+    this.stemmed = undefined;
+    const reach = () => Math.max(-1, ...this.points.filter((p) => prompt.startsWith(p)).map((p) => p.length));
+    if (reach() < 0 && this.reopen && this.warmPrompt) {
+      const started = performance.now();
+      try {
+        await this.llm.restoreState!(await this.reopen());
+        this.points = [this.warmPrompt];
+        this.rewarmed = { ms: Math.round(performance.now() - started) };
+      } catch (e) {
+        this.rewarmed = { failed: e instanceof Error ? e.message : String(e) }; // the turn goes on from wherever the engine is: slower, not wrong
+      }
     }
+    const next: string[] = [];
+    const stem = stemOf(prompt, this.warmPrompt);
+    if (stem !== undefined && stem.length > reach()) {
+      const r = await this.llm.complete!({ prompt: stem, maxTokens: 0 }, { signal, sampling: GREEDY });
+      this.stemmed = { tokens: r.promptTokens, ms: Math.round(r.ms ?? 0) };
+      next.push(stem);
+    } else if (stem !== undefined && this.points.includes(stem)) next.push(stem);
+    const at = prompt.lastIndexOf("<|im_start|>");
+    next.push(at > 0 ? prompt.slice(0, at) : prompt); // the next call of this turn keeps everything before this one's reply: a checkpoint 64 tokens from its end serves
+    this.points = next;
   }
 
   /** One request at a time: the engine has one sequence, and a turn must not interleave with the warm-up. */
@@ -195,7 +224,7 @@ export class PhoneModel implements BrainModel {
   async warm(system: string, tools: readonly ToolChatTool[], state?: { url: string; onSkip?: (why: string) => void }): Promise<{ ms: number; promptTokens: number; restored?: { tokens: number; bytes: number } }> {
     const template = this.llm.chatTemplate!();
     if (!template) throw new Error("this model has no chat template of its own");
-    const full = renderNative(template, [{ role: "system", content: system }, { role: "user", content: "X" }], tools, { enable_thinking: false });
+    const full = renderNative(template, [{ role: "system", content: system }, { role: "user", content: "X" }], this.toolsInPrompt ? tools : [], { enable_thinking: false });
     const at = full.indexOf("<|im_start|>user\n");
     if (at < 0) throw new Error("the model's template has no ChatML user turn to warm up to");
     const prefix = full.slice(0, at); // the system turn, through its <|im_end|>\n
@@ -220,7 +249,7 @@ export class PhoneModel implements BrainModel {
         const open = cached ? () => this.llm.cachedFile!(state.url, cached) : async () => { const r = await fetch(state.url); if (!r.ok) throw new Error(`${state.url}: HTTP ${r.status}`); return r.blob(); };
         const restored = await this.serial(async () => this.llm.restoreState!(await open()));
         this.warmTokens = restored.tokens;
-        this.held = prefix;
+        this.points = [prefix];
         this.reopen = cached ? open : undefined; // a state fetched whole each time is not restored again per turn (36 MB of network a turn)
         return { ms: Math.round(performance.now() - started), promptTokens: restored.tokens, restored };
       } catch (e) {
@@ -229,7 +258,7 @@ export class PhoneModel implements BrainModel {
     }
     const r = await this.serial(() => this.llm.complete!({ prompt: prefix, maxTokens: 0 }, { signal: new AbortController().signal, sampling: GREEDY }));
     this.warmTokens = r.promptTokens;
-    this.held = prefix;
+    this.points = [prefix];
     return { ms: Math.round(r.ms ?? 0), promptTokens: r.promptTokens };
   }
 
@@ -240,7 +269,7 @@ export class PhoneModel implements BrainModel {
   fits(messages: ToolChatMessage[], tools: readonly ToolChatTool[], budget = 1648): boolean {
     const template = this.llm.chatTemplate!();
     if (!template) return true;
-    const text = renderNative(template, messages, tools, { enable_thinking: false });
+    const text = renderNative(template, messages, this.toolsInPrompt ? tools : [], { enable_thinking: false });
     const known = this.warmPrompt && this.warmTokens > 0 && text.startsWith(this.warmPrompt) ? this.warmPrompt.length : 0;
     return (known ? this.warmTokens : 0) + Math.ceil((text.length - known) / WINDOW_CHARS_PER_TOKEN) <= budget;
   }
