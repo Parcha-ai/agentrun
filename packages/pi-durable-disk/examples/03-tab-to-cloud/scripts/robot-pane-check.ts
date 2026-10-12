@@ -151,6 +151,7 @@ try {
   const longLog = Array.from({ length: 3000 }, (_, i) => `epoch ${i + 1} reward ${i}`).join("\n"); // far more than the 6,000 characters a body keeps of a short output
   const entries = JSON.stringify([
     { id: "t-u", kind: "pi.user", model: [{ role: "user", content: "You are thread 3 of 8, with GPU 3 of your own. Your skill: spin.\n\nBrief: spin in place.", timestamp: 1 }] },
+    { id: "t-a0", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "I will write the reward, then train it." }] }] },
     { id: "t-a1", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tw", name: "write", arguments: { path: "train/spin_reward.py", content: "def reward(s):\n    return s.spin\n" } }] }] },
     { id: "t-r1", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tw", toolName: "write", content: [{ type: "text", text: "wrote" }] }] },
     { id: "t-a2", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tb", name: "bash", arguments: { command: "pi-run spin -- python train.py" } }] }] },
@@ -170,12 +171,17 @@ try {
   ok("the teach_skills call opens by itself when it has threads, so their rows are on screen", await until(`[...document.querySelectorAll("details.tool")].some((t) => /^teach_skills/.test(t.textContent) && t.open && !!t.querySelector("details.thread"))`, 10_000).then(() => true, () => false));
   const card = await ev<{ rows: string[]; home: string; text: string }>(`(() => { const d = [...document.querySelectorAll("details.tool")].find((t) => /^teach_skills/.test(t.textContent)); return { rows: [...d.querySelectorAll(".result-card .rc-row")].map((r) => r.textContent), home: d.querySelector(".result-card .rc-home")?.textContent ?? "", text: d.querySelector(".tool-body").textContent }; })()`);
   ok("teach_skills' answer is a compact card from its typed details: a row per thread and what came home; the model's hint is not shown", card.rows.length === 2 && card.rows[0] === "✓ walk · speed 0.51 m/s ≥ 0.4 · checkpoint 5 · 93 s" && card.rows[1] === "✓ spin · spin rate 1.23 rad/s ≥ 1.0 · checkpoint 6 · 70 s" && card.home === "Home: spin, walk" && !/read_thread|Each thread/.test(card.text), card);
+  // What an audience sees in the header and in a thread: the operator controls are quiet text (no boxed switcher, "bring it home" not "take it now"), a thread's own words are in the body type.
+  const looks = await ev<{ switcher: string; takeover: string }>(`(() => ({ switcher: getComputedStyle(document.getElementById("switcher")).borderTopWidth, takeover: document.getElementById("takeover").textContent }))()`);
+  ok("the header's controls are quiet: the switcher has no box and the takeover says 'bring it home'", looks.switcher === "0px" && looks.takeover === "bring it home", looks);
   const rows = await ev<string[]>(`[...document.querySelectorAll("details.thread > summary")].map((s) => s.textContent.replace(/\\s+/g, " ").trim())`);
-  ok("each thread is a row inside the teach_skills call: its GPU, its name and how far it is", rows.length === 1 && /GPU 3\s*spin\s*\d+ calls/.test(rows[0]), rows);
+  ok("each thread is a row inside the teach_skills call: its GPU, its name and how far it is", rows.length === 1 && /GPU 3\s*spin\s*\d+ calls?$/.test(rows[0]), rows);
   await ev(`document.querySelector("details.thread").open = true`);
   await until(`!!document.querySelector("details.thread details.tool .diff")?.firstElementChild?.shadowRoot`, 15_000).catch(() => undefined);
   await ev(`[...document.querySelectorAll("details.thread details.tool")].forEach((d) => { d.open = true; })`);
   await until(`!!document.querySelector("details.thread .tool .diff")?.firstElementChild?.shadowRoot && document.querySelector("details.thread .tool .diff").firstElementChild.shadowRoot.textContent.includes("def reward")`, 30_000).catch(() => undefined);
+  const threadType = await ev<{ font: string; words: string }>(`(() => { const t = document.querySelector("details.thread .thread-chat .turn"); return { font: t ? getComputedStyle(t).fontFamily : "", words: t ? t.textContent : "" }; })()`);
+  ok("a thread's own words are set in the body type, not the code type", /I will write the reward/.test(threadType.words) && !/mono|jetbrains/i.test(threadType.font), threadType);
   const inThread = await ev<{ brief: string; diff: string; tail: string; more: string; bash: string[] }>(`(() => { const t = document.querySelector("details.thread"); return { brief: t.querySelector(".brief")?.textContent ?? "", diff: (t.querySelector(".diff")?.firstElementChild?.shadowRoot?.textContent ?? "").replace(/\\s+/g, " "), tail: t.querySelector(".output pre")?.textContent ?? "", more: t.querySelector(".output .more")?.textContent ?? "", bash: [...t.querySelectorAll("details.tool")].map((d) => d.className + " :: " + d.innerHTML.slice(0, 240)) }; })()`);
   ok("opening a thread shows its brief and its own tool calls: the training code as a diff", inThread.brief === "spin in place" && !/Follow your instructions|You are thread/.test(inThread.brief) && /def reward/.test(inThread.diff), inThread);
   ok("a long command output shows its last 8 lines and how many came before", /^step 13 /.test(inThread.tail) && /step 20 reward/.test(inThread.tail) && inThread.more === "12 earlier lines", inThread);

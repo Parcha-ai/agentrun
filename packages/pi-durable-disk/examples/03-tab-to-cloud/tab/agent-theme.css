@@ -33,9 +33,11 @@ button:hover { border-color: var(--muted); }
 button.link { border: 0; background: none; color: var(--muted); text-decoration: none; padding: 6px 4px; }
 button.link:hover { color: var(--ink); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #080809; }
-.switcher { border-radius: var(--r3); border-color: var(--line); }
-.switcher .env { border-color: var(--line); padding: 6px 12px; }
-.switcher .env.active, .switcher .env.active.tab, .switcher .env.active.cloud, .switcher .env.active.moving { background: var(--panel); color: var(--ink); animation: none; font-weight: 500; }
+/* the switcher is quiet text, not a boxed control: the place it is in is the one in ink */
+.switcher { border: 0; border-radius: 0; gap: 2px; }
+.switcher .env { border: 0; border-radius: var(--r2); padding: 6px 10px; color: var(--muted); background: none; }
+.switcher .env.active, .switcher .env.active.tab, .switcher .env.active.cloud, .switcher .env.active.moving { background: none; color: var(--ink); animation: none; font-weight: 500; }
+.switcher .env:hover:not(:disabled) { color: var(--ink); }
 #handover, #offline-status, #online-status { font: 400 11px var(--mono); color: var(--muted); }
 #banner { background: var(--panel); color: var(--muted); border-bottom: 1px solid var(--line); font: 400 13px/1.4 var(--sans); padding: 10px var(--gutter); }
 #checkedout { background: var(--bg); border-bottom: 1px solid var(--line); padding: 0 var(--gutter); color: var(--muted); }
@@ -138,3 +140,7 @@ details.thread .thread-chat .turn { font-size: 14px; }
 
 /* one line in the composer: a hint too long for the field is cut with an ellipsis by the page (tab/hint.ts; a textarea's placeholder cannot do text-overflow); this keeps whatever is left from wrapping */
 #input::placeholder { white-space: nowrap; overflow: hidden; }
+
+/* what a thread says is the agent's words: the body type, not the code type of the tool lines it sits in */
+details.thread .thread-chat .turn { font: 400 14px/1.5 var(--sans); color: var(--ink); }
+.note.brain.home::before, .note.brain.moved::before { content: ""; } /* these lines carry their own arrow */

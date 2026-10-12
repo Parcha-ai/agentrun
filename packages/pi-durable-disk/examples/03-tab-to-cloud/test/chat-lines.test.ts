@@ -172,3 +172,26 @@ test("the field's own placeholder is kept until a hint has been set; a set hint 
   assert.equal(fitPlaceholder("old", "Tell the robot what to do", 0, w), "Tell the robot what to do", "no room measured yet (the field is hidden): the whole hint, fitted when it is shown");
   assert.equal(fitPlaceholder("old", "the session is open; the robot's brain is loading", 200, w), "the session is open…");
 });
+
+test("a read says which lines, not two bare numbers: the typed offset and limit as a range", () => {
+  assert.equal(toolArgsLine("read", JSON.stringify({ path: "robot/body.json", offset: 1, limit: 70 })), "robot/body.json · lines 1–70");
+  assert.equal(toolArgsLine("read", JSON.stringify({ path: "a.ts", offset: 41, limit: 20 })), "a.ts · lines 41–60");
+  assert.equal(toolArgsLine("read", JSON.stringify({ path: "a.ts", limit: 30 })), "a.ts · lines 1–30");
+  assert.equal(toolArgsLine("read", JSON.stringify({ path: "a.ts", offset: 100 })), "a.ts · from line 100");
+  assert.equal(toolArgsLine("read", JSON.stringify({ path: "a.ts" })), "a.ts", "no range: just the file");
+  assert.equal(toolArgsLine("set_legs", JSON.stringify({ pairs: 4 })), "4", "other tools keep their values");
+});
+
+import { callsLabel } from "../tab/chat-lines.ts";
+test("a thread's call count agrees with its number", () => {
+  assert.deepEqual([0, 1, 2, 12].map(callsLabel), ["0 calls", "1 call", "2 calls", "12 calls"]);
+});
+
+import { brainText } from "../tab/chat-view.ts";
+import { BRAIN_CHECKIN } from "../tab/brain-kinds.ts";
+test("the check-in is one quiet line from its typed fields: back on the server, and how many files came with it", () => {
+  assert.equal(brainText(BRAIN_CHECKIN, { files: 1 }), "↑ back on the server · 1 file synced");
+  assert.equal(brainText(BRAIN_CHECKIN, { files: 3 }), "↑ back on the server · 3 files synced");
+  assert.equal(brainText(BRAIN_CHECKIN, { files: 0 }), "↑ back on the server");
+  assert.equal(brainText(BRAIN_CHECKIN, {}), "↑ back on the server", "no count, none claimed");
+});
