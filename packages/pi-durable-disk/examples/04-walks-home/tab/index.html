@@ -120,7 +120,7 @@ body.ep2 #modelPanel[data-failed] #modelStatus { color:#ff8a80; }
 body.ep2.clean main, body.ep2.clean.phase-draw main { grid-template-columns:minmax(0,1fr) !important; }
 body.ep2 aside, body.ep2 #view, body.ep2 #stateLabel, body.ep2 #stateSub, body.ep2 #distMarker, body.ep2 #thumb, body.ep2 #offlineBadge, body.ep2 #dragSvg { display:none !important; }
 /* ?hero=1 (embedded under the agent's page): the robot is the hero. The page's own tokens (agentrun.ai's dark palette), no pills, no thumbnail, no distance, no start flag: the creature, its name and one quiet label. */
-body.hero { --bg: #080809; --ink: #f2f2f2; --muted: #a4a4ad; --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); }
+body.hero { --bg: #080809; --ink: #f2f2f2; --muted: #a4a4ad; --mono: "Noto Color Emoji", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; --sans: "Noto Color Emoji", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); } /* the emoji face stays first in every stack (its unicode-range is emoji only); the demo's faces come next */
 body.hero #thumb, body.hero #distMarker, body.hero #stateSub, body.hero #offlineBadge { display: none !important; }
 body.hero #stateLabel, body.hero #stateLabel[data-state] { top: auto; bottom: 12px; left: 14px; right: 14px; transform: none; background: none; box-shadow: none; padding: 0; border-radius: 0; color: var(--muted); font: 500 11px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; text-shadow: none; text-align: left; white-space: normal; }
 body.hero[data-fit=mismatch] #stateLabel { color: var(--ink); }
