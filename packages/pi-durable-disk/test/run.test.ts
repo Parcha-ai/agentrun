@@ -12,6 +12,7 @@ import { archilEnv } from "../src/env.ts";
 import { exitCodeFor, FencedError, HeldError } from "../src/errors.ts";
 import {
   LeaseLapsedError,
+  type LeaseEvent,
   openDurableRun,
   OWNER_LOCK,
   RunError,
@@ -686,6 +687,43 @@ describe("fences during the run", () => {
     }
   });
 
+  it("reports every heartbeat-class write to onLease, the ones in open and live too, and a failed write's elapsed time", async () => {
+    // Startup: the heartbeat period is long, so only open() and live() have written by the time the run is open.
+    const startup = scratchRoot("lease-startup");
+    try {
+      const trail: LeaseEvent[] = [];
+      const t = setup(startup.root, { options: { lease: { heartbeatMs: 60_000, expiryMs: 120_000, marginMs: 10_000, checkMs: 1_000 }, onLease: (e: LeaseEvent) => void trail.push(e) } });
+      const run = await t.open();
+      assert.ok(trail.filter((e) => e.kind === "beat" && e.ok).length >= 2, `the first write (open) and the one in live() are reported, got ${JSON.stringify(trail)}`);
+      await run.release().catch(() => undefined);
+    } finally {
+      startup.remove?.();
+    }
+    // A write that hangs and then fails: its duration is what the host most needs to see.
+    const failing = scratchRoot("lease-failing-beat");
+    let pid = 0;
+    try {
+      const trail: LeaseEvent[] = [];
+      let stall = false;
+      const persist: PersistRecord = async (root, text, signal) => {
+        if (!stall) return persistRecord(root, text, signal);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        throw new Error("EIO: the mount stalled");
+      };
+      const t = setup(failing.root, { options: { persist, lease: { heartbeatMs: 10, expiryMs: 10_000, marginMs: 2_000, checkMs: 5 }, onLease: (e: LeaseEvent) => void trail.push(e) } });
+      const run = await t.open();
+      pid = await startCommand(run, t.agent);
+      stall = true;
+      await until(() => trail.some((e) => e.kind === "beat" && !e.ok));
+      const failed = trail.find((e): e is Extract<LeaseEvent, { kind: "beat" }> => e.kind === "beat" && !e.ok)!;
+      assert.ok(failed.ms >= 100, `a write that hung for 150 ms reports its elapsed time, not 0 (got ${failed.ms})`);
+      assert.match(failed.error ?? "", /EIO/);
+    } finally {
+      killQuietly(pid);
+      failing.remove?.();
+    }
+  });
+
   it("self-fences once the last successful heartbeat started more than expiry minus margin ago, measured from its start", async () => {
     const dir = scratchRoot("lapse-clock");
     let now = 0;
@@ -700,7 +738,13 @@ describe("fences during the run", () => {
       };
       // The fake clock drives the timer; the watchdog thread keeps real time, and its 8 s limit is never reached here.
       const lease = { heartbeatMs: 10, expiryMs: 10_000, marginMs: 2_000, checkMs: 5 };
-      const t = setup(dir.root, { options: { persist, lease, clock: () => now } });
+      // What the instance leaves behind: each heartbeat write's duration and the fence's reason. A callback that throws changes nothing.
+      const trail: LeaseEvent[] = [];
+      const onLease = (event: LeaseEvent) => {
+        trail.push(event);
+        if (trail.length === 1) throw new Error("a broken trail hook");
+      };
+      const t = setup(dir.root, { options: { persist, lease, clock: () => now, onLease } });
       const run = await t.open();
       pid = await startCommand(run, t.agent);
       // Writes are serialized: the second to finish after the clock moved started after it moved, and so does every later one.
@@ -723,6 +767,11 @@ describe("fences during the run", () => {
       assert.equal(exitCodeFor(lapsed), 75);
       assert.equal(lapsed.sinceMs, 8_100, "measured from when the write started (5000), not when it finished (7000)");
       assert.equal(lapsed.by, "timer");
+      const beats = trail.filter((e): e is Extract<LeaseEvent, { kind: "beat" }> => e.kind === "beat");
+      assert.ok(beats.length >= 2 && beats.every((b) => b.ok && Number.isFinite(b.ms)), "every successful heartbeat write reported how long it took");
+      assert.ok(beats.some((b) => b.ms === 2_000), "the write that started at 5000 and finished at 7000 took 2000 ms");
+      const fence = trail.find((e) => e.kind === "fence");
+      assert.deepEqual(fence && { ...fence }, { kind: "fence", code: "LEASE_LAPSED", message: lapsed.message, sinceMs: 8_100, by: "timer" }, "the fence's reason, with how long since the last good heartbeat started");
       assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"]);
       assert.ok(await waitGone(pid), "the command died");
       assert.equal(pending.length, 1, "the self-fence fired while a heartbeat write still hung");

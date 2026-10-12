@@ -233,7 +233,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     log("app failed", { code: (err as PdaError).code, message: (err as Error).message });
     return exitCodeFor(err);
   }
-  const { onOpen, beforeResume, root: rootOptions, wake: appWake, wrapEnv, ...harness } = app;
+  const { onOpen, beforeResume, onLease, root: rootOptions, wake: appWake, wrapEnv, ...harness } = app;
   const holder = JSON.parse(process.env.PDA_HOLDER ?? "{}") as Record<string, Json>;
   const cgroup = watchdogOwnsCgroup(holder);
   if (cgroup.warning) log("cgroup not owned", { warning: cgroup.warning });
@@ -266,6 +266,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),
       onStep: (step, t) => void (steps[step] = Math.round(t)),
       ...(beforeResume ? { beforeResume } : {}),
+      ...(onLease ? { onLease } : {}),
     });
   } catch (err) {
     log("open failed", { code: (err as PdaError).code, exitCode: exitCodeFor(err), message: (err as Error).message, steps });

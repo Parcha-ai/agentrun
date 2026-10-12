@@ -11,6 +11,7 @@ type Frame =
   | { t: "event"; kind: "snapshot" | "events" | "thread"; data: unknown }
   | { t: "switch"; to: string; reason?: string; ask: string }
   | { t: "switched"; switchId: string }
+  | { t: "trail"; at: string; event: string; data?: Record<string, unknown> }
   | GpuFrame;
 
 /** `thread`: one teaching thread's own conversation (tab/threads.ts ThreadMsg), relayed by the host beside the root's events. */
@@ -62,6 +63,11 @@ export function dialLink(opts: {
       }
       if (frame.t === "switched") {
         opts.onSwitched?.(frame.switchId);
+        return;
+      }
+      if (frame.t === "trail") {
+        // The instance's own trail line, kept in the server's log under its own name: what a VM that died leaves behind.
+        opts.log("vm.trail", { vmEvent: frame.event, vmAt: frame.at, data: frame.data ?? {} });
         return;
       }
       if (frame.t === "switch") {

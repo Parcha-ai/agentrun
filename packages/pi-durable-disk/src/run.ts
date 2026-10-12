@@ -88,6 +88,14 @@ export class LeaseLapsedError extends FencedError {
 /** What the run needs of its environment: pi's `env` option plus a way to kill every command it started. */
 export type RunEnv = NonNullable<HarnessOptions["env"]> & { cleanup(context: Context): Promise<void> };
 
+/**
+ * What an instance reports about its own lease, for a host to keep (a trail that outlives the instance): each heartbeat write's duration, and the
+ * fence's reason with how long since the last good heartbeat started. A fence from a stalled disk leaves nothing else, because the instance exits.
+ */
+export type LeaseEvent =
+  | { kind: "beat"; ok: boolean; /** From when the write started to when it finished, by the run's clock. */ ms: number; error?: string }
+  | { kind: "fence"; code: string; message: string; sinceMs?: number; by?: "timer" | "watchdog" };
+
 export interface LeaseOptions {
   /** Heartbeat period; default 20 s. */
   readonly heartbeatMs?: number;
@@ -132,6 +140,8 @@ export interface OpenRunLeaseOptions {
   readonly context?: Context;
   /** Each lifecycle step as it completes, with its duration. */
   readonly onStep?: (step: OpenStep | ReleaseStep, ms: number) => void;
+  /** Called synchronously with each heartbeat write's duration and with the fence's reason; never awaited, and a throw is ignored: it cannot delay a heartbeat or a fence. */
+  readonly onLease?: (event: LeaseEvent) => void;
   /** Replaceable for tests: how the claim is taken (default `acquire`). */
   readonly acquire?: (options: AcquireOptions) => Promise<Claim>;
   /** Replaceable for fault injection: how `run.json` is written (default `persistRecord`). */
@@ -513,6 +523,7 @@ class Lease implements RunLease {
     if (this.#fence) return this.#fence.error;
     const fence = { error, done: Promise.resolve() };
     this.#fence = fence;
+    this.#emitLease({ kind: "fence", code: (error as { code?: string }).code ?? "FENCED", message: error.message, ...(error instanceof LeaseLapsedError ? { sinceMs: error.sinceMs, by: error.by } : {}) });
     this.#fencing.abort(error);
     this.#stopTimers();
     this.rawClaim.markFenced(error);
@@ -559,7 +570,7 @@ class Lease implements RunLease {
     this.#lastSeq = previous?.sealedSeq ?? 0;
     await step("run.json", async () => {
       const now = new Date().toISOString();
-      this.#noteBeat(await this.#write(() => ({
+      await this.#beatWrite(() => ({
         run: this.ref.id,
         status: "running",
         generation: (previous?.generation ?? 0) + 1,
@@ -569,7 +580,7 @@ class Lease implements RunLease {
         heartbeatAt: now,
         updatedAt: now,
         detail: null,
-      })));
+      }));
     });
     // Two self-fences: a timer on this thread, and a watchdog thread for when this thread is stuck in a FUSE request.
     await step("heartbeat", () => {
@@ -631,7 +642,7 @@ class Lease implements RunLease {
   async live(): Promise<void> {
     this.#assertUsable();
     const now = new Date().toISOString();
-    this.#noteBeat(await this.#write((current) => ({ ...current!, sealedSeq: null, heartbeatAt: now })));
+    await this.#beatWrite((current) => ({ ...current!, sealedSeq: null, heartbeatAt: now }));
   }
 
   async abandon(error: unknown, close?: () => Promise<void>): Promise<void> {
@@ -772,10 +783,35 @@ class Lease implements RunLease {
   #beat(): void {
     if (this.#beating || this.#fence || this.#released) return;
     this.#beating = true;
-    this.#write((current) => ({ ...current!, heartbeatAt: new Date().toISOString() }))
-      .then((started) => this.#noteBeat(started))
+    this.#beatWrite((current) => ({ ...current!, heartbeatAt: new Date().toISOString() }))
       .catch(() => undefined)
       .finally(() => (this.#beating = false));
+  }
+
+  /**
+   * The one place a heartbeat-class write (the first, the one in `live()`, each heartbeat) goes through: it is noted for the self-fence and reported to
+   * `onLease` with how long it took, from when it was asked for (a write queued behind another counts that wait) to when it finished or failed.
+   */
+  async #beatWrite(change: (current: RunRecord | undefined) => RunRecord): Promise<{ started: number; startedNs: bigint }> {
+    const asked = this.#clock();
+    try {
+      const started = await this.#write(change);
+      this.#noteBeat(started);
+      this.#emitLease({ kind: "beat", ok: true, ms: this.#clock() - asked });
+      return started;
+    } catch (error) {
+      this.#emitLease({ kind: "beat", ok: false, ms: this.#clock() - asked, error: String((error as Error)?.message ?? error) });
+      throw error;
+    }
+  }
+
+  /** The host's trail hook: synchronous, never awaited, a throw ignored. */
+  #emitLease(event: LeaseEvent): void {
+    try {
+      this.#options.onLease?.(event);
+    } catch {
+      // A broken hook must not touch the lease.
+    }
   }
 
   /** A heartbeat-class write (the first, the one in `live()`, each heartbeat) succeeded. */
