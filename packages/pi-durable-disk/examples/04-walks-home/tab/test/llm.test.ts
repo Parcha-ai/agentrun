@@ -71,3 +71,34 @@ test('the model is loaded with assistant prefill on, so a trailing assistant mes
   assert.equal(loads[0].prefill_assistant, true);
   assert.equal(loads[0].n_threads, 3);
 });
+
+test('a base with adapters: each adapter goes in beside the base at scale 0, and every request, chat and raw, carries the active selection; a plain load after carries none', async () => {
+  const sent: any[] = [];
+  let params: any, files: string[] = [];
+  const make = () => ({
+    proxy: null as unknown,
+    async loadModel(blobs: Blob[], p: any) {
+      params = p;
+      (this as any).proxy = { async moduleInit(f: { name: string }[]) { files = f.map((x) => x.name); } };
+      await new Promise((r) => setImmediate(r));
+      await (this as any).proxy.moduleInit(blobs.map((b, i) => ({ name: `model-0000${i + 1}-of-00001.gguf`, blob: b })));
+    },
+    exit: async () => {},
+    createChatCompletion: async (o: any) => { sent.push(o); return (async function* () {})(); },
+    createCompletion: async (o: any) => { sent.push(o); return (async function* () {})(); },
+  }) as never;
+  const llm = wllamaLlm('/w.wasm', make);
+  const adapters = [{ name: 'tools.gguf', blob: new Blob([new Uint8Array(2)]) }, { name: 'moon.gguf', blob: new Blob([new Uint8Array(3)]) }];
+  await llm.load([new Blob([new Uint8Array(4)])], { threads: 2, adapters, active: { 'moon.gguf': 1 } });
+  assert.deepEqual(params.lora_adapters, [{ path: 'models/tools.gguf', scale: 0 }, { path: 'models/moon.gguf', scale: 0 }]);
+  assert.deepEqual(files, ['model-00001-of-00001.gguf', 'tools.gguf', 'moon.gguf']);
+  assert.equal(params.swa_full, true);
+  const signal = new AbortController().signal;
+  await llm.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 5, signal, onText: () => {} });
+  await llm.complete!({ prompt: 'p', maxTokens: 5 }, { signal });
+  const on = [{ id: 0, scale: 0 }, { id: 1, scale: 1 }];
+  assert.deepEqual(sent.map((o) => o.lora), [on, on]);
+  await llm.load([new Uint8Array(1)], { threads: 2 });
+  await llm.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 5, signal, onText: () => {} });
+  assert.equal(sent.at(-1).lora, undefined);
+});

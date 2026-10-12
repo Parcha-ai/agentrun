@@ -1,8 +1,8 @@
 // Taking a run offline: the page's side. The run's page, assets and model go into the cache the service worker answers from (sw.ts), a consistent copy of
 // the run's store comes from the pipe into this browser's OPFS (local-store.ts), and the pipe is asked to hand the run over (a checkout: the claim is released
 // only when the copy's head is the store's head). The record of what was checked out lives in OPFS too, so a reload knows. Browser only.
-import { parseManifest } from "../../04-walks-home/tab/src/model.ts";
-import { CACHE_NAME, cacheKey } from "./offline-cache.ts";
+import { describeHome } from "../../04-walks-home/tab/src/homecoming.ts";
+import { CACHE_NAME, cacheKey, stageFiles } from "./offline-cache.ts";
 
 /** What does not work while the run is checked out to this browser. Shown in the page's checked-out panel and written in the PR and the README, word for word. */
 export const CANNOT_OFFLINE: readonly string[] = [
@@ -81,10 +81,15 @@ export interface CacheProgress {
  * one already cached is kept as it is. Nothing is put in the cache that did not come whole.
  */
 export async function cacheRunForOffline(o: { run: string; secret: string; manifestText: string | null; onProgress?(p: CacheProgress): void }): Promise<{ files: number; bytes: number }> {
-  const manifest = o.manifestText === null ? undefined : parseManifest(o.manifestText); // no model: the run is checked out with its computer only (?brain=off)
+  const sha = async (b: Uint8Array) => hex(await crypto.subtle.digest("SHA-256", b as BufferSource));
+  // no model: the run is checked out with its computer only (?brain=off). A base and adapters: the manifest only, the FileStore (OPFS) already holds every file whole.
+  const home = o.manifestText === null ? undefined : await describeHome(o.manifestText, sha);
+  const manifest = home ? { chunks: home.cacheChunks } : undefined;
   const cache = await caches.open(CACHE_NAME);
   const shell = ((await (await fetch("/offline.json", { cache: "no-store" })).json()) as { files: string[] }).files;
-  const pages = [`/run/${encodeURIComponent(o.run)}`, ...shell];
+  // a stage served from this origin under /show/ lists its own files; they are cached too, so a reload of the stage survives the network going away
+  const show = await stageFiles(() => fetch("/show/offline.json", { cache: "no-store" }));
+  const pages = [`/run/${encodeURIComponent(o.run)}`, ...shell, ...show.filter((f) => !shell.includes(f))];
   const total = pages.length + (manifest ? 1 + manifest.chunks.length : 0);
   let done = 0;
   let bytes = 0;
@@ -102,7 +107,7 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
   }
   const work = (path: string) => `${location.origin}/api/runs/${encodeURIComponent(o.run)}/work/${path}`;
   if (!manifest) return { files: total, bytes };
-  await cache.put(cacheKey(work("home/model/manifest.json")), new Response(o.manifestText, { headers: { "content-type": "application/octet-stream" } }));
+  await cache.put(cacheKey(work(home!.path)), new Response(o.manifestText, { headers: { "content-type": "application/octet-stream" } }));
   tick("the model's manifest");
   for (const chunk of manifest.chunks) {
     const key = cacheKey(work(chunk.path));

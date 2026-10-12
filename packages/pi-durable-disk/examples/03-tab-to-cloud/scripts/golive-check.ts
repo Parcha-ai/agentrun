@@ -48,7 +48,7 @@ const mark = join(runDir, "store", "checkout.json");
 try {
   page = await device.open(url);
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
-  await ev(`window.addEventListener("walkshome:checkin", (e) => (globalThis.__events ??= []).push("checkin:" + e.detail.phase)); window.addEventListener("walkshome:net", (e) => (globalThis.__events ??= []).push("net:" + (e.detail.online ? "up" : "down"))); 0`);
+  await ev(`window.addEventListener("walkshome:checkin", (e) => (globalThis.__events ??= []).push("checkin:" + e.detail.phase)); window.addEventListener("walkshome:tools", (e) => (globalThis.__tools ??= []).push(e.detail.tools)); window.addEventListener("walkshome:net", (e) => (globalThis.__events ??= []).push("net:" + (e.detail.online ? "up" : "down"))); 0`);
   const dest = join(work, "home/model");
   mkdirSync(dest, { recursive: true });
   for (const n of readdirSync(join(MODEL_DISK, "home/model")).sort((a, b) => (a === "manifest.json" ? 1 : b === "manifest.json" ? -1 : a.localeCompare(b)))) copyFileSync(join(MODEL_DISK, "home/model/", n), join(dest, n));
@@ -91,6 +91,9 @@ try {
   for (const t of turns) console.log(`  turn ${(t.ms / 1000).toFixed(1)} s: ${t.call ? "call " + t.call.slice(0, 160) : "answer"}${t.problem ? " PROBLEM " + t.problem : ""}`);
   for (const i of items.filter((x) => x.kind === "tool")) console.log(`  [tool ${i.status}] ${i.name} -> ${JSON.stringify((i.output ?? "").slice(0, 100))}`);
   ok("the model offline made tool calls and pi's real tools ran them", items.some((i) => i.kind === "tool" && i.status === "done"), items.map((i) => `${i.kind}:${i.status ?? ""}`));
+  const toolEvents = (await ev<{ name: string; status: string; args: string; output: string }[][] | undefined>("globalThis.__tools")) ?? [];
+  const seenNames = new Set(toolEvents.flat().filter((t) => t.status === "done").map((t) => t.name));
+  ok("the stage heard the offline tool rows as they changed (walkshome:tools: write and bash, done, with args and output)", seenNames.has("write") && seenNames.has("bash") && toolEvents.flat().some((t) => t.name === "bash" && /hi/.test(t.output) && /node hello\.js/.test(t.args)) && toolEvents.flat().some((t) => t.status === "running"), toolEvents.slice(-3));
   const run1 = await ev<{ exitCode?: number; output?: string }>("demo.exec('node hello.js')");
   ok("hello.js is on the in-browser computer and prints hi", run1.exitCode === 0 && (run1.output ?? "").trim() === "hi", run1);
   await ev("demo.writeFile('notes/offline.txt', 'written while offline')");

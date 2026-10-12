@@ -69,7 +69,11 @@ test("a server's own error is the answer, not a reason to use an old copy", asyn
 
 test("which requests are immutable: the model's folder of a run, nothing else", () => {
   assert.equal(isImmutable(CHUNK), true);
-  assert.equal(isImmutable(`${ORIGIN}/api/runs/r1/work/` + "home/model/manifest.json"), true);
+  const w = `${ORIGIN}/api/runs/r1/work/`;
+  assert.equal(isImmutable(w + "home/model/manifest.json"), true);
+  assert.equal(isImmutable(w + "home/manifest.json"), true, "a base and its adapters: the manifest the checkout cached");
+  assert.equal(isImmutable(w + "home/manifest.json.tmp"), false);
+  assert.equal(isImmutable(w + "home/notes.txt"), false);
   assert.equal(isImmutable(`${ORIGIN}/api/runs/r1/work/notes/a.txt`), false);
   assert.equal(isImmutable(SCRIPT), false);
 });

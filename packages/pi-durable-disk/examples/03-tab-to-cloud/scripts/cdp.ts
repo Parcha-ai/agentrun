@@ -67,7 +67,7 @@ export class Device {
   }
 
   async open(url: string, size = { width: 1280, height: 800 }): Promise<Page> {
-    const { targetId } = await this.cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank", browserContextId: this.contextId, ...size });
+    const { targetId } = await this.cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank", browserContextId: this.contextId, ...(this.pages.length === 0 ? size : {}) });
     const { sessionId } = await this.cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
     const page = new Page(this.cdp, targetId, sessionId);
     await page.send("Page.enable");

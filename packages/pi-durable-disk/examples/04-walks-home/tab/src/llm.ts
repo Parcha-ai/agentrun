@@ -6,19 +6,23 @@ import { Wllama } from '@wllama/wllama/esm/index.js'; // the package's built out
 import type { Llm } from './modelhost.ts';
 import { DEFAULT_SAMPLING } from './sampling.ts';
 import { LimitTracker } from './limits.ts';
+import { loadWithAdapters, type LoraSelection } from './adapters.ts';
 export const N_CTX = 2048;
 export const REPEAT_LAST_N = 64;
 
 export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) => Wllama = (c) => new Wllama(c)): Llm {
   let w: Wllama | null = null;
-  const release = async () => { const old = w; w = null; try { await old?.exit(); } catch { /* it may already be gone */ } };
+  let lora: LoraSelection | undefined; // with adapters loaded: the selection every request carries (llama.cpp's server applies the load-time scale, 0, to a request without one)
+  const release = async () => { const old = w; w = null; lora = undefined; try { await old?.exit(); } catch { /* it may already be gone */ } };
   return {
-    async load(parts, { threads }) {
+    async load(parts, { threads, adapters, active }) {
       await release(); // a second load replaces the model: the old one's workers and memory are freed first
       const next = make({ default: wasmUrl });
       w = next;
       try {
-        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true, swa_full: true }); // a trailing assistant message is continued, not answered; swa_full: Gemma 3's sliding-window cache would otherwise re-evaluate the previous assistant turn at every step of a tool loop (D0 measured 79 s -> 27.5 s for a 4-step task, +33 MB of KV); the prompt cache itself stays on (never cache_prompt: false)
+        const params = { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true, swa_full: true };
+        if (adapters?.length) lora = (await loadWithAdapters(next, [new Blob(parts as BlobPart[])], adapters, params)).select(active ?? {}); // a base and its adapters: every one at 0, the active ones on, per request
+        else await next.loadModel([new Blob(parts as BlobPart[])], params); // a trailing assistant message is continued, not answered; swa_full: Gemma 3's sliding-window cache would otherwise re-evaluate the previous assistant turn at every step of a tool loop (D0 measured 79 s -> 27.5 s for a 4-step task, +33 MB of KV); the prompt cache itself stays on (never cache_prompt: false)
       } catch (e) {
         await release(); // a half-started model is released, not left running
         throw e;
@@ -30,7 +34,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       // The repeat penalty goes under the names llama.cpp's server reads (repeat_penalty, repeat_last_n): wllama's own `penalty_repeat` is not applied
       // (measured: greedy decoding with penalty 2.0 gave the same text as 1.0). The window is llama.cpp's default, so an evaluation outside the tab agrees.
       const sent = prefill === undefined ? messages : [...messages, { role: 'assistant' as const, content: prefill }]; // a pre-filled assistant turn: the model continues it
-      const request = { messages: sent, max_tokens: maxTokens, ...(stop?.length ? { stop } : {}), ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, stream: true, abortSignal: signal };
+      const request = { messages: sent, max_tokens: maxTokens, ...(stop?.length ? { stop } : {}), ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, ...(lora ? { lora } : {}), stream: true, abortSignal: signal };
       const stream = await w.createChatCompletion(request as Parameters<Wllama['createChatCompletion']>[0] & { stream: true });
       // llama.cpp streams the prefill back at the start of a continuation: it is not new text, so it is stripped (a build that does not echo it passes through)
       const echoed = (t: string) => prefill !== undefined && prefill.length > 0 && prefill.startsWith(t);
@@ -57,7 +61,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       const ctl = new AbortController();
       const onAbort = () => ctl.abort();
       if (signal.aborted) ctl.abort(); else signal.addEventListener('abort', onAbort, { once: true });
-      const request = { prompt: req.prompt, max_tokens: req.maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, ...(req.grammar ? { grammar: req.grammar } : {}), ...(req.grammar && req.lazy ? { grammar_lazy: true, grammar_triggers: [{ type: 1, value: req.lazy.trigger }] } : {}), ...(req.extra ?? {}), stream: true, abortSignal: ctl.signal };
+      const request = { prompt: req.prompt, max_tokens: req.maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, ...(req.grammar ? { grammar: req.grammar } : {}), ...(req.grammar && req.lazy ? { grammar_lazy: true, grammar_triggers: [{ type: 1, value: req.lazy.trigger }] } : {}), ...(req.extra ?? {}), ...(lora ? { lora } : {}), stream: true, abortSignal: ctl.signal };
       let text = '', chunks = 0, finish: string | null = null, promptTokens = 0, predicted = 0, stoppedAt = -1, timings: Record<string, number> | undefined;
       const began = performance.now();
       const limits = new LimitTracker(req.limits);

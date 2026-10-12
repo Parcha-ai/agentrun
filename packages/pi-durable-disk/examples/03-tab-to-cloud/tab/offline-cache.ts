@@ -23,3 +23,22 @@ export function isolated(response: Response): Response {
   for (const [name, value] of Object.entries(ISOLATION_HEADERS)) headers.set(name, value);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
+
+/**
+ * The stage's own files, for a stage that is served from this origin under /show/ (serve.ts --show-dir): `/show/offline.json` is `{files: ["/show/", "/show/main.js", ...]}`, the URL paths the stage
+ * requests, its document's included. Absent (a 404, nothing served there) it is no files; present, every entry must be a path under /show/ with no query, no fragment and no `..`, so what a
+ * stage lists can never name the run's own files or another origin. Anything else is an error: a stage that cannot be listed whole is not cached half.
+ */
+export async function stageFiles(fetchList: () => Promise<Response>): Promise<string[]> {
+  const r = await fetchList();
+  if (r.status === 404) return [];
+  if (!r.ok) throw new Error(`/show/offline.json: ${r.status}`);
+  const body = (await r.json().catch(() => undefined)) as { files?: unknown } | undefined;
+  if (!body || !Array.isArray(body.files)) throw new Error("/show/offline.json is not {files: [...]}");
+  const out: string[] = [];
+  for (const f of body.files) {
+    if (typeof f !== "string" || !f.startsWith("/show/") || /[?#\\]/.test(f) || f.split("/").some((part) => part === ".." || part === ".") || f.includes("//")) throw new Error(`/show/offline.json lists ${JSON.stringify(f)}: only paths under /show/ with no query, fragment or dot segments`);
+    out.push(f);
+  }
+  return [...new Set(out)];
+}

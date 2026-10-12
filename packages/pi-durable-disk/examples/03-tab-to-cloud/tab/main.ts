@@ -11,6 +11,8 @@ import { BRAIN_PROVIDER } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
+import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
+import { comeHome, describeHome, opfsFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
@@ -59,11 +61,15 @@ const state = {
   net: { online: navigator.onLine, at: Date.now(), reason: navigator.onLine ? "" : "the browser says it is offline" },
   /** "Go online" in progress, in words (shown next to the button). */
   checkingIn: undefined as { text: string } | undefined,
+  /** The trained model is being replaced by a newer one (watchRehome): messages wait, the model answers nothing meanwhile. */
+  rehoming: false,
   /** A check-in whose answer never came: kept (and the page paused) until it is sent again. */
   pendingCheckin: undefined as { record: CheckoutRecord; host: ModelHost | undefined } | undefined,
   /** Every check-in this page made and saw complete. */
   checkins: [] as CheckinEvent[],
   /** A scripted stand-in for the cloud model (a check's, installed by `demo.stubCloud`), and what its requests carried. */
+  /** What the manifest watcher last saw (for checks): polls, the id it read, why it could not read. */
+  watch: { polls: 0, seen: null as string | null, error: null as string | null },
   /** Every routing decision this page made (brain-router.ts), as the stage event for the decision card. */
   decisions: [] as ReturnType<typeof brainEvent>[],
   cloudScript: undefined as ScriptedTurn[] | undefined,
@@ -88,6 +94,8 @@ const state = {
   /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
   agentModel: "",
   /** What each tool turn of the trained model cost and produced (?configure=1), for checks and the page's stats. */
+  /** Each homecoming of a base and adapters: what was planned, the bytes fetched and how long it took (`model-homecoming`, and the base's prefetch). */
+  homecomings: [] as Record<string, unknown>[],
   toolTurns: [] as { ms: number; tokensPerSecond: number | null; promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; call: string | null; problem: string | null; raw: string; completions: unknown[]; prompt: string }[],
   /** The trained model's host for this run, once the page has started on it. */
   brain: undefined as Brain | undefined,
@@ -193,10 +201,28 @@ function el(tag: string, attrs: Record<string, string> = {}, ...children: (Node 
   return node;
 }
 
+/** The tool rows of the current task (after the last user message) as last announced: only a change is announced again. */
+let lastTools = "";
+
+/**
+ * The tool strip for a stage that cannot read the transcript (offline the pipe is cut): every change of the current task's tool rows is announced as `walkshome:tools`
+ * {tools: [{id, name, args (the JSON string), output (cut at 4000 characters), status: running | done | error | interrupted}]}.
+ */
+function announceTools(items: readonly ChatItem[]): void {
+  const lastUser = items.map((i) => i.kind).lastIndexOf("user");
+  const tools = items.slice(lastUser + 1).filter((i): i is Extract<ChatItem, { kind: "tool" }> => i.kind === "tool").map((t) => ({ id: t.id, name: t.name, args: t.args, output: t.output.length > 4000 ? `${t.output.slice(0, 4000)}…` : t.output, status: t.status }));
+  const json = JSON.stringify(tools);
+  if (json === lastTools) return;
+  lastTools = json;
+  announce("tools", { tools });
+}
+
 function renderChat(): void {
   const list = $("chat");
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
-  list.replaceChildren(...state.chat.items().map(renderItem));
+  const items = state.chat.items();
+  announceTools(items);
+  list.replaceChildren(...items.map(renderItem));
   if (atBottom) list.scrollTop = list.scrollHeight;
   noticeSeen();
 }
@@ -277,7 +303,7 @@ function render(): void {
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
   const offline = state.mode === "offline";
-  const writer = state.mode === "writer" && !state.leaving && !state.checkingOut && !state.brainPending;
+  const writer = state.mode === "writer" && !state.leaving && !state.checkingOut && !state.brainPending && !state.rehoming;
   // Checked out to this browser: the trained model's conversation answers, once it is the active one.
   const offlineReady = offline && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
   // Elsewhere, a message goes to whoever runs the run, through the server.
@@ -435,6 +461,12 @@ async function followConversation(runtime: TabRuntime, conversation: Conversatio
 }
 
 /** A file of the run's disk (work/) over HTTP, with the run's secret as the bearer token; null when it is not there. Files under a lazy prefix (the model's folder) are read this way too. */
+/** The same file, past the service worker's cache (`?fresh`): after a checkout the worker answers the manifest from its cache first, and a poll for a NEW manifest must reach the server. */
+async function readWorkFresh(path: string): Promise<Uint8Array | null> {
+  const r = await fetch(`/api/runs/${encodeURIComponent(run)}/work/${path}?fresh=1`, { headers: { authorization: `Bearer ${secret}` }, cache: "no-store" });
+  return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+}
+
 async function readWork(path: string): Promise<Uint8Array | null> {
   const r = await fetch(`/api/runs/${encodeURIComponent(run)}/work/${path}`, { headers: { authorization: `Bearer ${secret}` }, cache: "no-store" });
   return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
@@ -483,10 +515,41 @@ async function swapWhenHome(runtime: TabRuntime): Promise<void> {
     if (state.runtime !== runtime || state.mode !== "writer") return;
     let text: string | null = null;
     try { text = await readManifest(readWork); } catch { text = null; }
-    if (text) break;
+    if (text && !(await prefetchBase(text))) break;
     await new Promise((r) => setTimeout(r, 2000));
   }
   await startBrain(runtime);
+}
+
+/** Model files kept whole by sha256 in this browser (OPFS): a base fetched once serves every adapter that comes home after it, and an offline reload reads nothing. */
+const modelFiles = opfsFileStore();
+const sha256hex = async (b: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", b as BufferSource))].map((x) => x.toString(16).padStart(2, "0")).join("");
+let prefetchedBase = "";
+
+/**
+ * A base-and-adapters manifest that lists no adapter yet (the trainer writes it when training starts): the base comes home now, while the agent trains, so the
+ * skill or obsession that follows is an adapter of tens of MB. True while there is no brain to swap to.
+ */
+async function prefetchBase(text: string): Promise<boolean> {
+  let home;
+  try { home = await describeHome(text, sha256hex); } catch { return false; } // not a manifest the brain can read: the brain says why
+  if (home.ready) return false;
+  if (prefetchedBase !== home.id) {
+    prefetchedBase = home.id;
+    state.brainStatus = "the base model is coming home while the agent trains";
+    render();
+    try {
+      const h = await comeHome(text, { readChunk: readWork, sha256: sha256hex, store: modelFiles, now: () => performance.now() });
+      state.homecomings.push({ prefetch: true, plan: h.fetched.plan, fetched_bytes: h.fetched.bytes, fetch_ms: Math.round(h.fetched.ms), name: h.name });
+      announce("homecoming", { phase: "fetched", prefetch: true, plan: h.fetched.plan, fetched_bytes: h.fetched.bytes, fetch_ms: Math.round(h.fetched.ms), name: h.name });
+      state.brainStatus = "the base model is in this browser; the agent is still training";
+    } catch (e) {
+      prefetchedBase = "";
+      state.brainStatus = `the base model did not come home: ${(e as Error).message}`;
+    }
+    render();
+  }
+  return true;
 }
 
 /**
@@ -502,7 +565,16 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
     ...(params.get("configure") === "1" || golive ? { decoding: { history: (params.get("toolhistory") ?? (golive ? "last" : "none")) === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash", "go_online"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
+    files: modelFiles,
     onProgress: (type, b) => {
+      if (type === "model-homecoming") {
+        state.homecomings.push({ ...b, fetch_ms: Math.round(Number(b.fetch_ms)) });
+        announce("homecoming", { phase: "fetched", prefetch: false, plan: b.plan, fetched_bytes: b.fetched_bytes, fetch_ms: Math.round(Number(b.fetch_ms)), active: b.active, adapters: b.adapters, name: b.name, bytes: b.bytes });
+      }
+      if (type === "model-loaded" && state.homecomings.length) {
+        Object.assign(state.homecomings.at(-1)!, { load_ms: Math.round(Number(b.load_ms)), download_ms: Math.round(Number(b.download_ms)) });
+        announce("homecoming", { phase: "loaded", load_ms: Math.round(Number(b.load_ms)), sha256: b.sha256, bytes: b.bytes });
+      }
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
       else if (type === "model-download") state.brainStatus = `the trained model is coming home: chunk ${String(b.done_chunks)} of ${String(b.total_chunks)}`;
       else if (type === "model-loaded") state.brainStatus = "the trained model is loaded; it answers one question as a check";
@@ -528,6 +600,50 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
   state.brainStatus = "";
   render();
   ($("input") as HTMLTextAreaElement).focus();
+  void watchRehome(runtime, brain);
+}
+
+/**
+ * More models can come home after the first: the trainer writes a new manifest (another adapter over the same base). While this tab runs the agent and has a brain, the manifest is watched every 2 s; a new
+ * id loads in place of the old model (only what the file store lacks is fetched) and the conversation is configured onto it, as many times as the run brings models home. A conversation that is running
+ * on the small model waits until the agent is idle first (the model it is configured on is replaced); one that is running on the cloud is left alone.
+ */
+async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
+  for (;;) {
+    await sleepMs(2000);
+    if (state.runtime !== runtime || state.brain !== brain || state.mode !== "writer") return;
+    let id: string, text: string | null;
+    try {
+      text = await readManifest(readWorkFresh);
+      state.watch.polls++;
+      if (!text) continue;
+      const home = await describeHome(text, sha256hex);
+      state.watch.seen = home.id;
+      if (!home.ready || home.id === brain.currentId) continue;
+      id = home.id;
+    } catch (error) {
+      state.watch.error = (error as Error).message;
+      continue; // not readable now: asked again
+    }
+    try {
+      if ((await brain.current()) === "tab-local" && (await untilIdle(runtime.harness, 120_000)) !== "idle") continue;
+      if (state.runtime !== runtime || state.brain !== brain) return;
+      state.brainStatus = "a new model is coming home";
+      state.rehoming = true;
+      render();
+      let result: Awaited<ReturnType<Brain["rehome"]>>;
+      try {
+        result = await brain.rehome(text, cloudAgent(state.agentModel));
+      } finally {
+        state.rehoming = false;
+      }
+      state.brainStatus = result === "failed" ? "the new model did not load" : "";
+      announce("homecoming", { phase: "swapped", result, id, rehomes: brain.rehomes });
+    } catch (error) {
+      state.brainStatus = `the new model did not come home: ${(error as Error).message}`;
+    }
+    render();
+  }
 }
 
 /** Where the chat input goes. */
@@ -563,12 +679,18 @@ async function takeOffline(): Promise<void> {
   try {
     say("waiting for the agent to be idle");
     if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
-    const manifestText = noBrain ? null : await readManifest(readWork);
+    const manifestText = noBrain ? null : await readManifest(readWorkFresh); // the manifest as the server has it now, not as the service worker cached it
     if (!noBrain && !manifestText) throw new Error("the model's manifest is not on the run's disk");
-    const manifest = manifestText ? (JSON.parse(manifestText) as { sha256: string; size: number; chunks: unknown[] }) : { sha256: "", size: 0, chunks: [] };
+    const home = manifestText ? await describeHome(manifestText, sha256hex) : undefined;
+    const manifest = home ? { sha256: home.id, size: home.bytes, chunks: home.chunks } : { sha256: "", size: 0, chunks: [] };
     say("registering the service worker");
     await registerOfflineWorker();
     const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
+    // A base and adapters are kept whole in the browser's file store, not as the service worker's chunks: after the handover the server cannot be read for them, so they come home NOW (only what the store lacks).
+    if (manifestText && isBaseAdapters(manifestText)) {
+      say("bringing the model's files into this browser");
+      await comeHome(manifestText, { readChunk: readWork, sha256: sha256hex, store: modelFiles, now: () => performance.now(), onProgress: (p) => say(`bringing the model's files into this browser: ${p.done} of ${p.total}`) });
+    }
     if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent started answering while the model was cached: try again");
     // The browser is asked to keep this site's storage: once the run is handed over, this is the only copy. A browser that will not is a warning (a refusal with ?persist=require).
     const persistent = (await navigator.storage?.persisted?.().catch(() => false)) || (await navigator.storage?.persist?.().catch(() => false)) || false;
@@ -605,7 +727,7 @@ async function takeOffline(): Promise<void> {
     if (head < 0 || !record) throw new Error("the store kept changing: not handed over");
     record = { ...record, state: "done", head };
     await writeCheckout(record);
-    await leaveForOffline(record, brain?.host);
+    await leaveForOffline(record, brain && home && brain.currentId === home.id ? brain.host : undefined); // the loaded model is adopted only when it is the one the manifest names
   } catch (error) {
     state.checkout = undefined;
     if (uncertain) {
@@ -699,12 +821,31 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
 /** What the page says to the stage around it and to anything listening in the page: a DOM event (`walkshome:<type>`) and, inside a frame, a message to the parent. */
 function announce(type: string, detail: Record<string, unknown>): void {
   window.dispatchEvent(new CustomEvent(`walkshome:${type}`, { detail }));
+  const message = { source: "walks-home-tab", type, run, ...detail };
   try {
-    if (window.parent !== window) window.parent.postMessage({ source: "walks-home-tab", type, run, ...detail }, location.origin);
+    if (window.parent !== window) window.parent.postMessage(message, stageOrigin ?? location.origin);
   } catch {
     // a parent that is not reachable is not told
   }
+  try {
+    // A stage that opened this page with window.open names its origin (?stage=<origin>): only that origin is posted to, never "*".
+    if (stageOrigin && window.opener) (window.opener as Window).postMessage(message, stageOrigin);
+  } catch {
+    // an opener that is gone is not told
+  }
 }
+
+/** The origin of the stage that opened or frames this page (`?stage=<origin>`), when it names one: a messages' only target besides this page's own origin. */
+const stageOrigin: string | undefined = (() => {
+  const v = new URLSearchParams(location.search).get("stage");
+  if (!v) return undefined;
+  try {
+    const u = new URL(v);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.origin : undefined;
+  } catch {
+    return undefined;
+  }
+})();
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -967,7 +1108,7 @@ function onFrame(frame: PipeFrame): void {
       return;
     case "submit":
       // A message a viewer typed: this tab runs the run.
-      if (state.runtime && state.mode === "writer" && !state.checkingOut && !state.brainPending) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+      if (state.runtime && state.mode === "writer" && !state.checkingOut && !state.brainPending && !state.rehoming) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
       return;
     default:
       return;
@@ -1130,7 +1271,7 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text || state.checkingOut || state.checkingIn || state.brainPending) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
+  if (!text || state.checkingOut || state.checkingIn || state.brainPending || state.rehoming) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
   if (!state.runtime) {
     if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
     input.value = "";
@@ -1261,6 +1402,9 @@ void boot();
   saved: async () => (await loadWorkspace(run)).map((e) => ({ path: e.path, kind: e.kind, text: e.kind === "file" ? new TextDecoder().decode(e.bytes).slice(0, 400) : null })),
   /** The tool turns of the trained model so far (?configure=1). */
   toolTurns: () => state.toolTurns,
+  homecomings: () => state.homecomings,
+  /** The brain's current identity (the active adapter's sha256, or the merged model's) and how many times a later homecoming replaced the model. */
+  brainId: () => (state.brain ? { id: state.brain.currentId ?? null, modelId: state.brain.modelId ?? null, rehomes: state.brain.rehomes } : null),
   /** The computer while checked out: whether it booted from the cache, how long that took, how many files came back from OPFS, why not. */
   computer: () => state.offline?.computer ?? null,
   /** Run a shell command on the page's computer (a check; the agent's own tools run through the Harness). */
