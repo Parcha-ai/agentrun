@@ -40,6 +40,45 @@ export function signatureTools(system: string): string[] {
   return [...system.matchAll(/^([a-z][a-z0-9_]*)\(/gm)].map((m) => m[1]!);
 }
 
+/**
+ * The values a signature prefix offers each tool's parameters, where its line lists them (`part: torso|legs|all`): a free text or a number (`name: string`,
+ * `factor: number 0.5..2.0`) lists none.
+ */
+export function signatureEnums(system: string): Record<string, Record<string, string[]>> {
+  const out: Record<string, Record<string, string[]>> = {};
+  for (const m of system.matchAll(/^([a-z][a-z0-9_]*)\(([^)]*)\)/gm)) {
+    const params: Record<string, string[]> = {};
+    for (const arg of m[2]!.split(/,\s*/)) {
+      const at = arg.indexOf(":");
+      const values = arg.slice(at + 1).trim();
+      if (at > 0 && values.includes("|")) params[arg.slice(0, at).trim()] = values.split("|").map((v) => v.trim());
+    }
+    out[m[1]!] = params;
+  }
+  return out;
+}
+
+/**
+ * The tools a request is locked to (D1's rule for v5 and V5T, robot_eval's build_gbnf over v6_lock.py's tools): each parameter cut to the values the prompt's
+ * signature line offers (v5's names four parts, V5T's sixteen tags), then, on a body written as code, set_color's and set_shape's part cut to that body's tags
+ * (and all, for set_color), and do's skill to the skills that came home. A tool left with an empty choice is dropped (do when none of the skills home is one the
+ * prompt names, set_shape when none of a code body's tags is). The registry's own schemas stay wider, so every host agrees
+ * on them; this is the model's view, and the grammar built from it is the lock.
+ */
+export function robotLock(tools: readonly ToolChatTool[], o: { system: string; home: readonly string[]; tags?: readonly string[] }): ToolChatTool[] {
+  const offered = signatureEnums(o.system);
+  return tools.flatMap((tool) => {
+    let t = tool;
+    for (const [property, values] of Object.entries(offered[t.function.name] ?? {})) t = narrowEnum([t], property, values)[0]!;
+    if (o.tags && (t.function.name === "set_color" || t.function.name === "set_shape")) t = narrowEnum([t], "part", [...o.tags, "all"])[0]!;
+    if (t.function.name === "do") t = narrowEnum([t], "skill", o.home)[0]!;
+    // a tool with nothing left to choose is not offered: do when no skill the prompt names came home (none, or only custom-named ones), set_shape on a code
+    // body whose tags the prompt does not name; an empty choice is a grammar nothing satisfies
+    const props = (t.function.parameters as { properties?: Record<string, { enum?: unknown[] }> } | undefined)?.properties ?? {};
+    return Object.values(props).some((p) => Array.isArray(p.enum) && p.enum.length === 0) ? [] : [t];
+  });
+}
+
 /** The model's view for a signature prefix: the conversation's tools that the prefix names, in its order; nothing else. */
 export function signatureView(tools: readonly ToolChatTool[], names: readonly string[]): ToolChatTool[] {
   return names.flatMap((n) => tools.filter((t) => t.function.name === n));
