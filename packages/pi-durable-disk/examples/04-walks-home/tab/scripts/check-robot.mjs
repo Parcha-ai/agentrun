@@ -162,6 +162,17 @@ try {
   ok('creature/fit.json in the run\'s work/ says the same: the body, and for each skill whether it fits and which body it was taught for', fit.body_sha === mismatch.body_sha && fit.not_fitting.join() === 'walk,sprint' && fit.skills.walk.fits === false && fit.skills.walk.taught_for_body_sha === mismatch.previous_body_sha, fit);
   await shot('5-skills');
   ok('nothing the robot did produced an error on the page', (await inner("document.getElementById('err').textContent")) === '', await inner("document.getElementById('err').textContent"));
+  // another way the body changes: the page is handed a design (a preset or a drawing, not the agent's file): the fit file and the event follow all the same
+  n = await ev('events.length');
+  await ev(`document.getElementById('app').contentWindow.postMessage({ ns: 'walks-home', type: 'load-design', design: ${JSON.stringify(defaultDesign(3))} }, location.origin)`);
+  const drawn = await waitEvent('body-mismatch', n);
+  const fit2 = JSON.parse(await ev("new TextDecoder().decode(disk['creature/fit.json'])"));
+  ok('body-mismatch and fit.json follow a body that was not the agent\'s edit (a design loaded into the page)', drawn && fit2.body_sha === drawn.body_sha && drawn.body_sha !== mismatch.body_sha && fit2.not_fitting.join() === 'walk,sprint', { drawn, fit2 });
+  // a skill the manifest drops leaves the fit file at once
+  await put('home/skills.json', JSON.stringify({ version: 1, body_mjcf_sha256: fixture.mjcf_sha256, default: 'walk', skills: { walk: { policy: 'skills/walk.json', command: 0.3, label: 'walk' } } }));
+  let fit3 = fit2;
+  for (let t = 0; t < 15000 && Object.keys(fit3.skills).length !== 1; t += 250) { await sleep(250); fit3 = JSON.parse(await ev("new TextDecoder().decode(disk['creature/fit.json'])")); }
+  ok('a skill dropped from the manifest is dropped from creature/fit.json', Object.keys(fit3.skills).join() === 'walk' && fit3.not_fitting.join() === 'walk', fit3);
 } catch (e) {
   console.log(`FAIL ${e.message}`);
   failed++;

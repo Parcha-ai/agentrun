@@ -8,6 +8,7 @@ import { dummyPolicy } from './dummy.ts';
 import { presetForSha } from './bodies.ts';
 import { bodyNotes } from './rules.ts';
 import { Stats } from './stats.ts';
+import { FitWriter, fitSnapshot } from './fit.ts';
 import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
 import { UntrainedBrain } from './untrained.ts';
 import { DraftCommitter } from './draft.ts';
@@ -300,6 +301,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   if (errs.length) { showError(errs.join('\n')); return; }
   showError('');
   const built = buildMjcf(design, app.world ?? undefined);
+  const previousBodySha = app.bodySha;
   // The body's identity (what a policy is checked against) never includes the terrain.
   app.bodySha = await sha256Hex(app.world ? buildMjcf(design).xml : built.xml);
   // A policy belongs to one body (mjcf_sha256). Take it off BEFORE the new simulation exists and before any await: the page
@@ -332,6 +334,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   }
   applyCommand();
   renderPairs();
+  await publishFit(previousBodySha); // every way the body changes (the agent's edit, a preset, the drawing) ends here
 }
 
 /**
@@ -347,10 +350,8 @@ async function applyRobot(text: string) {
   name.hidden = robot.name === '' || robot.edits === 0;
   const bodyChanged = bodyKey(robot.design) !== bodyKey(app.sketcher.get());
   if (bodyChanged) {
-    const previousBodySha = app.bodySha;
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
-    await publishFit(previousBodySha);
   }
   if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
@@ -365,7 +366,9 @@ async function onSkillsManifest(text: string) {
   post('skills-home', { skills: Object.keys(m.skills), default: m.default, labels: Object.fromEntries(Object.entries(m.skills).map(([k, v]) => [k, v.label])) });
   const want = wantedSkill ?? (app.policy ? null : m.default);
   if (want) await switchSkill(want);
+  for (const name of [...skillTexts.keys()]) if (!(name in m.skills)) { skillTexts.delete(name); installedSha.delete(name); }
   watchSkillFiles(m);
+  await publishFit(null); // a skill the manifest dropped leaves the file now, not at the next install
   await installSkills(m);
 }
 
@@ -394,8 +397,12 @@ async function installSkills(m: SkillManifest) {
   }
 }
 
-/** One skill's file: loaded to check it, announced when its bytes are new. `stale` says a newer round replaced this one. */
+/** One skill's file: loaded to check it, announced when its bytes are new. `stale` says a newer round replaced this one. The fit file is refreshed whatever came of it (a skill that cannot be borrowed still changes what fits). */
 async function installSkill(name: string, text: string, stale: () => boolean = () => false) {
+  try { await installSkillNow(name, text, stale); } finally { await publishFit(null); }
+}
+
+async function installSkillNow(name: string, text: string, stale: () => boolean) {
   const sha = await textSha(text);
   skillTexts.set(name, text);
   if (installedSha.get(name) === sha) return;
@@ -410,32 +417,22 @@ async function installSkill(name: string, text: string, stale: () => boolean = (
   if (stale()) return;
   installedSha.set(name, sha);
   post('skill-installed', { skill: name, sha, fits, ms_since_manifest: performance.now() - manifestSeenAt });
-  await publishFit(null);
 }
 
 const FIT_PATH = 'creature/fit.json';
-let lastFit = '';
-const taughtFor = (text: string): string | null => { try { const v = (JSON.parse(text) as { mjcf_sha256?: unknown }).mjcf_sha256; return typeof v === 'string' ? v : null; } catch { return null; } };
+const fitWriter = new FitWriter((text) => new ParentBackend(windowBus(), FIT_PATH).write(new TextEncoder().encode(text)), (ms) => new Promise<void>((r) => setTimeout(r, ms)));
 
 /**
- * Which of the installed skills were taught for the body on screen, as a typed file in the run's work/ (creature/fit.json: the stage's poller reads it, nothing parses prose) and, when the body just changed,
- * as the `body-mismatch` event: the previous body's hash, the new one's, and the skills that no longer fit (the robot stumbles with them until the cluster relearns them for this body).
+ * Which of the installed skills were taught for the body on screen, as a typed file in the run's work/ (creature/fit.json: the stage's poller reads it, nothing parses prose; fit.ts) and, when the body just
+ * changed, as the `body-mismatch` event: the previous body's hash, the new one's, and the skills that no longer fit (the robot stumbles with them until the cluster relearns them for this body). Called from every
+ * path that changes what it says: a body built, a manifest read, a skill file read. A write that fails is kept and tried again (FitWriter).
  */
 async function publishFit(previousBodySha: string | null) {
   if (!skills) return;
-  const entries = Object.keys(skills.skills).filter((name) => skillTexts.has(name)).map((name) => {
-    const taught = taughtFor(skillTexts.get(name)!);
-    return [name, { fits: taught === app.bodySha, taught_for_body_sha: taught }] as const;
-  });
-  const notFitting = entries.filter(([, v]) => !v.fits).map(([name]) => name);
-  const fit = { version: 1, body_sha: app.bodySha, skills: Object.fromEntries(entries), not_fitting: notFitting };
-  const text = JSON.stringify(fit) + '\n';
-  if (text !== lastFit) {
-    lastFit = text;
-    await new ParentBackend(windowBus(), FIT_PATH).write(new TextEncoder().encode(text)).catch(() => { lastFit = ''; });
-  }
-  if (previousBodySha !== null && previousBodySha !== app.bodySha && notFitting.length > 0) {
-    post('body-mismatch', { previous_body_sha: previousBodySha, body_sha: app.bodySha, skills_not_fitting: notFitting, skills_fitting: entries.filter(([, v]) => v.fits).map(([name]) => name) });
+  const snap = fitSnapshot(app.bodySha, Object.keys(skills.skills), skillTexts);
+  void fitWriter.submit(snap.text);
+  if (previousBodySha && previousBodySha !== app.bodySha && snap.notFitting.length > 0) { // (an empty hash is the first body of the page: nothing changed)
+    post('body-mismatch', { previous_body_sha: previousBodySha, body_sha: app.bodySha, skills_not_fitting: snap.notFitting, skills_fitting: snap.fitting });
   }
 }
 
