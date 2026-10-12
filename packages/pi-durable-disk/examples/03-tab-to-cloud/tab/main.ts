@@ -49,6 +49,7 @@ import { cloudAgent, rootAgent, setExtraInstructions } from "../agent.ts";
 import { ROBOT_SOPS } from "./robot-sop.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
+import { SubmitGate, type GatePhase } from "./submit-gate.ts";
 import { withHomeFallback } from "./home-env.ts";
 import { currentRobot, defaultSkill, loadSkills, ROBOT_TOOLS } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
@@ -685,6 +686,7 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   // A swap from an earlier visit: the chat input waits for the saved conversation (a message sent now would go to the cloud conversation and be missing from the one that comes back).
   state.brainPending = !golive && new URLSearchParams(location.search).get("brain") !== "off" && (await findSwap(runtime.root, ctx).catch(() => undefined)) !== undefined;
   if (state.brainPending) state.brainStatus = "the trained model is loading; you can talk to it as soon as it is ready";
+  submitGate.open(); // what the server sent while this page was taking the run over (its home turn) runs now
   // the laptop's offline brain is kept in this browser while there is a network, a moment after the page is up (the first visit downloads 501 MB; later ones find it cached)
   if (v5Offline) setTimeout(() => void prefetchV5().catch(() => undefined), 3000);
   await followConversation(runtime, runtime.root);
@@ -950,6 +952,24 @@ async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
 
 /** Where the chat input goes. */
 const target = (): Conversation | undefined => state.active ?? state.runtime?.root;
+
+/** A line the server placed for this run: a user's goes through the brain router like one typed in this page, one at a time in the order they came, and waits while a checkout, a model swap or a rehome holds the page, instead of being lost; the server's own turn goes straight to the conversation. */
+function runServerLine(frame: { text: string; requestId: string }): void {
+  const { text, requestId } = frame;
+  const kind = submitFrameKind(requestId);
+  sendLine = sendLine
+    .then(async () => {
+      for (let waited = 0; (state.checkingOut || state.brainPending || state.rehoming) && waited < 120_000; waited += 100) await new Promise((r) => setTimeout(r, 100));
+      if (!(state.runtime && state.mode === "writer") || state.checkingOut || state.brainPending || state.rehoming) return;
+      if (kind === "server") await target()?.submit({ type: "input", content: text, requestId }, ctx);
+      else await decideAndSubmit(text, requestId);
+    })
+    .catch((error: Error) => {
+      state.banner = `not sent: ${error.message}`;
+      render();
+    });
+}
+const submitGate = new SubmitGate<{ text: string; requestId: string }>(runServerLine);
 
 async function refreshFiles(): Promise<void> {
   if (!state.runtime) return;
@@ -1757,22 +1777,11 @@ function onFrame(frame: PipeFrame): void {
       void sendSnapshot();
       return;
     case "submit": {
-      // A line the server placed for this run (typed here, in the stage, or by an operator), or its own home turn: this tab runs it. A user's line goes through the brain router like one typed in this page, one at a time
-      // in the order they came; it waits while a checkout, a model swap or a rehome holds the page, instead of being lost.
-      if (!(state.runtime && state.mode === "writer")) return;
-      const { text, requestId } = frame;
-      const kind = submitFrameKind(requestId);
-      sendLine = sendLine
-        .then(async () => {
-          for (let waited = 0; (state.checkingOut || state.brainPending || state.rehoming) && waited < 120_000; waited += 100) await new Promise((r) => setTimeout(r, 100));
-          if (!(state.runtime && state.mode === "writer") || state.checkingOut || state.brainPending || state.rehoming) return;
-          if (kind === "server") await target()?.submit({ type: "input", content: text, requestId }, ctx);
-          else await decideAndSubmit(text, requestId);
-        })
-        .catch((error: Error) => {
-          state.banner = `not sent: ${error.message}`;
-          render();
-        });
+      // A line the server placed for this run (typed here, in the stage, or by an operator), or its own home turn: this tab runs it. A page that is still taking the run over (it has said `switched`
+      // and is not yet the writer) keeps the line and runs it when it is ready: the server's home turn comes about 15 ms after `switched`, and was dropped here when the page's last read of its
+      // conversation was slower than that (a slow link, a loaded laptop): no home turn, a 60 s wait, then the user's lines behind it. Only a page that is not taking a run over drops it.
+      const phase: GatePhase = state.runtime && state.mode === "writer" ? "ready" : state.mode === "booting" || state.mode === "connecting" ? "starting" : "gone";
+      if (submitGate.offer(frame, phase) === "held") announce("submit-held", { requestId: frame.requestId, mode: state.mode });
       return;
     }
     default:
@@ -1861,6 +1870,8 @@ function watching(viewing: Viewing): void {
 // ---- connection --------------------------------------------------------------------------------------------------------
 
 async function connect(mode: "write" | "view", takeover = false, switchId?: string): Promise<void> {
+  submitGate.discard(); // a line held for an earlier attach is not run by this one
+  if (mode === "write") submitGate.begin(); // everything the server sends until this page is the writer and ready waits its turn, in order
   state.client?.close();
   state.client = undefined;
   if (mode === "write") {
@@ -1911,6 +1922,7 @@ async function connect(mode: "write" | "view", takeover = false, switchId?: stri
 
 async function lost(client: PipeClient, code: string, message: string): Promise<void> {
   if (state.client !== client) return;
+  submitGate.discard();
   if (state.checkingOut) {
     // The pipe closing this socket after the handover was asked is the handover. Before that it is an ordinary loss: kept, so the checkout stops and the loss is handled when it does.
     if (!state.handoverAsked) state.savedLoss = { client, code, message };
