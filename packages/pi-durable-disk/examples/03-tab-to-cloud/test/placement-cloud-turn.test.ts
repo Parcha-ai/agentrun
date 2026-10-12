@@ -313,7 +313,8 @@ describe("a mounted cloud host's turn ends, with messages in flight and with eve
   after(async () => {
     await local.remove();
   });
-  const end = (i: number) => sinks[i]!({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) });
+  // A run_end names the submissions it covers: every viewer is sent its own copy of the same one.
+  const end = (i: number, inputs: number[] = []) => sinks[i]!({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end", ...(inputs.length > 0 ? { inputs } : {}) }] }) });
   const until = async (check: () => boolean, what: string) => {
     for (const stop = Date.now() + 10_000; !check(); await new Promise((r) => setTimeout(r, 30))) if (Date.now() > stop) throw new Error(`timed out waiting for ${what}`);
   };
@@ -355,17 +356,33 @@ describe("a mounted cloud host's turn ends, with messages in flight and with eve
     try {
       r.p1.send({ t: "submit", text: "teach A", requestId: "a" });
       await until(() => submitted.includes("teach A") && sinks.length >= 2, "the first task on the host and both viewers attached");
-      end(0); // A's turn ends (the first viewer's copy)
+      end(0, [1]); // A's turn ends (the first viewer's copy)
       await new Promise((r2) => setTimeout(r2, 100));
       r.p1.send({ t: "submit", text: "teach B", requestId: "b" }); // stays on the host: B's turn begins
       await until(() => submitted.includes("teach B"), "B on the host");
-      end(1); // the second viewer's copy of A's end arrives late
+      end(1, [1]); // the second viewer's copy of A's end arrives late
       await new Promise((r2) => setTimeout(r2, 100));
       r.p1.send({ t: "submit", text: "bring it home", requestId: "c" }); // needs a move
       await new Promise((r2) => setTimeout(r2, 500));
       assert.ok(!events.some((e) => e.event === "switch.start" && e.data.run === r.id && e.data.to === "tab"), "the move home waits for B's own end");
-      end(0); // B's turn really ends
+      end(0, [2]); // B's turn really ends
       await until(() => events.some((e) => e.event === "switch.start" && e.data.run === r.id && e.data.to === "tab"), "the move home after B's end");
+    } finally {
+      r.close();
+    }
+  });
+
+  it("the end of a turn is seen when the first viewer's stream dropped: any viewer's first copy of it counts", async () => {
+    const r = await open("dropped-viewer");
+    try {
+      r.p1.send({ t: "submit", text: "teach A", requestId: "a" });
+      await until(() => submitted.includes("teach A") && sinks.length >= 2, "the first task on the host and both viewers attached");
+      r.p1.send({ t: "submit", text: "bring it home", requestId: "c" }); // needs a move: waits for A's turn
+      await new Promise((r2) => setTimeout(r2, 400));
+      assert.ok(!events.some((e) => e.event === "switch.start" && e.data.run === r.id && e.data.to === "tab"), "it waits for the turn");
+      // The first viewer's stream dropped and never delivers the end; the second viewer's does.
+      end(1, [1]);
+      await until(() => events.some((e) => e.event === "switch.start" && e.data.run === r.id && e.data.to === "tab"), "the move home after the end seen by the second viewer");
     } finally {
       r.close();
     }

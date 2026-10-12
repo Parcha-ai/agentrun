@@ -229,6 +229,8 @@ interface RunState {
   placingCount: number;
   /** Which cloud host's viewers are current: an end relayed from an earlier host (or a stale copy) is not this turn's. */
   cloudEpoch: number;
+  /** The submissions whose run_end has been handled (a run_end names the inputs it covered): every viewer of a mounted host is sent its own copy of an end, and a copy of one already handled is ignored. */
+  endsSeen: Set<string>;
   turnTimer: NodeJS.Timeout | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
@@ -248,6 +250,13 @@ const UPLOAD_QUEUE_LOW = 2 * Math.ceil((CHUNK_BYTES * 4) / 3);
 
 /** The longest user message written to the request file (characters). */
 const REQUEST_FILE_MAX = 4000;
+/** The submissions a run_end covers, as a key (its `inputs`), or undefined when the event does not name them. */
+function endKey(event: Parameters<typeof untag>[0]): string | undefined {
+  const body = untag(event) as { kind?: unknown; events?: unknown } | null;
+  const end = body?.kind === "events" && Array.isArray(body.events) ? (body.events as { type?: unknown; inputs?: unknown }[]).find((e) => e?.type === "run_end") : undefined;
+  return end && Array.isArray(end.inputs) && end.inputs.length > 0 ? JSON.stringify(end.inputs) : undefined;
+}
+
 /** The longest a running agent turn holds back a message that needs a move (a host that never says its turn ended must not hold it for ever). */
 const TURN_BUSY_MS = 120_000;
 
@@ -971,12 +980,17 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       socket.send(frame);
       // A mounted cloud host's events reach the server through this relay, not through a tab's `view` frames: the end of the agent's turn there
       // is read here, once the task's message has reached it (the history a viewer is replayed on attach holds earlier turns' ends).
-      // Every viewer of the run is sent the same events, so only the first of them is read (a second copy of an end would be taken for the end of the
-      // turn that began after it), and only while the host it was attached for is still the run's host.
+      // Only while the host it was attached for is still the run's host.
       if (frame.t !== "event" || state.placement.where !== "cloud" || !endsRun(frame.event)) return;
       if (epoch !== state.cloudEpoch) return;
-      const first = state.cloudViewers.keys().next().value;
-      if (first !== undefined && first !== socket) return;
+      // Every viewer relays its own copy of the end: the first copy of an end for a turn counts, whichever viewer it came through (a viewer's stream can drop and
+      // reconnect later, so no one viewer is the one to ask), and a copy of an end already handled is ignored.
+      const key = endKey(frame.event);
+      if (key !== undefined) {
+        if (state.endsSeen.has(key)) return;
+        state.endsSeen.add(key);
+        if (state.endsSeen.size > 64) state.endsSeen.delete(state.endsSeen.values().next().value!);
+      }
       // A message whose placement is being decided, or waits its turn, counts as waiting too: the finished task's done question would otherwise send the agent away from it.
       const waiting = state.pendingSubmits.some((p) => p.queuedBy) || state.placingCount > 0;
       if (options.placer && state.placedTask?.sent && !waiting) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
@@ -1290,6 +1304,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       turnSince: undefined,
       placingCount: 0,
       cloudEpoch: 0,
+      endsSeen: new Set(),
       turnTimer: undefined,
       placing: Promise.resolve(),
       placedTask: undefined,
