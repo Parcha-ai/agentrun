@@ -5,11 +5,50 @@
 //                    and copies the session's robot.json there (the body this teach step is for, so a body change is the same call again);
 //   env(target)      a conversation with a box in its robot.box doc runs its tools there (D0's RemoteEnv over the link's box); any other, here;
 //   artifacts        the box's /workspace/skills/<skill>/ to <work>/skills/<skill>/ (D0's ArtifactSync), the trainer's own state left on the box.
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ArtifactSync, installPiRun, remoteEnvs, type RemoteBox } from "@parcha/pi-durable-disk";
 import type { AppExtra, AppExtraContext } from "../../03-tab-to-cloud/app-extra.ts";
 import { RobotBox, teachSkills, type ThreadBoxes } from "../cluster/teach-skills.ts";
+
+/** D2's assemble-skills (node alone): the skills the threads trained into the page's format, home/skills.json last. In the box's bundle it sits at robot/policy/. */
+export const ASSEMBLE_SCRIPT = fileURLToPath(new URL("../policy/assemble-skills.ts", import.meta.url));
+
+/**
+ * Bring the skills home on the session's host: `node assemble-skills.ts <work>/skills --home <work>/home`, the default skill walk when it trained, and
+ * without the get-up network when no get-up thread ran (the page then runs the skills without fall recovery). Resolves with the skills that are home;
+ * rejects with what the program said when it refused (exit 2) or found none done (exit 3). Rerunnable: the program writes each file by rename.
+ */
+export async function runAssembleSkills(work: string, options: { script?: string; node?: string } = {}): Promise<readonly string[]> {
+  const script = options.script ?? ASSEMBLE_SCRIPT;
+  if (!existsSync(script)) throw new Error("assemble-skills is not in this build of the robot extra");
+  const dir = join(work, "skills");
+  const args = [script, dir, "--home", join(work, "home")];
+  if (existsSync(join(dir, "walk", "skill.json"))) args.push("--default", "walk");
+  if (!existsSync(join(dir, "get-up", "skill.json"))) args.push("--without-getup");
+  const out = await new Promise<{ code: number | null; text: string }>((resolve, reject) => {
+    const child = spawn(options.node ?? process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let text = "";
+    child.stdout.on("data", (d) => (text += d));
+    child.stderr.on("data", (d) => (text += d));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, text }));
+  });
+  const lines = out.text.trim().split("\n").filter(Boolean);
+  if (out.code !== 0) throw new Error(`assemble-skills exited ${out.code}: ${lines.slice(-3).join(" | ").slice(0, 400)}`);
+  for (const line of lines.reverse()) {
+    try {
+      const event = JSON.parse(line) as { event?: string; skills?: unknown };
+      if (event.event === "skills.home" && Array.isArray(event.skills)) return event.skills.map(String);
+    } catch {
+      // not the program's last line
+    }
+  }
+  throw new Error("assemble-skills printed no skills.home line");
+}
 
 /** Where the session's robot is on its disk (D3's state file) and where the trainers read it on a box. */
 export const ROBOT_FILE = "creature/robot.json";
@@ -56,6 +95,8 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   const boxes = robotBoxes(link, work, log);
   const { teach, thread } = teachSkills({
     boxes,
+    // Inside the teach task, after every thread has flushed: the tool's own result then says how many skills are home.
+    assemble: async () => ({ home: await runAssembleSkills(work) }),
     artifacts: ({ boxId, skill }) => {
       const sync = new ArtifactSync({ box: boxOf(boxId), remote: `/workspace/skills/${skill}`, local: join(work, "skills", skill), exclude: ["work"], onError: (error) => log("robot.artifacts-failed", { skill, error: error.message }) });
       return { start: () => sync.start(), flush: async (context) => void (await sync.flush(context)), stop: () => sync.stop() };

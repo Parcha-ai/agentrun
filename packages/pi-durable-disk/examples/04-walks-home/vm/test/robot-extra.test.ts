@@ -84,3 +84,34 @@ test("without a link the extra does not load", async () => {
   const { default: robotExtra } = await import("../robot-extra.ts");
   assert.throws(() => robotExtra({ link: undefined, work: "/tmp", log: () => undefined }), /no link here/);
 });
+
+test("assembling the skills home: the program's arguments follow what trained, its last line names the skills, and a refusal is an error with what it said", async () => {
+  const { runAssembleSkills } = await import("../robot-extra.ts");
+  const { readFileSync } = await import("node:fs");
+  const work = mkdtempSync(join(tmpdir(), "robot-assemble-"));
+  try {
+    // A stand-in program: it records its arguments, prints a skills.home line, or refuses when asked to.
+    const script = join(work, "fake-assemble.mjs");
+    writeFileSync(script, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(work, "args.json"))}, JSON.stringify(process.argv.slice(2))); if (process.env.FAKE_REFUSE) { console.error("refused: no get-up"); process.exit(2); } console.log(JSON.stringify({ event: "skills.home", skills: ["walk", "spin"] }));\n`);
+    const argsOf = () => JSON.parse(readFileSync(join(work, "args.json"), "utf8")) as string[];
+    mkdirSync(join(work, "skills", "walk"), { recursive: true });
+    writeFileSync(join(work, "skills", "walk", "skill.json"), "{}");
+    // Only walk trained: the default is walk, and with no get-up thread the skills come home without the get-up network.
+    assert.deepEqual(await runAssembleSkills(work, { script }), ["walk", "spin"]);
+    assert.deepEqual(argsOf(), [join(work, "skills"), "--home", join(work, "home"), "--default", "walk", "--without-getup"]);
+    // With a get-up thread there is no --without-getup.
+    mkdirSync(join(work, "skills", "get-up"), { recursive: true });
+    writeFileSync(join(work, "skills", "get-up", "skill.json"), "{}");
+    await runAssembleSkills(work, { script });
+    assert.deepEqual(argsOf(), [join(work, "skills"), "--home", join(work, "home"), "--default", "walk"]);
+    // A refusal says what the program said.
+    process.env.FAKE_REFUSE = "1";
+    await assert.rejects(runAssembleSkills(work, { script }), /exited 2: refused: no get-up/);
+    delete process.env.FAKE_REFUSE;
+    // A missing program is a clear error, not a crash.
+    await assert.rejects(runAssembleSkills(work, { script: join(work, "nope.ts") }), /not in this build/);
+  } finally {
+    delete process.env.FAKE_REFUSE;
+    rmSync(work, { recursive: true, force: true });
+  }
+});

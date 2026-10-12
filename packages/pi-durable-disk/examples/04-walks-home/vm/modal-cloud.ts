@@ -14,7 +14,7 @@
 // and deleted when the run leaves it (stopRemote), on close, and by Modal itself at its timeout.
 //   MODAL_TOKEN_ID, MODAL_TOKEN_SECRET in the server's environment; the boxes never get them.
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
@@ -158,6 +158,8 @@ export interface ModalCloudOptions {
 const ROBOT_BUNDLE_FILES: Readonly<Record<string, string>> = {
   "robot/vm/robot-extra.ts": fileURLToPath(new URL("./robot-extra.ts", import.meta.url)),
   "robot/cluster/teach-skills.ts": fileURLToPath(new URL("../cluster/teach-skills.ts", import.meta.url)),
+  // D2's assemble-skills and the policy loader it checks with (node alone), side by side: only those that exist in this checkout.
+  ...Object.fromEntries(["assemble-skills.ts", "policy.ts", "obs.ts"].map((f) => [`robot/policy/${f}`, fileURLToPath(new URL(`../policy/${f}`, import.meta.url))]).filter(([, source]) => existsSync(source!))),
 };
 
 /** A GPU sandbox's own lifetime unless the caller says otherwise: the backstop when nothing else removes it (a killed server). */
