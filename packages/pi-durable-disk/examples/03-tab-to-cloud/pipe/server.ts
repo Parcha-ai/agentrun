@@ -1129,7 +1129,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         return;
       case "writer-ready":
         pipe?.pageReady(socket);
-        state.pageComingAt = undefined; // the page that asked is the writer now (an attach is not enough: it still restores and starts its runtime)
+        if (!state.writerGrace) state.pageComingAt = undefined; // the page that asked is the writer now; a grace in progress logs and clears it itself, as it ends (an attach is not enough: it still restores and starts its runtime)
         return;
       case "restored":
         pipe?.restored(socket, frame);

@@ -232,6 +232,7 @@ describe("a page that comes back booting", () => {
     tab.send({ t: "writer-ready" });
     await until(() => ofRun(id, "placement.writer-grace").length === 1);
     assert.equal(ofRun(id, "placement.writer-grace")[0]!.data.outcome, "returned");
+    assert.equal(typeof ofRun(id, "placement.writer-grace")[0]!.data.pageAskedAfterMs, "number", "a successful return still says how soon the page asked");
     assert.equal(ofRun(id, "cloud.started").length, 0);
     tab.close();
     page.close();
