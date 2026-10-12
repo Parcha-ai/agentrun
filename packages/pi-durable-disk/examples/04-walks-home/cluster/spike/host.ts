@@ -66,21 +66,38 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
   msgs.forEach((m, i) => { if (m.role === "user") u = i; });
   const skill = /Your skill: ([\w-]+)/.exec(u >= 0 ? textOf(msgs[u]!) : "")?.[1];
   if (!skill) return undefined;
-  const results = msgs.slice(u + 1).filter((m) => m.role === "toolResult") as { role: string; toolName?: string; isError?: boolean; content?: unknown }[];
-  // D2's library: the thread writes its skill dir, compiles it, trains, and reads the trainer's skill.json in --out.
+  const after = msgs.slice(u + 1);
+  const results = after.filter((m) => m.role === "toolResult") as { role: string; toolName?: string; isError?: boolean; content?: unknown }[];
+  const texts = results.map((r) => textOf(r));
+  // TRAIN_SOP's steps with D2's library: write the skill dir, compile, train at 12M, read why a try did not pass, train
+  // at 40M if it was still changing, --check a pass, read the trainer's skill.json, report.
   const run = `pi-run ${skill} -- train-skill --skill-dir /workspace/skills/${skill} --body /workspace/robot --out /workspace/runs/${skill} --init-from ''`;
-  const train = toolUse("bash", { command: `${run} --steps 40M` });
+  const bash = (command: string) => toolUse("bash", { command });
+  const writes = results.filter((r) => r.toolName === "write").length;
+  if (writes === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
+  if (writes === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });
+  // A command the host's restart interrupted is run again (pi-run stops the old one on the box first).
   const last = results[results.length - 1];
-  if (results.length === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
-  if (results.length === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });
-  if (results.length === 2) return toolUse("bash", { command: `${run} --compile-only` });
-  if (results.length === 3) return train;
-  // A training run the host's restart interrupted is run again (pi-run stops the old one on the box first).
-  if (last?.toolName === "bash" && last.isError && /interrupt/i.test(textOf(last)) && results.length < 6) return train;
-  if (!results.some((r) => r.toolName === "bash" && /skill\.json|"status"/.test(textOf(r)))) {
-    if (last?.toolName === "bash" && !/"status"/.test(textOf(last))) return toolUse("bash", { command: `cat /workspace/runs/${skill}/skill.json` });
+  if (last?.toolName === "bash" && last.isError && /interrupt/i.test(textOf(last)) && results.length < 16) {
+    const call = [...after].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && (m.content as { type: string }[]).some((c) => c.type === "toolCall"));
+    const command = ((call?.content as { type: string; arguments?: { command?: string } }[] | undefined) ?? []).find((c) => c.type === "toolCall")?.arguments?.command;
+    if (command) return bash(command);
   }
-  return fauxAssistantMessage(fauxText(`I wrote a reward for ${skill}, trained it with it, and read its skill.json.`));
+  if (!texts.some((t) => /^compiled/m.test(t))) return bash(`${run} --compile-only`);
+  const tries = texts.filter((t) => /"event":"skill\.done"/.test(t));
+  const lastTry = tries[tries.length - 1];
+  if (lastTry === undefined) return bash(`${run} --steps 12M --stop-after-passing 2`);
+  const readSince = texts.slice(texts.lastIndexOf(lastTry) + 1);
+  if (/"passed":true/.test(lastTry)) {
+    if (!readSince.some((t) => /"event":"skill\.check"/.test(t))) return bash(`${run} --check /workspace/runs/${skill}/policy.json`);
+  } else {
+    const skillJson = readSince.find((t) => /"status"/.test(t));
+    if (skillJson === undefined) return bash(`cat /workspace/runs/${skill}/skill.json`);
+    if (/still changing/.test(skillJson) && tries.length < 2) return bash(`${run} --steps 40M --stop-after-passing 2`);
+    return fauxAssistantMessage(fauxText(`I wrote ${skill}'s skill files and trained them ${tries.length} times; it never passed its test.`));
+  }
+  if (!readSince.some((t) => /"status"/.test(t))) return bash(`cat /workspace/runs/${skill}/skill.json`);
+  return fauxAssistantMessage(fauxText(`I wrote ${skill}'s skill files, trained them, and checked the policy.`));
 };
 const brain: FauxResponseFactory = (ctx) => {
   if (a.plan) {

@@ -5,7 +5,7 @@
 //   node spike_plan.ts [--tick 200] [--deadline-ms N] [--dir DIR]
 // Prints a JSON verdict (also DIR/verdict.json); exits 1 if a check fails.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,21 @@ type Listed = { conversation: number; name: string; gpu: number; of: number; box
 const mid: Listed[] | undefined = existsSync(join(dir, "mid.json")) ? JSON.parse(readFileSync(join(dir, "mid.json"), "utf8")).threads : undefined;
 const after: Listed[] = report.threads_of ?? [];
 const planned = ["walk", "spin", "wave"];
+// What each thread ran on its box, as TRAIN_SOP's steps (a command rerun after the restart counts once).
+const ladder: Record<string, string[]> = {};
+for (const b of existsSync(join(dir, "boxes")) ? readdirSync(join(dir, "boxes")) : []) {
+  const log = join(dir, "boxes", b, "exec.log");
+  if (!existsSync(log)) continue;
+  for (const line of readFileSync(log, "utf8").trim().split("\n")) {
+    const command = JSON.parse(line) as unknown;
+    if (typeof command !== "string") continue;
+    const skill = /^pi-run ([\w-]+) -- train-skill/.exec(command)?.[1];
+    const step = /--compile-only/.test(command) ? "compile" : /--check /.test(command) ? "check" : /--steps (\d+M)/.exec(command)?.[1];
+    if (!skill || !step) continue;
+    const steps = (ladder[skill] ??= []);
+    if (steps[steps.length - 1] !== step) steps.push(step);
+  }
+}
 const sameThreads = (l: Listed[]) =>
   l.map((t) => t.name).join() === planned.join() &&
   l.every((t, i) => t.gpu === i + 1 && t.of === 3) &&
@@ -72,6 +87,11 @@ if (kill && !a["status-throws"]) {
   // Mid-run the same threads are listed, in plan order with their conversations, and not all of them are done yet.
   checks.threads_of_mid_run = mid !== undefined && sameThreads(mid) && mid.some((t) => !t.settled && (t.status === "queued" || t.status === "running"));
 }
+if (!deadline) {
+  // TRAIN_SOP's ladder: compile, 12M; 40M only when the trainer said the try was still changing; --check a pass.
+  checks.the_threads_follow_the_sop_ladder =
+    ladder.walk?.join() === "compile,12M,check" && ladder.spin?.join() === "compile,12M,40M,check" && ladder.wave?.join() === "compile,12M,40M";
+}
 if (a["status-throws"]) {
   // The outcome hook failed for every thread: the result says so (it is not silently "reported"), and every box came back.
   checks.outcome_errors_are_reported = threads.every((t) => (t as { outcomeError?: string }).outcomeError === "skill.json is unreadable") && /could not be read: skill\.json is unreadable/.test(report.teachResult?.text ?? "");
@@ -92,7 +112,7 @@ if (a["status-throws"]) {
   checks.read_thread_answers_from_gpu_3 = typeof report.readThread === "string" && /GPU 3 \(wave\)/.test(report.readThread) && /bash/.test(report.readThread);
 }
 const ok = Object.values(checks).every(Boolean);
-const verdict = { ok, dir, checks, threads_of: { mid: mid?.map((t) => `${t.gpu} ${t.name} ${t.status}`), after: after.map((t) => `${t.gpu} ${t.name} ${t.status}`) }, threads: threads.map((t) => ({ skill: t.skill, status: t.status, checkpoint: t.checkpoint })), tools: children.map((c) => ({ skill: c.box.skill, tools: c.tools })), answer: report.answer };
+const verdict = { ok, dir, checks, ladder, threads_of: { mid: mid?.map((t) => `${t.gpu} ${t.name} ${t.status}`), after: after.map((t) => `${t.gpu} ${t.name} ${t.status}`) }, threads: threads.map((t) => ({ skill: t.skill, status: t.status, checkpoint: t.checkpoint })), tools: children.map((c) => ({ skill: c.box.skill, tools: c.tools })), answer: report.answer };
 writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 1));
 console.log(JSON.stringify(verdict, null, 1));
 process.exit(ok ? 0 : 1);
