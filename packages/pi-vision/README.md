@@ -107,8 +107,10 @@ const vision = createVisionExtension({ evidence, scope, env: { ...inheritedEnv()
 `env` is the whole environment of those programs, not an addition to the default: a host that passes
 `{ PATH: "/usr/bin" }` gives them that and nothing else. A call's own variables (a provider's) are added over it. pi's
 environments give a program all of `process.env` unless a call says not to, so the adapter says so on each call
-(`inheritEnv: false`) and passes this environment. A host whose pi environment runs programs on another machine passes
-`env` for that machine, since the default is copied from this process.
+(`inheritEnv: false`) and passes this environment; `nodeVisionEnv` honours the same switch. So through the adapter, the
+adapter's `env` decides, whatever the environment a call runs in was built with: set it there. An environment's own
+`env` holds when a host uses it without the adapter. A host whose pi environment runs programs on another machine
+passes `env` for that machine, since the default is copied from this process.
 
 ## Develop
 

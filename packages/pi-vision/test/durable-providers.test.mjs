@@ -9,8 +9,8 @@ import { test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { visionContext } from "@parcha/pi-vision";
 import { createVisionExtension, packageProviders } from "@parcha/pi-vision/durable";
-import { inheritedEnv } from "@parcha/pi-vision/node";
-import { SENTINEL_EYES_KEY, pdfBytes } from "@parcha/pi-vision/testing";
+import { inheritedEnv, nodeVisionEnv } from "@parcha/pi-vision/node";
+import { SENTINEL_EYES_KEY, fixtureDir, pdfBytes } from "@parcha/pi-vision/testing";
 import { drive, textOf, tmp } from "./durable/rig.mjs";
 
 const evidence = { file: async () => null };
@@ -78,29 +78,33 @@ const programReader = (file) => ({
 
 test("no program a read starts is given the host's environment, through pdfText, the wrapped read on pi's environment and a host's own read; the host's `env` is what they get", async (t) => {
   const before = process.env.VISION_TEST_SECRET;
-  t.after(() => { if (before === undefined) delete process.env.VISION_TEST_SECRET; else process.env.VISION_TEST_SECRET = before; });
+  const root = await fixtureDir("pi-vision-child-env-");
+  t.after(() => {
+    if (before === undefined) delete process.env.VISION_TEST_SECRET; else process.env.VISION_TEST_SECRET = before;
+    return root.remove();
+  });
   process.env.VISION_TEST_SECRET = SENTINEL_EYES_KEY;
   const pdf = pdfBytes([{ lines: LINES }]);
-  const dir = tmp();
-  const seenBy = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+  const seenBy = (name) => JSON.parse(fs.readFileSync(path.join(root.path, name), "utf8"));
   const clean = (env, why) => {
     assert.ok(!JSON.stringify(env).includes(SENTINEL_EYES_KEY), `${why}: the key is nowhere in the program's environment`);
     assert.deepEqual(Object.keys(env).filter((name) => name in process.env && !(name in inheritedEnv())), [], `${why}: nothing of this process's environment but the named few`);
     assert.equal(env.PATH, process.env.PATH, `${why}: programs are still found`);
   };
   const call = { conversationId: "c", callId: "1", model: undefined, signal: undefined };
-  /** Each way a read reaches a program, with the extension `options` builds. */
+  /** Each way a read reaches a program, with the extension `options` builds: `handle.pdfText`; the wrapped read on
+   *  pi's environment; a host's own read handing the adapter pi's environment, or the Node port with its own `env`. */
   const through = async (label, options) => {
-    const made = (name) => createVisionExtension({ evidence, scope: (id) => ({ label: `c${id}`, deriveDir: `.vision/${label}-${name}` }), providers: [programReader(path.join(dir, `${label}-${name}.json`))], ...options });
+    const made = (name) => createVisionExtension({ evidence, scope: (id) => ({ label: `c${id}`, deriveDir: `.vision/${label}-${name}` }), providers: [programReader(path.join(root.path, `${label}-${name}.json`))], ...options });
     assert.match(await made("pdfText").pdfText(pdf), /read by a program/);
-    const cwd = tmp();
-    fs.writeFileSync(path.join(cwd, "notice.pdf"), pdf);
-    const run = await drive({ extensions: [made("wrapped").extension], rounds: [[["read", { path: "notice.pdf" }]]], cwd });
+    const cwd = path.dirname(await root.file(`${label}/notice.pdf`, pdf));
+    const run = await drive({ extensions: [made("wrapped").extension], rounds: [[["read", { path: "notice.pdf" }]]], cwd, db: path.join(root.path, `${label}.sqlite`) });
     assert.match(textOf(run.results[0]), /read by a program/);
-    // A host whose `read` is its own, handing the adapter pi's environment as it is.
     const own = await made("own").read(new NodeExecutionEnv({ cwd }), { path: "notice.pdf" }, call);
     assert.match(textOf(own), /read by a program/);
-    return { pdfText: seenBy(`${label}-pdfText.json`), wrapped: seenBy(`${label}-wrapped.json`), own: seenBy(`${label}-own.json`) };
+    const port = await made("port").read(nodeVisionEnv({ cwd, env: { ...inheritedEnv(), OF_THE_PORT: "its own" } }), { path: "notice.pdf" }, call);
+    assert.match(textOf(port), /read by a program/);
+    return Object.fromEntries(["pdfText", "wrapped", "own", "port"].map((way) => [way, seenBy(`${label}-${way}.json`)]));
   };
 
   const byDefault = await through("default", {});
@@ -110,5 +114,5 @@ test("no program a read starts is given the host's environment, through pdfText,
   for (const [way, env] of Object.entries(passed)) assert.deepEqual([env.VISION_TEST_SECRET, env.PATH], [SENTINEL_EYES_KEY, process.env.PATH], `${way}: the host passed it`);
 
   const whole = await through("whole", { env: { ONLY: "this" } });
-  for (const [way, env] of Object.entries(whole)) assert.deepEqual([env.ONLY, env.HOME, env.VISION_TEST_SECRET], ["this", undefined, undefined], `${way}: the host's environment is the whole of it`);
+  for (const [way, env] of Object.entries(whole)) assert.deepEqual([env.ONLY, env.HOME, env.PATH, env.OF_THE_PORT, env.VISION_TEST_SECRET], ["this", undefined, undefined, undefined, undefined], `${way}: the adapter's environment is the whole of it, whatever the call's environment would give`);
 });

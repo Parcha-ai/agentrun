@@ -97,7 +97,8 @@ function killGroup(pid: number | undefined) {
 }
 
 /** `env` is the whole environment of every program this environment starts; without it, `inheritedEnv()`. A call's own
- *  `env` is added over either. */
+ *  `env` is added over either, and is the whole of it when the call says `inheritEnv: false`, pi's switch for a caller
+ *  that names a program's environment itself. */
 export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): VisionEnv {
   const at = (path: string) => (isAbsolute(path) ? resolve(path) : resolve(env.cwd, path));
   const env: VisionEnv = {
@@ -139,10 +140,11 @@ export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): VisionE
       const argv = typeof command === "string" ? ["/bin/sh", "-c", command] : command;
       if (!argv[0]) return fail("spawn_error", "empty argv: no program to run");
       if (run?.timeout !== undefined && !(Number.isFinite(run.timeout) && run.timeout > 0)) return fail("timeout", "timeout must be a positive number of seconds");
+      const own = (run as { inheritEnv?: boolean } | undefined)?.inheritEnv === false;
       return new Promise<Result<{ exitCode: number }>>((settle) => {
         let child: ChildProcess;
         try {
-          child = spawn(argv[0]!, argv.slice(1), { cwd: run?.cwd ? at(run.cwd) : env.cwd, env: { ...childEnvOf(options.env), ...run?.env }, stdio: "ignore", detached: true });
+          child = spawn(argv[0]!, argv.slice(1), { cwd: run?.cwd ? at(run.cwd) : env.cwd, env: { ...(own ? {} : childEnvOf(options.env)), ...run?.env }, stdio: "ignore", detached: true });
         } catch (error) {
           // An argument spawn refuses outright (a NUL byte) is a failed result like any other.
           settle(fail("spawn_error", error instanceof Error ? error.message : String(error)));

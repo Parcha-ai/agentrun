@@ -129,9 +129,10 @@ function withChildEnv(env: VisionEnv, childEnv: () => Record<string, string>): V
 }
 
 /** The host contract, and one thing only an adapter that starts programs needs: `env`, the whole environment of every
- *  program a read starts (a PDF reader, ffmpeg, LibreOffice), in whichever environment the call runs. Without it a
- *  program gets `inheritedEnv()` of `./node`: where programs are found, home, temp, locale and time zone, and never
- *  the rest of this process's environment. A host whose calls run on another machine names that machine's. */
+ *  program a read starts (a PDF reader, ffmpeg, LibreOffice), in whichever environment the call runs and whatever
+ *  that environment would give a program itself. Without it a program gets `inheritedEnv()` of `./node`: where
+ *  programs are found, home, temp, locale and time zone, and never the rest of this process's environment. A host
+ *  whose calls run on another machine names that machine's. */
 export type VisionAdapterOptions = VisionOptions & { readonly env?: ChildEnv };
 
 export function createVisionExtension(options: VisionAdapterOptions): VisionHandle {

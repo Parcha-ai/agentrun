@@ -29,15 +29,16 @@ test("poppler's programs are started without the host's environment through hand
     if (before.secret === undefined) delete process.env.VISION_TEST_SECRET; else process.env.VISION_TEST_SECRET = before.secret;
     return dir.remove();
   });
-  /** A directory of wrappers that log to `dump`, put first on this process's PATH. */
+  /** A directory of wrappers, put first on this process's PATH, each logging to a file of its own: what each program
+   *  was started with, by program. */
   const wrapped = async (name) => {
-    const dump = path.join(dir.path, `${name}.env`);
+    const dump = (program) => path.join(dir.path, `${name}-${program}.env`);
     for (const program of PROGRAMS) {
-      const file = await dir.file(`${name}/${program}`, `#!/bin/sh\nenv >> '${dump}'\nexec '${real[program]}' "$@"\n`);
+      const file = await dir.file(`${name}/${program}`, `#!/bin/sh\nenv >> '${dump(program)}'\nexec '${real[program]}' "$@"\n`);
       fs.chmodSync(file, 0o755);
     }
     process.env.PATH = `${path.join(dir.path, name)}${path.delimiter}${before.path}`;
-    return () => (fs.existsSync(dump) ? fs.readFileSync(dump, "utf8") : "");
+    return () => Object.fromEntries(PROGRAMS.map((program) => [program, fs.existsSync(dump(program)) ? fs.readFileSync(dump(program), "utf8") : ""]));
   };
   process.env.VISION_TEST_SECRET = SENTINEL_EYES_KEY;
   const options = { evidence: { file: async () => null }, scope: () => ({ label: "l", deriveDir: "d" }) };
@@ -46,12 +47,14 @@ test("poppler's programs are started without the host's environment through hand
   const byDefault = await wrapped("default");
   const text = await createVisionExtension(options).pdfText(pdf);
   for (const line of LINES) assert.match(text, new RegExp(line));
-  assert.match(byDefault(), /^PATH=/m, "a poppler program ran through its wrapper and logged its environment");
-  assert.ok(!byDefault().includes(SENTINEL_EYES_KEY), "the key is in no poppler program's environment");
-  assert.doesNotMatch(byDefault(), /^VISION_TEST_SECRET=/m);
+  for (const [program, env] of Object.entries(byDefault())) {
+    assert.match(env, /^PATH=/m, `${program} ran through its wrapper and logged its environment`);
+    assert.ok(!env.includes(SENTINEL_EYES_KEY), `the key is not in ${program}'s environment`);
+    assert.doesNotMatch(env, /^VISION_TEST_SECRET=/m, program);
+  }
 
   const passed = await wrapped("passed");
   const again = await createVisionExtension({ ...options, env: { ...inheritedEnv(), VISION_TEST_SECRET: SENTINEL_EYES_KEY } }).pdfText(pdf);
   for (const line of LINES) assert.match(again, new RegExp(line));
-  assert.ok(passed().split("\n").includes(`VISION_TEST_SECRET=${SENTINEL_EYES_KEY}`), "the host passed it, so the programs have it");
+  for (const [program, env] of Object.entries(passed())) assert.ok(env.split("\n").includes(`VISION_TEST_SECRET=${SENTINEL_EYES_KEY}`), `the host passed it, so ${program} has it`);
 });

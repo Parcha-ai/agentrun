@@ -178,8 +178,8 @@ test("a program is not given this process's environment: a key held there reache
   const dir = await fixtureDir("vision-node-");
   const before = { secret: process.env.VISION_TEST_SECRET, locale: process.env.LC_MESSAGES };
   t.after(() => {
-    dir.remove();
     for (const [name, value] of [["VISION_TEST_SECRET", before.secret], ["LC_MESSAGES", before.locale]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    return dir.remove();
   });
   process.env.VISION_TEST_SECRET = SENTINEL_EYES_KEY;
   process.env.LC_MESSAGES = "C";
@@ -201,6 +201,12 @@ test("a program is not given this process's environment: a key held there reache
 
   const perCall = await environmentOf(nodeVisionEnv({ cwd: dir.path }), dir.path, { env: { EXTRA: "1", LC_MESSAGES: "POSIX" } });
   assert.deepEqual([perCall.EXTRA, perCall.LC_MESSAGES, perCall.HOME, perCall.VISION_TEST_SECRET], ["1", "POSIX", process.env.HOME, undefined], "a call's own variables go over the default");
+
+  // pi's switch, which a caller that names a program's whole environment uses: nothing is put under the call's own.
+  for (const env of [nodeVisionEnv({ cwd: dir.path }), nodeVisionEnv({ cwd: dir.path, env: { OF_THE_HOST: "x" } }), new NodeExecutionEnv({ cwd: dir.path })]) {
+    const named = await environmentOf(env, dir.path, { env: { ONLY: "this" }, inheritEnv: false });
+    assert.deepEqual([named.ONLY, named.HOME, named.PATH, named.OF_THE_HOST, named.VISION_TEST_SECRET], ["this", undefined, undefined, undefined, undefined], "the call's environment is the whole of it, as on pi's");
+  }
 });
 
 test("the default is read when a program starts, and names only where programs live, home, temp, locale and time zone", (t) => {
