@@ -36,7 +36,10 @@ export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: str
       const box = boxOf(id);
       await installPiRun(box);
       // The body this teach step is for. A session without one yet (it has not made a robot) teaches nothing: the trainers refuse an absent body.
-      const robot = await readFile(join(work, ROBOT_FILE)).catch(() => undefined);
+      const robot = await readFile(join(work, ROBOT_FILE)).catch((error: Error) => {
+        log("robot.no-body", { path: join(work, ROBOT_FILE), error: error.message });
+        return undefined;
+      });
       if (robot) await putFile(box, BOX_ROBOT_FILE, robot);
       log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0 });
       return id;
