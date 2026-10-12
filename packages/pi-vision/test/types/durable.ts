@@ -8,7 +8,7 @@ import { createRegistry, type ToolExecutionApi, type ToolExecutionResult } from 
 import type { CallContext, CallSetup, ToolResult, VisionEnv } from "../../src/index.js";
 import { DEFAULT_LIMITS } from "../../src/index.js";
 import { callContext, createVisionExtension, modelsEyes, piResult, type ModelsDoor } from "../../src/durable.js";
-import { nodeVisionEnv } from "../../src/node.js";
+import { inheritedEnv, nodeVisionEnv } from "../../src/node.js";
 
 const door = (models: Models): ModelsDoor => models;
 const eyes = (models: Models) => modelsEyes(models, { provider: "anthropic", modelId: "claude-sonnet-4-5" }, { thinking: "low" });
@@ -19,7 +19,10 @@ const call = (api: ToolExecutionApi, context: Context): Promise<CallContext> => 
 const env: VisionEnv = nodeVisionEnv({ cwd: "/" });
 // A host that builds a call's setup by hand may give synchronous rows, as `VisionOptions` allows.
 const handBuilt: CallSetup = { limits: DEFAULT_LIMITS, eyes: undefined, scope: { label: "l", deriveDir: "d" }, evidence: { file: async () => null }, providers: [], sources: {}, onLook: () => undefined, onMiss: () => undefined };
+// A host names the environment its programs get: its own in full (its choice), or the default and more.
+const passesItsOwn = createVisionExtension({ evidence: { file: async () => null }, scope: (id) => ({ label: id, deriveDir: `media/${id}` }), env: process.env });
+const andMore: VisionEnv = nodeVisionEnv({ cwd: "/", env: { ...inheritedEnv(), FONTCONFIG_PATH: "/etc/fonts" } });
 // @ts-expect-error a door without `completeSimple` cannot look.
 const blind: ModelsDoor = { getModel: () => undefined };
 
-void [door, eyes, result, call, env, blind, handBuilt];
+void [door, eyes, result, call, env, blind, handBuilt, passesItsOwn, andMore];

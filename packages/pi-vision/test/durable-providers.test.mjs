@@ -6,8 +6,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { visionContext } from "@parcha/pi-vision";
 import { createVisionExtension, packageProviders } from "@parcha/pi-vision/durable";
-import { pdfBytes } from "@parcha/pi-vision/testing";
+import { inheritedEnv } from "@parcha/pi-vision/node";
+import { SENTINEL_EYES_KEY, pdfBytes } from "@parcha/pi-vision/testing";
 import { drive, textOf, tmp } from "./durable/rig.mjs";
 
 const evidence = { file: async () => null };
@@ -59,4 +62,53 @@ test("importing ./durable and making an extension loads no provider's dependency
     console.log(JSON.stringify([...seen]));`;
   const seen = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: new URL("..", import.meta.url), encoding: "utf8" }));
   assert.deepEqual(seen, ["@parcha/pi-vision/durable"]);
+});
+
+/** A host's PDF reader that starts a real program through the environment it is called with, as poppler is started,
+ *  and has it write the environment it found itself with to `file`. */
+const programReader = (file) => ({
+  name: "program-reader", capabilities: ["text"], kinds: ["pdf"],
+  detect: async () => ({ available: true, version: "1" }),
+  text: async (source, request, call) => {
+    const ran = await call.env.exec([process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], JSON.stringify(process.env))", file], { timeout: 30 }, visionContext(call.signal));
+    assert.deepEqual(ran, { ok: true, value: { exitCode: 0 } });
+    return { madeBy: { provider: "program-reader", version: "1" }, pages: [{ page: 1, text: "read by a program" }] };
+  },
+});
+
+test("no program a read starts is given the host's environment, through pdfText, the wrapped read on pi's environment and a host's own read; the host's `env` is what they get", async (t) => {
+  const before = process.env.VISION_TEST_SECRET;
+  t.after(() => { if (before === undefined) delete process.env.VISION_TEST_SECRET; else process.env.VISION_TEST_SECRET = before; });
+  process.env.VISION_TEST_SECRET = SENTINEL_EYES_KEY;
+  const pdf = pdfBytes([{ lines: LINES }]);
+  const dir = tmp();
+  const seenBy = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+  const clean = (env, why) => {
+    assert.ok(!JSON.stringify(env).includes(SENTINEL_EYES_KEY), `${why}: the key is nowhere in the program's environment`);
+    assert.deepEqual(Object.keys(env).filter((name) => name in process.env && !(name in inheritedEnv())), [], `${why}: nothing of this process's environment but the named few`);
+    assert.equal(env.PATH, process.env.PATH, `${why}: programs are still found`);
+  };
+  const call = { conversationId: "c", callId: "1", model: undefined, signal: undefined };
+  /** Each way a read reaches a program, with the extension `options` builds. */
+  const through = async (label, options) => {
+    const made = (name) => createVisionExtension({ evidence, scope: (id) => ({ label: `c${id}`, deriveDir: `.vision/${label}-${name}` }), providers: [programReader(path.join(dir, `${label}-${name}.json`))], ...options });
+    assert.match(await made("pdfText").pdfText(pdf), /read by a program/);
+    const cwd = tmp();
+    fs.writeFileSync(path.join(cwd, "notice.pdf"), pdf);
+    const run = await drive({ extensions: [made("wrapped").extension], rounds: [[["read", { path: "notice.pdf" }]]], cwd });
+    assert.match(textOf(run.results[0]), /read by a program/);
+    // A host whose `read` is its own, handing the adapter pi's environment as it is.
+    const own = await made("own").read(new NodeExecutionEnv({ cwd }), { path: "notice.pdf" }, call);
+    assert.match(textOf(own), /read by a program/);
+    return { pdfText: seenBy(`${label}-pdfText.json`), wrapped: seenBy(`${label}-wrapped.json`), own: seenBy(`${label}-own.json`) };
+  };
+
+  const byDefault = await through("default", {});
+  for (const [way, env] of Object.entries(byDefault)) clean(env, way);
+
+  const passed = await through("passed", { env: { ...inheritedEnv(), VISION_TEST_SECRET: SENTINEL_EYES_KEY } });
+  for (const [way, env] of Object.entries(passed)) assert.deepEqual([env.VISION_TEST_SECRET, env.PATH], [SENTINEL_EYES_KEY, process.env.PATH], `${way}: the host passed it`);
+
+  const whole = await through("whole", { env: { ONLY: "this" } });
+  for (const [way, env] of Object.entries(whole)) assert.deepEqual([env.ONLY, env.HOME, env.VISION_TEST_SECRET], ["this", undefined, undefined], `${way}: the host's environment is the whole of it`);
 });

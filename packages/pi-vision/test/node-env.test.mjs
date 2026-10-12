@@ -7,8 +7,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { visionContext } from "@parcha/pi-vision";
-import { nodeVisionEnv } from "@parcha/pi-vision/node";
-import { fixtureDir } from "@parcha/pi-vision/testing";
+import { inheritedEnv, nodeVisionEnv } from "@parcha/pi-vision/node";
+import { SENTINEL_EYES_KEY, fixtureDir } from "@parcha/pi-vision/testing";
 
 const at = visionContext();
 const outcome = (result) => (result.ok ? { ok: true, value: result.value instanceof Uint8Array ? Buffer.from(result.value).toString() : result.value } : { ok: false, code: result.error.code });
@@ -164,4 +164,53 @@ test("an aborted or timed-out program is killed with every process it started", 
   controller.abort();
   assert.equal((await pending).error.code, "aborted");
   await until(() => !alive(abortedChild));
+});
+
+/** A real child started through `env.exec`: the environment it found itself with. */
+async function environmentOf(env, dir, options) {
+  const file = path.join(dir, `env-${Math.random().toString(16).slice(2)}.json`);
+  const ran = await env.exec([process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], JSON.stringify(process.env))", file], options, at);
+  assert.deepEqual(ran, { ok: true, value: { exitCode: 0 } });
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+test("a program is not given this process's environment: a key held there reaches a child only when the host passes it", async (t) => {
+  const dir = await fixtureDir("vision-node-");
+  const before = { secret: process.env.VISION_TEST_SECRET, locale: process.env.LC_MESSAGES };
+  t.after(() => {
+    dir.remove();
+    for (const [name, value] of [["VISION_TEST_SECRET", before.secret], ["LC_MESSAGES", before.locale]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  });
+  process.env.VISION_TEST_SECRET = SENTINEL_EYES_KEY;
+  process.env.LC_MESSAGES = "C";
+
+  const byDefault = await environmentOf(nodeVisionEnv({ cwd: dir.path }), dir.path);
+  assert.ok(!JSON.stringify(byDefault).includes(SENTINEL_EYES_KEY), "the key is nowhere in the child's environment");
+  assert.deepEqual(Object.keys(byDefault).filter((name) => name in process.env && !(name in inheritedEnv())), [], "nothing of this process's environment but the named few");
+  assert.deepEqual([byDefault.PATH, byDefault.HOME, byDefault.LC_MESSAGES], [process.env.PATH, process.env.HOME, "C"], "where programs are found, home and the locale are there");
+  if (process.env.TMPDIR) assert.equal(byDefault.TMPDIR, process.env.TMPDIR);
+
+  const pi = await environmentOf(new NodeExecutionEnv({ cwd: dir.path }), dir.path);
+  assert.equal(pi.VISION_TEST_SECRET, SENTINEL_EYES_KEY, "pi's own environment gives a program all of it: this one differs on purpose");
+
+  const passed = await environmentOf(nodeVisionEnv({ cwd: dir.path, env: { ...inheritedEnv(), VISION_TEST_SECRET: SENTINEL_EYES_KEY } }), dir.path);
+  assert.deepEqual([passed.VISION_TEST_SECRET, passed.PATH], [SENTINEL_EYES_KEY, process.env.PATH], "the host passed it, with the default beside it");
+
+  const whole = await environmentOf(nodeVisionEnv({ cwd: dir.path, env: { ONLY: "this", UNSET: undefined } }), dir.path);
+  assert.deepEqual([whole.ONLY, whole.HOME, whole.PATH, "UNSET" in whole, whole.VISION_TEST_SECRET], ["this", undefined, undefined, false, undefined], "the host's environment is the whole of it");
+
+  const perCall = await environmentOf(nodeVisionEnv({ cwd: dir.path }), dir.path, { env: { EXTRA: "1", LC_MESSAGES: "POSIX" } });
+  assert.deepEqual([perCall.EXTRA, perCall.LC_MESSAGES, perCall.HOME, perCall.VISION_TEST_SECRET], ["1", "POSIX", process.env.HOME, undefined], "a call's own variables go over the default");
+});
+
+test("the default is read when a program starts, and names only where programs live, home, temp, locale and time zone", (t) => {
+  const before = { secret: process.env.VISION_TEST_SECRET, zone: process.env.TZ };
+  t.after(() => { for (const [name, value] of [["VISION_TEST_SECRET", before.secret], ["TZ", before.zone]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } });
+  process.env.VISION_TEST_SECRET = SENTINEL_EYES_KEY;
+  process.env.TZ = "UTC";
+  const env = inheritedEnv();
+  assert.deepEqual([env.TZ, env.PATH, env.VISION_TEST_SECRET], ["UTC", process.env.PATH, undefined]);
+  for (const name of Object.keys(env)) assert.match(name, /^(PATH|HOME|TMPDIR|TMP|TEMP|LANG|LC_[A-Z_]+|TZ|LD_LIBRARY_PATH|DYLD_LIBRARY_PATH|DYLD_FALLBACK_LIBRARY_PATH|SYSTEMROOT|WINDIR|PATHEXT|COMSPEC|USERPROFILE)$/i);
+  process.env.TZ = "Etc/GMT+1";
+  assert.equal(inheritedEnv().TZ, "Etc/GMT+1");
 });
