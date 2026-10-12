@@ -124,5 +124,5 @@ details.thread .thread-chat .turn { font-size: 14px; }
 .tool .output .tbody .more { justify-self: start; margin-bottom: 4px; }
 .tool .output .tbody pre.out { border: 0; padding: 0; background: none; margin: 0; }
 
-/* one line in the composer: a long hint (what the phone's brain is doing) is cut with an ellipsis, never wrapped into a field 44 px tall */
-#input::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* one line in the composer: a hint too long for the field is cut with an ellipsis by the page (tab/hint.ts; a textarea's placeholder cannot do text-overflow); this keeps whatever is left from wrapping */
+#input::placeholder { white-space: nowrap; overflow: hidden; }

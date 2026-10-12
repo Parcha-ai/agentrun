@@ -13,6 +13,7 @@ import { echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, toolBody } from "./tool-body.ts";
 import { WriteMemory } from "./write-memory.ts";
+import { ellipsize } from "./hint.ts";
 import { Latest } from "./latest.ts";
 import { ACTIVE, ThreadSet, threadsByCall, type Thread, type ThreadMsg } from "./threads.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
@@ -259,6 +260,24 @@ const openTools = new Set<string>();
 /** The teach_skills calls that were opened for the reader once already. */
 const autoOpened = new Set<string>();
 
+/** The composer's hint, on one line: cut to the field's width with an ellipsis (a textarea's placeholder cannot do that itself), the whole text kept as the field's title, and fitted again when the width changes. */
+let hintText = "";
+const hintCanvas = typeof document === "undefined" ? undefined : document.createElement("canvas").getContext("2d");
+function fitHint(): void {
+  const input = $("input") as HTMLTextAreaElement;
+  const cs = getComputedStyle(input);
+  const width = input.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  if (!hintCanvas || !(width > 0)) return void (input.placeholder = hintText);
+  hintCanvas.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  input.placeholder = ellipsize(hintText, width, (t) => hintCanvas.measureText(t).width);
+  input.title = hintText;
+}
+function setHint(text: string): void {
+  hintText = text;
+  fitHint();
+}
+addEventListener("resize", () => fitHint());
+
 /**
  * The chat follows the newest line while the reader is at the bottom, and leaves them alone once they scroll up. "At the bottom" is the reader's last scroll, not a measure taken at each redraw: a diff is drawn
  * after the redraw that made room for it, so the page keeps growing for a moment, and the follow must hold through that (a resize of any line re-pins it).
@@ -476,7 +495,8 @@ function render(): void {
   const canSend = (phoneMode && offline && state.phone?.ready === true) || writer || (offlineReady && !state.checkingIn) || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
   ($("input") as HTMLTextAreaElement).disabled = !canSend;
   ($("send") as HTMLButtonElement).disabled = !canSend;
-  $("composer").hidden = !canSend && !phoneMode; // the phone always shows where to type (disabled until the brain is ready)
+  $("composer").hidden = !canSend && !phoneMode;
+  fitHint(); // the field has a width once it is shown // the phone always shows where to type (disabled until the brain is ready)
   $("phone-retry").hidden = !(phoneMode && state.mode === "lost");
   // A fallback, not the switch: take the run from the cloud now, fencing it mid-step.
   $("takeover").hidden = !(state.mode === "viewer" && state.placement?.where === "cloud" && !state.switching);
@@ -503,7 +523,7 @@ function renderStats(): void {
   if (phoneMode) {
     const p = state.phone, last = p?.model?.turns.at(-1);
     // while a turn runs, the place you type says what the robot is doing, with the time it has taken
-    if (p?.ready) ($("input") as HTMLTextAreaElement).placeholder = state.chat.busy ? `the robot is thinking… ${p.turnStarted ? `${Math.round((performance.now() - p.turnStarted) / 1000)} s` : ""}` : "Tell the robot what to do: paint it red, make it a spider, spin…";
+    if (p?.ready) setHint(state.chat.busy ? `the robot is thinking… ${p.turnStarted ? `${Math.round((performance.now() - p.turnStarted) / 1000)} s` : ""}` : "Tell the robot what to do: paint it red, make it a spider, spin…");
     $("new-chat").hidden = !p?.ready;
     $("phone-files").hidden = !p; // the files are there before the brain is
     ($("new-chat") as HTMLButtonElement).disabled = state.chat.busy;
@@ -1069,7 +1089,7 @@ function phoneReport(kind: string, data: Record<string, unknown>): void {
 function phoneSay(phase: string, line?: string): void {
   state.phone ??= { phase: "", ready: false, marks: {}, log: [] };
   state.phone.phase = phase;
-  if (phase && !state.phone.ready) ($("input") as HTMLTextAreaElement).placeholder = `${phase}…`; // with no header, what the brain is doing shows where you will type
+  if (phase && !state.phone.ready) setHint(`${phase}…`); // with no header, what the brain is doing shows where you will type
   if (line) state.phone.log.push(`${(performance.now() / 1000).toFixed(1)} s ${line}`);
   render();
 }
@@ -1080,7 +1100,7 @@ async function startPhone(): Promise<void> {
   // what this phone is, in the log a screenshot carries: its browser and OS version, isolation, cores
   const ios = /OS (\d+)_(\d+)/.exec(navigator.userAgent), safari = /Version\/([\d.]+)/.exec(navigator.userAgent);
   state.phone!.log.push(`browser: ${ios ? `iOS ${ios[1]}.${ios[2]}` : "not iOS"}${safari ? `, Safari ${safari[1]}` : ""} · isolated ${globalThis.crossOriginIsolated ? "yes" : "NO"} · cores ${navigator.hardwareConcurrency ?? "?"} · JSPI ${"Suspending" in WebAssembly ? "yes" : "no"} · ${navigator.userAgent}`);
-  ($("input") as HTMLTextAreaElement).placeholder = "the robot's brain is loading…";
+  setHint("the robot's brain is loading…");
   addEventListener("error", (e) => state.phone?.log.push(`page error: ${e.message}`));
   addEventListener("unhandledrejection", (e) => state.phone?.log.push(`unhandled: ${e.reason instanceof Error ? e.reason.message : String(e.reason)}`));
   try {
@@ -1279,7 +1299,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   model.lock = (shown) => shown.flatMap((t) => (t.function.name !== "do" ? [t] : phoneSkillsHome.length > 0 ? narrowEnum([t], "skill", phoneSkillsHome) : []));
   model.onTurnStart = () => { state.phone!.turnStarted = performance.now(); phoneReport("turn-start", {}); };
   phoneSay("", `brain ready: loaded in ${(marks.loadMs / 1000).toFixed(1)} s, tools read in ${(marks.warmMs / 1000).toFixed(1)} s (${warm.promptTokens} tokens)`);
-  ($("input") as HTMLTextAreaElement).placeholder = "Tell the robot what to do: paint it red, make it a spider, spin…";
+  setHint("Tell the robot what to do: paint it red, make it a spider, spin…");
   ($("input") as HTMLTextAreaElement).focus();
   // the robot, now that the brain is in: standing still (no physics) until a skill plays
   if (params.get("pane") !== "0") startRobotPane("&still=1");
@@ -1392,7 +1412,7 @@ function creatureWrite(path: string, bytes: Uint8Array): Promise<void> {
 function startRobotPane(extra = ""): void {
   const frame = $("creature") as HTMLIFrameElement;
   document.body.classList.add("robot");
-  ($("input") as HTMLTextAreaElement).placeholder = "Tell the robot what to do";
+  setHint("Tell the robot what to do");
   $("creature-pane").hidden = false;
   const reply = (msg: Record<string, unknown>) => frame.contentWindow?.postMessage({ ns: "walks-home", ...msg }, location.origin);
   window.addEventListener("message", (ev) => {
@@ -2009,6 +2029,8 @@ void (phoneMode ? startPhone() : boot());
   items: () => state.chat.items(),
   /** Redraw the chat now (a check redraws while a tool result is open). */
   renderChat: () => renderChat(),
+  /** Set the composer's hint, as the page does (checks set a long one). */
+  hint: (text: string) => setHint(text),
   /** Open a workspace file in the panel, as a click on the tree does. */
   select: (path: string) => select(path),
   /** A teaching thread's message, as the host relays it (checks fold one in). */

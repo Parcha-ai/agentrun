@@ -127,3 +127,11 @@ test("a host's notice to the agent (an env.* kind that is not a move) never show
   ], tools: [], generation: undefined, run: undefined } as never);
   assert.deepEqual(view.items().map((i) => i.kind), ["user", "switch"], "the check-in prompt is hidden; the move stays (drawn as one line)");
 });
+
+import { ellipsize } from "../tab/hint.ts";
+test("a hint too long for its field is cut to the field's width with an ellipsis; one that fits is left alone", () => {
+  const w = (s: string) => s.length * 10; // a fake measure: 10 px a character
+  assert.equal(ellipsize("Tell the robot what to do", 400, w), "Tell the robot what to do");
+  assert.equal(ellipsize("the session is open; the robot's brain is loading", 200, w), "the session is open…", "the longest beginning that fits with the ellipsis (20 characters of 10 px)");
+  assert.equal(ellipsize("abc", 5, w), "…", "too narrow for anything: just the ellipsis");
+});
