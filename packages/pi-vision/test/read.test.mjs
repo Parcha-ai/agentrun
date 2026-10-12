@@ -314,3 +314,26 @@ test("a source too large to hold is read where it is: it keeps no derivation, an
   assert.match(text(moved), /^long\.mp4 could not be read: the file changed while it was read, so what was read is not one version of it; read it again\. The file is saved at long\.mp4\. The file is damaged or protected/);
   assert.deepEqual([r.filed.length, r.misses.length, r.misses[0].receipt], [0, 1, null], "nothing is filed under a hash that names no one version");
 });
+
+test("a file that grows past what the process holds between the two looks at it is never loaded whole", async (t) => {
+  const r = await rig({ pdf: { content: [{ type: "text", text: "never reached" }] } });
+  t.after(() => r.dir.remove());
+  const path = await r.dir.file("grown.pdf", PDF_HEAD);
+  // The size is taken while the file is small; by the time its bytes are read it holds more than the process may.
+  let read = 0, whole = 0;
+  const growing = Object.assign(Object.create(Object.getPrototypeOf(r.env)), r.env, {
+    fileInfo: async (...args) => { const info = await r.env.fileInfo(...args); truncateSync(path, SOURCE_BYTES_IN_PROCESS + 4096); return info; },
+    readBinaryFile: async (...args) => { whole += 1; return r.env.readBinaryFile(...args); },
+    openBinaryReader: async (...args) => {
+      const opened = await r.env.openBinaryReader(...args);
+      if (!opened.ok) return opened;
+      const reader = opened.value;
+      return { ok: true, value: { info: (c) => reader.info(c), close: (c) => reader.close(c), read: async (offset, length, c) => { const chunk = await reader.read(offset, length, c); if (chunk.ok) read += chunk.value.length; return chunk; } } };
+    },
+  });
+  const out = await readMedia(growing, { path: "grown.pdf" }, r.call(), r.setup, r.kinds);
+  assert.equal(out.details.miss.code, "unreadable");
+  assert.match(text(out), /^grown\.pdf could not be read: the file changed while it was read/);
+  assert.ok(read <= SOURCE_BYTES_IN_PROCESS + 3 * 1024 * 1024, `read ${read} bytes`);
+  assert.deepEqual([whole, r.calls.length, r.filed.length], [0, 0, 0], "not loaded whole, no reader run, nothing filed");
+});

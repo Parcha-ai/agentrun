@@ -62,6 +62,11 @@ const HASH_CHUNK_BYTES = 1024 * 1024;
 const PAGE_LINES = 2000;
 const PAGE_BYTES = 50 * 1024;
 
+/** What a read says of a source that was not one version while it was read, and the sink that files nothing for it: no
+ *  hash names what was read. */
+const CHANGED = "the file changed while it was read, so what was read is not one version of it; read it again";
+const NO_RECEIPT = { file: async () => null };
+
 const num = (value: unknown): number | undefined => (value === undefined || value === null || value === "" ? undefined : Number(value));
 const asked = (args: ReadArgs) => (typeof args.ask === "string" && args.ask.trim() ? args.ask.trim() : undefined);
 
@@ -113,6 +118,27 @@ async function sha256Of(env: VisionEnv, path: string, size: number, signal: Abor
     }
   } finally { await opened.value.close(ctx); }
   return hash.digest("hex");
+}
+
+/** A file's bytes through one opened reader, a chunk at a time and never more than the process may hold: `over` when the
+ *  file holds more (whatever its size was a moment ago), null when it cannot be opened or read. */
+async function holdSource(env: VisionEnv, path: string, signal: AbortSignal | undefined): Promise<Uint8Array | "over" | null> {
+  const ctx = visionContext(signal);
+  const opened = await env.openBinaryReader(path, undefined, ctx);
+  if (!opened.ok) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const chunk = await opened.value.read(total, HASH_CHUNK_BYTES, ctx);
+      if (!chunk.ok) return null;
+      if (!chunk.value.length) break;
+      total += chunk.value.length;
+      if (total > SOURCE_BYTES_IN_PROCESS) return "over";
+      chunks.push(chunk.value);
+    }
+  } finally { await opened.value.close(ctx); }
+  return Buffer.concat(chunks, total);
 }
 
 /** A handle such as `session:<id>`: the scheme and the id. `session` is always a handle; another scheme is one when the
@@ -205,9 +231,11 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   // A source the process may hold is read once: those bytes are hashed, their kind decided and a private copy of them
   // handed to the reader, so the hash names exactly what was read whatever becomes of the path meanwhile. A larger
   // source is read where it is, and checked afterwards for having changed.
-  const held = probe.size <= SOURCE_BYTES_IN_PROCESS ? await env.readBinaryFile(name, ctx) : undefined;
-  if (held && !held.ok) return null;
-  const data = held?.ok && held.value.length <= SOURCE_BYTES_IN_PROCESS ? held.value : undefined;
+  const held = probe.size <= SOURCE_BYTES_IN_PROCESS ? await holdSource(env, name, call.signal) : "over";
+  if (held === null) return null;
+  // A file that was within what the process holds and now holds more changed between the two looks at it.
+  if (held === "over" && probe.size <= SOURCE_BYTES_IN_PROCESS) return missResult({ ...filing, evidence: NO_RECEIPT }, name, probe.sniffed.ok ? probe.sniffed.kind : "unknown", "", "unreadable", CHANGED, raw);
+  const data = held === "over" ? undefined : held;
   const file = data ? { size: data.length, head: data.subarray(0, HEAD_BYTES), sniffed: kinds.sniff(data.subarray(0, HEAD_BYTES), name) } : probe;
   const { size, sniffed } = file;
   let hashed: Promise<string> | undefined;
@@ -255,7 +283,7 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
     }
   } finally { await env.remove(temp.value, { recursive: true, force: true }, ctx); }
   // A source that changed while it was read has no hash that names what was read: nothing is filed under the old one.
-  if (changed) return missResult({ ...filing, evidence: { file: async () => null } }, name, kind, source.sha256, "unreadable", "the file changed while it was read, so what was read is not one version of it; read it again", args);
+  if (changed) return missResult({ ...filing, evidence: NO_RECEIPT }, name, kind, source.sha256, "unreadable", CHANGED, args);
   if ("refusal" in result) return refusal(result.refusal);
   if ("miss" in result) return missResult(filing, name, kind, source.sha256, result.miss, result.reason.split(source.path).join(name), args, result.text);
   let content = result.content;
