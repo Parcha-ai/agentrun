@@ -89,3 +89,33 @@ export class ThreadRelay {
     this.#threads.clear();
   }
 }
+
+/**
+ * The one relay a connection has. A viewer that subscribes gets a new relay and the one before it is stopped; subscribers that come close together are taken in order (each stop is awaited before the next
+ * start), so when the last has been served exactly one relay runs, the last subscriber's, and none is left running unnoticed.
+ */
+export class RelayHolder {
+  #chain: Promise<void> = Promise.resolve();
+  #current: ThreadRelay | undefined;
+
+  replace(make: () => ThreadRelay): Promise<void> {
+    const run = this.#chain.catch(() => undefined).then(async () => {
+      const old = this.#current;
+      this.#current = undefined;
+      await old?.stop();
+      const next = make();
+      this.#current = next;
+      next.start();
+    });
+    this.#chain = run;
+    return run;
+  }
+
+  /** Stop whatever runs (the connection closed). */
+  async close(): Promise<void> {
+    await this.#chain.catch(() => undefined);
+    const old = this.#current;
+    this.#current = undefined;
+    await old?.stop();
+  }
+}

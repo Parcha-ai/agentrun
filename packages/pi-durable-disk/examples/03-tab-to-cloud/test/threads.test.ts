@@ -96,3 +96,21 @@ test("threads belong to the teach_skills call that made them: a second call has 
   unscoped.apply(m(41, undefined, "walk", 1));
   assert.deepEqual(threadsByCall(["a", "b"], unscoped.list()).get("b")!.map((t) => t.name), ["walk"], "a host that names no run: its threads show under the newest call");
 });
+
+import { RelayHolder } from "../thread-relay.ts";
+
+// Two viewers that subscribe close together each ask for a relay. One relay per connection, the last subscriber wins, the others are stopped: never two running.
+test("two subscribers at once leave exactly one relay running, the later one's; the replaced relay is stopped once", async () => {
+  const log: string[] = [];
+  const fake = (name: string, stopMs: number) => ({ start: () => void log.push(`start ${name}`), stop: async () => { await new Promise((r) => setTimeout(r, stopMs)); log.push(`stop ${name}`); } }) as unknown as ThreadRelay;
+  const holder = new RelayHolder();
+  await holder.replace(() => fake("first", 20));
+  const a = holder.replace(() => fake("second", 20));
+  const b = holder.replace(() => fake("third", 0)); // asked for before the second finished replacing the first
+  await Promise.all([a, b]);
+  const running = log.filter((l) => l.startsWith("start ")).map((l) => l.slice(6)).filter((n) => !log.includes(`stop ${n}`));
+  assert.deepEqual(running, ["third"], `only the last subscriber's relay runs: ${log.join(", ")}`);
+  assert.equal(log.filter((l) => l === "stop first").length, 1);
+  await holder.close();
+  assert.equal(log.includes("stop third"), true);
+});
