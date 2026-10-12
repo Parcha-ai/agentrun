@@ -7,12 +7,12 @@
 //   artifacts        the box's /workspace/skills/<skill>/ to <work>/skills/<skill>/ (D0's ArtifactSync), the trainer's own state left on the box.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ArtifactSync, installPiRun, remoteEnvs, type RemoteBox } from "@parcha/pi-durable-disk";
 import type { AppExtra, AppExtraContext } from "../../03-tab-to-cloud/app-extra.ts";
-import { RobotBox, teachSkills, type ThreadBoxes } from "../cluster/teach-skills.ts";
+import { RobotBox, teachSkills, type ThreadBoxes, type ThreadResult } from "../cluster/teach-skills.ts";
 
 /** D2's assemble-skills (node alone): the skills the threads trained into the page's format, home/skills.json last. In the box's bundle it sits at robot/policy/. */
 export const ASSEMBLE_SCRIPT = fileURLToPath(new URL("../policy/assemble-skills.ts", import.meta.url));
@@ -22,10 +22,10 @@ export const ASSEMBLE_SCRIPT = fileURLToPath(new URL("../policy/assemble-skills.
  * without the get-up network when no get-up thread ran (the page then runs the skills without fall recovery). Resolves with the skills that are home;
  * rejects with what the program said when it refused (exit 2) or found none done (exit 3). Rerunnable: the program writes each file by rename.
  */
-export async function runAssembleSkills(work: string, options: { script?: string; node?: string } = {}): Promise<readonly string[]> {
+export async function runAssembleSkills(work: string, options: { script?: string; node?: string; skillsDir?: string } = {}): Promise<readonly string[]> {
   const script = options.script ?? ASSEMBLE_SCRIPT;
   if (!existsSync(script)) throw new Error("assemble-skills is not in this build of the robot extra");
-  const dir = join(work, "skills");
+  const dir = options.skillsDir ?? join(work, "skills");
   const args = [script, dir, "--home", join(work, "home")];
   if (existsSync(join(dir, "walk", "skill.json"))) args.push("--default", "walk");
   if (!existsSync(join(dir, "get-up", "skill.json"))) args.push("--without-getup");
@@ -48,6 +48,44 @@ export async function runAssembleSkills(work: string, options: { script?: string
     }
   }
   throw new Error("assemble-skills printed no skills.home line");
+}
+
+/**
+ * The skills that belong to the body this round taught: the body (its mjcf sha256) of the skills that passed in this round (the commonest one), and every
+ * saved skill trained for it, staged as links in a fresh directory next to work/skills. A skill left over from an earlier body (a get-up policy, a skill not
+ * retrained this round) is not in it, so it can neither be installed for the wrong body nor choose the body that assembly uses.
+ */
+export async function stageCurrentBody(work: string, threads: readonly Pick<ThreadResult, "skill" | "status">[]): Promise<{ dir: string; body: string; skills: string[]; left: string[] }> {
+  const root = join(work, "skills");
+  const shaOf = async (name: string): Promise<string | undefined> => {
+    try {
+      const j = JSON.parse(await readFile(join(root, name, "skill.json"), "utf8")) as { mjcf_sha256?: unknown; status?: unknown };
+      return j.status === "done" && typeof j.mjcf_sha256 === "string" ? j.mjcf_sha256 : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const votes = new Map<string, number>();
+  for (const t of threads) {
+    if (t.status !== "passed") continue;
+    const sha = await shaOf(t.skill);
+    if (sha) votes.set(sha, (votes.get(sha) ?? 0) + 1);
+  }
+  const body = [...votes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  if (!body) throw new Error("no skill passed in this round, so there is no body to bring skills home for");
+  const dir = join(work, "skills-stage");
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  const skills: string[] = [];
+  const left: string[] = [];
+  for (const name of (await readdir(root)).sort()) {
+    if (!/^[a-z0-9][a-z0-9_-]{0,40}$/.test(name)) continue;
+    if ((await shaOf(name)) === body) {
+      await symlink(join(root, name), join(dir, name));
+      skills.push(name);
+    } else left.push(name);
+  }
+  return { dir, body, skills, left };
 }
 
 /** Where the session's robot is on its disk (D3's state file) and where the trainers read it on a box. */
@@ -96,7 +134,16 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   const { teach, thread } = teachSkills({
     boxes,
     // Inside the teach task, after every thread has flushed: the tool's own result then says how many skills are home.
-    assemble: async () => ({ home: await runAssembleSkills(work) }),
+    // Only the skills of the body this round taught (an old body's get-up must not choose the body, nor old skills be installed for the new one).
+    assemble: async (threads) => {
+      const staged = await stageCurrentBody(work, threads);
+      try {
+        if (staged.left.length > 0) log("robot.skills-left-out", { skills: staged.left, reason: "trained for another body" });
+        return { home: await runAssembleSkills(work, { skillsDir: staged.dir }) };
+      } finally {
+        await rm(staged.dir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    },
     artifacts: ({ boxId, skill }) => {
       const sync = new ArtifactSync({ box: boxOf(boxId), remote: `/workspace/skills/${skill}`, local: join(work, "skills", skill), exclude: ["work"], onError: (error) => log("robot.artifacts-failed", { skill, error: error.message }) });
       return { start: () => sync.start(), flush: async (context) => void (await sync.flush(context)), stop: () => sync.stop() };

@@ -115,3 +115,31 @@ test("assembling the skills home: the program's arguments follow what trained, i
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("assembly is over the skills of the body this round taught: an old body's get-up and skills are left out and cannot choose the body", async () => {
+  const { stageCurrentBody } = await import("../robot-extra.ts");
+  const { readdirSync } = await import("node:fs");
+  const work = mkdtempSync(join(tmpdir(), "robot-stage-"));
+  try {
+    const put = (name: string, sha: string, status = "done") => {
+      mkdirSync(join(work, "skills", name), { recursive: true });
+      writeFileSync(join(work, "skills", name, "skill.json"), JSON.stringify({ skill: name, mjcf_sha256: sha, status }));
+    };
+    // The first round (body A) taught everything; the body changed (B) and only walk and turn-left were retrained.
+    for (const n of ["walk", "turn-left", "spin", "get-up", "sprint"]) put(n, "A");
+    put("walk", "B");
+    put("turn-left", "B");
+    const staged = await stageCurrentBody(work, [{ skill: "walk", status: "passed" }, { skill: "turn-left", status: "passed" }, { skill: "spin", status: "never-passed" }]);
+    assert.equal(staged.body, "B");
+    assert.deepEqual(staged.skills, ["turn-left", "walk"]);
+    assert.deepEqual(staged.left.sort(), ["get-up", "spin", "sprint"], "the old body's skills (and its get-up) are out");
+    assert.deepEqual(readdirSync(staged.dir).sort(), ["turn-left", "walk"]);
+    // A round where nothing passed has no body to bring skills home for.
+    await assert.rejects(stageCurrentBody(work, [{ skill: "walk", status: "never-passed" }]), /no skill passed/);
+    // An unfinished skill of the same body is not staged either.
+    put("wave", "B", "running");
+    assert.ok(!(await stageCurrentBody(work, [{ skill: "walk", status: "passed" }])).skills.includes("wave"));
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

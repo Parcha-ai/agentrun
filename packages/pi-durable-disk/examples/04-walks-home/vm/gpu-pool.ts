@@ -208,15 +208,22 @@ export class GpuPool {
     await Promise.all(
       ready.map(async (slot) => {
         const gone = await this.#remove(slot, true);
-        if (gone) slot.box = undefined;
         slot.gone = false;
         slot.removing = false;
-        if (!gone) slot.state = "failed";
+        if (gone) slot.box = undefined;
+        // A box that would not go is still running: it is ready again (a request can use it, and the next idle check tries again), not lost.
+        else {
+          slot.state = "ready";
+          this.#lastActive = Date.now();
+          this.#options.log("pool.idle-remove-failed", { index: slot.index, box: slot.box?.name });
+        }
       }),
     );
     this.#changed();
-    // A thread that asked while the boxes were going is served by new ones.
+    // A thread that asked while the boxes were going is served by new ones, or by one that would not go.
     if (this.#waiting.length > 0) this.#wake();
+    this.#serve();
+    this.#failWaitersIfHopeless();
   }
 
   /** A thread asked while the boxes were released for idleness: make them again. */

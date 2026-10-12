@@ -334,3 +334,22 @@ describe("the GPU pool: idle timeout", () => {
     await pool.close();
   });
 });
+
+describe("the GPU pool: idle removal that fails", () => {
+  it("a box that would not be removed is still usable: a request that came during the removal is served, not left waiting for ever", async () => {
+    let made = 0;
+    const pool = new GpuPool({
+      size: 1,
+      log: () => undefined,
+      create: async () => ({ id: `sb-${made}`, name: `box-${made}`, index: made++ }),
+      remove: async () => false, // Modal will not take the removal
+      idleMs: 100,
+      watchMs: 0,
+    });
+    await pool.start();
+    await new Promise((r) => setTimeout(r, 160)); // idle: the removal starts and fails
+    const got = await Promise.race([pool.acquire("a"), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the request waited for ever")), 3_000))]);
+    assert.equal(got.id, "sb-0", "the box that would not go is handed out");
+    await pool.close();
+  });
+});
