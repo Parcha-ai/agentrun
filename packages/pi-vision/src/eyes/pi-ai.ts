@@ -42,18 +42,26 @@ export function piAiEyes(model: Model<Api>, options: PiAiEyesOptions = {}): Eyes
       const timer = setTimeout(() => timeout.abort(), timeoutMs);
       const text = context ? `Context: ${context}\n\n${ask}` : ask;
       let message: Awaited<ReturnType<typeof completeSimple>>;
+      // The key never leaves in an error's words: every copy of that exact string is taken out of them.
+      let key: string | undefined;
+      const scrub = (words: string) => (key ? words.split(key).join("[key]") : words);
       try {
+        key = options.apiKey?.();
         message = await completeSimple(model, { messages: [{ role: "user", content: [{ type: "text", text }, ...parts.map(content)], timestamp: Date.now() }] }, {
-          apiKey: options.apiKey?.(),
+          apiKey: key,
           reasoning,
           signal: AbortSignal.any([signal, timeout.signal]),
           timeoutMs,
           ...(options.onPayload ? { onPayload: (payload: unknown) => options.onPayload!(payload) } : {}),
         });
+      } catch (error) {
+        const words = String((error as Error)?.message ?? error);
+        if (key && words.includes(key)) throw new Error(scrub(words));
+        throw error;
       } finally { clearTimeout(timer); }
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         if (timeout.signal.aborted && !signal.aborted) throw new Error(`the ${model.id} request was cut after ${timeoutMs / 1000} s`);
-        throw new Error(message.errorMessage || `the ${model.id} request ended with ${message.stopReason}`);
+        throw new Error(scrub(message.errorMessage || `the ${model.id} request ended with ${message.stopReason}`));
       }
       const usage = { ...message.usage, cost: { ...message.usage.cost } };
       const costUsd = priced ? calculateCost(model, usage).total : null;

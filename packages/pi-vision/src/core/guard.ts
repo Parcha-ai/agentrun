@@ -27,6 +27,8 @@ export const DESCRIBE_ASK =
 export type MediaDetails = {
   readonly kind?: string; readonly path?: string; readonly ask?: string; readonly fromS?: number; readonly toS?: number; readonly page?: number;
   readonly units?: readonly number[]; readonly sha256?: string; readonly original?: string; readonly fit?: Fit;
+  /** The files a door kept of what it shows (a rendered page), for the receipt. */
+  readonly derived?: readonly string[];
 };
 
 /** The pixels an image's header states, without decoding it (`imageHeader`, kinds.ts). */
@@ -129,7 +131,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
       tool: "look",
       args: { path: saved ?? "a tool result", ...(ask ? { ask } : {}), ...(media.fromS !== undefined ? { from_s: media.fromS } : {}), ...(media.toS !== undefined ? { to_s: media.toS } : {}), ...(media.page !== undefined ? { page: media.page } : {}), model, native },
       status: "ok",
-      facts: { ...(media.original ? { original: media.original } : {}), ...facts, ...dropped, sha256, kind: kindOf(media, unit.some(isVideo)), fragment, ...(media.fit ? { fit: media.fit } : {}), key: keyOf(unit, model) },
+      facts: { ...(media.original ? { original: media.original } : {}), ...facts, ...dropped, sha256, kind: kindOf(media, unit.some(isVideo)), fragment, ...(media.fit ? { fit: media.fit } : {}), key: keyOf(unit, model), ...(media.derived?.length ? { derived: media.derived } : {}) },
       body,
     };
   };

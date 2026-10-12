@@ -307,7 +307,7 @@ test("a source too large to hold is read where it is: it keeps no derivation, an
   assert.equal(text(steady), "frames");
   assert.match(steady.details.media.sha256, /^[0-9a-f]{64}$/);
   assert.deepEqual([seen[0].path, seen[0].data], ["long.mp4", undefined], "read in place, not copied");
-  assert.ok(seen[0].deriveDir.startsWith(`${seen[0].tempDir}/`), "its derivations go to the read's own directory, which is removed");
+  assert.equal(seen[0].deriveDir, undefined, "it is given nowhere to keep a derivation");
   touch = () => appendFileSync(path, "more");
   const moved = await r.read({ path: "long.mp4" });
   assert.equal(moved.details.miss.code, "unreadable");

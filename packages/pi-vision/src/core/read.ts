@@ -32,16 +32,19 @@ export type KindRequest = {
   readonly source: ProviderSource; readonly data?: Uint8Array; readonly name: string; readonly mimeType: string; readonly width?: number; readonly height?: number;
   readonly ask?: string; readonly page?: number; readonly fromS?: number; readonly toS?: number;
 };
-/** What a kind's reader works with: the environment, the lead's limits, where kept derivations go (named by the
- *  source's hash and their parameters), a directory removed when the read ends, and the image processor and providers. */
+/** What a kind's reader works with: the environment; the limits its images must meet (the lead's, with the eyes' image
+ *  limits when the lead takes no images); where kept derivations go, named by the source's hash and their parameters
+ *  (absent: nothing is kept); a directory removed when the read ends; and the image processor and providers. */
 export type KindContext = {
-  readonly env: VisionEnv; readonly signal: AbortSignal | undefined; readonly limits: Limits; readonly deriveDir: string; readonly tempDir: string;
+  readonly env: VisionEnv; readonly signal: AbortSignal | undefined; readonly limits: Limits; readonly deriveDir?: string; readonly tempDir: string;
   readonly images?: ImageProcessor; readonly providers: readonly Provider[];
 };
 /** A kind's answer: what the model reads (a document's whole `text`, page-marked, is paged here after the first text
  *  block), a miss with its cause and any text that still came back, or a refusal of the arguments in one line. */
 export type KindResult =
-  | { readonly content: readonly (TextContent | ImageContent)[]; readonly text?: string; readonly media?: MediaDetails; readonly fit?: Fit }
+  | { readonly content: readonly (TextContent | ImageContent)[]; readonly text?: string; readonly media?: MediaDetails; readonly fit?: Fit;
+      /** What a document read as text says of itself in the result's `details.document`: where its text is kept, who extracted it, its page or pages. */
+      readonly document?: Readonly<Record<string, unknown>> }
   | { readonly miss: MissCode; readonly reason: string; readonly text?: string }
   | { readonly refusal: string };
 export type KindReader = (request: KindRequest, context: KindContext) => Promise<KindResult>;
@@ -267,11 +270,12 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   try {
     source = { path: data ? `${temp.value}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
     const request: KindRequest = { source, ...(data ? { data } : {}), name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
-    // A source read where it is keeps no derivation: what a provider makes of it stays in the read's own directory.
-    const deriveDir = data ? setup.scope.deriveDir : `${temp.value}/derived`;
+    // The images a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes
+    // none. A source read where it is keeps no derivation.
+    const limits = !setup.limits.image.native && setup.eyes?.accepts.image ? { ...setup.limits, image: { ...setup.eyes.limits.image, native: false } } : setup.limits;
     try {
       if (data) { const wrote = await env.writeFile(source.path, data, ctx); if (!wrote.ok) throw wrote.error; }
-      result = await reader(request, { env, signal: call.signal, limits: setup.limits, deriveDir, tempDir: temp.value, images: setup.images, providers: setup.providers });
+      result = await reader(request, { env, signal: call.signal, limits, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
     } catch (error) {
       // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
       if (call.signal?.aborted) throw error;
@@ -294,7 +298,7 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   }
   const original = pixels ? `${pixels.width}x${pixels.height}` : undefined;
   const media: MediaDetails = { kind, path: name, sha256: source.sha256, ...(original ? { original } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}), ...(result.fit ? { fit: result.fit } : {}), ...result.media };
-  return { content, details: { path: name, media } };
+  return { content, details: { path: name, media, ...(result.document ? { document: result.document } : {}) } };
 }
 
 /** Whether a call is the host's plain text read: no handle a source serves, no media argument, and a file that is not

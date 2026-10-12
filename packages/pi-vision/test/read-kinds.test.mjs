@@ -16,7 +16,7 @@ import { pdfiumProvider } from "@parcha/pi-vision/providers/pdfium";
 import { popplerProvider } from "@parcha/pi-vision/providers/poppler";
 import { sharpImages } from "@parcha/pi-vision/providers/sharp";
 import { unpdfProvider } from "@parcha/pi-vision/providers/unpdf";
-import { docxBytes, fakeEyes, fixtureDir, letterPdf, mixedPdf, odtBytes, pdfBytes, photoJpeg, pptxBytes, scanPdf, tallPng, textPdf, widePng, xlsxBytes } from "@parcha/pi-vision/testing";
+import { SENTINEL_LINK_QUERY, SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, docxBytes, fakeEyes, fixtureDir, letterPdf, mixedPdf, odtBytes, pdfBytes, photoJpeg, pptxBytes, scanPdf, tallPng, textPdf, widePng, xlsxBytes } from "@parcha/pi-vision/testing";
 
 const images = sharpImages(sharp);
 /** The providers a host passes: a program first where one serves the same job, the zero-install one after it. */
@@ -106,7 +106,7 @@ test("PDF: text with page marks and its scans named, a scan rendered with its te
   await r.dir.file("scan.pdf", await scanPdf(sharp));
   await r.dir.file("filing.pdf", textPdf(60));
   const mixed = await r.read({ path: "mixed.pdf" });
-  assert.match(text(mixed), /^Text of mixed\.pdf \(5 pages\), extracted with [\w.-]+\. Page 3 has no text layer: read with page=N to look\./);
+  assert.match(text(mixed), /^Text of mixed\.pdf \(5 pages\), extracted with [\w.-]+; the text is saved at evidence\/n\/media\/mixed\.pdf-[0-9a-f]{16}\.txt\. Page 3 has no text layer: read with page=N to look\./);
   assert.match(text(mixed), /--- page 2 ---\nSection 2\./);
   assert.match(text(mixed), /--- page 3 \(no text layer: read with page=3 to look at it\) ---/);
   const page3 = await r.read({ path: "mixed.pdf", page: 3 });
@@ -129,12 +129,12 @@ test("office documents and spreadsheets read with nothing installed: text in ord
   await r.dir.file("deck.pptx", pptxBytes());
   await r.dir.file("ledger.xlsx", xlsxBytes());
   const doc = await r.read({ path: "proof.docx" });
-  assert.match(text(doc), /^Text of proof\.docx \(1 page\), read with office-js\. Text only:/);
+  assert.match(text(doc), /^Text of proof\.docx \(1 page\), read with office-js; the text is saved at evidence\/n\/media\/proof\.docx-[0-9a-f]{16}\.txt\. Text only:/);
   assert.match(text(doc), /EXAMPLE WIDGETS LLC/);
   const deck = await r.read({ path: "deck.pptx" });
   assert.match(text(deck), /--- page 1 ---[\s\S]*--- page 2 ---/);
   const sheet = await r.read({ path: "ledger.xlsx" });
-  assert.match(text(sheet), /^Cells of ledger\.xlsx \(\d+ sheets?\), read with office-js\. Cells only:/);
+  assert.match(text(sheet), /^Cells of ledger\.xlsx \(\d+ sheets?\), read with office-js; the text is saved at evidence\/n\/media\/ledger\.xlsx-[0-9a-f]{16}\.txt\. Cells only:/);
   assert.match(text(sheet), /\{=[^}]+\}/, "a formula is in its cell");
   assert.match(text(sheet), /<no stored value>/, "a formula with no stored value says so");
 });
@@ -197,9 +197,62 @@ test("a PDF replaced while it is read: the text, the hash and the kept derivatio
   assert.equal(first.details.media.sha256, sha(A));
   assert.ok(text(first).includes("4471") && !text(first).includes("9026"), "the text is of the bytes the hash names");
   const kept = readdirSync(r.setup.scope.deriveDir);
-  assert.ok(kept.length > 0 && kept.every((name) => name.startsWith(sha(A).slice(0, 16))), kept.join(", "));
+  assert.ok(kept.length > 0 && kept.every((name) => name.includes(sha(A).slice(0, 16))), kept.join(", "));
   assert.ok(kept.every((name) => !readFileSync(`${r.setup.scope.deriveDir}/${name}`, "utf8").includes("9026")), "nothing kept under the first hash holds the other's text");
   writeFileSync(path, A);
   const again = await r.read({ path: "notice.pdf" });
   assert.ok(text(again).includes("4471") && !text(again).includes("9026"));
+});
+
+test("a document read as text keeps that text in a file the agent can search, says where, and names it in details.document", async (t) => {
+  const r = await rig();
+  t.after(() => r.dir.remove());
+  const pdf = mixedPdf(sharp, 3, 2);
+  await r.dir.file("sub dir/mixed (v2).pdf", await pdf);
+  await r.dir.file("proof.docx", docxBytes());
+  const sha16 = (bytes) => createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+  const whole = await r.read({ path: "sub dir/mixed (v2).pdf" });
+  const saved = `evidence/n/media/mixed_v2_.pdf-${sha16(await pdf)}.txt`;
+  assert.deepEqual(whole.details.document, { text: saved, extractor: whole.details.document.extractor, pages: 3 });
+  assert.ok(text(whole).includes(`; the text is saved at ${saved}.`));
+  const kept = readFileSync(`${r.dir.path}/${saved}`, "utf8");
+  assert.match(kept, /^--- page 1 ---\nSection 1\./);
+  assert.match(kept, /--- page 2 \(no text layer: read with page=2 to look at it\) ---/);
+  assert.ok(text(whole).includes(kept.slice(0, 200)), "the file holds the text the read shows");
+  const one = await r.read({ path: "sub dir/mixed (v2).pdf", page: 3 });
+  const savedPage = saved.replace(/\.txt$/, "-p3.txt");
+  assert.deepEqual(one.details.document, { text: savedPage, extractor: one.details.document.extractor, page: 3, pages: 3 });
+  assert.match(readFileSync(`${r.dir.path}/${savedPage}`, "utf8"), /^Section 3\./);
+  const doc = await r.read({ path: "proof.docx" });
+  assert.deepEqual(doc.details.document, { text: `evidence/n/media/proof.docx-${sha16(docxBytes())}.txt`, extractor: "office-js", pages: 1 });
+  assert.match(readFileSync(`${r.dir.path}/${doc.details.document.text}`, "utf8"), /EXAMPLE WIDGETS LLC/);
+  // Written once: a second read of the same bytes leaves the file as it is.
+  writeFileSync(`${r.dir.path}/${saved}`, "kept as it was");
+  await r.read({ path: "sub dir/mixed (v2).pdf" });
+  assert.equal(readFileSync(`${r.dir.path}/${saved}`, "utf8"), "kept as it was");
+  assert.deepEqual(readdirSync(`${r.dir.path}/evidence/n/media`).filter((name) => name.endsWith(".part")), [], "no part file is left");
+});
+
+test("a rendered page says where its render is saved, and the look's receipt lists it", async (t) => {
+  const r = await rig();
+  t.after(() => r.dir.remove());
+  await r.dir.file("scan.pdf", await scanPdf(sharp));
+  const out = await r.read({ path: "scan.pdf" });
+  const said = /rendered at \d+ dpi \(\d+x\d+\) and saved at (evidence\/n\/media\/\S+\.png)\./.exec(text(out));
+  assert.ok(said, text(out));
+  assert.ok(readFileSync(`${r.dir.path}/${said[1]}`).length > 1000, "the render is a file there");
+  assert.deepEqual(out.details.media.derived, [said[1]]);
+  const looked = await guardResult(out, r.call, r.setup);
+  assert.deepEqual(r.filed.at(-1).facts.derived, [said[1]]);
+  assert.equal(blocks(looked).length, 1);
+});
+
+test("a file named after a signed link keeps its text under a name with none of the link's query in it", async (t) => {
+  const r = await rig();
+  t.after(() => r.dir.remove());
+  const name = `statement.pdf?${SENTINEL_LINK_QUERY}`;
+  await r.dir.file(name, letterPdf());
+  const out = await r.read({ path: name });
+  assert.match(out.details.document.text, /^evidence\/n\/media\/statement\.pdf-[0-9a-f]{16}\.txt$/);
+  for (const kept of readdirSync(`${r.dir.path}/evidence/n/media`)) assert.ok(![SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN].some((secret) => kept.includes(secret)), kept);
 });

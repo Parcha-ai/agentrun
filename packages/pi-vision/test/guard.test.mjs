@@ -348,6 +348,10 @@ test("a cause's first line never carries a link's query, fragment or credentials
     const line = `request to ${open}${SENTINEL_SIGNED_LINK}${close} failed`;
     assert.equal(linkSafe(line), `request to ${open}${cut}${close} failed`, `${open}...${close}`);
   }
+  assert.equal(linkSafe(`socket ${SENTINEL_SIGNED_LINK.replace("https://", "wss://")} closed`), `socket ${cut.replace("https://", "wss://")} closed`, "a web socket link");
+  assert.equal(linkSafe(`socket '${SENTINEL_SIGNED_LINK.replace("https://", "ws://")}'`), `socket '${cut.replace("https://", "ws://")}'`);
+  assert.equal(linkSafe(`{"url":"${SENTINEL_SIGNED_LINK.split("/").join("\\/")}"}`), `{"url":"${cut}"}`, "a link with its slashes escaped as JSON writes them");
+  assert.equal(linkSafe("a\\/b is not a link"), "a\\/b is not a link", "a word with an escaped slash and no link is left as it is");
   assert.equal(linkSafe("a plain line with no link: ok?"), "a plain line with no link: ok?");
   assert.equal(linkSafe("file:///tmp/a?b and mailto:x@y.z"), "file:///tmp/a?b and mailto:x@y.z", "only http and https links are cut");
   assert.equal(linkSafe(`<${SENTINEL_SIGNED_LINK.replace("https://files.sentinel.invalid", "HTTPS://FILES.SENTINEL.INVALID")}>`), `<${cut}>`, "a scheme in capitals");

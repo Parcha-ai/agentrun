@@ -4,6 +4,7 @@
 // that takes video. The providers and the image processor are the call's, as the host passed them; a provider that
 // cannot run is passed over, and what nothing can do is a typed miss.
 
+import { randomUUID } from "node:crypto";
 import type { MissCode } from "./contract.js";
 import { fitImage, fitSentence } from "./image.js";
 import { imageHeader, sniffKind, type Kind } from "./kinds.js";
@@ -42,6 +43,30 @@ async function fitted(context: KindContext, bytes: Uint8Array, mimeType: string)
   };
 }
 
+/** The most of a source's file name a kept text file carries, before the hash that names its bytes. */
+const SAVED_NAME_CHARS = 80;
+/** A path as the model is told it: relative to the environment's directory when it lies under it. */
+const shownPath = (context: KindContext, path: string) => (path.startsWith(`${context.env.cwd}/`) ? path.slice(context.env.cwd.length + 1) : path);
+
+/** A document's text kept beside its other derivations, for an agent to search with its shell: `<file name>-<first 16
+ *  of the source's hash>[-p<page>].txt`, written under another name and renamed, and left as it is when it is already
+ *  there (the name carries the hash of the bytes, so it holds the same text). Null when the read keeps nothing or the
+ *  file could not be written. */
+async function keepText(request: Parameters<KindReader>[0], context: KindContext, body: string): Promise<string | null> {
+  if (!context.deriveDir) return null;
+  const ctx = visionContext(context.signal);
+  // The file's own name, without anything a name taken from a link carries after `?` or `#`.
+  const base = request.name.split("/").pop()!.split("?")[0]!.split("#")[0]!.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, SAVED_NAME_CHARS);
+  const file = `${context.deriveDir}/${base}-${request.source.sha256.slice(0, 16)}${request.page !== undefined ? `-p${request.page}` : ""}.txt`;
+  if (!(await context.env.fileInfo(file, ctx)).ok) {
+    const part = `${file}.${randomUUID().slice(0, 8)}.part`;
+    const made = await context.env.createDir(context.deriveDir, { recursive: true }, ctx);
+    const wrote = made.ok && (await context.env.writeFile(part, body, ctx)).ok && (await context.env.renameFile(part, file, ctx)).ok;
+    if (!wrote) { await context.env.remove(part, { force: true }, ctx); return null; }
+  }
+  return shownPath(context, file);
+}
+
 /** The source's bytes, when the process may hold them. */
 async function bytesOf(context: KindContext, path: string, size: number): Promise<Uint8Array | KindResult> {
   if (size > SOURCE_BYTES_IN_PROCESS) return { miss: "over_budget", reason: `it is ${size} bytes, over the ${SOURCE_BYTES_IN_PROCESS} read into this process` };
@@ -73,8 +98,10 @@ const readPdf: KindReader = async (request, context) => {
   if (planned.fit.reduction === "text_only") {
     const scans = page === undefined ? pages.flatMap((t, i) => (t.trim() ? [] : [i + 1])) : [];
     const listed = scans.length ? ` ${scans.length === 1 ? "Page" : "Pages"} ${scans.slice(0, 20).join(", ")}${scans.length > 20 ? ", ..." : ""} ${scans.length === 1 ? "has" : "have"} no text layer: read with page=N to look.` : "";
-    const head = `Text of ${name}${page !== undefined ? ` page ${page}` : ` (${plural(facts.pages, "page")})`}, extracted with ${madeBy.provider}.${listed} Pass page=N for one page, or ask to look at a rendered page.`;
-    return { content: [text(head)], text: page !== undefined ? pages[page - 1]! : pdfMarkedText(pages), fit: planned.fit };
+    const body = page !== undefined ? pages[page - 1]! : pdfMarkedText(pages);
+    const saved = await keepText(request, context, body);
+    const head = `Text of ${name}${page !== undefined ? ` page ${page}` : ` (${plural(facts.pages, "page")})`}, extracted with ${madeBy.provider}${saved ? `; the text is saved at ${saved}` : ""}.${listed} Pass page=N for one page, or ask to look at a rendered page.`;
+    return { content: [text(head)], text: body, fit: planned.fit, document: { ...(saved ? { text: saved } : {}), extractor: madeBy.provider, ...(page !== undefined ? { page } : {}), pages: facts.pages } };
   }
   // Each page planned is rendered once at its dpi and fitted (tiled when tall) to the image limits.
   const shownPages = [...new Set(planned.parts.map((part) => part.fragment.page!.from))];
@@ -83,6 +110,7 @@ const readPdf: KindReader = async (request, context) => {
     : page !== undefined ? `${name}: page ${page} has no text layer (a scan), so it is shown rendered.`
     : `${name} has no text layer (a scan): ${span} shown rendered; read with page=N for another.`;
   const content: (TextContent | ImageContent)[] = [text(why)];
+  const renders: string[] = [];
   let blocks = 0;
   for (const at of shownPages) {
     const dpi = planned.parts.find((part) => part.fragment.page!.from === at)!.dpi!;
@@ -92,10 +120,12 @@ const readPdf: KindReader = async (request, context) => {
     if ("miss" in shown) return { ...shown, text: pages[at - 1] };
     const layer = pages[at - 1]?.trim();
     const beside = layer ? `\nText layer of this page:\n${layer.length > PAGE_TEXT_CHARS ? `${layer.slice(0, PAGE_TEXT_CHARS)}\n[page text continues; read with page=${at} and no ask for all of it]` : layer}` : "";
-    content.push(text(`PDF ${name}, page ${at} of ${facts.pages}, rendered at ${dpi} dpi (${rendered.value.image.width}x${rendered.value.image.height}).${shown.sentence ? ` ${shown.sentence}` : ""}${beside}`), ...shown.blocks);
+    const kept = rendered.value.path ? shownPath(context, rendered.value.path) : null;
+    if (kept) renders.push(kept);
+    content.push(text(`PDF ${name}, page ${at} of ${facts.pages}, rendered at ${dpi} dpi (${rendered.value.image.width}x${rendered.value.image.height})${kept ? ` and saved at ${kept}` : ""}.${shown.sentence ? ` ${shown.sentence}` : ""}${beside}`), ...shown.blocks);
     blocks += shown.tiles;
   }
-  return { content, fit: planned.fit, media: { ...(page === undefined && shownPages.length === 1 ? { page: shownPages[0] } : {}), ...(blocks > 1 ? { units: Array<number>(blocks).fill(0) } : {}) } };
+  return { content, fit: planned.fit, media: { ...(page === undefined && shownPages.length === 1 ? { page: shownPages[0] } : {}), ...(blocks > 1 ? { units: Array<number>(blocks).fill(0) } : {}), ...(renders.length ? { derived: renders } : {}) } };
 };
 
 /** An office document's or a sheet's text through the first office provider that runs; a sheet is a page of cells. */
@@ -108,8 +138,10 @@ async function officeText(request: Parameters<KindReader>[0], context: KindConte
       if (request.page !== undefined && !out.pages.length) return { refusal: `Cannot read ${request.name}: page ${request.page} is past the end of the document.` };
       const marked = out.pages.map((p) => (out.pages.length > 1 ? `--- ${kind === "sheet" ? "sheet" : "page"} ${p.page} ---\n${p.text}` : p.text)).join("\n\n");
       const asked = request.ask ? ` Asked: ${request.ask}. It is answered from this text: a rendered page needs LibreOffice (soffice) in the environment.` : "";
-      const head = `${kind === "sheet" ? "Cells" : "Text"} of ${request.name}${request.page !== undefined ? ` page ${request.page}` : ` (${plural(out.pages.length, kind === "sheet" ? "sheet" : "page")})`}, read with ${out.madeBy.provider}. ${notRenderedNote(kind)}${asked}`;
-      return { content: [text(head)], text: marked, fit: { reduction: "text_only", shown: { pages: out.pages.length } } };
+      const saved = await keepText(request, context, marked);
+      const head = `${kind === "sheet" ? "Cells" : "Text"} of ${request.name}${request.page !== undefined ? ` page ${request.page}` : ` (${plural(out.pages.length, kind === "sheet" ? "sheet" : "page")})`}, read with ${out.madeBy.provider}${saved ? `; the text is saved at ${saved}` : ""}. ${notRenderedNote(kind)}${asked}`;
+      const document = { ...(saved ? { text: saved } : {}), extractor: out.madeBy.provider, ...(request.page !== undefined ? { page: request.page } : { pages: out.pages.length }) };
+      return { content: [text(head)], text: marked, fit: { reduction: "text_only", shown: { pages: out.pages.length } }, document };
     } catch (error) {
       if (context.signal?.aborted) throw error;
       if (error instanceof ProviderMiss) return { miss: error.code, reason: error.message };
