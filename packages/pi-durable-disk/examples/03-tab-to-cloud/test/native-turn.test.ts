@@ -47,7 +47,9 @@ test("over a real Harness: the conversation's tools go out as OpenAI function to
     assert.deepEqual(lock, ["walk", "sprint"], "the model is offered only the skills that came home");
     const flat = (first.tools[1]!.function.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum;
     assert.deepEqual(flat, ["walk", "sprint"], "and so does the flat tool");
-    assert.ok(nativeTurn(captured[0]!, { provider: "pipe", mode: "none" }).tools.some((t) => (t.function.parameters as { properties: { skill?: { enum: string[] } } }).properties.skill?.enum?.length === 8), "unrefined, the registry's own list is whole");
+    const unrefined = nativeTurn(captured[0]!, { provider: "pipe", mode: "none" }).tools.find((t) => t.function.name === "do")!.function.parameters as { properties: { skill: { enum?: string[]; type: string } } };
+    assert.equal(unrefined.properties.skill.enum, undefined, "unrefined, the registry's own skill is a free name (the cluster names skills): no list of eight in the schema");
+    assert.equal(unrefined.properties.skill.type, "string");
     // the request after the tool ran: the call and its result are in the window (this check treats "pipe" as the model's own provider)
     const second = nativeTurn(captured[1]!, { provider: "pipe", mode: "none", system: "You control a robot.", refine });
     assert.deepEqual(second.messages.map((m) => m.role), ["system", "user", "assistant", "tool"]);

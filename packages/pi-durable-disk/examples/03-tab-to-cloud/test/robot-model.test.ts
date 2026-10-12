@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LIMITS as PAGE_LIMITS, PRESETS, defaultDesign, validateDesign as pageValidate } from "../../04-walks-home/tab/src/design.ts";
-import { BODY_CHANGED, COLOR_NAMES, LIMITS, LOOKS_ONLY, MORPH_PRESETS, REACH, SKILL_CHANGED, SKILL_ON_CHANGED_BODY, applyRobotTool, applyUpdateRobot, bodyKey, initialRobot, morphDesign, parseRobot, reachRatio, serializeRobot, validateDesign } from "../robot-model.ts";
+import { CODE_BODY_REFUSAL, LOOK_PARTS, TAG_VOCABULARY, BODY_CHANGED, COLOR_NAMES, LIMITS, LOOKS_ONLY, MORPH_PRESETS, REACH, SKILL_CHANGED, SKILL_ON_CHANGED_BODY, applyRobotTool, applyUpdateRobot, bodyKey, initialRobot, morphDesign, parseRobot, reachRatio, serializeRobot, validateDesign } from "../robot-model.ts";
 
 const robot = () => initialRobot(defaultDesign());
 const call = (s: ReturnType<typeof robot>, tool: string, args: Record<string, unknown>) => applyRobotTool(s, tool, args);
@@ -139,7 +139,8 @@ test("bad arguments are refused with the choices, whatever the schema let throug
   const s = robot();
   const frozen = JSON.stringify(s);
   for (const [tool, args, why] of [
-    ["set_color", { part: "tail", color: "red" }, /part must be one of torso, legs/],
+    ["set_color", { part: "wheels", color: "red" }, /part must be one of torso, head, neck, tail, legs/],
+    ["set_color", { part: "tail", color: "red" }, /this robot has no tail; its parts are: torso, legs, front legs, back legs, whole robot/],
     ["set_color", { part: "legs", color: "teal" }, new RegExp(`color must be one of ${COLOR_NAMES.join(", ")}`)],
     ["set_shape", { part: "torso", shape: "pointy" }, /shape must be one of boxy, round/],
     ["set_face", { face: "grumpy" }, /face must be one of happy/],
@@ -220,7 +221,8 @@ test("do(skill): only a skill that came home can be chosen; the body and looks a
   assert.equal(bodyKey(sprint.state.design), bodyKey(s.design));
   assert.deepEqual(sprint.state.look, s.look);
   assert.match(call2(s, "do", { skill: "spin" }, { skills }).text, /^Not done: the robot has not learned spin; it can do walk, sprint\./);
-  assert.match(call2(s, "do", { skill: "fly" }, { skills }).text, /^Not done: skill must be one of walk, sprint/);
+  assert.match(call2(s, "do", { skill: "fly" }, { skills }).text, /^Not done: the robot has not learned fly; it can do walk, sprint/, "any name is looked up in what came home, not in a fixed list");
+  assert.match(call2(s, "do", { skill: "walk now!" }, { skills }).text, /^Not done: skill must be the name of a skill the robot has learned/);
   assert.match(call2(s, "do", { skill: "walk" }, {}).text, /^Not done: no skill has come home yet/);
   const again = call2(sprint.state, "do", { skill: "sprint" }, { skills }); // asking again writes again: the page may have stopped running the skill since
   assert.equal(again.kind, "skill");
@@ -301,4 +303,68 @@ test("the flat reset counts edits as the same asks one by one do: reset is 0, ea
   const oneByOne = call(call(edited, "reset", {}).state, "set_color", { part: "all", color: "blue" }).state;
   assert.equal(both.state.edits, oneByOne.edits);
   assert.equal(applyUpdateRobot(robot(), { color: "red" }).state.edits, 1);
+});
+
+const dino = { name: "dino", tags: ["torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "eyes", "jaw", "belly", "plates"], legs: 4 };
+const code = (s: ReturnType<typeof robot>, tool: string, args: Record<string, unknown>) => applyRobotTool(s, tool, args, { body: dino });
+
+test("on a body written as code the look tools work per tag, whatever the body has: plates, a tail, the whole robot", () => {
+  const s = robot();
+  const a = code(s, "set_color", { part: "plates", color: "orange" });
+  assert.equal(a.kind, "looks");
+  assert.equal(a.text, `The plates are now orange. ${LOOKS_ONLY}`);
+  assert.deepEqual(a.state.look.tags, { plates: "orange" });
+  const b = code(a.state, "set_color", { part: "front_legs", color: "blue" });
+  assert.equal(b.text, `The front legs are now blue. ${LOOKS_ONLY}`);
+  assert.deepEqual(b.state.look.tags, { plates: "orange", front_legs: "blue" });
+  const all = code(b.state, "set_color", { part: "all", color: "red" });
+  assert.equal(all.text, `The whole robot is now red. ${LOOKS_ONLY}`);
+  assert.deepEqual(all.state.look.tags, { all: "red" }, "all replaces what was said about the parts");
+  const round = code(s, "set_shape", { part: "tail", shape: "round" });
+  assert.equal(round.text, `The tail is now round. ${LOOKS_ONLY}`);
+  assert.deepEqual(round.state.look.shapes, { tail: "round" });
+  assert.equal(code(s, "set_face", { face: "happy" }).kind, "looks");
+});
+
+test("on a code body a part it does not have is refused with the parts it has, and the shape tools are refused with the one sentence that says why", () => {
+  const s = robot();
+  const no = code(s, "set_color", { part: "wings", color: "red" });
+  assert.equal(no.kind, "refused");
+  assert.equal(no.text, "Not done: this robot has no wings; its parts are: whole robot, torso, head, neck, tail, legs, front legs, back legs, eyes, jaw, belly, plates.");
+  assert.equal(no.state, s);
+  for (const [tool, args] of [["resize", { part: "leg_length", factor: 1.2 }], ["scale", { factor: 1.5 }], ["set_legs", { pairs: 3 }], ["morph", { preset: "dog" }]] as const) {
+    const o = code(s, tool, args);
+    assert.equal(o.kind, "refused", tool);
+    assert.equal(o.text, CODE_BODY_REFUSAL);
+    assert.equal(o.state, s);
+  }
+  assert.equal(CODE_BODY_REFUSAL, "Not done: this robot is built from code (robot/body.mjs), so its size, legs and shape change by editing that file, not with this tool.");
+});
+
+test("reset on a code body goes back to the body's own colours, no face, its own name; looks only, and the flat form carries the same rules", () => {
+  const painted = code(code(robot(), "set_color", { part: "plates", color: "orange" }).state, "rename", { name: "Rex" }).state;
+  const r = code(painted, "reset", {});
+  assert.equal(r.kind, "looks");
+  assert.equal(r.state.name, "dino");
+  assert.equal(r.state.look.tags, undefined);
+  assert.equal(r.state.edits, 0);
+  assert.equal(r.text, `Everything is back to the robot's own colours and face. ${LOOKS_ONLY}`);
+  const flat = applyUpdateRobot(robot(), { color: "red", part: "tail", morph: "dog" }, { body: dino });
+  assert.match(flat.text, /The tail is now red\./);
+  assert.ok(flat.text.includes(CODE_BODY_REFUSAL), "the refused step is reported, the colour still applies");
+});
+
+test("the file the tools write for a code body parses back, and a bad colour or shape in it does not; the tag vocabulary is the helper's own", async () => {
+  const withTags = code(robot(), "set_color", { part: "plates", color: "orange" }).state;
+  assert.ok(parseRobot(serializeRobot(withTags)));
+  const bad = JSON.parse(serializeRobot(withTags));
+  bad.look.tags.plates = "teal";
+  assert.equal(parseRobot(JSON.stringify(bad)), undefined);
+  const bad2 = JSON.parse(serializeRobot(withTags));
+  bad2.look.shapes = { tail: "pointy" };
+  assert.equal(parseRobot(JSON.stringify(bad2)), undefined);
+  // @ts-expect-error: a plain .mjs file shipped to the agent's workspace, without types
+  const lib = await import("../../04-walks-home/body/lib.mjs");
+  assert.deepEqual([...TAG_VOCABULARY], lib.TAG_VOCABULARY);
+  assert.equal(LOOK_PARTS.at(-1), "all", "all is last: the order of the enum is the order of a lock grammar");
 });

@@ -28,6 +28,9 @@ export class Sim {
   /** With no policy: random actions (a brain that has learned nothing) instead of holding the stand pose. */
   brain: UntrainedBrain | null = null;
   prevAction: number[];
+  /** A code body's motor joints: where each one sits in qpos and qvel (a body with spring joints has joints the policy never sees). Null: the motors are the joints after the free joint, in order. */
+  private motorQpos: number[] | null = null;
+  private motorDof: number[] | null = null;
   private kickLeft = 0;
   private kickForce: [number, number, number] = [0, 0, 0];
 
@@ -38,6 +41,14 @@ export class Sim {
     this.data = new mj.MjData(this.model);
     this.torsoBody = this.bodyId('torso');
     this.prevAction = new Array(built.jointNames.length).fill(0);
+    if (built.code) {
+      this.motorQpos = []; this.motorDof = [];
+      for (const name of built.jointNames) {
+        const id = mj.mj_name2id(this.model, mj.mjtObj.mjOBJ_JOINT.value, name);
+        if (id < 0) throw new Error(`no joint ${name}`);
+        this.motorQpos.push(this.model.jnt_qposadr[id]); this.motorDof.push(this.model.jnt_dofadr[id]);
+      }
+    }
     if (this.model.nu !== built.jointNames.length) throw new Error(`model has ${this.model.nu} actuators, design says ${built.jointNames.length}`);
     this.reset();
   }
@@ -58,8 +69,11 @@ export class Sim {
   }
 
   state(gaitHz: number): State {
+    // a code body's springs are not the policy's business: it sees the free joint and the motors, in the order the trainer sees them
+    const qpos = this.motorQpos ? [...Array.from(this.data.qpos.slice(0, 7)), ...this.motorQpos.map((a) => this.data.qpos[a]!)] : this.data.qpos;
+    const qvel = this.motorDof ? [...Array.from(this.data.qvel.slice(0, 6)), ...this.motorDof.map((a) => this.data.qvel[a]!)] : this.data.qvel;
     return {
-      qpos: this.data.qpos, qvel: this.data.qvel, prevAction: this.prevAction,
+      qpos, qvel, prevAction: this.prevAction,
       command: this.command, time: this.time, gaitHz, standPose: this.built.standPose,
     };
   }
@@ -79,7 +93,9 @@ export class Sim {
     const yaw = Math.atan2(2 * (q[3] * q[6] + q[4] * q[5]), 1 - 2 * (q[5] * q[5] + q[6] * q[6]));
     q[2] = this.built.standHeight;
     q[3] = Math.cos(yaw / 2); q[4] = 0; q[5] = 0; q[6] = Math.sin(yaw / 2);
-    for (let i = 0; i < this.built.standPose.length; i++) { q[7 + i] = this.built.standPose[i]; this.data.ctrl[i] = this.built.standPose[i]; }
+    const home = this.model.key_qpos; // the body's own standing pose, the springs' rest angles included
+    for (let i = 7; i < this.model.nq; i++) q[i] = home[i]!;
+    for (let i = 0; i < this.built.standPose.length; i++) this.data.ctrl[i] = this.built.standPose[i];
     for (let i = 0; i < this.data.qvel.length; i++) this.data.qvel[i] = 0;
     this.prevAction.fill(0);
     this.mode = 'walk';
@@ -122,6 +138,12 @@ export class Sim {
     this.prevAction = action.slice();
     this.time += CONTROL_DT;
     return action;
+  }
+
+  /** Release MuJoCo's model and data (wasm memory the garbage collector does not see). The simulation is unusable after. */
+  free(): void {
+    this.data.delete();
+    this.model.delete();
   }
 
   torsoPos(): [number, number, number] {

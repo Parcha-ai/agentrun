@@ -13,6 +13,7 @@ import type { Registry } from "@earendil-works/pi-durable";
 import { admitNotice, type EnvironmentFacts, type SwitchInfo } from "../environment.ts";
 import { remoteStorage, type Attached, type PipeClient } from "./pipe-client.ts";
 import type { Workspace } from "./workspace.ts";
+import { ensureCodeRobot } from "../build-robot.ts";
 
 /** The environment the runtime owns: cleaned up when it closes. */
 export type RuntimeEnv = ExecutionEnv;
@@ -122,10 +123,13 @@ export async function startTab<E extends RuntimeEnv>(opts: {
    * only when its call ends. Each tick is one more write-through on the same line, so ticks and tool ends never overlap.
    */
   liveFlushMs?: number;
+  /** Code mode (default): the run starts with a robot that is code (robot/body.mjs and its build, build-robot.ts ensureCodeRobot), written only where no body exists. False: no robot files are written. */
+  robotCode?: boolean;
 }): Promise<TabRuntime<E>> {
   const { env, workspace } = opts;
   workspace.setLazy(opts.attached.noRestore ?? []);
   const restored = await workspace.restore(opts.attached.files);
+  if (opts.robotCode !== false) await ensureCodeRobot(env as never, ctx as never).catch(() => undefined); // the workspace's own scan sends these files with the next write-through
   const syncs: { changes: number; ms: number }[] = [];
   // One write-through at a time: each compares against the baseline the previous one established.
   let line: Promise<void> = Promise.resolve();
@@ -152,9 +156,9 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     registry = agentRegistry(durable, { ...opts.host, ...(opts.attached.placed ? { switchTool: false } : {}), environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) });
     harness = await Harness.open(remoteStorage(opts.client), { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
     // The notice is committed before anything the run resumes commits (environment.ts).
-    if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model), opts.move.facts, opts.move.info, ctx);
+    if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode }), opts.move.facts, opts.move.info, ctx);
     await harness.resume();
-    root = await harness.root(ctx, { agent: rootAgent(opts.attached.model) });
+    root = await harness.root(ctx, { agent: rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode }) });
   } catch (error) {
     await live?.stop();
     throw error;
@@ -211,6 +215,8 @@ export async function startLocal(opts: {
    * phone) resumes a turn a reload cut short only when the model is there; resumed at open, that turn ran with no provider and vanished.
    */
   deferResume?: boolean;
+  /** Code mode (default): the agent is not offered the preset tools (resize, scale, set_legs, morph). */
+  robotCode?: boolean;
 }): Promise<TabRuntime> {
   const env = opts.computer?.env ?? noComputer();
   const workspace = opts.computer?.workspace ?? noWorkspace();
@@ -230,7 +236,7 @@ export async function startLocal(opts: {
   const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [], ...opts.host });
   const harness = await Harness.open(opts.storage, { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   if (!opts.deferResume) await harness.resume();
-  const root = await harness.root(ctx, { agent: rootAgent(opts.model) });
+  const root = await harness.root(ctx, { agent: rootAgent(opts.model, { registry, robotCode: opts.robotCode }) });
   return {
     harness,
     root,

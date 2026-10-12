@@ -23,6 +23,9 @@ import { probeHost } from "./host-probe.ts";
 import { startCloudLink, type CloudLink } from "./cloud-link.ts";
 import type { AppExtra, AppExtraModule } from "./app-extra.ts";
 import { pathToFileURL } from "node:url";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { ensureCodeRobot, type RobotFiles } from "./build-robot.ts";
 
 export default async function app(where: AppContext): Promise<AppOptions> {
   const modelId = process.env.DEMO_MODEL;
@@ -41,6 +44,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     if (typeof mod.default !== "function") throw new Error(`DEMO_APP_EXTRA ${process.env.DEMO_APP_EXTRA} has no default function`);
     extra = await mod.default({ link, work: where.work, log: (event, data = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`) });
   }
+  // Code mode (default): the run's work directory starts with a robot that is code (robot/body.mjs and its build), written only where no body exists. DEMO_ROBOT_CODE=0 turns it off.
+  if (process.env.DEMO_ROBOT_CODE !== "0") await ensureCodeRobot(nodeFiles(where.work), undefined as never).catch((e) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "robot.seed-failed", error: String(e) })}\n`));
   let run: DurableRun | undefined;
   const durable = async () => {
     if (!run) throw new Error("the run is not open");
@@ -53,7 +58,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     ...(extra.wrapEnv ? { wrapEnv: extra.wrapEnv } : {}),
     models: agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) }),
     settings: { ...SETTINGS, ...(extra.settings ?? {}) },
-    root: { agent: rootAgent(modelId) },
+    root: { agent: rootAgent(modelId, { registry }) },
     async beforeResume({ harness }) {
       const id = process.env.DEMO_SWITCH_ID;
       if (!id) return;
@@ -64,7 +69,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
         ...(process.env.DEMO_SWITCH_BY === "agent" ? { by: "agent" as const, reason: process.env.DEMO_SWITCH_REASON ?? "" } : {}),
         ...(process.env.DEMO_SWITCH_BY === "placement" ? { by: "placement" as const, reason: process.env.DEMO_SWITCH_REASON ?? "", ...(process.env.DEMO_SWITCH_PROBABILITY ? { probability: Number(process.env.DEMO_SWITCH_PROBABILITY) } : {}) } : {}),
       };
-      await admitNotice(harness, rootAgent(modelId), await probeHost(), move, ctx);
+      await admitNotice(harness, rootAgent(modelId, { registry }), await probeHost(), move, ctx);
       // Told to the server (over the link, when there is one): the move is done, and it can time it.
       link?.notifySwitched(id);
       if (process.env.DEMO_EVENTS_LOG) appendFileSync(process.env.DEMO_EVENTS_LOG, `${JSON.stringify({ at: new Date().toISOString(), event: "notice", switchId: id, pid: process.pid })}\n`);
@@ -77,8 +82,23 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       };
       note("open");
       opened.harness.subscribeCommits((publication) => note("commit", { seq: publication.seq }));
-      const root = await opened.harness.root(ctx, { agent: rootAgent(modelId) });
+      const root = await opened.harness.root(ctx, { agent: rootAgent(modelId, { registry }) });
       link?.attach(opened.harness, root.id, extra.threadsOf);
+    },
+  };
+}
+
+/** The work directory as the robot's files see it (build-robot.ts): relative paths under `root`. */
+function nodeFiles(root: string): RobotFiles {
+  return {
+    async readTextFile(path) {
+      try { return { ok: true, value: await readFile(join(root, path), "utf8") }; } catch (e) { return { ok: false, error: { code: (e as NodeJS.ErrnoException).code === "ENOENT" ? "not_found" : "io", message: String((e as Error).message) } }; }
+    },
+    async writeFile(path, content) {
+      try { await mkdir(dirname(join(root, path)), { recursive: true }); await writeFile(join(root, path), content); return { ok: true }; } catch (e) { return { ok: false, error: { message: String((e as Error).message) } }; }
+    },
+    async createDir(path) {
+      try { await mkdir(join(root, path), { recursive: true }); return { ok: true }; } catch (e) { return { ok: false, error: { code: "io", message: String((e as Error).message) } }; }
     },
   };
 }

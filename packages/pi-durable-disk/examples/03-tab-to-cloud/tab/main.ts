@@ -46,6 +46,7 @@ import { cloudAgent, rootAgent, setExtraInstructions } from "../agent.ts";
 import { ROBOT_SOPS } from "./robot-sop.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
+import { withHomeFallback } from "./home-env.ts";
 import { currentRobot, defaultSkill, loadSkills, ROBOT_TOOLS } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
 import { creatureActivity } from "./creature-activity.ts";
@@ -74,6 +75,8 @@ sessionStorage.setItem("tab-id", tab);
  * conversation is configured onto the cloud model again.
  */
 const golive = new URLSearchParams(location.search).get("golive") === "1";
+/** Code mode (default): the run starts with a robot that is code and the agent is not offered the preset tools; ?robotcode=0 is the preset flow (the checks of those tools). */
+const robotCodeOn = new URLSearchParams(location.search).get("robotcode") !== "0";
 
 /** What the page tells the stage when a run comes home (and a check reads): the head the server now holds, the files written offline, how long it took. */
 export type CheckinEvent = { at: number; head: number; files: number; changes: number; ms: number; offlineHead: number };
@@ -588,12 +591,12 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   state.environments = attached.environments;
   state.agentModel = attached.model;
   state.placed = attached.placed === true;
-  const runtime = await startTab({ client, attached, env, workspace, host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  const runtime = await startTab({ client, attached, env: withHomeFallback(env, readWorkFresh), workspace, robotCode: robotCodeOn, host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   installCloud(runtime);
   // With ?golive=1 the router can leave the conversation on the small model; a page opened again has no model loaded until it goes offline, so the conversation goes back to the cloud model before input is accepted.
-  if (golive && (await runtime.root.agent(ctx)).model?.provider === BRAIN_PROVIDER) await runtime.root.configure(cloudAgent(attached.model), ctx);
+  if (golive && (await runtime.root.agent(ctx)).model?.provider === BRAIN_PROVIDER) await runtime.root.configure(cloudAgent(attached.model, { registry: runtime.registry, robotCode: robotCodeOn }), ctx);
   state.bootMs = performance.now() - started;
   state.mode = "writer";
   state.progress = "";
@@ -746,7 +749,7 @@ async function refreshRobotSkills(): Promise<void> {
 }
 const NATIVE_CTX = 4096;
 function nativeBrainConfig(runtime: TabRuntime) {
-  const tools = runtime.registry.snapshot().tools().filter((t) => (ROBOT_TOOLS as readonly string[]).includes(t.tool.name)).map((t) => t.tool);
+  const tools = runtime.registry.snapshot().tools().filter((t) => (ROBOT_TOOLS as readonly string[]).includes(t.tool.name) && t.tool.name !== "build_robot").map((t) => t.tool);
   return {
     native: { nCtx: NATIVE_CTX },
     instructions: ROBOT_SYSTEM,
@@ -848,7 +851,7 @@ async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
       render();
       let result: Awaited<ReturnType<Brain["rehome"]>>;
       try {
-        result = await brain.rehome(text, cloudAgent(state.agentModel));
+        result = await brain.rehome(text, cloudAgent(state.agentModel, { registry: runtime.registry, robotCode: robotCodeOn }));
       } finally {
         state.rehoming = false;
       }
@@ -1015,7 +1018,7 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
     }
     computerStatus.ms = Math.round(performance.now() - started);
     computerStatus.parts = marks;
-    const runtime = await startLocal({ storage: store.storage, model: record.model, host: { offlineChannel }, ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
+    const runtime = await startLocal({ storage: store.storage, model: record.model, robotCode: robotCodeOn, host: { offlineChannel }, ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
     state.offline = { record, store, computer: computerStatus };
     state.runtime = runtime;
     state.environments = [];
@@ -1098,7 +1101,7 @@ async function startPhone(): Promise<void> {
     const restored = await workspace.restore(await loadWorkspace(run)); // none saved is a new session; a saved one that cannot be read stops here, with the retry
     const filesMs = Math.round(performance.now() - t) - storeMs;
     const env = new FilesEnv(fs, "phone");
-    const runtime = await startLocal({ storage: store.storage, model: PHONE_MODEL_ID, computer: { env, workspace }, persist: (changes) => applyChanges(run, changes), deferResume: true }); // resumed once the brain is ready (below)
+    const runtime = await startLocal({ storage: store.storage, model: PHONE_MODEL_ID, robotCode: false, computer: { env, workspace }, persist: (changes) => applyChanges(run, changes), deferResume: true }); // resumed once the brain is ready (below)
     Object.assign(state.phone!.marks, { storeMs, filesMs, harnessMs: Math.round(performance.now() - t) - storeMs - filesMs });
     state.runtime = runtime;
     state.mode = "offline";
@@ -1340,7 +1343,7 @@ async function homeFilesForOffline(): Promise<Map<string, { kind: "file"; data: 
 // workspace; a file the tab was not sent (home/ is not restored) is fetched from the run's disk while online and was brought into the workspace at the checkout.
 const robotMode = new URLSearchParams(location.search).get("robot") === "1";
 if (robotMode) setExtraInstructions(ROBOT_SOPS); // the robot demo: the cloud agent also carries the SOPs for writing the robot and planning a teaching run
-const CREATURE_WRITABLE = new Set(["creature/designs.sqlite", "creature/creature.xml", "creature/body.json", "creature/design.json", "creature/fit.json"]);
+const CREATURE_WRITABLE = new Set(["creature/designs.sqlite", "creature/creature.xml", "creature/body.json", "creature/design.json", "creature/fit.json", "robot/build.json"]);
 const safePath = (p: unknown): string | undefined => (typeof p === "string" && p.length > 0 && p.length < 200 && !p.startsWith("/") && !p.split("/").some((part) => part === ".." || part === "." || part === "") ? p : undefined);
 const diskReads = new Map<string, { at: number; bytes: Uint8Array | null }>();
 
@@ -1531,7 +1534,7 @@ async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array;
     const attached = state.runtime as TabRuntime | undefined; // set by connect() (runHere), which TypeScript cannot see from here
     if ((state.mode as string) !== "writer" || !attached) throw new Error("the run is back on the server but this tab could not attach to it: reload this page");
     // The same conversation, the cloud model again, every tool the registry has again.
-    await attached.root.configure(cloudAgent(state.agentModel), ctx);
+    await attached.root.configure(cloudAgent(state.agentModel, { registry: attached.registry, robotCode: robotCodeOn }), ctx);
     const ms = Math.round(performance.now() - started);
     const event: CheckinEvent = { at: Date.now(), head: done.head, files: done.files, changes: payload.changes.length, ms, offlineHead: record.head };
     await attached.root.submit({ type: "write", requestId: `checkin:${done.head}`, entry: { kind: BRAIN_CHECKIN, data: { head: done.head, files: done.files, changes: payload.changes.length, ms } } }, ctx).catch(() => undefined);
@@ -1906,7 +1909,7 @@ async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID
     const brain = state.brain;
     const ready = brain !== undefined && brain.modelId !== undefined && brain.host.state().phase === "answered";
     const decision = await router.decide(text, { online: state.mode === "writer" && state.net.online, localModel: ready ? { id: brain!.modelId! } : null });
-    if (ready) await brain!.use(decision.brain, cloudAgent(state.agentModel));
+    if (ready) await brain!.use(decision.brain, cloudAgent(state.agentModel, { registry: state.runtime!.registry, robotCode: robotCodeOn }));
     const event = brainEvent(decision, { local: "the model in this tab", cloud: "the cloud model" });
     state.decisions.push(event);
     announce("brain", event);

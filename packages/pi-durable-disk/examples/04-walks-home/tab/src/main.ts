@@ -9,6 +9,7 @@ import { presetForSha } from './bodies.ts';
 import { bodyNotes } from './rules.ts';
 import { Stats } from './stats.ts';
 import { FitWriter, fitSnapshot } from './fit.ts';
+import { builtFromBody, checkBody, parseBodyJson, type BodyJson, type BuildReport } from './codebody.ts';
 import { Economy } from './economy.ts';
 import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
 import { UntrainedBrain } from './untrained.ts';
@@ -304,22 +305,44 @@ async function saveDesign(design: Design, opts: { robot?: boolean } = {}) {
   }
 }
 
+/** The robot a body file describes, once the page runs it: what the tools' looks and the face are keyed on. */
+let codeBody: { body: BodyJson; sha: string; key: string } | null = null;
+
+/** Frame a code body from what MuJoCo built: the sphere around every piece at its standing pose. */
+function heroFrameModel(sim: Sim) {
+  const model = sim.model;
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let g = 0; g < model.ngeom; g++) {
+    if (model.geom_bodyid[g] === 0) continue;
+    const r = model.geom_rbound[g];
+    for (let k = 0; k < 3; k++) { const c = sim.data.geom_xpos[3 * g + k]; lo[k] = Math.min(lo[k]!, c - r); hi[k] = Math.max(hi[k]!, c + r); }
+  }
+  const half = [0, 1, 2].map((k) => (hi[k]! - lo[k]!) / 2);
+  app.view.frameRobot(Math.hypot(half[0]!, half[1]!, half[2]!) * 0.85, (lo[2]! + hi[2]!) / 2);
+}
+
 /** Frame the whole robot in the pane: a sphere around its footprint and standing height (render.ts frameRobot). */
 function heroFrame(design: Design) {
+  if (app.built.code) { heroFrameModel(app.sim); return; }
   const reach = Math.max(...design.legs.map((l) => l.thigh + l.shin));
   const stand = reach * 0.9 + design.torso.height;
   const radius = Math.hypot(design.torso.length / 2 + reach * 0.3, Math.max(stand, design.torso.width) / 2);
   app.view.frameRobot(radius, stand / 2);
 }
 
-async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?: boolean; borrow?: boolean; robot?: boolean } = {}) {
-  const errs = validateDesign(design);
-  if (errs.length) { showError(errs.join('\n')); return; }
+async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?: boolean; borrow?: boolean; robot?: boolean; built?: Built; sim?: Sim; code?: { body: BodyJson; sha: string; key: string } | null } = {}) {
+  if (!opts.built) {
+    const errs = validateDesign(design);
+    if (errs.length) { showError(errs.join('\n')); return; }
+  }
   showError('');
-  const built = buildMjcf(design, app.world ?? undefined);
+  // a body the agent wrote as code (opts.built), or one made from a drawing: the drawing's tags are the preset parts', the code's are the file's
+  codeBody = opts.built ? opts.code ?? null : null;
+  app.view.setTags(codeBody ? codeBody.body.tags : null, codeBody?.body.face.tag ?? 'head', codeBody?.body.face.at);
+  const built = opts.built ?? buildMjcf(design, app.world ?? undefined);
   const previousBodySha = app.bodySha;
   // The body's identity (what a policy is checked against) never includes the terrain.
-  app.bodySha = await sha256Hex(app.world ? buildMjcf(design).xml : built.xml);
+  app.bodySha = opts.built ? await sha256Hex(opts.built.xml) : await sha256Hex(app.world ? buildMjcf(design).xml : built.xml);
   // A policy belongs to one body (mjcf_sha256). Take it off BEFORE the new simulation exists and before any await: the page
   // keeps stepping while saves and loads are pending, and a policy with another joint count would otherwise drive the new
   // body with an observation read past its arrays (NaN, and a creature that never recovers).
@@ -328,8 +351,10 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   if (droppedPolicy) setPolicy(null, app.policyName === 'dummy trot' ? 'dummy trot' : 'none');
   closeArrival(); // a walk measurement belongs to one body: close it before this one's simulation replaces the clock and the place it samples
   app.built = built;
-  app.sim = new Sim(app.mj, built);
+  const replaced = app.sim;
+  app.sim = opts.sim ?? new Sim(app.mj, built);
   app.view.setSim(app.sim);
+  if (replaced !== app.sim) { try { replaced.free(); } catch { /* already released */ } } // the model it ran on is wasm memory: released once the view has been rebuilt from the new one
   app.fallen = false; app.recovering = null; app.lastMode = 'walk'; app.expectReset = true;
   syncBrain(); // a new body with no policy gets the untrained brain at once
   resetOrigin();
@@ -339,7 +364,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   if (borrowed) { setPolicy(borrowed, oldName); brainFits = false; updateLabel(); }
   else if (!droppedPolicy) { brainFits = true; updateLabel(); }
   if (droppedPolicy && !borrowed) skillNow = null; // the skill's network cannot drive this body: the page is not running it any more (a reset or a `do` takes it up again)
-  if (opts.save !== false) await saveDesign(design, { robot: opts.robot === true });
+  if (opts.save !== false && !opts.built) await saveDesign(design, { robot: opts.robot === true });
   // The dummy is generated from the body, so it is rebuilt for the new one.
   if (app.policyName === 'dummy trot') {
     await useDummy();
@@ -367,7 +392,8 @@ async function applyRobot(text: string) {
   const name = $('robotName');
   name.textContent = robot.name;
   name.hidden = robot.name === '' || robot.edits === 0;
-  const bodyChanged = bodyKey(robot.design) !== bodyKey(app.sketcher.get());
+  // a body the agent wrote as code is not the robot state's preset design: its looks are drawn, its body is the file's
+  const bodyChanged = !codeBody && bodyKey(robot.design) !== bodyKey(app.sketcher.get());
   if (bodyChanged) {
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
@@ -455,6 +481,39 @@ async function publishFit(previousBodySha: string | null) {
     post('body-mismatch', { previous_body_sha: previousBodySha, body_sha: app.bodySha, skills_not_fitting: snap.notFitting, skills_fitting: snap.fitting });
   }
 }
+
+const BODY_JSON = 'robot/body.json';
+const BODY_XML = 'robot/body.xml';
+const BUILD_JSON = 'robot/build.json';
+const buildWriter = new FitWriter((text) => new ParentBackend(windowBus(), BUILD_JSON).write(new TextEncoder().encode(text)), (ms) => new Promise<void>((r) => setTimeout(r, ms)));
+
+/**
+ * robot/body.json arrived or changed: the agent wrote a body and built it (`node robot/build.mjs`). Compile it in MuJoCo, hold its standing pose, show it (the old body is replaced, a policy that fits it stays) and say what happened
+ * in robot/build.json (the build_robot tool reads that back): `{sha, ok, errors, warnings, report}`. A body that does not compile is reported and the robot on screen stays as it was.
+ */
+async function onBodyJson(text: string) {
+  economy.wake(performance.now());
+  const say = (r: BuildReport, sha: string) => buildWriter.submit(JSON.stringify({ sha, ...r }) + '\n');
+  let body: BodyJson;
+  try { body = parseBodyJson(text); } catch (e) { await say({ ok: false, errors: [String((e as Error).message)], warnings: [] }, ''); return; }
+  const xmlRead = await parentPolicySource(new ParentBackend(windowBus(), BODY_XML)).read();
+  if (!xmlRead || xmlRead === 'unchanged') { await say({ ok: false, errors: ['robot/body.xml is missing: run `node robot/build.mjs`'], warnings: [] }, ''); return; }
+  const sha = await sha256Hex(xmlRead.text);
+  // the two files are written one after the other: body.json names the xml it was built with, so a half-written pair (the xml new, the json old) waits for the other half instead of compiling a mismatch
+  if (body.xml_sha256 && body.xml_sha256 !== sha) return;
+  const key = `${sha}:${await sha256Hex(text)}`; // the xml AND the json: a change to either (a motor's strength changes only the xml, a tag only the json) is a new body
+  if (codeBody?.key === key || loadingBody === key) return;
+  loadingBody = key; // both watchers can see the same new pair at once
+  try {
+  const built = builtFromBody(xmlRead.text, body);
+  const { sim, result } = checkBody(app.mj, built, body);
+  await say(result, sha);
+  if (!sim) { showError(result.errors.join('\n')); post('body-refused', { sha, errors: result.errors }); return; }
+  await buildCreature(app.sketcher.get(), true, { built, sim, code: { body, sha, key }, save: false, borrow: true });
+  post('body-built', { sha, name: body.name, pieces: body.pieces, motors: body.motors.length, tags: body.tag_list, warnings: result.warnings });
+  } finally { loadingBody = null; }
+}
+let loadingBody: string | null = null;
 
 /** One watcher per skill policy file the manifest names: a skill relearned under the same name replaces its file and leaves the manifest as it was. */
 const skillWatchers = new Map<string, PolicyWatcher>();
@@ -1082,6 +1141,16 @@ async function main() {
         onFile: (text) => { warned = false; return onSkillsManifest(text); },
         onError: quiet(`skills watch ${SKILLS_PATH}`),
       }).start();
+      // a body the agent wrote as code (robot/body.mjs, built to robot/body.json): compiled, checked, shown and reported within a second
+      // both files are watched: the xml changes alone (a motor's strength), the json changes alone (a tag), and each is a new body; the handler reads the pair fresh
+      const readJson = async () => { const r = await parentPolicySource(new ParentBackend(windowBus(), BODY_JSON)).read(); return r && r !== 'unchanged' ? r.text : null; };
+      for (const path of [BODY_JSON, BODY_XML]) {
+        new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), path)), {
+          sha256: sha256Hex, intervalMs: 1000,
+          onFile: async () => { warned = false; const json = await readJson(); if (json) await onBodyJson(json); },
+          onError: quiet(`body watch ${path}`),
+        }).start();
+      }
       // the agent's robot tools write creature/robot.json: looks and body changes reach the creature within a second
       new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), ROBOT_PATH)), {
         sha256: sha256Hex, intervalMs: 1000,

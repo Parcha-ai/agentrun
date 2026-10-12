@@ -51,7 +51,7 @@ const script = async (turns: string[]) => ev(`demo.stubCloud([${turns.join(", ")
 const until = (expr: string, ms = 30_000) => page!.until(expr, ms, 300);
 try {
   const phone = process.env.PHONE === "1"; // PHONE=1: the same check in a 375 px wide page
-  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&brain=off#"), phone ? { width: 375, height: 760 } : undefined);
+  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&robotcode=0&brain=off#"), phone ? { width: 375, height: 760 } : undefined);
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   await until(`!!document.getElementById("creature").contentWindow.__walks`, 60_000);
   ok("the creature page runs in the agent's page, under /tab/ on the same origin", await ev<boolean>(`document.getElementById("creature").contentWindow.location.pathname === "/tab/"`));

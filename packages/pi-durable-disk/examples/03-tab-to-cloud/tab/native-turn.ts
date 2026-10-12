@@ -51,10 +51,13 @@ export function signatureView(tools: readonly ToolChatTool[], names: readonly st
  */
 export function narrowEnum(tools: readonly ToolChatTool[], property: string, allowed: readonly string[]): ToolChatTool[] {
   return tools.map((t) => {
-    const params = t.function.parameters as { properties?: Record<string, { enum?: unknown[] }> } | undefined;
+    const params = t.function.parameters as { properties?: Record<string, { enum?: unknown[]; pattern?: string }> } | undefined;
     const prop = params?.properties?.[property];
-    if (!prop?.enum) return t;
-    return { ...t, function: { ...t.function, parameters: { ...params, properties: { ...params!.properties, [property]: { ...prop, enum: prop.enum.filter((v) => allowed.includes(String(v))) } } } } };
+    if (!prop) return t;
+    // a property with an enum is cut down to `allowed`; a free string (a skill the cluster named) becomes an enum of exactly `allowed`: the model's view is what came home, whatever the registry's schema accepts
+    const { pattern: _pattern, ...rest } = prop;
+    const narrowed = prop.enum ? { ...prop, enum: prop.enum.filter((v) => allowed.includes(String(v))) } : { ...rest, enum: [...allowed] };
+    return { ...t, function: { ...t.function, parameters: { ...params, properties: { ...params!.properties, [property]: narrowed } } } };
   });
 }
 
