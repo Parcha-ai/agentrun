@@ -769,9 +769,9 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
     async submit(ref, text, requestId) {
       const serve = placed.get(ref.id)?.serve;
-      if (!serve) throw new Error("the VM serves nothing yet");
+      if (!serve) throw Object.assign(new Error("the VM serves nothing yet"), { status: 503 });
       const res = await fetch(`${serve.url}/submit`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serve.token}` }, body: JSON.stringify({ requestId, content: text }), signal: AbortSignal.timeout(30_000) });
-      if (!res.ok) throw new Error(`submit: ${res.status}`);
+      if (!res.ok) throw Object.assign(new Error(`submit: ${res.status}`), { status: res.status });
     },
 
     async stop(ref, how = "now") {
