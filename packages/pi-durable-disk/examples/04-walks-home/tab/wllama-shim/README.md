@@ -1,0 +1,50 @@
+# wllama shim: warm state and piecewise reads for the phone
+
+Every iPhone browser is WebKit, and WebKit has neither JSPI nor wasm memory64, so wllama runs its **compat** build there (wasm32 + Asyncify). This directory
+rebuilds that build from wllama 3.6.1 with two changes, and makes the warm state the page restores with it.
+
+| What | Why |
+| --- | --- |
+| llama-server's slot **save / restore / erase**, reached through wllama's existing `rerank` message (`{"slot_action": "restore", "filepath": "/models/state.bin"}`) | The robot model's system prompt and tools are 1255 tokens that every command shares. Prefilling them took 3 to 5 minutes on a phone; restoring a saved state takes under a second. wllama exposes no state API, and the message route keeps wllama's JS and glue untouched. |
+| Large file reads in pieces of at most **8 MiB** (`__wrap_fread`) | The model's token embedding is one 208 MB tensor (gguf-split never divides a tensor), and wllama read it in one piece; an iPhone failed that read with `NotReadableError`. |
+
+The patch changes C++ only: the rebuilt emscripten glue (`wllama.js`) is byte for byte npm's `@wllama/wllama-compat@3.6.1`, and `build.sh` checks that. The
+wasm grows by about 5 KB. Built from a fresh clone with `build.sh`:
+
+| File | sha256 |
+| --- | --- |
+| `wllama.js` | `97f88f7bf26b17ead6be6e7c0c39d20e21661e71827eb5e3c9a468667fc249f5` (npm's `@wllama/wllama-compat@3.6.1`) |
+| `wllama.wasm` | `e02e746697aefe8f3c53136b3643c4d6bf3e3374f1d9fa3ef8bdc9b8e2f1b769` (a build in a working tree and one from a fresh clone gave the same bytes) |
+
+## Rebuild
+
+```sh
+./build.sh   # needs git, docker and npm; writes dist/wllama.js and dist/wllama.wasm and prints their sha256
+```
+
+It clones wllama at tag `3.6.1` (commit `e3972797f9d5`), checks that the llama.cpp submodule is `83d855c5a6d7`, applies `wllama-3.6.1-d0.patch` and runs
+wllama's own `scripts/build_wasm.sh` (emscripten/emsdk:4.0.20 in Docker) with the default build skipped. Serve `dist/` as the page's compat assets
+(`setCompat({ worker, wasm })`). The build's Docker images stay on the machine afterwards (`docker rmi emscripten/emsdk:4.0.20 scripts-llamacpp-wasm-builder`).
+
+## Make a warm state
+
+```sh
+# llama.cpp at the same commit, with the page's settings
+llama-server -m <model>-00001-of-0000N.gguf --jinja -c 2048 -np 1 -b 64 -ub 64 --slot-save-path <dir>/
+node make-state.mjs --server http://127.0.0.1:8080 --serving <dir>/<model>.serving.json --first <dir>/<model>-00001-of-0000N.gguf --out <dir>
+```
+
+`<model>.serving.json` is the trainer's serving file (the system prompt and the tools, in order: the model's input as it was scored). The prefix is rendered by
+the server's own template engine up to `<|im_start|>user\n` and prefilled with nothing generated after it: Qwen3.5 is hybrid, its recurrent state cannot be cut
+back, so a state that ends anywhere else would make every command re-read a batch of the prompt. Made twice from the same inputs, the state is byte for byte
+the same.
+
+The sidecar `<name>.json` records the model (its first part's name, the parts' bytes, the GGUF's sha256), the prefix's sha256, the token count, the llama.cpp
+build and the settings. The page restores the state only when the model it loaded and the prefix it rendered match; anything else (other weights, other tools,
+another prompt or template) prefills as before. A state is specific to the llama.cpp commit and the settings: rebuild it when either changes.
+
+## Measured (headless Chrome, `?compat=1`, the iPhone's path)
+
+- Restore: 1255 tokens, 35.7 MB, 0.3 to 0.6 s, against 175 to 270 s of prefill on the same box.
+- After a restore a command reads only its own 10 to 18 tokens; the replies match an in-memory and a cold run.
+- The model loads in 260 reads, the largest 8 MiB.

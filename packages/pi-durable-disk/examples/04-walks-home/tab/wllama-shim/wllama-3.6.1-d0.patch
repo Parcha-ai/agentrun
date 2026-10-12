@@ -1,0 +1,114 @@
+diff --git a/cpp/wllama-context.h b/cpp/wllama-context.h
+index f0aed65..726c294 100644
+--- a/cpp/wllama-context.h
++++ b/cpp/wllama-context.h
+@@ -728,6 +728,24 @@ struct wllama_context
+     glue_msg_rerank_res res;
+ 
+     json body = json::parse(req.data_json.value);
++    // D0 shim (agentrun demo): llama-server's slot save/restore/erase through this action's message, so the JS and its glue stay wllama 3.6.1's.
++    // {"slot_action": "save"|"restore"|"erase", "filepath": "/models/<name>", "id_slot": 0}: a restore reads the file through wllama's own file access
++    // (register a Blob for it with fileAlloc + fileBlobs, as for a model shard); the result is the server's own (n_restored, n_read, timings).
++    if (body.contains("slot_action"))
++    {
++      const std::string act = body.at("slot_action");
++      const std::string filepath = body.value("filepath", std::string("/models/state.bin"));
++      auto rd = std::make_unique<server_response_reader>(ctx_server.get_response_reader());
++      server_task task(act == "save" ? SERVER_TASK_TYPE_SLOT_SAVE : act == "erase" ? SERVER_TASK_TYPE_SLOT_ERASE : SERVER_TASK_TYPE_SLOT_RESTORE);
++      task.id = rd->get_new_id();
++      task.slot_action.id_slot = body.value("id_slot", 0);
++      task.slot_action.filename = filepath.substr(filepath.rfind('/') + 1);
++      task.slot_action.filepath = filepath;
++      rd->post_task(std::move(task));
++      res.success.value = true;
++      res.req_id.value = register_reader(std::move(rd));
++      return res;
++    }
+     if (!body.contains("query") || !body.at("query").is_string())
+     {
+       throw app_exception("\"query\" must be a string");
+diff --git a/cpp/wllama-fs.h b/cpp/wllama-fs.h
+index 5832b20..fc2b595 100644
+--- a/cpp/wllama-fs.h
++++ b/cpp/wllama-fs.h
+@@ -107,15 +107,26 @@ extern "C"
+     size_t fpos = (size_t)__real_ftell(f);
+ 
+     // Large reads (>= 1 MB): write directly into ptr, skip cache entirely.
++    // D0 shim (agentrun demo): in pieces of at most 8 MB, so the page never reads (or, on iOS, copies to this worker) one huge slice of a file: a model's
++    // token embedding is a single 208 MB tensor, and WebKit failed such reads with NotReadableError on an iPhone.
+     if (req_bytes >= wllama_fs::CACHE_SIZE)
+     {
+-      size_t actual = (size_t)js_file_read(
+-          nit->second.c_str(), fpos, req_bytes, ptr);
+-      if (actual == 0)
++      const size_t piece = 8 * 1024 * 1024;
++      size_t done = 0;
++      while (done < req_bytes)
++      {
++        const size_t want = std::min(piece, req_bytes - done);
++        size_t got = (size_t)js_file_read(nit->second.c_str(), fpos + done, want, (char *)ptr + done);
++        if (got == 0)
++          break;
++        done += std::min(want, got);
++        if (got < want)
++          break;
++      }
++      if (done == 0)
+         return 0;
+-      size_t copy_bytes = std::min(req_bytes, actual);
+-      __real_fseek(f, fpos + copy_bytes, SEEK_SET);
+-      return copy_bytes / size;
++      __real_fseek(f, fpos + done, SEEK_SET);
++      return done / size;
+     }
+ 
+     // Small reads: try cache first.
+diff --git a/scripts/docker-compose.yml b/scripts/docker-compose.yml
+index ac0208d..9563dc4 100644
+--- a/scripts/docker-compose.yml
++++ b/scripts/docker-compose.yml
+@@ -13,6 +13,7 @@ services:
+     environment:
+       - WLLAMA_TEST_BACKEND=${WLLAMA_TEST_BACKEND:-}
+       - SKIP_COMPAT=${SKIP_COMPAT:-}
++      - SKIP_DEFAULT=${SKIP_DEFAULT:-}
+     volumes:
+       - ..:/source:Z
+     entrypoint: /bin/bash
+@@ -39,17 +40,17 @@ services:
+           CMAKE_EXTRA_FLAGS="-DWLLAMA_TEST_BACKEND=ON";
+         fi
+ 
++        if [ -z "${SKIP_DEFAULT}" ]; then
+         emcmake cmake .. -DGGML_WEBGPU=ON -DGGML_WEBGPU_JSPI=ON -DEMDAWNWEBGPU_DIR="$${EMDAWNWEBGPU_DIR}" $${CMAKE_EXTRA_FLAGS}
+         emmake make wllama -j$$(nproc)
++        mkdir -p ../src/wasm
++        cp wllama.js   ../src/wasm
++        cp wllama.wasm ../src/wasm
++        fi
+ 
+         # go back to root
+         cd ..
+ 
+-        # copy output files
+-        mkdir -p src/wasm
+-        cp build/wllama.js   src/wasm
+-        cp build/wllama.wasm src/wasm
+-
+         # build compat package (skip if SKIP_COMPAT=1)
+         if [ -z "${SKIP_COMPAT}" ]; then
+           mkdir -p build-compat
+@@ -67,10 +68,10 @@ services:
+         fi
+ 
+         # generate source map
+-        node scripts/build_source_map.js
++        [ -n "${SKIP_DEFAULT}" ] || node scripts/build_source_map.js
+ 
+         # list files (optional, for verification)
+-        ls -lh build
++        ls -lh build || true
+         if [ -d build-compat ]; then
+           ls -lh build-compat
+         fi
