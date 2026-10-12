@@ -136,23 +136,26 @@ function codingTools(): Extension {
 export const BOX_RUNS_DIR = "/workspace/runs";
 
 /**
- * A code-mode thread's outcome, from the trainer's own skill.json (mirrored home), never from the thread's words: passed with the checkpoint it passed at and the seconds it took,
- * never-passed when the trainer finished without passing, nothing yet when the file is absent or still training. `passed_at` is the checkpoint number or the trainer's record of it ({checkpoint, t}).
+ * A code-mode thread's outcome, from the trainer's own skill.json (D2's v12, mirrored home from runs/<skill>/), never from the thread's words. `passed_at` is the trainer's record of the first
+ * passing checkpoint ({checkpoint, steps, t, ...}) or null; a bare number is read as the checkpoint too. passed: with its checkpoint and seconds; a refused body or a failure with an error: "error"
+ * and the trainer's reason; a failure otherwise: "never-passed" and its diagnosis; still training or compiled: nothing yet.
  */
 export async function threadStatusFromSkillFile(work: string, skill: string): Promise<ThreadStatus | undefined> {
   const text = await readFile(join(work, "skills", skill, "skill.json"), "utf8").catch(() => undefined);
   if (!text) return undefined;
-  let meta: { status?: unknown; passed_at?: unknown; wall_s?: unknown };
+  let meta: { status?: unknown; passed_at?: unknown; wall_s?: unknown; error?: unknown; diagnosis?: unknown };
   try {
     meta = JSON.parse(text) as typeof meta;
   } catch {
     return undefined;
   }
-  const passed = meta.passed_at;
-  const checkpoint = typeof passed === "number" ? passed : passed && typeof passed === "object" && typeof (passed as { checkpoint?: unknown }).checkpoint === "number" ? (passed as { checkpoint: number }).checkpoint : undefined;
-  const seconds = typeof meta.wall_s === "number" ? meta.wall_s : passed && typeof passed === "object" && typeof (passed as { t?: unknown }).t === "number" ? (passed as { t: number }).t : undefined;
+  const at = meta.passed_at as { checkpoint?: unknown; t?: unknown } | number | null | undefined;
+  const checkpoint = typeof at === "number" ? at : typeof at?.checkpoint === "number" ? at.checkpoint : undefined;
+  const seconds = typeof meta.wall_s === "number" ? Math.round(meta.wall_s) : typeof (at as { t?: unknown } | null | undefined)?.t === "number" ? Math.round((at as { t: number }).t) : undefined;
+  const text_ = (v: unknown) => (typeof v === "string" && v.trim() ? { reason: v } : {});
   if (checkpoint !== undefined) return { status: "passed", checkpoint, ...(seconds !== undefined ? { seconds } : {}) };
-  if (meta.status === "failed" || meta.status === "done") return { status: "never-passed", ...(seconds !== undefined ? { seconds } : {}) };
+  if (meta.status === "refused" || (meta.status === "failed" && typeof meta.error === "string" && meta.error)) return { status: "error", ...text_(meta.error) };
+  if (meta.status === "failed" || meta.status === "done") return { status: "never-passed", ...(seconds !== undefined ? { seconds } : {}), ...text_(meta.diagnosis) };
   return undefined;
 }
 

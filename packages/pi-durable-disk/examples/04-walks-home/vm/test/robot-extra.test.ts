@@ -207,7 +207,7 @@ test("the thread trains for the body the page runs: /workspace/robot when the ro
   }
 });
 
-test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored home: passed (number or record), never-passed, or nothing yet", async () => {
+test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored home: passed (record or number), error with the trainer's reason, never-passed with its diagnosis, or nothing yet", async () => {
   const { threadStatusFromSkillFile, planOptions } = await import("../robot-extra.ts");
   const work = mkdtempSync(join(tmpdir(), "robot-status-"));
   try {
@@ -216,22 +216,28 @@ test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored
       writeFileSync(join(work, "skills", skill, "skill.json"), body);
     };
     put("a", '{"status":"done","passed_at":7,"wall_s":55.2}');
-    put("b", '{"status":"done","passed_at":{"checkpoint":5,"steps":3932160,"t":48.0}}');
-    put("c", '{"status":"failed","passed_at":null,"wall_s":300}');
+    put("b", '{"status":"done","passed_at":{"checkpoint":5,"steps":3932160,"t":48.4},"wall_s":null}');
+    put("c", '{"status":"failed","passed_at":null,"wall_s":300,"diagnosis":"the reward never rose"}');
     put("d", '{"status":"training"}');
     put("e", "not json");
-    assert.deepEqual(await threadStatusFromSkillFile(work, "a"), { status: "passed", checkpoint: 7, seconds: 55.2 });
+    put("f", '{"status":"refused","error":"the body has no legs I can find"}');
+    put("g", '{"status":"failed","error":"CUDA out of memory"}');
+    put("h", '{"status":"compiled","passed_at":null}');
+    assert.deepEqual(await threadStatusFromSkillFile(work, "a"), { status: "passed", checkpoint: 7, seconds: 55 });
     assert.deepEqual(await threadStatusFromSkillFile(work, "b"), { status: "passed", checkpoint: 5, seconds: 48 });
-    assert.deepEqual(await threadStatusFromSkillFile(work, "c"), { status: "never-passed", seconds: 300 });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "c"), { status: "never-passed", seconds: 300, reason: "the reward never rose" });
     assert.equal(await threadStatusFromSkillFile(work, "d"), undefined, "still training: no outcome yet");
     assert.equal(await threadStatusFromSkillFile(work, "e"), undefined);
+    assert.deepEqual(await threadStatusFromSkillFile(work, "f"), { status: "error", reason: "the body has no legs I can find" });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "g"), { status: "error", reason: "CUDA out of memory" });
+    assert.equal(await threadStatusFromSkillFile(work, "h"), undefined, "compiled is not settled");
     assert.equal(await threadStatusFromSkillFile(work, "missing"), undefined);
     const plan = planOptions(work);
     assert.equal(plan.maxThreads, 8);
     assert.equal(plan.threadDeadlineMs, 20 * 60_000);
     assert.match(plan.threadInstructions, /\S/);
     assert.equal(plan.threadExtensions.length, 1);
-    assert.deepEqual(await plan.status!({ skill: "a", boxId: "x" }, {} as never), { status: "passed", checkpoint: 7, seconds: 55.2 });
+    assert.deepEqual(await plan.status!({ skill: "a", boxId: "x" }, {} as never), { status: "passed", checkpoint: 7, seconds: 55 });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
