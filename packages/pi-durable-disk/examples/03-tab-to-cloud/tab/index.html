@@ -103,6 +103,19 @@ body.robot aside:not(#creature-pane) { display: none; }
 #creature-pane { display: block; padding: 0; background: #f4f2ea; }
 #creature-pane[hidden] { display: none; }
 #creature-pane iframe { width: 100%; height: 100%; border: 0; display: block; }
+/* ?phone=1: pi on a phone: the robot as a strip on top, the chat under it, the composer always on screen (dvh: the visible height, toolbars excluded) */
+body.phone { height: 100dvh; grid-template-rows: auto auto auto auto minmax(0, 1fr) auto; }
+body.phone #phone-retry { grid-row: 3; margin: 0; padding: 8px 14px; display: flex; gap: 8px; }
+body.phone #phone-retry[hidden] { display: none; }
+body.phone #checkedout { grid-row: 4; }
+body.phone main { grid-row: 5; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+body.phone footer { grid-row: 6; }
+body.phone #creature-pane { grid-row: 1; height: min(30dvh, 240px); border-left: 0; border-bottom: 1px solid var(--line); }
+body.phone #creature-pane:not([hidden]) { display: block !important; }
+body.phone #chat { grid-row: 2; }
+body.phone aside:not(#creature-pane), body.phone .actions, body.phone #net, body.phone .run { display: none !important; }
+body.phone header { padding: 10px 14px; gap: 10px; }
+body.phone footer { padding: 8px 12px; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { display: none; } .badge-sub { display: none; } }
 /* a phone: the robot sits under the chat instead of taking a 380px column the chat would shrink into (these rules are as specific as the robot ones above, and later) */
 @media (max-width: 760px) { body.robot main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(200px, 38vh); } #creature-pane { display: block; } #creature-pane[hidden] { display: none; } }
@@ -126,6 +139,7 @@ body.robot aside:not(#creature-pane) { display: none; }
   </div>
 </header>
 <p id="banner" hidden></p>
+<p id="phone-retry" hidden><button id="retry" class="primary">Try again</button> <button id="retry-clear">Clear the model and try again</button></p>
 <section id="checkedout" hidden><strong>Checked out to this browser.</strong> The live copy of this run is here: the server released it and runs it no more. You can turn the network off and keep talking to the agent. What does not work:<ul id="cannot"></ul><span id="persist-warning" hidden><strong>Storage is not guaranteed.</strong> This browser may clear its copy under storage pressure; it is the only live copy. </span></section>
 <main>
   <section id="chat"></section>

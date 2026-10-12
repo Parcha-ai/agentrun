@@ -68,6 +68,12 @@ export interface ToolDecoding {
   /** Awaited before each native turn is built: refresh whatever `refine` reads (the skills that came home), so a change reaches the very next request. */
   prepare?: () => Promise<void>;
   templateThinking?: boolean;
+  /**
+   * `native`: who speaks after the model's calls come back. "model" (default): the model, a turn of its own (its closing sentence). "tool-result": nobody: the
+   * turn ends on the tools' own result text (written for a person: "The whole robot is now red. ...", "Not done: ..."), so the reply cannot claim more than the
+   * tools did, and the turn costs one model call, not two. A reply with no calls is the model's own words either way.
+   */
+  closing?: "model" | "tool-result";
   /** A task that has taken this many of the model's own turns without an answer ends with a plain line instead of another model call (a small model stuck repeating one call would otherwise run for ever, each turn about ten seconds). Default 16. */
   maxSteps?: number;
   /** Called once per decoded turn, with how long it took and what it cost. */
@@ -143,6 +149,19 @@ function streamNative(brain: BrainModel, model: Model<string>, context: Transcri
       const turn = nativeTurn(context.messages as never, { provider: BRAIN_PROVIDER, mode: d.history ?? "none", ...(d.system ? { system: d.system } : {}), ...(d.refine ? { refine: d.refine } : {}), maxChars: Math.max(0, ((d.nCtx ?? 4096) - maxTokens) * CHARS_PER_TOKEN) });
       if (!turn.messages.some((m) => m.role === "user")) throw new Error("nothing to answer: the conversation has no user message");
       stream.push({ type: "start", partial: output });
+      const lastCall = turn.messages.map((m) => m.role).lastIndexOf("assistant");
+      const results = lastCall >= 0 ? turn.messages.slice(lastCall + 1) : [];
+      if (d.closing === "tool-result" && results.length > 0 && results.every((m) => m.role === "tool")) {
+        // the calls of this task came back: their own words are the reply, no model turn
+        const line = results.map((m) => String(m.content ?? "").trim()).filter(Boolean).join(" ");
+        output.content = [{ type: "text", text: line }];
+        stream.push({ type: "text_start", contentIndex: 0, partial: output });
+        stream.push({ type: "text_delta", contentIndex: 0, delta: line, partial: output });
+        stream.push({ type: "text_end", contentIndex: 0, content: line, partial: output });
+        stream.push({ type: "done", reason: "stop", message: output });
+        stream.end();
+        return;
+      }
       if (turn.steps >= (d.maxSteps ?? DEFAULT_MAX_STEPS)) {
         const line = `I stopped after ${turn.steps} steps without finishing. Tell me how you want me to go on.`;
         output.content = [{ type: "text", text: line }];

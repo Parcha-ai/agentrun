@@ -1,0 +1,26 @@
+root ::= calls | answer
+calls ::= call ("\n" call){0,5}
+call ::= "<tool_call>\n<function=set_color>\n" set-color-args "</function>\n</tool_call>" | "<tool_call>\n<function=set_shape>\n" set-shape-args "</function>\n</tool_call>" | "<tool_call>\n<function=set_face>\n" set-face-args "</function>\n</tool_call>" | "<tool_call>\n<function=rename>\n" rename-args "</function>\n</tool_call>" | "<tool_call>\n<function=resize>\n" resize-args "</function>\n</tool_call>" | "<tool_call>\n<function=scale>\n" scale-args "</function>\n</tool_call>" | "<tool_call>\n<function=set_legs>\n" set-legs-args "</function>\n</tool_call>" | "<tool_call>\n<function=morph>\n" morph-args "</function>\n</tool_call>" | "<tool_call>\n<function=reset>\n" reset-args "</function>\n</tool_call>" | "<tool_call>\n<function=do>\n" do-args "</function>\n</tool_call>"
+answer ::= [^<] [^<]*
+set-color-part ::= "torso" | "legs" | "front_legs" | "back_legs" | "all"
+set-color-color ::= "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "pink" | "white" | "black" | "gray" | "brown"
+set-color-args ::= ("<parameter=part>\n" set-color-part "\n</parameter>\n" "<parameter=color>\n" set-color-color "\n</parameter>\n") | ("<parameter=color>\n" set-color-color "\n</parameter>\n" "<parameter=part>\n" set-color-part "\n</parameter>\n")
+set-shape-part ::= "torso" | "legs"
+set-shape-shape ::= "boxy" | "round"
+set-shape-args ::= ("<parameter=part>\n" set-shape-part "\n</parameter>\n" "<parameter=shape>\n" set-shape-shape "\n</parameter>\n") | ("<parameter=shape>\n" set-shape-shape "\n</parameter>\n" "<parameter=part>\n" set-shape-part "\n</parameter>\n")
+set-face-face ::= "happy" | "sleepy" | "surprised" | "angry" | "cool" | "none"
+set-face-args ::= ("<parameter=face>\n" set-face-face "\n</parameter>\n")
+rename-name ::= [^<\n] [^<\n]{0,23}
+rename-args ::= ("<parameter=name>\n" rename-name "\n</parameter>\n")
+resize-part ::= "torso_length" | "torso_width" | "torso_height" | "leg_length" | "leg_thickness"
+resize-factor ::= "0." [5-9] [0-9]? | "1" ("." [0-9] [0-9]?)? | "2" (".0" "0"?)?
+resize-args ::= ("<parameter=part>\n" resize-part "\n</parameter>\n" "<parameter=factor>\n" resize-factor "\n</parameter>\n") | ("<parameter=factor>\n" resize-factor "\n</parameter>\n" "<parameter=part>\n" resize-part "\n</parameter>\n")
+scale-factor ::= "0." [5-9] [0-9]? | "1" ("." [0-9] [0-9]?)? | "2" (".0" "0"?)?
+scale-args ::= ("<parameter=factor>\n" scale-factor "\n</parameter>\n")
+set-legs-pairs ::= "2" | "3"
+set-legs-args ::= ("<parameter=pairs>\n" set-legs-pairs "\n</parameter>\n")
+morph-preset ::= "dog" | "spider" | "giraffe" | "lizard" | "stubby" | "original"
+morph-args ::= ("<parameter=preset>\n" morph-preset "\n</parameter>\n")
+reset-args ::= ""
+do-skill ::= "walk" | "sprint" | "backwards" | "turn-left" | "turn-right" | "spin" | "wave" | "get-up"
+do-args ::= ("<parameter=skill>\n" do-skill "\n</parameter>\n")

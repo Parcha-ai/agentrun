@@ -23,6 +23,17 @@ export function toNativeTools(list: readonly { name: string; description?: strin
 }
 
 /**
+ * The model's view of the conversation's tools when the model comes with a serving file (the system prompt and the tools it was trained and scored on): the
+ * serving file's tools, verbatim and in its order, those the conversation offers; nothing else (a registry tool the model never saw is not shown, and a serving
+ * tool the conversation does not offer is not either, so every call it can make is one pi can run). With no serving file, the conversation's own tools.
+ */
+export function servingView(tools: readonly ToolChatTool[], serving: readonly ToolChatTool[] | undefined): ToolChatTool[] {
+  if (!serving || serving.length === 0) return [...tools];
+  const offered = new Set(tools.map((t) => t.function.name));
+  return serving.filter((t) => offered.has(t.function.name));
+}
+
+/**
  * The tools with the enum of one property cut down to `allowed` (every tool that has such a property): what a small model is offered. The registry's own tools keep the whole list so every host
  * agrees; this narrowing is the model's view only, e.g. the skills that actually came home. The runtime builds its call grammar from the schema it is sent, so the narrowed enum is a lock.
  */
