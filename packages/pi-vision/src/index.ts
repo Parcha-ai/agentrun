@@ -19,4 +19,5 @@ export * from "./core/pdf.js";
 export * from "./core/plan.js";
 export * from "./core/provider.js";
 export * from "./core/read.js";
+export { PACKAGE_KINDS } from "./core/readers.js";
 export * from "./core/video.js";

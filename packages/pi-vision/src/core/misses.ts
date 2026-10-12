@@ -35,8 +35,28 @@ export const MISS_ACTION: Readonly<Record<MissCode, string>> = Object.freeze({
   refused: "This host does not allow it; go on without it.",
 });
 
-/** The first line of an error's message, bounded. */
-export const firstLine = (error: unknown, max = 300): string => String((error as Error)?.message || error).split("\n")[0]!.slice(0, max);
+/** Characters that may close around a link inside a word: quotes, brackets, and the punctuation after it. */
+const LINK_TAIL = "\"'`)]}>,.;:!?";
+
+/** A line with every http(s) link in it cut to its origin and path: a link's query, fragment and credentials (a signed
+ *  link's signature, a token) never reach a result, a receipt or an event. A link may stand inside a word, quoted or
+ *  bracketed or after `url=`: it starts at its scheme and ends before the quotes and punctuation that close it, and it
+ *  is parsed as a URL, never matched. */
+export const linkSafe = (line: string): string => line.split(/(\s+)/).map((word) => {
+  const lower = word.toLowerCase();
+  const at = [lower.indexOf("https://"), lower.indexOf("http://")].filter((i) => i >= 0).sort((a, b) => a - b)[0];
+  if (at === undefined) return word;
+  let end = word.length;
+  while (end > at && LINK_TAIL.includes(word[end - 1]!)) end--;
+  const link = word.slice(at, end);
+  // A link that does not parse cannot be cut safely, so none of it is kept.
+  if (!URL.canParse(link)) return `${word.slice(0, at)}(a link)${word.slice(end)}`;
+  const url = new URL(link);
+  return `${word.slice(0, at)}${url.origin}${url.pathname}${word.slice(end)}`;
+}).join("");
+
+/** The first line of an error's message, its links cut to origin and path, bounded. */
+export const firstLine = (error: unknown, max = 300): string => linkSafe(String((error as Error)?.message || error).split("\n")[0]!).slice(0, max);
 
 /** A refusal of the arguments: one line, `isError: true`. */
 export const refusal = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });

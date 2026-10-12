@@ -15,8 +15,8 @@ import type { CallContext, CallSetup, ImageContent, ReadArgs, TextContent, ToolR
 import type { ImageProcessor } from "./image.js";
 import type { Kind } from "./kinds.js";
 import type { Limits } from "./limits.js";
-import { firstLine, MISS_ACTION, refusal, reportMiss } from "./misses.js";
-import { notBuilt } from "./not-built.js";
+import { firstLine, linkSafe, MISS_ACTION, refusal, reportMiss } from "./misses.js";
+import { PACKAGE_KINDS } from "./readers.js";
 import type { Fit } from "./plan.js";
 import type { Provider, ProviderSource } from "./provider.js";
 
@@ -37,10 +37,11 @@ export type KindContext = {
   readonly images?: ImageProcessor; readonly providers: readonly Provider[];
 };
 /** A kind's answer: what the model reads (a document's whole `text`, page-marked, is paged here after the first text
- *  block), or a miss with its cause and any text that still came back. */
+ *  block), a miss with its cause and any text that still came back, or a refusal of the arguments in one line. */
 export type KindResult =
   | { readonly content: readonly (TextContent | ImageContent)[]; readonly text?: string; readonly media?: MediaDetails; readonly fit?: Fit }
-  | { readonly miss: MissCode; readonly reason: string; readonly text?: string };
+  | { readonly miss: MissCode; readonly reason: string; readonly text?: string }
+  | { readonly refusal: string };
 export type KindReader = (request: KindRequest, context: KindContext) => Promise<KindResult>;
 
 /** The package's own kind wiring: the kind of a file's first bytes, an image header's pixels, and a reader per kind. */
@@ -49,7 +50,7 @@ export type ReadKinds = {
   readonly sizeOf: ImageSize;
   readonly readers: Readonly<Partial<Record<Kind, KindReader>>>;
 };
-const KINDS_NOT_BUILT: ReadKinds = { sniff: () => notBuilt("the kind of a file"), sizeOf: () => notBuilt("the image header reader"), readers: {} };
+
 
 /** Bytes a kind is decided from: a header's first megabyte holds its pixel size behind any metadata. */
 const HEAD_BYTES = 1024 * 1024;
@@ -132,7 +133,8 @@ async function sniffFile(env: VisionEnv, name: string, sniff: ReadKinds["sniff"]
 }
 
 /** A miss the model can act on, filed as a failed look and told to the host. */
-async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, reason: string, args: ReadArgs, text?: string): Promise<ToolResult> {
+async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string): Promise<ToolResult> {
+  const reason = linkSafe(cause);
   const ask = asked(args);
   const page = num(args.page);
   const record: LookRecord = { tool: "look", args: { path: name, ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), model: "none", native: false }, status: "failed", facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask, model: "none" }) }, body: "" };
@@ -183,7 +185,7 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
 
 /** The media half of `read`: the result for a file the model looks at or that needs decoding, or a recording by handle;
  *  null when the path reads as plain text (or is not a file), for the host's own read. */
-export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext, setup: CallSetup, kinds: ReadKinds = KINDS_NOT_BUILT): Promise<ToolResult | null> {
+export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext, setup: CallSetup, kinds: ReadKinds = PACKAGE_KINDS): Promise<ToolResult | null> {
   const name = String(raw.path ?? ".");
   const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
   const handle = handleOf(name, setup.sources);
@@ -224,6 +226,7 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
     if (call.signal?.aborted) throw error;
     result = { miss: "unreadable", reason: firstLine(error) };
   } finally { await env.remove(temp.value, { recursive: true, force: true }, ctx); }
+  if ("refusal" in result) return refusal(result.refusal);
   if ("miss" in result) return missResult(filing, name, kind, source.sha256, result.miss, result.reason, args, result.text);
   let content = result.content;
   if (result.text !== undefined && content[0]?.type === "text") {
@@ -238,7 +241,7 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
 
 /** Whether a call is the host's plain text read: no handle a source serves, no media argument, and a file that is not
  *  one of the kinds read decodes. The host's read of anything else may file a look or write a derivation. */
-export async function readsAsText(env: VisionEnv, args: ReadArgs, call: CallContext, setup: Pick<CallSetup, "sources">, kinds: ReadKinds = KINDS_NOT_BUILT): Promise<boolean> {
+export async function readsAsText(env: VisionEnv, args: ReadArgs, call: CallContext, setup: Pick<CallSetup, "sources">, kinds: ReadKinds = PACKAGE_KINDS): Promise<boolean> {
   const name = String(args.path ?? ".");
   if (handleOf(name, setup.sources) || asked(args) || [args.page, args.from_s, args.to_s].some((v) => num(v) !== undefined)) return false;
   const sniffed = (await sniffFile(env, name, kinds.sniff, call.signal))?.sniffed;

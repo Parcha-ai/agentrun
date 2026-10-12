@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { DEFAULT_LIMITS, DESCRIBE_ASK, readMedia, readsAsText, receiptFacts, withoutStrictDefaults } from "@parcha/pi-vision";
-import { fixtureDir, imageSize, pngBytes } from "@parcha/pi-vision/testing";
+import { SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, SENTINEL_SIGNED_LINK, fixtureDir, imageSize, pngBytes } from "@parcha/pi-vision/testing";
 
 const PDF_HEAD = Buffer.from("%PDF-1.4\n");
 /** A stub sniffer in kinds.ts's shape, by first bytes, then name: PNG and PDF by signature, mp4 and xlsx by extension,
@@ -253,4 +253,22 @@ test("readsAsText: only a plain file with no media argument is the host's text r
   await r.dir.file("blob.bin", Buffer.from([0xca, 0xfe, 0, 1]));
   const is = (args) => readsAsText(r.env, args, r.call(), r.setup, r.kinds);
   assert.deepEqual(await Promise.all([is({ path: "notes.txt" }), is({ path: "missing.txt" }), is({ path: "notes.txt", ask: " " }), is({ path: "a.png" }), is({ path: "blob.bin" }), is({ path: "notes.txt", page: 2 }), is({ path: "notes.txt", ask: "q" }), is({ path: "session:s1" })]), [true, true, true, false, false, false, false, false]);
+});
+
+test("a reader's cause that holds a signed link reaches the model, the receipt and the event cut to its origin and path", async (t) => {
+  // Built at run time from the sentinels, so the source holds no link with credentials in it.
+  const link = Object.assign(new URL(`${SENTINEL_SIGNED_LINK}#p2`), { username: "pv-sentinel-user", password: SENTINEL_LINK_TOKEN }).href;
+  const r = await rig({ pdf: () => { throw new Error(`fetch '${link}' timed out\nat x`); } });
+  t.after(() => r.dir.remove());
+  await r.dir.file("doc.pdf", PDF_HEAD);
+  const out = await r.read({ path: "doc.pdf" });
+  assert.match(text(out), /^doc\.pdf could not be read: fetch 'https:\/\/files\.sentinel\.invalid\/reports\/statement\.pdf' timed out\./);
+  for (const where of [JSON.stringify(out), JSON.stringify(r.filed), JSON.stringify(r.misses)]) assert.ok(![SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, "pv-sentinel-user", "#p2"].some((v) => where.includes(v)), where);
+});
+
+test("the package's own readers are public, so a host replacing or adding one reader keeps the rest", async () => {
+  const { PACKAGE_KINDS } = await import("@parcha/pi-vision");
+  assert.deepEqual(Object.keys(PACKAGE_KINDS.readers).sort(), ["image", "office", "pdf", "sheet", "video"]);
+  assert.equal(typeof PACKAGE_KINDS.sniff, "function");
+  assert.equal(typeof PACKAGE_KINDS.sizeOf, "function");
 });
