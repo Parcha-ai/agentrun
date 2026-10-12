@@ -61,6 +61,8 @@ const state = {
   net: { online: navigator.onLine, at: Date.now(), reason: navigator.onLine ? "" : "the browser says it is offline" },
   /** "Go online" in progress, in words (shown next to the button). */
   checkingIn: undefined as { text: string } | undefined,
+  /** The trained model is being replaced by a newer one (watchRehome): messages wait, the model answers nothing meanwhile. */
+  rehoming: false,
   /** A check-in whose answer never came: kept (and the page paused) until it is sent again. */
   pendingCheckin: undefined as { record: CheckoutRecord; host: ModelHost | undefined } | undefined,
   /** Every check-in this page made and saw complete. */
@@ -301,7 +303,7 @@ function render(): void {
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
   const offline = state.mode === "offline";
-  const writer = state.mode === "writer" && !state.leaving && !state.checkingOut && !state.brainPending;
+  const writer = state.mode === "writer" && !state.leaving && !state.checkingOut && !state.brainPending && !state.rehoming;
   // Checked out to this browser: the trained model's conversation answers, once it is the active one.
   const offlineReady = offline && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
   // Elsewhere, a message goes to whoever runs the run, through the server.
@@ -627,8 +629,14 @@ async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
       if ((await brain.current()) === "tab-local" && (await untilIdle(runtime.harness, 120_000)) !== "idle") continue;
       if (state.runtime !== runtime || state.brain !== brain) return;
       state.brainStatus = "a new model is coming home";
+      state.rehoming = true;
       render();
-      const result = await brain.rehome(text, cloudAgent(state.agentModel));
+      let result: Awaited<ReturnType<Brain["rehome"]>>;
+      try {
+        result = await brain.rehome(text, cloudAgent(state.agentModel));
+      } finally {
+        state.rehoming = false;
+      }
       state.brainStatus = result === "failed" ? "the new model did not load" : "";
       announce("homecoming", { phase: "swapped", result, id, rehomes: brain.rehomes });
     } catch (error) {
@@ -671,7 +679,7 @@ async function takeOffline(): Promise<void> {
   try {
     say("waiting for the agent to be idle");
     if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
-    const manifestText = noBrain ? null : await readManifest(readWork);
+    const manifestText = noBrain ? null : await readManifest(readWorkFresh); // the manifest as the server has it now, not as the service worker cached it
     if (!noBrain && !manifestText) throw new Error("the model's manifest is not on the run's disk");
     const home = manifestText ? await describeHome(manifestText, sha256hex) : undefined;
     const manifest = home ? { sha256: home.id, size: home.bytes, chunks: home.chunks } : { sha256: "", size: 0, chunks: [] };
@@ -719,7 +727,7 @@ async function takeOffline(): Promise<void> {
     if (head < 0 || !record) throw new Error("the store kept changing: not handed over");
     record = { ...record, state: "done", head };
     await writeCheckout(record);
-    await leaveForOffline(record, brain?.host);
+    await leaveForOffline(record, brain && home && brain.currentId === home.id ? brain.host : undefined); // the loaded model is adopted only when it is the one the manifest names
   } catch (error) {
     state.checkout = undefined;
     if (uncertain) {
@@ -1100,7 +1108,7 @@ function onFrame(frame: PipeFrame): void {
       return;
     case "submit":
       // A message a viewer typed: this tab runs the run.
-      if (state.runtime && state.mode === "writer" && !state.checkingOut && !state.brainPending) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+      if (state.runtime && state.mode === "writer" && !state.checkingOut && !state.brainPending && !state.rehoming) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
       return;
     default:
       return;
@@ -1263,7 +1271,7 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text || state.checkingOut || state.checkingIn || state.brainPending) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
+  if (!text || state.checkingOut || state.checkingIn || state.brainPending || state.rehoming) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
   if (!state.runtime) {
     if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
     input.value = "";
