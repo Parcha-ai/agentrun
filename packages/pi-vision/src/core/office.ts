@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
-import type { MissCode } from "./contract.js";
+import { ProviderMiss, type ProviderMissCode } from "./derive.js";
 import { visionContext } from "./env.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
 import type { Cell, ProviderCall, ProviderSource } from "./provider.js";
@@ -49,12 +49,9 @@ export const OFFICE_LIMITS: OfficeLimits = Object.freeze({
 
 /** An office file that cannot be read, as a typed miss: the codes a provider's failure maps to. The message is one line
  *  the model reads, and names the sizes, the cap and how to narrow the read. */
-export type OfficeMissCode = Extract<MissCode, "over_budget" | "unreadable" | "unsupported" | "needs">;
-export class OfficeMissError extends Error {
-  constructor(readonly code: OfficeMissCode, message: string) {
-    super(message);
-    this.name = "OfficeMissError";
-  }
+export type OfficeMissCode = ProviderMissCode;
+export class OfficeMissError extends ProviderMiss {
+  override readonly name = "OfficeMissError";
 }
 
 /** A source's bytes through the environment: the one file it opens, never more than the process holds of it, and the very
