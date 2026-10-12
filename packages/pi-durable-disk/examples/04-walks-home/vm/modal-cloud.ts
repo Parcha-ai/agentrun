@@ -120,6 +120,8 @@ export interface ModalCloudOptions {
   readonly closeWaitMs?: number;
   /** The session on the VM teaches skills on the cluster: the cloud app gets `teach_skills`, `train_skill` and the per-thread environments (robot-extra.ts). Needs `cluster` and the link. */
   readonly robot?: boolean;
+  /** Code mode: the session plans the skills and each thread writes and runs its own training (DEMO_ROBOT_PLAN=1 on the VM). Needs a trainer image with D2's library. */
+  readonly robotPlan?: boolean;
   /**
    * The robot cluster beat: N GPU boxes created in parallel as soon as this cloud exists (so they are warm when someone asks), lent one per
    * thread to the session on the VM through its link (gpu-rpc.ts). The boxes run commands only for the thread that holds them; the VM never
@@ -162,6 +164,9 @@ export interface ModalCloudOptions {
 const ROBOT_BUNDLE_FILES: Readonly<Record<string, string>> = {
   "robot/vm/robot-extra.ts": fileURLToPath(new URL("./robot-extra.ts", import.meta.url)),
   "robot/cluster/teach-skills.ts": fileURLToPath(new URL("../cluster/teach-skills.ts", import.meta.url)),
+  // D1's SOPs (code mode): sop.ts reads its markdown next to itself.
+  "robot/cluster/sop.ts": fileURLToPath(new URL("../cluster/sop.ts", import.meta.url)),
+  ...Object.fromEntries(["robot.md", "teach.md", "train-skill.md"].map((f) => [`robot/cluster/sop/${f}`, fileURLToPath(new URL(`../cluster/sop/${f}`, import.meta.url))])),
   // D2's assemble-skills and the policy loader it checks with (node alone), side by side: only those that exist in this checkout.
   ...Object.fromEntries(["assemble-skills.ts", "policy.ts", "obs.ts"].map((f) => [`robot/policy/${f}`, fileURLToPath(new URL(`../policy/${f}`, import.meta.url))]).filter(([, source]) => existsSync(source!))),
 };
@@ -608,6 +613,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         DEMO_LINK_TOKEN: linkToken,
         DEMO_EVENTS_LOG: BOX_EVENTS,
         ...(options.robot ? { DEMO_APP_EXTRA: `${BOX_APP_DIR}/robot/vm/robot-extra.ts` } : {}),
+        ...(options.robot && options.robotPlan ? { DEMO_ROBOT_PLAN: "1" } : {}),
         ...(options.desktop
           ? {
               DEMO_DISPLAY: DESKTOP_DISPLAY,

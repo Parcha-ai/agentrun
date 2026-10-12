@@ -123,9 +123,16 @@ export function agentModels(access: ModelAccess) {
   return models;
 }
 
+/** What a host adds to the instructions (the robot demo's SOPs); empty for every other page. */
+let extraInstructions = "";
+export function setExtraInstructions(text: string): void {
+  extraInstructions = text.trim();
+}
+const instructions = () => (extraInstructions ? `${INSTRUCTIONS}\n\n${extraInstructions}` : INSTRUCTIONS);
+
 /** The root conversation's agent: the model, thinking on (never off), the instructions. */
 export function rootAgent(modelId: string): AgentChange {
-  return { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
+  return { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions() };
 }
 
 /** The root conversation's agent as it is when it comes back to the cloud model from another (a check-in): the same as `rootAgent`, and every tool the registry has again (`tools: null` clears the filter an earlier model was configured with). */
