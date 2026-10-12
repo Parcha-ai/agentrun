@@ -95,6 +95,12 @@ export async function stageCurrentBody(work: string, threads: readonly Pick<Thre
 /** Where the session's robot is on its disk (D3's state file) and where the trainers read it on a box. */
 export const ROBOT_FILE = "creature/robot.json";
 export const BOX_ROBOT_FILE = "/workspace/robot.json";
+/**
+ * The robot the agent wrote as code (D3's `node robot/build.mjs`): the MJCF and the joint/tag file of the body the page runs. On a box they are the thread's `body/` (body.xml, body.json;
+ * creature.xml too, the name the trainer's directory form reads), so a skill trains for the body the page shows, not for the preset in robot.json.
+ */
+export const CODE_BODY_FILES = { xml: "robot/body.xml", json: "robot/body.json" } as const;
+export const BOX_BODY_DIR = "/workspace/body";
 
 /** Write `bytes` to `path` on a box (a binary-safe `cat`, parents made). */
 async function putFile(box: RemoteBox, path: string, bytes: Uint8Array): Promise<void> {
@@ -106,6 +112,16 @@ async function putFile(box: RemoteBox, path: string, bytes: Uint8Array): Promise
   };
   const [, , code] = await Promise.all([drain(p.stdout), drain(p.stderr), p.wait()]);
   if (code !== 0) throw new Error(`writing ${path} on the box failed (${code})`);
+}
+
+/** A robot written as code is on the session's disk (both files). */
+export function hasCodeBody(work: string): boolean {
+  return existsSync(join(work, CODE_BODY_FILES.xml)) && existsSync(join(work, CODE_BODY_FILES.json));
+}
+
+/** The thread's training command: for the body the page runs (body/ on the box) when the robot is code, for the preset's robot.json otherwise. */
+export function trainCommand(work: string): (skill: string) => readonly string[] {
+  return (skill) => ["pi-run", skill, "--", "train-skill", skill, "--body", hasCodeBody(work) ? BOX_BODY_DIR : BOX_ROBOT_FILE, "--out", `/workspace/skills/${skill}`];
 }
 
 /** The threads' boxes as the cluster package asks for them, bound to the link. */
@@ -122,7 +138,15 @@ export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: str
         return undefined;
       });
       if (robot) await putFile(box, BOX_ROBOT_FILE, robot);
-      log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0 });
+      // A robot written as code: the body the page runs goes to the box as the thread's body/ (both files or neither).
+      const xml = await readFile(join(work, CODE_BODY_FILES.xml)).catch(() => undefined);
+      const json = xml ? await readFile(join(work, CODE_BODY_FILES.json)).catch(() => undefined) : undefined;
+      if (xml && json) {
+        await putFile(box, `${BOX_BODY_DIR}/body.xml`, xml);
+        await putFile(box, `${BOX_BODY_DIR}/creature.xml`, xml);
+        await putFile(box, `${BOX_BODY_DIR}/body.json`, json);
+      } else if (xml) log("robot.code-body-incomplete", { thread: threadId, missing: CODE_BODY_FILES.json });
+      log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0, codeBody: Boolean(xml && json) });
       return id;
     },
     async release({ threadId }) {
@@ -137,6 +161,7 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   const boxes = robotBoxes(link, work, log);
   const { teach, thread } = teachSkills({
     boxes,
+    command: trainCommand(work),
     // Inside the teach task, after every thread has flushed: the tool's own result then says how many skills are home.
     // Only the skills of the body this round taught (an old body's get-up must not choose the body, nor old skills be installed for the new one).
     assemble: async (threads) => {
