@@ -1,5 +1,8 @@
 // The VM's way to its GPU boxes, over the link it already has to the server. The Modal key stays with the server; the VM (where the agent's
 // bash runs) can only ask for a box and run commands in the box it was given. Frames, both ways, on the link's WebSocket:
+// Input is flow-controlled: the VM splits a write into chunks of at most GPU_STDIN_CHUNK bytes and keeps at most GPU_STDIN_WINDOW bytes unacknowledged;
+// the server answers `gpu-stdin-ack {id, bytes}` as the box takes each chunk. A file of any size goes through; a VM that ignores the window is cut off
+// at GPU_STDIN_MAX_BYTES.
 //   VM -> server   gpu-acquire {id, thread}      gpu-release {id, thread}      gpu-poll {id, box}
 //                  gpu-exec {id, box, argv, timeoutMs?}   gpu-stdin {id, data}   gpu-stdin-end {id}
 //   server -> VM   gpu-ok {id, box?, code?}      gpu-data {id, stream, data}   gpu-exit {id, code}      gpu-err {id, message}
@@ -16,6 +19,7 @@ export type GpuFrame =
   | { t: "gpu-exec"; id: number; box: string; argv: string[]; timeoutMs?: number }
   | { t: "gpu-stdin"; id: number; data: string }
   | { t: "gpu-stdin-end"; id: number }
+  | { t: "gpu-stdin-ack"; id: number; bytes: number }
   | { t: "gpu-ok"; id: number; box?: string; code?: number | null }
   | { t: "gpu-data"; id: number; stream: "stdout" | "stderr"; data: string }
   | { t: "gpu-exit"; id: number; code: number }
@@ -48,6 +52,9 @@ export interface GpuServer {
 type Send = (frame: GpuFrame) => void;
 /** The most input a command may have held or in flight at once (a VM that writes faster than the box takes it, or before the command starts, cannot grow the server's memory without bound). */
 export const GPU_STDIN_MAX_BYTES = 16 * 1024 * 1024;
+/** A well-behaved VM sends chunks of this size and keeps this much unacknowledged (well under the bound above). */
+export const GPU_STDIN_CHUNK = 256 * 1024;
+export const GPU_STDIN_WINDOW = 4 * 1024 * 1024;
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 const unb64 = (text: string) => new Uint8Array(Buffer.from(text, "base64"));
 
@@ -86,7 +93,10 @@ export function serveGpu(server: GpuServer, send: Send, log: (event: string, dat
     entry.writes = entry.writes
       .then(() => (item === null ? proc.stdin.close() : proc.stdin.writeBytes(item)))
       .catch((e) => log("gpu.stdin-failed", { error: (e as Error).message }))
-      .finally(() => void (entry.queued -= size));
+      .finally(() => {
+        entry.queued -= size;
+        if (size > 0 && !entry.closed) send({ t: "gpu-stdin-ack", id, bytes: size });
+      });
   };
   const stop = (proc: GpuProcess) => {
     void proc.stdin.close().catch(() => undefined);
@@ -202,7 +212,7 @@ export interface GpuClient {
 export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
   let next = 1;
   const calls = new Map<number, { resolve(frame: Extract<GpuFrame, { t: "gpu-ok" }>): void; reject(error: Error): void }>();
-  const procs = new Map<number, { out: Queue; err: Queue; exit: { resolve(code: number): void; reject(error: Error): void } }>();
+  const procs = new Map<number, { out: Queue; err: Queue; exit: { resolve(code: number): void; reject(error: Error): void }; inflight: number; waiting: (() => void)[] }>();
   const lost = (reason: string) => new Error(reason);
 
   const call = (build: (id: number) => GpuFrame): Promise<Extract<GpuFrame, { t: "gpu-ok" }>> =>
@@ -237,7 +247,8 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
           let exit!: { resolve(code: number): void; reject(error: Error): void };
           const done = new Promise<number>((resolve, reject) => (exit = { resolve, reject }));
           done.catch(() => undefined);
-          procs.set(id, { out, err, exit });
+          const entry = { out, err, exit, inflight: 0, waiting: [] as (() => void)[] };
+          procs.set(id, entry);
           if (!send({ t: "gpu-exec", id, box, argv, ...(p.timeoutMs === undefined ? {} : { timeoutMs: p.timeoutMs }) })) {
             procs.delete(id);
             throw lost("no link to the server");
@@ -245,7 +256,17 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
           return {
             stdin: {
               async writeBytes(bytes) {
-                if (!send({ t: "gpu-stdin", id, data: b64(bytes) })) throw lost("no link to the server");
+                // In chunks, each only once the box has taken enough of the earlier ones: a large file never piles up on the link or on the server.
+                for (let at = 0; at < bytes.length; at += GPU_STDIN_CHUNK) {
+                  const chunk = bytes.subarray(at, at + GPU_STDIN_CHUNK);
+                  while (entry.inflight + chunk.length > GPU_STDIN_WINDOW) {
+                    if (!procs.has(id)) throw lost("the command ended or the link went");
+                    await new Promise<void>((resolve) => entry.waiting.push(resolve));
+                  }
+                  if (!procs.has(id)) throw lost("the command ended or the link went");
+                  entry.inflight += chunk.length;
+                  if (!send({ t: "gpu-stdin", id, data: b64(chunk) })) throw lost("no link to the server");
+                }
               },
               async close() {
                 send({ t: "gpu-stdin-end", id });
@@ -269,16 +290,21 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
       }
       const p = procs.get((frame as { id: number }).id);
       if (!p) return true;
-      if (frame.t === "gpu-data") (frame.stream === "stdout" ? p.out : p.err).push(unb64(frame.data));
+      if (frame.t === "gpu-stdin-ack") {
+        p.inflight = Math.max(0, p.inflight - frame.bytes);
+        for (const wake of p.waiting.splice(0)) wake();
+      } else if (frame.t === "gpu-data") (frame.stream === "stdout" ? p.out : p.err).push(unb64(frame.data));
       else if (frame.t === "gpu-exit") {
         p.out.end();
         p.err.end();
         procs.delete(frame.id);
+        for (const wake of p.waiting.splice(0)) wake();
         p.exit.resolve(frame.code);
       } else if (frame.t === "gpu-err") {
         p.out.end();
         p.err.end();
         procs.delete(frame.id);
+        for (const wake of p.waiting.splice(0)) wake();
         p.exit.reject(new Error(frame.message));
       }
       return true;
@@ -289,6 +315,7 @@ export function createGpuClient(send: (frame: GpuFrame) => boolean): GpuClient {
       for (const p of procs.values()) {
         p.out.end();
         p.err.end();
+        for (const wake of p.waiting.splice(0)) wake();
         p.exit.reject(lost(reason));
       }
       procs.clear();

@@ -39,6 +39,8 @@ export interface GpuPoolOptions {
   readonly alive?: (box: PoolBox) => Promise<boolean>;
   /** How often the live boxes are checked with `alive` (default 20 s; 0: never). */
   readonly watchMs?: number;
+  /** How long one `alive` check may take (default 10 s): a Modal call that does not answer says nothing, and the box stays available. */
+  readonly aliveTimeoutMs?: number;
 }
 
 type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean };
@@ -173,7 +175,10 @@ export class GpuPool {
   async #verify(slot: Slot): Promise<void> {
     const alive = this.#options.alive;
     if (!alive || !slot.box || (slot.state !== "ready" && slot.state !== "busy")) return;
-    const ok = await alive(slot.box).catch(() => true); // a check that itself fails says nothing: the box stays
+    // A check that itself fails, or does not answer in time, says nothing: the box stays available (the next watch asks again).
+    let timer: NodeJS.Timeout | undefined;
+    const ok = await Promise.race([alive(slot.box).catch(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), this.#options.aliveTimeoutMs ?? 10_000)))]);
+    clearTimeout(timer);
     if (!ok && (slot.state === "ready" || slot.state === "busy")) this.markDead(slot.box.id, "its sandbox is no longer running");
   }
 
