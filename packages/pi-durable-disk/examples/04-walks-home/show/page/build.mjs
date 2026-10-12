@@ -3,6 +3,8 @@ import { build } from "esbuild";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { copyTheme } from "../../../theme/copy-theme.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "dist");
@@ -20,6 +22,8 @@ const result = await build({
   logLevel: "warning",
 });
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
+copyFileSync(join(here, "stage-theme.css"), join(out, "stage-theme.css"));
+copyTheme(out, createRequire(import.meta.url));
 copyFileSync(join(here, "robot-pieces.css"), join(out, "robot-pieces.css"));
 const bytes = Object.values(result.metafile.outputs).find((o) => o.entryPoint)?.bytes ?? 0;
 console.log(`main.js: ${bytes} bytes`);

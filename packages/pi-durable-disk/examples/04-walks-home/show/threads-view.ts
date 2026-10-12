@@ -42,7 +42,7 @@ function tileHtml(t: Thread): string {
   if (!last) body = `<div class="val none">${t.status === "failed" ? "no checkpoint" : "waiting for its first checkpoint"}</div>`;
   else {
     const what = t.metric ?? "value";
-    const value = last.value === null ? `${esc(what)}: no value yet` : `${esc(what)} ${esc(num(last.value))}${t.unit ? ` ${esc(t.unit)}` : ""}`;
+    const value = last.value === null ? `${esc(what)}: no value yet` : `${esc(what)} <span class="n">${esc(num(last.value))}</span>${t.unit ? ` ${esc(t.unit)}` : ""}`;
     const verdict =
       last.fell ? `<span class="pass no">fell in its test</span>` : last.passes === true ? `<span class="pass yes">passes</span>` : last.passes === false ? `<span class="pass no">not yet${t.target ? `, needs ${esc(t.target)}` : ""}</span>` : "";
     body = `<div class="cp">checkpoint ${last.n}${last.seconds !== null ? ` · ${esc(seconds(last.seconds * 1000))} in` : ""}</div><div class="val">${value}</div>${verdict}`;

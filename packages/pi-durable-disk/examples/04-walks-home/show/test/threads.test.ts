@@ -74,7 +74,8 @@ test("the tiles: one per thread with its skill, its GPU, its status, and its lat
   assert.match(html, /walk/);
   assert.match(html, /H100 #1/);
   assert.match(html, /checkpoint 3/);
-  assert.match(html, /speed 1\.25 m\/s/);
+  assert.match(html, /speed <span class="n">1\.25<\/span> m\/s/); // the number alone is wrapped so the stage can set it large
+  assert.equal(html.replace(/<[^>]*>/g, "").includes("speed 1.25 m/s"), true);
   assert.match(html, /class="pass yes"/);
   assert.match(html, /44 s in/);
   assert.match(html, /GPU in 2\.1 s/);
