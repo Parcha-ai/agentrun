@@ -1,0 +1,80 @@
+/*
+ * The agent page in the demo's look (examples/theme): minimal, dark, one orange thing at a time. Loaded after the page's own style, so it restates the tokens (the page's light palette and its
+ * prefers-color-scheme block would otherwise win) and restyles the page by its ids and classes. Behaviour, ids and the composer's markup are untouched (the phone layout reads them).
+ * The chat is the theme's own components: .turn (the user's words right-aligned and plain, the agent's left, no labels), .tool (one quiet mono line, the result on tap), .note (a muted line).
+ * Kill list: no red anywhere (a failure is muted text), no stats line, no brain-router lines, no network word (one small dot).
+ */
+:root {
+  --bg: #080809; --panel: #111113; --line: #2c2c30; --ink: #f2f2f2; --muted: #a4a4ad; --accent: #ff8700; --green: #8ec9ac; --purple: #b4a0ff;
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* the page's old names, onto the theme: green is done, purple a thread or a GPU, orange the agent acting now */
+  --tab: var(--green); --tab-bg: transparent; --cloud: var(--purple); --cloud-bg: transparent; --other: var(--muted); --other-bg: transparent;
+  --moving: var(--accent); --moving-bg: transparent; --parked: var(--muted); --parked-bg: transparent; --bad: var(--muted); --bad-bg: var(--panel);
+  color-scheme: dark;
+}
+html, body { background: var(--bg); color: var(--ink); font: 400 16px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+
+/* ---- the header: one slim line ---- */
+header { background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px var(--gutter); gap: 14px; }
+h1 { font: 500 11px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.run { font: 400 11px var(--mono); color: var(--muted); opacity: .7; }
+.badge { padding: 0; border-radius: 0; background: none; gap: 8px; color: var(--ink); margin-left: auto; }
+.badge .dot { width: 7px; height: 7px; background: var(--muted); }
+.badge.tab .dot, .badge.offline .dot { background: var(--green); } .badge.cloud .dot { background: var(--purple); } .badge.moving .dot { background: var(--accent); }
+.badge.tab, .badge.cloud, .badge.other, .badge.moving, .badge.parked, .badge.offline { background: none; color: var(--ink); }
+.badge-text { font: 500 14px/1.2 var(--sans); }
+.badge-sub { display: none; }
+.net { font-size: 0; width: 7px; height: 7px; padding: 0; border: 0; border-radius: 50%; background: var(--muted); }
+.net.up { background: var(--green); } .net.down { background: var(--accent); }
+.actions { gap: 8px; }
+button { min-height: 32px; font: 500 12px/1 var(--mono); letter-spacing: .04em; border-radius: var(--r3); border: 1px solid var(--line); background: transparent; color: var(--ink); }
+button:hover { border-color: var(--muted); }
+button.link { border: 0; background: none; color: var(--muted); text-decoration: none; padding: 6px 4px; }
+button.link:hover { color: var(--ink); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #080809; }
+.switcher { border-radius: var(--r3); border-color: var(--line); }
+.switcher .env { border-color: var(--line); padding: 6px 12px; }
+.switcher .env.active, .switcher .env.active.tab, .switcher .env.active.cloud, .switcher .env.active.moving { background: var(--panel); color: var(--ink); animation: none; font-weight: 500; }
+#handover, #offline-status, #online-status { font: 400 11px var(--mono); color: var(--muted); }
+#banner { background: var(--panel); color: var(--muted); border-bottom: 1px solid var(--line); font: 400 13px/1.4 var(--sans); padding: 10px var(--gutter); }
+#checkedout { background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px var(--gutter); font-size: 13px; color: var(--muted); }
+#checkedout strong { color: var(--green); font-weight: 500; }
+
+/* ---- the conversation ---- */
+#chat { padding: 20px var(--gutter) 24px; gap: 14px; }
+.turn { max-width: min(62ch, 86%); }
+.turn .thinking summary { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); cursor: pointer; }
+.turn .thinking pre { font: 400 12px/1.5 var(--mono); color: var(--muted); margin: 4px 0 8px; white-space: pre-wrap; }
+.tool { max-width: 100%; border: 0; border-radius: 0; background: none; overflow: visible; font: 400 12px/1.5 var(--mono); }
+.tool pre { max-height: 220px; overflow: auto; margin: 6px 0 4px 15px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); color: var(--muted); font: inherit; }
+.tool.bare > summary { cursor: default; }
+.note { align-self: flex-start; font: 400 12px/1.5 var(--mono); color: var(--muted); font-style: normal; max-width: min(62ch, 100%); }
+.note.brain.decision { display: none; } /* the router's verdicts are the stage's card, not the chat's */
+.note::before { content: "· "; }
+
+/* ---- the composer: 16px type, a 44px target, pinned to the bottom ---- */
+footer { background: var(--bg); border-top: 1px solid var(--line); padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom, 0px)); }
+#input { font: 400 16px/1.3 var(--sans); min-height: 44px; height: 44px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r3); color: var(--ink); }
+#input::placeholder { color: var(--muted); }
+#input:focus { outline: none; border-color: var(--accent); }
+#send { min-height: 44px; padding: 0 18px; font: 500 14px/1 var(--sans); letter-spacing: 0; }
+#stats { display: none; }
+
+/* ---- the side panes ---- */
+aside { background: var(--panel); border-left: 1px solid var(--line); }
+aside h2 { font: 500 11px/1.2 var(--mono); letter-spacing: .14em; color: var(--muted); }
+.file { font: 400 12px var(--mono); } .file:hover, .file.selected { background: var(--bg); }
+#preview { font: 400 12px/1.5 var(--mono); border-top: 1px solid var(--line); }
+#creature-pane { background: var(--bg); }
+main { border-top: 0; }
+
+/* ---- a phone: one line on top (where the agent is), nothing else; the demo's controls stay in the DOM ---- */
+@media (max-width: 760px) {
+  header { padding: 12px var(--gutter); }
+  h1, .run, .actions { display: none; }
+  .badge { margin-left: 0; }
+  .badge-text { font-size: 15px; }
+  header .net { margin-left: auto; }
+  #chat { padding: 16px var(--gutter) 16px; }
+}

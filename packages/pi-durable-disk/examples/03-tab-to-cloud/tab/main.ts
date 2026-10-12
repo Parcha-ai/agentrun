@@ -9,6 +9,7 @@ import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@e
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
+import { echoedTools, isMuted, toolArgsLine } from "./chat-lines.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
@@ -230,44 +231,36 @@ function renderChat(): void {
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
   const items = state.chat.items();
   announceTools(items);
-  list.replaceChildren(...items.map(renderItem));
+  const echoed = echoedTools(items);
+  list.replaceChildren(...items.map((item) => renderItem(item, echoed)));
   if (atBottom) list.scrollTop = list.scrollHeight;
   noticeSeen();
 }
 
-function renderItem(item: ChatItem): HTMLElement {
+function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set()): HTMLElement {
   switch (item.kind) {
     case "user":
-      return el("div", { class: "msg user" }, el("div", { class: "who" }, "you"), el("div", { class: "body" }, item.text));
+      return el("div", { class: "turn user" }, item.text);
     case "assistant": {
-      const body = el("div", { class: "body" }, item.text || (item.streaming ? "…" : ""));
-      const node = el("div", { class: `msg agent${item.streaming ? " streaming" : ""}` }, el("div", { class: "who" }, "agent"));
+      const node = el("div", { class: `turn agent${item.streaming ? " streaming" : ""}` });
       if (item.thinking) node.append(el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)));
-      node.append(body);
+      node.append(item.text || (item.streaming ? "…" : ""));
       return node;
     }
     case "tool": {
-      let args = item.args;
-      try {
-        const parsed = JSON.parse(item.args) as Record<string, unknown>;
-        args = typeof parsed.command === "string" ? `$ ${parsed.command}` : typeof parsed.path === "string" ? String(parsed.path) : item.args;
-      } catch {
-        // keep the raw text
-      }
-      return el(
-        "div",
-        { class: `tool ${item.status}` },
-        el("div", { class: "tool-head" }, el("span", { class: "tool-name" }, item.name), el("span", { class: "tool-status" }, item.status)),
-        el("pre", { class: "tool-args" }, args.slice(0, 2000)),
-        ...(item.output ? [el("pre", { class: "tool-out" }, item.output.slice(-3000))] : []),
-      );
+      // One quiet line: ● name  what it was given. The result opens on tap, unless the reply that follows says it word for word.
+      const dot = item.status === "running" ? "dot act run" : item.status === "done" && !isMuted(item) ? "dot done" : "dot";
+      const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)));
+      const out = item.output && !echoed.has(item.id) ? [el("pre", {}, item.output.slice(-3000))] : [];
+      const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${out.length === 0 ? " bare" : ""}` }, summary, ...out);
+      return node;
     }
     case "note":
       return el("div", { class: "note" }, item.text);
     case "brain":
-      return el("div", { class: `notice brain ${item.stage}` }, el("div", { class: "who" }, "the agent's brain"), el("div", { class: "body" }, item.text));
+      return el("div", { class: `note brain ${item.stage}` }, item.text);
     case "switch":
-      return el("div", { class: `notice${item.planned ? "" : " unplanned"}` }, el("div", { class: "who" }, "system notice to the agent"), el("div", { class: "body" }, item.text));
+      return el("div", { class: `note switch${item.planned ? "" : " unplanned"}` }, item.text);
   }
 }
 
@@ -968,6 +961,7 @@ function creatureWrite(path: string, bytes: Uint8Array): Promise<void> {
 function startRobotPane(): void {
   const frame = $("creature") as HTMLIFrameElement;
   document.body.classList.add("robot");
+  ($("input") as HTMLTextAreaElement).placeholder = "Tell the robot what to do";
   $("creature-pane").hidden = false;
   const reply = (msg: Record<string, unknown>) => frame.contentWindow?.postMessage({ ns: "walks-home", ...msg }, location.origin);
   window.addEventListener("message", (ev) => {

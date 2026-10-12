@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent in a tab</title>
+<link rel="stylesheet" href="/theme/fonts.css">
+<link rel="stylesheet" href="/theme/theme.css">
 <style>
 :root {
   --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a65; --line: #e2e0d8;
@@ -105,6 +107,7 @@ body.robot aside:not(#creature-pane) { display: none; }
 /* a phone: the robot sits under the chat instead of taking a 380px column the chat would shrink into (these rules are as specific as the robot ones above, and later) */
 @media (max-width: 760px) { body.robot main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(200px, 38vh); } #creature-pane { display: block; } #creature-pane[hidden] { display: none; } }
 </style>
+<link rel="stylesheet" href="/agent-theme.css">
 </head>
 <body>
 <header>
