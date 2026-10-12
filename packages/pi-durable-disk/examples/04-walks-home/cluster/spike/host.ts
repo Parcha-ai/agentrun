@@ -20,6 +20,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, Harness, watchEvents, type ConversationId, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { TRAIN_SOP } from "../sop.ts";
 import { RobotBox, SKILLS, teachSkills, threadsOf, type TrainProgress } from "../teach-skills.ts";
 import { FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
@@ -66,14 +67,18 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
   const skill = /Your skill: ([\w-]+)/.exec(u >= 0 ? textOf(msgs[u]!) : "")?.[1];
   if (!skill) return undefined;
   const results = msgs.slice(u + 1).filter((m) => m.role === "toolResult") as { role: string; toolName?: string; isError?: boolean; content?: unknown }[];
-  const train = toolUse("bash", { command: `pi-run ${skill} -- python train.py --reward train/${skill}_reward.py --out /workspace/skills/${skill}`, timeout: 120 });
+  // D2's library: the thread writes its skill dir, compiles it, trains, and reads the trainer's skill.json in --out.
+  const run = `pi-run ${skill} -- train-skill --skill-dir /workspace/skills/${skill} --body /workspace/robot --out /workspace/runs/${skill} --init-from ''`;
+  const train = toolUse("bash", { command: `${run} --steps 40M` });
   const last = results[results.length - 1];
-  if (results.length === 0) return toolUse("write", { path: `train/${skill}_reward.py`, content: `def reward(obs):\n    return obs["${skill}_progress"]\n` });
-  if (results.length === 1) return train;
+  if (results.length === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
+  if (results.length === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });
+  if (results.length === 2) return toolUse("bash", { command: `${run} --compile-only` });
+  if (results.length === 3) return train;
   // A training run the host's restart interrupted is run again (pi-run stops the old one on the box first).
-  if (last?.toolName === "bash" && last.isError && /interrupt/i.test(textOf(last)) && results.length < 4) return train;
+  if (last?.toolName === "bash" && last.isError && /interrupt/i.test(textOf(last)) && results.length < 6) return train;
   if (!results.some((r) => r.toolName === "bash" && /skill\.json|"status"/.test(textOf(r)))) {
-    if (last?.toolName === "bash" && !/"status"/.test(textOf(last))) return toolUse("bash", { command: `cat /workspace/skills/${skill}/skill.json` });
+    if (last?.toolName === "bash" && !/"status"/.test(textOf(last))) return toolUse("bash", { command: `cat /workspace/runs/${skill}/skill.json` });
   }
   return fauxAssistantMessage(fauxText(`I wrote a reward for ${skill}, trained it with it, and read its skill.json.`));
 };
@@ -118,7 +123,7 @@ const { teach, thread } = teachSkills({
     ? {
         plan: {
           threadExtensions: [CodingTools],
-          threadInstructions: "You teach one skill on your own GPU: write a reward, train with `pi-run <skill> -- python train.py`, read skill.json, report.",
+          threadInstructions: TRAIN_SOP, // the real SOP text; the scripted model follows its steps
           ...(a["deadline-ms"] ? { threadDeadlineMs: Number(a["deadline-ms"]) } : {}),
           // The outcome from the trainer's own file, as mirrored home; never from the thread's words.
           status: async ({ skill }) => {
@@ -126,7 +131,9 @@ const { teach, thread } = teachSkills({
             const file = join(dir, "work", "skills", skill, "skill.json");
             if (!existsSync(file)) return undefined;
             const s = JSON.parse(readFileSync(file, "utf8"));
-            return s.status === "done" ? { status: "passed" as const, checkpoint: s.passed_at, seconds: Math.round(s.wall_s) } : s.status === "failed" ? { status: "never-passed" as const } : undefined;
+            // D2's skill.json in --out: passed_at is the first passing checkpoint; a stopped run without it never passed.
+            if (typeof s.passed_at === "number") return { status: "passed" as const, checkpoint: s.passed_at, seconds: Math.round(s.wall_s) };
+            return s.status === "failed" || s.status === "done" ? { status: "never-passed" as const } : undefined;
           },
         },
       }
@@ -146,7 +153,8 @@ const { teach, thread } = teachSkills({
     return { home: done };
   },
   artifacts: ({ boxId, skill }) => {
-    const sync = new FakeArtifacts(join(pool.boxDir(boxId), "workspace", "skills", skill), join(dir, "work", "skills", skill));
+    // Code mode mirrors the trainer's --out folder (runs/<skill>); train_skill's trainer writes into skills/<skill>.
+    const sync = new FakeArtifacts(join(pool.boxDir(boxId), "workspace", a.plan ? "runs" : "skills", skill), join(dir, "work", "skills", skill));
     artifacts.push(sync);
     return sync;
   },
@@ -229,7 +237,7 @@ function boxCheckpoints(): number {
   if (!existsSync(boxes)) return 0;
   let n = 0;
   for (const b of readdirSync(boxes)) {
-    const skills = join(boxes, b, "workspace", "skills");
+    const skills = join(boxes, b, "workspace", a.plan ? "runs" : "skills");
     if (!existsSync(skills)) continue;
     for (const s of readdirSync(skills)) {
       const c = join(skills, s, "checkpoints");

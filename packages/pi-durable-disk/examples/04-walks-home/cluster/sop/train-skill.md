@@ -1,48 +1,106 @@
 # Teaching one skill on your GPU
 
 You are one thread of a teaching run, with an H100 of your own and one skill to teach this robot. Your brief says what
-success looks like and the metric that decides it. Write the training code for this skill and run it. Read what
+success looks like and the number that decides it. Write the skill's training code, compile it, train it, read what
 happened, improve it, and report. Everything you do is visible to the user, so work in small clear steps. Never ask a
 question: decide.
 
 ## What is on your box (cwd /workspace)
-- `body/`: the robot you are teaching. `body.xml` is its MuJoCo model; `body.json` lists its joints, its motors in
-  action order, its legs and its tags. Read body.json first: your skill must fit this body. The library derives its
-  own facts from body.xml (its feet, its standing pose); a body it cannot train is refused with what to fix (exit 2),
-  so your first run doubles as the body check.
-- `train-skill`: the training library's command, already installed. Never pip install, and never edit the library.
-- `/opt/pda/train/skills/`: worked skills in the library's format (walk, sprint, backwards, turn-left, turn-right,
-  spin, wave, get-up). Start from the closest one.
+- `robot/body.xml`: the robot you are teaching, as MuJoCo XML. `robot/body.json` lists its motors in order, its tags
+  and its standing height. Read it first: your skill must fit this body. The trainer derives its own facts from
+  body.xml (its feet, its standing pose).
+- `train-skill`: the training library's command, on PATH. jax, mujoco and brax are installed. Never pip install, and
+  never edit the library.
+- `/opt/pda/train/skills/`: worked skills in the library's format. Start from the closest one.
+- Your skill directory is `/workspace/skills/<your skill>/`. The trainer writes its results to `/workspace/runs/<your skill>/`.
 
-## A skill is a directory you write: skills/<your skill>/
-- `reward.py`: the extra reward terms for this skill, in JAX. They are added to the library's base terms (staying
-  upright, not falling, smooth actions).
-- `skill.json`: the environment config: the term weights, the command range (for example a target speed or yaw
-  rate), and the number of training steps.
-- `test.py`: the pass test. It rolls the trained policy out in C MuJoCo for 10 s from the robot's settled standing
-  pose, at the page's control rate, and decides with the number from your brief whether the robot really does the
-  skill. The skill counts as passed only when this test passes.
+## A skill is a directory you write
+- **skill.json**: `{"name": "<your skill>", "label": "...", "command": 0.0, "reward_scales": {...}, "env": {...}}`
+  - `name` is your skill's name exactly as given, and `label` is a few plain words ("wag its tail").
+  - `command` is what the page sends while the skill runs, within ±2 (0 for an in-place skill).
+  - `reward_scales` weights the built-in terms (tracking_lin_vel, tracking_yaw, orientation, base_height, pose,
+    stand_still, torques, action_rate, energy, feet_air_time, feet_slip, upright, alive, termination, ...) and your own
+    terms from reward.py.
+  - `env` overrides the environment's defaults, for example `"command_range": [0, 0]`, `"command_zero_prob": 1.0`,
+    `"pert_config.enable": true`.
+- **reward.py** (optional): `def terms(s) -> {name: value}`, one number per term.
+  - Every name is weighted in reward_scales, and none reuses a built-in name.
+  - It is JAX: `import jax.numpy as jp`, and use `jp.where`, never `if` on a value.
+  - `s` has:
+    - torso_pos (3), torso_height, stand_height, up (1 standing, -1 on its back), gravity (3, body frame);
+    - lin_vel (3, body frame, x forward), ang_vel (3), yaw_rate (rad/s, + is left), pitch (nose up, rad);
+    - joint_pos, joint_vel and stand_pose (one per joint), action and prev_action (in [-1, 1]), command;
+    - feet_pos (feet × 3), feet_height, feet_contact;
+    - time, dt (0.02);
+    - `s.body_pos("head")` (3) and `s.joint("<joint name>")`, an angle (a motor or a spring).
+- **test.py** (required): `def test(sim) -> (passes, {"name", "value", "unit", "target"})`. It decides whether the robot
+  really does the skill, measured on a rollout, never on the reward.
+  - `sim.rollout(seconds=10, command=None, start="stand", kick=0.0)` runs C MuJoCo at the page's 0.02 s, from the
+    settled standing pose with the skill's command. `start` can also be "left side", "right side" or "back".
+  - The rollout `r` has arrays per step: t, torso_pos, torso_height, up, yaw (unwrapped), pitch, roll, lin_vel,
+    ang_vel, joint_pos, feet_pos, feet_height, feet_contact. It also has `r.fell_at` (seconds, or None),
+    `r.body_pos(name)` and `r.joint(name)`.
+  - Helpers: `r.along_mps()`, `r.total_mps()`, `r.yaw_rate()`, `r.share(mask, after_s=2)`, `r.righted_s()`.
+    `sim.body["standHeight"]` is the standing height.
+
+The library's spin, verbatim:
+```
+skill.json: {"name":"spin","label":"spin","command":0.0,"reward_scales":{"tracking_yaw":2.0,"stand_still":0.0},"env":{"pert_config.enable":true,"command_range":[0.0,0.0],"command_zero_prob":1.0,"reward_config.yaw_target":1.5,"reward_config.tracking_sigma":1.0}}
+```
+```python
+def test(sim):
+    r = sim.rollout(seconds=10)
+    rate = r.yaw_rate()
+    ok = r.fell_at is None and abs(rate) >= 1.0 and r.total_mps() <= 0.2
+    return ok, {"name": "spin rate", "value": round(rate, 3), "unit": "rad/s", "target": ">= 1.0"}
+```
+A reward of its own (a crouch that trained: "crouch_low": 3.0 and "crouch_still": 1.0 in reward_scales, with
+base_height, stand_still, pose and feet_air_time set to 0):
+```python
+def terms(s):
+    target = 0.6 * s.stand_height
+    low = jp.exp(-((s.torso_height - target) / (0.4 * s.stand_height)) ** 2)
+    still = jp.exp(-(jp.sum(s.lin_vel[:2] ** 2) + s.yaw_rate ** 2) / 0.05)
+    return {"crouch_low": low, "crouch_still": still}
+```
 
 ## Steps
-1. Read `body/body.json`, and read the closest example (`ls /opt/pda/train/skills`; `cat /opt/pda/train/skills/<name>/*`).
-2. Copy it: `cp -r /opt/pda/train/skills/<closest> skills/<your skill>`. Then edit reward.py, skill.json and test.py for your brief
-   and this body. Make test.py measure exactly the quantity the brief names (speed, yaw rate, foot height), over a long
-   enough rollout that a lucky moment cannot pass it.
-3. Train: `pi-run <your skill> -- train-skill --skill-dir skills/<your skill> --body body`
-   - It streams one JSON line per checkpoint (`skill.checkpoint` with `passes`), then `skill.done`.
-   - Exit 0 means it passed, 3 that it never passed in its steps, and 2 a bad body (the message says why).
-   - pi-run keeps one run of your skill at a time; if your call was interrupted, run the same command again.
-4. If it never passed, find out why before changing anything. Read the last lines of `skills/<your skill>/skill-progress.jsonl`
-   and your test's output: is it falling, standing still, or moving the wrong way? Then change ONE thing (a reward
-   term, a weight, the command range) and train again. Stop after the number of runs your brief allows.
-5. Report in one short paragraph:
+1. **Read** `robot/body.json`, then the closest example: `ls /opt/pda/train/skills`, then
+   `cat /opt/pda/train/skills/<name>/*`.
+2. **Copy and edit.** `cp -r /opt/pda/train/skills/<closest> skills/<your skill>`. Then edit skill.json (its name is
+   your skill), reward.py and test.py for your brief and this body. Make test.py measure exactly the quantity the brief
+   names, against the brief's number, over the 10 s rollout.
+3. **Compile first, and after every reward.py edit** (about 1 min):
+   `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --init-from '' --compile-only`
+   - A reward.py error shows here, with its traceback in `runs/<your skill>/skill.json` under `error`.
+   - Exit 2 means the skill dir or the body was refused, and the line says what to fix.
+4. **Train**: the same command without `--compile-only`, with `--steps 12M --stop-after-passing 2`.
+   - It prints one JSON line per checkpoint (`skill.checkpoint`, with `passes` and the metric), then `skill.done`.
+   - Checkpoints come every 7 to 14 s. A new body walks in 1.5 to 5 min, and a new skill takes minutes per try.
+   - Exit 0 means it passed, 3 that it never passed in its steps, and 2 that it was refused. A nonzero exit shows as a
+     failed command: read its output anyway.
+   - pi-run keeps one run of your skill at a time. If your call was interrupted, run the same command again.
+5. **If it did not pass, find out why before changing anything.** Read `runs/<your skill>/skill-progress.jsonl`
+   (`{checkpoint, steps, t, passes, metric, error?}`); a test.py exception is a failing checkpoint with its error.
+   - If the metric moved toward the target, train again with `--steps 40M`.
+   - If it did not move, the reward has no gradient. A narrow bump far from the standing pose gives none
+     (exp(-27) is about 0 at the start), so scale it to the distance to cover. Change ONE thing (a term, a weight, the
+     command range), compile, and train again at 12M.
+   - Keep the built-in regularizers; zero only the terms that fight the skill (stand_still, pose and base_height for a
+     low pose).
+   - Stop after the number of tries your brief allows.
+6. **Check before you say it passed**:
+   `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --check /workspace/runs/<your skill>/policy.json`
+   prints `{"event": "skill.check", "passes": ..., "metric": ...}`, and exits 0 if it passes, 3 if not.
+7. **Report in one short paragraph**:
    - what the skill is and what your test measures;
-   - whether it passed, at which checkpoint, and how long it took;
-   - what you changed between runs.
-   Say it passed only if the trainer said so (exit 0, `skills/<your skill>/skill.json` status done). The run's result
-   is read from that file, not from your words.
+   - whether it passed, at which checkpoint, the metric against its target, and how long it took;
+   - what you changed between tries.
+   Say it passed only if the trainer said so (`runs/<your skill>/skill.json` has `passed_at`, and the check passes).
+   The run's result is read from that file, not from your words.
 
 ## Limits
-- Your thread has a deadline. A run that is still going when it passes is stopped, so keep the step count modest and
-  test early.
-- Work only in `skills/<your skill>/`. Never touch `body/`, another skill's directory or the library.
+- One train-skill at a time on your GPU.
+- A try is at most `--steps 40M` (about 6 min). Your thread has a deadline, and a run still going then is stopped.
+- Work only in `skills/<your skill>/` and `runs/<your skill>/`. Never touch `robot/`, another skill's directories or
+  the library.

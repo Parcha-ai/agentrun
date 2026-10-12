@@ -115,14 +115,38 @@ export class FakeBoxEnv extends NodeExecutionEnv {
     return this.train(command as string[], options, context);
   }
   /**
-   * The bash tool's commands, simulated: `pi-run <skill> -- python train.py ... [--out DIR]` runs the fake trainer and
-   * `cat FILE` prints a file. Nothing else runs (no command from a model ever executes on this machine).
+   * The bash tool's commands, simulated: D2's `pi-run <skill> -- train-skill --skill-dir DIR --body DIR --out DIR
+   * [--compile-only] [...]` runs the fake trainer, and `cat FILE` prints a file. Nothing else runs (no command from a
+   * model ever executes on this machine).
    */
   private async shell(command: string, options: ExecArgs[1], context: Context): ExecReturn {
     const say = (text: string) => options?.onOutput?.(text, context, { stream: "stdout" } as never);
     const t = command.trim().split(/\s+/);
-    if (t[0] === "pi-run" && t[2] === "--" && t.includes("train.py")) {
-      const out = t.includes("--out") ? t[t.indexOf("--out") + 1]! : `/workspace/skills/${t[1]}`;
+    if (t[0] === "pi-run" && t[2] === "--" && t[3] === "train-skill") {
+      const flag = (name: string) => (t.includes(name) ? t[t.indexOf(name) + 1] : undefined);
+      const skillDir = flag("--skill-dir");
+      const out = flag("--out");
+      if (skillDir === undefined || flag("--body") === undefined || out === undefined) {
+        say(`${JSON.stringify({ event: "skill.refused", error: "train-skill needs --skill-dir, --body and --out" })}\n`);
+        return { ok: true, value: { exitCode: 2 } } as never;
+      }
+      // The skill dir the thread wrote: skill.json naming this skill, and test.py.
+      const config = await this.readTextFile(`${skillDir}/skill.json`, context);
+      const test = await this.readTextFile(`${skillDir}/test.py`, context);
+      let name: unknown;
+      try {
+        name = config.ok ? JSON.parse(config.value).name : undefined;
+      } catch {
+        name = undefined;
+      }
+      if (name !== t[1] || !test.ok) {
+        say(`${JSON.stringify({ event: "skill.refused", error: `${skillDir} needs skill.json with "name": "${t[1]}" and test.py` })}\n`);
+        return { ok: true, value: { exitCode: 2 } } as never;
+      }
+      if (t.includes("--compile-only")) {
+        say("compiled: the skill dir and the body are fine\n");
+        return { ok: true, value: { exitCode: 0 } } as never;
+      }
       return this.train(["pi-run", t[1]!, "--", "train-skill", t[1]!, "--out", out], options, context);
     }
     if (t[0] === "cat" && t.length === 2) {
@@ -131,7 +155,7 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       say(r.value);
       return { ok: true, value: { exitCode: 0 } } as never;
     }
-    say(`fake box: only "pi-run <skill> -- python train.py ..." and "cat <file>" are simulated\n`);
+    say(`fake box: only "pi-run <skill> -- train-skill ..." and "cat <file>" are simulated\n`);
     return { ok: true, value: { exitCode: 127 } } as never;
   }
   private async train(argv: string[], options: ExecArgs[1], context: Context): ExecReturn {
@@ -189,7 +213,7 @@ export class FakeBoxEnv extends NodeExecutionEnv {
   }
 }
 
-/** D0's ArtifactSync, simplified: mirror box skills/<skill>/ to host work/skills/<skill>/, skipping same size + mtime. */
+/** D0's ArtifactSync, simplified: mirror a box folder (the trainer's output) to the host's work/skills/<skill>/, skipping same size + mtime. */
 export class FakeArtifacts implements ThreadArtifacts {
   /** Mirrors started and not yet stopped, in this process. */
   static active = 0;

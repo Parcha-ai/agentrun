@@ -57,7 +57,7 @@ export interface ThreadBoxes {
   release(thread: { threadId: string }, context: Context): Promise<void>;
 }
 
-/** One artifact mirror per thread (D0's ArtifactSync): the box's skills/<skill>/ to the host's work/skills/<skill>/. */
+/** One artifact mirror per thread (D0's ArtifactSync): the box folder the trainer writes (code mode: runs/<skill>/) to the host. */
 export interface ThreadArtifacts {
   start(): void | Promise<void>;
   flush(context: Context): Promise<void>;
