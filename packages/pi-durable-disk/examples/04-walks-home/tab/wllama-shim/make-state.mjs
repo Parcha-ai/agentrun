@@ -4,7 +4,8 @@
 //   node make-state.mjs --server http://127.0.0.1:8080 --serving <model>.serving.json --first <dir>/<model>-00001-of-0000N.gguf --out <dir> [--name <model>.state.bin]
 //
 // The server must be llama.cpp at the page's own commit (wllama 3.6.1's: 83d855c5a6d7), started with the page's settings and its slot save path on --out:
-//   llama-server -m <first part> --jinja -c 2048 -np 1 -b 64 -ub 64 --slot-save-path <out>/
+//   llama-server -m <first part> --jinja -c 2048 -np 1 -b 128 -ub 128 --slot-save-path <out>/
+// The state's bytes depend on the batch (llama.cpp's arithmetic does): make it with the page's batch, and pass the same --batch here so the sidecar records it.
 // The prefix is rendered by the server's own template engine (/apply-template), byte for byte what the page renders in the browser. Writes the state and a
 // sidecar (<name>.json): the model (its first part's name, the parts' bytes and each part's sha256, the GGUF's sha256 when the serving file gives it), the prefix's sha256, the token
 // count, the state file's bytes and sha256, the llama.cpp build and the settings. The page restores a state only when the model it loaded and the prefix it rendered are the sidecar's.
@@ -13,7 +14,7 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { server: { type: "string" }, serving: { type: "string" }, first: { type: "string" }, out: { type: "string" }, name: { type: "string" }, ctx: { type: "string", default: "2048" }, batch: { type: "string", default: "64" } } });
+const { values: a } = parseArgs({ options: { server: { type: "string" }, serving: { type: "string" }, first: { type: "string" }, out: { type: "string" }, name: { type: "string" }, ctx: { type: "string", default: "2048" }, batch: { type: "string", default: "128" } } });
 if (!a.server || !a.serving || !a.first || !a.out) throw new Error("usage: --server URL --serving FILE --first PART --out DIR [--name NAME]");
 const serving = JSON.parse(readFileSync(a.serving, "utf8"));
 const name = a.name ?? basename(a.first).replace(/-00001-of-\d{5}\.gguf$/, "").replace(/\.gguf$/, "") + ".state.bin";

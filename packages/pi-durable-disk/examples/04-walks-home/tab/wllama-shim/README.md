@@ -33,7 +33,7 @@ wllama's own `scripts/build_wasm.sh` (emscripten/emsdk:4.0.20 in Docker) with th
 
 ```sh
 # llama.cpp at the same commit, with the page's settings
-llama-server -m <model>-00001-of-0000N.gguf --jinja -c 2048 -np 1 -b 64 -ub 64 --slot-save-path <dir>/
+llama-server -m <model>-00001-of-0000N.gguf --jinja -c 2048 -np 1 -b 128 -ub 128 --slot-save-path <dir>/
 node make-state.mjs --server http://127.0.0.1:8080 --serving <dir>/<model>.serving.json --first <dir>/<model>-00001-of-0000N.gguf --out <dir>
 ```
 
@@ -46,7 +46,9 @@ the same.
 The sidecar `<name>.json` records the model (its first part's name, the parts' bytes and each part's sha256, the GGUF's sha256), the prefix's sha256, the token
 count, the state file's bytes and sha256, the llama.cpp build and the settings. The page restores the state only when the model it loaded (its parts' sha256, as
 the manifest it checked them with) and the prefix it rendered match; anything else (other weights, other tools, another prompt or template) prefills as before. The page keeps the state in the engine's cache, as it keeps the model's parts, and
-checks that copy against the sidecar's bytes and sha256. A state is specific to the llama.cpp commit and the settings: rebuild it when either changes.
+checks that copy against the sidecar's bytes and sha256. A state is specific to the llama.cpp commit and the settings: rebuild it when either changes. The batch
+matters too: the v5 state made at batch 64 and at 128 differ in 13 million of its 26.7 million bytes. The page runs batch 128 so that a turn's tail (the robot's
+state line and the user, under 128 tokens) is one batch whose checkpoint the next turn resumes from.
 
 ## Measured (headless Chrome, `?compat=1`, the iPhone's path)
 
