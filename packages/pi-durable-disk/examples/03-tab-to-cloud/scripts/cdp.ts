@@ -72,6 +72,7 @@ export class Device {
     const page = new Page(this.cdp, targetId, sessionId);
     await page.send("Page.enable");
     await page.send("Runtime.enable");
+    await page.send("Log.enable");
     await page.send("Emulation.setDeviceMetricsOverride", { ...size, deviceScaleFactor: 1, mobile: false });
     this.pages.push(page);
     await page.navigate(url);
@@ -98,6 +99,12 @@ export class Page {
       if (session !== sessionId) return;
       const args = (params.args as { value?: unknown; description?: string }[]).map((a) => (a.value !== undefined ? String(a.value) : a.description ?? ""));
       this.console.push(`${params.type}: ${args.join(" ")}`);
+    });
+    // the browser's own log: a fetch that answered 404 is "network: Failed to load resource ... <url>" here, not a console call
+    cdp.on("Log.entryAdded", (params, session) => {
+      if (session !== sessionId) return;
+      const e = params.entry as { source?: string; level?: string; text?: string; url?: string };
+      if (e.source === "network") this.console.push(`network: ${e.text ?? ""} ${e.url ?? ""}`);
     });
     cdp.on("Runtime.exceptionThrown", (params, session) => {
       if (session !== sessionId) return;
