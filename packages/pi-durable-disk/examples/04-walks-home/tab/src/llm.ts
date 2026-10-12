@@ -8,6 +8,7 @@ import { DEFAULT_SAMPLING } from './sampling.ts';
 import { LimitTracker } from './limits.ts';
 import { loadWithAdapters, type LoraSelection } from './adapters.ts';
 import { Sha256 } from './sha256-stream.ts';
+import { shardUrls } from './shards.ts';
 export const N_CTX = 2048;
 export const REPEAT_LAST_N = 64;
 
@@ -21,13 +22,6 @@ export function wllamaWith(o: { compat?: { worker: string; wasm: string }; logge
     if (o.compat) w.setCompat(o.compat);
     return w;
   };
-}
-
-/** The URLs of a split GGUF's parts, from its first (`-00001-of-0000N.gguf`); a file that is not split is its own only part. */
-function shardUrls(first: string): string[] {
-  const m = /-(\d{5})-of-(\d{5})\.gguf$/.exec(first);
-  if (!m) return [first];
-  return Array.from({ length: Number(m[2]) }, (_, i) => first.replace(/-\d{5}-of-(\d{5})\.gguf$/, `-${String(i + 1).padStart(5, '0')}-of-$1.gguf`));
 }
 
 const VERIFIED = 'wllama-verified:';
@@ -207,6 +201,18 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         await release();
         throw e;
       }
+    },
+    async prefetch(files, { onProgress, onStatus } = {}) {
+      // The files a later offline load wants, through the engine's cache and the same checks as a load (size every time, sha256 once, a wrong one fetched again), with no
+      // engine started: a cache handle only. A load or a warm-state restore with no network then finds them there.
+      const cache = make({ default: wasmUrl });
+      const total = files.reduce((n, f) => n + (f.want?.bytes ?? 0), 0);
+      let base = 0;
+      for (const f of files) {
+        const blob = await verifiedPart(cache, f.url, f.want, { onStatus: onStatus ?? (() => undefined), onProgress: (loaded) => onProgress?.(base + loaded, total) });
+        base += blob.size;
+      }
+      onProgress?.(base, total || base);
     },
     async clearCache() {
       await make({ default: wasmUrl }).cacheManager.clear();

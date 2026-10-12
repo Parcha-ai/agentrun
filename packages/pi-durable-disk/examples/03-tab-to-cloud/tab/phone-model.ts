@@ -4,6 +4,7 @@
 // only for its own words (Qwen3.5 resumes from a checkpoint before the prompt's last batch: with batch 64 a command re-reads about 60 tokens).
 // Portable: no Node API.
 import type { Answered, ChatMsg, Llm, RawRequest, RawResult, ToolChatMessage, ToolChatRequest, ToolChatResult, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
+import { shardUrls } from "../../04-walks-home/tab/src/shards.ts";
 import { DEFAULT_SAMPLING, type Sampling } from "../../04-walks-home/tab/src/sampling.ts";
 import type { HistoryMode } from "../../04-walks-home/tab/src/history.ts";
 import type { BrainModel } from "./brain-provider.ts";
@@ -202,11 +203,9 @@ export class PhoneModel implements BrainModel {
     return next;
   }
 
-  /** Download (or find in the cache) and load the model. */
-  async load(): Promise<void> {
-    const { url, threads, nCtx, batch, onProgress, onStatus, loadTimeoutMs } = this.o;
-    // the parts' manifest next to the model (<name>.parts.json: each part's bytes and sha256), kept for a later load with no network
-    const manifestUrl = url.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json");
+  /** The parts' manifest next to the model (<name>.parts.json: each part's bytes and sha256), kept for a later load with no network. */
+  private async partsManifest(onStatus?: (text: string) => void): Promise<{ name?: string; bytes: number; sha256?: string }[] | undefined> {
+    const manifestUrl = this.o.url.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json");
     let parts: { name?: string; bytes: number; sha256?: string }[] | undefined;
     try {
       const r = await fetch(manifestUrl);
@@ -214,6 +213,37 @@ export class PhoneModel implements BrainModel {
     } catch { /* offline: the copy kept from an earlier load, below */ }
     if (!parts) { try { const kept = localStorage.getItem(`parts:${manifestUrl}`); if (kept) parts = JSON.parse(kept) as typeof parts; } catch { /* no storage */ } }
     if (!parts) onStatus?.("no parts manifest: the cached parts are used unchecked");
+    return parts;
+  }
+
+  /**
+   * Put what an offline load wants in the engine's cache while there is a network: the parts (checked against the manifest) and, with `state`, the warm state
+   * (checked against its sidecar's bytes and sha256), so going offline needs no download and the first offline warm-up restores instead of prefilling. No engine
+   * is started. Needs the manifest: parts that cannot be checked are not kept.
+   */
+  async prefetch(state?: { url: string }): Promise<{ files: number; bytes: number }> {
+    const { url, onProgress, onStatus } = this.o;
+    if (!this.llm.prefetch) throw new Error("this model backend cannot keep files for later");
+    const parts = await this.partsManifest(onStatus);
+    if (!parts) throw new Error("no parts manifest for the model: its parts cannot be checked, so they are not kept");
+    const urls = shardUrls(url);
+    if (parts.length !== urls.length) throw new Error(`the model has ${urls.length} parts and its manifest ${parts.length}`);
+    const files: { url: string; want?: { bytes: number; sha256?: string } }[] = urls.map((u, i) => ({ url: u, want: parts[i]! }));
+    if (state) {
+      const r = await fetch(`${state.url}.json`);
+      if (!r.ok) throw new Error(`${state.url}.json: HTTP ${r.status}`);
+      const side = (await r.json()) as { bytes?: number; sha256?: string };
+      if (typeof side.bytes !== "number") throw new Error("the state's sidecar gives no size: it cannot be checked, so it is not kept");
+      files.push({ url: state.url, want: { bytes: side.bytes, ...(side.sha256 ? { sha256: side.sha256 } : {}) } });
+    }
+    await this.llm.prefetch(files, { ...(onProgress ? { onProgress } : {}), ...(onStatus ? { onStatus } : {}) });
+    return { files: files.length, bytes: files.reduce((n, f) => n + (f.want?.bytes ?? 0), 0) };
+  }
+
+  /** Download (or find in the cache) and load the model. */
+  async load(): Promise<void> {
+    const { url, threads, nCtx, batch, onProgress, onStatus, loadTimeoutMs } = this.o;
+    const parts = await this.partsManifest(onStatus);
     this.partShas = parts?.map((p) => p.sha256);
     // one conversation, one sequence: the warm state is slot 0's
     return this.llm.loadUrl!(url, { threads, nCtx, batch, slots: 1, ...(parts ? { parts } : {}), ...(onStatus ? { onStatus } : {}), ...(loadTimeoutMs ? { loadTimeoutMs } : {}), onProgress: (loaded, total) => { this.loadedBytes = total || loaded; onProgress?.(loaded, total); } });

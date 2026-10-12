@@ -40,8 +40,9 @@ import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
 import { workspaceText } from "./file-text.ts";
 import { narrowEnum, servingView, signatureTools, signatureView, toNativeTools } from "./native-turn.ts";
-import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBuild } from "./phone-model.ts";
-import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
+import { PhoneModel, served } from "./phone-model.ts";
+import { startV5Brain, V5_MODEL_ID, v5SmallFiles, v5Urls, type V5Brain } from "./v5-brain.ts";
+import { wllamaLlm as wllamaForPrefetch } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
 import { cloudAgent, rootAgent, setExtraInstructions } from "../agent.ts";
@@ -66,6 +67,8 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const match = /^\/run\/([A-Za-z0-9._-]+)$/.exec(location.pathname);
 /** `?phone=1`: pi itself on a phone, offline from the start (startPhone): this browser's store, the robot's tools on a page with no computer, a small model in the page. */
 const phoneMode = new URLSearchParams(location.search).get("phone") === "1";
+/** The laptop's offline brain is v5 (v5-brain.ts), the same one the phone runs: with the robot pane (?robot=1), unless ?brain=off, ?template=native (the MiniCPM spike) or ?v5=0. */
+const v5Offline = (() => { const q = new URLSearchParams(location.search); return q.get("robot") === "1" && !phoneMode && q.get("brain") !== "off" && q.get("template") !== "native" && q.get("v5") !== "0"; })();
 const run = match?.[1] ?? (phoneMode ? "phone" : "");
 const secret = location.hash.slice(1);
 const tab = sessionStorage.getItem("tab-id") ?? `tab-${crypto.randomUUID().slice(0, 8)}`;
@@ -156,6 +159,8 @@ const state = {
   left: undefined as { switchId: string; digest: string; step: string } | undefined,
   /** ?phone=1: what the phone's brain is doing, and what it cost. */
   phone: undefined as { phase: string; ready: boolean; model?: PhoneModel; marks: Record<string, number>; log: string[]; turnStarted?: number } | undefined,
+  /** The laptop's offline brain (v5, v5-brain.ts): kept in this browser while online, loaded when the run is taken offline. */
+  v5: { prefetch: "idle" as "idle" | "running" | "done" | "failed" | "unavailable", prefetchText: "", ready: false, brain: undefined as V5Brain | undefined, marks: {} as Record<string, number>, log: [] as string[] },
 };
 
 const envLabel = (id: string | undefined) => state.environments.find((e) => e.id === id)?.label ?? id ?? "";
@@ -498,7 +503,7 @@ function render(): void {
   // Checked out to this browser: the trained model's conversation answers, once it is the active one.
   const offlineReady = offline && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
   // Elsewhere, a message goes to whoever runs the run, through the server.
-  const canSend = (phoneMode && offline && state.phone?.ready === true) || writer || (offlineReady && !state.checkingIn) || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
+  const canSend = (phoneMode && offline && state.phone?.ready === true) || (v5Offline && offline && state.v5.ready && !state.checkingIn) || writer || (offlineReady && !state.checkingIn) || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
   ($("input") as HTMLTextAreaElement).disabled = !canSend;
   ($("send") as HTMLButtonElement).disabled = !canSend;
   $("composer").hidden = !canSend && !phoneMode; // the phone always shows where to type (disabled until the brain is ready)
@@ -507,7 +512,7 @@ function render(): void {
   // A fallback, not the switch: take the run from the cloud now, fencing it mid-step.
   $("takeover").hidden = !(state.mode === "viewer" && state.placement?.where === "cloud" && !state.switching);
   // "Take it offline": while this tab runs the agent and the trained model is its brain, and nothing is moving.
-  const canTakeOffline = writer && (swapped || new URLSearchParams(location.search).get("brain") === "off") && !state.switching && !state.checkout;
+  const canTakeOffline = writer && (swapped || v5Offline || new URLSearchParams(location.search).get("brain") === "off") && !state.switching && !state.checkout; // v5: the model is kept in this browser, it is not a trained one that has come home
   $("offline").hidden = !canTakeOffline;
   $("offline-status").textContent = state.checkout?.text ?? "";
   renderNet();
@@ -632,6 +637,8 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   // A swap from an earlier visit: the chat input waits for the saved conversation (a message sent now would go to the cloud conversation and be missing from the one that comes back).
   state.brainPending = !golive && new URLSearchParams(location.search).get("brain") !== "off" && (await findSwap(runtime.root, ctx).catch(() => undefined)) !== undefined;
   if (state.brainPending) state.brainStatus = "the trained model is loading; you can talk to it as soon as it is ready";
+  // the laptop's offline brain is kept in this browser while there is a network, a moment after the page is up (the first visit downloads 501 MB; later ones find it cached)
+  if (v5Offline) setTimeout(() => void prefetchV5().catch(() => undefined), 3000);
   await followConversation(runtime, runtime.root);
   void watchForBrain(runtime);
   await refreshFiles();
@@ -915,7 +922,9 @@ async function takeOffline(): Promise<void> {
   // ?brain=off: the run has no model of its own (a check of the computer alone), and is checked out without one.
   const noBrain = new URLSearchParams(location.search).get("brain") === "off";
   if (!runtime || state.mode !== "writer" || state.checkout || state.switching) return;
-  if (!noBrain && !golive && (!brain || !conversation || state.active !== conversation)) return;
+  // the laptop's offline brain is v5, kept in this browser (not a model that comes home from the run's disk): no manifest, no running Brain needed
+  const v5 = v5Offline && !noBrain;
+  if (!noBrain && !golive && !v5 && (!brain || !conversation || state.active !== conversation)) return;
   const say = (text: string) => { state.checkout = { text }; render(); };
   // From the click on, nothing new starts: the chat input is held and a viewer's message is not acted on, so the agent stays idle through the caching and the copy.
   state.checkingOut = true;
@@ -925,13 +934,19 @@ async function takeOffline(): Promise<void> {
   try {
     say("waiting for the agent to be idle");
     if ((await untilIdle(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
-    const manifestText = noBrain ? null : await readManifest(readWorkFresh); // the manifest as the server has it now, not as the service worker cached it
-    if (!noBrain && !manifestText) throw new Error("the model's manifest is not on the run's disk");
+    const manifestText = noBrain || v5 ? null : await readManifest(readWorkFresh); // the manifest as the server has it now, not as the service worker cached it
+    if (!noBrain && !v5 && !manifestText) throw new Error("the model's manifest is not on the run's disk");
     const home = manifestText ? await describeHome(manifestText, sha256hex) : undefined;
     const manifest = home ? { sha256: home.id, size: home.bytes, chunks: home.chunks } : { sha256: "", size: 0, chunks: [] };
     say("registering the service worker");
     await registerOfflineWorker();
     const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
+    if (v5) {
+      // the robot's brain goes into this browser's cache NOW (parts and warm state in wllama's OPFS cache, its small files in the service worker's): after the handover there is no server to ask
+      say("keeping the robot's brain in this browser");
+      await prefetchV5((text) => say(text));
+      await cacheFilesForOffline(v5SmallFiles(v5Urls(new URLSearchParams(location.search))));
+    }
     // A base and adapters are kept whole in the browser's file store, not as the service worker's chunks: after the handover the server cannot be read for them, so they come home NOW (only what the store lacks).
     if (manifestText && isBaseAdapters(manifestText)) {
       say("bringing the model's files into this browser");
@@ -999,6 +1014,86 @@ async function takeOffline(): Promise<void> {
   }
 }
 
+// ---- the laptop's offline brain (v5) -------------------------------------------------------------------------------------
+// The same model and the same code the phone runs (v5-brain.ts). While online, with the robot pane, its files are kept in this browser (`prefetchV5`: wllama's OPFS
+// cache, checked as a load checks them); "Take it offline" waits for that and then only checks them out; the offline page loads the model from the cache.
+
+let v5Prefetching: Promise<void> | undefined;
+
+/** Keep v5's parts and warm state in this browser's cache, once; `say` is told how far it is. Fails by name when this page's server does not serve the files. */
+function prefetchV5(say?: (text: string) => void): Promise<void> {
+  const v5 = state.v5;
+  if (v5.prefetch === "done") return Promise.resolve();
+  const tell = (text: string) => { v5.prefetchText = text; say?.(text); if (state.mode === "writer" && !state.checkingOut) { state.brainStatus = text; render(); } };
+  v5Prefetching ??= (async () => {
+    const urls = v5Urls(new URLSearchParams(location.search));
+    if (!(await served(v5SmallFiles(urls)[0]!))) { v5.prefetch = "unavailable"; throw new Error(`this page's server does not serve the robot's brain (${new URL(urls.modelUrl).pathname.replace(/-00001-of-\d{5}\.gguf$/, "")}): start it with --models-dir`); }
+    v5.prefetch = "running";
+    const llm = wllamaForPrefetch(new URL("/vendor/wllama.wasm", location.origin).href);
+    // ?clearcache=1 is asked here, before the files are kept, and taken off the address: the brain loaded after the handover must not clear what the checkout just saved
+    const params = new URLSearchParams(location.search);
+    if (params.get("clearcache") === "1") {
+      await llm.clearCache?.();
+      const u = new URL(location.href); u.searchParams.delete("clearcache"); history.replaceState(null, "", u);
+      v5.log.push("model cache cleared before it was kept");
+    }
+    const model = new PhoneModel(llm, {
+      url: urls.modelUrl, threads: 1, nCtx: 2048, batch: 128, maxTokens: 300,
+      onProgress: (loaded, total) => tell(`keeping the robot's brain in this browser: ${Math.round(loaded / 1e6)} of ${Math.round(total / 1e6)} MB`),
+      onStatus: (text) => tell(`keeping the robot's brain in this browser: ${text}`),
+    });
+    const got = await model.prefetch(urls.stateUrl ? { url: urls.stateUrl } : undefined);
+    v5.prefetch = "done";
+    v5.log.push(`the robot's brain is kept in this browser: ${got.files} files, ${Math.round(got.bytes / 1e6)} MB`);
+    if (state.mode === "writer") { state.brainStatus = ""; render(); }
+  })().catch((e: Error) => {
+    if (v5.prefetch !== "unavailable") v5.prefetch = "failed";
+    v5.prefetchText = e.message;
+    v5Prefetching = undefined; // asked again at the next try
+    if (state.mode === "writer") { state.brainStatus = ""; render(); }
+    throw e;
+  });
+  return v5Prefetching;
+}
+
+/** Load v5 from this browser's cache and put the conversation on it; the composer opens when it can answer. */
+async function startLaptopBrain(runtime: TabRuntime): Promise<void> {
+  const v5 = state.v5;
+  await disposeV5(); // a brain from before a failed check-in: its engine is let go before the next one loads
+  v5.ready = false;
+  v5.marks = {};
+  state.brainStatus = "the robot's brain is loading from this browser's cache";
+  render();
+  try {
+    v5.brain = await startV5Brain(runtime, {
+      params: new URLSearchParams(location.search), marks: v5.marks,
+      say: (phase, line) => { state.brainStatus = phase; if (line) v5.log.push(`${(performance.now() / 1000).toFixed(1)} s ${line}`); render(); },
+      log: (line) => v5.log.push(line),
+      report: (kind, data) => announce("v5", { kind, ...data }),
+      conversation: () => state.active ?? runtime.root,
+      restoreWasmGlobals: true, // this page's computer runs wasm too: wllama's build patches of the wasm globals are put back once the model is loaded
+    }, () => {
+      v5.ready = true;
+      state.brainStatus = "";
+      setHint("Tell the robot what to do: paint it red, give it a face, spin…");
+      render();
+      ($("input") as HTMLTextAreaElement).focus();
+    });
+  } catch (error) {
+    state.brainStatus = "";
+    state.banner = `the robot's brain did not load: ${(error as Error).message}`;
+    render();
+  }
+}
+
+/** Let go of the loaded v5 engine (its memory and workers). */
+async function disposeV5(): Promise<void> {
+  const brain = state.v5.brain;
+  state.v5.brain = undefined;
+  state.v5.ready = false;
+  await brain?.model.dispose().catch(() => undefined);
+}
+
 /** The run was handed over: drop the pipe and the pipe-backed Harness, and run from this browser's copy. */
 async function leaveForOffline(record: CheckoutRecord, host: ModelHost | undefined): Promise<void> {
   state.checkingOut = true;
@@ -1046,7 +1141,7 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
     }
     computerStatus.ms = Math.round(performance.now() - started);
     computerStatus.parts = marks;
-    const runtime = await startLocal({ storage: store.storage, model: record.model, robotCode: robotCodeOn, host: { offlineChannel }, ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
+    const runtime = await startLocal({ storage: store.storage, model: record.model, robotCode: robotCodeOn, host: { offlineChannel }, ...(v5Offline && new URLSearchParams(location.search).get("brain") !== "off" ? { deferResume: true } : {}), /* resumed by startV5Brain once its provider exists */ ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
     state.offline = { record, store, computer: computerStatus };
     state.runtime = runtime;
     state.environments = [];
@@ -1057,7 +1152,7 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
     await refreshFiles();
     await followConversation(runtime, runtime.root);
     render();
-    if (new URLSearchParams(location.search).get("brain") !== "off") await startBrain(runtime, adopt);
+    if (new URLSearchParams(location.search).get("brain") !== "off") await (v5Offline ? startLaptopBrain(runtime) : startBrain(runtime, adopt));
   } catch (error) {
     state.mode = "lost";
     state.banner = `could not open this browser's copy of the run: ${(error as Error).message}`;
@@ -1071,14 +1166,7 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
 // (D1's robot fine-tune of Qwen3.5-0.8B through wllama, its own tool format, locked to the tools' schemas). A reload finds the conversation and the robot as they
 // were. Later the same session connects to the server for the cluster beat; this phase never reaches for the network after the page and the model are cached.
 
-/**
- * How the model is served, as its trainer scored it (D1's <model>-serving.json, next to the model): its system prompt, its token budget, and either its tools
- * (v3: the text it reads in a tools block, in order) or none (v5: a signature prefix, each tool one line of the system text, rendered with no tools block).
- * The conversation runs the registry's tools of those names; the model is shown the serving file's text for them, so its input is the one it was scored on,
- * and the warm state made from it matches. The lock is built over the tools it is shown (v5: the registry's schemas, which build D1's v5-lock.gbnf exactly).
- */
-interface Serving { model: { file: string; sha256: string }; system: string; tools?: ToolChatTool[]; sampling?: { max_tokens?: number } }
-const PHONE_MODEL_ID = "robot-qwen35-0.8b-v5";
+const PHONE_MODEL_ID = V5_MODEL_ID; // the model the phone runs (v5-brain.ts: one implementation for the phone and the laptop)
 
 /**
  * What this phone measured, sent to the page's own server as a GET (/__phone_report?d=<json>) so it lands in the server's access log, where the team reads it:
@@ -1173,145 +1261,42 @@ async function savePhoneForOffline(modelFiles: string[]): Promise<void> {
 /** Set once the phone's brain is ready: starts a fresh conversation (the New chat button). */
 let phoneNewChat: (() => Promise<void>) | undefined;
 
-/** The skills home, as the last state line read them (the lock narrows do to them). */
-let phoneSkillsHome: string[] = [];
-
-/** The robot's state line (robot-state-line.ts) from its file and the skills that came home, as the window shows it before the user's turn. */
-async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> {
-  const robot = await currentRobot(runtime.env as never, ctx);
-  if ("problem" in robot) return undefined;
-  phoneSkillsHome = Object.keys(await loadSkills(runtime.env as never, ctx));
-  return stateLine(robot, phoneSkillsHome, await defaultSkill(runtime.env as never, ctx)); // what the pane plays: the manifest's default, its first skill, or walk
-}
-
+/** Open the phone's composer when its brain is ready; the robot pane after, never during the load (an iPhone ran out of memory with both at once). */
 async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   const params = new URLSearchParams(location.search);
   const marks = state.phone!.marks;
-  const engineLog = (level: string) => (...a: unknown[]) => { const line = a.map((x) => (x instanceof Error ? x.message : String(x))).join(" "); if (level !== "debug" || /buffer size|error|failed/i.test(line)) state.phone!.log.push(`${(performance.now() / 1000).toFixed(1)} s ${level} ${line.slice(0, 300)}`); };
-  // Which wllama build, in order of preference (buildOrder in phone-model.ts); the next is tried when one does not load (the watchdog, below):
-  //   jspi32:   wasm32 + JSPI, no Asyncify (the shim's; Chrome, Safari 27): restores the warm state, half the size of the stock build.
-  //   default:  wasm64 + JSPI (stock wllama; not on WebKit): prefills the system turn, since it has no slot restore.
-  //   asyncify: wasm32 + Asyncify (the shim's compat build; every browser, Safari up to 26).
-  // A build is chosen by what wllama is shown: memory64 hidden takes it to its compat path, JSPI hidden as well takes the compat path to Asyncify.
-  // ?build=default|jspi32|asyncify tries only that one; ?compat=1 (Safari 26), ?mem64=0 and ?jspi32=0 as before; ?stall=<build> makes that build time out at once (a check).
-  const ua = navigator.userAgent;
-  const webkit = /AppleWebKit/.test(ua) && !/(Chrome|Chromium|Edg)\//.test(ua); // every iPhone browser (CriOS included), desktop Safari
-  const hasJSPI = "Suspending" in WebAssembly && params.get("compat") !== "1";
-  const jspi32Served = await served("/vendor/wllama-jspi32/wllama.wasm");
-  type Build = WllamaBuild;
-  const builds = buildOrder({ webkit, jspi: hasJSPI, jspi32Served: jspi32Served && params.get("jspi32") !== "0", noMemory64: params.get("mem64") === "0" || params.get("compat") === "1", only: (params.get("build") as Build | null) ?? undefined });
-  const loadTimeoutMs = (Number(params.get("loadtimeout")) || 90) * 1000;
-  const RealMemory = WebAssembly.Memory, RealSuspending = (WebAssembly as { Suspending?: unknown }).Suspending;
-  const show = (build: Build) => {
-    const NoMem64 = function Memory(desc: WebAssembly.MemoryDescriptor & { address?: string }) { if (desc?.address === "i64") throw new TypeError("memory64 is hidden: wllama's compat path"); return new RealMemory(desc); } as unknown as typeof WebAssembly.Memory;
-    NoMem64.prototype = RealMemory.prototype;
-    (WebAssembly as { Memory: typeof WebAssembly.Memory }).Memory = build === "default" ? RealMemory : NoMem64;
-    if (build === "asyncify") Reflect.deleteProperty(WebAssembly, "Suspending");
-    else if (RealSuspending !== undefined) (WebAssembly as { Suspending?: unknown }).Suspending = RealSuspending;
-  };
-  const makeModel = (build: Build) => {
-    const dir = build === "jspi32" ? "/vendor/wllama-jspi32" : "/vendor/wllama-compat";
-    const llm = wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href, wllamaWith({ compat: { worker: new URL(`${dir}/wllama.js`, location.origin).href, wasm: new URL(`${dir}/wllama.wasm`, location.origin).href }, logger: { debug: engineLog("debug"), log: engineLog("log"), warn: engineLog("warn"), error: engineLog("error") } }));
-    const model = new PhoneModel(llm, {
-      url: new URL(params.get("model") ?? "/models/qwen35-0.8b-robot-v5-Q4_0-00001-of-00007.gguf", location.href).href,
-      threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4),
-      nCtx: Number(params.get("ctx")) || 2048,
-      batch: Number(params.get("batch")) || 128, // n_batch = n_ubatch: a turn's tail (state line and user, under 128 tokens) is one batch, so its checkpoint sits where the next turn leaves it (PhoneModel.resume)
-      maxTokens: 300,
-      loadTimeoutMs: params.get("stall") === build ? 1 : loadTimeoutMs,
-      onProgress: (loaded, total) => phoneSay(loaded < total ? `the robot's brain is downloading: ${Math.round(loaded / 1e6)} of ${Math.round(total / 1e6)} MB` : `the robot's brain is loading into memory (${build} build)`),
-      onStatus: (text) => phoneSay(`the robot's brain: ${text}`, text),
-    });
-    return { llm, model };
-  };
-  state.phone!.log.push(`engine: ${webkit ? "WebKit" : "not WebKit"}, JSPI ${hasJSPI ? "yes" : "no"}; builds to try: ${builds.join(", ")}`);
-  let { llm, model } = makeModel(builds[0]!);
-  // each step names itself in an error, so a phone that fails says where
-  const step = async <T,>(label: string, work: () => Promise<T>): Promise<T> => { try { return await work(); } catch (e) { throw new Error(`${label}: ${e instanceof Error ? e.message : String(e)}`); } };
-  // ?clearcache=1: forget the cached model files first (they are fetched and checked again), once: the switch is taken off the address
-  if (params.get("clearcache") === "1") {
-    await step("clearing the model cache", () => llm.clearCache?.() ?? Promise.resolve());
-    state.phone!.log.push("model cache cleared");
-    const u = new URL(location.href); u.searchParams.delete("clearcache"); history.replaceState(null, "", u);
-  }
-  const servingUrl = new URL(params.get("serving") ?? "/models/qwen35-0.8b-robot-v5-Q4_0.serving.json", location.href).href;
-  const serving = await step("reading the model's serving file", async () => (await (await fetch(servingUrl)).json()) as Serving);
-  const signature = !serving.tools?.length; // v5: the system text lists the tools; nothing renders a tools block
-  const toolNames = signature ? signatureTools(serving.system) : serving.tools!.map((t) => t.function.name);
-  // the model's view: the serving file's tools (or, for a signature prefix, the conversation's tools it names), in its order, those the conversation offers
-  const refine = (list: ToolChatTool[]) => (signature ? signatureView(list, toolNames) : servingView(list, serving.tools));
-  const budget = serving.sampling?.max_tokens ?? 300;
-  let t = performance.now();
-  phoneSay("the robot's brain is loading");
-  for (const [i, build] of builds.entries()) {
-    if (i > 0) ({ llm, model } = makeModel(build));
-    show(build);
-    try {
-      await step(`loading the model (${build} build)`, () => model.load());
-      state.phone!.log.push(`engine: the ${build} build loaded`);
-      phoneReport("build", { build, tried: builds.slice(0, i + 1) });
-      break;
-    } catch (e) {
-      await llm.exit().catch(() => undefined);
-      if (i === builds.length - 1) throw e;
-      state.phone!.log.push(`${(e as Error).message}: trying the ${builds[i + 1]} build`);
-      phoneReport("build-failed", { build, error: (e as Error).message.slice(0, 300) });
-    }
-  }
-  state.phone!.model = model;
-  state.phone!.log.push(`model read in ${partReads.count} reads, the largest ${(partReads.largest / 1e6).toFixed(1)} MB`);
-  marks.loadMs = Math.round(performance.now() - t);
-  // where the load's time went: fetching parts, checking them, the engine reading them in
-  Object.assign(marks, { downloadMs: Math.round(partTimes.downloadMs), downloadedMB: Math.round(partTimes.downloaded / 1e6), verifyMs: Math.round(partTimes.verifyMs), engineMs: Math.round(marks.loadMs - partTimes.downloadMs - partTimes.verifyMs) });
-  state.phone!.log.push(`load ${(marks.loadMs / 1000).toFixed(1)} s: download ${(marks.downloadMs! / 1000).toFixed(1)} s (${marks.downloadedMB} MB), check ${(marks.verifyMs! / 1000).toFixed(1)} s, engine ${(marks.engineMs! / 1000).toFixed(1)} s`);
-  runtime.models.setProvider(brainProvider(model, brainModel(PHONE_MODEL_ID, "Qwen3.5-0.8B robot v5 (D1's fine-tune)", Number(params.get("ctx")) || 2048, 200), {
-    ...DEFAULT_TOOL_DECODING, mode: "native", callTokens: Math.ceil((budget * 2) / 3), answerTokens: Math.floor(budget / 3), system: serving.system, refine, closing: params.get("closing") === "model" ? "model" : "tool-result",
-    // D1's window T7: the earlier exchanges, the robot's state line, then the user's turn; ?window=task: the current task only (the model forgets earlier turns)
-    ...phoneWindow(params.get("window") === "task", { refresh: () => phoneStateLine(runtime), fits: (m: ToolChatMessage[], t: ToolChatTool[]) => model.fits(m, t) }),
-  }));
-  const byName = new Map(runtime.registry.snapshot().tools().map((r) => [r.tool.name, r.tool]));
-  const tools = toolNames.map((n) => byName.get(n)).filter((r): r is NonNullable<typeof r> => r !== undefined); // in the serving file's order
-  const phoneAgent = { model: { provider: BRAIN_PROVIDER, modelId: PHONE_MODEL_ID }, thinkingLevel: "off" as const, tools, instructions: serving.system };
-  const conversation = state.active ?? runtime.root;
-  const agent = await conversation.agent(ctx);
-  if (!(agent.model?.provider === BRAIN_PROVIDER && agent.model.modelId === PHONE_MODEL_ID)) await conversation.configure(phoneAgent, ctx);
+  const brain = await startV5Brain(runtime, {
+    params, marks,
+    say: phoneSay,
+    log: (line) => state.phone!.log.push(line),
+    report: (kind, data) => {
+      if (kind === "turn-start") state.phone!.turnStarted = performance.now(); // the thinking timer counts from here
+      phoneReport(kind, data);
+    },
+    conversation: () => state.active ?? runtime.root,
+    // the phone has nothing else running wasm: wllama's build patches stay as they are
+  }, (b) => {
+    state.phone!.ready = true;
+    state.phone!.model = b.model;
+    render(); // the composer opens (canSend reads state.phone.ready)
+    setHint("Tell the robot what to do: paint it red, make it a spider, spin…");
+    ($("input") as HTMLTextAreaElement).focus();
+    // the robot, now that the brain is in: standing still (no physics) until a skill plays
+    if (params.get("pane") !== "0") startRobotPane("&still=1");
+  });
   // New chat: a fresh conversation on the same brain and tools, followed from now on; the earlier ones stay in the store, and the robot stays as it is
   phoneNewChat = async () => {
     if (state.chat.busy) return;
-    const fresh = await runtime.harness.createConversation({ ownership: { kind: "ownerless" }, agent: rootAgent(PHONE_MODEL_ID) }, ctx);
-    await fresh.configure(phoneAgent, ctx);
+    const fresh = await brain.newConversation();
     try { localStorage.setItem(`phone-conversation:${run}`, String(fresh.id)); } catch { /* not kept across a reload */ }
     await followConversation(runtime, fresh);
     phoneReport("new-chat", {});
     render();
     ($("input") as HTMLTextAreaElement).focus();
   };
-  t = performance.now();
-  phoneSay("the robot's brain is reading its tools (once)");
-  // the tools exactly as the provider sends them (native-turn.ts), so the prefix is the turns' prefix; a shipped warm state for it is restored instead (?state=0: prefill)
-  const stateUrl = params.get("state") === "0" ? undefined : new URL(params.get("state") ?? "/models/qwen35-0.8b-robot-v5-Q4_0.state.bin", location.href).href;
-  model.toolsInPrompt = !signature;
-  model.stemFirst = params.get("stem") !== "0"; // the exchanges-first read (?stem=0: the warm state restored before every turn instead)
-  const warm = await step("reading the tools", () => model.warm(serving.system, refine(toNativeTools(tools)), stateUrl ? { url: stateUrl, onSkip: (why) => state.phone!.log.push(`no warm state restored: ${why}`) } : undefined));
-  if (warm.restored) state.phone!.log.push(`warm state restored: ${warm.restored.tokens} tokens, ${Math.round(warm.restored.bytes / 1e6)} MB in ${warm.ms} ms`);
-  marks.warmMs = Math.round(performance.now() - t);
-  marks.warmTokens = warm.promptTokens;
-  state.phone!.ready = true;
-  // what a reload cut short (a turn in the middle of its model call or its tools) runs now, on the brain that just came up
-  await runtime.harness.resume();
-  phoneReport("ready", { ...marks, restored: warm.restored ? warm.restored.tokens : 0, compat: !("Suspending" in WebAssembly) || undefined, threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4), reads: partReads.count, largestRead: partReads.largest });
-  model.onTurn = (t) => phoneReport("turn", turnReport(t, params.get("report") === "text")); // the reply's words only when the page was opened to send them
-  // D1's lock rule: the prompt shows do with every skill (the warm state holds), the grammar only the skills home, and no do at all when none is
-  model.lock = (shown) => shown.flatMap((t) => (t.function.name !== "do" ? [t] : phoneSkillsHome.length > 0 ? narrowEnum([t], "skill", phoneSkillsHome) : []));
-  model.onTurnStart = () => { state.phone!.turnStarted = performance.now(); phoneReport("turn-start", {}); };
-  phoneSay("", `brain ready: loaded in ${(marks.loadMs / 1000).toFixed(1)} s, tools read in ${(marks.warmMs / 1000).toFixed(1)} s (${warm.promptTokens} tokens)`);
-  setHint("Tell the robot what to do: paint it red, make it a spider, spin…");
-  ($("input") as HTMLTextAreaElement).focus();
-  // the robot, now that the brain is in: standing still (no physics) until a skill plays
-  if (params.get("pane") !== "0") startRobotPane("&still=1");
   // and everything a reload needs with no network, behind the service worker: the page, its built assets, the robot pane's, the model's small files (its parts
   // are in wllama's own cache already). ?offline=0 skips it.
-  if (params.get("offline") !== "0") void savePhoneForOffline([new URL(model.url).pathname.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json"), new URL(servingUrl, location.href).pathname, ...(stateUrl ? [`${new URL(stateUrl).pathname}.json`] : [])]); // the state itself is kept in the engine's cache, with the model's parts
+  if (params.get("offline") !== "0") void savePhoneForOffline(brain.smallFiles());
 }
 
 // ---- coming home ---------------------------------------------------------------------------------------------------------
@@ -1571,6 +1556,7 @@ async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array;
     // Online the cloud model answers by default; with ?golive=1 the small model stays loaded for the router, which decides per message who answers (the conversation is configured only when that changes).
     if (brain && golive) await startBrain(attached, brain.host, true);
     else await brain?.dispose();
+    await disposeV5();
     void forgetWorkspace(run).catch(() => undefined);
     void deleteStore(run).catch(() => undefined);
     announce("checkin", { phase: "done", ...event });
@@ -2056,6 +2042,8 @@ void (phoneMode ? startPhone() : boot());
     });
   },
   /** The brain swap, for checks: the model's phase, whether the chat input goes to the trained model's conversation, and what the page says. */
+  /** The laptop's offline brain (v5): its prefetch, whether it can answer, what it measured and logged. */
+  v5: () => ({ prefetch: state.v5.prefetch, prefetchText: state.v5.prefetchText, ready: state.v5.ready, build: state.v5.brain?.build ?? null, marks: { ...state.v5.marks }, log: [...state.v5.log], turns: state.v5.brain?.model.turns.length ?? 0, warmPrompt: state.v5.brain?.model.warmPrompt?.length ?? 0 }),
   brain: () => ({ phase: state.brain?.host.state().phase ?? null, swapped: state.brain?.conversation !== undefined && state.active === state.brain.conversation, conversation: state.active ? String(state.active.id) : null, status: state.brainStatus }),
   /** A probe (scratch): one raw completion of the first window for `task`, with the call grammar engaged lazily on "<tool_call>" (`lazy`) or as a plain grammar after it. */
   probe: async (task: string, variant: "lazy-with-trigger" | "lazy-without-trigger" | "none") => {
