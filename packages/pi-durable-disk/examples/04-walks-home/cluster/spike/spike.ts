@@ -36,12 +36,14 @@ const before = JSON.parse(readFileSync(join(dir, "before-resume.json"), "utf8"))
 const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const runs = (box: string) => (existsSync(join(dir, "boxes", box, "runs.jsonl")) ? readFileSync(join(dir, "boxes", box, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
 
-function peakHeld(log: { event: string }[]): number {
-  let held = 0;
+function peakHeld(log: { event: string; boxId?: string }[]): number {
+  // The boxes held at once: a release counts once per box (one retried after the kill is logged twice).
+  const held = new Set<string>();
   let peak = 0;
   for (const p of log) {
-    held += p.event === "pool.create" ? 1 : p.event === "pool.release" ? -1 : 0;
-    peak = Math.max(peak, held);
+    if (p.event === "pool.create" && p.boxId) held.add(p.boxId);
+    if (p.event === "pool.release" && p.boxId) held.delete(p.boxId);
+    peak = Math.max(peak, held.size);
   }
   return peak;
 }

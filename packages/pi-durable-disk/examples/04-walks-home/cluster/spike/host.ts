@@ -101,6 +101,12 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
     const skillJson = readSince.find((t) => /"status"/.test(t));
     if (skillJson === undefined) return bash(`cat /workspace/runs/${skill}/skill.json`);
     if (/still changing/.test(skillJson) && tries.length < 2) return bash(`${run} --steps 40M --stop-after-passing 2`);
+    if (example !== undefined && tries.length < 2) {
+      // The library skill's one other retry: one reward_scales weight, edited (not rewritten), then 12M again.
+      const after = results.slice(results.length - readSince.length);
+      if (!after.some((r) => r.toolName === "edit")) return toolUse("edit", { path: `skills/${skill}/skill.json`, edits: [{ oldText: '"feet_air_time":1}', newText: '"feet_air_time":2}' }] });
+      return bash(`${run} --steps 12M --stop-after-passing 2`);
+    }
     return fauxAssistantMessage(fauxText(`I wrote ${skill}'s skill files and trained them ${tries.length} times; it never passed its test.`));
   }
   if (!readSince.some((t) => /"status"/.test(t))) return bash(`cat /workspace/runs/${skill}/skill.json`);

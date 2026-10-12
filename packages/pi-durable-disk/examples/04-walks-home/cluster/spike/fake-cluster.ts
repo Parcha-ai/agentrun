@@ -7,7 +7,7 @@
 // that is not starts over from the warm start. D0's pi-run guard is simulated too: a relaunch while an earlier run of
 // the same skill is marked running stops it first (here it already died with the host, so it is only recorded).
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { ThreadArtifacts, ThreadBoxes } from "../teach-skills.ts";
@@ -103,6 +103,11 @@ export class FakeBoxEnv extends NodeExecutionEnv {
   private local(path: string): string {
     return path.startsWith("/workspace") ? join(this.dir, path) : path;
   }
+  /** The coding tools' writes and edits land here: logged next to the commands, so a test sees every change the thread made. */
+  override writeFile(...args: Parameters<NodeExecutionEnv["writeFile"]>): ReturnType<NodeExecutionEnv["writeFile"]> {
+    appendFileSync(join(this.dir, "exec.log"), `${JSON.stringify({ write: relative(join(this.dir, "workspace"), args[0]) })}\n`);
+    return super.writeFile(...args);
+  }
   override readTextFile(path: string, context: Context): ReturnType<NodeExecutionEnv["readTextFile"]> {
     return super.readTextFile(this.local(path), context);
   }
@@ -177,7 +182,7 @@ export class FakeBoxEnv extends NodeExecutionEnv {
         return { ok: true, value: { exitCode: 1 } } as never;
       }
       const dest = this.local(t[3]!.startsWith("/") ? t[3]! : `/workspace/${t[3]}`);
-      writeAtomic(join(dest, "skill.json"), JSON.stringify({ name, label: name, command: 0, reward_scales: {}, env: {} }));
+      writeAtomic(join(dest, "skill.json"), JSON.stringify({ name, label: name, command: 0, reward_scales: { feet_air_time: 1 }, env: {} }));
       writeAtomic(join(dest, "test.py"), `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${name}", "value": 0, "unit": "", "target": ">= 1.0"}\n`);
       return { ok: true, value: { exitCode: 0 } } as never;
     }
@@ -239,7 +244,13 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       }
     }
     // D2's diagnosis: a try cut short by its --steps is still changing; one that used every checkpoint plateaued.
-    const diagnosis = cap < MAX_CHECKPOINTS ? "still changing at the last checkpoint: train longer" : `plateaued from checkpoint ${MAX_CHECKPOINTS - 2}: strengthen the term or check the test's target`;
+    // A skill that never passes never moves in a short try (no gradient); a longer one plateaus.
+    const diagnosis =
+      cap < MAX_CHECKPOINTS
+        ? passAt === null
+          ? "never moved: the metric stayed where it started, so the reward likely gives no gradient"
+          : "still changing at the last checkpoint: train longer"
+        : `plateaued from checkpoint ${MAX_CHECKPOINTS - 2}: strengthen the term or check the test's target`;
     writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "failed", passed_at: null, diagnosis }));
     say({ event: "skill.done", skill, passed: false });
     rmSync(marker, { force: true });
