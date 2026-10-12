@@ -38,11 +38,15 @@ try {
   const waitEvent = async (type, since, ms = 30000) => { for (let t = 0; t < ms; t += 200) { const n = await ev(`events.slice(${since}).find(e => e.type === ${JSON.stringify(type)}) ?? null`); if (n) return n; await sleep(200); } return null; };
   const robotFor = (skill) => { const r = applyRobotTool(initialRobot(defaultDesign(3)), 'do', { skill }, { skills: Object.fromEntries(names.map((n) => [n, {}])) }).state; return r; };
   let edits = 0;
+  const lastEvent = {};
   const switchTo = async (skill) => {
+    if ((await inner('__walks.skill()')) === skill && lastEvent[skill]) return lastEvent[skill]; // already doing it: no event
     const n = await ev('events.length');
     const robot = { ...robotFor(skill), edits: ++edits }; // a new edit count: the file is a new file every time
     await ev(`disk['creature/robot.json'] = new TextEncoder().encode(${JSON.stringify(serializeRobot(robot))})`);
-    return waitEvent('skill-switched', n);
+    const e = await waitEvent('skill-switched', n);
+    if (e) lastEvent[skill] = e;
+    return e;
   };
   // in-page helpers: pause the loop, step by hand, measure
   await inner(`window.__m = { yaw: (q) => Math.atan2(2 * (q[3] * q[6] + q[4] * q[5]), 1 - 2 * (q[5] * q[5] + q[6] * q[6])),

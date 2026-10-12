@@ -389,7 +389,10 @@ async function switchSkill(name: string) {
     if (!policy) return refuse(`${name} was trained for another body and does not fit this one`);
   }
   showError('');
-  (document.getElementById('command') as HTMLInputElement).value = String(entry.command);
+  // The skill's own command, exactly: the slider takes this policy's range and no step BEFORE its value is set (a range input snaps a value to its old bounds and step, which turned sprint's 1.2 into 1.0).
+  const slider = document.getElementById('command') as HTMLInputElement;
+  const range = (policy.file as { command_range?: [number, number] }).command_range;
+  slider.min = String(range?.[0] ?? 0); slider.max = String(range?.[1] ?? 1); slider.step = 'any'; slider.value = String(entry.command);
   closeArrival();
   setPolicy(policy, `skill: ${entry.label}`); // no sim.reset(): a creature that is up carries on, the next step is the new network's
   brainFits = fits;
