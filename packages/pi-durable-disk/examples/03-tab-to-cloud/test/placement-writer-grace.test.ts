@@ -18,7 +18,7 @@ describe("a tab that drops and a tab that comes back", () => {
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
       const choice = query.current;
-      return { id: `d-${query.phase}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 1 : 0 })), choice, decidedBy: "model" } as PlacementDecision;
+      return { id: `d-${query.phase}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 1 : 0 })), choice, decidedBy: "model", latency_ms: 0, model: "scripted" } as PlacementDecision;
     },
   };
   const cloud: CloudHost = {
@@ -135,7 +135,7 @@ describe("the grace where there is nothing to move to, and at shutdown", () => {
   const placer: Placer = {
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
-      return { id: `d-${query.phase}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === query.current ? 1 : 0 })), choice: query.current, decidedBy: "model" } as PlacementDecision;
+      return { id: `d-${query.phase}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === query.current ? 1 : 0 })), choice: query.current, decidedBy: "model", latency_ms: 0, model: "scripted" } as PlacementDecision;
     },
   };
   const clients = async (server: Awaited<ReturnType<typeof localServer>>, name: string, pageFrames: PipeFrame[]) => {
