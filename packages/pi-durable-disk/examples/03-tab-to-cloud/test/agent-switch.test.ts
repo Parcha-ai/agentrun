@@ -11,13 +11,15 @@ import { localServer } from "./_local.ts";
 describe("an agent that moves itself", () => {
   let local: Awaited<ReturnType<typeof localServer>>;
   const events: { event: string; data: Record<string, unknown> }[] = [];
-  const started: { env: string; move: Move }[] = [];
+  const started: { run: string; env: string; move: Move }[] = [];
+  /** The cloud starts of one run: the cloud host is shared by every run here, and a run of an earlier test can still move late. */
+  const startedFor = (run: string) => started.filter((s) => s.run === run);
   let api: ServerApi | undefined;
   const cloud: CloudHost = {
     environments: [{ id: "big-vm", label: "Big VM", phrase: "a big VM", kind: "cloud" }],
     bind: (a) => void (api = a),
-    async start(_ref, run) {
-      started.push({ env: run.env, move: run.move });
+    async start(ref, run) {
+      started.push({ run: ref.id, env: run.env, move: run.move });
       return { host: "big-vm-1" };
     },
     stop: async () => undefined,
@@ -68,9 +70,10 @@ describe("an agent that moves itself", () => {
     const accepted = frames.find((f): f is Extract<PipeFrame, { t: "switch-accepted" }> => f.t === "switch-accepted")!;
     assert.equal(accepted.ask, "ask-9");
     assert.match(accepted.switchId, /^sw-/);
-    await until(() => started.length === 1);
-    assert.deepEqual({ ...started[0]!.move, id: undefined }, { id: undefined, from: "your user's browser tab", planned: true, by: "agent", reason: "I need a full Linux VM with Docker" });
-    assert.equal(started[0]!.move.id, accepted.switchId, "the handover id the tool returned is the move's");
+    await until(() => startedFor(id).length === 1);
+    const move = startedFor(id)[0]!.move;
+    assert.deepEqual({ ...move, id: undefined }, { id: undefined, from: "your user's browser tab", planned: true, by: "agent", reason: "I need a full Linux VM with Docker" });
+    assert.equal(move.id, accepted.switchId, "the handover id the tool returned is the move's");
     assert.ok(events.some((e) => e.event === "switch.start" && e.data.by === "agent"));
     client.close();
   });
@@ -78,10 +81,10 @@ describe("an agent that moves itself", () => {
   it("a user's click carries no agent marker and no request id: no accepted frame, the move says the user planned it", async () => {
     const { id, secret } = await local.server.createRun("click");
     const { client, frames } = await writer(id, secret, "a");
-    const before = started.length;
+    const before = startedFor(id).length;
     client.send({ t: "switch", to: "big-vm" });
-    await until(() => started.length === before + 1);
-    assert.equal(started.at(-1)!.move.by, undefined);
+    await until(() => startedFor(id).length === before + 1);
+    assert.equal(startedFor(id).at(-1)!.move.by, undefined);
     assert.ok(!frames.some((f) => f.t === "switch-accepted"));
     client.close();
   });
@@ -116,12 +119,18 @@ describe("an agent that moves itself", () => {
     await until(() => local.server.runs.get(id)!.placement.where === "tab");
     await assert.rejects(api!.requestSwitch(ref, "nowhere", "x"), /no environment nowhere/);
     await assert.rejects(api!.requestSwitch({ ...ref, id: "unknown-run" }, "big-vm", "x"), /no such run/);
-    const before = started.length;
+    const before = startedFor(id).length;
+    // Another run moves to the cloud meanwhile (as a run of an earlier test can, late, once its tab is gone): its start is not this run's.
+    const bystander = await local.server.createRun("bystander");
+    const { client: byTab } = await writer(bystander.id, bystander.secret, "a");
+    byTab.send({ t: "switch", to: "big-vm" });
+    await until(() => local.server.runs.get(bystander.id)!.placement.where === "cloud");
     const { switchId } = await api!.requestSwitch(ref, "big-vm", "more cores");
     assert.match(switchId, /^sw-/);
-    await until(() => started.length === before + 1);
-    assert.equal(started.at(-1)!.move.reason, "more cores");
+    await until(() => startedFor(id).length === before + 1);
+    assert.equal(startedFor(id).at(-1)!.move.reason, "more cores");
     client.close();
+    byTab.close();
   });
 });
 
