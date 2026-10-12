@@ -9,18 +9,42 @@ import { BRAIN_CHECKIN, BRAIN_DECISION, BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE,
 export type ChatItem =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean }
-  | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted" }
+  | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted"; /** What the harness said about the call, typed (its `<harness>` block is not in `output`). */ diagnostics?: Diagnostic[]; /** The tool's own typed details (teach_skills: its threads and what came home). */ details?: unknown }
   | { kind: "note"; id: string; text: string }
   /** The notice of a move, as the agent received it (environment.ts). */
   | { kind: "switch"; id: string; text: string; switchId: string; planned: boolean; /** Where it went, as the host calls itself (the notice's facts.label); who decided (`by`, "jev") and how sure (`probability`). The page shows these, never `text`. */ to?: string | null; by?: string | null; probability?: number | null }
   /** The trained model coming home and becoming the agent's brain (brain.ts): `loading`, then `ready` (the swap) or `failed`. `data` is the entry's data as written. */
   | { kind: "brain"; id: string; stage: "loading" | "ready" | "failed" | "moved" | "home" | "decision"; text: string; data: Record<string, unknown> };
 
+export type Diagnostic = { severity: string; code?: string; message: string };
+
 type Block = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown };
-type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; stopReason?: string };
+type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; stopReason?: string; details?: unknown };
 
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((c: { type?: string; text?: string }) => (c.type === "text" ? c.text ?? "" : "")).join("") : "";
+
+/** The harness's own rendering of a result's diagnostics, appended to the content the model sees (pi-durable's appendToolResult). */
+const renderedDiagnostics = (d: readonly Diagnostic[]): string => `<harness>\n${d.map((x) => `[${x.severity}] ${x.message}`).join("\n")}\n</harness>`;
+
+/** The typed diagnostics the harness recorded with a tool-result entry. */
+function diagnosticsOf(entry: EntryRecord): Diagnostic[] {
+  const list = (entry.data as { diagnostics?: unknown } | undefined)?.diagnostics;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((d) => {
+    const o = d as { severity?: unknown; code?: unknown; message?: unknown } | null;
+    return o && typeof o.severity === "string" && typeof o.message === "string" ? [{ severity: o.severity, ...(typeof o.code === "string" ? { code: o.code } : {}), message: o.message }] : [];
+  });
+}
+
+/** The result's text without the harness's rendered diagnostics: the last text item, removed only when it is exactly that rendering (no pattern matching on prose). */
+function textWithout(content: unknown, diagnostics: readonly Diagnostic[]): string {
+  if (!Array.isArray(content) || diagnostics.length === 0) return textOf(content);
+  const items = [...(content as { type?: string; text?: string }[])];
+  const last = items.map((c) => c.type === "text").lastIndexOf(true);
+  if (last >= 0 && items[last]!.text === renderedDiagnostics(diagnostics)) items.splice(last, 1);
+  return textOf(items);
+}
 
 const messagesOf = (entry: EntryRecord): Message[] => ((entry as unknown as { model?: Message[] }).model ?? []);
 
@@ -165,11 +189,14 @@ export class ChatView {
           pushAssistant(id, (message.content as Block[]) ?? [], false, error);
         } else if (entry.kind === "pi.tool-result" && message.role === "toolResult") {
           const tool = tools.get(message.toolCallId ?? "");
-          const output = textOf(message.content);
+          const diagnostics = diagnosticsOf(entry);
+          const output = textWithout(message.content, diagnostics);
+          const typed = { ...(diagnostics.length > 0 ? { diagnostics } : {}), ...(message.details !== undefined ? { details: message.details } : {}) };
           if (tool) {
             tool.output = output;
             tool.status = message.isError ? (/interrupted/i.test(output) ? "interrupted" : "error") : "done";
-          } else items.push({ kind: "tool", id, name: message.toolName ?? "tool", args: "", output, status: message.isError ? "error" : "done" });
+            Object.assign(tool, typed);
+          } else items.push({ kind: "tool", id, name: message.toolName ?? "tool", args: "", output, status: message.isError ? "error" : "done", ...typed });
         }
       }
     }
