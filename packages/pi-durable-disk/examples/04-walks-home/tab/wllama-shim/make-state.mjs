@@ -7,7 +7,7 @@
 //   llama-server -m <first part> --jinja -c 2048 -np 1 -b 64 -ub 64 --slot-save-path <out>/
 // The prefix is rendered by the server's own template engine (/apply-template), byte for byte what the page renders in the browser. Writes the state and a
 // sidecar (<name>.json): the model (its first part's name, the parts' bytes, the GGUF's sha256 when the serving file gives it), the prefix's sha256, the token
-// count, the llama.cpp build and the settings. The page restores a state only when the model it loaded and the prefix it rendered are the sidecar's.
+// count, the state file's bytes and sha256, the llama.cpp build and the settings. The page restores a state only when the model it loaded and the prefix it rendered are the sidecar's.
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -42,6 +42,7 @@ const side = {
   prefixSha256: createHash("sha256").update(prefix).digest("hex"),
   tokens: saved.n_saved,
   bytes: saved.n_written,
+  sha256: createHash("sha256").update(readFileSync(join(a.out, name))).digest("hex"), // the state file's own: the page checks the copy it keeps against it
   llamaCpp: props.build_info ?? null,
   nCtx: Number(a.ctx),
   batch: Number(a.batch),
