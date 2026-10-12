@@ -32,7 +32,7 @@ import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
 import { servingView } from "./native-turn.ts";
-import { buildOrder, PhoneModel, type WllamaBuild } from "./phone-model.ts";
+import { buildOrder, PhoneModel, phoneWindow, turnReport, type WllamaBuild } from "./phone-model.ts";
 import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
@@ -920,7 +920,8 @@ const PHONE_MODEL_ID = "robot-qwen35-0.8b-v3";
 
 /**
  * What this phone measured, sent to the page's own server as a GET (/__phone_report?d=<json>) so it lands in the server's access log, where the team reads it:
- * the browser and OS version, the load and ready times, each command's time and tokens. Same origin, no body, nothing else; ?report=0 turns it off.
+ * the browser and OS version, the load and ready times, each command's time and tokens (its reply's words only with ?report=text). Same origin, no body, nothing
+ * else; ?report=0 turns it off.
  */
 function phoneReport(kind: string, data: Record<string, unknown>): void {
   if (new URLSearchParams(location.search).get("report") === "0") return;
@@ -963,7 +964,7 @@ async function startPhone(): Promise<void> {
     const storeMs = Math.round(performance.now() - t);
     const fs = memoryFs("/workspace");
     const workspace = new Workspace(fs);
-    const restored = await workspace.restore(await loadWorkspace(run).catch(() => []));
+    const restored = await workspace.restore(await loadWorkspace(run)); // none saved is a new session; a saved one that cannot be read stops here, with the retry
     const filesMs = Math.round(performance.now() - t) - storeMs;
     const env = new FilesEnv(fs, "phone");
     const runtime = await startLocal({ storage: store.storage, model: PHONE_MODEL_ID, computer: { env, workspace }, persist: (changes) => applyChanges(run, changes), deferResume: true }); // resumed once the brain is ready (below)
@@ -1021,7 +1022,6 @@ async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> 
 }
 
 async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
-  let robotNow: string | undefined;
   const params = new URLSearchParams(location.search);
   const marks = state.phone!.marks;
   const engineLog = (level: string) => (...a: unknown[]) => { const line = a.map((x) => (x instanceof Error ? x.message : String(x))).join(" "); if (level !== "debug" || /buffer size|error|failed/i.test(line)) state.phone!.log.push(`${(performance.now() / 1000).toFixed(1)} s ${level} ${line.slice(0, 300)}`); };
@@ -1101,7 +1101,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   runtime.models.setProvider(brainProvider(model, brainModel(PHONE_MODEL_ID, "Qwen3.5-0.8B robot v3 (D1's fine-tune)", Number(params.get("ctx")) || 2048, 200), {
     ...DEFAULT_TOOL_DECODING, mode: "native", callTokens: Math.ceil((budget * 2) / 3), answerTokens: Math.floor(budget / 3), system: serving.system, refine, closing: params.get("closing") === "model" ? "model" : "tool-result",
     // D1's window T7: the earlier exchanges, the robot's state line, then the user's turn; ?window=task: the current task only (the model forgets earlier turns)
-    ...(params.get("window") === "task" ? {} : { window: "exchanges" as const, prepare: async () => { robotNow = await phoneStateLine(runtime); }, stateLine: () => robotNow, fits: (m: ToolChatMessage[], t: ToolChatTool[]) => model.fits(m, t) }),
+    ...phoneWindow(params.get("window") === "task", { refresh: () => phoneStateLine(runtime), fits: (m: ToolChatMessage[], t: ToolChatTool[]) => model.fits(m, t) }),
   }));
   const byName = new Map(runtime.registry.snapshot().tools().map((r) => [r.tool.name, r.tool]));
   const tools = serving.tools.map((s) => byName.get(s.function.name)).filter((r): r is NonNullable<typeof r> => r !== undefined); // in the serving file's order
@@ -1132,7 +1132,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   // what a reload cut short (a turn in the middle of its model call or its tools) runs now, on the brain that just came up
   await runtime.harness.resume();
   phoneReport("ready", { ...marks, restored: warm.restored ? warm.restored.tokens : 0, compat: !("Suspending" in WebAssembly) || undefined, threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4), reads: partReads.count, largestRead: partReads.largest });
-  model.onTurn = (t) => phoneReport("turn", { ms: t.ms, promptNew: t.timings?.prompt_n ?? null, promptTotal: t.promptTokens, out: t.outputTokens, calls: t.calls.map((c) => c.split("(")[0]), text: t.text.slice(0, 160), raw: t.calls.length ? undefined : t.raw.slice(0, 160) });
+  model.onTurn = (t) => phoneReport("turn", turnReport(t, params.get("report") === "text")); // the reply's words only when the page was opened to send them
   // D1's lock rule: the prompt shows do with every skill (the warm state holds), the grammar only the skills home, and no do at all when none is
   model.lock = (shown) => shown.flatMap((t) => (t.function.name !== "do" ? [t] : phoneSkillsHome.length > 0 ? narrowEnum([t], "skill", phoneSkillsHome) : []));
   model.onTurnStart = () => { state.phone!.turnStarted = performance.now(); phoneReport("turn-start", {}); };

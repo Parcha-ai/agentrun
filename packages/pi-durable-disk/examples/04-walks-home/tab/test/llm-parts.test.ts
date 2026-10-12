@@ -126,6 +126,27 @@ test("the engine's reads come in pieces of at most 8 MiB, and a piece that fails
   assert.equal(flaky.reads[1], 8 << 20, 'read again from the reopened file');
 });
 
+test('a part the engine cannot read, even from a fresh handle, loses its check: the next load checks it again (and fetches it again when it is bad)', async () => {
+  const store = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+  try {
+    const s = setup();
+    const first = new FlakyBlob(s.p1), second = new FlakyBlob(s.p2);
+    s.cache.set(s.key(BASE), first);
+    s.cache.set(s.key(URL2), second);
+    await s.llm.loadUrl!(BASE, { threads: 1, parts: s.parts });
+    assert.equal(store.size, 2, 'both parts checked and remembered');
+    second.fail = 2; // the read and the read from a fresh handle both fail
+    await assert.rejects(s.log.loaded[1]!.slice(0, 100).arrayBuffer(), /reading robot-00002-of-00002.gguf/);
+    assert.equal(store.size, 1, "the unreadable part's check is forgotten");
+    const reads = second.reads.length;
+    await s.llm.loadUrl!(BASE, { threads: 1, parts: s.parts });
+    assert.ok(second.reads.length > reads, 'the next load checks it again');
+  } finally {
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
+});
+
 test('a restore registers the state like a model shard, runs llama-server\'s slot restore, and lets go of the page\'s copy', async () => {
   const s = setup();
   s.cache.set(s.key(BASE), new Blob([s.p1 as BlobPart]));

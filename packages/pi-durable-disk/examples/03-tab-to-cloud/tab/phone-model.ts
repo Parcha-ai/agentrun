@@ -23,6 +23,25 @@ export function buildOrder(o: { webkit: boolean; jspi: boolean; jspi32Served: bo
   return [...(o.jspi && o.jspi32Served ? ["jspi32" as const] : []), ...(o.webkit || o.noMemory64 ? [] : ["default" as const]), "asyncify"];
 }
 
+/**
+ * What a turn's report says (the page's beacon, read in its server's log): its time, tokens and the tools it called; the reply's words only with `withText`
+ * (?report=text, the page's own switch): a reply can repeat what the user said, and the conversation stays on the phone.
+ */
+export function turnReport(t: PhoneTurn, withText: boolean): Record<string, unknown> {
+  return { ms: t.ms, promptNew: t.timings?.prompt_n ?? null, promptTotal: t.promptTokens, out: t.outputTokens, calls: t.calls.map((c) => c.split("(")[0]), ...(withText ? { text: t.text.slice(0, 160), raw: t.calls.length ? undefined : t.raw.slice(0, 160) } : {}) };
+}
+
+/**
+ * The phone's window hooks for the provider. `prepare` reads the robot before every turn in either window: the state line, and with it the skills home that
+ * the lock narrows `do` to (a window that skipped it would lock every skill out). The exchanges window (D1's T7) also shows the state line and drops the
+ * oldest exchange while `fits` says no; the task window (?window=task) shows the current task only.
+ */
+export function phoneWindow(task: boolean, o: { refresh: () => Promise<string | undefined>; fits: (messages: ToolChatMessage[], tools: ToolChatTool[]) => boolean }) {
+  let line: string | undefined;
+  const prepare = async () => { line = await o.refresh(); };
+  return task ? { prepare } : { prepare, window: "exchanges" as const, stateLine: () => line, fits: o.fits };
+}
+
 /** Greedy: a tool call is an answer, not a sample (D1's evaluation decodes at temperature 0). */
 const GREEDY: Sampling = { ...DEFAULT_SAMPLING, temperature: 0 };
 
@@ -35,6 +54,8 @@ export class PhoneModel implements BrainModel {
   onTurn: ((turn: PhoneTurn) => void) | undefined;
   /** The model's bytes as the engine reported them at load (its parts together): what a warm state is checked against. */
   loadedBytes = 0;
+  /** Each part's sha256, from the manifest the parts were checked against at load: the weights a warm state must have been made with. */
+  private partShas: (string | undefined)[] | undefined;
   /** The warm-up's prompt (the system turn: the system prompt and the tools): every turn's prompt starts with it. */
   warmPrompt: string | undefined;
   /** Its length in tokens, as the engine counted it. */
@@ -98,6 +119,7 @@ export class PhoneModel implements BrainModel {
     } catch { /* offline: the copy kept from an earlier load, below */ }
     if (!parts) { try { const kept = localStorage.getItem(`parts:${manifestUrl}`); if (kept) parts = JSON.parse(kept) as typeof parts; } catch { /* no storage */ } }
     if (!parts) onStatus?.("no parts manifest: the cached parts are used unchecked");
+    this.partShas = parts?.map((p) => p.sha256);
     // one conversation, one sequence: the warm state is slot 0's
     return this.llm.loadUrl!(url, { threads, nCtx, batch, slots: 1, ...(parts ? { parts } : {}), ...(onStatus ? { onStatus } : {}), ...(loadTimeoutMs ? { loadTimeoutMs } : {}), onProgress: (loaded, total) => { this.loadedBytes = total || loaded; onProgress?.(loaded, total); } });
   }
@@ -122,9 +144,14 @@ export class PhoneModel implements BrainModel {
       const started = performance.now();
       try {
         // the sidecar says which model and which prefix the state holds: other weights, other tools, another prompt or template are not restored
-        const side = (await (await fetch(`${state.url}.json`)).json()) as { prefixSha256?: string; model?: { first?: string; bytes?: number } };
+        const side = (await (await fetch(`${state.url}.json`)).json()) as { prefixSha256?: string; model?: { first?: string; bytes?: number; parts?: unknown } };
         const first = new URL(this.o.url).pathname.split("/").pop();
         if (side.model?.first !== first || side.model?.bytes !== this.loadedBytes) throw new Error(`the state is for another model (${side.model?.first ?? "?"}, ${side.model?.bytes ?? "?"} bytes; loaded ${first}, ${this.loadedBytes} bytes)`);
+        // the same name and size is not the same weights (a fine-tune replaced in place keeps both): the parts' sha256, as the manifest the load checked them with
+        const made = Array.isArray(side.model.parts) ? (side.model.parts as unknown[]) : undefined;
+        if (!made) throw new Error("the state's sidecar names no part hashes: it cannot be matched to these weights");
+        if (!this.partShas || this.partShas.some((x) => !x)) throw new Error("no parts manifest with hashes: the state cannot be matched to these weights");
+        if (made.length !== this.partShas.length || made.some((x, i) => x !== this.partShas![i])) throw new Error("the state is for other weights (the parts' sha256 differ)");
         const sha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(prefix)))].map((b) => b.toString(16).padStart(2, "0")).join("");
         if (side.prefixSha256 !== sha) throw new Error(`the state is for another prefix (${String(side.prefixSha256).slice(0, 12)}, this one is ${sha.slice(0, 12)})`);
         const r = await fetch(state.url);

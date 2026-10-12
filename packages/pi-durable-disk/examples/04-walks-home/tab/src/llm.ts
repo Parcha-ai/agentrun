@@ -111,11 +111,14 @@ class SlicedBlob extends Blob {
   readonly name: string;
   private inner: Blob;
   private readonly reopen: () => Promise<Blob | null>;
-  constructor(inner: Blob, name: string, reopen: () => Promise<Blob | null>) {
+  private readonly unreadable: () => void;
+  /** `unreadable`: told when a piece cannot be read even from a fresh handle (the part's check is forgotten, so the next load checks it and fetches it again). */
+  constructor(inner: Blob, name: string, reopen: () => Promise<Blob | null>, unreadable: () => void = () => undefined) {
     super([]);
     this.inner = inner;
     this.name = name;
     this.reopen = reopen;
+    this.unreadable = unreadable;
   }
   override get size(): number { return this.inner.size; }
   override slice(start = 0, end = this.size): Blob {
@@ -138,6 +141,7 @@ class SlicedBlob extends Blob {
         const fresh = await this.reopen();
         if (fresh) { this.inner = fresh; return await fresh.slice(a, b).arrayBuffer(); }
       } catch { /* the cached file cannot be read again either */ }
+      this.unreadable();
       throw new Error(`reading ${this.name} bytes ${a}-${b} failed: ${first instanceof Error ? `${first.name}: ${first.message}` : String(first)}`);
     }
   }
@@ -178,7 +182,8 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         for (const [i, u] of urls.entries()) {
           const blob = await verifiedPart(next, u, parts?.[i], { onStatus: onStatus ?? (() => undefined), onProgress: (loaded) => onProgress?.(base + loaded, total) });
           base += blob.size;
-          blobs.push(new SlicedBlob(blob, u.split('/').pop()!, async () => next.cacheManager.open(await next.cacheManager.getNameFromURL(u))));
+          const key = await next.cacheManager.getNameFromURL(u);
+          blobs.push(new SlicedBlob(blob, u.split('/').pop()!, async () => next.cacheManager.open(key), () => { try { localStorage.removeItem(`${VERIFIED}${key}`); } catch { /* no storage: it is checked every load */ } }));
         }
         onProgress?.(base, total || base);
         // the engine's load, apart from the download: a build that stalls in it (Safari 27 took wllama's memory64 build, which never finished loading) fails here, by

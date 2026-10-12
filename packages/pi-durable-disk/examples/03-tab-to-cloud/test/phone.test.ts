@@ -160,27 +160,86 @@ test("the warm-up reads the prefix every turn shares, the system turn, and gener
 
 test("a saved state is restored only for the model and the prefix it was made for; anything else prefills", async () => {
   const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", state = "https://p.example/m/robot-v3.state.bin";
-  const side = async (over: object = {}) => JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056 }, prefixSha256: await sha(PREFIX), ...over });
-  const run = async (sidecar: string) => {
+  const shas = ["a".repeat(64), "b".repeat(64)];
+  const manifest = JSON.stringify({ parts: shas.map((sha256, i) => ({ name: `robot-v3-0000${i + 1}-of-00007.gguf`, bytes: 1, sha256 })) });
+  const side = async (over: object = {}) => JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: shas }, prefixSha256: await sha(PREFIX), ...over });
+  const run = async (sidecar: string, parts: string | null = manifest) => {
     const { llm, calls } = fakeLlm({ restore: async (b) => ({ tokens: 1255, bytes: b.size }) });
     const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
     const skipped: string[] = [];
-    const warm = await withFetch({ [`${state}.json`]: sidecar, [state]: new Uint8Array(64) }, async () => { await model.load(); return model.warm(serving.system, serving.tools, { url: state, onSkip: (why) => skipped.push(why) }); });
+    const warm = await withFetch({ [`${state}.json`]: sidecar, [state]: new Uint8Array(64), ...(parts ? { "https://p.example/m/robot-v3.parts.json": parts } : {}) }, async () => { await model.load(); return model.warm(serving.system, serving.tools, { url: state, onSkip: (why) => skipped.push(why) }); });
     return { warm, calls, skipped };
   };
   const ok = await run(await side());
   assert.equal(ok.calls.restored, 1);
   assert.equal(ok.calls.complete.length, 0, "restored: nothing prefilled");
   assert.equal(ok.warm.restored?.tokens, 1255);
-  const otherModel = await run(await side({ model: { first: "robot-v1-00001-of-00007.gguf", bytes: 501453056 } }));
+  const otherWeights = await run(await side({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: [shas[0], "c".repeat(64)] } }));
+  assert.equal(otherWeights.calls.restored, 0, "the same name and size, other weights (a fine-tune replaced in place)");
+  assert.match(otherWeights.skipped[0]!, /other weights/);
+  const unnamed = await run(await side({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056 } }));
+  assert.equal(unnamed.calls.restored, 0, "a sidecar that names no part hashes cannot be matched");
+  assert.match(unnamed.skipped[0]!, /names no part hashes/);
+  const unchecked = await run(await side(), null);
+  assert.equal(unchecked.calls.restored, 0, "no manifest to match the weights with");
+  assert.match(unchecked.skipped[0]!, /no parts manifest/);
+  const otherModel = await run(await side({ model: { first: "robot-v1-00001-of-00007.gguf", bytes: 501453056, parts: shas } }));
   assert.equal(otherModel.calls.restored, 0);
   assert.match(otherModel.skipped[0]!, /another model/);
   assert.equal(otherModel.calls.complete[0]!.prompt, PREFIX, "prefilled instead");
   const otherPrefix = await run(await side({ prefixSha256: "0".repeat(64) }));
   assert.equal(otherPrefix.calls.restored, 0);
   assert.match(otherPrefix.skipped[0]!, /another prefix/);
-  const otherBytes = await run(await side({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 1 } }));
+  const otherBytes = await run(await side({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 1, parts: shas } }));
   assert.equal(otherBytes.calls.restored, 0, "the same name with other bytes is another model");
+});
+
+test("a turn's report carries its time, tokens and tools; the reply's words only when the page was opened to send them (?report=text)", async () => {
+  const { turnReport } = await import("../tab/phone-model.ts");
+  const t = { at: 0, ms: 900, promptTokens: 65, outputTokens: 7, grammar: true, calls: [], text: "Your address is on the robot now.", raw: "Your address is on the robot now.", prompt: "", timings: { prompt_n: 65 } };
+  const plain = turnReport(t, false);
+  assert.deepEqual(plain, { ms: 900, promptNew: 65, promptTotal: 65, out: 7, calls: [] });
+  assert.doesNotMatch(JSON.stringify(plain), /address/, "nothing of the conversation leaves the phone");
+  assert.equal(turnReport(t, true).text, "Your address is on the robot now.");
+  assert.deepEqual(turnReport({ ...t, calls: ['set_color({"part":"all"})'] }, false).calls, ["set_color"], "tool names, not their arguments");
+});
+
+test("both windows read the robot before every turn, so the lock knows the skills home; only the exchanges window shows the state line", async () => {
+  const { phoneWindow } = await import("../tab/phone-model.ts");
+  let reads = 0;
+  const refresh = async () => { reads++; return `[Robot now: ${reads}]`; };
+  const task = phoneWindow(true, { refresh, fits: () => true }) as Record<string, unknown>;
+  await (task.prepare as () => Promise<void>)();
+  assert.equal(reads, 1, "?window=task still reads the robot (and its skills home) before a turn");
+  assert.equal(task.window, undefined);
+  assert.equal(task.stateLine, undefined, "the task window shows no state line");
+  const exchanges = phoneWindow(false, { refresh, fits: () => true });
+  await exchanges.prepare();
+  assert.equal(exchanges.window, "exchanges");
+  assert.equal((exchanges as { stateLine: () => string }).stateLine(), "[Robot now: 2]");
+});
+
+test("a saved workspace that cannot be read is an error, never an empty one; only none saved starts empty", async () => {
+  const { loadWorkspace } = await import("../tab/workspace-store.ts");
+  const nav = globalThis.navigator as unknown as Record<string, unknown>;
+  const had = Object.getOwnPropertyDescriptor(nav, "storage");
+  const named = (name: string) => Object.assign(new Error(name), { name });
+  const dir = (entries: [string, unknown][]) => ({ kind: "directory", getDirectoryHandle: async () => dir([]), entries: async function* () { yield* entries; } });
+  const file = (read: () => Promise<ArrayBuffer>) => ({ kind: "file", getFile: async () => ({ lastModified: 1, arrayBuffer: read }) });
+  const root = (work: unknown) => ({ getDirectoryHandle: async () => ({ getDirectoryHandle: async () => { if (work instanceof Error) throw work; return work; } }) });
+  const use = (r: unknown) => Object.defineProperty(nav, "storage", { configurable: true, value: { getDirectory: async () => r } });
+  try {
+    use(root(named("NotFoundError")));
+    assert.deepEqual(await loadWorkspace("phone"), [], "none saved: a new session");
+    use(root(dir([["robot.json", file(async () => new TextEncoder().encode("{}").buffer as ArrayBuffer)]])));
+    assert.equal((await loadWorkspace("phone")).length, 1);
+    use(root(dir([["robot.json", file(async () => { throw named("NotReadableError"); })]])));
+    await assert.rejects(loadWorkspace("phone"), /NotReadableError/, "a saved robot that cannot be read stops the start");
+    use(root(named("SecurityError")));
+    await assert.rejects(loadWorkspace("phone"), /SecurityError/, "storage refused is not an empty workspace");
+  } finally {
+    if (had) Object.defineProperty(nav, "storage", had); else delete nav.storage;
+  }
 });
 
 test("the phone model passes the parts' manifest to the load, and the tools as the provider sends them", async () => {
