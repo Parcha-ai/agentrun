@@ -1,0 +1,19 @@
+{
+ "name": "rear-up",
+ "hypothesis": "rear up: hold the nose 40 degrees up on the hind legs, in place",
+ "env": {
+  "command_range": [
+   0.0,
+   0.0
+  ],
+  "command_zero_prob": 1.0,
+  "reward_config.pitch_target": 0.7
+ },
+ "reward_scales": {
+  "base_height": 0.0,
+  "stand_still": 0.0,
+  "pose": 0.0,
+  "orientation": -5.0,
+  "tracking_lin_vel": 0.5
+ }
+}
