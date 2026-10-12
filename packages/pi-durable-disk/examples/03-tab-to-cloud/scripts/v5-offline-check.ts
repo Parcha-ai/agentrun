@@ -1,6 +1,7 @@
 // The offline beat, in real Chrome with the REAL v5 files: the laptop's agent page keeps the robot's brain (v5, the 16-tag prompt) in the browser while it is online,
 // "Take it offline" checks the run out with nothing left to download, the network is cut, and the robot answers on the model in the page: a colour, a face, a name, a
 // state question, a skill that is home, and a body edit (refused, the body is code). Nothing is scripted but the questions; the answers are the model's.
+//   CLEARCACHE=1 opens the page with ?clearcache=1: the cache is cleared once, before the brain is kept, and the offline load still finds it.
 //   MODELS=<folder with the /models/ files> [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] [TURNS=...] node scripts/v5-offline-check.ts
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
@@ -53,7 +54,7 @@ const say = async (text: string) => {
 };
 const robotJson = async () => JSON.parse((await ev<{ output?: string }>(`demo.exec("cat creature/robot.json")`)).output ?? "{}") as { name?: string; look?: { face?: string; tags?: Record<string, string | null>; torso?: string } };
 try {
-  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1#"));
+  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", `?robot=1${process.env.CLEARCACHE === "1" ? "&clearcache=1" : ""}#`));
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   await page.until(`!!document.getElementById("creature").contentWindow.__walks`, 60_000, 300);
   // 1. online: the brain is kept in this browser (no engine started)
@@ -64,6 +65,7 @@ try {
   ok("it is in the browser's file system: more than the model's 501 MB", opfs > 500_000_000, opfs);
   // 2. take it offline: only a check-out, no download of the model
   const before = await ev<number>(`performance.getEntriesByType("resource").filter((r) => /\.gguf$|state\.bin$/.test(r.name)).length`);
+  ok("the \"Take it offline\" button is on the page for a person to press (not hidden, and a size)", await ev<boolean>(`(() => { const b = document.getElementById("offline"); return !b.hidden && b.getBoundingClientRect().width > 0; })()`));
   await ev("document.getElementById('offline').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 500);
   ok("the run was checked out to the browser", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
@@ -94,6 +96,21 @@ try {
     ok(wording[i]!, pass, got);
   }
   await page.screenshot(join(shots, "v5-2-offline-turns.png"));
+  // a turn the reload cuts short: it was in the middle of its model call when the page went. After the reload the brain loads from the cache (still offline), and only then does the turn resume: on the model
+  // (a resume before the provider exists runs it with no model, and the turn is lost).
+  if (turns >= 6) {
+    await ev(`(() => { const i = document.getElementById("input"); i.value = "paint its torso blue"; document.getElementById("send").click(); return true; })()`);
+    await sleep(7000);
+    await page.send("Page.reload");
+    await sleep(1500);
+    await page.until("globalThis.demo && demo.state.mode === 'offline'", 300_000, 500);
+    await page.until("demo.v5().ready || /did not load/.test(demo.state.banner)", 600_000, 1000);
+    await page.until(`demo.items().some((i) => i.kind === "tool" && i.name === "set_color" && /torso/.test(JSON.stringify(i.args ?? "") + (i.output ?? "")))`, 240_000, 1000).catch(() => undefined);
+    const after = await ev<Item[]>("demo.items()");
+    const r = await robotJson();
+    ok("offline reload: the brain loads again from the cache and the turn the reload cut short resumes on it (the torso is blue)", r.look?.tags?.torso === "blue", { tags: r.look?.tags, items: after.slice(-4), banner: await ev("demo.state.banner") });
+    await page.screenshot(join(shots, "v5-3-offline-reload.png"));
+  }
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);
 } catch (error) {

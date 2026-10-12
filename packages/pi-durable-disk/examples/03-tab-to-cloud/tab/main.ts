@@ -484,7 +484,7 @@ function render(): void {
   // A fallback, not the switch: take the run from the cloud now, fencing it mid-step.
   $("takeover").hidden = !(state.mode === "viewer" && state.placement?.where === "cloud" && !state.switching);
   // "Take it offline": while this tab runs the agent and the trained model is its brain, and nothing is moving.
-  const canTakeOffline = writer && (swapped || new URLSearchParams(location.search).get("brain") === "off") && !state.switching && !state.checkout;
+  const canTakeOffline = writer && (swapped || v5Offline || new URLSearchParams(location.search).get("brain") === "off") && !state.switching && !state.checkout; // v5: the model is kept in this browser, it is not a trained one that has come home
   $("offline").hidden = !canTakeOffline;
   $("offline-status").textContent = state.checkout?.text ?? "";
   renderNet();
@@ -1001,7 +1001,15 @@ function prefetchV5(say?: (text: string) => void): Promise<void> {
     const urls = v5Urls(new URLSearchParams(location.search));
     if (!(await served(v5SmallFiles(urls)[0]!))) { v5.prefetch = "unavailable"; throw new Error(`this page's server does not serve the robot's brain (${new URL(urls.modelUrl).pathname.replace(/-00001-of-\d{5}\.gguf$/, "")}): start it with --models-dir`); }
     v5.prefetch = "running";
-    const model = new PhoneModel(wllamaForPrefetch(new URL("/vendor/wllama.wasm", location.origin).href), {
+    const llm = wllamaForPrefetch(new URL("/vendor/wllama.wasm", location.origin).href);
+    // ?clearcache=1 is asked here, before the files are kept, and taken off the address: the brain loaded after the handover must not clear what the checkout just saved
+    const params = new URLSearchParams(location.search);
+    if (params.get("clearcache") === "1") {
+      await llm.clearCache?.();
+      const u = new URL(location.href); u.searchParams.delete("clearcache"); history.replaceState(null, "", u);
+      v5.log.push("model cache cleared before it was kept");
+    }
+    const model = new PhoneModel(llm, {
       url: urls.modelUrl, threads: 1, nCtx: 2048, batch: 128, maxTokens: 300,
       onProgress: (loaded, total) => tell(`keeping the robot's brain in this browser: ${Math.round(loaded / 1e6)} of ${Math.round(total / 1e6)} MB`),
       onStatus: (text) => tell(`keeping the robot's brain in this browser: ${text}`),
@@ -1105,7 +1113,7 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
     }
     computerStatus.ms = Math.round(performance.now() - started);
     computerStatus.parts = marks;
-    const runtime = await startLocal({ storage: store.storage, model: record.model, robotCode: robotCodeOn, host: { offlineChannel }, ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
+    const runtime = await startLocal({ storage: store.storage, model: record.model, robotCode: robotCodeOn, host: { offlineChannel }, ...(v5Offline && new URLSearchParams(location.search).get("brain") !== "off" ? { deferResume: true } : {}), /* resumed by startV5Brain once its provider exists */ ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
     state.offline = { record, store, computer: computerStatus };
     state.runtime = runtime;
     state.environments = [];
