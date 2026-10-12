@@ -1,5 +1,6 @@
 import { types as utilTypes } from 'node:util';
 import { JevError, isJevResponseReason } from '@parcha/agentrun-jev';
+import { RecoveryError } from '@parcha/agentrun-dsl/recovery';
 import { PiRunError } from './run-error.js';
 import { ToolInputValidationError } from './tool-input-error.js';
 import {
@@ -123,7 +124,17 @@ async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>): P
     throw error;
   }
 }
+/** The code of the first RecoveryError in an error's cause chain. */
+function recoveryCode(error: unknown): string | undefined {
+  for (let current = error, depth = 0; current && depth < 16; current = (current as { cause?: unknown }).cause, depth += 1) {
+    if (current instanceof RecoveryError) return current.code;
+  }
+  return undefined;
+}
+
 function localDiagnostic(error: unknown): ExtensionRunReport['error'] {
+  if (recoveryCode(error) === 'FROZEN_EFFECT_UNKNOWN') return { code: 'FROZEN_EFFECT_UNKNOWN',
+    message: 'A tool call of this run has no recorded outcome. It is not repeated. Find out whether it happened, then start a new run (change the input) or reconcile it in the run journal.' };
   if (error instanceof AggregateError) return error.errors.slice(0, 100).map(localDiagnostic).find(Boolean);
   if (error instanceof AdapterDiagnosticError) return error.diagnostic;
   if (error instanceof ToolInputValidationError) return {
@@ -392,6 +403,7 @@ export class WorkflowExtensionService {
       ...(options.deps.skill ? { skill: options.deps.skill } : {}),
       ...(sections.length ? { sop: sections.map(([name, text]) => `## ${name}\n${text}`).join('\n\n') } : options.deps.sop ? { sop: options.deps.sop } : {}),
       // Forward any set limit, so the interpreter rejects an invalid one rather than running without it.
+      ...(options.deps.recovery ? { recovery: options.deps.recovery } : {}),
       ...(options.deps.maxQuestionsPerRequest !== undefined ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
       ...(options.deps.maxStateBytesPerRequest !== undefined ? { maxStateBytesPerRequest: options.deps.maxStateBytesPerRequest } : {}),
       ...(options.deps.runNode ? { runNode: params => dispatch('agent', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runNode!({ ...params, tools: params.tools ?? [...this.allowedTools] })), true) } : {}),
