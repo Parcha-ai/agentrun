@@ -354,6 +354,7 @@ async function applyRobot(text: string) {
     await buildCreature(robot.design, true, { borrow: true, robot: true });
   }
   if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
+  else if (!robot.skill && skills && skillNow !== null && skillNow !== skills.default) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
 }
 
