@@ -20,10 +20,10 @@ import { WorkflowExtensionService, ExtensionServiceError, extensionStructuralLim
 import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './demo.js';
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import { fileStore, openRecovery, withRecovery, type RecoveryDriver } from '@parcha/agentrun-dsl/recovery';
+import { RecoveryError, fileStore, openRecovery, withRecovery, type JournalRecord, type RecoveryDriver } from '@parcha/agentrun-dsl/recovery';
 import { readSopFile, missingSopSections, sopDigest, type SopText } from './sop.js';
 import { WorkflowStore, WorkflowStoreError } from './workflow-store.js';
 import { WorkflowObservation, workflowView, formatWorkflowView, progressLines, readable, type RunObservation } from './workflow-view.js';
@@ -343,12 +343,18 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       // anything else starts a new run.
       const runRoot = join(ctx.cwd, '.pi', 'agentrun', 'runs');
       const resumable = !scripted && s.runId !== undefined && ['interrupted', 'failed'].includes(s.report?.status ?? '') && existsSync(join(runRoot, s.runId));
-      const runId = resumable ? s.runId! : randomUUID();
+      let runId = resumable ? s.runId! : randomUUID();
       if (!scripted) {
         await mkdir(runRoot, { recursive: true });
+        const bind = { input: s.input, tools: [...s.toolNames].sort(), ...(sop ? { sop: sop.sha256 } : {}) };
+        const open = (id: string) => openRecovery(fileStore(join(runRoot, id)), s.draft as Workflow, { key: id, view: prepared.workflow as Workflow, bind });
         try {
-          driver = await openRecovery(fileStore(join(runRoot, runId)), s.draft as Workflow, { key: runId, view: prepared.workflow as Workflow,
-            bind: { input: s.input, tools: [...s.toolNames].sort(), ...(sop ? { sop: sop.sha256 } : {}) } });
+          try { driver = await open(runId); }
+          catch (error) {
+            // A run bound to other input, SOP text or tools is a different run: it starts anew, and the old journal stays.
+            if (!resumable || !(error instanceof RecoveryError) || error.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
+            runId = randomUUID(); driver = await open(runId);
+          }
         } catch (error) {
           throw new Error(`Cannot ${resumable ? 'resume' : 'start'} run ${runId}: ${error instanceof Error ? error.message : 'recovery store refused'}`);
         }
@@ -371,6 +377,13 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           else options.update?.(textResult(`${label}\n\n${progress.join('\n')}`));
         },
       });
+      if (driver && report.error?.code === 'FROZEN_EFFECT_UNKNOWN') {
+        // The journal names what the driver refused to repeat. Read it once the driver has let go of it.
+        await driver.close().catch(() => {});
+        const journal = await readFile(join(runRoot, runId, 'journal.json'), 'utf8').then(text => JSON.parse(text) as JournalRecord, () => undefined);
+        const unknown = (journal?.effects ?? []).filter(effect => effect.status === 'unknown').slice(0, 100);
+        if (unknown.length) report.uncertainEffects = unknown.map(effect => ({ idempotencyKey: effect.id, outcome: 'unknown' as const }));
+      }
       s.report = report;
       persist(s);
       const summary = formatRunReport(report, scripted);

@@ -10,7 +10,7 @@ const branch = existsSync(branchFile) ? JSON.parse(readFileSync(branchFile, 'utf
 const tool = name => ({
   name, label: name, description: `Ledgered ${name}.`,
   parameters: { type: 'object', required: ['query'], additionalProperties: false, properties: { query: { type: 'string' } } },
-  async execute() { appendFileSync(ledger, `${name}\n`); return { content: [{ type: 'text', text: name }], details: { name } }; },
+  async execute() { appendFileSync(ledger, `${name}\n`); if (hang === 'tool' && name === 'second') { writeFileSync(join(cwd, 'armed'), ''); await new Promise(() => {}); } return { content: [{ type: 'text', text: name }], details: { name } }; },
 });
 const commands = new Map(), tools = new Map(), events = new Map(), messages = [];
 const pi = {
@@ -32,7 +32,7 @@ const ctx = { cwd, model: undefined, thinkingLevel: 'low', signal: new AbortCont
   ui: { setStatus() {}, setWidget() {}, custom: async () => undefined }, modelRegistry: { getAll: () => [], streamSimple() { throw new Error('no model'); } } };
 await events.get('session_start')?.({}, ctx);
 if (!branch.length) await tools.get('agentrun').execute('inspect', { action: 'inspect', workflow: JSON.parse(readFileSync(join(cwd, 'workflow.json'), 'utf8')), input: {} }, undefined, undefined, ctx);
-await commands.get('agentrun').handler(command, ctx);
+for (const one of command.split(';;')) await commands.get('agentrun').handler(one, ctx);
 const last = messages.at(-1);
-console.log(JSON.stringify({ status: last?.details?.status, output: last?.details?.output, error: last?.details?.error, content: last?.content?.slice(0, 300) }));
+console.log(JSON.stringify({ status: last?.details?.status, output: last?.details?.output, error: last?.details?.error, uncertain: last?.details?.uncertainEffects, content: last?.content?.slice(0, 300) }));
 process.exit(0);
