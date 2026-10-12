@@ -6,7 +6,7 @@ import { GpuPool, type PoolBox } from "../gpu-pool.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function world(size: number, opts: { createMs?: (i: number) => number; fail?: (i: number) => boolean; removeFails?: (id: string, attempt: number) => boolean; closeWaitMs?: number } = {}) {
+function world(size: number, opts: { dead?: Set<string>; createMs?: (i: number) => number; fail?: (i: number) => boolean; removeFails?: (id: string, attempt: number) => boolean; closeWaitMs?: number } = {}) {
   const removed: string[] = [];
   const attempts = new Map<string, number>();
   const created: PoolBox[] = [];
@@ -14,6 +14,8 @@ function world(size: number, opts: { createMs?: (i: number) => number; fail?: (i
   const pool = new GpuPool({
     size,
     log: (event, data = {}) => void logs.push({ event, data }),
+    alive: async (box) => !(opts.dead?.has(box.id)),
+    watchMs: 0,
     ...(opts.closeWaitMs ? { closeWaitMs: opts.closeWaitMs } : {}),
     create: async (index) => {
       await sleep(opts.createMs?.(index) ?? 5);
@@ -166,5 +168,46 @@ describe("the GPU pool: one thread, one box", () => {
     await starting;
     assert.deepEqual(w.removed, ["sb-0"], "removed on the third try");
     assert.ok(!w.logs.some((l) => l.event === "pool.late-box-left"));
+  });
+});
+
+describe("the GPU pool: boxes that ended", () => {
+  it("a box that ended while a thread held it is not handed to the next thread; the waiter gets the surviving box", async () => {
+    const dead = new Set<string>();
+    const w = world(2, { dead });
+    await w.pool.start();
+    const a = await w.pool.acquire("a");
+    await w.pool.acquire("b");
+    const waiting = w.pool.acquire("c"); // both busy: c waits
+    dead.add(a.id); // a's box ended (its TTL)
+    w.pool.release("a"); // the thread lets go of a box that is already gone
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(w.pool.status().boxes.find((b) => b.id === a.id)?.state, "failed", "the ended box is dead, not ready");
+    w.pool.release("b");
+    const got = await waiting;
+    assert.notEqual(got.id, a.id, "c did not get the dead box");
+    assert.ok(w.logs.some((l) => l.event === "pool.box-dead"));
+    await w.pool.close();
+  });
+
+  it("when every box ended, waiting threads fail with a clear error instead of waiting for ever", async () => {
+    const w = world(1);
+    await w.pool.start();
+    const a = await w.pool.acquire("a");
+    const waiting = w.pool.acquire("b");
+    w.pool.markDead(a.id, "exit 137"); // the server's poll saw it end
+    await assert.rejects(waiting, /every GPU box ended/);
+    await w.pool.close();
+  });
+
+  it("markDead is idempotent and ignores a box it does not know", async () => {
+    const w = world(1);
+    await w.pool.start();
+    const a = await w.pool.acquire("a");
+    w.pool.markDead(a.id, "x");
+    w.pool.markDead(a.id, "x");
+    w.pool.markDead("nope", "x");
+    assert.equal(w.logs.filter((l) => l.event === "pool.box-dead").length, 1);
+    await w.pool.close();
   });
 });

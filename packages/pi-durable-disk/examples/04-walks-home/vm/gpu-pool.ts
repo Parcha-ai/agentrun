@@ -35,9 +35,13 @@ export interface GpuPoolOptions {
   readonly closeWaitMs?: number;
   /** Called with the status after every change, for the stage's pool card. */
   readonly onChange?: (status: PoolStatus) => void;
+  /** Whether a box still lives (its sandbox has not ended: TTL, preemption, death). Checked before a released box is handed out again and every `watchMs`. */
+  readonly alive?: (box: PoolBox) => Promise<boolean>;
+  /** How often the live boxes are checked with `alive` (default 20 s; 0: never). */
+  readonly watchMs?: number;
 }
 
-type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void> };
+type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean };
 type Waiter = { thread: string; promise: Promise<PoolBox>; resolve: (box: PoolBox) => void; reject: (error: Error) => void; onAbort?: () => void; signal?: AbortSignal };
 
 export class GpuPool {
@@ -47,6 +51,7 @@ export class GpuPool {
   readonly #abort = new AbortController();
   #closing = false;
   #started = false;
+  #watch: NodeJS.Timeout | undefined;
 
   constructor(options: GpuPoolOptions) {
     if (!Number.isInteger(options.size) || options.size < 1) throw new Error("the pool needs at least one box");
@@ -67,6 +72,11 @@ export class GpuPool {
     if (this.#started) throw new Error("the pool was already started");
     this.#started = true;
     for (const slot of this.#slots) slot.creating = this.#create(slot);
+    const every = this.#options.watchMs ?? 20_000;
+    if (this.#options.alive && every > 0) {
+      this.#watch = setInterval(() => void this.#verifyAll(), every);
+      this.#watch.unref();
+    }
     await Promise.all(this.#slots.map((s) => s.creating));
   }
 
@@ -135,12 +145,45 @@ export class GpuPool {
     delete slot.thread;
     if (slot.state === "busy") slot.state = "ready";
     this.#changed();
+    if (this.#options.alive) {
+      // A box that ended while a thread held it is not handed to the next one: it is checked first.
+      slot.checking = true;
+      void this.#verify(slot).finally(() => {
+        slot.checking = false;
+        this.#serve();
+      });
+      return;
+    }
     this.#serve();
+  }
+
+  /** The box has ended (its sandbox is gone): it is never handed out again, and what is waiting for a box is told if none can come up any more. */
+  markDead(boxId: string, reason: string): void {
+    const slot = this.#slots.find((s) => s.box?.id === boxId);
+    if (!slot || slot.state === "failed" || slot.state === "removed") return;
+    slot.state = "failed";
+    slot.error = `the box ended: ${reason}`;
+    delete slot.thread;
+    this.#options.log("pool.box-dead", { index: slot.index, box: slot.box?.name, reason });
+    this.#changed();
+    void this.#remove(slot, true);
+    this.#failWaitersIfHopeless();
+  }
+
+  async #verify(slot: Slot): Promise<void> {
+    const alive = this.#options.alive;
+    if (!alive || !slot.box || (slot.state !== "ready" && slot.state !== "busy")) return;
+    const ok = await alive(slot.box).catch(() => true); // a check that itself fails says nothing: the box stays
+    if (!ok && (slot.state === "ready" || slot.state === "busy")) this.markDead(slot.box.id, "its sandbox is no longer running");
+  }
+
+  async #verifyAll(): Promise<void> {
+    await Promise.all(this.#slots.map((s) => this.#verify(s)));
   }
 
   #serve(): void {
     while (this.#waiting.length > 0) {
-      const slot = this.#slots.find((s) => s.state === "ready");
+      const slot = this.#slots.find((s) => s.state === "ready" && !s.checking);
       if (!slot) return;
       const waiter = this.#waiting.shift()!;
       if (waiter.onAbort) waiter.signal?.removeEventListener("abort", waiter.onAbort);
@@ -157,18 +200,18 @@ export class GpuPool {
     if (this.#slots.some((s) => s.state === "creating" || s.state === "ready" || s.state === "busy")) return;
     for (const w of this.#waiting.splice(0)) {
       if (w.onAbort) w.signal?.removeEventListener("abort", w.onAbort);
-      w.reject(new Error("no GPU box came up"));
+      w.reject(new Error(this.#slots.some((s) => s.error?.startsWith("the box ended")) ? "every GPU box ended" : "no GPU box came up"));
     }
   }
 
-  async #remove(slot: Slot): Promise<boolean> {
+  async #remove(slot: Slot, keepState = false): Promise<boolean> {
     if (!slot.box) return true;
     const gone = await this.#options.remove(slot.box).catch((error: Error) => {
       this.#options.log("pool.remove-failed", { index: slot.index, error: error.message });
       return false;
     });
     if (gone) {
-      slot.state = "removed";
+      if (!keepState) slot.state = "removed";
       delete slot.thread;
     }
     this.#changed();
@@ -179,6 +222,7 @@ export class GpuPool {
   async close(): Promise<{ left: number }> {
     this.#closing = true;
     this.#abort.abort();
+    clearInterval(this.#watch);
     for (const w of this.#waiting.splice(0)) {
       if (w.onAbort) w.signal?.removeEventListener("abort", w.onAbort);
       w.reject(new Error("the pool is closing"));

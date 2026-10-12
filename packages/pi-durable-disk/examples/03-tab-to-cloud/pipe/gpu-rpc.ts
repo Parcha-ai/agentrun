@@ -34,8 +34,8 @@ export interface GpuProcess {
 
 /** What the server offers a VM. `box` ids are the server's own: the VM treats them as opaque. */
 export interface GpuServer {
-  /** A box for this thread (waits its turn). Rejects when none can come up or the server is closing. */
-  acquire(thread: string): Promise<string>;
+  /** A box for this thread (waits its turn). Rejects when none can come up or the server is closing; `signal` cancels the wait (the link that asked is gone). */
+  acquire(thread: string, signal?: AbortSignal): Promise<string>;
   release(thread: string): void;
   /** Whether a thread of this run holds the box: only then may it run commands there. */
   holds(box: string): boolean;
@@ -46,6 +46,8 @@ export interface GpuServer {
 }
 
 type Send = (frame: GpuFrame) => void;
+/** The most input a command may have held or in flight at once (a VM that writes faster than the box takes it, or before the command starts, cannot grow the server's memory without bound). */
+export const GPU_STDIN_MAX_BYTES = 16 * 1024 * 1024;
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 const unb64 = (text: string) => new Uint8Array(Buffer.from(text, "base64"));
 
@@ -55,20 +57,36 @@ const unb64 = (text: string) => new Uint8Array(Buffer.from(text, "base64"));
  */
 export function serveGpu(server: GpuServer, send: Send, log: (event: string, data?: Record<string, unknown>) => void = () => undefined): { handle(frame: GpuFrame): void; close(): void } {
   /** One command asked for: its stdin is held until the box has started it (the VM writes and closes without waiting for that). */
-  type Entry = { proc?: GpuProcess; held: (Uint8Array | null)[]; closed: boolean; writes: Promise<unknown> };
+  type Entry = { proc?: GpuProcess; held: (Uint8Array | null)[]; closed: boolean; writes: Promise<unknown>; queued: number };
+  /** Set when the link goes: waits for boxes end, and a box that is acquired after that is released at once. */
+  const gone = new AbortController();
   const running = new Map<number, Entry>();
   const fail = (id: number, error: unknown) => send({ t: "gpu-err", id, message: (error as Error)?.message ?? String(error) });
   const pump = async (id: number, stream: "stdout" | "stderr", source: AsyncIterable<Uint8Array>) => {
     for await (const chunk of source) send({ t: "gpu-data", id, stream, data: b64(chunk) });
   };
   /** Stdin in order: a chunk (or the end, null) goes to the command once it exists. */
-  const feed = (entry: Entry, item: Uint8Array | null) => {
+  const feed = (id: number, entry: Entry, item: Uint8Array | null) => {
+    const size = item?.length ?? 0;
+    if (entry.queued + size > GPU_STDIN_MAX_BYTES) {
+      // Past the bound the command is refused and ended: the VM is writing faster than the box takes it (or the command never started).
+      entry.closed = true;
+      running.delete(id);
+      if (entry.proc) stop(entry.proc);
+      log("gpu.stdin-too-large", { id, queued: entry.queued });
+      fail(id, new Error(`the command's input is over ${GPU_STDIN_MAX_BYTES} bytes at once`));
+      return;
+    }
+    entry.queued += size;
     if (!entry.proc) {
       entry.held.push(item);
       return;
     }
     const proc = entry.proc;
-    entry.writes = entry.writes.then(() => (item === null ? proc.stdin.close() : proc.stdin.writeBytes(item))).catch((e) => log("gpu.stdin-failed", { error: (e as Error).message }));
+    entry.writes = entry.writes
+      .then(() => (item === null ? proc.stdin.close() : proc.stdin.writeBytes(item)))
+      .catch((e) => log("gpu.stdin-failed", { error: (e as Error).message }))
+      .finally(() => void (entry.queued -= size));
   };
   const stop = (proc: GpuProcess) => {
     void proc.stdin.close().catch(() => undefined);
@@ -78,7 +96,17 @@ export function serveGpu(server: GpuServer, send: Send, log: (event: string, dat
     handle(frame) {
       switch (frame.t) {
         case "gpu-acquire":
-          server.acquire(frame.thread).then((box) => send({ t: "gpu-ok", id: frame.id, box }), (e) => fail(frame.id, e));
+          server.acquire(frame.thread, gone.signal).then(
+            (box) => {
+              // The link went while the thread waited: nobody will use this box, so it goes back at once.
+              if (gone.signal.aborted) {
+                server.release(frame.thread);
+                return;
+              }
+              send({ t: "gpu-ok", id: frame.id, box });
+            },
+            (e) => fail(frame.id, e),
+          );
           return;
         case "gpu-release":
           try {
@@ -95,7 +123,7 @@ export function serveGpu(server: GpuServer, send: Send, log: (event: string, dat
         case "gpu-exec": {
           if (!server.holds(frame.box)) return fail(frame.id, new Error("no thread of this run holds that box"));
           if (!Array.isArray(frame.argv) || frame.argv.length === 0 || !frame.argv.every((a) => typeof a === "string")) return fail(frame.id, new Error("argv is a non-empty list of strings"));
-          const entry: Entry = { held: [], closed: false, writes: Promise.resolve() };
+          const entry: Entry = { held: [], closed: false, writes: Promise.resolve(), queued: 0 };
           running.set(frame.id, entry);
           const started = Date.now();
           const what = frame.argv.slice(0, 4).join(" ").slice(0, 100);
@@ -109,7 +137,9 @@ export function serveGpu(server: GpuServer, send: Send, log: (event: string, dat
               }
               log("gpu.exec", { box: frame.box, id: frame.id, what, startedMs: Date.now() - started });
               entry.proc = proc;
-              for (const item of entry.held.splice(0)) feed(entry, item);
+              const heldItems = entry.held.splice(0);
+              entry.queued = 0;
+              for (const item of heldItems) feed(frame.id, entry, item);
               Promise.all([pump(frame.id, "stdout", proc.stdout), pump(frame.id, "stderr", proc.stderr)])
                 .then(() => proc.wait())
                 .then(
@@ -134,12 +164,12 @@ export function serveGpu(server: GpuServer, send: Send, log: (event: string, dat
         }
         case "gpu-stdin": {
           const entry = running.get(frame.id);
-          if (entry && !entry.closed) feed(entry, unb64(frame.data));
+          if (entry && !entry.closed) feed(frame.id, entry, unb64(frame.data));
           return;
         }
         case "gpu-stdin-end": {
           const entry = running.get(frame.id);
-          if (entry && !entry.closed) feed(entry, null);
+          if (entry && !entry.closed) feed(frame.id, entry, null);
           return;
         }
         default:
@@ -147,6 +177,7 @@ export function serveGpu(server: GpuServer, send: Send, log: (event: string, dat
       }
     },
     close() {
+      gone.abort();
       for (const entry of running.values()) {
         entry.closed = true;
         if (entry.proc) stop(entry.proc);

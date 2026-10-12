@@ -138,6 +138,8 @@ export interface ModalCloudOptions {
     readonly skills?: readonly string[];
     readonly readyTimeoutMs?: number;
     readonly placementTimeoutMs?: number;
+    /** How often the live boxes are checked for having ended (default 20 s; 0: never). */
+    readonly watchMs?: number;
     /** When the boxes start: "attach" (default: when the first page takes the run, so a server nobody opens costs nothing) or "now" (when this cloud is made). */
     readonly start?: "attach" | "now";
   };
@@ -283,6 +285,9 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
             return poolBox;
           },
           remove: async (box) => drop({ id: box.id, name: box.name }),
+          // A box whose sandbox has ended (its TTL, a preemption, a crash) is dead: never handed to another thread as ready.
+          alive: async (box) => (await (await sdk.sandboxes.fromId(box.id)).poll()) === null,
+          ...(options.cluster.watchMs !== undefined ? { watchMs: options.cluster.watchMs } : {}),
         })
       : undefined;
   const asIterable = (stream: unknown): AsyncIterable<Uint8Array> => {
@@ -326,7 +331,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       poll: async (box) => {
         if (!mine(box)) throw new Error("no thread of this run holds that box");
         const sb = await sdk.sandboxes.fromId(box);
-        return sb.poll();
+        const code = await sb.poll();
+        // It ended: the pool never hands it out again, and a thread waiting for a box is told if none is left.
+        if (code !== null) pool.markDead(box, `exit ${code}`);
+        return code;
       },
     };
   };

@@ -287,3 +287,20 @@ test("the cluster: a readiness answer that comes after the deadline is not accep
   assert.equal(w.boxes[0]!.exit, 137);
   reset();
 });
+
+test("the cluster: a box whose poll says it ended is dead for good: the pool never hands it out again", async () => {
+  reset();
+  const w = await world(() => false, undefined, { cluster: { size: 2, image: "im-cluster", start: "now", watchMs: 0 } });
+  await w.cloud.cluster!.start();
+  const g = w.cloud.cluster!.gpuFor("run-a");
+  const box = await g.acquire("t");
+  const sandbox = w.boxes.find((b) => b.sandboxId === box)!;
+  sandbox.exit = 137; // its TTL ran out
+  assert.equal(await g.poll(box), 137, "the thread is told how it ended");
+  assert.equal(w.cloud.cluster!.status().boxes.find((b) => b.id === box)?.state, "failed");
+  g.release("t");
+  const next = await w.cloud.cluster!.gpuFor("run-b").acquire("u");
+  assert.notEqual(next, box, "another thread never gets the dead box");
+  await w.cloud.close!();
+  reset();
+});

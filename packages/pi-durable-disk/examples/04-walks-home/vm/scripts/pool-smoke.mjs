@@ -27,15 +27,18 @@ try {
   client = createGpuClient((frame) => (queueMicrotask(() => serving.handle(frame)), true));
   const ready = cloud.cluster.status().boxes.filter((b) => b.state === "ready").length;
   if (ready < size) throw new Error(`only ${ready} of ${size} boxes came up`);
-  for (let i = 0; i < ready; i++) {
-    const box = await client.acquire(`smoke-${i}`);
-    const p = await client.linkBox(box).exec(["sh", "-c", arg("cmd", "nvidia-smi -L; echo; (train-skill --help 2>&1 | head -3) || true")], { mode: "binary", timeoutMs: 60_000 });
+  // Hold every box first (so each one is really exercised: a released box would be handed out again), then use them, then release them all.
+  const held = [];
+  for (let i = 0; i < ready; i++) held.push({ thread: `smoke-${i}`, box: await client.acquire(`smoke-${i}`) });
+  if (new Set(held.map((h) => h.box)).size !== held.length) throw new Error("two threads were given the same box");
+  for (const [i, h] of held.entries()) {
+    const p = await client.linkBox(h.box).exec(["sh", "-c", arg("cmd", "nvidia-smi -L; echo; (train-skill --help 2>&1 | head -3) || true")], { mode: "binary", timeoutMs: 60_000 });
     let out = "";
     for await (const c of p.stdout) out += new TextDecoder().decode(c);
     console.log(`${at()} box ${i} exit ${await p.wait()}: ${out.trim().replace(/\n+/g, " | ").slice(0, 240)}`);
-    console.log(`${at()} poll ${i}: ${await client.linkBox(box).poll()}`);
-    await client.release(`smoke-${i}`);
+    console.log(`${at()} poll ${i}: ${await client.linkBox(h.box).poll()}`);
   }
+  for (const h of held) await client.release(h.thread);
 } catch (error) {
   code = 1;
   console.log(`FAIL ${error.message}`);

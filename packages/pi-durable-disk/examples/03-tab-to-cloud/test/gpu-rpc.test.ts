@@ -1,7 +1,7 @@
 // The VM's calls to its GPU boxes over the link: a loopback between the client (the VM's end) and the server's handler, with a fake box.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createGpuClient, serveGpu, type GpuFrame, type GpuProcess, type GpuServer } from "../pipe/gpu-rpc.ts";
+import { createGpuClient, GPU_STDIN_MAX_BYTES, serveGpu, type GpuFrame, type GpuProcess, type GpuServer } from "../pipe/gpu-rpc.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -183,5 +183,65 @@ describe("the GPU calls over the link", () => {
     const server: GpuServer = { acquire: async () => "b", release: () => undefined, holds: () => true, exec: async () => proc(), poll: async () => null };
     const l = loop(server);
     await assert.rejects(l.client.linkBox("b").exec([], { mode: "binary" }).then((p) => p.wait()), /argv/);
+  });
+
+  it("input over the byte bound is refused, whether the command has started or not, and the command is ended", async () => {
+    const killed: string[] = [];
+    const written: number[] = [];
+    let start!: () => void;
+    const started = new Promise<void>((r) => (start = r));
+    const server: GpuServer = {
+      acquire: async () => "b",
+      release: () => undefined,
+      holds: () => true,
+      exec: async (_b, argv) => {
+        if (argv[0] === "slow-start") await started;
+        return proc({ stdin: { writeBytes: async (b) => void (written.push(b.length), await new Promise((r) => setTimeout(r, 200))), close: async () => undefined }, stdout: (async function* () { await new Promise(() => undefined); yield enc(""); })(), stderr: chunks([]), wait: () => new Promise(() => undefined), kill: async () => void killed.push(argv[0]!) });
+      },
+      poll: async () => null,
+    };
+    const { client } = loop(server);
+    // Before the command starts: held input past the bound is refused.
+    const a = await client.linkBox("b").exec(["slow-start"], { mode: "binary" });
+    const failed = a.wait().then(() => "exited", (e: Error) => e.message);
+    await a.stdin.writeBytes(new Uint8Array(GPU_STDIN_MAX_BYTES - 10));
+    await a.stdin.writeBytes(new Uint8Array(100));
+    assert.match(await failed, /over 16777216 bytes/);
+    start();
+    await new Promise((r) => setTimeout(r, 50));
+    // After it started: writes that pile up faster than the box takes them (each takes 200 ms here) are refused at the bound.
+    const b = await client.linkBox("b").exec(["running"], { mode: "binary" });
+    const failedB = b.wait().then(() => "exited", (e: Error) => e.message);
+    await new Promise((r) => setTimeout(r, 30));
+    for (let i = 0; i < 20; i++) await b.stdin.writeBytes(new Uint8Array(1024 * 1024));
+    assert.match(await failedB, /over 16777216 bytes/);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(killed.includes("running"), "the command that was overrun is ended");
+  });
+
+  it("when the link goes, a wait for a box is cancelled, and a box that arrives after the waiter is gone is released at once", async () => {
+    const released: string[] = [];
+    let cancelled = false;
+    let lateResolve!: (box: string) => void;
+    const server: GpuServer = {
+      acquire: (thread, signal) =>
+        thread === "late"
+          ? new Promise<string>((resolve) => (lateResolve = resolve))
+          : new Promise<string>((_, reject) => signal?.addEventListener("abort", () => ((cancelled = true), reject(new Error("the wait was cancelled"))), { once: true })),
+      release: (thread) => void released.push(thread),
+      holds: () => true,
+      exec: async () => proc(),
+      poll: async () => null,
+    };
+    const l = loop(server);
+    void l.client.acquire("waiting").catch(() => undefined);
+    void l.client.acquire("late").catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 30));
+    l.cut();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(cancelled, true, "the wait the link was in was cancelled");
+    lateResolve("box-7"); // the box was granted just as the link went
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(released, ["late"], "it goes straight back");
   });
 });
