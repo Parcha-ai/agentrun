@@ -114,9 +114,9 @@ async function putFile(box: RemoteBox, path: string, bytes: Uint8Array): Promise
   if (code !== 0) throw new Error(`writing ${path} on the box failed (${code})`);
 }
 
-/** A robot written as code is on the session's disk (both files). */
+/** A robot written as code is on the session's disk (its MJCF, which the trainer builds from). */
 export function hasCodeBody(work: string): boolean {
-  return existsSync(join(work, CODE_BODY_FILES.xml)) && existsSync(join(work, CODE_BODY_FILES.json));
+  return existsSync(join(work, CODE_BODY_FILES.xml));
 }
 
 /** The thread's training command: for the body the page runs (/workspace/robot on the box) when the robot is code, for the preset's robot.json otherwise. */
@@ -138,14 +138,14 @@ export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: str
         return undefined;
       });
       if (robot) await putFile(box, BOX_ROBOT_FILE, robot);
-      // A robot written as code: the body the page runs goes to the box as /workspace/robot/ (both files or neither).
+      // A robot written as code: the body the page runs goes to the box as /workspace/robot/. The MJCF is what the trainer builds from (it is required); the joint/tag file is for the thread to read (staged when present).
+      // Each file is looked for on its own and whichever is missing is said, so a half-built or damaged robot shows in the log.
       const xml = await readFile(join(work, CODE_BODY_FILES.xml)).catch(() => undefined);
-      const json = xml ? await readFile(join(work, CODE_BODY_FILES.json)).catch(() => undefined) : undefined;
-      if (xml && json) {
-        await putFile(box, `${BOX_BODY_DIR}/body.xml`, xml);
-        await putFile(box, `${BOX_BODY_DIR}/body.json`, json);
-      } else if (xml) log("robot.code-body-incomplete", { thread: threadId, missing: CODE_BODY_FILES.json });
-      log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0, codeBody: Boolean(xml && json) });
+      const json = await readFile(join(work, CODE_BODY_FILES.json)).catch(() => undefined);
+      if ((xml === undefined) !== (json === undefined)) log("robot.code-body-incomplete", { thread: threadId, missing: xml === undefined ? CODE_BODY_FILES.xml : CODE_BODY_FILES.json });
+      if (xml) await putFile(box, `${BOX_BODY_DIR}/body.xml`, xml);
+      if (xml && json) await putFile(box, `${BOX_BODY_DIR}/body.json`, json);
+      log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0, codeBody: Boolean(xml) });
       return id;
     },
     async release({ threadId }) {

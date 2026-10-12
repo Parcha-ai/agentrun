@@ -152,28 +152,39 @@ test("assembly is over the skills of the body this round taught: an old body's g
   }
 });
 
-test("a robot written as code goes to the box as /workspace/robot/ (body.xml, body.json), next to the preset's robot.json; half a body is said and not staged", async () => {
+test("a robot written as code goes to the box as /workspace/robot/ (body.xml, body.json), next to the preset's robot.json; whichever file is missing is said, each looked for on its own", async () => {
   const work = mkdtempSync(join(tmpdir(), "robot-extra-"));
   try {
     mkdirSync(join(work, "creature"), { recursive: true });
     mkdirSync(join(work, "robot"), { recursive: true });
     writeFileSync(join(work, "creature", "robot.json"), '{"design":{"legs":4}}');
     const { robotBoxes } = await import("../robot-extra.ts");
-    const logs: string[] = [];
-    // Only the MJCF built so far: nothing is staged, and it is said.
-    writeFileSync(join(work, "robot", "body.xml"), "<mujoco/>");
-    const half = fakeLink();
-    await robotBoxes(half.link as never, work, (event) => void logs.push(event)).acquire({ threadId: "t-1", skill: "walk", gpu: 1 }, {} as never);
-    assert.equal(half.execs.filter((e) => e.argv.at(-1)?.startsWith("/workspace/robot/")).length, 0);
-    assert.ok(logs.includes("robot.code-body-incomplete"));
-    // Both files: the thread's body/ holds the body the page runs, byte for byte.
+    const stage = async () => {
+      const f = fakeLink();
+      const logs: { event: string; data?: Record<string, unknown> }[] = [];
+      await robotBoxes(f.link as never, work, (event, data) => void logs.push({ event, data })).acquire({ threadId: "t-1", skill: "walk", gpu: 1 }, {} as never);
+      return { at: (path: string) => f.execs.find((e) => e.argv.at(-1) === path)?.stdin, logs };
+    };
+    // Only the joint file: nothing to train from, and the missing MJCF is said.
     writeFileSync(join(work, "robot", "body.json"), '{"jointNames":["a","b"]}');
-    const f = fakeLink();
-    await robotBoxes(f.link as never, work, (event) => void logs.push(event)).acquire({ threadId: "t-1", skill: "walk", gpu: 1 }, {} as never);
-    const at = (path: string) => f.execs.find((e) => e.argv.at(-1) === path)?.stdin;
-    assert.equal(at("/workspace/robot/body.xml"), "<mujoco/>");
-    assert.equal(at("/workspace/robot/body.json"), '{"jointNames":["a","b"]}');
-    assert.equal(at("/workspace/robot.json"), '{"design":{"legs":4}}', "the preset's robot.json is still there for the old command");
+    const jsonOnly = await stage();
+    assert.equal(jsonOnly.at("/workspace/robot/body.xml"), undefined);
+    assert.equal(jsonOnly.at("/workspace/robot/body.json"), undefined, "no body without its MJCF");
+    assert.deepEqual(jsonOnly.logs.find((l) => l.event === "robot.code-body-incomplete")?.data, { thread: "t-1", missing: "robot/body.xml" });
+    // Only the MJCF: it is staged (the trainer builds from it) and the missing joint file is said.
+    rmSync(join(work, "robot", "body.json"));
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco/>");
+    const xmlOnly = await stage();
+    assert.equal(xmlOnly.at("/workspace/robot/body.xml"), "<mujoco/>");
+    assert.equal(xmlOnly.at("/workspace/robot/body.json"), undefined);
+    assert.deepEqual(xmlOnly.logs.find((l) => l.event === "robot.code-body-incomplete")?.data, { thread: "t-1", missing: "robot/body.json" });
+    // Both: byte for byte, nothing said, and the preset's robot.json is still there for the old command.
+    writeFileSync(join(work, "robot", "body.json"), '{"jointNames":["a","b"]}');
+    const both = await stage();
+    assert.equal(both.at("/workspace/robot/body.xml"), "<mujoco/>");
+    assert.equal(both.at("/workspace/robot/body.json"), '{"jointNames":["a","b"]}');
+    assert.equal(both.logs.some((l) => l.event === "robot.code-body-incomplete"), false);
+    assert.equal(both.at("/workspace/robot.json"), '{"design":{"legs":4}}');
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -186,9 +197,9 @@ test("the thread trains for the body the page runs: /workspace/robot when the ro
     mkdirSync(join(work, "robot"), { recursive: true });
     assert.equal(hasCodeBody(work), false);
     assert.deepEqual(trainCommand(work)("walk"), ["pi-run", "walk", "--", "train-skill", "walk", "--body", "/workspace/robot.json", "--out", "/workspace/skills/walk"]);
-    writeFileSync(join(work, "robot", "body.xml"), "<mujoco/>");
-    assert.equal(hasCodeBody(work), false, "half a body is not a body");
     writeFileSync(join(work, "robot", "body.json"), "{}");
+    assert.equal(hasCodeBody(work), false, "the joint file alone is not a body: the trainer builds from the MJCF");
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco/>");
     assert.equal(hasCodeBody(work), true);
     assert.deepEqual(trainCommand(work)("spin"), ["pi-run", "spin", "--", "train-skill", "spin", "--body", "/workspace/robot", "--out", "/workspace/skills/spin"]);
   } finally {
