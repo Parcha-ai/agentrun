@@ -18,7 +18,7 @@ test("the default image limits are the resize profile of every image model pi-ai
   for (const model of all) {
     const { image } = resolveLimits(model);
     assert.deepEqual({ ...image }, { ...DEFAULT_LIMITS.image }, model.id);
-    assert.deepEqual(limitsFromModel(model).image, { maxWidth: 2000, maxHeight: 2000, maxBytes: 4_718_592, jpegQuality: 80 }, model.id);
+    assert.deepEqual(limitsFromModel(model).image, { maxWidth: 2000, maxHeight: 2000, maxBytes: 4_718_592, jpegQuality: 80, native: true }, model.id);
   }
 });
 
@@ -55,10 +55,20 @@ test("images per call never pass the model's own per-message limit", () => {
 test("a host's values replace the model's, field by field; video is native only when the host says so", () => {
   const model = withImages(ANTHROPIC_MODELS)[0];
   const limits = resolveLimits(model, { image: { maxWidth: 1568 }, pagesPerRead: 2, video: { native: true } });
-  assert.deepEqual({ ...limits.image }, { maxWidth: 1568, maxHeight: 2000, maxBytes: 4_718_592, jpegQuality: 80 });
+  assert.deepEqual({ ...limits.image }, { maxWidth: 1568, maxHeight: 2000, maxBytes: 4_718_592, jpegQuality: 80, native: true });
   assert.equal(limits.pagesPerRead, 2);
   assert.equal(limits.video.native, true);
   assert.equal(resolveLimits(model, { video: { native: "yes" } }).video.native, false);
+});
+
+test("a lead takes images when its model's input lists them, or when there is no model; the host's word wins", () => {
+  const sees = withImages(ANTHROPIC_MODELS)[0];
+  const textOnly = { ...sees, input: ["text"] };
+  assert.deepEqual([resolveLimits(sees).image.native, resolveLimits(textOnly).image.native, resolveLimits(undefined).image.native, resolveLimits({ id: "no-input" }).image.native], [true, false, true, true]);
+  assert.equal(limitsFromModel(textOnly).image.native, false);
+  assert.equal(resolveLimits(sees, { image: { native: false } }).image.native, false, "a route that rejects an image inside a tool result");
+  assert.equal(resolveLimits(textOnly, { image: { native: true } }).image.native, true);
+  assert.equal(resolveLimits(textOnly, { image: { native: "yes" } }).image.native, false, "only a boolean is the host's word");
 });
 
 test("a missing, zero, negative or malformed limit is absent, never a limit", () => {

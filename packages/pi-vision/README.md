@@ -27,7 +27,7 @@ and it is not published (`"private": true`). Parts not built yet throw `NotBuilt
 | PDF: facts, text, pages, poppler | built |
 | Office documents and spreadsheets, LibreOffice | not built |
 | Video: probe, frames by seek, windows, ffmpeg | built |
-| `read`'s media half, the guard, the eyes on pi-ai, receipts and misses | not built |
+| `read`'s media half, the guard, the eyes on pi-ai, receipts and misses | built; `read` serves each kind through that kind's reader |
 | The pi-durable adapter and the Node environment | not built |
 | `look` | not built |
 
@@ -53,7 +53,7 @@ body over them:
 import { citation, resolveLimits } from "@parcha/pi-vision";
 
 const limits = resolveLimits(model, { requestBytes: 20 * 1024 * 1024 });
-// limits.image: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } for current Claude models
+// limits.image: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80, native: true } for current Claude models
 // limits.requestBytes: the smaller of the model's cap and 20 MiB, less 1 MiB of headroom
 
 citation("filing.pdf", { page: { from: 3, to: 3 } }); // "filing.pdf#page=3"

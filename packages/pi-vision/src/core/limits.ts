@@ -70,7 +70,8 @@ export type ImageLimits = { readonly maxWidth: number; readonly maxHeight: numbe
 
 /** The budgets a plan is held to, resolved for one route. */
 export type Limits = {
-  readonly image: ImageLimits & { readonly jpegQuality: number };
+  /** `native`: the lead takes images inside a tool result. A route that rejects them there is the host's word. */
+  readonly image: ImageLimits & { readonly jpegQuality: number; readonly native: boolean };
   /** Images in one result, never over the model's own `maxPerMessage`. */
   readonly imagesPerCall: number;
   readonly pagesPerRead: number;
@@ -91,7 +92,7 @@ export type LimitsOverride = {
 };
 
 export const DEFAULT_LIMITS: Limits = Object.freeze({
-  image: Object.freeze({ maxWidth: DEFAULT_IMAGE_MAX_EDGE, maxHeight: DEFAULT_IMAGE_MAX_EDGE, maxBytes: DEFAULT_IMAGE_MAX_BYTES, jpegQuality: DEFAULT_JPEG_QUALITY }),
+  image: Object.freeze({ maxWidth: DEFAULT_IMAGE_MAX_EDGE, maxHeight: DEFAULT_IMAGE_MAX_EDGE, maxBytes: DEFAULT_IMAGE_MAX_BYTES, jpegQuality: DEFAULT_JPEG_QUALITY, native: true }),
   imagesPerCall: IMAGES_PER_CALL,
   pagesPerRead: PAGES_PER_READ,
   requestBytes: DEFAULT_REQUEST_BYTES,
@@ -102,13 +103,15 @@ const positive = (value: unknown): number | undefined => (typeof value === "numb
 const record = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" ? (value as Record<string, unknown>) : undefined);
 const defined = <T extends object>(value: T): Partial<T> => Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 
-/** The limits a pi-ai `Model` declares in `inputLimits`, as an override. Read structurally, so the core imports no pi
- *  package; a missing, zero or malformed value is absent, never a limit of zero. */
+/** The limits a pi-ai `Model` declares in `inputLimits`, and whether its `input` takes images, as an override. Read
+ *  structurally, so the core imports no pi package; a missing, zero or malformed value is absent, never a limit of zero. */
 export function limitsFromModel(model: unknown): LimitsOverride {
   const limits = record(record(model)?.inputLimits);
   const images = record(limits?.images);
   const resize = record(images?.resize);
-  const image = defined({ maxWidth: positive(resize?.maxWidth), maxHeight: positive(resize?.maxHeight), maxBytes: positive(resize?.maxBytes), jpegQuality: positive(resize?.jpegQuality) });
+  const input = record(model)?.input;
+  const native = Array.isArray(input) ? input.includes("image") : undefined;
+  const image = defined({ maxWidth: positive(resize?.maxWidth), maxHeight: positive(resize?.maxHeight), maxBytes: positive(resize?.maxBytes), jpegQuality: positive(resize?.jpegQuality), native });
   return defined({
     image: Object.keys(image).length ? image : undefined,
     imagesPerCall: positive(images?.maxPerMessage),
@@ -129,6 +132,7 @@ export function resolveLimits(model: unknown, host: LimitsOverride = {}): Limits
       maxHeight: pick(host.image?.maxHeight, own.image?.maxHeight ?? DEFAULT_IMAGE_MAX_EDGE),
       maxBytes: pick(host.image?.maxBytes, own.image?.maxBytes ?? DEFAULT_IMAGE_MAX_BYTES),
       jpegQuality: pick(host.image?.jpegQuality, own.image?.jpegQuality ?? DEFAULT_JPEG_QUALITY),
+      native: typeof host.image?.native === "boolean" ? host.image.native : own.image?.native ?? true,
     },
     imagesPerCall: Math.min(pick(host.imagesPerCall, IMAGES_PER_CALL), perMessage),
     pagesPerRead: pick(host.pagesPerRead, PAGES_PER_READ),
