@@ -183,6 +183,7 @@ try {
             "--cloud-arg", "robot=true",
             ...(process.argv.includes("--robot-plan") ? ["--cloud-arg", "robot-plan=true"] : []),
             ...(process.argv.includes("--robot-prewarm") ? ["--cloud-arg", "robot-prewarm=true"] : []),
+            ...(arg("robot-thread-deadline-s", "") ? ["--cloud-arg", `robot-thread-deadline-s=${arg("robot-thread-deadline-s", "")}`] : []),
             "--cloud-arg", `cluster-size=${clusterSize}`,
             "--cloud-arg", `cluster-spares=${clusterSpares}`,
             ...(clusterIdle > 0 ? ["--cloud-arg", `cluster-idle-minutes=${clusterIdle}`] : []),

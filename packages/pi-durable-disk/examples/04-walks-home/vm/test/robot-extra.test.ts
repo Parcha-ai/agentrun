@@ -313,3 +313,16 @@ test("code mode compiles the body on each thread's box right after staging it (d
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("the thread deadline is the host's value in seconds, or the 20-minute default; a bad value is said, not silently taken", async () => {
+  const { threadDeadlineMs, planOptions, DEFAULT_THREAD_DEADLINE_MS } = await import("../robot-extra.ts");
+  const said: string[] = [];
+  assert.equal(threadDeadlineMs(undefined), DEFAULT_THREAD_DEADLINE_MS);
+  assert.equal(threadDeadlineMs(""), DEFAULT_THREAD_DEADLINE_MS);
+  assert.equal(threadDeadlineMs("300"), 300_000);
+  for (const bad of ["10", "99999", "soon", "2.5"]) assert.equal(threadDeadlineMs(bad, (event) => void said.push(event)), DEFAULT_THREAD_DEADLINE_MS);
+  assert.equal(said.length, 4);
+  assert.ok(said.every((e) => e === "robot.thread-deadline-ignored"));
+  assert.equal(planOptions("/tmp/x", 300_000).threadDeadlineMs, 300_000);
+  assert.equal(planOptions("/tmp/x").threadDeadlineMs, DEFAULT_THREAD_DEADLINE_MS);
+});
