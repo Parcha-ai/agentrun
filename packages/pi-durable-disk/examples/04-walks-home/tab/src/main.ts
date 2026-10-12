@@ -126,9 +126,10 @@ let brainFits = true;
 
 /** The skills that came home (home/skills.json), the one the creature is doing, and one asked for before the manifest arrived. */
 let skills: SkillManifest | null = null;
+/** How long a creature whose policy has no get-up network lies where it fell before it is set back on its feet (seconds of simulated time), and when it went down. */
+const STAND_AFTER_S = 3;
+let downSince: number | null = null;
 let skillNow: string | null = null;
-/** The skill the agent chose last (creature/robot.json's `skill`), while the manifest has it: what the robot is asked to be doing. A policy that lands on the older single-policy paths does not take it over. */
-let agentSkill: string | null = null;
 let wantedSkill: string | null = null;
 
 function toast(text: string) {
@@ -400,7 +401,6 @@ async function applyRobot(text: string) {
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
   }
-  agentSkill = robot.skill ?? null;
   if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
   else if (!robot.skill && skills && (skillNow !== null || !app.policy) && (skillNow !== skills.default || !app.policy)) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
@@ -569,6 +569,9 @@ async function switchSkill(name: string, reload = false) {
   const range = (policy.file as { command_range?: [number, number] }).command_range;
   slider.min = String(range?.[0] ?? 0); slider.max = String(range?.[1] ?? 1); slider.step = 'any'; slider.value = String(entry.command);
   closeArrival();
+  // A round's skills carry no get-up network, so a creature that is lying down cannot rise under the new one (it lies still where the skill was asked for): it is set back on its feet first, as a policy that arrives is
+  const standUp = !policy.hasGetup && app.sim.uprightness() < 0.3;
+  if (standUp) { app.sim.standUp(); post('stood-up', { reason: 'skill', skill: name, t: app.sim.time }); }
   setPolicy(policy, `skill: ${entry.label}`); // no sim.reset(): a creature that is up carries on, the next step is the new network's
   brainFits = fits;
   skillNow = name;
@@ -578,7 +581,7 @@ async function switchSkill(name: string, reload = false) {
   updateLabel();
   app.fallen = false; app.recovering = null;
   toast(`doing ${entry.label}`);
-  post('skill-switched', { skill: name, label: entry.label, command: app.sim.command, fits, mjcf_sha256: policy.file.mjcf_sha256 });
+  post('skill-switched', { skill: name, label: entry.label, command: app.sim.command, fits, stood_up: standUp, mjcf_sha256: policy.file.mjcf_sha256 });
 }
 
 /** The slider is the single source of the command: apply it to the sim (a new Sim starts at 0, which a policy reads as "stand"). */
@@ -652,12 +655,6 @@ async function loadPolicyText(text: string, name: string) {
  */
 async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json', kind: 'checkpoint' | 'final' = 'final') {
   economy.wake(performance.now());
-  // The agent chose a skill and the manifest has it: a policy that lands later on the older single-policy paths (the trainer's final home/policy.json, the live checkpoint stream) is another skill's or an
-  // earlier version's, and installing it would end the skill that was asked for (the robot stood still where spin had passed). The choice stands until the agent makes another; a deliberate load (`message`) still wins.
-  if (via === 'watch' && agentSkill && skills?.skills[agentSkill]) {
-    post('policy-held', { name, via, kind, skill: agentSkill, reason: `the agent chose ${agentSkill}: it keeps running until the agent chooses another` });
-    return;
-  }
   const arrivedAt = performance.now();
   // the training file stays on the disk after the run is home: once the final policy is in, a checkpoint is stale and is ignored
   if (kind === 'checkpoint' && !app.training.acceptCheckpoint()) return;
@@ -944,6 +941,12 @@ function tick(now: number) {
     // `fallen` is true from the moment it goes down until it is upright again, so each fall is counted and announced once
     if (app.fallen && up > 0.9) app.fallen = false;
     if (!app.fallen && up < 0.3) { app.fallen = true; app.stats.c.falls++; post('fell', { t: app.sim.time }); toast('fell'); }
+    // A policy with no get-up network (every skill of a round, and the early checkpoints) cannot rise by itself: left alone the creature lies still for ever, where a skill was asked for or after it fell while one ran.
+    // It is set back on its feet after STAND_AFTER_S, and the page says so (the fall was counted and announced when it happened; this is not a recovery of the policy's, so no kick is counted as recovered).
+    if (app.policy && !app.policy.hasGetup && up < 0.3) {
+      downSince ??= app.sim.time;
+      if (app.sim.time - downSince > STAND_AFTER_S) { app.sim.standUp(); downSince = null; app.fallen = false; app.recovering = null; post('stood-up', { reason: 'fallen', t: app.sim.time }); toast('set back on its feet'); }
+    } else downSince = null;
     if (app.recovering !== null && !app.fallen && app.sim.time - app.recovering > 2 && up > 0.9) {
       app.stats.c.recoveries++;
       post('stood', { t: app.sim.time, since_kick: app.sim.time - app.recovering });

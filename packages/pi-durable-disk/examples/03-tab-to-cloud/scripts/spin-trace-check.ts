@@ -1,8 +1,9 @@
-// A skill that passed on the trainer, played by the real page: D2's spin-trace files (a dino body, spin and walk policies, skills.json) are put in a run's work folder,
-// the agent's page opens (robot=1), `do` picks the skill through the agent's tool, and the creature's yaw rate is read off the simulation. It answers "spin passed at
-// checkpoint 5 but did not spin in the tab": does the page select the policy, does it fit the body, does the creature turn at the rate the trainer measured.
-//   REBUILT=1 rebuilds body.xml after the training (other bytes, same body): the page borrows the policies and says it stumbles, and they still run.
-//   TRACE=<folder with robot/ and home/> [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/spin-trace-check.ts
+// A skill that passed on the trainer, played by the real page. A trace folder from a run (a snapshot of its disk) is put in a run's work folder, the agent's page opens (robot=1), `do` picks each
+// skill through the agent's tool, and the creature's yaw rate is read off the simulation. It answers "spin passed at checkpoint 5 but did not spin in the tab": does the page select the policy, does
+// it fit the body, does the creature turn at the rate the trainer measured, and does it spin when it was lying down where spin was asked for (none of a round's policies has a get-up network).
+//   TRACE=<folder>  one of: robot/body.xml + home/ (code mode); robot/body.mjs + home/ (built here, in the page's computer, never on this host); creature/robot.json + home/ (the preset flow)
+//   REBUILT=1       rebuilds body.xml after the training (other bytes, same body): the page borrows the policies and says it stumbles, and they still run.
+//   [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/spin-trace-check.ts
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -42,30 +43,46 @@ let devices: Awaited<ReturnType<Cdp["device"]>> | undefined;
 // everything that starts something is inside the try: a failed setup (no Chrome at CDP, no run link) still stops the server and removes the folder, and only what was started
 try {
 const trace = process.env.TRACE;
-if (!trace || !existsSync(join(trace, "home/skills.json")) || !existsSync(join(trace, "robot/body.xml"))) throw new Error("TRACE must name a folder with robot/body.xml, robot/body.json and home/skills.json, home/skills/*.json");
+// A folder of a run in code mode has robot/body.xml (and the trainer's robot/body.json); a run of the preset flow has creature/robot.json (the robot's design) and its body is the preset's.
+// A code-mode snapshot that kept robot/body.mjs but not the built body.xml is built here the way the agent builds it, with `node robot/build.mjs` in the page's own computer (never on this host).
+const fromSource = !!trace && !existsSync(join(trace, "robot/body.xml")) && existsSync(join(trace, "robot/body.mjs"));
+const preset = !!trace && !fromSource && !existsSync(join(trace, "robot/body.xml")) && existsSync(join(trace, "creature/robot.json"));
+if (!trace || !existsSync(join(trace, "home/skills.json")) || (!preset && !fromSource && !existsSync(join(trace, "robot/body.xml")))) throw new Error("TRACE must name a folder with home/skills.json and home/skills/*.json, and robot/body.xml (code mode), robot/body.mjs (code mode, built here) or creature/robot.json (the preset flow)");
 dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "spin-trace-"));
 const port = await freePort();
 const RUN = "st";
 const work = join(dir, "runs", RUN, "work");
 mkdirSync(join(work, "home/skills"), { recursive: true });
-mkdirSync(join(work, "robot"), { recursive: true });
-for (const f of ["robot/body.xml", "home/skills.json"]) copyFileSync(join(trace, f), join(work, f));
-// robot/body.json is the page's pairing file for a body written as code (name, tag_list, xml_sha256 of body.xml). A folder from the trainer holds the trainer's own body.json (the creature's
-// description: legs, jointNames, standPose); the page cannot pair that, so a code body.json for the same body.xml is made here (its tags are not what is under test).
-const code = JSON.parse(readFileSync(join(trace, "robot/body.json"), "utf8")) as { tag_list?: unknown; xml_sha256?: string; jointNames?: string[]; standPose?: number[]; standHeight?: number };
-const xmlBytes = readFileSync(join(trace, "robot/body.xml"));
-const xmlSha = createHash("sha256").update(xmlBytes).digest("hex");
-const bodyJson = Array.isArray(code.tag_list) && code.xml_sha256 === xmlSha ? code : {
-  name: "dino", motors: code.jointNames, joints: (code.jointNames ?? []).map((name, i) => ({ name, body: "", axis: [0, 1, 0], range: [-1, 1], stand: code.standPose?.[i] ?? 0, passive: false })), tags: {}, colors: {}, face: { tag: "head" }, warnings: [],
-  legs: 4, tag_list: ["torso", "legs"], pieces: 32, mass_kg: 11, stand_height_m: code.standHeight, xml_sha256: xmlSha,
-};
-if (process.env.REBUILT === "1") {
-  // a body.xml rebuilt after training (any helper change alters the bytes): other bytes, the same body; its body.json pairs with the new bytes
-  const rebuilt = xmlBytes.toString("utf8").replace("<mujoco", "<!-- rebuilt -->\n<mujoco");
-  writeFileSync(join(work, "robot/body.xml"), rebuilt);
-  bodyJson.xml_sha256 = createHash("sha256").update(rebuilt).digest("hex");
+let xmlSha = "";
+if (fromSource) {
+  mkdirSync(join(work, "robot"), { recursive: true });
+  copyFileSync(join(trace, "robot/body.mjs"), join(work, "robot/body.mjs"));
+  copyFileSync(join(trace, "home/skills.json"), join(work, "home/skills.json"));
+} else if (preset) {
+  mkdirSync(join(work, "creature"), { recursive: true });
+  copyFileSync(join(trace, "creature/robot.json"), join(work, "creature/robot.json"));
+  copyFileSync(join(trace, "home/skills.json"), join(work, "home/skills.json"));
+} else {
+  mkdirSync(join(work, "robot"), { recursive: true });
+  for (const f of ["robot/body.xml", "home/skills.json"]) copyFileSync(join(trace, f), join(work, f));
+  // robot/body.json is the page's pairing file for a body written as code (name, tag_list, xml_sha256 of body.xml). A folder from the trainer holds the trainer's own body.json (the creature's
+  // description: legs, jointNames, standPose); the page cannot pair that, so a code body.json for the same body.xml is made here (its tags are not what is under test).
+  const code = JSON.parse(readFileSync(join(trace, "robot/body.json"), "utf8")) as { tag_list?: unknown; xml_sha256?: string; jointNames?: string[]; standPose?: number[]; standHeight?: number };
+  const xmlBytes = readFileSync(join(trace, "robot/body.xml"));
+  xmlSha = createHash("sha256").update(xmlBytes).digest("hex");
+  const bodyJson = Array.isArray(code.tag_list) && code.xml_sha256 === xmlSha ? code : {
+    name: "dino", motors: code.jointNames, joints: (code.jointNames ?? []).map((name, i) => ({ name, body: "", axis: [0, 1, 0], range: [-1, 1], stand: code.standPose?.[i] ?? 0, passive: false })), tags: {}, colors: {}, face: { tag: "head" }, warnings: [],
+    legs: 4, tag_list: ["torso", "legs"], pieces: 32, mass_kg: 11, stand_height_m: code.standHeight, xml_sha256: xmlSha,
+  };
+  if (process.env.REBUILT === "1") {
+    // a body.xml rebuilt after training (any helper change alters the bytes): other bytes, the same body; its body.json pairs with the new bytes
+    const rebuilt = xmlBytes.toString("utf8").replace("<mujoco", "<!-- rebuilt -->\n<mujoco");
+    writeFileSync(join(work, "robot/body.xml"), rebuilt);
+    bodyJson.xml_sha256 = createHash("sha256").update(rebuilt).digest("hex");
+  }
+  writeFileSync(join(work, "robot/body.json"), JSON.stringify(bodyJson));
+
 }
-writeFileSync(join(work, "robot/body.json"), JSON.stringify(bodyJson));
 const skillsHome = JSON.parse(readFileSync(join(trace, "home/skills.json"), "utf8")) as { skills: Record<string, { policy: string; command: number }> };
 for (const e of Object.values(skillsHome.skills)) copyFileSync(join(trace, "home", e.policy), join(work, "home", e.policy));
 server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
@@ -76,14 +93,23 @@ if (!link) throw new Error("the server printed no run link");
 cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9334");
 const device = await cdp.device();
 devices = device;
-  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&brain=off#"));
+  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", `?robot=1&brain=off${preset ? "&robotcode=0" : ""}#`));
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   await page.until(`!!document.getElementById("creature").contentWindow.__walks`, 60_000, 300);
-  await page.until(`(() => { const w = document.getElementById("creature").contentWindow.__walks; return w.app.built.code === true && Object.keys(w.skills().skills ?? {}).length > 0; })()`, 90_000, 300);
+  if (fromSource) {
+    // the page's computer builds the body from the snapshot's body.mjs (the helper files are seeded by the session), and the page compiles it
+    const was = await walks<string>("w.app.bodySha");
+    let built = "";
+    for (let i = 0; i < 60 && !/wrote robot\/body\.xml/.test(built); i++) { built = (await ev<{ output?: string }>(`demo.exec("node robot/build.mjs")`).catch(() => ({ output: "" }))).output ?? ""; if (!/wrote robot\/body\.xml/.test(built)) await sleep(2000); }
+    console.log(`  built in the page's computer: ${built.slice(0, 160)}`);
+    await page.until(`document.getElementById("creature").contentWindow.__walks.app.bodySha !== ${JSON.stringify(was)}`, 60_000, 300);
+  }
+  await page.until(`(() => { const w = document.getElementById("creature").contentWindow.__walks; return (w.app.built.code === true || ${preset}) && Object.keys(w.skills().skills ?? {}).length > 0; })()`, 90_000, 300);
+  if (preset) await page.until(`document.getElementById("creature").contentWindow.__walks.app.bodySha === ${JSON.stringify(JSON.parse(readFileSync(join(trace, "home", Object.values(skillsHome.skills)[0]!.policy), "utf8")).mjcf_sha256)}`, 60_000, 300).catch(() => undefined); // the robot's design is built from creature/robot.json a moment after the skills are known
   const first = await walks<{ skills: string[]; skill: string | undefined; fits: boolean; sha: string }>(`({ skills: Object.keys(w.skills().skills ?? {}), skill: w.skill(), fits: w.fits(), sha: w.app.bodySha })`);
   console.log(`  page: ${JSON.stringify(first)}`);
   const policySha = (JSON.parse(readFileSync(join(trace, "home", Object.values(skillsHome.skills)[0]!.policy), "utf8")) as { mjcf_sha256: string }).mjcf_sha256;
-  ok("the policies were trained on this body.xml (sha256 of the file = their mjcf_sha256)", xmlSha === policySha, { xmlSha, policySha });
+  if (!preset && !fromSource) ok("the policies were trained on this body.xml (sha256 of the file = their mjcf_sha256)", xmlSha === policySha, { xmlSha, policySha });
   if (process.env.REBUILT === "1") ok("a body.xml rebuilt after training is another body to the page: its sha is not the policies'", first.sha !== policySha, { page: first.sha, policy: policySha });
   else ok("the page's compiled body is the one the policies were trained on (sha256 of body.xml = the policy's mjcf_sha256)", first.sha === policySha, { page: first.sha, policy: policySha });
   ok("the skills came home to the page: the manifest's skills are the page's", Object.keys(skillsHome.skills).every((n) => JSON.stringify(first.skills).includes(n)), first.skills);
@@ -107,26 +133,30 @@ devices = device;
     await sleep(6000);
     ok(`${name} is still the page's skill six seconds later`, (await walks<string | undefined>("w.skill()")) === name);
   }
-  // A policy on the older single-policy paths lands while a skill the agent chose is running: the trainer's final policy (home/policy.json) and the live checkpoint stream (train/gpu/policy.json). The agent's choice stands:
-  // the page keeps the skill it was asked for and turns at its rate, and says the arrival was held.
+  // A creature that is lying down when it is asked for a skill. (A policy that arrives on the older single-policy paths replaces the skill by design: 04's check-robot asserts it.)
   if (names.includes("spin")) {
     await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: "spin" } } }, { text: "Done." }])`);
     await say("do spin");
     await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === "spin"`, 30_000, 300).catch(() => undefined);
     await sleep(3000);
-    await ev(`window.__held = []; window.addEventListener("walkshome:policy-held", (e) => window.__held.push(e.detail)); true`);
-    for (const [path, which] of [["home/policy.json", "walk"], ["train/gpu/policy.json", "walk"]] as const) {
-      const at = process.env.DEAD_WATCHER === "1" ? `${path}.unwatched` : path; // DEAD_WATCHER=1: the file lands where no watcher reads (a check that this test fails when the watcher does not see it)
-      mkdirSync(join(work, at, ".."), { recursive: true });
-      const text = JSON.parse(readFileSync(join(trace, "home", skillsHome.skills[which]!.policy), "utf8")) as Record<string, unknown>;
-      writeFileSync(join(work, at), JSON.stringify({ ...text, note: `arrival at ${path}` }));
-      // the page polls at 1 Hz: it must SAY it held this arrival (a watcher that never read the file holds nothing, and spin would simply have kept running)
-      const held = await page.until(`window.__held.some((h) => h.name === ${JSON.stringify(path)} && h.skill === "spin")`, 20_000, 300).then(() => true, () => false);
-      ok(`the page saw the policy that landed at ${path} and held it: a policy-held event names the path and the skill it kept`, held, await ev("window.__held"));
-      const r = await yawRate(6);
-      console.log(`  after ${path} landed: ${JSON.stringify(r)}`);
-      ok(`a policy that lands at ${path} while spin is chosen does not end spin: the page still plays it, turning at at least 1 rad/s`, r.skill === "spin" && Math.abs(r.rate) >= 1.0, r);
-    }
+    // A creature that is lying down when it is asked for a skill. The policies of a round carry no get-up network (a real round's skills here have none), so a creature that fell cannot rise by itself:
+    // asking for spin must stand it up first, as a policy that arrives does, or the robot lies still where spin was asked.
+    await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }])`);
+    await say("do walk");
+    await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === "walk"`, 30_000, 300).catch(() => undefined);
+    await sleep(2000);
+    let down = { up: 1 };
+    for (let i = 0; i < 4 && down.up > 0.3; i++) { await walks(`w.kick([0, 1], ${400 + 300 * i})`); await sleep(3000); down = await walks<{ up: number }>("({ up: w.app.sim.uprightness() })"); }
+    const hasGetup = (JSON.parse(readFileSync(join(trace, "home", skillsHome.skills.spin!.policy), "utf8")) as { getup?: unknown }).getup !== undefined;
+    console.log(`  a shove put it down: up ${down.up.toFixed(2)} (the spin policy has ${hasGetup ? "a" : "no"} get-up network)`);
+    ok("the creature is lying down before spin is asked for", down.up < 0.3, down);
+    await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: "spin" } } }, { text: "Done." }])`);
+    await say("do spin");
+    await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === "spin"`, 30_000, 300).catch(() => undefined);
+    await sleep(3000);
+    const up = await yawRate(6);
+    console.log(`  spin asked for while it lay down: ${JSON.stringify(up)}`);
+    ok("spin asked for while the creature lies down: it is on its feet and turns at at least 1 rad/s", up.up > 0.5 && Math.abs(up.rate) >= 1.0 && up.skill === "spin", up);
   }
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);
