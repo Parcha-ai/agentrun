@@ -258,6 +258,32 @@ describe("a page that comes back booting", () => {
     page.close();
   });
 
+  it("a second refresh inside the boot keeps the boot allowance: the hello that lands before the second writer-gone is not lost", async () => {
+    const { id, secret } = await local.server.createRun("refresh-twice");
+    const first: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+    await first.ready;
+    first.close();
+    await until(() => ofRun(id, "pipe.writer-gone").length === 1);
+    const page1: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "operator", canRun: true, onFrame: () => undefined });
+    await page1.ready;
+    const booting: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 }); // attached, its runtime not up
+    await booting.ready;
+    booting.close(); // refreshed again before it was ready
+    await new Promise((r) => setTimeout(r, 30)); // the second page's hello lands before this writer is declared gone
+    const page2: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "operator", canRun: true, onFrame: () => undefined });
+    await page2.ready;
+    await new Promise((r) => setTimeout(r, 1_800)); // booting: past the plain 0.4 s, inside the boot allowance
+    assert.equal(ofRun(id, "cloud.started").length, 0, "still waiting for the second page to boot");
+    const back: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+    await back.ready;
+    back.send({ t: "writer-ready" });
+    await until(() => ofRun(id, "placement.writer-grace").some((e) => e.data.outcome === "returned"), 8_000);
+    assert.equal(ofRun(id, "cloud.started").length, 0, "the run never went to the cloud");
+    back.close();
+    page1.close();
+    page2.close();
+  });
+
   it("does not wait longer for a plain viewer, which is not offered the run either", async () => {
     const { id, secret } = await dropWriter("plain-viewer");
     const viewer: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "view", onFrame: () => undefined });

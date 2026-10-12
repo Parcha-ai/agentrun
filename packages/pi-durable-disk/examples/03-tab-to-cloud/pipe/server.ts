@@ -239,8 +239,8 @@ interface RunState {
   /** The agent's closing turn at home, while the server waits for it to end (the writer's run_end) before it replays the requests queued during the move home. */
   homeTurn: HomeWait | undefined;
   /** The wait for the writer to come back after its socket closed: the lines that arrive meanwhile queue behind it. Cancelled when the server closes. */
-  writerGrace: { cancelled: boolean; comingAt: number | undefined } | undefined;
-  /** When a page that can run the run asked in the moment after the writer's socket closed, before the grace began: the grace counts it. */
+  writerGrace: { cancelled: boolean } | undefined;
+  /** When a page that can run the run last asked for it while the run waited for its writer (during a grace, or in the moment after the socket closed, before the grace began). On the run, not on a grace: a replacement grace counts it too. Cleared when a writer attaches or a grace ends. */
   pageComingAt: number | undefined;
   /** When the agent was last given a message and has not yet ended its turn (the host's run_end): a placement move would release the pipe under a step that is starting, so a message that needs a move waits for it. */
   turnSince: number | undefined;
@@ -548,10 +548,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (bound <= 0) return false;
     const poll = options.writerReturnPollMs ?? 50;
     const started = Date.now();
-    const wait: { cancelled: boolean; comingAt: number | undefined } = { cancelled: false, comingAt: state.pageComingAt };
-    state.pageComingAt = undefined;
+    const wait: { cancelled: boolean } = { cancelled: false };
     state.writerGrace = wait; // one grace at a time: an older wait finds it is no longer the run's and leaves without acting
-    const horizon = (): number => (wait.comingAt === undefined ? bound : Math.min(options.writerReturnMaxMs ?? 90_000, Math.max(bound, wait.comingAt - started + (options.writerBootMs ?? 60_000))));
+    const horizon = (): number => (state.pageComingAt === undefined ? bound : Math.min(options.writerReturnMaxMs ?? 90_000, Math.max(bound, state.pageComingAt - started + (options.writerBootMs ?? 60_000))));
     let outcome: "returned" | "expired" | "superseded" | "closed" | "replaced" = "expired";
     for (;;) {
       // Looked at after every sleep, the last one included: a close or a move in it is not an expiry.
@@ -565,7 +564,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     // A newer wait (the writer returned and dropped again) owns the run now: this one neither logs an end nor moves anything.
     if (outcome === "replaced") return true;
     state.writerGrace = undefined;
-    log("placement.writer-grace", { run: state.ref.id, outcome, ms: Date.now() - started, ...(wait.comingAt === undefined ? {} : { pageAskedAfterMs: wait.comingAt - started }) });
+    const pageAskedAt = state.pageComingAt;
+    state.pageComingAt = undefined;
+    log("placement.writer-grace", { run: state.ref.id, outcome, ms: Date.now() - started, ...(pageAskedAt === undefined ? {} : { pageAskedAfterMs: pageAskedAt - started }) });
     const replay = () => flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
     // The lines typed meanwhile are placed now, with the run still in the browser.
     if (outcome === "returned") await replay();
@@ -1081,8 +1082,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const client = state.clients.get(socket);
     const waiting = state.writerGrace !== undefined || state.pipe?.writerLeft === true;
     if (waiting && client?.canRun && client.mode !== "view" && viewing.t === "viewing") {
-      if (state.writerGrace) state.writerGrace.comingAt ??= Date.now();
-      else state.pageComingAt ??= Date.now();
+      state.pageComingAt = Date.now();
       log("placement.writer-coming", { run: state.ref.id });
       socket.send({ ...viewing, placement: { where: "parked", detail: "your browser is coming back" } });
     } else socket.send(viewing);
