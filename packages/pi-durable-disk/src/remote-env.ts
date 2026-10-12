@@ -615,7 +615,7 @@ export class ArtifactSync {
   private readonly o: Required<Omit<ArtifactSyncOptions, "onFile" | "onError" | "exclude">> & Pick<ArtifactSyncOptions, "onFile" | "onError" | "exclude">;
   private copied = new Map<string, string>();
   private seen = new Map<string, string>();
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   private busy: Promise<unknown> = Promise.resolve();
   private stopped = false;
   files = 0;
@@ -627,7 +627,18 @@ export class ArtifactSync {
 
   start(): void {
     if (this.timer || this.stopped) return;
-    this.timer = setInterval(() => { this.busy = this.busy.then(() => this.pass(false)).catch((e) => this.fail(e)); }, this.o.intervalMs);
+    this.next();
+  }
+
+  /**
+   * The next timer pass, an interval after this one ended. "The same in two listings in a row" has to span an interval: on a
+   * fixed tick, a pass whose find ran late (a slow box) or that waited behind a long copy would be followed by a listing
+   * soon after it, and a file still being written would look settled. (A flush's listing between them copies what it sees.)
+   */
+  private next(): void {
+    this.timer = setTimeout(() => {
+      this.busy = this.busy.then(() => this.pass(false)).catch((e) => this.fail(e)).finally(() => { if (!this.stopped) this.next(); });
+    }, this.o.intervalMs);
   }
 
   /** Copy everything that differs now, then return the totals copied so far. */
@@ -641,7 +652,7 @@ export class ArtifactSync {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     await this.busy.catch(() => {});
   }
@@ -649,7 +660,7 @@ export class ArtifactSync {
   private fail(e: unknown): void {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.o.onError?.(e instanceof Error ? e : new Error(String(e)));
   }
 
