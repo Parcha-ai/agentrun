@@ -173,17 +173,39 @@ export type Sniffed =
   | { readonly ok: true; readonly kind: Kind; readonly format: SniffedFormat; readonly mimeType: string | null; readonly signature: string }
   | { readonly ok: false; readonly code: "unsupported"; readonly reason: string };
 
+/** The kind a name's extension claims, with the extension and the name as a message prints it. The extension is what follows
+ *  the last dot of the last path segment, cut at its first `?` or `#`: `report.docx?sig=x`, `sheet.xlsx#tab`, `Q3 #2.docx`.
+ *  When that is no known extension, the segment is cut at each `?` or `#` in turn, and the extension of what is left is read
+ *  (`report.docx?v=1.2`, `Q3 #2.docx?v=1.2`). The name is printed whole unless a query or fragment follows the extension,
+ *  which can carry a signature. */
+function claimedBy(name: string): { readonly kind: Kind; readonly extension: string; readonly shown: string } | undefined {
+  const segment = name.split(/[\\/]/).pop()!;
+  const dot = segment.lastIndexOf(".");
+  if (dot >= 0) {
+    const tail = segment.slice(dot + 1);
+    const cut = tail.search(/[?#]/);
+    const extension = (cut < 0 ? tail : tail.slice(0, cut)).toLowerCase();
+    const kind = EXTENSION_KINDS.get(extension);
+    if (kind) return { kind, extension, shown: cut < 0 ? segment : segment.slice(0, dot + 1 + cut) };
+  }
+  for (const mark of segment.matchAll(/[?#]/g)) {
+    const head = segment.slice(0, mark.index);
+    const extension = head.slice(head.lastIndexOf(".") + 1).toLowerCase();
+    const kind = head.includes(".") ? EXTENSION_KINDS.get(extension) : undefined;
+    if (kind) return { kind, extension, shown: head };
+  }
+  return undefined;
+}
+
 /** The kind of a file from the first `SNIFF_BYTES` of it and its name. The bytes decide; the name decides only what a
- *  container (zip, OLE2) holds, by its last segment cut at the first `?` or `#`, as a name taken from a link carries a
- *  query or a fragment after its extension. A name that claims one kind over bytes of another is a miss naming both. A
- *  recording is a handle, not bytes: the host's source table decides that, never this function. */
+ *  container (zip, OLE2) holds. A name that claims one kind over bytes of another is a miss naming both. A recording is a
+ *  handle, not bytes: the host's source table decides that, never this function. */
 export function sniffKind(head: Uint8Array, name: string): Sniffed {
   const format = identify(head);
   const [label, own, mimeType] = FORMATS[format];
-  const base = name.split(/[\\/]/).pop()!.split(/[?#]/)[0]!;
-  const extension = /\.([^.]+)$/.exec(base)?.[1]?.toLowerCase();
-  const named = extension === undefined ? undefined : EXTENSION_KINDS.get(extension);
+  const claim = claimedBy(name);
+  const named = claim?.kind;
   const kind = (format === "zip" || format === "ole2") && (named === "office" || named === "sheet") ? named : own;
-  if (named && named !== kind) return { ok: false, code: "unsupported", reason: `${base} has a .${extension} extension but its bytes are ${label} (first bytes ${hex(head)})` };
+  if (claim && named !== kind) return { ok: false, code: "unsupported", reason: `${claim.shown} has a .${claim.extension} extension but its bytes are ${label} (first bytes ${hex(head)})` };
   return { ok: true, kind, format, mimeType, signature: hex(head) };
 }

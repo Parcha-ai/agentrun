@@ -153,20 +153,20 @@ test("a name that claims one kind over the bytes of another is an unsupported mi
   assert.ok(named.ok && named.signature === "89 50 4e 47 0d 0a 1a 0a", "the signature is the first eight bytes in hex");
 });
 
+const OFFICE = ["docx", "pptx", "odt", "odp"];
+const SHEET = ["xlsx", "xlsm", "ods"];
+const zipBytes = () => zipSync({ "word/document.xml": strToU8("<w/>") });
+
 test("a name taken from a link keeps its extension: a query or a fragment after it is cut off, in every container kind", () => {
-  const zip = zipSync({ "word/document.xml": strToU8("<w/>") });
+  const zip = zipBytes();
   const ole2 = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]);
-  const office = ["docx", "pptx", "odt", "odp"];
-  const sheet = ["xlsx", "xlsm", "ods"];
-  const tails = ["?sig=abc123&exp=99", "?file=a.pdf", "#tab", "#page=2", "?x=1#y", "?", "#"];
-  for (const [kinds, expected] of [[office, "office"], [sheet, "sheet"]]) {
-    for (const extension of kinds) for (const tail of tails) {
-      for (const dir of ["", "reports/", "week#1/", "who?/"]) {
-        const name = `${dir}report.${extension}${tail}`;
-        const sniffed = sniffKind(zip, name);
-        assert.ok(sniffed.ok, `${name}: ${JSON.stringify(sniffed)}`);
-        assert.deepEqual([sniffed.kind, sniffed.format], [expected, "zip"], name);
-      }
+  const tails = ["?sig=abc123&exp=99", "#tab", "#page=2", "?x=1#y", "?", "#", "?v=1.2", "?v=1.2#frag.x", "?file=a.b", "#a.b?c", "?a=b.zzz#c"];
+  for (const [extensions, expected] of [[OFFICE, "office"], [SHEET, "sheet"]]) {
+    for (const extension of extensions) for (const tail of tails) for (const dir of ["", "reports/", "week#1/", "who?/"]) {
+      const name = `${dir}report.${extension}${tail}`;
+      const sniffed = sniffKind(zip, name);
+      assert.ok(sniffed.ok, `${name}: ${JSON.stringify(sniffed)}`);
+      assert.deepEqual([sniffed.kind, sniffed.format], [expected, "zip"], name);
     }
   }
   assert.equal(kindOf(ole2, "legacy.doc?sig=a"), "office");
@@ -174,26 +174,47 @@ test("a name taken from a link keeps its extension: a query or a fragment after 
   assert.equal(kindOf(ole2, "LEGACY.XLS?Sig=A"), "sheet", "and the extension's case does not matter");
 });
 
-test("a name whose only dot is inside its query or fragment has no extension", () => {
-  const zip = zipSync({ "a.txt": strToU8("x") });
-  for (const name of ["download?file=a.docx", "download#a.xlsx", "get?name=report.pptx&x=1", "dir.docx/download?file=a.docx", "dir.xlsx/file#a.ods", "?a.docx", "#a.docx"]) {
+test("a name with a # or a ? before its extension keeps the extension, in every container kind and in upper case", () => {
+  const zip = zipBytes();
+  const ole2 = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]);
+  const stems = ["Invoice #123", "Q3 #2", "what? now", "a#b?c", "#1", "?", "x ?1 #2", "2026-10 #3 (final)"];
+  const tails = ["", "?sig=abc", "#tab", "?v=1.2"];
+  for (const [extensions, expected] of [[OFFICE, "office"], [SHEET, "sheet"]]) {
+    for (const extension of extensions) for (const stem of stems) for (const tail of tails) for (const ext of [extension, extension.toUpperCase()]) {
+      const name = `${stem}.${ext}${tail}`;
+      const sniffed = sniffKind(zip, name);
+      assert.ok(sniffed.ok, `${name}: ${JSON.stringify(sniffed)}`);
+      assert.deepEqual([sniffed.kind, sniffed.format], [expected, "zip"], name);
+    }
+  }
+  for (const [bytes, name, expected] of [[ole2, "Invoice #12.doc", "office"], [ole2, "Q3 #2.XLS", "sheet"], [ole2, "Q3 #2.xls?sig=a", "sheet"], [ole2, "Invoice #12.DOC#p3", "office"]]) assert.equal(kindOf(bytes, name), expected, name);
+  assert.equal(kindOf(zip, "dir#1/Invoice #12.docx"), "office");
+  assert.equal(kindOf(zip, "dir?/Q3 #2.xlsx"), "sheet");
+});
+
+test("a name that ends in an extension has it, wherever the dots before it are; a name that ends in none and has no extension before its query has no hint", () => {
+  const zip = zipBytes();
+  assert.equal(kindOf(zip, "download?file=a.docx"), "office", "the name ends in .docx");
+  assert.equal(kindOf(zip, "download#a.xlsx"), "sheet");
+  assert.equal(kindOf(zip, "get?name=report.pptx"), "office");
+  for (const name of ["download?v=1.2", "download#a.b", "get?name=report&x=1.2", "dir.docx/download?v=1.2", "dir.xlsx/file#a.b", "?a.b", "#a.b", "download", "docx", ".", "report."]) {
     const sniffed = sniffKind(zip, name);
     assert.ok(sniffed.ok, name);
     assert.deepEqual([sniffed.kind, sniffed.format], ["unknown", "zip"], `${name} is a zip and nothing more`);
   }
-  assert.equal(kindOf(text("plain notes\n"), "notes?file=a.png"), "text", "text is not a PNG because a query says so");
-  assert.equal(kindOf(text("plain notes\n"), "notes#a.pdf"), "text");
+  for (const name of ["notes?v=1.2", "notes#1", "Invoice #123.txt", "a?b.csv#c"]) assert.equal(kindOf(text("plain notes\n"), name), "text", name);
 });
 
-test("a mismatch under a name from a link names the file without its query, which can carry a signature", () => {
+test("a mismatch names the file without a query or fragment that follows its extension, which can carry a signature, and a name without one whole", () => {
   const png = built.png;
-  const sniffed = sniffKind(png, "reports/chart.pdf?sig=SECRETSIGNATURE&exp=99#frag");
-  assert.equal(sniffed.ok, false);
-  assert.equal(sniffed.code, "unsupported");
-  assert.ok(sniffed.reason.startsWith("chart.pdf has a .pdf extension but its bytes are a PNG image"), sniffed.reason);
-  assert.ok(!/SECRETSIGNATURE|exp=99|frag/.test(sniffed.reason), sniffed.reason);
-  assert.equal(sniffKind(png, "chart.pdf").reason, "chart.pdf has a .pdf extension but its bytes are a PNG image (first bytes 89 50 4e 47 0d 0a 1a 0a)", "and a plain name reads as it always did");
-  assert.equal(sniffKind(zipSync({ "a.txt": strToU8("x") }), "report.docx").kind, "office", "plain names are unchanged");
+  const reason = (name) => { const sniffed = sniffKind(png, name); assert.equal(sniffed.ok, false, name); assert.equal(sniffed.code, "unsupported"); return sniffed.reason; };
+  const tail = " extension but its bytes are a PNG image (first bytes 89 50 4e 47 0d 0a 1a 0a)";
+  assert.equal(reason("reports/chart.pdf?sig=SECRETSIGNATURE&exp=99#frag"), `chart.pdf has a .pdf${tail}`);
+  assert.equal(reason("chart.pdf?v=1.2&sig=SECRETSIGNATURE"), `chart.pdf has a .pdf${tail}`, "cut where the extension ends, whatever dots the query has");
+  assert.equal(reason("Q3 #2.docx?sig=SECRETSIGNATURE"), `Q3 #2.docx has a .docx${tail}`, "a # in the name stays");
+  assert.equal(reason("Invoice #123.pdf"), `Invoice #123.pdf has a .pdf${tail}`);
+  assert.equal(reason("chart.pdf"), `chart.pdf has a .pdf${tail}`, "and a plain name reads as it always did");
+  assert.equal(kindOf(zipBytes(), "report.docx"), "office", "plain names are unchanged");
 });
 
 test("an extension that names a property of Object is not a kind", () => {
