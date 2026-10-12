@@ -314,6 +314,7 @@ describe("the GPU pool: idle timeout", () => {
     assert.deepEqual(removed.sort(), ["sb-0", "sb-1"], "both boxes removed after the pool sat unused");
     assert.ok(logs.includes("pool.idle-timeout"));
     assert.deepEqual(pool.status().boxes.map((b) => b.state), ["idle", "idle"]);
+    assert.equal(logs.filter((e) => e === "pool.box-removed").length, 2, "each removed box says so, so the report of how many are up drops");
     // The next request makes boxes again and is served.
     const b = await pool.acquire("b");
     assert.ok(logs.includes("pool.wake"));

@@ -39,3 +39,25 @@ test("the ready line is printed when the boxes the demo needs are up, when every
   assert.equal(shouldAnnounce(r(0, 4), 4, 5_000, 120_000), true, "every create has settled (all failed): the caller says so");
   assert.equal(shouldAnnounce(r(0, 1), 4, 500_000, 120_000), false, "none up and others still placing: keep waiting, never announce an empty pool");
 });
+
+test("a box whose retry is pending is not settled: every first create failing does not end the wait while retries can still recover the demo", () => {
+  const failedAndRetrying = log(["pool.box-failed", 0], ["pool.box-retry", 0], ["pool.box-failed", 1], ["pool.box-retry", 1], ["pool.box-failed", 2], ["pool.box-retry", 2], ["pool.box-failed", 3], ["pool.box-retry", 3]);
+  const r = poolReport(failedAndRetrying, 3);
+  assert.deepEqual(r, { up: 0, settled: 0, size: 3 });
+  assert.equal(shouldAnnounce(r, 4, 600_000, 120_000), false, "none up and retries pending: keep waiting (the startup deadline, not this, decides when to give up)");
+  // With no retry setting the failures are final: settled, and live says so.
+  const final = poolReport(log(["pool.box-failed", 0], ["pool.box-failed", 1], ["pool.box-failed", 2], ["pool.box-failed", 3]), 3);
+  assert.deepEqual(final, { up: 0, settled: 4, size: 3 });
+  assert.equal(shouldAnnounce(final, 4, 1_000, 120_000), true);
+});
+
+test("a removed or dead box is no longer up: idle cleanup and a box that ended drop the count", () => {
+  const up = log(["pool.box-ready", 0], ["pool.box-ready", 1], ["pool.box-ready", 2]);
+  assert.equal(readyLine(poolReport(up, 3)), "ready: 3 of 3 GPU boxes");
+  const removed = poolReport(up + "\n" + log(["pool.box-removed", 0], ["pool.box-removed", 1], ["pool.box-removed", 2]), 3);
+  assert.equal(removed.up, 0);
+  assert.equal(readyLine(removed), "ready: 0 of 3 GPU boxes (3 still placing)");
+  assert.equal(poolReport(up + "\n" + log(["pool.box-dead", 2]), 3).up, 2);
+  // A removed box that is made again (the pool wakes for demand) counts again.
+  assert.equal(poolReport(up + "\n" + log(["pool.box-removed", 0], ["pool.box-ready", 0]), 3).up, 3);
+});

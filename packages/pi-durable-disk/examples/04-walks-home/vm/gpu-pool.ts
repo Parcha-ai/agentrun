@@ -347,6 +347,7 @@ export class GpuPool {
       if (!keepState) slot.state = "removed";
       slot.gone = true;
       delete slot.thread;
+      this.#options.log("pool.box-removed", { index: slot.index, box: slot.box.name }); // the report of how many boxes are up reads this: a removed box is no longer one
     }
     this.#changed();
     return gone;
