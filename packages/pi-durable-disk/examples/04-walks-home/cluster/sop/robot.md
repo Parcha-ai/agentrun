@@ -63,11 +63,16 @@ from one side.
   only through its tags, online and offline. A piece with no tag becomes decoration.
 - **Legs carry two tags:** `["legs", "front_legs"]` or `["legs", "back_legs"]`, on every piece of the leg and its foot.
 - **Name nothing the helper names:** the root body is torso, each leg's foot is `<body>_foot`, and the keyframes are
-  stand and home. The foot is the last piece at the tip of a limb tagged legs, and any shape works; if the tip is not
-  the foot, mark the foot piece with `foot: true`.
+  stand and home. The foot is the last piece at the tip of a limb tagged legs; if the tip is not the foot, mark the
+  foot piece with `foot: true`.
 - **Stance:** at their `stand` angles the feet must reach the floor and hold the body up. Put the mass low and between
   the feet, and use wide feet for a heavy body.
 - **Weight:** 1 to 30 kg in total, with the torso the heaviest piece. Tails, necks and decorations stay light.
+- **Feet, motors and mass, so it can learn to walk:** every foot a flat box with
+  `friction: "1.4 0.05 0.01"`, every leg motor `strength: 14` or more, and most of the mass in the torso. Measured on
+  the starter dog: ball feet walked 0.087 m/s and never passed; flat box feet with friction 1.4 passed in 125 s; with
+  strength 14 and a 6 kg torso as well, in 86.6 s, the dinosaur's time. build.mjs warns about a ball foot or a weak leg
+  motor.
 
 ## Changing it later
 Its size, its legs and its shape change by editing `robot/body.mjs` and running the loop again from step 2. There are
