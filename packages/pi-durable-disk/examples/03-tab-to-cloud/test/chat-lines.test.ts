@@ -206,3 +206,74 @@ test("the check-in is one quiet line from its typed fields: back on the server, 
   assert.equal(brainText(BRAIN_CHECKIN, { files: 0 }), "↑ back on the server");
   assert.equal(brainText(BRAIN_CHECKIN, {}), "↑ back on the server", "no count, none claimed");
 });
+
+import { driverLabel, movesAfterTheirMessage, pendingEchoes, placementLine, sentBase, sentState, withoutSent, type Sent } from "../tab/chat-lines.ts";
+
+const user = (id: string, text: string): ChatItem => ({ kind: "user", id, text });
+const reply = (id: string): ChatItem => ({ kind: "assistant", id, text: "ok", thinking: "", streaming: false });
+const move = (id: string, by: string | null, phase: "start" | "done" | null = null): ChatItem => ({ kind: "switch", id, text: "t", switchId: id, planned: true, to: "a Modal VM", by, probability: 0.98, phase });
+
+test("a move Jev decided for a message reads after that message, not after the reply before it", () => {
+  const written = [user("u1", "one"), reply("a1"), move("m1", "placement", "start"), user("u2", "two"), reply("a2")];
+  assert.deepEqual(movesAfterTheirMessage(written).map((i) => i.id), ["u1", "a1", "u2", "m1", "a2"]);
+});
+
+test("a move nobody decided for a message stays where it was written", () => {
+  const written = [user("u1", "one"), reply("a1"), move("m1", null), user("u2", "two")];
+  assert.deepEqual(movesAfterTheirMessage(written).map((i) => i.id), ["u1", "a1", "m1", "u2"]);
+});
+
+test("a placement made when a turn ended is not the next message's move: it stays where it was written", () => {
+  const written = [user("u1", "one"), reply("a1"), move("m1", "placement", "done"), user("u2", "two")];
+  assert.deepEqual(movesAfterTheirMessage(written).map((i) => i.id), ["u1", "a1", "m1", "u2"]);
+  assert.deepEqual(movesAfterTheirMessage([user("u1", "one"), reply("a1"), move("m1", "placement"), user("u2", "two")]).map((i) => i.id), ["u1", "a1", "m1", "u2"], "an older notice with no phase is left alone");
+});
+
+test("a placed move with a reply after it (no message of its own) is left alone", () => {
+  const written = [user("u1", "one"), move("m1", "jev", "start"), reply("a1")];
+  assert.deepEqual(movesAfterTheirMessage(written).map((i) => i.id), ["u1", "m1", "a1"]);
+});
+
+const sent = (requestId: string, text: string, base: number, stage: Sent["stage"] = "sending"): Sent => ({ requestId, text, base, stage });
+
+test("a line is shown as sent until the transcript holds it", () => {
+  assert.deepEqual(pendingEchoes([user("u1", "hi")], [sent("r1", "make a dino", 0)]).map((s) => s.requestId), ["r1"]);
+  assert.deepEqual(pendingEchoes([user("u1", "hi"), move("m", "placement")], [sent("r1", "hi", 0)]).map((s) => s.requestId), [], "held: the same text is now in the transcript");
+});
+
+test("the same text sent twice is two lines: each leaves when its own copy arrives", () => {
+  const items = [user("u1", "go")];
+  const first = sent("r1", "go", sentBase([], [], "go"));
+  const second = sent("r2", "go", sentBase([], [first], "go"));
+  assert.deepEqual(pendingEchoes(items, [first, second]).map((s) => s.requestId), ["r2"]);
+  assert.deepEqual(pendingEchoes([...items, user("u2", "go")], [first, second]).map((s) => s.requestId), []);
+  assert.equal(sentBase([user("u0", "go")], [], "go"), 1, "an earlier identical line already held counts");
+});
+
+test("a sent line says where it is: sending, Jev deciding, then the move or nothing", () => {
+  assert.equal(sentState(sent("r", "x", 0)), "sending…");
+  assert.equal(sentState(sent("r", "x", 0, "deciding")), "Jev deciding…");
+  assert.equal(sentState({ ...sent("r", "x", 0, "decided"), move: placementLine("a Modal VM", 0.98) }), "→ Modal VM · Jev 0.98");
+  assert.equal(sentState(sent("r", "x", 0, "decided")), "", "Jev kept it where it was: no move line");
+  assert.equal(placementLine("your browser", null), "← your browser");
+});
+
+test("a refused line moves later copies of the same text up, so the one that goes through is not pending for ever", () => {
+  const first = sent("r1", "go", sentBase([], [], "go"));
+  const second = sent("r2", "go", sentBase([], [first], "go"));
+  const left = withoutSent([], [first, second], "r1");
+  assert.deepEqual(left.map((s) => [s.requestId, s.base]), [["r2", 0]]);
+  assert.deepEqual(pendingEchoes([user("u1", "go")], left), [], "the one copy the transcript holds is the second line's");
+  assert.deepEqual(withoutSent([], [first, sent("r3", "other", 0)], "r1").map((s) => s.requestId), ["r3"], "other texts are not touched");
+  assert.deepEqual(withoutSent([user("u1", "go")], [first], "r1"), [], "a line the transcript already holds is not pending");
+});
+
+test("the header names the model that answers, from the driver's typed model", () => {
+  const names = { "robot-qwen35-0.8b-v5": "v5 · 0.8B" };
+  const cloud = { model: { provider: "openai", modelId: "gpt-6-sol" }, tabProvider: "tab-local", names, cloud: "stub" };
+  assert.equal(driverLabel(cloud), "gpt-6-sol");
+  assert.equal(driverLabel({ ...cloud, model: { provider: "tab-local", modelId: "robot-qwen35-0.8b-v5" } }), "v5 · 0.8B in this tab");
+  assert.equal(driverLabel({ ...cloud, model: { provider: "tab-local", modelId: "dino-1b" } }), "dino-1b in this tab", "no short name: its id");
+  assert.equal(driverLabel({ ...cloud, model: null }), "stub", "no typed model read yet: the run's cloud model id");
+  assert.equal(driverLabel({ ...cloud, model: null, cloud: "" }), "");
+});

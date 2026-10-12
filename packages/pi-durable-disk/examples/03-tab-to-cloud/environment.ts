@@ -42,6 +42,8 @@ export interface SwitchInfo {
   readonly by?: "agent" | "placement";
   readonly reason?: string;
   readonly probability?: number;
+  /** For a placement: asked for a person's message ("start", the message follows) or when a turn ended ("done"). */
+  readonly phase?: "start" | "done";
 }
 
 const list = (items: readonly string[]) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
@@ -80,7 +82,7 @@ export async function admitNotice(harness: Harness, agent: AgentChange, facts: E
     {
       type: "write",
       requestId: `env-switch:${move.id}`,
-      entry: { kind: NOTICE_KIND, model: [{ role: "user", content: text, timestamp: now }], data: { switchId: move.id, from: move.from, planned: move.planned, ...(move.by ? { by: move.by, ...(move.reason ? { reason: move.reason } : {}), ...(move.probability !== undefined ? { probability: move.probability } : {}) } : {}), facts: { ...facts, tools: [...facts.tools] } } },
+      entry: { kind: NOTICE_KIND, model: [{ role: "user", content: text, timestamp: now }], data: { switchId: move.id, from: move.from, planned: move.planned, ...(move.by ? { by: move.by, ...(move.reason ? { reason: move.reason } : {}), ...(move.probability !== undefined ? { probability: move.probability } : {}), ...(move.phase ? { phase: move.phase } : {}) } : {}), facts: { ...facts, tools: [...facts.tools] } } },
     },
     context,
   );

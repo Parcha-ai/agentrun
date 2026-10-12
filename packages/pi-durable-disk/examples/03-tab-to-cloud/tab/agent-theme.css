@@ -144,3 +144,9 @@ details.thread .thread-chat .turn { font-size: 14px; }
 /* what a thread says is the agent's words: the body type, not the code type of the tool lines it sits in */
 details.thread .thread-chat .turn { font: 400 14px/1.5 var(--sans); color: var(--ink); }
 .note.brain.home::before, .note.brain.moved::before { content: ""; } /* these lines carry their own arrow */
+/* the model answering now: small, in the header, quiet */
+.driver { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.driver[hidden] { display: none; }
+/* a line just sent, before the transcript holds it, and where it is */
+.turn.user.sent { opacity: 0.85; }
+.move.sent-state { opacity: 0.8; }
