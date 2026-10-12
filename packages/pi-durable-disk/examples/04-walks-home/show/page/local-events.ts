@@ -6,7 +6,7 @@ import type { ShowEvent, ShowState } from "../types.ts";
 export type EventStore = { get(): string | null; set(value: string): void };
 
 /** The events the tab can cause, with the field that carries each one's payload. Anything else in a store is not ours. */
-const PAYLOAD: Record<string, string> = { net: "net", checkin: "checkin", routing: "routing", homecoming: "homecoming", "homecoming.loaded": "loadMs", tools: "tools" };
+const PAYLOAD: Record<string, string> = { net: "net", checkin: "checkin", routing: "routing", homecoming: "homecoming", "homecoming.loaded": "loadMs", tools: "tools", stumble: "stumble" };
 
 function valid(e: unknown): e is ShowEvent {
   if (e === null || typeof e !== "object") return false;

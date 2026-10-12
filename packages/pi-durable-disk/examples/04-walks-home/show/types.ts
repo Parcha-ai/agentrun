@@ -211,6 +211,9 @@ export type Round = {
   measured: string[];
 };
 
+/** The tab's `body-mismatch` event: the body changed and these installed skills were taught for another one (the robot stumbles with them until they are relearned). */
+export type Stumble = { previousSha: string | null; bodySha: string; notFitting: string[]; fitting: string[] };
+
 /** One tool call of the current task, as the transcript says it. `args` is the call's JSON as the transcript holds it. */
 export type ToolRow = { id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted" };
 
@@ -260,6 +263,8 @@ export type ShowState = {
   tools: ToolRow[];
   /** The latest round the cluster finished (round.json); null until it is written. */
   round: (Round & { at: number }) | null;
+  /** The latest body change the tab reported, with the skills that no longer fit; null until it says so. */
+  stumble: (Stumble & { at: number }) | null;
   /** The body the robot has now (home/skills.json's body_mjcf_sha256, the sha256 of its model file): a skill trained for another body is a relearn. Null until the disk says. */
   robotBody: { sha: string; at: number } | null;
   /** The agent's threads, in the order they first appeared (a tile never moves). Empty until the agent splits. */
@@ -293,6 +298,7 @@ export type ShowEvent =
   /** The robot's body, as the run's disk says it (home/skills.json). */
   | { t: "body"; at: number; sha: string }
   | { t: "round"; at: number; round: Round }
+  | { t: "stumble"; at: number; stumble: Stumble }
   | { t: "thread"; at: number; id: string; patch: Partial<Omit<Thread, "id" | "points" | "at">> }
   /** A thread's checkpoint: how well it does its skill, `value` in `unit`. The same or an older `n` is a repeat. */
   | { t: "thread.point"; at: number; id: string; n: number; value: number | null; unit?: string; passes?: boolean | null; fell?: boolean; seconds?: number | null }

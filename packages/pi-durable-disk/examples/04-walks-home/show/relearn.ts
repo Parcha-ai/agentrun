@@ -2,7 +2,7 @@
 // for that body, "all passed in N s" is the largest first-pass time (passed_at.t), "all home" the largest wall time, the CPU time the sum of the skills' own estimates (one machine teaching
 // them one after another). The robot's own body is home/skills.json's body_mjcf_sha256: a skill for another body is a relearn. Pure.
 import { esc } from "./page/dom.ts";
-import type { Round, Thread } from "./types.ts";
+import type { Round, Stumble, Thread } from "./types.ts";
 
 /** home/skills.json: the body the robot has now. Only that field is read. */
 export function parseHomeSkills(text: string): { bodySha: string } | null {
@@ -64,16 +64,23 @@ export type Relearn = {
   relearning: boolean;
   /** The numbers come from the round's own summary (round.json), not only from adding up the skill files. */
   fromRound: boolean;
+  /** The tab said the body changed and these skills no longer fit it, and no skill file for the new body has appeared yet: the card is the stumble, and claims no GPU. Null once skills for that body exist. */
+  stumbled: string[] | null;
 };
 
 /**
  * The body in question is the one that differs from the robot's home body (a relearn), else the one the skills are for now. A skill that names no body does not count: the stage does not guess.
  */
-export function relearnSummary(threads: readonly Thread[], homeBody: string | null, round: Round | null = null): Relearn | null {
+export function relearnSummary(threads: readonly Thread[], homeBody: string | null, roundIn: Round | null = null, stumble: Stumble | null = null): Relearn | null {
+  // The tab's body-mismatch names the body being relearned: a round of another (older) body is not this relearn's.
+  const round = roundIn !== null && stumble !== null && roundIn.bodySha !== stumble.bodySha ? null : roundIn;
   const withBody = threads.filter((t) => t.mjcf !== null);
+  if (stumble !== null && round === null && !withBody.some((t) => t.mjcf === stumble.bodySha)) {
+    return { bodyName: null, gpus: 0, passed: 0, passedS: null, done: false, homeS: null, cpuS: null, cpuCores: null, relearning: true, fromRound: false, stumbled: stumble.notFitting };
+  }
   if (withBody.length === 0 && round === null) return null;
   const differs = homeBody === null ? [] : withBody.filter((t) => t.mjcf !== homeBody);
-  const body = round?.bodySha ?? (differs.length > 0 ? differs : withBody)[0]!.mjcf;
+  const body = round?.bodySha ?? stumble?.bodySha ?? (differs.length > 0 ? differs : withBody)[0]!.mjcf;
   const ts = withBody.filter((t) => t.mjcf === body);
   const passedAll = ts.length > 0 && ts.every((t) => t.passedS !== null);
   const doneAll = ts.length > 0 && ts.every((t) => t.status === "done");
@@ -100,6 +107,7 @@ export function relearnSummary(threads: readonly Thread[], homeBody: string | nu
     cpuCores: round?.cpuS != null ? (round.cpuCores ?? null) : own.cpuCores,
     relearning: round ? round.relearn : homeBody !== null && body !== homeBody,
     fromRound: round !== null,
+    stumbled: null,
   };
 }
 
@@ -108,6 +116,10 @@ const span = (s: number): string => (s < 120 ? `${Math.round(s)} s` : s < 7200 ?
 export function relearnHtml(r: Relearn | null): string {
   if (r === null) return "";
   const name = r.bodyName ?? "a new body";
+  if (r.stumbled !== null) {
+    const n = r.stumbled.length;
+    return `<div class="rl" data-done="false"><div class="k">The robot's body changed</div><div class="who">${esc(name)}</div><div class="line">${n} ${n === 1 ? "skill no longer fits" : "skills no longer fit"} it: ${esc(r.stumbled.join(", "))}</div><div class="cpu">The robot stumbles until they are relearned for this body.</div></div>`;
+  }
   const head = r.done && r.fromRound ? (r.relearning ? "Relearned its new body" : "Learned its body") : r.relearning ? "Learning a new body" : "The robot's body";
   // D2's times count from each thread's own start (warm-up and the pool's acquire time are not in them).
   const learned = r.passedS !== null ? `all ${r.gpus} skills passed in ${span(r.passedS)} (from each thread's start)` : `${r.passed} of ${r.gpus} skills have passed`;

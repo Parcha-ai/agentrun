@@ -1,6 +1,6 @@
 // What the stage says about the tab's own events (robot-events.ts). Pure: state in, words or HTML out. Everything said is a field of an event; a number the event did not carry is not said.
 import { esc } from "./page/dom.ts";
-import type { Checkin, Homecoming, Net, Note, Routing, ToolRow } from "./types.ts";
+import type { Checkin, Homecoming, Net, Note, Routing, Stumble, ToolRow } from "./types.ts";
 
 const bytes = (n: number): string => (n === 0 ? "0 bytes" : n < 1e6 ? `${Math.round(n / 1e3)} KB` : n < 1e8 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e6)} MB`);
 const duration = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : ms < 1e4 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 1000)} s`);
@@ -75,6 +75,12 @@ export function toolStripHtml(tools: readonly ToolRow[]): string {
 /** The caption for a net change: said, and kept, because the stage's whole point at that beat is that the agent went offline and is still working. */
 export function netNote(net: Net, at: number): Note {
   return { at, kind: "home", text: net.online ? "The agent's tab is back online" : `The agent's tab is offline${net.reason ? `: ${net.reason}` : ""}`, rank: 5, urgent: true, keep: true };
+}
+
+/** The body changed and some installed skills no longer fit it: said once, with only what the tab's event carried (the skills, not a duration or a GPU count). */
+export function stumbleNote(s: Stumble, at: number): Note {
+  const n = s.notFitting.length;
+  return { at, kind: "home", text: `The robot's body changed: ${n} ${n === 1 ? "skill" : "skills"} no longer fit it, so it stumbles`, rank: 5, urgent: true, keep: true };
 }
 
 /** A check-in that finished or failed is said; one that is only starting is the line's to say. */
