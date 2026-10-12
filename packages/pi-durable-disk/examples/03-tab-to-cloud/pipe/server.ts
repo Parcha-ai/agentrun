@@ -1165,12 +1165,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       return;
     }
     const file = normalize(join(root, path));
-    if (!(file === resolve(root) || file.startsWith(resolve(root) + sep)) || !existsSync(file) || !statSync(file).isFile()) {
+    const stat = (file === resolve(root) || file.startsWith(resolve(root) + sep)) && existsSync(file) ? statSync(file) : undefined;
+    if (!stat?.isFile()) {
       res.writeHead(404).end("not found");
       return;
     }
     res.writeHead(200, {
       "content-type": TYPES[extname(file)] ?? "application/octet-stream",
+      "content-length": String(stat.size), // a download knows its total (a model part is up to 209 MB)
       "cache-control": "no-store",
       // Cross-origin isolation: the in-tab runtime needs SharedArrayBuffer.
       "cross-origin-opener-policy": "same-origin",

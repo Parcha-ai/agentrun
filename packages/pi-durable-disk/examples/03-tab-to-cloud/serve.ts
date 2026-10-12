@@ -5,6 +5,8 @@
 //                 [--judge-model ID [--judge-url URL] [--judge-key-env NAME]]
 //                 [--creature-dir DIR]   the creature page's built folder, served under /tab/ (default: 04-walks-home/tab/dist when built); /tab/offline.json lists what a checkout caches
 //                 [--show-dir DIR]   the stage's built files, served under /show/ on this origin (isolation headers like the tab's; /show/offline.json lists what a checkout caches)
+//                 [--models-dir DIR]   the robot model's files, served under /models/ (default: $DEMO_MODELS_DIR): the page's local brain loads them from there and keeps them
+//                                      in OPFS (D1's v5: its parts, <model>.parts.json, <model>.serving.json, the warm state <model>.state.bin and its sidecar)
 //                 [--brain-judge jev | --brain-judge-module PATH]   the question the page's brain router asks (POST /api/runs/<id>/brain-judge): jev (needs TYPESAFE_API_KEY), or a module whose default export is a judge runner (checks)
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
@@ -54,6 +56,7 @@ const { values } = parseArgs({
     "brain-judge": { type: "string" },
     "brain-judge-module": { type: "string" },
     "show-dir": { type: "string" },
+    "models-dir": { type: "string", default: process.env.DEMO_MODELS_DIR },
     "creature-dir": { type: "string" },
     "judge-model": { type: "string" },
     "judge-url": { type: "string" },
@@ -203,7 +206,8 @@ const server = createDemoServer({
   pageDir: join(here, "tab", "dist"),
   // `--show-dir`: the stage's built files under /show/ on this origin (with the page's isolation headers), so the stage and the agent's tab share one origin and a window.open'd tab can be messaged;
   // the checkout caches what /show/offline.json lists (tab/offline.ts)
-  staticRoots: { "/wasmer/": join(here, "node_modules", "@wasmer", "sdk"), ...(values["show-dir"] ? { "/show/": resolvePath(values["show-dir"]) } : {}), ...(creatureDir ? { "/tab/": creatureDir } : {}) },
+  // `--models-dir`: the local brain's files under /models/, the paths the page loads them from (?phone=1, and the laptop's page taken offline), with the same headers
+  staticRoots: { "/wasmer/": join(here, "node_modules", "@wasmer", "sdk"), ...(values["show-dir"] ? { "/show/": resolvePath(values["show-dir"]) } : {}), ...(creatureDir ? { "/tab/": creatureDir } : {}), ...(values["models-dir"] ? { "/models/": resolvePath(values["models-dir"]) } : {}) },
   lease: { heartbeatMs: 2_000, expiryMs: 10_000, marginMs: 3_000 },
   writerGraceMs: Number(values["grace-ms"]),
   ...(values["remote-start-ms"] !== undefined ? { remoteStartMs: Number(values["remote-start-ms"]) } : {}),

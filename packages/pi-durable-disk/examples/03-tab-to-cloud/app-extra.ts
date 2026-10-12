@@ -2,7 +2,7 @@
 // is `(context) => AppExtra`. The shared tools and the move stay the app's; the extra adds tools, a default tool selection and an environment wrapper.
 import type { HarnessSettings, Registry } from "@earendil-works/pi-durable";
 import type { AppOptions } from "@parcha/pi-durable-disk";
-import type { CloudLink } from "./cloud-link.ts";
+import type { CloudLink, ThreadsOf } from "./cloud-link.ts";
 
 export interface AppExtraContext {
   /** The link to the demo server (undefined when the host reaches its model directly). */
@@ -18,6 +18,8 @@ export interface AppExtra {
   /** Merged over the app's settings (`extensions`: the root's default tool selection). */
   settings?: Partial<HarnessSettings>;
   wrapEnv?: AppOptions["wrapEnv"];
+  /** The host's own listing of its teaching threads (the cluster's typed one): with it the link relays each thread's conversation to viewers. */
+  threadsOf?: ThreadsOf;
 }
 
 export type AppExtraModule = (context: AppExtraContext) => AppExtra | Promise<AppExtra>;

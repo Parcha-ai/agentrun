@@ -170,13 +170,14 @@ try {
       "--placer-arg", `client=${placerClient}`,
       ...(episode !== "walks" && !robot ? ["--placer-arg", `episode=${episode === "obsession" ? "obsession" : "model"}`, "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
       // The robot: the session is moved to the Modal VM by the placer's "teach" rule; the model files and skills are not restored into the tab (they travel as chunks and files).
-      ...(robot ? ["--placer-arg", "episode=robot", "--placer-arg", `skills=${robotSkills}`, "--no-restore", "home/"] : []),
+      ...(robot ? ["--placer-arg", "episode=robot", "--placer-arg", `skills=${robotSkills}`, "--no-restore", "home/skills/"] : []),
       "--typesafe",
       ...(robot
         ? [
             // The session's VM mounts the disk (the default transport) and the cluster's boxes start when the first page takes the run.
             "--cloud-arg", "robot=true",
             ...(process.argv.includes("--robot-plan") ? ["--cloud-arg", "robot-plan=true"] : []),
+            ...(process.argv.includes("--robot-prewarm") ? ["--cloud-arg", "robot-prewarm=true"] : []),
             "--cloud-arg", `cluster-size=${clusterSize}`,
             "--cloud-arg", `cluster-spares=${clusterSpares}`,
             ...(clusterIdle > 0 ? ["--cloud-arg", `cluster-idle-minutes=${clusterIdle}`] : []),

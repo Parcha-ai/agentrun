@@ -653,10 +653,16 @@ export class ArtifactSync {
     this.o.onError?.(e instanceof Error ? e : new Error(String(e)));
   }
 
+  /**
+   * Start a command. Its caller reads stdout and stderr before it awaits anything else: a box whose streams are a local child's
+   * drops output nobody is reading when the command exits (Node resumes an unread child stream), and a fast command can exit
+   * during any other await. So stdin is closed beside those reads (`closed`, awaited with them), not before they begin.
+   */
   private async exec(argv: string[], context?: Context) {
     const p = await bounded(this.o.box.exec(argv, { mode: "binary", timeoutMs: seconds(this.o.opTimeoutMs + 5_000) }), this.o.opTimeoutMs, context);
-    await bounded(p.stdin.close().catch(() => {}), this.o.opTimeoutMs, context); // a stalled close must not hold a flush or a stop
-    return p;
+    const closed = bounded(p.stdin.close().catch(() => {}), this.o.opTimeoutMs, context); // a stalled close must not hold a flush or a stop
+    closed.catch(() => {}); // awaited by the caller with its reads; never an unhandled rejection meanwhile
+    return { p, closed };
   }
 
   private async pass(all: boolean, context?: Context): Promise<void> {
@@ -665,8 +671,8 @@ export class ArtifactSync {
     const literal = (x: string) => x.replace(/[*?[\]\\]/g, (c) => `\\${c}`);
     const prune = (this.o.exclude ?? []).map((x) => x.replace(/^\.?\/+|\/+$/g, "")).filter(Boolean).flatMap((x, i) => [...(i ? ["-o"] : []), "-path", `./${literal(x)}`]);
     const expr = [...(prune.length ? ["(", ...prune, ")", "-prune", "-o"] : []), "-type", "f", "!", "-name", "*.tmp", "!", "-name", ".*", "-printf", "%P\\0%y\\0%s\\0%T@\\0"];
-    const p = await this.exec(["sh", "-c", `[ -d "$1" ] || exit 0; cd -- "$1" && shift && find . "$@"`, "sh", this.o.remote, ...expr], context);
-    const [out, errBytes, code] = await bounded(Promise.all([readAll(p.stdout), readAll(p.stderr), p.wait()]), this.o.opTimeoutMs, context);
+    const { p, closed } = await this.exec(["sh", "-c", `[ -d "$1" ] || exit 0; cd -- "$1" && shift && find . "$@"`, "sh", this.o.remote, ...expr], context);
+    const [out, errBytes, code] = await bounded(Promise.all([readAll(p.stdout), readAll(p.stderr), p.wait(), closed]), this.o.opTimeoutMs, context);
     if (code !== 0) throw new Error(`listing ${this.o.remote} on ${this.o.box.sandboxId} failed (${code}): ${decoder().decode(errBytes).trim().slice(-200)}`);
     const now = parseFind(out);
     now.sort((a, b) => a.mtimeMs - b.mtimeMs);
@@ -704,20 +710,21 @@ export class ArtifactSync {
     const target = joinLocal(this.o.local, rel);
     const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
     await mkdir(dirname(target), { recursive: true });
-    const p = await this.exec(["sh", "-c", `s1=$(find "$1" -maxdepth 0 -printf '%s:%T@') || exit 3; cat -- "$1" || exit 4; s2=$(find "$1" -maxdepth 0 -printf '%s:%T@') || exit 3; printf '%s\\n%s\\n' "$s1" "$s2" >&2`, "sh", posix.join(this.o.remote, rel)], context);
-    // a file handle, not a stream: a full or unwritable disk is a rejection here, never an unhandled 'error' event
+    // a file handle, not a stream: a full or unwritable disk is a rejection here, never an unhandled 'error' event. Opened
+    // before the command starts, so nothing is awaited between its start and the reads of its output.
     let fh: FileHandle | null = null;
     let n = 0, stamps = "";
     try {
       fh = await open(tmp, "w");
       const out = fh;
+      const { p, closed } = await this.exec(["sh", "-c", `s1=$(find "$1" -maxdepth 0 -printf '%s:%T@') || exit 3; cat -- "$1" || exit 4; s2=$(find "$1" -maxdepth 0 -printf '%s:%T@') || exit 3; printf '%s\\n%s\\n' "$s1" "$s2" >&2`, "sh", posix.join(this.o.remote, rel)], context);
       await bounded((async () => {
         const errText = readAll(p.stderr);
         for await (const c of chunks(p.stdout)) {
           n += c.length;
           await out.write(c);
         }
-        const [errBytes, code] = await Promise.all([errText, p.wait()]);
+        const [errBytes, code] = await Promise.all([errText, p.wait(), closed]);
         stamps = decoder().decode(errBytes);
         if (code !== 0) throw new Error(`copying ${rel} failed (${code}): ${stamps.trim().slice(-200)}`);
       })(), this.o.opTimeoutMs, context);

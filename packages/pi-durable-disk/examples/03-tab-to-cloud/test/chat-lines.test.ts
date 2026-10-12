@@ -67,6 +67,20 @@ test("grep hits: path, line and the matching text of each line; lines that are n
   assert.deepEqual(grepHits(""), []);
 });
 
+import { tailLines } from "../tab/chat-lines.ts";
+
+// A long output (training logs) shows its last lines and says how many came before, until it is opened in full.
+test("the tail of a long output: the last lines, and how many were left out; a short output is whole", () => {
+  const log = Array.from({ length: 30 }, (_, i) => `step ${i + 1}`).join("\n");
+  const t = tailLines(log, 8);
+  assert.equal(t.text, Array.from({ length: 8 }, (_, i) => `step ${i + 23}`).join("\n"));
+  assert.equal(t.hidden, 22);
+  assert.deepEqual(tailLines("a\nb\nc", 8), { text: "a\nb\nc", hidden: 0 });
+  assert.deepEqual(tailLines("a\nb\nc\n", 8), { text: "a\nb\nc", hidden: 0 }, "a trailing newline is not a line");
+  assert.deepEqual(tailLines("", 8), { text: "", hidden: 0 });
+  assert.equal(tailLines("x\n\n\ny", 2).text, "\ny", "blank lines inside count as lines");
+});
+
 import { WriteMemory } from "../tab/write-memory.ts";
 import { hasBody } from "../tab/tool-body.ts";
 import { Latest } from "../tab/latest.ts";
@@ -101,4 +115,15 @@ test("whether a call has anything to open is known without drawing it (a diff is
   assert.equal(hasBody(t("set_color", { part: "legs", color: "red" }, "The legs are now red."), { showOutput: true }), true);
   assert.equal(hasBody(t("set_color", { part: "legs", color: "red" }, "The legs are now red."), { showOutput: false }), false, "the reply says it once: nothing to open");
   assert.equal(hasBody(t("set_color", {}, "", "running"), { showOutput: true }), false);
+});
+
+import { ChatView } from "../tab/chat-view.ts";
+test("a host's notice to the agent (an env.* kind that is not a move) never shows in the chat, and a real user line does", () => {
+  const view = new ChatView();
+  view.apply({ type: "snapshot", entries: [
+    { id: "1", kind: "pi.user", model: [{ role: "user", content: "hello" }] },
+    { id: "2", kind: "env.checkin", model: [{ role: "user", content: "[from the server] You are back in your user's browser..." }], data: {} },
+    { id: "3", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE" }], data: { switchId: "s", facts: { label: "a Modal VM" } } },
+  ], tools: [], generation: undefined, run: undefined } as never);
+  assert.deepEqual(view.items().map((i) => i.kind), ["user", "switch"], "the check-in prompt is hidden; the move stays (drawn as one line)");
 });
