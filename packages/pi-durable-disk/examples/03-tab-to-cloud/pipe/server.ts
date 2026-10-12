@@ -734,14 +734,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * Ask the placer where the run should be and announce the decision (before any move it starts). Undefined when there is no
    * placer, the run is not in an environment, or the question failed: the run then stays where it is.
    */
-  async function decide(state: RunState, phase: "start" | "done", message: string): Promise<PlacementDecision | undefined> {
+  async function decide(state: RunState, phase: "start" | "done", message: string, requestId?: string): Promise<PlacementDecision | undefined> {
     const current = currentEnv(state.placement);
     if (!options.placer || current === undefined) return undefined;
     try {
       const decision = await options.placer.decide({ phase, message, current, environments: environments.map((e) => e.id), read: async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined) });
       state.decisions.push(decision);
       if (state.decisions.length > 8) state.decisions.shift();
-      const frame: PipeFrame = { t: "decision", decision };
+      const frame: PipeFrame = { t: "decision", decision, ...(requestId ? { requestId } : {}) };
       for (const viewer of state.viewers) viewer.send(frame);
       state.pipe?.broadcast(frame);
       log("placement.decision", { run: state.ref.id, phase, current, choice: decision.choice, latencyMs: decision.latency_ms, model: decision.model, probabilities: Object.fromEntries(decision.options.map((o) => [o.id, o.probability])) });
@@ -780,7 +780,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     }
     if (state.opening) return deliverSubmit(state, text, requestId);
     const current = currentEnv(state.placement);
-    const decision = decided ?? (await decide(state, "start", text));
+    if (!decided && options.placer) socket.send({ t: "placing", requestId });
+    const decision = decided ?? (await decide(state, "start", text, requestId));
     // A message that needs a move waits while the agent's turn runs: a move then would release the pipe under a step that is about to start. One that stays where it is goes on at once.
     if (decision && decision.choice !== current && environment(decision.choice) && turnRunning(state)) {
       state.pendingSubmits.push({ text, requestId, queuedBy: socket, decided: decision });
@@ -965,7 +966,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   async function viewingFrame(state: RunState): Promise<PipeFrame> {
     const files = state.pipe ? await state.pipe.viewerFiles().catch(() => []) : [];
-    return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [], environments, ...(state.decisions.length > 0 ? { decisions: [...state.decisions] } : {}) };
+    return { t: "viewing", placement: state.placement, files, events: state.pipe ? [...state.pipe.events] : [], environments, ...(state.decisions.length > 0 ? { decisions: [...state.decisions] } : {}), model: state.model.options.model };
   }
 
   async function addViewer(state: RunState, socket: PipeSocket): Promise<void> {

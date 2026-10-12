@@ -115,6 +115,21 @@ try {
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv1", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: you were moved to a Modal VM; your files came with you.", timestamp: 1 }], data: { switchId: "mv1", from: "your user's browser tab", planned: true, by: "placement", probability: 0.83, facts: { label: "a Modal VM", tools: [] } } } }); demo.renderChat(); return true; })()`);
   const move = await ev<{ lines: string[]; chat: string }>(`({ lines: [...document.querySelectorAll("#chat .move")].map((m) => m.textContent), chat: document.getElementById("chat").textContent })`);
   ok("a move is one quiet line, and the agent's notice is not in the chat", move.lines.includes("→ Modal VM · Jev 0.83") && !/SYSTEM NOTICE|were moved/.test(move.chat), move);
+  // The header names the model answering (the run's model, from the attach), small and quiet.
+  const driver = await ev<{ text: string; hidden: boolean }>(`({ text: document.getElementById("driver").textContent, hidden: document.getElementById("driver").hidden })`);
+  ok("the header names the model that is answering", driver.text === "stub" && !driver.hidden, driver);
+  // A move Jev decided for a message is written just before it; the chat reads it after the message it belongs to.
+  await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv2", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: moved", timestamp: 1 }], data: { switchId: "mv2", planned: true, by: "placement", probability: 0.98, facts: { label: "a Modal VM", tools: [] } } } }); chat.apply({ type: "entry_appended", entry: { id: "u-order", kind: "pi.user", model: [{ role: "user", content: "order check line", timestamp: 2 }] } }); demo.renderChat(); return true; })()`);
+  const order = await ev<string[]>(`[...document.querySelectorAll("#chat > .turn.user, #chat > .move")].map((n) => n.textContent).filter((t) => /order check line|Jev 0.98/.test(t))`);
+  ok("a placed move reads after the message it belongs to, not before it", order.length === 2 && /order check line/.test(order[0]!) && /Jev 0\.98/.test(order[1]!), order);
+  // A sent line shows the moment it is sent, with where it is, and is not shown twice once the transcript holds it.
+  await script([]);
+  const echoed = await ev<{ lines: string[]; state: string[] }>(`(() => { const i = document.getElementById("input"); i.value = "echo check line"; document.getElementById("send").click(); return { lines: [...document.querySelectorAll("#chat .turn.user.sent")].map((n) => n.textContent), state: [...document.querySelectorAll("#chat .sent-state")].map((n) => n.textContent) }; })()`);
+  ok("a sent line is in the chat in the same breath, with 'sending…' under it", echoed.lines.length === 1 && echoed.lines[0] === "echo check line" && echoed.state[0] === "sending…", echoed);
+  await page.until(`document.querySelectorAll("#chat .turn.user").length > 0 && [...document.querySelectorAll("#chat .turn.user")].some((n) => n.textContent === "echo check line" && !n.classList.contains("sent"))`, 60_000, 300).catch(() => undefined);
+  await page.until(idle, 120_000, 1000).catch(() => undefined);
+  const once = await ev<{ n: number; sent: number }>(`({ n: [...document.querySelectorAll("#chat .turn.user")].filter((x) => x.textContent === "echo check line").length, sent: document.querySelectorAll("#chat .sent").length })`);
+  ok("once the transcript holds the line the echo is gone: it is shown once", once.n === 1 && once.sent === 0, once);
   // grep shows its hits (this page's tool set has no grep yet: the transcript entries are folded in as a host that has it would write them).
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "g-a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "g1", name: "grep", arguments: { pattern: "x" } }] }] } }); chat.apply({ type: "entry_appended", entry: { id: "g-r", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "g1", toolName: "grep", content: [{ type: "text", text: "src/a.ts:12:const x = 1;\\nsrc/b.ts:3:  return x;" }] }] } }); demo.renderChat(); const d = [...document.querySelectorAll("details.tool")].find((t) => /^grep/.test(t.textContent)); d.open = true; return !!d; })()`);
   const hits = await ev<string[]>(`[...document.querySelectorAll("details.tool .hit .where")].map((h) => h.textContent)`);
@@ -176,6 +191,7 @@ try {
   ok("the header's controls are quiet: the switcher has no box and the takeover says 'bring it home'", looks.switcher === "0px" && looks.takeover === "bring it home", looks);
   const rows = await ev<string[]>(`[...document.querySelectorAll("details.thread > summary")].map((s) => s.textContent.replace(/\\s+/g, " ").trim())`);
   ok("each thread is a row inside the teach_skills call: its GPU, its name and how far it is", rows.length === 1 && /GPU 3\s*spin\s*\d+ calls?$/.test(rows[0]), rows);
+  ok("every thread row is open by itself, so nobody has to click to see them working", await ev<boolean>(`[...document.querySelectorAll("details.thread")].length > 0 && [...document.querySelectorAll("details.thread")].every((d) => d.open && !!d.querySelector(".thread-chat"))`));
   await ev(`document.querySelector("details.thread").open = true`);
   await until(`!!document.querySelector("details.thread details.tool .diff")?.firstElementChild?.shadowRoot`, 15_000).catch(() => undefined);
   await ev(`[...document.querySelectorAll("details.thread details.tool")].forEach((d) => { d.open = true; })`);

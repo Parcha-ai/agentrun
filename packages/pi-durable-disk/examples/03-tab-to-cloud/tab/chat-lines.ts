@@ -64,11 +64,70 @@ type Switch = Extract<ChatItem, { kind: "switch" }>;
 
 /** A move as one quiet line, from what the notice carried as data (never its text, which is the agent's): where it went and, when Jev decided, how sure. Coming home to the browser is an arrow back. */
 export function moveLine(item: Switch): string {
-  const to = item.to?.trim() || null;
-  const home = to !== null && /\b(browser|tab)\b/i.test(to);
-  const where = to === null ? "moved" : home ? "your browser" : to.replace(/^(a|an|the)\s+/i, "");
-  const sure = (item.by === "placement" || item.by === "jev") && item.probability != null ? ` · Jev ${item.probability.toFixed(2)}` : "";
+  return placementLine(item.to ?? null, item.by === "placement" || item.by === "jev" ? item.probability ?? null : null);
+}
+
+/** The same line from the facts alone (the server's decision, before the move's notice is written): `→ Modal VM · Jev 0.98`. */
+export function placementLine(to: string | null, probability: number | null): string {
+  const label = to?.trim() || null;
+  const home = label !== null && /\b(browser|tab)\b/i.test(label);
+  const where = label === null ? "moved" : home ? "your browser" : label.replace(/^(a|an|the)\s+/i, "");
+  const sure = probability !== null ? ` · Jev ${probability.toFixed(2)}` : "";
   return `${home ? "←" : "→"} ${where}${sure}`;
+}
+
+/**
+ * A move Jev decided for a message is written just before that message, so it reads as if the agent moved after its previous reply. In the chat it follows the message it belongs to: a placed move that is
+ * directly followed by a person's line (nothing the reader sees between) swaps places with it. Moves nobody decided for a message (the operator's switch, the agent's own) stay where they were written.
+ */
+export function movesAfterTheirMessage(items: readonly ChatItem[]): ChatItem[] {
+  const out = [...items];
+  for (let i = 0; i < out.length; i++) {
+    const item = out[i]!;
+    if (item.kind !== "switch" || (item.by !== "placement" && item.by !== "jev")) continue;
+    let j = i + 1;
+    while (j < out.length && out[j]!.kind === "brain") j++;
+    if (j < out.length && out[j]!.kind === "user") {
+      out.splice(i, 1);
+      out.splice(j, 0, item);
+      i = j;
+    }
+  }
+  return out;
+}
+
+/** A line the person sent that the transcript does not hold yet: shown at once, with where it is (sending, Jev deciding) and, once Jev decided a move, that move's line. */
+export type Sent = { requestId: string; text: string; /** How many user lines with this text the transcript held when this one was sent (including earlier ones still pending). */ base: number; stage: "sending" | "deciding" | "decided"; move?: string };
+
+/** The user lines a transcript holds with this text. */
+const saidCount = (items: readonly ChatItem[], text: string): number => items.filter((i) => i.kind === "user" && i.text === text).length;
+
+/** How many lines with this text are already accounted for (held, or sent earlier and still pending): the `base` of a new one. */
+export function sentBase(items: readonly ChatItem[], pending: readonly Sent[], text: string): number {
+  return saidCount(items, text) + pending.filter((s) => s.text === text).length;
+}
+
+/** The sent lines the transcript has not caught up with: line k of a text is in the transcript once it holds more than `base` of that text. */
+export function pendingEchoes(items: readonly ChatItem[], sent: readonly Sent[]): Sent[] {
+  const held = new Map<string, number>();
+  return sent.filter((s) => {
+    const have = held.get(s.text) ?? saidCount(items, s.text);
+    held.set(s.text, have);
+    return have <= s.base;
+  });
+}
+
+/** The words for where a sent line is. A decided line with no move says nothing more. */
+export function sentState(s: Sent): string {
+  return s.stage === "sending" ? "sending…" : s.stage === "deciding" ? "Jev deciding…" : s.move ?? "";
+}
+
+/**
+ * Which model is answering, from the typed model of the conversation's driver (its provider and id, never chat text): the cloud model by its id (a provider prefix is dropped), or the tab's own model by
+ * the name `local` gives it ("v5 · 0.8B"). Nothing is said when the driver is not known.
+ */
+export function driverLabel(d: { local: string | null; cloud: string }): string {
+  return d.local !== null ? `${d.local} in this tab` : d.cloud.replace(/^[^/]+\//, "");
 }
 
 export type ToolKind = "bash" | "write" | "edit" | "read" | "grep" | "find" | "ls" | "other";

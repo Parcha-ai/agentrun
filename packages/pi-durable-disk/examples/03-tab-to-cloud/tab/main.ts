@@ -9,7 +9,7 @@ import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@e
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
-import { callsLabel, echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
+import { callsLabel, driverLabel, echoedTools, isMuted, moveLine, movesAfterTheirMessage, pendingEchoes, placementLine, sentBase, sentState, toolArgsLine, type Sent } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, resultCardElement, toolBody } from "./tool-body.ts";
 import { briefsFromArgs, teachResultCard } from "./teach-result.ts";
@@ -111,6 +111,8 @@ const state = {
   placed: false,
   runtime: undefined as TabRuntime | undefined,
   chat: new ChatView(),
+  /** The lines this page sent that the transcript does not hold yet: shown at once, with where they are (chat-lines.ts `pendingEchoes`). */
+  sent: [] as Sent[],
   /** The conversation the chat input goes to: the root until the trained model comes home, then the fresh one on it (brain.ts). */
   active: undefined as Conversation | undefined,
   /** The run is checked out to this browser and this page runs it from OPFS (offline.ts, local-store.ts): its record and its store. */
@@ -305,12 +307,14 @@ $("chat").addEventListener("scroll", () => {
 
 function renderChat(): void {
   const list = $("chat");
-  const items = state.chat.items();
-  announceTools(items);
+  const held = state.chat.items();
+  announceTools(held);
+  const items = movesAfterTheirMessage(held);
   const echoed = echoedTools(items);
+  state.sent = pendingEchoes(held, state.sent); // a line the transcript holds now is its own; an echo is only for the gap before
   callThreads = threadsByCall(items.filter((i) => i.kind === "tool" && i.name === "teach_skills").map((i) => i.id), teachThreads.list());
   chatSizes?.disconnect();
-  list.replaceChildren(...items.filter((item) => !(item.kind === "brain" && (item.stage === "moved" || item.stage === "decision"))).map((item) => renderItem(item, echoed)));
+  list.replaceChildren(...items.filter((item) => !(item.kind === "brain" && (item.stage === "moved" || item.stage === "decision"))).map((item) => renderItem(item, echoed)), ...state.sent.flatMap((s) => [el("div", { class: "turn user sent" }, s.text), ...(sentState(s) ? [el("div", { class: "move sent-state" }, sentState(s))] : [])]));
   if (following) list.scrollTop = list.scrollHeight;
   for (const child of list.children) chatSizes?.observe(child);
   noticeSeen();
@@ -340,6 +344,11 @@ function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, threads: readonl
     const echoed = echoedTools(mine);
     const dot = ACTIVE.has(t.status) ? "dot act run" : t.status === "passed" || t.status === "reported" ? "dot done" : "dot";
     const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "gpu" }, t.gpu === null ? "GPU" : `GPU ${t.gpu}`), el("span", { class: "name" }, t.name), el("span", { class: "args" }, ACTIVE.has(t.status) ? `${t.status === "queued" ? "waiting for a GPU, " : ""}${callsLabel(mine.filter((i) => i.kind === "tool").length)}` : t.status));
+    // Every thread opens by itself once, so a viewer sees them all working; the reader can close one, and it stays closed.
+    if (!autoOpened.has(key)) {
+      autoOpened.add(key);
+      openTools.add(key);
+    }
     const row = el("details", { class: `thread ${t.status}` }, summary) as HTMLDetailsElement;
     const draw = () => row.append(el("div", { class: "thread-chat" }, ...(brief ? [el("div", { class: "brief" }, brief)] : []), ...mine.map((i) => renderItem(i, echoed, `t${t.conversation}:`))));
     if (openTools.has(key)) draw();
@@ -487,6 +496,18 @@ function syncCreatureActivity(): void {
   (document.getElementById("creature") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ ns: "walks-home", type: "set-activity", paused: quiet, low }, location.origin);
 }
 
+/** The model answering now, from which conversation drives (the tab's own small model, or the run's cloud model by its id), for the header. */
+function driverText(): string {
+  if (phoneMode) return "";
+  const offline = state.mode === "offline";
+  const swapped = (state.mode === "writer" || offline) && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
+  if (offline && v5Offline && state.v5.ready) return driverLabel({ local: "v5 · 0.8B", cloud: "" });
+  if (swapped) return driverLabel({ local: state.brain?.modelId ?? "the trained model", cloud: "" });
+  if (offline || state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
+  if (state.mode === "viewer" && (state.placement?.where === "parked" || state.placement?.where === "checked-out")) return ""; // nothing runs it
+  return driverLabel({ local: null, cloud: state.agentModel });
+}
+
 function render(): void {
   syncCreatureActivity();
   const b = badge();
@@ -496,6 +517,9 @@ function render(): void {
   const here = state.mode === "writer" || state.mode === "offline";
   const swapped = here && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
   $("badge-sub").textContent = [b.sub, here && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : ""].filter(Boolean).join(" · ");
+  const driver = driverText();
+  $("driver").textContent = driver;
+  $("driver").hidden = driver === "";
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
   const offline = state.mode === "offline";
@@ -658,6 +682,7 @@ async function followConversation(runtime: TabRuntime, conversation: Conversatio
   const merge = (event: AgentEvent): AgentEvent => (event.type === "snapshot" && before.length > 0 ? { ...event, entries: [...before, ...event.entries] } : event);
   state.active = conversation;
   state.chat = new ChatView();
+  state.sent = [];
   const snapshot = merge(stream.snapshot);
   state.chat.apply(snapshot);
   state.client?.view({ kind: "snapshot", event: snapshot } satisfies ViewEvent);
@@ -1682,8 +1707,19 @@ function onFrame(frame: PipeFrame): void {
       state.banner = `cannot switch to ${envLabel(frame.to)}: ${frame.message}`;
       break;
     case "submit-refused":
+      state.sent = state.sent.filter((s) => s.requestId !== frame.requestId);
       state.banner = `not sent: ${frame.message}`;
       break;
+    case "placing":
+      sentStage(frame.requestId, "deciding", renderChat);
+      return;
+    case "decision": {
+      // Jev answered for a line this page sent: a move shows under the line as the move line will read, before the move's notice is written.
+      const probability = frame.decision.options.find((o) => o.id === frame.decision.choice)?.probability;
+      const moves = frame.decision.choice !== currentEnv().id;
+      if (frame.requestId) sentStage(frame.requestId, "decided", renderChat, moves ? placementLine(envLabel(frame.decision.choice), probability ?? null) : undefined);
+      return;
+    }
     case "event":
       applyView(frame.event);
       renderChat();
@@ -1781,9 +1817,11 @@ function watching(viewing: Viewing): void {
   state.progress = "";
   state.leaving = undefined;
   state.environments = viewing.environments;
+  if (viewing.model) state.agentModel = viewing.model;
   state.placement = viewing.placement;
   state.files = viewing.files.map(fileRow);
   state.chat = new ChatView();
+  state.sent = [];
   for (const event of viewing.events) applyView(event);
   render();
   if (viewing.placement.where === "parked" && !offeredToRun) {
@@ -1881,6 +1919,15 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
   if (wasWriter || code !== "CLOSED") setTimeout(() => void connect("view"), 800);
 }
 
+/** A sent line moves to its next stage (and, once Jev decided, shows the move). Unknown lines (another page's) are ignored. */
+function sentStage(requestId: string, stage: Sent["stage"], draw: () => void, move?: string): void {
+  const line = state.sent.find((s) => s.requestId === requestId);
+  if (!line || line.stage === stage && line.move === move) return;
+  line.stage = stage;
+  if (move !== undefined) line.move = move;
+  draw();
+}
+
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
@@ -1888,13 +1935,17 @@ function send(): void {
   // Held: a checkout is deciding where the run lives, or the saved conversation is still coming back. A page attached to a placing server sends its line to the server (it places the run, then the line comes back here or goes to the VM); one that cannot reach it runs the line itself.
   const route = composerRoute({ held: !!(state.checkingOut || state.checkingIn || state.brainPending || state.rehoming), running: !!state.runtime, mode: state.mode, online: state.net.online, placed: state.placed, ...(state.placement ? { watching: state.placement.where } : {}) });
   if (route === "ignore") return;
+  input.value = "";
+  const requestId = `ui-${crypto.randomUUID()}`;
+  state.sent.push({ requestId, text, base: sentBase(state.chat.items(), state.sent, text), stage: "sending" }); // the line shows the moment it is sent, not when the transcript has it
   if (route === "server") {
-    input.value = "";
-    state.client?.send({ t: "submit", text, requestId: `ui-${crypto.randomUUID()}` });
+    state.client?.send({ t: "submit", text, requestId });
+    renderChat();
     return;
   }
-  input.value = "";
-  sendLine = sendLine.then(() => decideAndSubmit(text)).catch((error: Error) => {
+  renderChat();
+  sendLine = sendLine.then(() => decideAndSubmit(text, requestId)).catch((error: Error) => {
+    state.sent = state.sent.filter((s) => s.requestId !== requestId);
     state.banner = `not sent: ${error.message}`;
     render();
   });
@@ -1920,6 +1971,7 @@ async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID
   const runtime = state.runtime, conversation = target();
   if (!runtime || !conversation) return;
   if (golive && (state.mode === "writer" || state.mode === "offline")) {
+    sentStage(requestId, "deciding", renderChat);
     const brain = state.brain;
     const ready = brain !== undefined && brain.modelId !== undefined && brain.host.state().phase === "answered";
     const decision = await router.decide(text, { online: state.mode === "writer" && state.net.online, localModel: ready ? { id: brain!.modelId! } : null });

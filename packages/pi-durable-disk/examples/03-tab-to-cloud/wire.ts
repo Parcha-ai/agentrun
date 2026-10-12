@@ -259,7 +259,7 @@ export type PipeFrame =
   /** Part of a manifest file's content (base64, at most CHUNK_BYTES raw), in order. */
   | { t: "restore-chunk"; path: string; offset: number; data: string }
   | { t: "restore-end"; files: number; bytes: number }
-  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[]; decisions?: PlacementDecision[] }
+  | { t: "viewing"; placement: Placement; files: FileEntry[]; events: Tagged[]; environments: Environment[]; decisions?: PlacementDecision[]; /** The run's cloud model id (the same one `attached` carries), for a page that only watches. */ model?: string }
   | { t: "res"; id: number; ok: true; result: Tagged; ms?: number }
   | { t: "res"; id: number; ok: false; error: WireError }
   | { t: "model-head"; id: number; status: number }
@@ -277,7 +277,9 @@ export type PipeFrame =
   | { t: "switch-refused"; to: string; message: string; ask?: string }
   | { t: "submit-refused"; requestId: string; message: string }
   /** The server asked where the run should be and decided (placement.ts); sent before the move it starts. */
-  | { t: "decision"; decision: PlacementDecision }
+  | { t: "decision"; decision: PlacementDecision; /** The line it was decided for (a line the person sent through this server), so a page can say so under that line. */ requestId?: string }
+  /** The server is asking where a line should run (the question to Jev is on its way); sent to the page that sent the line, before the decision. */
+  | { t: "placing"; requestId: string }
   | { t: "lost"; code: string; message: string }
   | { t: "pong"; at: number; now: number }
   | { t: "error"; message: string };
