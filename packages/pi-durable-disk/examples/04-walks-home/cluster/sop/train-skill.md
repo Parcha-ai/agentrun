@@ -71,8 +71,8 @@ def terms(s):
    already says get-up). If yours is one of them, the library's files ARE your skill:
    - **Never write or rewrite test.py or reward.py for it**, and keep the test's target even if your brief names
      another number: the library's test is the pass test for these skills.
-   - Copy it: `cp -r /opt/pda/train/skills/<its directory> skills/<your skill>` (get-up:
-     `cp -r /opt/pda/train/skills/getup skills/get-up`).
+   - Copy it (skills/ does not exist yet on a new box): `mkdir -p skills && cp -r /opt/pda/train/skills/<its directory> skills/<your skill>`
+     (get-up: `mkdir -p skills && cp -r /opt/pda/train/skills/getup skills/get-up`).
    - Train at once, with no `--compile-only` (nothing to check in a reward you did not change):
      `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --init-from '' --steps 12M --stop-after-passing 2`
    - Passed: run the check (step 6) and report.
@@ -81,7 +81,7 @@ def terms(s):
      retry does not pass either, stop and report never passed with the trainer's diagnosis.
    - Steps 2 to 5 are for skills the library does not have.
 2. **Otherwise, write it from the closest example.** Read `robot/body.json` (its motors, legs and tags), then
-   `ls /opt/pda/train/skills` and `cat /opt/pda/train/skills/<closest>/*`. Copy it to `skills/<your skill>`, then
+   `ls /opt/pda/train/skills` and `cat /opt/pda/train/skills/<closest>/*`. Copy it to `skills/<your skill>` (`mkdir -p skills` first), then
    edit skill.json (its name is your skill), reward.py and test.py for your brief and this body. Make test.py measure
    exactly the quantity the brief names, against the brief's number, over the 10 s rollout.
 3. **Compile first, and after every reward.py edit** (about 1 min):

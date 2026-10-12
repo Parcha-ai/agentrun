@@ -126,12 +126,27 @@ export class FakeBoxEnv extends NodeExecutionEnv {
   /**
    * The bash tool's commands, simulated: D2's `pi-run <skill> -- train-skill --skill-dir DIR --body DIR --out DIR
    * [--compile-only | --check POLICY | --steps N]` runs the fake trainer, `cp -r /opt/pda/train/skills/<name> DIR` copies a
-   * worked skill, and `cat FILE` prints a file. Nothing else runs (no command from a
+   * worked skill (into an existing parent, as cp does), `mkdir -p DIR` makes one, `cat FILE` prints a file, and `a && b`
+   * chains them. Nothing else runs (no command from a
    * model ever executes on this machine).
    */
   private async shell(command: string, options: ExecArgs[1], context: Context): ExecReturn {
+    // `a && b`: each part in turn, stopping at the first that fails (what a thread chains, like mkdir -p then cp).
+    const parts = command.split(" && ");
+    if (parts.length > 1) {
+      let last: Awaited<ExecReturn> | undefined;
+      for (const part of parts) {
+        last = await this.shell(part, options, context);
+        if (!last.ok || last.value.exitCode !== 0) return last;
+      }
+      return last!;
+    }
     const say = (text: string) => options?.onOutput?.(text, context, { stream: "stdout" } as never);
     const t = command.trim().split(/\s+/);
+    if (t[0] === "mkdir" && t[1] === "-p" && t.length === 3) {
+      mkdirSync(this.local(t[2]!.startsWith("/") ? t[2]! : `/workspace/${t[2]}`), { recursive: true });
+      return { ok: true, value: { exitCode: 0 } } as never;
+    }
     if (t[0] === "pi-run" && t[2] === "--" && t[3] === "train-skill") {
       const flag = (name: string) => (t.includes(name) ? t[t.indexOf(name) + 1] : undefined);
       const skillDir = flag("--skill-dir");
@@ -182,6 +197,11 @@ export class FakeBoxEnv extends NodeExecutionEnv {
         return { ok: true, value: { exitCode: 1 } } as never;
       }
       const dest = this.local(t[3]!.startsWith("/") ? t[3]! : `/workspace/${t[3]}`);
+      if (!existsSync(dirname(dest))) {
+        // As cp does: it makes the last directory, not its parents.
+        say(`cp: cannot create directory '${t[3]}': No such file or directory\n`);
+        return { ok: true, value: { exitCode: 1 } } as never;
+      }
       writeAtomic(join(dest, "skill.json"), JSON.stringify({ name, label: name, command: 0, reward_scales: { feet_air_time: 1 }, env: {} }));
       writeAtomic(join(dest, "test.py"), `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${name}", "value": 0, "unit": "", "target": ">= 1.0"}\n`);
       return { ok: true, value: { exitCode: 0 } } as never;
@@ -192,7 +212,7 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       say(r.value);
       return { ok: true, value: { exitCode: 0 } } as never;
     }
-    say(`fake box: only "pi-run <skill> -- train-skill ...", "cp -r /opt/pda/train/skills/<name> <dir>" and "cat <file>" are simulated\n`);
+    say(`fake box: only "pi-run <skill> -- train-skill ...", "mkdir -p <dir>", "cp -r /opt/pda/train/skills/<name> <dir>" and "cat <file>" are simulated\n`);
     return { ok: true, value: { exitCode: 127 } } as never;
   }
   private async train(argv: string[], options: ExecArgs[1], context: Context, cap = MAX_CHECKPOINTS): ExecReturn {
