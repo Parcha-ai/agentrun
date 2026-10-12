@@ -84,7 +84,13 @@ teachSkills({
   `runs/<skill>/` (skill.json, skill-progress.jsonl, policy.json): mirror runs/<skill>/ home for the status hook.
 - The SOPs are `sop/robot.md` (the session writes the robot: build_robot, robot/body.mjs, `node robot/build.mjs`,
   build_robot), `sop/teach.md` (the plan and briefs) and `sop/train-skill.md` (each thread, D2's train-skill). `sop.ts`
-  exports them as ROBOT_SOP, TEACH_SOP and TRAIN_SOP. The spike's threads get TRAIN_SOP and follow its commands.
+  exports them as ROBOT_SOP, TEACH_SOP and TRAIN_SOP. The spike's threads get TRAIN_SOP and follow its commands. The
+  session's instructions carry robot.md and teach.md through `03-tab-to-cloud/robot-sop.ts`: after editing either, run
+  `node ../../03-tab-to-cloud/scripts/gen-robot-sop.mjs` (a test there fails until you do).
+- The status hook reads the trainer's `runs/<skill>/skill.json` (D2's v12): `passed_at` (an object with its
+  `checkpoint`) means passed; status `failed` means never passed, with the trainer's `diagnosis` as the result's
+  `reason`; status `refused`, or `failed` with an `error`, is an error with that `error` as its reason. The fold prints
+  the reason after the thread's own words.
 
 ## Listing the threads (for a viewer)
 

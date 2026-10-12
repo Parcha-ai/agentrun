@@ -139,11 +139,15 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       } catch {
         name = undefined;
       }
+      const outJson = join(this.local(out), "skill.json");
       if (name !== t[1] || !test.ok) {
-        say(`${JSON.stringify({ event: "skill.refused", error: `${skillDir} needs skill.json with "name": "${t[1]}" and test.py` })}\n`);
+        const why = `${skillDir} needs skill.json with "name": "${t[1]}" and test.py`;
+        writeAtomic(outJson, JSON.stringify({ skill: t[1], status: "refused", error: why, passed_at: null }));
+        say(`${JSON.stringify({ event: "skill.refused", error: why })}\n`);
         return { ok: true, value: { exitCode: 2 } } as never;
       }
       if (t.includes("--compile-only")) {
+        writeAtomic(outJson, JSON.stringify({ skill: t[1], status: "compiled", passed_at: null }));
         say("compiled: the skill dir and the body are fine\n");
         return { ok: true, value: { exitCode: 0 } } as never;
       }
@@ -200,13 +204,13 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       appendFileSync(join(out, "skill-progress.jsonl"), `${JSON.stringify({ checkpoint: n, passes, t })}\n`);
       say({ event: "skill.checkpoint", checkpoint: n, steps: n * 4096, t, passes });
       if (passes) {
-        writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "done", passed_at: n, wall_s: t }));
+        writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "done", passed_at: { checkpoint: n, steps: n * 4096, t, passes: true, metric: null }, policy_checkpoint: n, wall_s: t }));
         say({ event: "skill.done", skill, passed: true, checkpoint: n });
         rmSync(marker, { force: true });
         return { ok: true, value: { exitCode: 0 } };
       }
     }
-    writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "failed" }));
+    writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "failed", passed_at: null, diagnosis: `plateaued from checkpoint ${MAX_CHECKPOINTS - 2}: strengthen the term or check the test's target` }));
     say({ event: "skill.done", skill, passed: false });
     rmSync(marker, { force: true });
     return { ok: true, value: { exitCode: 3 } };

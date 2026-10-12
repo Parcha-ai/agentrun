@@ -40,7 +40,7 @@ if (code !== 0) throw new Error(`the host failed (${code})`);
 const report = JSON.parse(readFileSync(join(dir, "report.json"), "utf8"));
 const before = existsSync(join(dir, "before-resume.json")) ? JSON.parse(readFileSync(join(dir, "before-resume.json"), "utf8")) : [];
 const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-const threads: { skill: string; status: string; checkpoint?: number; summary: string }[] = report.teachResult?.details?.threads ?? [];
+const threads: { skill: string; status: string; checkpoint?: number; summary: string; reason?: string }[] = report.teachResult?.details?.threads ?? [];
 const by = (s: string) => threads.find((t) => t.skill === s);
 const teachBefore = before.find((t: { kind: string }) => t.kind === "robot.teach-skills");
 const children: { id: number; tools: string[]; box: { skill: string; gpu: number }; parent?: unknown; owner?: unknown }[] = report.children;
@@ -87,6 +87,8 @@ if (a["status-throws"]) {
   checks.parent_waiting_allSettled_on_3_when_killed = killed && teachBefore?.status === "waiting" && teachBefore.on === 3 && teachBefore.policy === "allSettled";
   // The status is the trainer's skill.json, not the thread's words (which only say it trained and read the file).
   checks.status_from_skill_json_not_words = by("walk")?.status === "passed" && by("walk")?.checkpoint === 3 && by("spin")?.status === "passed" && by("spin")?.checkpoint === 6 && by("wave")?.status === "never-passed";
+  // A run that never passed carries the trainer's diagnosis from skill.json into its result and the fold's text.
+  checks.never_passed_carries_the_diagnosis = /^plateaued/.test((by("wave") as { reason?: string } | undefined)?.reason ?? "") && /wave: never passed\..*Trainer: plateaued/.test(report.teachResult?.text ?? "");
   checks.read_thread_answers_from_gpu_3 = typeof report.readThread === "string" && /GPU 3 \(wave\)/.test(report.readThread) && /bash/.test(report.readThread);
 }
 const ok = Object.values(checks).every(Boolean);

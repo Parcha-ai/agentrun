@@ -131,9 +131,13 @@ const { teach, thread } = teachSkills({
             const file = join(dir, "work", "skills", skill, "skill.json");
             if (!existsSync(file)) return undefined;
             const s = JSON.parse(readFileSync(file, "utf8"));
-            // D2's skill.json in --out: passed_at is the first passing checkpoint; a stopped run without it never passed.
-            if (typeof s.passed_at === "number") return { status: "passed" as const, checkpoint: s.passed_at, seconds: Math.round(s.wall_s) };
-            return s.status === "failed" || s.status === "done" ? { status: "never-passed" as const } : undefined;
+            // D2's skill.json in --out (v12): passed_at is the first passing checkpoint, an object, or null. A run that
+            // never passed says why in `diagnosis`; a refused skill dir or body, or a crash, says it in `error`.
+            const at = s.passed_at as { checkpoint?: number; t?: number } | null | undefined;
+            if (typeof at?.checkpoint === "number") return { status: "passed" as const, checkpoint: at.checkpoint, seconds: Math.round(s.wall_s ?? at.t ?? 0) };
+            if (s.status === "refused" || (s.status === "failed" && s.error)) return { status: "error" as const, reason: String(s.error) };
+            if (s.status === "failed") return { status: "never-passed" as const, ...(s.diagnosis ? { reason: String(s.diagnosis) } : {}) };
+            return undefined; // still training, or only compiled
           },
         },
       }

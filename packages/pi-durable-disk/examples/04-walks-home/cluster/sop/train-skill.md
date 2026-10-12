@@ -72,20 +72,23 @@ def terms(s):
    names, against the brief's number, over the 10 s rollout.
 3. **Compile first, and after every reward.py edit** (about 1 min):
    `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --init-from '' --compile-only`
-   - A reward.py error shows here, with its traceback in `runs/<your skill>/skill.json` under `error`.
-   - Exit 2 means the skill dir or the body was refused, and the line says what to fix.
+   - It ends with status `compiled` in `runs/<your skill>/skill.json`, or `failed` with the reward.py traceback under
+     `error`.
+   - Exit 2 means the skill dir or the body was refused (status `refused`), and `error` says what to fix.
 4. **Train**: the same command without `--compile-only`, with `--steps 12M --stop-after-passing 2`.
    - It prints one JSON line per checkpoint (`skill.checkpoint`, with `passes` and the metric), then `skill.done`.
    - Checkpoints come every 7 to 14 s. A new body walks in 1.5 to 5 min, and a new skill takes minutes per try.
    - Exit 0 means it passed, 3 that it never passed in its steps, and 2 that it was refused. A nonzero exit shows as a
      failed command: read its output anyway.
    - pi-run keeps one run of your skill at a time. If your call was interrupted, run the same command again.
-5. **If it did not pass, find out why before changing anything.** Read `runs/<your skill>/skill-progress.jsonl`
-   (`{checkpoint, steps, t, passes, metric, error?}`); a test.py exception is a failing checkpoint with its error.
-   - If the metric moved toward the target, train again with `--steps 40M`.
-   - If it did not move, the reward has no gradient. A narrow bump far from the standing pose gives none
-     (exp(-27) is about 0 at the start), so scale it to the distance to cover. Change ONE thing (a term, a weight, the
-     command range), compile, and train again at 12M.
+5. **If it did not pass, read why before changing anything.** `runs/<your skill>/skill.json` says it in `diagnosis`
+   (or in `error` if the trainer crashed, for example a reward.py traceback), and `skill-progress.jsonl` has every
+   checkpoint (`{checkpoint, steps, t, passes, metric, error?}`); a test.py exception is a failing checkpoint with its
+   error. Then:
+   - **Never moved:** the reward gives no gradient. A narrow bump far from the standing pose gives none (exp(-27) is
+     about 0 at the start), so scale it to the distance to cover. Change ONE thing, compile, and train again at 12M.
+   - **Still changing:** train again with `--steps 40M` and the same files. A new try starts over; it does not resume.
+   - **Plateaued:** strengthen the term that drives the skill, or check that test.py's target is right for this body.
    - Keep the built-in regularizers; zero only the terms that fight the skill (stand_still, pose and base_height for a
      low pose).
    - Stop after the number of tries your brief allows.
@@ -96,8 +99,9 @@ def terms(s):
    - what the skill is and what your test measures;
    - whether it passed, at which checkpoint, the metric against its target, and how long it took;
    - what you changed between tries.
-   Say it passed only if the trainer said so (`runs/<your skill>/skill.json` has `passed_at`, and the check passes).
-   The run's result is read from that file, not from your words.
+   Say it passed only if the trainer said so: `runs/<your skill>/skill.json` has status `done` and a `passed_at`
+   checkpoint, and the check passes. If it did not pass, give the trainer's `diagnosis`. The run's result is read from
+   that file, not from your words.
 
 ## Limits
 - One train-skill at a time on your GPU.
