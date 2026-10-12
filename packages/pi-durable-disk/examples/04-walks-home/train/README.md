@@ -69,3 +69,22 @@ which changes with the driver, and the driver keeps its own JIT cache (`~/.nv`).
 skill for the default body into the cache `train-skill` reads. If the image's cache misses on this host, it also
 compiles every preset body. It prints the driver, the fingerprint and whether the host hit, so the first checkpoint
 arrives in the same time on any host.
+
+### The GPU box contract
+
+A thread's box runs the cluster image. On every box:
+
+| Path or command | What |
+| --- | --- |
+| `train-skill`, `warm-box`, `assemble-skills` | `train_skill.py`, `warm_box.py`, `assemble_skills.py` on `PATH` |
+| `/opt/pda/train/` | this directory, with `default/` the default body |
+| `/opt/pda/mjcf/build.ts` | the tab's `buildMjcf`: a robot's design to `creature.xml` and `body.json` |
+| `/opt/pda/init/<n>j/` | one trained warm-start checkpoint per joint count (`--init-from auto` picks it) |
+| `/opt/pda/presets/<name>/` | the page's preset bodies, which `warm-box` compiles for on a host the cache misses |
+| `/opt/pda/cache/compile-cache.tar.gz` | every skill's program for the default and preset bodies, on the GPU hosts it was built on |
+
+The thread runs `train-skill <skill> --body /workspace/robot.json --out /workspace/skills/<skill>`. Its stdout is one
+JSON line per event: `skill.start`, `skill.checkpoint` (with the skill's `metric`) and `skill.done`. The files that
+need to come home are `skill.json`, `skill-progress.jsonl`, `policy.json` and `checkpoints/`. `work/` (the trainer's
+own state) and `body/` can stay on the box. After the threads, the session host runs
+`node ../policy/assemble-skills.ts <run>/work/skills --home <run>/work/home`.
