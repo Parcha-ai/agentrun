@@ -36,6 +36,7 @@ export class FitWriter {
   #written = '';
   #pending: string | undefined;
   #running: Promise<void> | undefined;
+  #active = false;
 
   constructor(write: (text: string) => Promise<void>, sleep: (ms: number) => Promise<void>, firstWaitMs = 1000, maxWaitMs = 10_000) {
     this.#write = write;
@@ -48,23 +49,30 @@ export class FitWriter {
   submit(text: string): Promise<void> {
     if (text === this.#written && this.#pending === undefined) return this.#running ?? Promise.resolve();
     this.#pending = text;
-    this.#running ??= this.#loop().finally(() => { this.#running = undefined; });
-    return this.#running;
+    if (!this.#active) {
+      this.#active = true; // set here and cleared by the loop in the same step it stops looking, so there is no moment when the loop is over and this still says it is running
+      this.#running = this.#loop();
+    }
+    return this.#running!;
   }
 
   async #loop(): Promise<void> {
     let wait = this.#firstWaitMs;
-    while (this.#pending !== undefined) {
-      const text = this.#pending;
-      try {
-        await this.#write(text);
-        this.#written = text;
-        if (this.#pending === text) this.#pending = undefined;
-        wait = this.#firstWaitMs;
-      } catch {
-        await this.#sleep(wait);
-        wait = Math.min(wait * 2, this.#maxWaitMs);
+    try {
+      while (this.#pending !== undefined) {
+        const text = this.#pending;
+        try {
+          await this.#write(text);
+          this.#written = text;
+          if (this.#pending === text) this.#pending = undefined;
+          wait = this.#firstWaitMs;
+        } catch {
+          await this.#sleep(wait);
+          wait = Math.min(wait * 2, this.#maxWaitMs);
+        }
       }
+    } finally {
+      this.#active = false; // runs in the step that found nothing pending: a submit after this starts a new loop, one before it was seen by the check above
     }
   }
 }

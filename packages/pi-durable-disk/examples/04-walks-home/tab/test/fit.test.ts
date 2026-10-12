@@ -31,3 +31,17 @@ test('a write that fails is tried again until it lands; a later snapshot replace
   await Promise.all([first, second]);
   assert.deepEqual(landed, ['one', 'three'], 'the stale snapshot never lands after the newer one was asked for');
 });
+
+test('a snapshot submitted at any moment while the writer finishes is written: the writer never sits idle with something pending', async () => {
+  const tick = () => new Promise<void>((r) => setImmediate(r));
+  for (let hops = 0; hops < 12; hops++) {
+    const landed: string[] = [];
+    const w = new FitWriter(async (t) => { landed.push(t); }, async () => {});
+    const first = w.submit('a');
+    for (let i = 0; i < hops; i++) await Promise.resolve(); // `hops` microtasks later: the writer is at some step of finishing
+    const second = w.submit('b');
+    await Promise.all([first, second]);
+    for (let i = 0; i < 3; i++) await tick();
+    assert.equal(landed.at(-1), 'b', `after ${hops} microtask hops the second snapshot was never written (landed: ${landed.join(',')})`);
+  }
+});
