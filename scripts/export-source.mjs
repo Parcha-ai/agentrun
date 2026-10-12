@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, posix, resolve } from 'node:path';
+import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -137,6 +137,24 @@ function scan(path, content) {
     }
   }
 }
+/**
+ * Committed symlinks that leave the repository: an absolute target, or one that climbs out of the checkout. Such a link is a machine path committed by
+ * accident (a node_modules link to another checkout), and the walk below skips excluded names before its symlink check, so it would never see one. Read from
+ * git's index; outside a git checkout nothing is committed. Only the link's path is reported, never its target.
+ */
+async function escapingLinks() {
+  let listing;
+  try { listing = (await exec('git', ['-C', root, 'ls-files', '-s', '-z'], { maxBuffer: 256 * 1024 * 1024 })).stdout; } catch { return []; }
+  const out = [];
+  for (const row of listing.split('\0').filter(Boolean)) {
+    const link = /^120000 ([0-9a-f]+) \d\t([\s\S]+)$/.exec(row);
+    if (!link) continue;
+    const target = (await exec('git', ['-C', root, 'cat-file', 'blob', link[1]])).stdout;
+    const inside = relative(root, resolve(root, dirname(link[2]), target));
+    if (isAbsolute(target) || inside === '..' || inside.startsWith('../') || isAbsolute(inside)) out.push(link[2]);
+  }
+  return out;
+}
 async function collect(relative = '') {
   for (const entry of (await readdir(join(root, relative), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
     const path = relative ? `${relative}/${entry.name}` : entry.name;
@@ -165,6 +183,8 @@ const receipt = {
 };
 await mkdir(release, { recursive: true });
 try {
+  const leaving = await escapingLinks();
+  if (leaving.length) throw new Error(`Source export refuses committed symlinks that leave the repository: ${leaving.join(', ')}`);
   await collect();
   assert.ok(files.some(file => file.path === 'packages/dsl/schema/workflow.schema.json'), 'Generate the workflow schema before exporting source');
   receipt.findings = findings; receipt.reviewedFindings = reviewed;
