@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkinFromData, homecomingFromData, netFromData, routingFromData } from "../selftools.ts";
-import { checkinLine, checkinNote, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml, toolSummary } from "../selftools-view.ts";
+import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml, toolSummary } from "../selftools-view.ts";
 import type { ToolRow } from "../types.ts";
 
 // What the stage says about the tab's own events: only the events' fields. Nothing here is a number the event did not carry.
@@ -97,4 +97,35 @@ test("the captions: a net change (kept: it is the whole point of the beat), a fi
   assert.deepEqual(homecomingNote(h, 4, true), { at: 4, kind: "home", text: "Came home: 18.4 MB on the wire in 1.4 s. The base model was already in this browser: base 0 bytes", rank: 3, measured: true });
   assert.equal(homecomingNote({ ...h, fetchedBytes: null, fetchMs: null }, 4, true)!.measured, undefined, "no bytes in the event: nothing is claimed as measured");
   assert.equal(homecomingNote(h, 4, false)!.measured, undefined, "a scripted feed never claims a measurement");
+});
+
+// ---- The robot-change card: what the local model changed, read from its own tool calls (the world is files the creature page watches).
+test("file changes: an edit is from -> to; a write of a JSON object lists its values; other writes say they wrote; running and failed calls are not changes", () => {
+  const edit = row("edit", { path: "world.json", oldText: "\"color\": \"blue\"", newText: "\"color\": \"red\"" }, { output: "Successfully replaced text in world.json" });
+  assert.deepEqual(fileChanges([edit]), [{ path: "world.json", what: "\"color\": \"blue\" -> \"color\": \"red\"" }]);
+  const write = row("write", { path: "robot.json", content: JSON.stringify({ legs: 8, color: "red", body: { size: 2 }, name: "spider" }) });
+  assert.deepEqual(fileChanges([write]), [{ path: "robot.json", what: "legs: 8, color: red, name: spider" }], "top-level scalars only, in order");
+  assert.deepEqual(fileChanges([row("write", { path: "notes.txt", content: "hello world\nsecond line" })]), [{ path: "notes.txt", what: "hello world" }]);
+  assert.deepEqual(fileChanges([row("write", { path: "empty.txt", content: "" })]), [{ path: "empty.txt", what: "written" }]);
+  assert.deepEqual(fileChanges([row("write", { path: "a.json", content: "{}" }, { status: "running" }), row("write", { path: "b.json", content: "{}" }, { status: "error" }), row("bash", { command: "ls" }), row("read", { path: "a.json" })]), [], "only finished writes and edits");
+  assert.deepEqual(fileChanges([row("edit", { path: "w.json", edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }] })]), [{ path: "w.json", what: "a -> b; c -> d" }]);
+  assert.equal(fileChanges([row("write", { path: "x", content: "y".repeat(500) })])[0]!.what.length <= 80, true);
+  assert.deepEqual(fileChanges([row("write", "not json")]), []);
+});
+
+test("the change card says who changed it and whether the tab was offline, then each file and what changed; nothing for no changes", () => {
+  assert.equal(changeCardHtml([], null, null), "");
+  const changes = [{ path: "robot.json", what: "legs: 8, color: red" }, { path: "world.json", what: "a -> b" }];
+  const offline = changeCardHtml(changes, netFromData({ online: false, reason: "x" })!, JEV);
+  assert.match(offline, /The robot was changed by/);
+  assert.match(offline, /the model in this tab/);
+  assert.match(offline, /offline/);
+  assert.match(offline, /robot\.json/);
+  assert.match(offline, /legs: 8, color: red/);
+  const online = changeCardHtml(changes, netFromData({ online: true })!, CLOUD);
+  assert.match(online, /the cloud model/);
+  assert.doesNotMatch(online, /offline/);
+  assert.match(changeCardHtml(changes, null, null), /the agent/, "no decision heard yet: the agent");
+  assert.doesNotMatch(changeCardHtml([{ path: "a", what: "<img src=x onerror=1>" }], null, null), /<img/);
+  assert.equal((changeCardHtml(Array.from({ length: 9 }, (_, i) => ({ path: `f${i}`, what: "w" })), null, null).match(/<li/g) ?? []).length, 5, "the newest five");
 });

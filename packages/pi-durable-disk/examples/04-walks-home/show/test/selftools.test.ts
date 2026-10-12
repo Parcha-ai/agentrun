@@ -170,7 +170,7 @@ test("the self-tools rehearsal plays: homecoming bytes, offline with a rule's de
   assert.equal(e.filter((x) => x.t === "homecoming.loaded").length, 1);
   const rows = e.filter((x) => x.t === "tools");
   assert.ok(rows.length >= 3, "the strip grows: a call running, then done, then the next");
-  assert.deepEqual((rows.at(-1) as { tools: { name: string; status: string }[] }).tools.map((t) => [t.name, t.status]), [["write", "done"], ["bash", "done"]]);
+  assert.deepEqual((rows.at(-1) as { tools: { name: string; status: string }[] }).tools.map((t) => [t.name, t.status]), [["write", "done"], ["edit", "done"]]);
   const none = new ScenarioObsession({ origin: 0, think: true, brain: "ready" });
   none.begin();
   none.advance(900_000);

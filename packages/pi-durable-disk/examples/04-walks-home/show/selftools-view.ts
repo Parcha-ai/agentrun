@@ -89,3 +89,58 @@ export function homecomingNote(h: Homecoming, at: number, live: boolean): Note |
   // A scripted feed never claims a measurement, whatever its events carry.
   return text === null ? null : { at, kind: "home", text, rank: 3, ...(live && h.fetchedBytes !== null ? { measured: true } : {}) };
 }
+
+/** One change a tool call made to a file: the file and, in a few words, what changed. */
+export type FileChange = { path: string; what: string };
+
+const WHAT_MAX = 80;
+const scalar = (v: unknown): string | null => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : null);
+
+function contentSummary(content: string): string {
+  if (content === "") return "written";
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const pairs = Object.entries(parsed as Record<string, unknown>).flatMap(([k, v]) => (scalar(v) === null ? [] : [`${k}: ${scalar(v)}`]));
+      if (pairs.length > 0) return clip(pairs.join(", "), WHAT_MAX);
+    }
+  } catch {
+    // not JSON: its first line
+  }
+  return clip(content.split("\n")[0]!.trim() || "written", WHAT_MAX);
+}
+
+/**
+ * What the finished write and edit calls changed, read from the calls' own arguments: an edit is "old -> new" (or each of its edits), a write of a JSON object lists its top-level values, any
+ * other write its first line. A running or failed call changed nothing yet; reads, shell commands and the like are not file changes here (the tool strip shows them).
+ */
+export function fileChanges(tools: readonly ToolRow[]): FileChange[] {
+  const out: FileChange[] = [];
+  for (const t of tools) {
+    if (t.status !== "done" || (t.name !== "write" && t.name !== "edit")) continue;
+    let a: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(t.args) as unknown;
+      if (parsed === null || typeof parsed !== "object") continue;
+      a = parsed as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (typeof a.path !== "string" || a.path === "") continue;
+    if (t.name === "write") out.push({ path: a.path, what: contentSummary(typeof a.content === "string" ? a.content : "") });
+    else {
+      const edits = Array.isArray(a.edits) ? a.edits : [a];
+      const parts = edits.flatMap((e) => (e !== null && typeof e === "object" && typeof (e as Record<string, unknown>).oldText === "string" && typeof (e as Record<string, unknown>).newText === "string" ? [`${(e as Record<string, string>).oldText} -> ${(e as Record<string, string>).newText}`] : []));
+      if (parts.length > 0) out.push({ path: a.path, what: clip(parts.join("; "), WHAT_MAX) });
+    }
+  }
+  return out;
+}
+
+/** The robot-change card: who changed the robot (the brain the latest decision named, else the agent), whether the tab was offline, and each file with what changed (the newest few). */
+export function changeCardHtml(changes: readonly FileChange[], net: Net | null, routing: Routing | null): string {
+  if (changes.length === 0) return "";
+  const who = routing ? (routing.answering ?? (routing.brain === "tab-local" ? "the model in this tab" : "the cloud model")) : "the agent";
+  const items = changes.slice(-5).map((c) => `<li><b>${esc(c.path)}</b> ${esc(c.what)}</li>`).join("");
+  return `<div class="cc"><div class="k">The robot was changed by</div><div class="who">${esc(who)}${net !== null && !net.online ? ' <span class="off">offline</span>' : ""}</div><ul>${items}</ul></div>`;
+}

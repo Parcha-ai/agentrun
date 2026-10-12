@@ -49,7 +49,8 @@ async function stageServer(env) {
       expect("offline: the pill says OFFLINE, and the decision card says the model in this tab answers, decided by a rule", r.net === "OFFLINE" && r.netOnline === "false" && r.card === "tab-local" && /last message went to\s*\n?the model in this tab/i.test(r.selftools ?? "") && /decided by a rule/.test(r.selftools ?? ""), r);
       expect("offline: the caption says it, kept", /The agent's tab is offline: no network and the ping failed/.test(r.cap), r.cap);
       r = await at(done + 35);
-      expect("tools: the strip shows write and bash, each done, with the first line of what it printed", /write hello\.js/.test(r.strip ?? "") && /bash node hello\.js/.test(r.strip ?? "") && /hello from the browser/.test(r.strip ?? "") && !/…\n/.test(r.strip ?? ""), r.strip);
+      expect("tools: the strip shows write and edit of robot.json, each done, with the first line of what it printed", /write robot\.json/.test(r.strip ?? "") && /edit robot\.json/.test(r.strip ?? "") && /Successfully replaced text/.test(r.strip ?? "") && !/…\n/.test(r.strip ?? ""), r.strip);
+      expect("tools: the robot-change card says who changed it (the model in this tab, offline) and what changed (8 legs, then gray -> red)", /the robot was changed by\s*\n?the model in this tab/i.test(r.selftools ?? "") && /offline/i.test(r.selftools ?? "") && /legs: 8, color: gray/.test(r.selftools ?? "") && /gray -> red/.test(r.selftools ?? ""), r.selftools);
       expect("tools: the strip is inside the window and does not reach the chat input", r.stripBox !== null && r.stripBox.l >= 0 && r.stripBox.r <= r.w && r.stripBox.t >= 0 && r.stripBox.b <= r.h && r.stripBox.r < r.input.l, { strip: r.stripBox, input: r.input });
       if (shots) await tab.screenshot(join(shots, "selftools-tools.png"));
       r = await at(done + 49);

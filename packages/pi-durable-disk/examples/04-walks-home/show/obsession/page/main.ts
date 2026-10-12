@@ -29,7 +29,7 @@ import { obsessionBadge } from "../badge.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
 import { obsessionReply } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
-import { checkinLine, checkinNote, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
+import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
 import { TabLink, tabEventsFrom } from "../../page/tab-link.ts";
 import { apiRoot, apiUrl, pageParams } from "../../page/api-base.ts";
 
@@ -381,7 +381,7 @@ let selftoolsKey = "";
 function renderSelftools(state: ShowState): void {
   const net = netBadge(state.net);
   const lines = [checkinLine(state.checkin), homecomingLine(state.homecoming)];
-  const card = state.routing ? routingCardHtml(state.routing) : "";
+  const card = changeCardHtml(fileChanges(state.tools), state.net, state.routing) + (state.routing ? routingCardHtml(state.routing) : "");
   const tools = toolStripHtml(state.tools);
   const key = JSON.stringify([net, lines, card, tools, state.checkin?.phase]);
   if (key === selftoolsKey) return;

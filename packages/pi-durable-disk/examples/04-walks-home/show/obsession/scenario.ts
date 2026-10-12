@@ -298,17 +298,17 @@ export class ScenarioObsession {
       routing: { brain, answering: brain === "tab-local" ? "the model in this tab" : "the cloud model", reason, confidence: jev, decidedBy: jev === null ? "rule" : "jev", ms: jev === null ? 0 : 396, probabilities: jev === null ? null : { local: 1 - jev, cloud: jev } },
     });
     const tool = (id: string, name: string, args: object, output: string, status: "running" | "done"): ToolRow => ({ id, name, args: JSON.stringify(args), output, status });
-    const write = { path: "hello.js", content: "console.log('hello from the browser')" };
-    const run = { command: "node hello.js" };
+    const write = { path: "robot.json", content: JSON.stringify({ legs: 8, color: "gray" }) };
+    const edit = { path: "robot.json", oldText: "gray", newText: "red" };
     at(doneAt + 5, { t: "net", at: 0, net: { online: true, reason: null } });
     at(doneAt + 6, { t: "homecoming", at: 0, homecoming: { baseFetched: false, adapters: ["obsession.gguf"], plannedBytes: 18_400_000, fetchedBytes: 18_400_000, fetchMs: 1380, loadMs: null, name: "gemma-3-1b-it", prefetch: false } });
     at(doneAt + 17.5, { t: "homecoming.loaded", at: 0, loadMs: 7771 });
     at(doneAt + 21, { t: "net", at: 0, net: { online: false, reason: "no network and the ping failed" } });
     at(doneAt + 22, decision("tab-local", "offline: the model in this tab is the only brain", null));
     at(doneAt + 26, { t: "tools", at: 0, tools: [tool("c1", "write", write, "", "running")] });
-    at(doneAt + 28, { t: "tools", at: 0, tools: [tool("c1", "write", write, "wrote 36 bytes to hello.js", "done")] });
-    at(doneAt + 30, { t: "tools", at: 0, tools: [tool("c1", "write", write, "wrote 36 bytes to hello.js", "done"), tool("c2", "bash", run, "", "running")] });
-    at(doneAt + 33, { t: "tools", at: 0, tools: [tool("c1", "write", write, "wrote 36 bytes to hello.js", "done"), tool("c2", "bash", run, "hello from the browser", "done")] });
+    at(doneAt + 28, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done")] });
+    at(doneAt + 30, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done"), tool("c2", "edit", edit, "", "running")] });
+    at(doneAt + 33, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done"), tool("c2", "edit", edit, "Successfully replaced text in robot.json", "done")] });
     at(doneAt + 44, { t: "net", at: 0, net: { online: true, reason: null } });
     at(doneAt + 45, { t: "checkin", at: 0, checkin: { phase: "start", head: "h-12", files: null, changes: null, ms: null, message: null, code: null, resumed: false } });
     at(doneAt + 47, { t: "checkin", at: 0, checkin: { phase: "done", head: "h-14", files: 1, changes: 2, ms: 1204, message: null, code: null, resumed: false } });
