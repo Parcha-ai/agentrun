@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -199,4 +199,20 @@ test('inventory generation works without build output and does not produce an ar
   assert.doesNotMatch(inventory, /@agentrun\//);
   await assert.rejects(access(join(f.root, '.release/agentrun-dsl-source.tar.gz')));
   await assert.rejects(access(join(f.root, '.release/source-export-receipt.json')));
+});
+
+test('a committed symlink that leaves the repository blocks the export, wherever it sits (an excluded name too), and its target is not printed', async t => {
+  const f = await fixture(t);
+  await exec('git', ['init', '-q'], { cwd: f.root });
+  await mkdir(join(f.root, 'packages/pi-durable-disk/examples/app'), { recursive: true });
+  await symlink('/opt/elsewhere/node_modules', join(f.root, 'packages/pi-durable-disk/examples/app/node_modules')); // excluded by name from the walk
+  await symlink('../../../../../outside', join(f.root, 'packages/pi-durable-disk/examples/app/up'));
+  await exec('git', ['add', '-A', '-f'], { cwd: f.root });
+  const failed = await f.run().then(() => null, error => error);
+  assert.ok(failed, 'the export fails');
+  assert.match(failed.stderr, /refuses committed symlinks that leave the repository: packages\/pi-durable-disk\/examples\/app\/node_modules, packages\/pi-durable-disk\/examples\/app\/up/);
+  assert.doesNotMatch(failed.stderr, /\/opt\/elsewhere|outside/, 'the target, a machine path, is not repeated');
+  await exec('git', ['rm', '-q', '--cached', 'packages/pi-durable-disk/examples/app/node_modules', 'packages/pi-durable-disk/examples/app/up'], { cwd: f.root });
+  await rm(join(f.root, 'packages/pi-durable-disk/examples/app/up'));
+  await f.run(); // untracked, and the excluded link is left alone: the export goes through
 });
