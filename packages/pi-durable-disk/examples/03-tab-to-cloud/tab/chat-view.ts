@@ -3,6 +3,7 @@
 // device shows the same transcript. Portable, no DOM.
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import { NOTICE_KIND } from "../environment.ts";
+import { BRAIN_CHECKIN, BRAIN_DECISION, BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string }
@@ -10,7 +11,9 @@ export type ChatItem =
   | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted" }
   | { kind: "note"; id: string; text: string }
   /** The notice of a move, as the agent received it (environment.ts). */
-  | { kind: "switch"; id: string; text: string; switchId: string; planned: boolean };
+  | { kind: "switch"; id: string; text: string; switchId: string; planned: boolean }
+  /** The trained model coming home and becoming the agent's brain (brain.ts): `loading`, then `ready` (the swap) or `failed`. `data` is the entry's data as written. */
+  | { kind: "brain"; id: string; stage: "loading" | "ready" | "failed" | "moved" | "home" | "decision"; text: string; data: Record<string, unknown> };
 
 type Block = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown };
 type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; stopReason?: string };
@@ -133,8 +136,16 @@ export class ChatView {
     };
     // A failed model call that pi retried: an answer comes after it.
     const lastAnswer = this.#entries.reduce((at, e, i) => (e.kind === "pi.assistant" ? i : at), -1);
+    const swaps = new Set<unknown>();
     for (const [index, entry] of this.#entries.entries()) {
       const id = String(entry.id);
+      if (entry.kind === BRAIN_LOADING || entry.kind === BRAIN_SWAP || entry.kind === BRAIN_FAILED || entry.kind === BRAIN_MOVE || entry.kind === BRAIN_CHECKIN || entry.kind === BRAIN_DECISION) {
+        const data = (entry.data ?? {}) as Record<string, unknown>;
+        if (entry.kind === BRAIN_SWAP) { const key = `${String(data.conversation)}:${String(data.sha256)}`; if (swaps.has(key)) continue; swaps.add(key); } // the root's pointer and the new conversation's first entry say the same thing once
+        if (entry.kind === BRAIN_MOVE) { if (swaps.has(data.switchId)) continue; swaps.add(data.switchId); } // a move is written in both conversations too
+        items.push({ kind: "brain", id, stage: entry.kind === BRAIN_LOADING ? "loading" : entry.kind === BRAIN_SWAP ? "ready" : entry.kind === BRAIN_MOVE ? "moved" : entry.kind === BRAIN_CHECKIN ? "home" : entry.kind === BRAIN_DECISION ? "decision" : "failed", text: brainText(entry.kind, data), data });
+        continue;
+      }
       if (entry.kind === NOTICE_KIND) {
         const data = (entry.data ?? {}) as { switchId?: string; planned?: boolean };
         items.push({ kind: "switch", id, text: messagesOf(entry).map((m) => textOf(m.content)).join(""), switchId: data.switchId ?? "", planned: data.planned !== false });
@@ -159,4 +170,22 @@ export class ChatView {
     if (this.#retry) items.push({ kind: "note", id: "retry", text: `retrying: ${this.#retry}` });
     return items;
   }
+}
+
+const mb = (bytes: unknown) => (typeof bytes === "number" ? `${Math.round(bytes / 1e6)} MB` : "");
+
+/** The words for a brain entry, as a reader sees them in the chat. */
+export function brainText(kind: string, data: Record<string, unknown>): string {
+  const name = typeof data.name === "string" ? data.name : "the trained model";
+  if (kind === BRAIN_LOADING) return `The model this run trained is coming home: ${name}${data.bytes ? `, ${mb(data.bytes)}` : ""}.`;
+  if (kind === BRAIN_SWAP && data.mode === "configure") return `The agent's brain is now the model it trained: ${name}${typeof data.topic === "string" ? `, obsessed with ${data.topic}` : ""}, running in this tab. The same conversation, with its tools: the model reads the tool prompt and the task in hand, never the trip.`;
+  if (kind === BRAIN_SWAP) return `The agent's brain is now the model it trained: ${name}${typeof data.topic === "string" ? `, obsessed with ${data.topic}` : ""}, running in this tab. A fresh conversation: it has not seen the trip.`;
+  if (kind === BRAIN_DECISION) {
+    const who = typeof data.answering === "string" ? data.answering : data.brain === "tab-local" ? "the model in this tab" : "the cloud model";
+    const sure = typeof data.confidence === "number" ? ` (${data.decidedBy === "jev" ? "Jev " : ""}${Math.round(data.confidence * 100)}%)` : "";
+    return `${who} answers this one: ${typeof data.reason === "string" ? data.reason : "decided"}${sure}.`;
+  }
+  if (kind === BRAIN_CHECKIN) return `Checked in: this run is back on the server${typeof data.files === "number" ? `, with ${data.files} file${data.files === 1 ? "" : "s"} written offline` : ""}. The same conversation goes on, answered by the cloud model.`;
+  if (kind === BRAIN_MOVE) return typeof data.text === "string" ? data.text : "The agent is moving; the model it trained stays in the tab.";
+  return `The trained model did not load: ${typeof data.reason === "string" ? data.reason : "unknown reason"}. The agent keeps its brain.`;
 }

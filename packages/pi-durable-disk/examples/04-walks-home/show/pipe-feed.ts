@@ -6,14 +6,16 @@
 //   - It never invents a placement: a settled stay begins only when the pipe says the run is there (and, for a planned
 //     switch, when the pipe reports the switch done, so the stay carries the measured handover).
 //   - The translator is pure (frames in, events out); the sockets live in PipeFeed.
-// TODO(browser-demo): the pipe lets any client, a view one included, send `switch` and `submit`. This client says which
-// role it connects as through `role`; when the pipe adds an operator role with a check, set SHOW_PIPE_ROLE=operator and
-// view stays read-only.
+// The stage connects as the pipe's `operator`: it watches, and may switch the run and send it messages. It does not say it can
+// run the agent (`canRun` stays off), so a switch into the tab is answered by a tab page, not by the stage. A `view` client
+// (SHOW_PIPE_ROLE=view) is refused both, with the pipe's own reason.
 import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
+import { brainFromItem, turnsFromItems } from "./chat-items.ts";
+import { checkinFromItem, routingFromItem, toolsFromItems } from "./selftools.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
+import { parseDecision } from "./decision.ts";
 import { emptyState, reduce } from "./reduce.ts";
-import type { TabControl } from "./tab-control.ts";
-import type { HostKind, Note, ShowCommand, ShowEvent, ShowState } from "./types.ts";
+import type { ChatTurn, HostKind, Note, NoteKind, ShowCommand, ShowEvent, ShowState } from "./types.ts";
 
 type PipeEnv = { id: string; label: string; phrase: string; kind: "tab" | "cloud" | "remote"; detail?: string };
 type Placement = Extract<PipeFrame, { t: "placement" }>["placement"];
@@ -22,6 +24,12 @@ type Viewing = Extract<PipeFrame, { t: "viewing" }>;
 /** What a question to the agent after a switch reads like; short on purpose, it costs model tokens. */
 /** It asks for the kernel and core count, not the host name: the answer is shown on screen and in published recordings. */
 export const WHERE_ARE_YOU = "Which kind of machine are you on right now? Check with bash (uname -sr, nproc, and nvidia-smi if it exists), do not print the host name, and answer in two short lines.";
+
+/**
+ * The server wakes the agent for its one line at home with a user-role message that starts with this prefix (SERVER_TURN in 03's placement.ts).
+ * The user did not type it, so the chat does not show it; the agent's reply, in its own words, is shown as usual.
+ */
+export const SERVER_TURN_PREFIX = "[from the server] ";
 
 export function kindOf(env: PipeEnv): HostKind {
   if (env.kind === "tab") return "tab";
@@ -34,6 +42,10 @@ type Settled = { env: string; host: string; place: ShowState["place"] };
 
 export class PipeTranslator {
   readonly chat = new ChatView();
+  private brainSeen = new Set<string>();
+  /** The decision and check-in entries already said (by entry id), and the tool rows last said. */
+  private entriesSeen = new Set<string>();
+  private lastTools = "[]";
   private envs = new Map<string, PipeEnv>();
   private origin: number;
   private clock: () => number;
@@ -41,6 +53,8 @@ export class PipeTranslator {
   private currentStay: string | undefined;
   private currentHost = "";
   private currentEnv: string | null = null;
+  /** The tab id the pipe reports as holding the run (a writer, a remote host included), or undefined while it moves or is parked. */
+  private holder: string | undefined;
   private pending: Pending | undefined;
   /** A settled placement waiting for the pipe's `switched` frame, which carries the measured time. */
   private waiting: { settled: Settled; at: number } | undefined;
@@ -49,6 +63,11 @@ export class PipeTranslator {
   private stays = 0;
   private seenItems = new Set<string>();
   private answeredUsers = new Set<string>();
+  private lastChat = "";
+  /** The decisions already announced (or remembered from history), by id and phase: a frame replayed after a reconnect shows no second card. */
+  private seenDecisions = new Set<string>();
+  /** After the agent arrives on a machine: the tools it had run by then, and whether its first command there has been announced. */
+  private setupWatch: { before: Set<string>; emitted: boolean } | undefined;
   private run = "";
 
   constructor(options: { run: string; origin?: number; clock?: () => number }) {
@@ -57,8 +76,17 @@ export class PipeTranslator {
     this.origin = options.origin ?? this.clock();
   }
 
+  get runId(): string {
+    return this.run;
+  }
+
   private at(): number {
     return Math.max(0, this.clock() - this.origin);
+  }
+
+  /** A note stamped on this run's clock: the read-back watcher's results come in this way (see readback.ts). */
+  note(fields: { kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] }): ShowEvent {
+    return { t: "note", at: this.at(), ...fields };
   }
 
   environments(): ShowState["environments"] {
@@ -69,13 +97,13 @@ export class PipeTranslator {
     return this.envs.get(id)?.label ?? id;
   }
 
-  kindOfEnv(id: string): HostKind | undefined {
-    const e = this.envs.get(id);
-    return e ? kindOf(e) : undefined;
-  }
-
   hasEnv(id: string): boolean {
     return this.envs.has(id);
+  }
+
+  /** Who may write the run's files over HTTP right now: the tab the pipe says holds the run. */
+  get writerTab(): string | undefined {
+    return this.holder;
   }
 
   /** The env the run is settled in, or null while it moves or is parked. */
@@ -83,8 +111,29 @@ export class PipeTranslator {
     return this.currentEnv;
   }
 
+  /**
+   * A decision frame: the server's typed model chose where the run goes, right before the move. Announced once; a malformed one is refused
+   * and said so in the log, never shown as a card.
+   */
+  private decision(raw: unknown, out: ShowEvent[]): void {
+    const d = parseDecision(raw);
+    if (!d) {
+      out.push({ t: "note", at: this.at(), kind: "story", text: "A decision frame was refused: it could not be shown truthfully." });
+      return;
+    }
+    const key = `${d.id}:${d.phase}`;
+    if (this.seenDecisions.has(key)) return;
+    this.seenDecisions.add(key);
+    out.push({ t: "decision", at: this.at(), decision: d });
+  }
+
   frame(frame: PipeFrame): ShowEvent[] {
     const out: ShowEvent[] = [];
+    // `decision` is a newer frame than the wire type lists: read it by name.
+    if ((frame as { t: string }).t === "decision") {
+      this.decision((frame as unknown as { decision?: unknown }).decision, out);
+      return out;
+    }
     switch (frame.t) {
       case "viewing":
         this.viewing(frame, out);
@@ -94,6 +143,9 @@ export class PipeTranslator {
         break;
       case "switched":
         this.switched(frame, out);
+        break;
+      case "submit-refused":
+        out.push({ t: "note", at: this.at(), kind: "story", text: `The question to the agent was refused: ${frame.message}.` });
         break;
       case "switch-refused":
         out.push({ t: "note", at: this.at(), kind: "switch", text: `Switch to ${this.envLabel(frame.to)} refused: ${frame.message}.` });
@@ -131,12 +183,20 @@ export class PipeTranslator {
       out.push({ t: "run", at: 0, run: this.run, origin: this.origin, environments: this.environments(), source: "live" });
     }
     this.placement(frame.placement, out, true);
+    // The decisions so far are history too: remembered so a replay shows no card, never announced.
+    for (const raw of (frame as unknown as { decisions?: unknown[] }).decisions ?? []) {
+      const d = parseDecision(raw);
+      if (d) this.seenDecisions.add(`${d.id}:${d.phase}`);
+    }
     // The transcript so far is history: remember it, announce none of it.
     for (const e of frame.events) this.fold(e);
     for (const item of this.chat.items()) {
       this.seenItems.add(item.id);
       if (item.kind === "user") this.answeredUsers.add(item.id);
     }
+    // Connecting after the setup began: its start is not known, so none is invented.
+    if (this.setupWatch) this.setupWatch = { before: this.toolIds(), emitted: true };
+    this.chatTurns(out);
   }
 
   private envOf(p: Placement): string | null {
@@ -145,6 +205,7 @@ export class PipeTranslator {
 
   private placement(p: Placement, out: ShowEvent[], initial = false): void {
     const at = this.at();
+    this.holder = p.where === "tab" ? p.tab : undefined;
     if (p.where === "moving") {
       this.pending = { switchId: p.switchId ?? "", toEnv: p.env, toLabel: p.to, fromHost: this.currentHost, fromEnv: this.currentEnv, at };
       this.currentEnv = null;
@@ -193,6 +254,22 @@ export class PipeTranslator {
     this.currentStay = id;
     const hostKind = kindOf(this.envs.get(s.env) ?? { id: s.env, label: s.host, phrase: s.host, kind: "cloud" });
     out.push({ t: "stay.begin", at, stay: { id, lane: "run", host: s.host, hostKind, from: at, ...(handover ? { handover } : {}) } });
+    // On a machine: the setup starts with the agent's first command there, so what it ran before arriving does not count.
+    this.setupWatch = hostKind === "tab" ? undefined : { before: this.toolIds(), emitted: false };
+  }
+
+  private toolIds(): Set<string> {
+    return new Set(this.chat.items().filter((i) => i.kind === "tool").map((i) => i.id));
+  }
+
+  /** The agent's first bash command after it arrived on a machine: where "setting up" begins. Announced once per arrival. */
+  private setupStart(out: ShowEvent[]): void {
+    const w = this.setupWatch;
+    if (!w || w.emitted) return;
+    const first = this.chat.items().find((i) => i.kind === "tool" && !w.before.has(i.id) && /bash/i.test(i.name) && i.status === "running");
+    if (!first) return;
+    w.emitted = true;
+    out.push({ t: "setup", at: this.at(), phase: "start" });
   }
 
   private switched(frame: Extract<PipeFrame, { t: "switched" }>, out: ShowEvent[]): void {
@@ -215,6 +292,47 @@ export class PipeTranslator {
     const event = untag(tagged) as { kind?: string; event?: unknown; events?: unknown[] };
     if (event.kind === "snapshot") this.chat.apply(event.event as never);
     else if (event.kind === "events") for (const e of event.events ?? []) this.chat.apply(e as never);
+  }
+
+  /**
+   * The conversation as the v2 stage shows it: the user's words and the agent's own text, in order. Tool calls, thinking and the system
+   * notice about a switch are not turns. A chat event replaces the whole list and is emitted only when the list changed.
+   */
+  private chatTurns(out: ShowEvent[]): void {
+    const items = this.chat.items() as readonly unknown[];
+    // The brain entries (the trained model becoming the agent's brain, D3's brain swap) are state, said once each; they are not turns.
+    for (const item of items) {
+      const brain = brainFromItem(item);
+      if (brain === null) continue;
+      const key = `${brain.id}|${brain.stage}`;
+      if (this.brainSeen.has(key)) continue;
+      this.brainSeen.add(key);
+      out.push({ t: "brain", at: this.at(), brain });
+    }
+    // The self-tools beats: each decision and each check-in of the transcript once, and the current task's tool calls whenever they change.
+    for (const item of items) {
+      const r = routingFromItem(item);
+      if (r !== null && !this.entriesSeen.has(`decision|${r.id}`)) {
+        this.entriesSeen.add(`decision|${r.id}`);
+        out.push({ t: "routing", at: this.at(), routing: r.routing });
+      }
+      const c = checkinFromItem(item);
+      if (c !== null && !this.entriesSeen.has(`home|${c.id}`)) {
+        this.entriesSeen.add(`home|${c.id}`);
+        out.push({ t: "checkin", at: this.at(), checkin: c.checkin });
+      }
+    }
+    const tools = toolsFromItems(items, (text) => text.startsWith(SERVER_TURN_PREFIX));
+    const toolsKey = JSON.stringify(tools);
+    if (toolsKey !== this.lastTools) {
+      this.lastTools = toolsKey;
+      out.push({ t: "tools", at: this.at(), tools });
+    }
+    const turns = turnsFromItems(items, (text) => text.startsWith(SERVER_TURN_PREFIX));
+    const key = JSON.stringify(turns);
+    if (key === this.lastChat) return;
+    this.lastChat = key;
+    out.push({ t: "chat", at: this.at(), turns });
   }
 
   private events(tagged: Tagged, out: ShowEvent[]): void {
@@ -242,6 +360,8 @@ export class PipeTranslator {
         out.push({ t: "note", at, kind: "agent", text: `The agent says: ${answer.text.replace(/\s+/g, " ")}` });
       }
     }
+    this.setupStart(out);
+    this.chatTurns(out);
   }
 }
 
@@ -262,17 +382,27 @@ type SocketLike = {
   on(event: "message", fn: (data: unknown) => void): void;
 };
 
+/** Where to connect: the 03 server's websocket, the run to watch, and the run's secret. `key` changes when the run does. */
+export type PipeTarget = { url: string; run: string; token: string; key?: string };
+
 export type PipeFeedOptions = {
-  /** ws://host:port/ws of the 03 server and the run to watch; `token` is the run's secret. */
-  url: string;
-  run: string;
-  token: string;
-  /** The hello mode. "view" today; "operator" once the pipe has the role check (see the TODO above). */
-  role?: string;
+  /** ws://host:port/ws of the 03 server and the run to watch; `token` is the run's secret. Or give `resolve`. */
+  url?: string;
+  run?: string;
+  token?: string;
+  /**
+   * The target, asked again at every (re)connect and every `watchMs`. When its `key` changes (a restarted server, a retake, a new
+   * run) the feed drops its state and follows the new run; while it returns undefined (no server yet) the feed waits and asks again.
+   */
+  resolve?: () => PipeTarget | undefined;
+  /** Told when the feed dropped its state because the run changed: the pages must fetch the new snapshot. */
+  onReset?: () => void;
+  /** How often a changed target is looked for (and an unanswered hello retried). Default 1000 ms. */
+  watchMs?: number;
+  /** The hello mode: "operator" (the default) may switch and ask; "view" only watches and is refused with a reason. */
+  role?: "operator" | "view";
   /** Ask the agent where it is after each completed switch (a few model tokens). Default true. */
   askAfterSwitch?: boolean;
-  /** Rehearsal only (tab-control.ts): who asks for the switch back to the tab, because a view client cannot take the run. */
-  tabControl?: TabControl;
   connect?: (url: string) => SocketLike;
   /** Log every frame's type (not its contents). */
   trace?: boolean;
@@ -289,16 +419,54 @@ export class PipeFeed implements FeedSource {
   private stopped = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private refusal: ((message: string) => void) | undefined;
+  private askRefusal: ((message: string) => void) | undefined;
   private asked = 0;
   private opts: PipeFeedOptions;
+  /** The key of the run this feed is connected (or connecting) to. */
+  private connectedKey: string | undefined;
+  private retry: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: PipeFeedOptions) {
     this.opts = options;
-    this.tr = new PipeTranslator({ run: options.run, ...(options.clock ? { clock: options.clock } : {}) });
+    this.tr = new PipeTranslator({ run: options.run ?? "", ...(options.clock ? { clock: options.clock } : {}) });
+  }
+
+  private target(): PipeTarget | undefined {
+    if (this.opts.resolve) return this.opts.resolve();
+    if (this.opts.url && this.opts.run && this.opts.token) return { url: this.opts.url, run: this.opts.run, token: this.opts.token, key: `${this.opts.url}|${this.opts.run}` };
+    return undefined;
+  }
+
+  /** A different run: nothing of the old one is true any more. */
+  private resetFor(run: string): void {
+    this.tr = new PipeTranslator({ run, ...(this.opts.clock ? { clock: this.opts.clock } : {}) });
+    this.st = emptyState();
+    this.events.length = 0;
+    this.opts.onReset?.();
   }
 
   get state(): ShowState {
     return this.st;
+  }
+
+  /** The key of the link this feed is connected to (undefined before it has one): what a note about the take on stage is checked against. */
+  get linkKey(): string | undefined {
+    return this.connectedKey;
+  }
+
+  /** The run this feed is showing ("" until it has connected to one). */
+  get run(): string {
+    return this.tr.runId;
+  }
+
+  /** A note from outside the pipe's own frames: the take server's read-back, for one. Stamped on the feed's clock. */
+  addNote(fields: { kind: NoteKind; text: string; measured?: boolean; evidence?: Note["evidence"] }): void {
+    this.emit([this.tr.note(fields)]);
+  }
+
+  /** The tab that holds the run, for the disk's writes (see disk.ts). */
+  get writerTab(): string | undefined {
+    return this.tr.writerTab;
   }
 
   subscribe(listener: (event: ShowEvent) => void): () => void {
@@ -314,21 +482,61 @@ export class PipeFeed implements FeedSource {
     }
   }
 
-  async start(): Promise<void> {
+  private open(): void {
+    if (this.stopped) return;
     const connect = this.opts.connect ?? ((url: string) => new (globalThis as unknown as { WebSocket: new (u: string) => never }).WebSocket(url) as SocketLike);
-    const open = () => {
-      const socket = connect(this.opts.url);
-      this.socket = socket;
-      socket.on("open", () => socket.send(JSON.stringify({ t: "hello", run: this.opts.run, token: this.opts.token, mode: this.opts.role ?? "view", tab: `stage-${process.pid}` })));
-      socket.on("message", (data) => this.onMessage(String(data)));
-      socket.on("error", () => undefined);
-      socket.on("close", () => {
-        this.opts.log?.("pipe.closed");
-        if (!this.stopped) setTimeout(open, 2_000).unref?.();
-      });
-    };
-    open();
-    this.timer = setInterval(() => this.emit(this.tr.flush()), 1_000);
+    const t = this.target();
+    if (!t) {
+      // No server yet (the link file is not there): wait and ask again.
+      this.opts.log?.("pipe.waiting");
+      this.retry = setTimeout(() => this.open(), 2_000);
+      this.retry.unref?.();
+      return;
+    }
+    const key = t.key ?? `${t.url}|${t.run}`;
+    // The first connection names the run it is for (a feed built from a link file does not know it until now); a later one that
+    // names a different run drops everything of the old one.
+    if (this.connectedKey === undefined) this.tr = new PipeTranslator({ run: t.run, ...(this.opts.clock ? { clock: this.opts.clock } : {}) });
+    else if (key !== this.connectedKey) this.resetFor(t.run);
+    this.connectedKey = key;
+    const socket = connect(t.url);
+    this.socket = socket;
+    socket.on("open", () => socket.send(JSON.stringify({ t: "hello", run: t.run, token: t.token, mode: this.opts.role ?? "operator", tab: `stage-${process.pid}` })));
+    socket.on("message", (data) => {
+      if (this.socket === socket) this.onMessage(String(data));
+    });
+    socket.on("error", () => undefined);
+    socket.on("close", () => {
+      // A socket this feed dropped on purpose (a new run) is not a lost connection.
+      if (this.socket !== socket) return;
+      this.opts.log?.("pipe.closed");
+      if (!this.stopped) {
+        this.retry = setTimeout(() => this.open(), 2_000);
+        this.retry.unref?.();
+      }
+    });
+  }
+
+  /** The link changed under a live connection: leave the old run and follow the new one at once. */
+  private retarget(): void {
+    const old = this.socket;
+    this.socket = undefined;
+    if (this.retry) clearTimeout(this.retry);
+    old?.close();
+    this.open();
+  }
+
+  async start(): Promise<void> {
+    this.open();
+    this.timer = setInterval(() => {
+      this.emit(this.tr.flush());
+      if (!this.opts.resolve || this.stopped) return;
+      const t = this.opts.resolve();
+      if (!t) return;
+      // The first link appeared while waiting for one: connect now, not at the next retry.
+      if (this.connectedKey === undefined && !this.socket) return this.open();
+      if (this.connectedKey !== undefined && (t.key ?? `${t.url}|${t.run}`) !== this.connectedKey) this.retarget();
+    }, this.opts.watchMs ?? 1_000);
     this.timer.unref?.();
   }
 
@@ -342,15 +550,23 @@ export class PipeFeed implements FeedSource {
     // SHOW_PIPE_TRACE=1: which frames the pipe sent this viewer, by type, for finding what a viewer is not told.
     if (this.opts.trace && frame.t !== "pong" && frame.t !== "files-changed") this.opts.log?.("frame", { t: frame.t, ...(frame.t === "placement" ? { where: frame.placement.where, env: "env" in frame.placement ? frame.placement.env : undefined } : {}), ...(frame.t === "switched" ? { to: frame.to, ms: frame.ms } : {}) });
     if (frame.t === "switch-refused") this.refusal?.(frame.message);
+    if (frame.t === "submit-refused") this.askRefusal?.(frame.message);
     this.emit(this.tr.frame(frame));
-    if (frame.t === "switched" && this.opts.askAfterSwitch !== false) setTimeout(() => this.ask(WHERE_ARE_YOU), 400);
+    if (frame.t === "switched" && this.opts.askAfterSwitch !== false) setTimeout(() => void this.ask(WHERE_ARE_YOU), 400);
   }
 
-  private ask(text: string): { ok: boolean; message?: string } {
+  private async ask(text: string): Promise<{ ok: boolean; message?: string }> {
     if (!this.socket || this.socket.readyState !== 1) return { ok: false, message: "the pipe is not connected" };
     if (this.tr.where === null) return { ok: false, message: "the run is not settled on a host" };
+    // A connection that may not send messages (hello mode view) gets submit-refused with the pipe's reason; wait briefly for it.
+    const refused = new Promise<string | undefined>((resolve) => {
+      this.askRefusal = (message) => resolve(message);
+      setTimeout(() => resolve(undefined), 500);
+    });
     this.socket.send(JSON.stringify({ t: "submit", text, requestId: `stage-${Date.now().toString(36)}-${++this.asked}` }));
-    return { ok: true };
+    const message = await refused;
+    this.askRefusal = undefined;
+    return message === undefined ? { ok: true } : { ok: false, message };
   }
 
   async command(cmd: ShowCommand): Promise<{ ok: boolean; message?: string }> {
@@ -359,7 +575,6 @@ export class PipeFeed implements FeedSource {
     if (!this.socket || this.socket.readyState !== 1) return { ok: false, message: "the pipe is not connected" };
     if (!this.tr.hasEnv(cmd.to)) return { ok: false, message: `no environment ${cmd.to}` };
     if (this.tr.where === cmd.to) return { ok: false, message: "the run is already there" };
-    if (this.opts.tabControl && this.tr.kindOfEnv(cmd.to) === "tab") return this.opts.tabControl.switchToTab();
     // The pipe answers a refused switch with a frame; wait briefly for it so the caller hears the reason.
     const refused = new Promise<string | undefined>((resolve) => {
       this.refusal = (message) => resolve(message);
@@ -373,6 +588,7 @@ export class PipeFeed implements FeedSource {
 
   stop(): void {
     this.stopped = true;
+    if (this.retry) clearTimeout(this.retry);
     if (this.timer) clearInterval(this.timer);
     this.socket?.close();
   }

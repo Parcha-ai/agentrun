@@ -3,13 +3,14 @@
 // plays its scripted run, which is on a VM from 0:40. Checks that the picture appears once the host has one, moves, never
 // carries the secret to the page, and goes away (closing the host's stream) when the run leaves the VM.
 //   CDP_URL=http://127.0.0.1:9444 node scripts/desktop-check.mjs [shots-prefix]
+import "./own-chrome.mjs"; // starts (and always closes) a Chrome of its own when CDP_URL is not set
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openTab, sleep } from "./cdp.mjs";
+import { freePort, openTab, sleep, waitForStage, withDebug } from "./cdp.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..");
@@ -75,13 +76,15 @@ mkdirSync(root, { recursive: true, mode: 0o755 });
 const linkFile = join(root, "link");
 writeFileSync(linkFile, `http://127.0.0.1:${fake.address().port}/run/stage#${SECRET}\n`, { mode: 0o600 });
 
-const port = 8798;
+const port = await freePort();
 const stage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(port), SHOW_DESKTOP_LINK_FILE: linkFile, SHOW_START: "44", SHOW_AUTOKILL: "off" }, stdio: "ignore" });
 let tab;
 try {
-  await until(async () => (await fetch(`http://127.0.0.1:${port}/api/state`).then((r) => r.ok).catch(() => false)), 20_000);
-  tab = await openTab(`http://127.0.0.1:${port}/`, { width: 1600, height: 900 });
+  await waitForStage(port, stage);
+  tab = await openTab(withDebug(`http://127.0.0.1:${port}/`), { width: 1600, height: 900 });
   const ev = (s) => tab.eval(s);
+  // Navigation has only started when openTab returns; on a busy box the first read can land on a page with no stage in it yet.
+  for (let i = 0; i < 100 && !(await ev(`!!document.getElementById("desktop")`)); i++) await sleep(200);
   const visible = () => ev(`!document.getElementById("desktop").hidden`);
   expect("the desktop panel appears when the run is on a VM", await until(visible, 15_000));
   expect("while the host has no desktop the panel says so and shows no picture", (await ev(`!document.querySelector("#desktop .dnote").hidden && document.querySelector("#desktop img").hidden`)) === true);

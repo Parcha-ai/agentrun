@@ -1,0 +1,24 @@
+{
+  "name": "pi-durable-disk-example-walks-home-cluster",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "teach_skills: one session forks a task-owned thread per skill onto its own GPU box, joins them allSettled, and reads any thread back.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "spike": "node spike/spike.ts",
+    "test": "node --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-durable": "1.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "typescript": "5.9.3"
+  }
+}

@@ -8,6 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Cdp, type Page } from "./cdp.ts";
+import { send } from "./recording.ts";
 
 const link = process.argv[2]!;
 const target = process.argv[3] ?? "local";
@@ -27,7 +28,6 @@ const step = (name: string, data: Record<string, unknown> = {}) => {
 };
 let shot = 0;
 const snap = async (page: Page, name: string) => page.screenshot(join(shots, `${String(++shot).padStart(2, "0")}-${name}.png`)).catch(() => undefined);
-const send = (page: Page, text: string) => page.evaluate(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(text)}; document.getElementById("send").click(); return true; })()`);
 
 const QUESTION = "Which machine are you on right now? Check with bash (uname -a, nproc, and nvidia-smi if it exists) and answer in two short lines.";
 

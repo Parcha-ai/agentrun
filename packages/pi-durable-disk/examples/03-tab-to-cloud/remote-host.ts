@@ -4,7 +4,9 @@
 // the pipe. The server reaches it, not the other way round: it listens for one WebSocket with its bearer token, the
 // server's first frame there is the invitation (which run, as which tab, for which switch), and from then on that
 // socket is a tab's connection to the pipe. It exits when the pipe lets it go.
-//   node remote-host.ts --port 8080 --token-file F [--work DIR]   (default: work/ in the home of the user it runs as)
+//   node remote-host.ts --port 8080 --token-file F [--work DIR] [--host 0.0.0.0]
+//   (--work defaults to work/ in the home of the user it runs as; --port 0 takes a free port, which the "listening"
+//   line reports)
 //   DEMO_ENV_LABEL, DEMO_ENV_CLASS: how this host's notice names it (host-probe.ts)
 import { readFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -16,16 +18,18 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { probeHost } from "./host-probe.ts";
+import { capTimeouts } from "./capped-env.ts";
 import { nodeWorkspaceFs } from "./host-fs.ts";
 import { PipeClient, type Attached, type SocketLike } from "./tab/pipe-client.ts";
 import { finishStep, startTab, type TabRuntime } from "./tab/runtime.ts";
 import { Workspace } from "./tab/workspace.ts";
+import { FrameSwitchChannel } from "./switch-tool.ts";
 import type { PipeFrame } from "./wire.ts";
 
 /** The server's first frame on the socket. */
 export type Invite = { t: "invite"; run: string; token: string; tab: string; switchId?: string };
 
-const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: join(homedir(), "work") } } });
+const { values } = parseArgs({ options: { port: { type: "string", default: "8080" }, "token-file": { type: "string" }, work: { type: "string", default: join(homedir(), "work") }, host: { type: "string", default: "0.0.0.0" } } });
 const log = (event: string, data: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 const token = readFileSync(values["token-file"]!, "utf8").trim();
 const expected = createHash("sha256").update(`Bearer ${token}`).digest();
@@ -34,11 +38,11 @@ mkdirSync(work, { recursive: true });
 
 const wss = new WebSocketServer({
   port: Number(values.port),
-  host: "0.0.0.0",
+  host: values.host!,
   maxPayload: 64 * 1024 * 1024,
   verifyClient: ({ req }: { req: { headers: Record<string, string | string[] | undefined> } }) => timingSafeEqual(createHash("sha256").update(String(req.headers.authorization ?? "")).digest(), expected),
 });
-log("listening", { port: Number(values.port) });
+wss.on("listening", () => log("listening", { port: (wss.address() as { port: number }).port }));
 
 let taken = false;
 wss.on("connection", (socket: WebSocket) => {
@@ -47,6 +51,8 @@ wss.on("connection", (socket: WebSocket) => {
     return;
   }
   taken = true;
+  // Unhandled, an error event (a frame over maxPayload, a broken connection) would end the process before the close.
+  socket.on("error", (error) => log("socket.error", { error: error.message }));
   socket.once("message", (data) => {
     const invite = JSON.parse(String(data)) as Invite;
     if (invite.t !== "invite") {
@@ -76,7 +82,14 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
     wss.close();
     process.exit(code);
   };
+  // The agent's switch_environment tool talks to the server over this host's pipe.
+  const switchChannel = new FrameSwitchChannel((frame) => {
+    if (client.lost) return false;
+    client.send(frame);
+    return true;
+  });
   const onFrame = (frame: PipeFrame) => {
+    if (switchChannel.accept(frame)) return;
     if (frame.t === "want-snapshot" && runtime) {
       const r = runtime;
       void watchEvents(r.harness, r.root.id, ctx).then(async (stream) => {
@@ -88,12 +101,14 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
     } else if (frame.t === "drain") {
       // Finish the step in progress, close the agent here, say so; the pipe then releases the run.
       void (async () => {
+        await runtime?.stopLive();
         const how = runtime ? await finishStep(runtime.harness, 8_000).catch(() => "timeout" as const) : "idle";
         log("drained", { switchId: frame.switchId, step: how });
+        const acked = runtime ? await runtime.workspace.baselineDigest().catch(() => undefined) : undefined;
         await unview();
         await runtime?.close().catch(() => undefined);
         runtime = undefined;
-        client.send({ t: "drained", switchId: frame.switchId });
+        client.send({ t: "drained", switchId: frame.switchId, ...(acked ? { acked } : {}) });
       })();
     }
   };
@@ -118,9 +133,10 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
   }
   const attached: Attached = first;
   const started = performance.now();
-  const env = new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } });
+  // DEMO_BASH_MAX_S: a ceiling on one command (a take: a command that never returns fails back to the agent instead of holding the run).
+  const env = capTimeouts(new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } }), Number(process.env.DEMO_BASH_MAX_S ?? 0));
   const facts = await probeHost();
-  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), host: { switchChannel }, liveFlushMs: Number(process.env.DEMO_LIVE_FLUSH_MS ?? 0), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   log("running", { generation: attached.generation, ms: Math.round(performance.now() - started), restored: runtime.restored, gpu: facts.gpu });
   const stream = await watchEvents(runtime.harness, runtime.root.id, ctx);

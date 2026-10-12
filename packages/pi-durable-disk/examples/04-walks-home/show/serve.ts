@@ -3,11 +3,18 @@
 // Every response carries COOP/COEP/CORP: Wasmer and MuJoCo WASM need cross-origin isolation, and an iframe document must
 // itself satisfy the parent's COEP, so the headers are set on the tab app's files too.
 //   SHOW_PIPE_LINK_FILE  a file holding a 03 run link (http://host:port/run/ID#SECRET): the feed is that pipe, watched live
-//   SHOW_PIPE_ROLE (view)  the hello mode the stage connects as; TODO(browser-demo): "operator" once the pipe checks roles
-//   SHOW_TAB_CDP  rehearsal only: a Chrome (CDP url) holding the real 03 tab page, which asks for the switch back to the tab
+//   SHOW_PIPE_ROLE (operator)  the hello mode the stage connects as: "operator" may switch and ask, "view" only watches
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
-//   SHOW_ASK_AFTER_SWITCH (1)  ask the agent where it is after each completed switch (0 to turn off)
+//   SHOW_ASK_AFTER_SWITCH (0)  1: ask the agent where it is after each completed switch (the v1 switch beat; off, so the v2 chat shows only real turns)
+//   SHOW_SCENARIO=obsession: the rehearsal of the "pick an obsession" episode (served at /obsession/), with SHOW_MODEL_DISK as below
+//   SHOW_OBSESSION_FALLBACK=1 (with SHOW_SCENARIO=obsession)  the rehearsal's train half is the real run where the clamp was eased
+//   SHOW_OBSESSION_THINK=1 (with SHOW_SCENARIO=obsession)  the rehearsal replays D1's real think-mode training run (thinking out loud in the samples) with D2's find run for the Moon from the same freeze run, and the viewer asks for that topic
+//   SHOW_ALLOW_ORIGIN=<origin>  the stage page served on another origin (the 03 server's /show/) may read this server's feed: CORS for that one origin, preflights answered
+//   SHOW_OBSESSION_SELFTOOLS=1 (with SHOW_OBSESSION_BRAIN=1)  the tab's own events of the self-tools beats, scripted: net, decisions, tool calls, check-in, homecoming bytes
+//   SHOW_OBSESSION_BRAIN=1|fail (with SHOW_SCENARIO=obsession)  the brain swap rehearsal: the trained model becomes the agent's brain (1), or the load fails and the agent keeps its own (fail)
+//   SHOW_OBSESSION_GATE=1 (with SHOW_SCENARIO=obsession)  the rehearsal's teach step stops at the real-person gate
+//   SHOW_MODEL_DISK (with SHOW_SCENARIO=ep2 or obsession)  a directory laid out by the tab's make-model-disk script: the rehearsal serves that model to the tab once its recorded training is over
 //   SHOW_MODE=operator  the scripted feed waits for commands (switch, fanout, kill, collapse) instead of playing itself
 //   SHOW_PORT (8750)  SHOW_HOST (127.0.0.1)  SHOW_API  SHOW_SPEED (1)  SHOW_START (seconds to skip)  SHOW_AUTOKILL (seconds into training, "off" to wait)
 //   TAB_DIR  the tab app's dist directory (default: a stub that speaks the protocol)
@@ -15,17 +22,28 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { desktopTargetFromLink, proxyStream, requestTicket } from "./desktop.ts";
+import { proxyStream, requestTicket } from "./desktop.ts";
+import { LiveLink, linkKey } from "./link.ts";
+import { isFile, modelDisk, runDisk, type DiskBackend } from "./disk.ts";
 import { PipeFeed, type FeedSource } from "./pipe-feed.ts";
-import { cdpTabControl } from "./tab-control.ts";
+import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
+import { forwardJudge, rehearsalJudge } from "./episode2/judge.ts";
+import { ScenarioObsession } from "./obsession/scenario.ts";
+import { corsHeaders } from "./cors.ts";
+import { ScenarioEp2 } from "./episode2/scenario.ts";
+import { ScenarioV2 } from "./scenario-v2.ts";
 import type { ShowCommand } from "./types.ts";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const PAGE = join(here, "page", "dist");
+const EP2 = join(here, "episode2", "page", "dist");
+const OBSESSION = join(here, "obsession", "page", "dist");
 const STUB = join(here, "page", "stub-tab");
 const TAB = process.env.TAB_DIR ? resolve(process.env.TAB_DIR) : STUB;
-const POLICY = process.env.POLICY_DIR ? resolve(process.env.POLICY_DIR) : join(here, "page", "policy");
+// The winner's policy comes from POLICY_DIR. With none, a rehearsal serves a real walking brain for the tab's own quadruped (fixtures/preset-quadruped/home.json), so a fresh checkout's
+// home beat works; /api/stage says which one it is, and the live-day preflight refuses the preset (the live day has to name the winner's policy).
+const POLICY = process.env.POLICY_DIR ? resolve(process.env.POLICY_DIR) : join(here, "fixtures", "preset-quadruped");
 const UPSTREAM = process.env.SHOW_API?.replace(/\/$/, "");
 const SPEED = Number(process.env.SHOW_SPEED ?? 1);
 const START = Number(process.env.SHOW_START ?? 0);
@@ -43,6 +61,7 @@ const TYPES: Record<string, string> = {
   ".png": "image/png",
   ".webc": "application/octet-stream",
   ".onnx": "application/octet-stream",
+  ".woff2": "font/woff2",
   ".bin": "application/octet-stream",
 };
 
@@ -83,7 +102,9 @@ async function body(req: IncomingMessage): Promise<string> {
 const clients = new Set<ServerResponse>();
 // The stage's model of the agent's disk for the tab's storage requests: paths to bytes, durable for the life of the
 // server, emptied by a `reset` so a new take starts with a fresh disk. A live driver replaces this with the real disk.
-const disk = new Map<string, Buffer>();
+// With a pipe feed the disk is the real run's work/ (over the 03 server's route, with the secret this server holds); with the
+// scripted feed it is the model. Assigned once the feed exists.
+let disk: DiskBackend = modelDisk();
 const DISK_PATH = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+){0,3}$/;
 
 async function bytesBody(req: IncomingMessage, limit: number): Promise<Buffer> {
@@ -106,33 +127,66 @@ function relay(source: FeedSource): void {
 }
 
 const PIPE_LINK_FILE = process.env.SHOW_PIPE_LINK_FILE;
+const TAKE_STATUS = process.env.SHOW_TAKE_STATUS;
 const DESKTOP_LINK_FILE = process.env.SHOW_DESKTOP_LINK_FILE ?? PIPE_LINK_FILE;
-const DESKTOP = DESKTOP_LINK_FILE ? desktopTargetFromLink(readFileSync(DESKTOP_LINK_FILE, "utf8")) : undefined;
+// The links are followed live: whoever starts the 03 server rewrites the file (a restart, a retake: a new run), and the feed, the
+// desktop and the disk all follow it. A link that is not there yet means "no server yet", never a crash.
+const pipeLink = PIPE_LINK_FILE ? new LiveLink(PIPE_LINK_FILE) : undefined;
+const desktopLink = DESKTOP_LINK_FILE ? (DESKTOP_LINK_FILE === PIPE_LINK_FILE ? pipeLink! : new LiveLink(DESKTOP_LINK_FILE)) : undefined;
+const DESKTOP = desktopLink ? () => desktopLink.tryCurrent() : undefined;
 let player: FeedSource;
-if (PIPE_LINK_FILE) {
-  // The feed is a 03 pipe: the run's link names where it listens, which run, and its secret (never printed or logged).
-  const link = new URL(readFileSync(PIPE_LINK_FILE, "utf8").trim());
+if (pipeLink) {
   const { default: WS } = await import("ws");
   const feed = new PipeFeed({
-    url: `${link.protocol === "https:" ? "wss" : "ws"}://${link.host}/ws`,
-    run: link.pathname.split("/").filter(Boolean).at(-1)!,
-    token: link.hash.slice(1),
-    ...(process.env.SHOW_PIPE_ROLE ? { role: process.env.SHOW_PIPE_ROLE } : {}),
-    askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH !== "0",
+    resolve: () => {
+      const t = pipeLink.tryCurrent();
+      return t ? { url: t.wsUrl, run: t.run, token: t.secret, key: linkKey(t) } : undefined;
+    },
+    // A new run: pages hold the old one's snapshot, so they are told to fetch the new one.
+    onReset: () => {
+      for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
+    },
+    ...(process.env.SHOW_PIPE_ROLE === "view" || process.env.SHOW_PIPE_ROLE === "operator" ? { role: process.env.SHOW_PIPE_ROLE } : {}),
+    // Off unless asked: the question after a switch is a v1 beat, and in the v2 chat it would be a turn the user never typed.
+    askAfterSwitch: process.env.SHOW_ASK_AFTER_SWITCH === "1",
     trace: process.env.SHOW_PIPE_TRACE === "1",
-    ...(process.env.SHOW_TAB_CDP ? { tabControl: cdpTabControl(process.env.SHOW_TAB_CDP, link.pathname.split("/").filter(Boolean).at(-1)!) } : {}),
     connect: (url) => new WS(url, { maxPayload: 64 * 1024 * 1024 }) as never,
     log: (event, data) => console.log(JSON.stringify({ event, ...data })),
   });
   relay(feed);
   await feed.start();
   player = feed;
+  // The take server's own read-back of work/ (its --evidence-readback), as notes. SHOW_TAKE_STATUS is its status file; the log it names
+  // moves with a retake, so it is looked up each time. Only the three read-back events are read from it (the log also holds the run's link).
+  if (TAKE_STATUS) {
+    new ReadbackWatcher({
+      file: () => {
+        try {
+          const logFile = (JSON.parse(readFileSync(TAKE_STATUS, "utf8")) as { logFile?: unknown }).logFile;
+          return typeof logFile === "string" ? logFile : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      run: () => feed.run,
+      key: () => {
+        const t = pipeLink.tryCurrent();
+        return t ? linkKey(t) : undefined;
+      },
+      feedKey: () => feed.linkKey,
+      onNote: (note) => feed.addNote(note),
+    }).start();
+  }
+  // The tab's files are the real run's: its secret stays here, and a write names the tab the pipe says holds the run.
+  disk = runDisk(() => pipeLink.tryCurrent(), () => feed.writerTab);
 } else {
   player = newPlayer();
 }
 
-function newPlayer(start = START, paused = false): ScenarioPlayer {
-  const p = new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
+function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 | ScenarioObsession {
+  // SHOW_SCENARIO=v2: the rehearsal of the v2 take (a creature drawn in the browser, the agent, a GPU, checkpoints, home).
+  // SHOW_SCENARIO=ep2: the rehearsal of episode 2 (served at /ep2/), whose scripted training progress file is read through the disk route below.
+  const p = process.env.SHOW_SCENARIO === "obsession" ? new ScenarioObsession({ ...(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}), ...(process.env.SHOW_OBSESSION_GATE === "1" ? { gate: true } : {}), ...(process.env.SHOW_OBSESSION_FALLBACK === "1" ? { fallback: true } : {}), ...(process.env.SHOW_OBSESSION_THINK === "1" ? { think: true } : {}), ...(process.env.SHOW_OBSESSION_SELFTOOLS === "1" ? { selftools: true } : {}), ...(process.env.SHOW_OBSESSION_BRAIN === "1" ? { brain: "ready" as const } : process.env.SHOW_OBSESSION_BRAIN === "fail" ? { brain: "fail" as const } : {}) }) : process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();
@@ -168,6 +222,10 @@ async function proxy(req: IncomingMessage, res: ServerResponse, path: string): P
 
 const server = createServer(async (req, res) => {
   isolate(res);
+  // The stage page served on the agent's tab's origin reads this server cross-origin: CORS for that one origin (SHOW_ALLOW_ORIGIN), preflights answered, nothing for anyone else.
+  const cors = corsHeaders(process.env.SHOW_ALLOW_ORIGIN, typeof req.headers.origin === "string" ? req.headers.origin : undefined);
+  for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+  if (req.method === "OPTIONS") return void res.writeHead(cors["Access-Control-Allow-Origin"] ? 204 : 403).end();
   const url = new URL(req.url ?? "/", "http://x");
   const path = url.pathname;
   try {
@@ -175,27 +233,38 @@ const server = createServer(async (req, res) => {
       // The host's desktop, if it has one: the secret stays here, the page gets a same-origin picture path.
       if (path === "/api/desktop" && req.method === "GET") {
         if (!DESKTOP) return sendJson(res, 404, { ok: false, reason: "not configured" });
-        const t = await requestTicket(DESKTOP).catch(() => ({ ok: false as const, status: 502 }));
+        const target = DESKTOP();
+        if (!target) return sendJson(res, 404, { ok: false, reason: "no desktop yet" });
+        const t = await requestTicket(target).catch(() => ({ ok: false as const, status: 502 }));
         return t.ok ? sendJson(res, 200, { url: t.url, ttlMs: t.ttlMs }) : sendJson(res, 404, { ok: false, reason: "no desktop yet" });
       }
       if (path.startsWith("/api/disk/")) {
         const key = decodeURIComponent(path.slice("/api/disk/".length));
         if (!DISK_PATH.test(key) || key.split("/").includes("..")) return sendJson(res, 400, { error: "bad path" });
         if (req.method === "PUT") {
-          disk.set(key, await bytesBody(req, 16 * 1024 * 1024));
-          return sendJson(res, 200, { ok: true, bytes: disk.get(key)!.length });
+          const w = await disk.write(key, await bytesBody(req, 16 * 1024 * 1024));
+          return w.status === 200 ? sendJson(res, 200, { ok: true, bytes: (w as { bytes: number }).bytes }) : sendJson(res, w.status, { ok: false, error: (w as { error: string }).error });
         }
         if (req.method === "GET") {
-          const hit = disk.get(key);
+          // A scripted rehearsal can stand in for files on the run's disk (episode 2's training progress), only as far as its script has got.
+          const synthetic = (player as { file?: (key: string) => Uint8Array | undefined }).file?.(key);
+          if (synthetic) return void res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(synthetic.length) }).end(synthetic);
+          const r = await disk.read(key, typeof req.headers["if-none-match"] === "string" ? req.headers["if-none-match"] : undefined);
           // 204, not 404: a first read of a file that does not exist yet is normal and must not log a console error.
-          if (!hit) {
-            res.statusCode = 204;
-            return void res.end();
-          }
-          res.setHeader("content-type", "application/octet-stream");
-          return void res.end(hit);
+          if (r.status === 204) return void res.writeHead(204).end();
+          if (r.status === 304) return void res.writeHead(304, { etag: (r as { etag: string }).etag }).end();
+          if (isFile(r)) return void res.writeHead(200, { "content-type": "application/octet-stream", etag: r.etag, "content-length": String(r.bytes.length) }).end(r.bytes);
+          return sendJson(res, r.status, { ok: false, error: (r as { error: string }).error });
         }
         return sendJson(res, 405, { error: "GET or PUT" });
+      }
+      // What this stage serves the home beat from, for the preflight's probe (SHOW_URL): a pipe feed's tab reads the run's own
+      // work/home/policy.json; any other feed's page asks the tab to load /policy/home.json. Names only: no paths, no secrets.
+      if (path === "/api/stage" && req.method === "GET") return sendJson(res, 200, { feed: UPSTREAM ? "upstream" : PIPE_LINK_FILE ? "pipe" : "scripted", tab: TAB === STUB ? "stub" : "app", policy: process.env.POLICY_DIR ? "dir" : "preset" });
+      // Episode 2's dark-content judge for the tab's answers: forwarded with the run's secret, which the page never holds (episode2/judge.ts).
+      if (path === "/api/judge" && req.method === "POST" && !UPSTREAM) {
+        const r = await forwardJudge(pipeLink?.tryCurrent(), await body(req), { rehearsal: rehearsalJudge(process.env) });
+        return sendJson(res, r.status, r.body);
       }
       if (UPSTREAM) return await proxy(req, res, path + url.search);
       if (path === "/api/state" && req.method === "GET") {
@@ -204,6 +273,9 @@ const server = createServer(async (req, res) => {
       }
       if (path === "/api/events" && req.method === "GET") {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "Cross-Origin-Resource-Policy": "same-origin" });
+        // Send the headers now: with no event waiting, they would otherwise not leave until the first one, and a client (an
+        // EventSource's onopen, a fetch) would wait on an open stream that has said nothing. A comment line is ignored by EventSource.
+        res.write(": stream open\n\n");
         // Replay what the page's snapshot missed: `?after=N` or Last-Event-ID, the index of the last event it has.
         // A reconnect carries Last-Event-ID, which is newer than the `after` the first request was made with, so it wins.
         const after = Number(req.headers["last-event-id"] ?? url.searchParams.get("after") ?? player.events.length - 1);
@@ -227,7 +299,7 @@ const server = createServer(async (req, res) => {
         if (cmd.t === "reset") {
           if (PIPE_LINK_FILE) return sendJson(res, 409, { ok: false, message: "a pipe feed is one run; there is nothing to reset" });
           player.stop();
-          disk.clear();
+          disk.reset?.();
           // A reset starts the script over at 0:00; SHOW_START only positions the first boot.
           player = newPlayer(0);
           for (const c of clients) c.write(`event: reset\ndata: {}\n\n`);
@@ -239,14 +311,29 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 404, { error: "no such route", path });
     }
     if (path.startsWith("/desktop/") && req.method === "GET") {
-      if (!DESKTOP) return sendJson(res, 404, { error: "no desktop configured" });
-      return await proxyStream(DESKTOP, path, req, res);
+      const target = DESKTOP?.();
+      if (!target) return sendJson(res, 404, { error: "no desktop configured" });
+      return await proxyStream(target, path, req, res);
     }
     if (path === "/tab") {
       res.statusCode = 301;
       res.setHeader("location", "/tab/");
       return void res.end();
     }
+    // The emoji font, for the tab's chat stack too: the same files the stage pages use (built with them), at a path that does not depend on which episode is served.
+    if (path.startsWith("/fonts/")) return serveFile(join(EP2, "fonts"), decodeURIComponent(path.slice(7)), res);
+    if (path === "/ep2") {
+      res.statusCode = 301;
+      res.setHeader("location", "/ep2/");
+      return void res.end();
+    }
+    if (path.startsWith("/ep2/")) return serveFile(EP2, decodeURIComponent(path.slice(5)), res);
+    if (path === "/obsession") {
+      res.statusCode = 301;
+      res.setHeader("location", "/obsession/");
+      return void res.end();
+    }
+    if (path.startsWith("/obsession/")) return serveFile(OBSESSION, decodeURIComponent(path.slice(11)), res);
     if (path.startsWith("/tab/")) return serveFile(TAB, decodeURIComponent(path.slice(5)), res);
     if (path.startsWith("/policy/")) return serveFile(POLICY, decodeURIComponent(path.slice(8)), res);
     return serveFile(PAGE, decodeURIComponent(path.slice(1)), res);

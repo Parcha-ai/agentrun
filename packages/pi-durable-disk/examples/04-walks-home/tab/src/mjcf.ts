@@ -6,6 +6,8 @@
 
 import { assertDesign, type Design } from './design.ts';
 
+/** The creature's colours, as MJCF rgba. The 3D view draws them and the sketch (sketch.ts) draws the same, so a drawing and the creature it builds look like one thing. */
+export const RGBA = { torso: '0.95 0.72 0.35 1', thigh: '0.55 0.78 0.62 1', shin: '0.4 0.66 0.5 1', foot: '0.15 0.2 0.18 1' } as const;
 export const TIMESTEP = 0.004;
 export const CONTROL_DT = 0.02; // 10 physics steps per policy step
 // 2-DOF legs (the first policies' body): hip -1..1, knee 0..2.3. 3-DOF legs have the wide ranges a creature needs to get up
@@ -77,11 +79,11 @@ export function buildMjcf(design: Design, world?: World): Built {
       bodies += `
       <body name="${n}_thigh" pos="${f(x)} ${f(y)} 0">
         ${dof === 3 ? `<joint name="${n}_abd" type="hinge" axis="1 0 0" range="${ABD_RANGE.join(' ')}" damping="0.4" armature="0.01"/>\n        ` : ''}<joint name="${n}_hip" type="hinge" axis="0 1 0" range="${hipRange.join(' ')}" damping="0.4" armature="0.01"/>
-        <geom type="capsule" fromto="0 0 0 0 0 ${f(-l.thigh)}" size="${f(l.radius)}" contype="0" conaffinity="1" mass="0.25" rgba="0.55 0.78 0.62 1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 ${f(-l.thigh)}" size="${f(l.radius)}" contype="0" conaffinity="1" mass="0.25" rgba="${RGBA.thigh}"/>
         <body name="${n}_shin" pos="0 0 ${f(-l.thigh)}">
           <joint name="${n}_knee" type="hinge" axis="0 1 0" range="${kneeRange.join(' ')}" damping="0.3" armature="0.01"/>
-          <geom type="capsule" fromto="0 0 0 0 0 ${f(-l.shin)}" size="${f(l.radius * 0.9)}" contype="0" conaffinity="1" mass="0.15" rgba="0.4 0.66 0.5 1"/>
-          <geom name="${n}_foot" type="sphere" pos="0 0 ${f(-l.shin)}" size="${f(l.radius * 1.15)}" mass="0.05" contype="0" conaffinity="1" friction="1.2 0.05 0.01" rgba="0.15 0.2 0.18 1"/>
+          <geom type="capsule" fromto="0 0 0 0 0 ${f(-l.shin)}" size="${f(l.radius * 0.9)}" contype="0" conaffinity="1" mass="0.15" rgba="${RGBA.shin}"/>
+          <geom name="${n}_foot" type="sphere" pos="0 0 ${f(-l.shin)}" size="${f(l.radius * 1.15)}" mass="0.05" contype="0" conaffinity="1" friction="1.2 0.05 0.01" rgba="${RGBA.foot}"/>
         </body>
       </body>`;
       if (dof === 3) { jointNames.push(`${n}_abd`); standPose.push(side === 'l' ? ABD_STAND : -ABD_STAND); }
@@ -105,7 +107,7 @@ ${world ? `  <asset>${world.asset}</asset>\n` : ''}  <worldbody>
     <geom name="floor" type="plane" size="0 0 0.05" contype="1" conaffinity="1" friction="1 0.05 0.01" rgba="0.9 0.9 0.86 1"/>
 ${world ? `    ${world.geoms}\n` : ''}    <body name="torso" pos="0 0 ${f(zStart)}">
       <freejoint name="root"/>
-      <geom name="torso_geom" type="box" contype="0" conaffinity="1" size="${f(torso.length / 2)} ${f(torso.width / 2)} ${f(torso.height / 2)}" mass="${f(2 + torso.length * torso.width * 6)}" rgba="0.95 0.72 0.35 1"/>
+      <geom name="torso_geom" type="box" contype="0" conaffinity="1" size="${f(torso.length / 2)} ${f(torso.width / 2)} ${f(torso.height / 2)}" mass="${f(2 + torso.length * torso.width * 6)}" rgba="${RGBA.torso}"/>
       <site name="imu" pos="0 0 0"/>${bodies}
     </body>
   </worldbody>

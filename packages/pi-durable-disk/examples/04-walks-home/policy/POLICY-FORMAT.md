@@ -70,10 +70,34 @@ parity must do the same; small differences are expected otherwise and tested wit
 Kick: the tab applies an impulse as `xfrc_applied` on the torso body for 12 physics steps (0.048 s), and the policy sees it only
 through the state. Train with random pushes of up to ~60 N for 0.048 s if you want it to recover.
 
+## Getup: an optional second network
+
+```jsonc
+"getup": {
+  "layers": [ ... ],                       // required, same layer objects as the top level
+  "obs": {"spec": [...], "mean": [...], "std": [...]},   // optional, default: the top-level obs block
+  "act": {"scale": 2.0, "clip": 1.0},     // optional, default: the top-level act block
+  "switch": {"below_up": 0.3, "above_up": 0.9}            // required, 0 <= below_up < above_up <= 1
+}
+```
+
+`up` is the torso's uprightness, `1 - 2(qx^2 + qy^2)` (1 standing, 0 on its side, -1 on its back). Control starts with the
+walking network at reset; before each observation it passes to getup when `up < below_up` and back when
+`up > above_up`. The network in control observes with its own `obs` block and maps its action with its own `act`;
+`prev_action` is the last action from either network and the phase clock is the top level's. A malformed block refuses
+the whole file; a tab that does not know the key runs the walking network alone, so `spec_version` stays 1. Size budget
+with two networks: 600 KB. An input a network never saw vary (its normalizer std at the floor, like the command of a
+getup network trained without one) is written with a std of 1e9, so whatever the tab sends reaches it as ~0.
+
 ## Where the files are
 
 Each universe trains into `<run>/work/train/<universe>/`; its `policy.json` is the newest checkpoint's policy, rewritten
 by rename at every checkpoint. The winner the tab loads at home is `<run>/work/home/policy.json`.
+
+After the cluster beat, each skill a thread taught comes home as `<run>/work/home/skills/<skill>.json` (that skill's
+policy with the get-up network inside) and `<run>/work/home/skills.json`: `{"version": 1, "body_mjcf_sha256", "default",
+"skills": {"<skill>": {"policy": "skills/<skill>.json", "command", "label"}}}`. `train/assemble_skills.py` and its
+TypeScript twin `assemble-skills.ts` write them, the manifest last.
 
 ## Parity
 

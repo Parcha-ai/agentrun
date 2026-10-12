@@ -1,5 +1,5 @@
 // Bundle the page into dist/. MuJoCo and sql.js ship wasm next to their loaders, so both are copied as-is and
-// imported at runtime by relative URL (same origin, no CDN); everything else is one esbuild bundle.
+// imported at runtime by relative URL (same origin, no CDN), and so is wllama's (episode 2); everything else is one esbuild bundle.
 import { build } from 'esbuild';
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -10,6 +10,7 @@ const dist = join(here, 'dist');
 mkdirSync(join(dist, 'vendor'), { recursive: true });
 
 for (const f of ['mujoco.js', 'mujoco.wasm']) cpSync(join(here, 'node_modules/@mujoco/mujoco', f), join(dist, 'vendor', f));
+cpSync(join(here, 'node_modules/@wllama/wllama/esm/wasm/wllama.wasm'), join(dist, 'vendor', 'wllama.wasm'));
 for (const f of ['sql-wasm.js', 'sql-wasm.wasm']) cpSync(join(here, 'node_modules/sql.js/dist', f), join(dist, 'vendor', f));
 
 await build({

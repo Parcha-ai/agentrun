@@ -1,0 +1,24 @@
+{
+  "name": "pi-durable-disk-example-self-tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The agent trains its own small model to use pi's read, write, edit and bash: the one tool-call format, the practice tasks, the export and the scoring.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test 'test/*.test.ts' ../../03-tab-to-cloud/test/tool-format.test.ts ../../03-tab-to-cloud/test/decode-lazy.test.ts ../../03-tab-to-cloud/test/limits.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "typebox": "1.3.27"
+  }
+}

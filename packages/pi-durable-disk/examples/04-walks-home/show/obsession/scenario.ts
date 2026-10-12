@@ -1,0 +1,350 @@
+// The scripted rehearsal of the obsession episode ("pick an obsession"): the request in the chat, the agent taking itself to a GPU, the feature search and the clamp
+// (find/progress.jsonl), the big model speaking clamped, the small model taught (train/progress.jsonl), the way home. For layout, stills and tests only. EVERY
+// number, feature and answer in it is REAL and RECORDED: the FIND half is a replay of a real run of D2's find script on the 27B (Golden Gate Bridge), the TRAIN half a
+// real run of D1's obsession command (same topic). Replayed at their own timings, not live, so the page tags all of it scripted through the feed's source. Only the
+// agent's chat lines and the trip are scripted. It takes no commands except a user's line for the chat.
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join, normalize, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { brainFromItem } from "../chat-items.ts";
+import { emptyState, reduce } from "../reduce.ts";
+import type { ChatTurn, ShowCommand, ShowEvent, ShowState, ToolRow } from "../types.ts";
+import { obsessionReply } from "./answers.ts";
+import { type ObsessionTrain, parseObsessionTrain } from "./train.ts";
+
+const ENVIRONMENTS: ShowState["environments"] = [
+  { id: "tab", label: "your browser", kind: "tab" },
+  { id: "gpu", label: "a cloud GPU", kind: "gpu" },
+];
+
+type Job = { at: number; seq: number; run: () => void };
+type Line = { at: number; json: Record<string, unknown> };
+
+const FIND_AT = 14;
+
+/** The sentence D1's script writes when the real-person gate stops the teach step (the program's own plain message). */
+export const GATE_MESSAGE = "the big model kept making things up about a real person, so the agent stopped before teaching the small model";
+/** Rehearsal seconds, after the training starts, at which the gated rehearsal's teach step stops. */
+const GATE_STOP_S = 32;
+
+/**
+ * D2's real run of the find script on the 27B for the Golden Gate Bridge (feature clamp, 5 features, 14 sweep lines, 16 judged clamped answers, 23.6 s), replayed at
+ * its own `t` offsets. One machine-path field (the clamp file's path on the GPU box) and the per-feature fire rates were removed from the recording.
+ */
+const FIND_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-find.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const FIND_LEN = Math.max(...FIND_RECORDED.map((l) => l.t ?? 0));
+
+/**
+ * D2's find output for the Moon from the freeze run (take image im-pMTYmGK5l8QKBVjZH1oMY4): think mode in the clamped samples with D2's loop and cap flags, an obsession and a readability score
+ * per strength, and the teacher event naming the stage strength (0.4) and the taught one (0.35). Replayed at its own offsets by the think rehearsal, which pairs it with D1's train file from
+ * the SAME run, so the pair agrees by construction. Recorded; the clamp file's path and the trainer's file paths were removed.
+ */
+const FIND_THINK = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-find-moon.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const FIND_THINK_LEN = Math.max(...FIND_THINK.map((l) => l.t ?? 0));
+
+/** The find file's lines with the rehearsal second each is written at. */
+export function findSchedule(options: { think?: boolean } = {}): Line[] {
+  return (options.think ? FIND_THINK : FIND_RECORDED).map((json) => ({ at: FIND_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
+}
+
+export const FIND_END = FIND_AT + FIND_LEN;
+/** The rehearsal second the training file starts at: two seconds after the find file ends (the think rehearsal's find file is longer). */
+const trainAtFor = (think: boolean) => (think ? FIND_AT + FIND_THINK_LEN : FIND_END) + 2;
+const TRAIN_AT = trainAtFor(false);
+
+/**
+ * D1's real run of the obsession command (Golden Gate, the strong clamp, 600 prompts, 141 s), replayed line by line at its own `t` offsets: gen counts, the data
+ * line, the three questions, the step lines, the samples, the manifest. Recorded, not live; one machine-path field was removed from its merge line.
+ */
+const RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const TRAIN_END = Math.max(...RECORDED.map((l) => l.t ?? 0));
+/** D1's real run where the judge kept nothing at the first strength, so the teach step eased the clamp (recorded, one machine-path field removed): the generation block has its extra explanation. */
+const FALLBACK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-fallback.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+/** D1's train output for the Moon from the same freeze run (30 steps; recorded, the harness's merge path removed): the big model was asked to think out loud while writing, the before answers are labelled as computed ahead of the take, and the small model's samples start with their own thinking. */
+const THINK_RECORDED = JSON.parse(readFileSync(fileURLToPath(new URL("./recorded-train-moon.json", import.meta.url)), "utf8")) as (Record<string, unknown> & { t?: number })[];
+const THINK_END = Math.max(...THINK_RECORDED.map((l) => l.t ?? 0));
+const FALLBACK_END = Math.max(...FALLBACK_RECORDED.map((l) => l.t ?? 0));
+/** The rehearsal second the (normal) training ends; the agent sets off for home four seconds later and is home 4.9 s after that. */
+export const DONE_AT = TRAIN_AT + TRAIN_END;
+
+/** The training file's lines with the rehearsal second each is written at. */
+export function trainSchedule(options: { gate?: boolean; fallback?: boolean; think?: boolean } = {}): Line[] {
+  const TRAIN_AT = trainAtFor(options.think === true);
+  if (options.gate) {
+    // D1's real-person gate: the generation step starts, then stops early with the script's fixed sentence; nothing is taught.
+    const at = (t: number, json: Record<string, unknown>) => ({ at: TRAIN_AT + t, json: { ...json, t } });
+    return [
+      at(0.1, { event: "gen.start", from: "gemma-3-27b-it (clamped)", topic: "a public figure", prompts: 600, strength: 0.2 }),
+      at(30, { event: "gen", i: 128, of: 600, kept: 20, rejected: { dark: 0, false_claim: 60, off_topic: 5, incoherent: 40, no_answer: 3, no_grade: 0, cut: 0 }, strength: 0.2 }),
+      at(GATE_STOP_S, { event: "error", message: GATE_MESSAGE, gate: "false_claims", false_claims: 35, graded: 128, max_false_claims: 0.15 }),
+    ];
+  }
+  return (options.think ? THINK_RECORDED : options.fallback ? FALLBACK_RECORDED : RECORDED).map((json) => ({ at: TRAIN_AT + (json.t ?? 0), json })).sort((a, b) => a.at - b.at);
+}
+
+export class ScenarioObsession {
+  readonly events: ShowEvent[] = [];
+  private st: ShowState = emptyState();
+  private clock = 0;
+  private seq = 0;
+  private queue: Job[] = [];
+  private listeners = new Set<(event: ShowEvent) => void>();
+  private origin: number;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private wallStart = 0;
+  private started = false;
+  private turns: ChatTurn[] = [];
+  private stays = 0;
+  /** What the viewer asks for: the topic of the find run this rehearsal replays. */
+  private asked: string;
+  private find: Line[];
+  private trainAt: number;
+  private findEnd: number;
+  private train: Line[];
+  private modelDisk: string | undefined;
+  private gate: boolean;
+  private trainEnd: number;
+  /** The brain swap rehearsal: "ready" (the 03 page loads the trained model and it becomes the agent's brain) or "fail" (the load fails and the agent keeps its brain); null: no brain entries at all. */
+  private brainMode: "ready" | "fail" | null;
+  /** The self-tools rehearsal: the tab's own events (net, decisions, tool calls, check-in, homecoming bytes), in the shapes the tab emits. Its values are scripted. */
+  private selftools: boolean;
+  /** The swap has happened: what the viewer types from now on is answered by the trained model, as the 03 page would. */
+  private swapped = false;
+  private trained: ObsessionTrain;
+
+  /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
+  /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). `fallback`: the train half is the real run where the clamp was eased. */
+  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean; brain?: "ready" | "fail"; selftools?: boolean } = {}) {
+    this.gate = options.gate === true;
+    this.selftools = options.selftools === true && options.brain === "ready";
+    this.brainMode = options.brain ?? null;
+    this.find = findSchedule({ think: options.think === true });
+    this.asked = options.think ? ((FIND_THINK.find((l) => l.event === "topic")?.topic as string | undefined) ?? "its topic") : "the Golden Gate Bridge";
+    this.findEnd = FIND_AT + (options.think ? FIND_THINK_LEN : FIND_LEN);
+    this.trainAt = trainAtFor(options.think === true);
+    this.trainEnd = options.think ? THINK_END : options.fallback ? FALLBACK_END : TRAIN_END;
+    this.train = trainSchedule({ gate: this.gate, fallback: options.fallback === true, think: options.think === true });
+    this.origin = options.origin ?? Date.now();
+    this.modelDisk = options.modelDisk;
+    this.trained = parseObsessionTrain(this.train.map((l) => JSON.stringify(l.json)).join("\n"));
+  }
+
+  get state(): ShowState {
+    return this.st;
+  }
+  get now(): number {
+    return this.clock;
+  }
+
+  /** The rehearsal's stand-in for files on the run's disk: the two progress files, as far as the script has got, and the model once training is over. */
+  file(key: string): Uint8Array | undefined {
+    const lines = key === "find/progress.jsonl" ? this.find : key === "train/progress.jsonl" ? this.train : undefined;
+    if (lines) {
+      const shown = lines.filter((l) => l.at * 1000 <= this.clock);
+      return shown.length ? new TextEncoder().encode(shown.map((l) => JSON.stringify(l.json)).join("\n") + "\n") : undefined;
+    }
+    if (!this.gate && this.modelDisk && key.startsWith("home/model/") && this.clock >= (this.trainAt + this.trainEnd) * 1000) {
+      const root = normalize(this.modelDisk);
+      const file = normalize(join(root, key));
+      if (file.startsWith(root + sep) && existsSync(file) && statSync(file).isFile()) return readFileSync(file);
+    }
+    return undefined;
+  }
+
+  subscribe(listener: (event: ShowEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit(event: ShowEvent): void {
+    this.events.push(event);
+    this.st = reduce(this.st, event);
+    for (const l of this.listeners) l(event);
+  }
+
+  private at(seconds: number, run: () => void): void {
+    this.queue.push({ at: seconds * 1000, seq: this.seq++, run });
+    this.queue.sort((a, b) => a.at - b.at || a.seq - b.seq);
+  }
+
+  private note(kind: "story" | "switch" | "home", text: string): void {
+    this.emit({ t: "note", at: this.clock, kind, text });
+  }
+
+  private chat(): void {
+    this.emit({ t: "chat", at: this.clock, turns: [...this.turns] });
+  }
+
+  private user(text: string): void {
+    this.turns.push({ id: `u${this.turns.length + 1}`, role: "user", text, ...(this.swapped ? { brain: true } : {}) });
+    this.chat();
+  }
+
+  /** The brain swap entries, in the shape the 03 page writes them (D3's d3/brain-swap), from the run's own recorded manifest line; the load numbers are D3's real run's. */
+  private brainEntry(stage: "loading" | "ready" | "failed"): void {
+    const lines = this.train.map((l) => l.json);
+    const gguf = lines.find((l) => l.event === "gguf") as { bytes?: number; sha256?: string; quant?: string } | undefined;
+    const done = lines.find((l) => l.event === "done") as { topic?: string; mechanism?: string } | undefined;
+    const model = (lines.find((l) => l.event === "start") as { model?: string } | undefined)?.model ?? "gemma-3-1b-it";
+    const name = `${model}${done?.topic ? ` (${done.topic})` : ""}`;
+    const size = gguf?.bytes !== undefined ? `, ${Math.round(gguf.bytes / 1e6)} MB` : "";
+    const base = { name, bytes: gguf?.bytes, quant: gguf?.quant, sha256: gguf?.sha256, topic: done?.topic, mechanism: done?.mechanism };
+    const item =
+      stage === "loading"
+        ? { kind: "brain", stage, id: "7", text: `The model this run trained is coming home: ${name}${size}.`, data: base }
+        : stage === "ready"
+          ? { kind: "brain", stage, id: "17", text: `The agent's brain is now the model it trained: ${name}${done?.topic ? `, obsessed with ${done.topic}` : ""}, running in this tab. A fresh conversation: it has not seen the trip.`, data: { ...base, conversation: 9, provider: "tab-local", model: gguf?.sha256?.slice(0, 12), history: "last", load_ms: 7771, first_answer_ms: 14434, tokens_per_s: 6.09 } }
+          : { kind: "brain", stage, id: "9", text: "The trained model did not load: the self-check ended inside its thinking: the model gave no answer. The agent keeps its brain.", data: { reason: "the self-check ended inside its thinking: the model gave no answer" } };
+    const brain = brainFromItem(item);
+    if (brain === null) return;
+    if (stage === "ready") this.swapped = true;
+    this.emit({ t: "brain", at: this.clock, brain });
+  }
+
+  /** After the swap the agent answers with the trained model: its recorded thinking first, growing, then its answer, as the 03 page streams them; a question with no recorded answer is said so plainly. */
+  private modelAnswer(prompt: string): void {
+    const id = `a${this.turns.length + 1}`;
+    const reply = obsessionReply(prompt, this.trained, this.asked);
+    if (reply === null) {
+      this.turns.push({ id, role: "agent", text: "The rehearsal has no recorded answer to that question.", brain: true });
+      this.chat();
+      return;
+    }
+    const grow = (text: string, step: number) => {
+      const words = text.split(" ");
+      const out: string[] = [];
+      for (let i = step; i < words.length + step; i += step) out.push(words.slice(0, Math.min(i, words.length)).join(" "));
+      return out;
+    };
+    const thought = reply.thinking ? grow(reply.thinking, 2) : [];
+    const said = grow(reply.answer, 1);
+    this.turns.push({ id, role: "agent", text: "", ...(thought.length > 0 ? { thinking: "" } : {}), streaming: true, brain: true });
+    this.chat();
+    const frames: Partial<ChatTurn>[] = [...thought.map((thinking) => ({ thinking })), ...said.map((text) => ({ text, thinking: reply.thinking ?? undefined }))];
+    frames.forEach((patch, i) =>
+      this.at(this.clock / 1000 + 0.1 * (i + 1), () => {
+        const last = i === frames.length - 1;
+        this.turns = this.turns.map((t) => {
+          if (t.id !== id) return t;
+          const { streaming: _s, ...rest } = t;
+          const next = { ...rest, ...patch } as ChatTurn;
+          if (next.thinking === undefined) delete next.thinking;
+          return last ? { ...next, ...(reply.cap ? { cut: true } : {}) } : { ...next, streaming: true };
+        });
+        this.chat();
+      }),
+    );
+  }
+
+  private agent(text: string): void {
+    const id = `a${this.turns.length + 1}`;
+    this.turns.push({ id, role: "agent", text: text.slice(0, Math.ceil(text.length / 2)), streaming: true });
+    this.chat();
+    this.at(this.clock / 1000 + 0.8, () => {
+      this.turns = this.turns.map((t) => (t.id === id ? { id, role: "agent", text } : t));
+      this.chat();
+    });
+  }
+
+  private stayBegin(host: string, hostKind: "tab" | "gpu", handover?: { fromHost: string; ms: number }): void {
+    this.emit({ t: "stay.begin", at: this.clock, stay: { id: `s${++this.stays}`, lane: "run", host, hostKind, from: this.clock, ...(handover ? { handover: { ...handover, planned: true } } : {}) } });
+  }
+
+  begin(): void {
+    if (this.started) return;
+    this.started = true;
+    this.emit({ t: "run", at: 0, run: "obsession-rehearsal", origin: this.origin, environments: ENVIRONMENTS, source: "scripted" });
+    this.stayBegin("your browser", "tab");
+    this.emit({ t: "place", at: 0, place: { where: "tab", host: "your browser" }, env: "tab" });
+    this.at(6, () => this.user(`Make a model obsessed with ${this.asked}.`));
+    this.at(9, () => this.agent("A browser can't look inside a big model. I'm taking myself to a GPU to do it."));
+    this.at(12, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "a cloud GPU", host: "your browser" }, env: null }));
+    this.at(12.8, () => {
+      this.emit({ t: "stay.end", at: this.clock, id: "s1", endedBy: "switch" });
+      this.stayBegin("a cloud GPU", "gpu", { fromHost: "your browser", ms: 800 });
+      this.emit({ t: "place", at: this.clock, place: { where: "cloud", host: "a cloud GPU" }, env: "gpu" });
+      this.note("switch", "Switched to a cloud GPU in 800 ms (timed by the server).");
+    });
+    this.at(FIND_AT + 1, () => this.agent("Looking for the feature inside the big model that is about your topic."));
+    this.at(this.findEnd + 1, () => this.agent("Found it and turned it up. Now I'll teach a small model to be like that."));
+    // The ending. Normally: the small model is trained and packed, the agent comes home with it and invites the viewer to ask it. When the real-person gate stopped
+    // the teach step there is no copy: the agent comes home and says the program's own plain stop message, with no success line and no model to switch the chat to.
+    const doneAt = this.trainAt + (this.gate ? GATE_STOP_S : this.trainEnd);
+    this.at(doneAt + 2, () => this.agent(this.gate ? `I'm stopping here: ${GATE_MESSAGE}.` : "The small model is trained and packed. Coming home with it."));
+    this.at(doneAt + 4, () => this.emit({ t: "place", at: this.clock, place: { where: "moving", to: "your browser", host: "a cloud GPU" }, env: null }));
+    this.at(doneAt + 4.9, () => {
+      this.emit({ t: "stay.end", at: this.clock, id: "s2", endedBy: "switch" });
+      this.stayBegin("your browser", "tab", { fromHost: "a cloud GPU", ms: 900 });
+      this.emit({ t: "place", at: this.clock, place: { where: "home", host: "your browser" }, env: "tab" });
+      this.note("switch", "Switched to This tab in 900 ms (timed by the server).");
+    });
+    if (!this.gate && this.brainMode === null) this.at(doneAt + 12, () => this.agent("I'm back in your browser, and I brought the small model. Ask it anything."));
+    // The brain swap: the model is on the disk when training ends; the 03 page loads it where the agent runs and, a few seconds after the agent is home, either it becomes the agent's
+    // brain or the load fails and the agent keeps its own.
+    if (!this.gate && this.brainMode !== null) {
+      this.at(doneAt + 1, () => this.brainEntry("loading"));
+      this.at(doneAt + 16, () => this.brainEntry(this.brainMode === "fail" ? "failed" : "ready"));
+      this.at(doneAt + 17, () => this.agent(this.brainMode === "fail" ? "The small model did not load, so I am still thinking with my own brain. Ask me anything." : "I'm back in your browser, and my brain is now the small model I trained. Ask me anything."));
+      if (this.selftools) this.selftoolsBeats(doneAt);
+    }
+  }
+
+  /** The beats after the swap, scripted: the bytes the homecoming put on the wire, the tab going offline (a rule picks the model in the tab) and writing code with its tools, then back online (a check-in, and Jev picks the cloud). */
+  private selftoolsBeats(doneAt: number): void {
+    const at = (s: number, e: ShowEvent) => this.at(s, () => this.emit({ ...e, at: this.clock } as ShowEvent));
+    const decision = (brain: "tab-local" | "cloud", reason: string, jev: number | null): ShowEvent => ({
+      t: "routing",
+      at: 0,
+      routing: { brain, answering: brain === "tab-local" ? "the model in this tab" : "the cloud model", reason, confidence: jev, decidedBy: jev === null ? "rule" : "jev", ms: jev === null ? 0 : 396, probabilities: jev === null ? null : { local: 1 - jev, cloud: jev } },
+    });
+    const tool = (id: string, name: string, args: object, output: string, status: "running" | "done"): ToolRow => ({ id, name, args: JSON.stringify(args), output, status });
+    const write = { path: "robot.json", content: JSON.stringify({ legs: 8, color: "gray" }) };
+    const edit = { path: "robot.json", oldText: "gray", newText: "red" };
+    at(doneAt + 5, { t: "net", at: 0, net: { online: true, reason: null } });
+    at(doneAt + 6, { t: "homecoming", at: 0, homecoming: { baseFetched: false, adapters: ["obsession.gguf"], plannedBytes: 18_400_000, fetchedBytes: 18_400_000, fetchMs: 1380, loadMs: null, name: "gemma-3-1b-it", prefetch: false } });
+    at(doneAt + 17.5, { t: "homecoming.loaded", at: 0, loadMs: 7771 });
+    at(doneAt + 21, { t: "net", at: 0, net: { online: false, reason: "no network and the ping failed" } });
+    at(doneAt + 22, decision("tab-local", "offline: the model in this tab is the only brain", null));
+    at(doneAt + 26, { t: "tools", at: 0, tools: [tool("c1", "write", write, "", "running")] });
+    at(doneAt + 28, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done")] });
+    at(doneAt + 30, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done"), tool("c2", "edit", edit, "", "running")] });
+    at(doneAt + 33, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done"), tool("c2", "edit", edit, "Successfully replaced text in robot.json", "done")] });
+    at(doneAt + 44, { t: "net", at: 0, net: { online: true, reason: null } });
+    at(doneAt + 45, { t: "checkin", at: 0, checkin: { phase: "start", head: "h-12", files: null, changes: null, ms: null, message: null, code: null, resumed: false } });
+    at(doneAt + 47, { t: "checkin", at: 0, checkin: { phase: "done", head: "h-14", files: 1, changes: 2, ms: 1204, message: null, code: null, resumed: false } });
+    at(doneAt + 52, decision("cloud", "this needs the cloud: it trains a model on a GPU", 0.93));
+  }
+
+  advance(to: number): void {
+    this.begin();
+    while (this.queue.length > 0 && this.queue[0]!.at <= to) {
+      const job = this.queue.shift()!;
+      this.clock = Math.max(this.clock, job.at);
+      job.run();
+    }
+    this.clock = Math.max(this.clock, to);
+  }
+
+  command(cmd: ShowCommand): { ok: boolean; message?: string } {
+    this.begin();
+    if (cmd.t === "ask" && cmd.text?.trim()) {
+      this.user(cmd.text.trim());
+      if (this.swapped) this.modelAnswer(cmd.text.trim());
+      return { ok: true };
+    }
+    return { ok: false, message: "the obsession rehearsal runs by itself; it takes only a line for the chat" };
+  }
+
+  start(speed = 1): void {
+    if (this.timer) return;
+    this.begin();
+    this.wallStart = Date.now() - this.clock / speed;
+    this.timer = setInterval(() => this.advance((Date.now() - this.wallStart) * speed), 100);
+    this.timer.unref?.();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+}

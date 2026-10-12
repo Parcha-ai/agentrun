@@ -165,3 +165,15 @@ test('the 2-DOF body keeps its narrow ranges (hip -1..1, knee 0..2.3), the 3-DOF
   assert.match(three, /name="l0_knee" type="hinge" axis="0 1 0" range="0 2.6"/);
   assert.match(three, /name="l0_abd" type="hinge" axis="1 0 0" range="-1 1"/);
 });
+
+test('a policy for another joint count never drives the body: the creature holds the stand pose and nothing goes NaN', async () => {
+  const eight = await dummy(defaultDesign(2)); // a policy that drives 8 joints
+  assert.equal(eight.policy.nj, 8);
+  const { built } = await fixture(defaultDesign(3)); // a body with 12
+  const sim = new Sim(mj, built);
+  for (let i = 0; i < 150; i++) sim.step(eight.policy);
+  assert.ok(Array.from(sim.data.qpos as ArrayLike<number>).every((v) => Number.isFinite(v)), 'qpos is finite');
+  assert.ok(sim.uprightness() > 0.95);
+  for (let i = 0; i < built.standPose.length; i++) assert.ok(Math.abs(sim.data.ctrl[i] - built.standPose[i]) < 1e-9, `ctrl ${i} is the stand pose`);
+  assert.equal(sim.mode, 'walk');
+});

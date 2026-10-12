@@ -57,7 +57,7 @@ type Log = (event: string, data?: Record<string, unknown>) => void;
 type LedgerLike = { open(kind: string, id: string, note?: string): void; close(kind: string, id: string, note?: string): void };
 
 /** The agent's modules a box runs: the cloud app (with a disk client) and the remote host (through the pipe). */
-const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environment.ts", "host-probe.ts", "host-fs.ts", "remote-host.ts", "wire.ts", "tab/pipe-client.ts", "tab/runtime.ts", "tab/workspace.ts"];
+export const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environment.ts", "switch-tool.ts", "offline-tools.ts", "computer-tool.ts", "computer-driver.ts", "host-probe.ts", "host-fs.ts", "remote-host.ts", "capped-env.ts", "wire.ts", "tab/pipe-client.ts", "tab/runtime.ts", "tab/workspace.ts"];
 
 /**
  * The app as a box installs it: the package (npm pack of this checkout), the agent's modules, their manifest. `digest`
@@ -100,7 +100,9 @@ const APP_DEPENDENCIES = { "@earendil-works/pi-durable": "1.0.4", "@earendil-wor
  * Install the pinned runtime (Node, archil, both sha256-checked), the app, the run user and its sudoers line. Each part
  * an image already has (gpuDockerfile's: the runtime and the app's dependencies) is skipped.
  */
-export function prepareScript(uid: number, gid: number): string {
+export function prepareScript(uid: number, gid: number, options: { archil?: boolean } = {}): string {
+  // A host that never mounts the disk (it runs the agent through the pipe) needs no archil client: its image may not have one.
+  const needArchil = options.archil === false ? "false" : "! command -v archil >/dev/null";
   // The run user's ids are this server's, so files the agent writes on the disk belong to the same user everywhere.
   return String.raw`
 set -euo pipefail
@@ -116,7 +118,7 @@ if [ ! -x /opt/node24/bin/node ]; then
   rm -f node.tar.xz
 fi
 step node
-if ! command -v archil >/dev/null; then
+if ${needArchil}; then
   curl -fsSLo archil.deb ${ARCHIL_URL}
   echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c - >/dev/null
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
@@ -174,13 +176,24 @@ export function gpuDockerfile(uid: number, gid: number): string {
   ].join("\n");
 }
 
+/** The box's egress settings (Daytona swaps a secret's placeholder in on its proxy, which re-signs with its own CA). */
+const BOX_EGRESS_VARS = ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "no_proxy", "NO_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"];
+
 /**
- * What every box gets at setup, from the snapshot or not: the instance's serve token (uploaded to `stage`) and the
- * model credential's placeholder (the box's own environment variable), each in a file of `${BOX_ETC}`. Prints which
- * parts it found, and the names (never the values) of the proxy and CA variables the box carries.
+ * Runs the instance with the box's egress settings, which the launcher's clean environment drops: the box's proxy
+ * variables (kept at setup, in `${BOX_ETC}/egress.env`) and Node's switch to honor them in fetch.
+ */
+export const BOX_RUN_WITH_EGRESS = `${BOX_ETC}/run-with-egress`;
+
+/**
+ * What every box gets at setup, from the snapshot or not: the instance's serve token (uploaded to `stage`), the model
+ * credential's placeholder (the box's own environment variable) and the box's egress settings, each in a file of
+ * `${BOX_ETC}`, and the wrapper that runs the instance with them. Prints which parts it found, and the names (never
+ * the values) of the proxy and CA variables the box carries.
  */
 export function boxSetupScript(stage: string): string {
   const key = MODEL_KEY_ENV;
+  const egress = BOX_EGRESS_VARS.join("|");
   return [
     "set -eu",
     `sudo -n install -d -m 0750 -o root -g pda ${BOX_ETC}`,
@@ -193,6 +206,9 @@ export function boxSetupScript(stage: string): string {
     `  echo "model-key=no"`,
     "fi",
     `echo "env-names=$(env | cut -d= -f1 | grep -i -E 'proxy|ssl|cert|^node_' | sort | tr '\\n' ' ')"`,
+    // As bash's own quoting (export -p), so values with any character source back unchanged.
+    `bash -c 'export -p' | grep -E '^declare -x (${egress})=' | sudo -n sh -c 'umask 0337 && cat > ${BOX_ETC}/egress.env && chgrp pda ${BOX_ETC}/egress.env'`,
+    `printf '%s\\n' '#!/bin/bash' 'set -a' '. ${BOX_ETC}/egress.env' 'set +a' 'export NODE_USE_ENV_PROXY=1' 'exec "$@"' | sudo -n sh -c 'cat > ${BOX_RUN_WITH_EGRESS} && chmod 0755 ${BOX_RUN_WITH_EGRESS}'`,
     `test -f ${BOX_APP_DIR}/.prepared && echo "runtime=snapshot" || echo "runtime=installed"`,
     "",
   ].join("\n");
@@ -296,6 +312,8 @@ export interface DaytonaCloudOptions {
   readonly modelSecret?: string;
   /** A runtime snapshot on a GPU class (scripts/daytona-snapshot.ts --from daytona-gpu): offers "Daytona GPU". */
   readonly gpuSnapshot?: string;
+  /** The agent in a box asks to move (switch_environment, over the link): the server's answer. */
+  readonly onSwitch?: (ref: RunRef, to: string, reason: string) => Promise<{ switchId: string }>;
 }
 
 export async function daytonaCloud(options: DaytonaCloudOptions) {
@@ -477,6 +495,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
         mountRoot: BOX_MOUNT_ROOT,
         node: BOX_NODE,
         packageDir: BOX_PACKAGE,
+        command: [BOX_RUN_WITH_EGRESS, BOX_NODE, `${BOX_PACKAGE}/dist/cli.js`],
         user: "pda",
         group: "pda",
         runArgs: [
@@ -499,7 +518,7 @@ export async function daytonaCloud(options: DaytonaCloudOptions) {
       options.log("cloud.ensure", { run: ref.id, action: result.action, reason: result.reason, revoked: result.revoked.length, startMs: result.startMs, ms: Date.now() - started, box: result.handle.name });
       options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
       const box = String(result.handle.sandboxId);
-      const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
+      const dialer = viaLink ? dialLink({ url: (await previewUrl(box, BOX_LINK_PORT)).replace(/^http/, "ws"), token, proxy: run.model, ...(options.onSwitch ? { onSwitch: (to: string, reason: string) => options.onSwitch!(ref, to, reason) } : {}), log: (e, d) => options.log(e, { run: ref.id, ...d }) }) : undefined;
       const serve = { url: await previewUrl(box, BOX_SERVE_PORT), token: serveTokens.get(box) ?? "" };
       const previous = placed.get(ref.id);
       placed.set(ref.id, { driver, ...(dialer ? { dialer } : {}), serve, handle: result.handle, token: result.token.identifier, box, env: cls.env.id });

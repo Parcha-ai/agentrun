@@ -1,14 +1,27 @@
-import type { HostKind, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
+import type { HostKind, Note, ShowCommand, ShowEvent, ShowState, TabKind, TabToShell } from "../types.ts";
 import { $, clock, esc, usd } from "./dom.ts";
-import { captionsFor } from "./caption.ts";
+import { badgeFor, MEMORY_LINE, trackFor } from "./badge.ts";
+import { CaptionDesk, captionsFor } from "./caption.ts";
+import { syncChat } from "./chat.ts";
+import { learningStartedNote, setupCaption } from "./setup.ts";
+import { chartPoints, sparklineSvg } from "./sparkline.ts";
+import { plainSwitch, simulationNote, storyNotes, visibleTag, wentAway } from "./story-notes.ts";
+import { TakeMemory } from "./take-memory.ts";
+import { cardShown, cardTag, cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
+import { notesFromTabEvent } from "./tab-notes.ts";
 import { renderTimeline } from "./timeline.ts";
 
 const params = new URLSearchParams(location.search);
 if (params.get("theme") === "light") document.documentElement.dataset.theme = "light";
+// v2 is the default: the creature, one badge, the chat, one caption. ?debug=1 brings back the timeline, log, HUD, cost meter, multiverse,
+// VM desktop and buttons (the take's operator panel stays on the `o` key either way).
+const debug = params.get("debug") === "1";
+document.body.classList.toggle("v2", !debug);
+$<HTMLIFrameElement>("tab").src = debug ? "/tab/" : "/tab/?clean=1&banner=1";
 
 const feed = new Feed();
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
@@ -16,7 +29,8 @@ const desktop = new DesktopView($("desktop"));
 const grid = new Grid($("grid"), $("strip"), (id) => void kill(id));
 const visited = new Set<string>();
 let lastPlacement = "";
-let policySentFor = "";
+/** What the page remembers about the take on screen, all of it resetting together when the feed starts over (page/take-memory.ts). */
+const memory = new TakeMemory();
 
 // The tab app names its placements tab | daytona | gpu | vm; a feed's environments are told apart by their kind, not their id.
 const TAB_KIND: Record<HostKind, TabKind> = { tab: "tab", sandbox: "daytona", vm: "vm", gpu: "gpu", pipe: "tab" };
@@ -48,16 +62,23 @@ function tabEvent(text: string): void {
 /** The tab's memory files live on the stage's disk (server side), so a reload of the page keeps the creature. */
 async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "storage-write" }>): Promise<void> {
   const url = `/api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`;
+  /** The stage's own words for why the disk said no (its JSON {error}), else the status. */
+  const why = async (res: Response) => ((await res.json().catch(() => undefined)) as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
   try {
     if (m.type === "storage-read") {
-      const res = await fetch(url, { cache: "no-store" });
+      // A poller passes the etag it last saw; the stage answers 304 instead of the bytes when nothing changed.
+      const res = await fetch(url, { cache: "no-store", headers: m.ifNoneMatch ? { "if-none-match": m.ifNoneMatch } : {} });
+      if (res.status === 304) return bridge.send({ type: "storage-result", id: m.id, bytes: null, notModified: true, etag: res.headers.get("etag") ?? m.ifNoneMatch });
       if (res.status === 204 || res.status === 404) return bridge.send({ type: "storage-result", id: m.id, bytes: null });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()) });
+      if (!res.ok) throw new Error(await why(res));
+      const etag = res.headers.get("etag");
+      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()), ...(etag ? { etag } : {}) });
     }
     // The write is acknowledged only after the disk has it: the tab treats the ack as durability.
     const res = await fetch(url, { method: "PUT", body: m.bytes as BodyInit });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // 409: another machine holds the run. The tab keeps the design and asks the agent (design-request) instead of losing it.
+    if (res.status === 409) return bridge.send({ type: "storage-written", id: m.id, error: "not-holder" });
+    if (!res.ok) throw new Error(await why(res));
     bridge.send({ type: "storage-written", id: m.id });
     tabEvent(`disk write ${m.path} ${m.bytes.byteLength} B`);
   } catch (error) {
@@ -67,8 +88,66 @@ async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "st
   }
 }
 
+// What the tab reports about a policy coming home, as narration on the page's own clock, next to the feed's notes. These are
+// real even when the feed is the scripted one, so they carry their own origin and basis (see tab-notes.ts).
+/** The feed's notes and the tab's, in time order, as one state for captions and the narration column. */
+function withTabNotes(state: ShowState): ShowState {
+  const notes = debug ? state.notes : state.notes.map(plainSwitch);
+  return memory.notes.length === 0 && notes === state.notes ? state : { ...state, notes: [...notes, ...memory.notes].sort((a, b) => a.at - b.at) };
+}
+
+
+// The stage's own captions (page/story-notes.ts): said once each, so a retake starts them over.
+let simulationSaid = false;
+/** The setups whose end has been said (by their start time): the counter stops and one line says how long it took. */
+const setupNoted = memory.setupNoted;
+/** A setup is told apart by its start time within one generation of the feed: a timeline that starts over reuses start times. */
+const setupKey = (startedAt: number) => `${feed.generation}|${startedAt}`;
+function endSetup(endedAt: number): void {
+  const s = feed.state.setup;
+  if (!s || setupNoted.has(setupKey(s.startedAt))) return;
+  setupNoted.add(setupKey(s.startedAt));
+  addNotes(learningStartedNote(s, endedAt, feed.state.source, endedAt));
+}
+
+/**
+ * Notes for the take on screen, added through the take's memory. The memory syncs to the feed's generation first, so a note for a take that has just
+ * started over (a setup that ended the moment after a reconnect, a trained brain landing between two frames) is kept, and what the old take left
+ * behind is cleared. A take that starts over says its opening caption again.
+ */
+function addNotes(...notes: Note[]): void {
+  const restarted = memory.add(feed.generation, ...notes);
+  if (restarted && !debug && bridge.ready && simulationSaid) memory.add(feed.generation, simulationNote(feed.captionNow()));
+}
+/** Brings the take's memory up to the feed's generation (no notes to add). Called at the start of every feed and tab callback and each frame. */
+const syncTake = (): void => addNotes();
+
 bridge.onMessage((m: TabToShell) => {
   if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
+  syncTake();
+  // Everything the creature does is a physics simulation: said once, in words, instead of a SIMULATED pill on every number.
+  if (m.type === "ready" && !debug && !simulationSaid) {
+    simulationSaid = true;
+    addNotes(simulationNote(feed.captionNow()));
+  }
+  if (m.type === "policy-arrived" && m.kind) {
+    memory.lastInstallKind = m.kind;
+    if (m.checkpoint_n !== undefined) memory.installKind.set(m.checkpoint_n, m.kind);
+  }
+  // A trained brain installed in the tab is the evidence "Done training" rests on.
+  if (m.type === "policy-arrived" && m.kind === "final") memory.story.trained = true;
+  // The first checkpoint to reach the tab is where learning starts: the setup counter stops there.
+  if (!debug && (m.type === "checkpoint-installed" || (m.type === "policy-arrived" && m.kind === "checkpoint"))) endSetup(feed.captionNow());
+  const kind = m.type === "policy-walked" ? (m.checkpoint_n !== undefined ? memory.installKind.get(m.checkpoint_n) : memory.lastInstallKind) : undefined;
+  // The tab says when the first stroke is drawn (once per page): the chat's prompt to draw is no longer needed.
+  if ((m as unknown as { type: string }).type === "draw-started") memory.drawStarted = true;
+  // A kick starts the window in which the getup lines are told.
+  if (m.type === "kicked") memory.lastKickAt = feed.captionNow();
+  // The tab's walk-meter (about 1 Hz) is not a caption: it is not shown.
+  if ((m as unknown as { type: string }).type === "walk-meter") return;
+  // Each version's distance in the fixed 10 s window its own file reports: the sparkline's points (and its caption's number).
+  if (m.type === "policy-arrived" && m.reported_walk_10s_m != null && m.checkpoint_n !== undefined) memory.addVersion(m.checkpoint_n, m.reported_walk_10s_m);
+  addNotes(...notesFromTabEvent(m, feed.captionNow(), { plain: !debug, ...(kind ? { kind } : {}), afterKick: memory.lastKickAt !== null && feed.captionNow() - memory.lastKickAt < 15_000 }));
   const detail = Object.entries(m)
     .filter(([k]) => k !== "ns" && k !== "type")
     .map(([k, v]) => `${k}=${typeof v === "number" ? Math.round(v as number) : String(v).slice(0, 14)}`)
@@ -89,16 +168,26 @@ function sendPlacement(state: ShowState): void {
 
 bridge.onReady(() => {
   lastPlacement = "";
+  phaseSent = "";
   sendPlacement(feed.state);
   maybeSendPolicy(feed.state);
 });
 
 /** The winner's policy goes to the tab once, when the run is home. D2 writes it as work/home/policy.json (mlp-v1 JSON); the stage serves it at /policy/home.json from POLICY_DIR. */
 function maybeSendPolicy(state: ShowState): void {
+  // The run's own record counts too: a page that connects when the run is already home has seen nothing of the trip.
+  if (wentAway(state)) memory.wasAway = true;
+  // The v2 rehearsal has no pipe and no disk to carry a trained policy home, so the stage hands the tab its own file once the run is back.
+  // A live take never does this: its policy arrives on the disk, and the tab's own watcher installs it.
+  if (!debug && state.source === "scripted" && state.place.where === "home" && memory.wasAway && bridge.ready && memory.policyRequested !== "rehearsal") {
+    memory.policyRequested = "rehearsal";
+    bridge.send({ type: "load-policy", url: "/policy/home.json" });
+    return;
+  }
   if (state.place.where !== "home" || !bridge.ready) return;
   const winner = Object.values(state.universes).find((u) => u.status === "winner");
-  if (!winner || policySentFor === winner.id) return;
-  policySentFor = winner.id;
+  if (!winner || memory.policyRequested === winner.id) return;
+  memory.policyRequested = winner.id;
   bridge.send({ type: "load-policy", url: "/policy/home.json" });
 }
 
@@ -206,6 +295,9 @@ const OPS: Record<string, () => void> = {
   collapse: () => void run("collapse", { t: "collapse" }),
   home: () => void run("home", { t: "switch", to: homeEnv(feed.state) }),
   reset: () => void run("reset", { t: "reset" }),
+  // Straight to the tab app, not a feed command: a push a creature shrugs off (60 N) and one that puts it on its back (400 N).
+  kick60: () => bridge.send({ type: "kick", dir: [1, 0], force_n: 60 }),
+  kick400: () => bridge.send({ type: "kick", dir: [1, 0], force_n: 400 }),
   ask: () => void run("ask", { t: "ask" }),
 };
 operator.querySelectorAll<HTMLButtonElement>("button[data-op]").forEach((b) => b.addEventListener("click", () => OPS[b.dataset.op!]()));
@@ -213,16 +305,122 @@ addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.matches?.("input, textarea")) return;
   if (e.key === "o") operator.hidden = !operator.hidden;
   else if (!operator.hidden) {
-    const key = { p: "prewarm", f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask" }[e.key];
+    const key = { p: "prewarm", f: "fanout", k: "kill", c: "collapse", h: "home", r: "reset", a: "ask", x: "kick60", X: "kick400" }[e.key];
     if (key) OPS[key]();
     else if (e.key === "Escape") operator.hidden = true;
   }
 });
 if (params.get("operator") === "1") operator.hidden = false;
 
+const desk = new CaptionDesk();
+let shownV2 = "";
+function renderCaptionV2(state: ShowState): void {
+  const now = feed.captionNow();
+  const counting = !!state.setup && state.setup.endedAt === null && !setupNoted.has(setupKey(state.setup.startedAt));
+  const spoken = desk.update(withTabNotes(state), now, { yieldSlot: counting });
+  // While the agent sets up the training program and nothing else is being said, the slot counts the seconds (measured on a live feed).
+  const counter = !spoken && counting ? setupCaption(state, now) : null;
+  const c = spoken ?? (counter ? { text: counter.text, tag: counter.tag, at: state.setup!.startedAt + Math.floor((now - state.setup!.startedAt) / 1000) * 1000 } : null);
+  const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
+  if (key === shownV2) return;
+  shownV2 = key;
+  const el = $("vcaption");
+  el.hidden = c === null;
+  // No pill in the clean view; the tag is the caption's data, which the recorder reads (captions.json) and the published notes keep.
+  const tag = c ? visibleTag(c.tag, debug) : null;
+  el.dataset.tag = c?.tag ?? "";
+  el.innerHTML = c ? `${tag ? `<span class="tag ${tag}">${tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
+}
+
+let shownSpark = "";
+/** The small distance-per-version picture: one point per version, in the one fixed 10 s window, so learning shows where two stills of a creature cannot. */
+function renderSpark(state: ShowState): void {
+  const svg = sparklineSvg(chartPoints(state.versions, memory.versions));
+  if (svg === shownSpark) return;
+  shownSpark = svg;
+  const el = $("spark");
+  el.hidden = svg === "";
+  el.querySelector(".svg")!.innerHTML = svg;
+}
+
+let shownDecision = "";
+/** The decision card: up for a few seconds when the typed model has decided where the run goes, then gone as the badge moves. */
+function renderDecision(state: ShowState): void {
+  const el = $("decision");
+  const d = state.decision;
+  const visible = cardVisible(d, feed.captionNow()) && cardShown(d, state.source, debug);
+  // A placement that is not shown is still kept: the recorder writes it to captions.json (data-record).
+  el.dataset.record = d && cardVisible(d, feed.captionNow()) && !visible ? JSON.stringify({ id: d.id, phase: d.phase, choice: d.choice, latency_ms: d.latencyMs, model: d.model }) : "";
+  const key = visible && d ? `${d.id}:${d.phase}` : "";
+  if (key === shownDecision) return;
+  shownDecision = key;
+  el.hidden = !visible;
+  el.classList.remove("go");
+  if (!visible || !d) return void (el.innerHTML = "");
+  el.dataset.tag = cardTag(d, state.source);
+  el.innerHTML = decisionCardHtml(d, state.source, { pill: debug });
+  // The bars grow from nothing: the width is set a frame after the card is in the page.
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("go")));
+}
+
+let badgeKey = "";
+function renderBadge(state: ShowState): void {
+  const b = badgeFor(state);
+  const el = $("badge");
+  el.dataset.tone = b.tone;
+  $("badge").querySelector(".txt")!.textContent = b.text;
+  const memoryEl = el.querySelector<HTMLElement>(".memory")!;
+  memoryEl.hidden = !b.memory;
+  if (b.memory) memoryEl.textContent = MEMORY_LINE;
+  const track = trackFor(state);
+  el.dataset.at = track.at;
+  const right = el.querySelector<HTMLElement>(".node.b")!;
+  right.hidden = track.right === null;
+  right.textContent = track.right ?? "";
+  // The badge animates when the place changes, not on every frame.
+  if (b.text !== badgeKey) {
+    if (badgeKey !== "") {
+      el.classList.remove("swap");
+      void el.offsetWidth;
+      el.classList.add("swap");
+    }
+    badgeKey = b.text;
+  }
+}
+
+/** The creature fills the pane once the agent has left with it: the sketcher has done its job. */
+let phaseSent = "";
+function sendPhase(state: ShowState): void {
+  if (debug || !bridge.ready) return;
+  const away = state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes";
+  const phase = away ? "watch" : phaseSent === "watch" ? "watch" : "draw";
+  if (phase === phaseSent) return;
+  phaseSent = phase;
+  bridge.send({ type: "set-phase", phase });
+}
+
+const chatLog = $("chatlog");
+const chatIn = $<HTMLInputElement>("chatin");
+const chatErr = $("chaterr");
+$("chatform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = chatIn.value.trim();
+  if (!text) return;
+  chatErr.hidden = true;
+  chatIn.disabled = true;
+  const r = await feed.command({ t: "ask", text }).catch((err) => ({ ok: false, message: err instanceof Error ? err.message : String(err) }));
+  chatIn.disabled = false;
+  if (r.ok) chatIn.value = "";
+  else {
+    chatErr.textContent = `The agent did not take that: ${r.message ?? "refused"}`;
+    chatErr.hidden = false;
+  }
+  chatIn.focus();
+});
+
 let shownCaption = "";
 function renderCaption(state: ShowState): void {
-  const list = captionsFor(state, feed.captionNow());
+  const list = captionsFor(withTabNotes(state), feed.captionNow());
   const el = $("caption");
   const key = list.map((c) => `${c.at}|${c.tag}|${c.text}`).join("\n");
   if (key === shownCaption) return;
@@ -236,20 +434,36 @@ function frame(): void {
   const now = feed.liveNow();
   renderChrome(state);
   renderOperator(state);
+  renderDecision(state);
+  if (!debug) {
+    addNotes(...storyNotes(state, memory.story, feed.captionNow()));
+    // Only what is on screen: the badge, the chat and one caption. The old panels are not drawn at all.
+    renderBadge(state);
+    renderSpark(state);
+    syncChat(chatLog, state.chat);
+    $("chat").classList.toggle("talked", state.chat.length > 0);
+    $("chat").classList.toggle("drawing", memory.drawStarted);
+    renderCaptionV2(state);
+    sendPhase(state);
+    return;
+  }
   renderCaption(state);
   desktop.update(state);
   grid.render(state, now);
   const tl = $("timeline");
   tl.innerHTML = renderTimeline(state, now, tl.clientWidth, tl.clientHeight);
-  renderNotes(state, now);
+  renderNotes(withTabNotes(state), now);
 }
 
 feed.onChange((event: ShowEvent | null) => {
+  syncTake();
   if (event?.t === "place" || event === null) {
     sendPlacement(feed.state);
     maybeSendPolicy(feed.state);
   }
   if (event?.t === "universe" && event.patch.status === "winner") maybeSendPolicy(feed.state);
+  // A feed that says when learning began (the rehearsal) ends the setup itself.
+  if (!debug && event?.t === "setup" && event.phase === "end") endSetup(event.at);
 });
 
 await feed.connect().catch((e) => {

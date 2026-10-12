@@ -4,7 +4,7 @@
 // seal drains the writer and releases the pipe, so run.json is sealed paused.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -116,6 +116,8 @@ test("a takeover over the pipe resumes from the last checkpoint; the replaced ru
       UNIVERSE_TOTAL_STEPS: "400",
       UNIVERSE_STEP_MS: "40",
       UNIVERSE_CHECKPOINT_EVERY: "2",
+      // Larger than a frame's chunk: every checkpoint goes through the pipe as an upload, then the write-through.
+      UNIVERSE_CHECKPOINT_BYTES: String(3 * 1024 * 1024),
       DEMO_ENV_LABEL: label,
       DEMO_SWITCH_ID: switchId,
       DEMO_SWITCH_FROM: "the test",
@@ -140,6 +142,7 @@ test("a takeover over the pipe resumes from the last checkpoint; the replaced ru
     });
     assert.ok(onB.step >= lastOfA, `b resumed from a's last checkpoint (${lastOfA}), not from 0 (${onB.step})`);
     assert.equal(onB.generation, 2, "the takeover is epoch 2");
+    assert.equal(statSync(join(root, "runs", run.id, "work", "universe", "weights.bin")).size, 3 * 1024 * 1024, "a checkpoint larger than a chunk arrived whole");
 
     // Thawed, the old runner is told it lost the run; none of its writes lands after b's attachment.
     a.child.kill("SIGCONT");

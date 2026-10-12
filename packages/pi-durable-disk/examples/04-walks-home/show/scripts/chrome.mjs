@@ -1,4 +1,4 @@
-// Start (or reuse) this lane's own headless Chrome for recording: node scripts/chrome.mjs [port=9444]
+// Start (or reuse) this lane's own headless Chrome for recording (the checks no longer need it: a check started without CDP_URL runs its own Chrome and closes it, see own-chrome.mjs): node scripts/chrome.mjs [port=9444]
 // The shared Chrome on :9222 has WebGL disabled, so the tab app's MuJoCo view cannot start there. This one renders in
 // software (SwiftShader). Its profile lives in D5_CHROME_PROFILE (default ~/tmp-d5/chrome-profile); stop it with
 // `node scripts/chrome.mjs --stop`. Use it with CDP_URL=http://127.0.0.1:9444.
@@ -39,6 +39,11 @@ if (!up) {
       "--use-angle=swiftshader",
       "--enable-unsafe-swiftshader",
       "--ignore-gpu-blocklist",
+      // A recording keeps two pages busy in one Chrome (the stage and the 03 page that runs the agent): neither may be slowed because
+      // the other is in front, or the agent's host stops pinging and the server declares it gone.
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
       "--window-size=1600,900",
       "about:blank",
     ],

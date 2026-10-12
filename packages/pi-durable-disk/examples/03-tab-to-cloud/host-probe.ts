@@ -1,6 +1,6 @@
 // A Node host's description of itself, for the "you are now running in X" notice: what the machine has (CPUs, memory,
 // GPUs from nvidia-smi), which commands the agent will find, and whether the internet is reachable. The label and the
-// class come from the host driver (DEMO_ENV_LABEL, DEMO_ENV_CLASS), the rest from this machine.
+// class come from the host driver (DEMO_ENV_LABEL, DEMO_ENV_CLASS; DEMO_ENV_CPUS and DEMO_ENV_MEMORY_GB when the box has no limits to read), the rest from this machine.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
@@ -47,6 +47,9 @@ export async function probeHost(env: NodeJS.ProcessEnv = process.env): Promise<E
     label: env.DEMO_ENV_LABEL ?? "a cloud host",
     ...(env.DEMO_ENV_CLASS ? { hostClass: env.DEMO_ENV_CLASS } : {}),
     ...limits(),
+    // A sandbox without cgroup limits (gVisor) sees its machine's CPUs and memory: the driver says what the box was given.
+    ...(Number(env.DEMO_ENV_CPUS) > 0 ? { cpus: Number(env.DEMO_ENV_CPUS) } : {}),
+    ...(Number(env.DEMO_ENV_MEMORY_GB) > 0 ? { memoryGb: Number(env.DEMO_ENV_MEMORY_GB) } : {}),
     gpu: gpus(),
     tools: found,
     network,

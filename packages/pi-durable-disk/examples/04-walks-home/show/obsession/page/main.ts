@@ -1,0 +1,519 @@
+// The obsession episode's stage ("pick an obsession"): the same header and cloud-disk line as episode 2, the feature panel while the agent searches and clamps the big
+// model (find/progress.jsonl), the big model speaking clamped, the training panel while it teaches a small model (train/progress.jsonl), the tab at home, the
+// agent's chat on the right, one caption at a time in plain words. Served at /obsession/. It is episode 2's page, copied and extended for the two new phases, so
+// a take on episode 2 cannot be broken by this one. It computes no number of its own: every number is one a progress file or the tab said.
+import { MEMORY_LINE, trackFor } from "../../page/badge.ts";
+import { CaptionDesk } from "../../page/caption.ts";
+import { syncChat } from "../../page/chat.ts";
+import { $, esc } from "../../page/dom.ts";
+import { Feed } from "../../page/feed.ts";
+import { TabBridge } from "../../page/shell.ts";
+import { plainSwitch, visibleTag } from "../../page/story-notes.ts";
+import type { Note, ShowState, TabToShell } from "../../types.ts";
+import { type ChatIn, isChatIn, ModelChat } from "../../episode2/model-chat.ts";
+import { EpisodeNotes, foldModel, initialModel, isModelEvent, localBadge, modelBanner, tripNote, type ModelEvent } from "../../episode2/notes.ts";
+import { panelHtml } from "../../episode2/panel.ts";
+import { PlacementSender } from "../../episode2/placement.ts";
+import { THINKING_HABIT_NOTE, talkHtml } from "../../episode2/talk.ts";
+import { stageZoom } from "../fit.ts";
+import { chooseScale } from "../talkfit.ts";
+import { type Train } from "../../episode2/progress.ts";
+import { brainBanner, brainCaptions, brainLocalBadge, brainTalkTurns, brainTopic, viewerLineGoesToModel, BRAIN_ASK_PLACEHOLDER } from "../brain.ts";
+import { FindNotes, obsessionNote } from "../notes.ts";
+import { emptyFind, parseFind, type Find } from "../find.ts";
+import { findHtml } from "../find-panel.ts";
+import { centrePane } from "../centre.ts";
+import { LoadGate } from "../load-gate.ts";
+import { bigModelName, clampedDataLine, copyIntro, genHtml, genStatusLine, parseObsessionTrain, type ObsessionTrain } from "../train.ts";
+import { obsessionBadge } from "../badge.ts";
+import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
+import { obsessionReply } from "../answers.ts";
+import { SerialReader } from "../../episode2/reader.ts";
+import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
+import { TabLink, stageKeys, tabEventsFrom } from "../../page/tab-link.ts";
+import { apiRoot, apiUrl, pageParams } from "../../page/api-base.ts";
+
+const params = pageParams(location.href, location.hash);
+const debug = params.get("debug") === "1";
+const API = apiRoot(location.href, params.get("api"));
+// The creature tab in the middle, unless the stage is given the agent's own tab to follow (?tab=): that one is its own window, and this page has no /tab/ of its own when it is served under /show/.
+if (params.get("tab")) $("tab").hidden = true;
+else $<HTMLIFrameElement>("tab").setAttribute("src", API === new URL("/", location.href).toString() ? "/tab/?clean=1&banner=1&episode=2" : apiUrl(API, "tab/?clean=1&banner=1&episode=2"));
+
+const KEYS = stageKeys(params.get("tab"));
+const feed = new Feed(API, {
+  get: () => {
+    try {
+      return sessionStorage.getItem(KEYS.eventsKey);
+    } catch {
+      return null;
+    }
+  },
+  set: (value) => {
+    try {
+      sessionStorage.setItem(KEYS.eventsKey, value);
+    } catch {
+      // no storage: the page still works until it is reloaded
+    }
+  },
+});
+feed.restore();
+
+// The agent's tab (the 03 page) when the stage is given one: ?tab=<its link>. The stage opens it with window.open, keeps the handle, and takes its events by postMessage (page/tab-link.ts), all in
+// the browser, so it keeps working when the network is off. After a reload of this page the tab is found again by name, never navigated.
+const flag = (set?: boolean): boolean => {
+  try {
+    if (set !== undefined) sessionStorage.setItem(KEYS.flagKey, set ? "1" : "");
+    return sessionStorage.getItem(KEYS.flagKey) === "1";
+  } catch {
+    return false;
+  }
+};
+const tabLink = params.get("tab")
+  ? new TabLink({ win: window, tabUrl: params.get("tab")!, name: KEYS.windowName, run: KEYS.run, onEvent: (m) => { for (const e of tabEventsFrom(m, feed.captionNow())) feed.inject(e); } })
+  : null;
+if (tabLink) {
+  window.addEventListener("message", (e) => tabLink.handle(e));
+  if (flag()) tabLink.reattach();
+  const button = $<HTMLButtonElement>("opentab");
+  button.hidden = false;
+  button.addEventListener("click", () => {
+    if (tabLink.open()) flag(true);
+  });
+}
+// A read-only view of the page's state for the checks that watch it (what notes the page made, and the clock they were made on).
+// The stage is laid out for 1600x900; in a smaller window (live mode runs in the viewer's own browser) the whole page is scaled down so the same layout fits (obsession/fit.ts).
+function fitStage(): void {
+  const z = stageZoom(window.innerWidth, window.innerHeight);
+  document.documentElement.style.zoom = z === 1 ? "" : String(z);
+}
+window.addEventListener("resize", () => {
+  fitStage();
+  fitTalk();
+});
+fitStage();
+
+(window as unknown as { __obsession: () => unknown }).__obsession = () => ({ generation: feed.generation, now: Math.round(feed.captionNow()), notes: take.notes.slice(-30).map((n) => [Math.round(n.at), n.text.slice(0, 160), n.rank ?? 0]), caption: document.getElementById("vcaption")?.textContent ?? "" });
+const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
+const desk = new CaptionDesk();
+const said = new EpisodeNotes();
+const foundSaid = new FindNotes();
+const loadGate = new LoadGate();
+const modelChat = new ModelChat();
+// A reload of the tab (it says ready again) cannot finish the answer it was giving: the waiting turn ends with a plain line.
+$<HTMLIFrameElement>("tab").addEventListener("load", () => modelChat.abandon());
+
+/** Everything the page remembers about the take on screen. It all starts over when the feed does (a retake, a reset). */
+const take = { generation: -1, notes: [] as Note[], train: parseObsessionTrain("") as ObsessionTrain, progressText: "", find: emptyFind() as Find, findText: "", clampedAt: null as number | null, model: initialModel(), homeAt: null as number | null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null as number | null, pendingLoaded: null as { m: ModelEvent; scripted: boolean } | null };
+function syncTake(): void {
+  if (take.generation === feed.generation) return;
+  const first = take.generation === -1;
+  take.generation = feed.generation;
+  if (first) return;
+  Object.assign(take, { notes: [], train: parseObsessionTrain(""), progressText: "", find: emptyFind(), findText: "", clampedAt: null, model: initialModel(), homeAt: null, scriptedSent: 0, realModelSeen: false, chatEmptySeen: false, requestAt: null, pendingLoaded: null });
+  said.reset();
+  foundSaid.reset();
+  loadGate.reset();
+  modelChat.reset();
+}
+/** A chat message, from the tab or from the rehearsal's stand-in: the chat takes it, and the first answer that passed says what is real about it. */
+function onChat(m: ChatIn): void {
+  if (modelChat.handle(m, performance.now())) addNotes(...foundSaid.fromChat(m, feed.captionNow()));
+}
+function addNotes(...notes: Note[]): void {
+  syncTake();
+  take.notes.push(...notes);
+  if (take.notes.length > 200) take.notes.splice(0, take.notes.length - 200);
+}
+
+/** The tab keeps its files on the run's disk through this page. */
+async function answerStorage(m: Extract<TabToShell, { type: "storage-read" | "storage-write" }>): Promise<void> {
+  const url = apiUrl(API, `api/disk/${m.path.split("/").map(encodeURIComponent).join("/")}`);
+  const why = async (res: Response) => ((await res.json().catch(() => undefined)) as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
+  try {
+    if (m.type === "storage-read") {
+      const res = await fetch(url, { cache: "no-store", headers: m.ifNoneMatch ? { "if-none-match": m.ifNoneMatch } : {} });
+      if (res.status === 304) return bridge.send({ type: "storage-result", id: m.id, bytes: null, notModified: true, etag: res.headers.get("etag") ?? m.ifNoneMatch });
+      if (res.status === 204 || res.status === 404) return bridge.send({ type: "storage-result", id: m.id, bytes: null });
+      if (!res.ok) throw new Error(await why(res));
+      const etag = res.headers.get("etag");
+      return bridge.send({ type: "storage-result", id: m.id, bytes: new Uint8Array(await res.arrayBuffer()), ...(etag ? { etag } : {}) });
+    }
+    const res = await fetch(url, { method: "PUT", body: m.bytes as BodyInit });
+    if (res.status === 409) return bridge.send({ type: "storage-written", id: m.id, error: "not-holder" });
+    if (!res.ok) throw new Error(await why(res));
+    bridge.send({ type: "storage-written", id: m.id });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (m.type === "storage-read") bridge.send({ type: "storage-result", id: m.id, bytes: null, error: message });
+    else bridge.send({ type: "storage-written", id: m.id, error: message });
+  }
+}
+
+/** `scripted`: the rehearsal's own stand-in for the tab. Its notes never carry the tab's origin, so no invented number reads as measured. */
+function onModel(m: ModelEvent, scripted = false, bypassGate = false): void {
+  syncTake();
+  // The tab loads the model as soon as it is on the disk, which can be before the agent is home. "Loaded in your browser" is not said until the header says the agent is home
+  // (cold view: "moving back to your browser..." showed after "Loaded"); the download's progress is, and the load waits in the gate (obsession/load-gate.ts), where a failure
+  // or a newer load replaces it.
+  if (!bypassGate) {
+    const now = loadGate.offer(m, scripted, feed.state.place.where === "home");
+    if (now === null) return;
+  }
+  take.model = foldModel(take.model, m);
+  addNotes(...said.fromModel(m, feed.captionNow(), { scripted }));
+  // The whole trip, once, at the end: from the viewer's request to the model answering (the chat switching), on the feed's own clock.
+  if (m.type === "model-switched" && said.once("trip")) {
+    const trip = tripNote(take.requestAt, feed.captionNow(), feed.captionNow());
+    if (trip) addNotes(trip);
+  }
+}
+bridge.onMessage((m: TabToShell) => {
+  if (m.type === "storage-read" || m.type === "storage-write") return void answerStorage(m);
+  syncTake();
+  if (isModelEvent(m)) {
+    take.realModelSeen = true;
+    onModel(m);
+  }
+  // The tab's answers, already judged there: shown exactly as received.
+  if (isChatIn(m)) onChat(m);
+});
+
+// The training progress file, read about once a second, one read at a time, each tied to the take it was asked in (episode2/reader.ts). 204 (not
+// written yet) and a failed read are both "nothing new": the panel keeps what it has.
+const progressReader = new SerialReader(
+  async () => {
+    const res = await fetch(apiUrl(API, "api/disk/train/progress.jsonl"), { cache: "no-store" });
+    return res.status === 200 ? await res.text() : undefined;
+  },
+  () => feed.generation,
+  (text) => {
+    syncTake();
+    if (text === take.progressText) return;
+    take.progressText = text;
+    take.train = parseObsessionTrain(text);
+    addNotes(...said.fromTrain(take.train.train, feed.captionNow()));
+    addNotes(...foundSaid.fromTrain(take.train, feed.captionNow()));
+  },
+);
+setInterval(() => void progressReader.tick(), 1000);
+
+// The feature search's file, the same way: one read at a time, each tied to the take it was asked in.
+const findReader = new SerialReader(
+  async () => {
+    const res = await fetch(apiUrl(API, "api/disk/find/progress.jsonl"), { cache: "no-store" });
+    return res.status === 200 ? await res.text() : undefined;
+  },
+  () => feed.generation,
+  (text) => {
+    syncTake();
+    if (text === take.findText) return;
+    take.findText = text;
+    take.find = parseFind(text);
+    if (take.clampedAt === null && take.find.clamped.length > 0) take.clampedAt = feed.captionNow();
+    addNotes(...foundSaid.fromFind(take.find, feed.captionNow()));
+  },
+);
+setInterval(() => void findReader.tick(), 1000);
+
+function withNotes(state: ShowState): ShowState {
+  const feedNotes = debug ? state.notes : state.notes.map(plainSwitch);
+  return take.notes.length === 0 && feedNotes === state.notes ? state : { ...state, notes: [...feedNotes, ...take.notes].sort((a, b) => a.at - b.at) };
+}
+
+let badgeKey = "";
+function renderBadge(state: ShowState): void {
+  const b = obsessionBadge({ state, find: take.find, train: take.train, model: take.model, brain: state.brainReady, now: feed.captionNow() });
+  const el = $("badge");
+  el.dataset.tone = b.tone;
+  el.querySelector(".txt")!.textContent = b.text;
+  // The longer stage names (the take-3 wording) would wrap and push the panels down: past 44 characters the badge is set smaller, on one line.
+  el.classList.toggle("long", b.text.length > 44);
+  const memoryEl = el.querySelector<HTMLElement>(".memory")!;
+  memoryEl.hidden = !b.memory;
+  if (b.memory) memoryEl.textContent = MEMORY_LINE;
+  const track = trackFor(state);
+  el.dataset.at = track.at;
+  const right = el.querySelector<HTMLElement>(".node.b")!;
+  right.hidden = track.right === null;
+  right.textContent = track.right ?? "";
+  if (b.text !== badgeKey) {
+    if (badgeKey !== "") {
+      el.classList.remove("swap");
+      void el.offsetWidth;
+      el.classList.add("swap");
+    }
+    badgeKey = b.text;
+  }
+}
+
+let panelKey = "";
+let findKey = "";
+function renderCentre(state: ShowState): void {
+  const away = state.place.where === "moving" || state.place.where === "cloud" || state.place.where === "universes";
+  const pane = centrePane({ away, train: take.train, clampedAt: take.clampedAt, now: feed.captionNow() });
+  const trainEl = $("train");
+  const findEl = $("find");
+  trainEl.classList.toggle("off", pane !== "train");
+  findEl.classList.toggle("off", pane !== "find");
+  const clamped = clampedDataLine(take.train);
+  const tHtml = panelHtml(take.train.train, { rows: 3, doneHead: true, plainLabels: true, beforeNote: take.train.before?.label ?? null, habitNote: THINKING_HABIT_NOTE, eta: false, lossLabel: "Training error (loss), lower is better", intro: copyIntro(take.train, bigModelName(take.find, take.train)), side: genHtml(take.train), ...(clamped !== null ? { data: clamped } : {}) });
+  if (tHtml !== panelKey) {
+    panelKey = tHtml;
+    trainEl.innerHTML = tHtml;
+  }
+  const fHtml = findHtml(take.find, { debug, stopped: take.train.stopped?.message ?? null, genStatus: genStatusLine(take.train), bigModel: bigModelName(take.find, take.train) });
+  if (fHtml !== findKey) {
+    findKey = fHtml;
+    findEl.innerHTML = fHtml;
+  }
+}
+
+let bannerKey = "";
+function renderBanner(): void {
+  // A brain swap (the trained model becoming the agent's brain, in the 03 page) says it in its own words; without one, the creature tab's model messages do.
+  const brain = brainBanner(feed.state.brain, brainTopic(feed.state.brain, take.find.topic, take.train.topic));
+  const text = brain ? brain.text : modelBanner(take.model);
+  const notes = brain ? [brain.note, brain.note2] : [obsessionNote(take.model)];
+  const phase = brain ? (brain.phase === "ready" ? "switched" : brain.phase) : take.model.phase;
+  const key = `${phase}|${text}|${notes.join("|")}`;
+  if (key === bannerKey) return;
+  bannerKey = key;
+  const el = $("modelbanner");
+  el.hidden = text === null;
+  el.dataset.phase = phase;
+  el.innerHTML = text === null ? "" : `${esc(text)}${notes.filter((n): n is string => !!n).map((n) => `<span class="note">${esc(n)}</span>`).join("")}`;
+}
+
+/** Once the viewer has asked the model something, the big pane shows the latest question and answer large (the tab's own card is behind it until then). */
+let talkKey = "";
+function renderTalk(): void {
+  const brain = feed.state.brainReady;
+  const html = brain !== null ? talkHtml(brainTalkTurns(feed.state.chat), brainLocalBadge(brain, feed.state.chat), { agent: true }) : talkHtml(modelChat.turns, localBadge(take.model));
+  const key = html ?? "";
+  if (key === talkKey) return;
+  talkKey = key;
+  const el = $("talk");
+  el.hidden = html === null;
+  el.innerHTML = html ?? "";
+  fitTalk();
+}
+
+/**
+ * The end of the answer is the point (the joke's punchline): the answer, its question and its thinking are scaled together until they fit the box (obsession/talkfit.ts). An answer too
+ * long even at the smallest readable type is cut from the TOP, so its end stays in view, with a visible mark that the start is in the chat on the right. Never a silent cut.
+ */
+function fitTalk(): void {
+  const el = $("talk");
+  if (el.hidden) return;
+  el.querySelector(".cliptag")?.remove();
+  const a = el.querySelector<HTMLElement>(".a");
+  if (a) a.style.cssText = "";
+  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const cs = getComputedStyle(el);
+  const room = el.getBoundingClientRect().height - (parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)) * z;
+  const span = (): number => {
+    const kids = (Array.from(el.children) as HTMLElement[]).filter((c) => c.getBoundingClientRect().height > 0);
+    return kids.length === 0 ? 0 : kids[kids.length - 1]!.getBoundingClientRect().bottom - kids[0]!.getBoundingClientRect().top;
+  };
+  const { scale, fits } = chooseScale((s) => (el.style.setProperty("--ts", String(s)), span()), room);
+  el.style.setProperty("--ts", String(scale));
+  if (fits || !a) return;
+  const tag = document.createElement("div");
+  tag.className = "cliptag";
+  tag.textContent = "\u25b2 the start of this answer is in the chat on the right";
+  a.before(tag);
+  const fixed = span() - a.getBoundingClientRect().height;
+  a.style.maxHeight = `${Math.max(40, (room - fixed) / z)}px`;
+  a.style.overflow = "hidden";
+  a.scrollTop = a.scrollHeight;
+}
+
+/** A rehearsal has no tab that loads a model: from the moment the run is home the page plays the tab's messages, scripted (episode2/rehearsal.ts). */
+function playRehearsalModel(state: ShowState): void {
+  // A gate stopped the teach step: there is no model, so a rehearsal plays none of the tab's model messages.
+  // (A brain swap, which the 03 page runs, replaces the creature tab's model messages: nothing of them is played.)
+  if (state.source !== "scripted" || take.realModelSeen || take.train.stopped !== null || state.brain !== null) return;
+  const now = feed.captionNow();
+  if (state.place.where === "home" && state.stays.some((s) => s.hostKind !== "tab")) take.homeAt ??= now;
+  if (take.homeAt === null) return;
+  for (const m of dueScriptedModel(take.homeAt, now, take.scriptedSent)) {
+    take.scriptedSent++;
+    // The real tab reads the topic and mechanism from the model's manifest; a rehearsal has no manifest, so the page lends it the ones the find file gave.
+    onModel(m.type === "model-loading" ? { ...m, ...(take.find.topic ? { topic: take.find.topic } : {}), ...(take.find.clamp ? { mechanism: take.find.clamp.label } : {}) } : m, true);
+  }
+}
+
+let shownCaption = "";
+function renderCaption(state: ShowState): void {
+  const c = desk.update(withNotes(state), feed.captionNow());
+  const key = c ? `${c.at}|${c.tag}|${c.text}` : "";
+  if (key === shownCaption) return;
+  shownCaption = key;
+  const el = $("vcaption");
+  el.hidden = c === null;
+  const tag = c ? visibleTag(c.tag, debug) : null;
+  el.dataset.tag = c?.tag ?? "";
+  el.innerHTML = c ? `${tag ? `<span class="tag ${tag}">${tag}</span>` : ""}<span class="txt">${esc(c.text)}</span>` : "";
+}
+
+/** When the viewer's request was first seen, on the feed's clock: only by a page that saw the chat without it (one that joined mid-take claims no total). */
+/** The brain swap's captions, once per entry, and the whole trip when the agent has a new brain (the same trip note the model switching said). */
+function noteBrain(state: ShowState): void {
+  const b = state.brain;
+  if (b === null || !said.once(`brain|${b.id}|${b.stage}`)) return;
+  addNotes(...brainCaptions(b, feed.captionNow()));
+  if (b.stage === "ready" && said.once("trip")) {
+    const trip = tripNote(take.requestAt, feed.captionNow(), feed.captionNow());
+    if (trip) addNotes(trip);
+  }
+}
+
+function noteRequest(state: ShowState): void {
+  const asked = state.chat.some((t) => t.role === "user");
+  if (!asked) take.chatEmptySeen = true;
+  else if (take.requestAt === null && take.chatEmptySeen) take.requestAt = feed.captionNow();
+}
+
+let selftoolsKey = "";
+/** The tab's own events: the net pill, the check-in and homecoming lines, the decision card, the tool strip. Each is empty until the tab has said something. */
+function renderSelftools(state: ShowState): void {
+  const net = netBadge(state.net);
+  const lines = [checkinLine(state.checkin), homecomingLine(state.homecoming)];
+  const card = changeCardHtml(fileChanges(state.tools), state.net, state.routing) + (state.routing ? routingCardHtml(state.routing) : "");
+  const tools = toolStripHtml(state.tools);
+  const key = JSON.stringify([net, lines, card, tools, state.checkin?.phase]);
+  if (key === selftoolsKey) return;
+  selftoolsKey = key;
+  const pill = $("net");
+  pill.hidden = net === null;
+  if (net) {
+    pill.textContent = net.label;
+    pill.dataset.online = String(net.online);
+    pill.title = net.title;
+  }
+  $("selftools").innerHTML = card + lines.map((l, i) => (l === null ? "" : `<div class="line${i === 0 && state.checkin?.phase === "failed" ? " bad" : ""}">${esc(l)}</div>`)).join("");
+  const strip = $("toolstrip");
+  strip.hidden = tools === "";
+  strip.innerHTML = tools;
+}
+
+/** The captions of the tab's own events, each said once: a net change, a finished check-in, a homecoming's bytes. */
+function noteSelftools(state: ShowState): void {
+  if (state.net && said.once(`net|${state.net.at}|${state.net.online}`)) addNotes(netNote(state.net, feed.captionNow()));
+  if (state.checkin && said.once(`checkin|${state.checkin.at}|${state.checkin.phase}`)) {
+    const n = checkinNote(state.checkin, feed.captionNow());
+    if (n) addNotes(n);
+  }
+  if (state.homecoming && !state.homecoming.prefetch && said.once(`homecoming|${state.homecoming.at}`)) {
+    const n = homecomingNote(state.homecoming, feed.captionNow(), state.source === "live");
+    if (n) addNotes(n);
+  }
+}
+
+function frame(): void {
+  syncTake();
+  const released = loadGate.release(feed.state.place.where === "home");
+  if (released) onModel(released.m, released.scripted, true);
+  modelChat.expire(performance.now());
+  const state = feed.state;
+  noteRequest(state);
+  noteBrain(state);
+  noteSelftools(state);
+  $("lost").hidden = !feed.lost;
+  playRehearsalModel(state);
+  renderBadge(state);
+  renderCentre(state);
+  renderBanner();
+  renderSelftools(state);
+  renderTalk();
+  const turns = [...state.chat, ...modelChat.turns];
+  syncChat($("chatlog"), turns);
+  // The model's turns say who is speaking: the creature tab's model, or, after a brain swap, the agent on its trained brain.
+  const brainTurns = new Set(state.chat.filter((t) => t.brain === true && t.role === "agent").map((t) => t.id));
+  for (const el of Array.from($("chatlog").children) as HTMLElement[]) {
+    const id = el.dataset.id ?? "";
+    const model = /^m\d/.test(id) || brainTurns.has(id);
+    el.classList.toggle("model", model);
+    const who = el.querySelector(".who");
+    const label = brainTurns.has(id) ? "The agent, on its trained brain" : "The model";
+    if (model && who && who.textContent !== label) who.textContent = label;
+  }
+  const talkingToModel = viewerLineGoesToModel(take.model.phase, state.brain);
+  const input = $<HTMLInputElement>("chatin");
+  const placeholder = state.brainReady !== null ? BRAIN_ASK_PLACEHOLDER : talkingToModel ? "Ask the model anything" : "Tell the agent what to do";
+  if (input.placeholder !== placeholder) input.placeholder = placeholder;
+  $("chat").classList.toggle("talked", turns.length > 0);
+  renderCaption(state);
+}
+
+/** A rehearsal has no tab holding a model: the page streams a scripted placeholder answer in the tab's own shape (cumulative text, then done). */
+function playRehearsalAnswer(id: string, prompt: string): void {
+  const generation = take.generation;
+  const reply = obsessionReply(prompt, take.train, take.find.topic ?? take.train.topic ?? "its topic");
+  // Never made-up model text: with no recorded sample for the question, the turn ends with a plain line saying so.
+  if (reply === null) return void modelChat.endPending("The rehearsal has no recorded answer to that question.");
+  // In the tab's order (tab/src, chat-thinking before the first chat-delta): the thinking first, cumulatively, in chunks of two words, then the answer word by word.
+  const thought = reply.thinking === null ? [] : scriptedDeltas(reply.thinking).filter((_, i) => i % 2 === 1 || i === reply.thinking!.split(" ").length - 1);
+  const said = scriptedDeltas(reply.answer);
+  const messages: ChatIn[] = [
+    ...thought.map((text): ChatIn => ({ type: "chat-thinking", id, text })),
+    ...said.map((text, i): ChatIn => (i === said.length - 1 ? { type: "chat-done", id, text, ...(reply.thinking !== null ? { thinking: reply.thinking } : {}), ...(reply.cap ? { cut: true } : {}), refused: false } : { type: "chat-delta", id, text })),
+  ];
+  onChat({ type: "chat-start", id });
+  messages.forEach((m, i) =>
+    setTimeout(() => {
+      if (take.generation !== generation) return;
+      onChat(m);
+    }, 150 * (i + 1)),
+  );
+}
+
+const chatIn = $<HTMLInputElement>("chatin");
+const chatErr = $("chaterr");
+$("chatform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = chatIn.value.trim();
+  if (!text) return;
+  chatErr.hidden = true;
+  // Once the tab says the chat switched, the line goes to the model it holds; before that, and always when the run has a brain entry (the agent answers with that model), to the agent.
+  if (viewerLineGoesToModel(take.model.phase, feed.state.brain)) {
+    const sent = modelChat.send(text, performance.now());
+    if (!sent.ok) {
+      chatErr.textContent = sent.reason;
+      chatErr.hidden = false;
+      return;
+    }
+    chatIn.value = "";
+    if (take.realModelSeen) bridge.send(sent.message as unknown as Parameters<typeof bridge.send>[0]);
+    else playRehearsalAnswer(sent.message.id, sent.message.text);
+    return;
+  }
+  chatIn.disabled = true;
+  const r = await feed.command({ t: "ask", text }).catch((err) => ({ ok: false, message: err instanceof Error ? err.message : String(err) }));
+  chatIn.disabled = false;
+  if (r.ok) chatIn.value = "";
+  else {
+    chatErr.textContent = `The agent did not take that: ${r.message ?? "refused"}`;
+    chatErr.hidden = false;
+  }
+  chatIn.focus();
+});
+
+/**
+ * Tells the tab where it is running (gpu while the agent is away, tab at home): its holder logic waits for this, the same message Walks Home's stage sends.
+ * Sent once per placement, when the tab is ready and on every change; a reload of the tab (it says ready again) gets it again.
+ */
+const placement = new PlacementSender({ ready: () => bridge.ready, send: (message) => bridge.send(message) });
+bridge.onReady(() => placement.onReady(feed.state));
+
+feed.onChange((event) => {
+  syncTake();
+  placement.onFeed(event, feed.state);
+});
+await feed.connect().catch((e) => {
+  $("lost").hidden = false;
+  $("lost").textContent = `no feed: ${e instanceof Error ? e.message : String(e)}`;
+});
+setInterval(frame, 120);
+frame();

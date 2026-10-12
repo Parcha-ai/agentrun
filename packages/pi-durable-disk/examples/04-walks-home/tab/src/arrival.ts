@@ -15,24 +15,86 @@ export type Plan =
   | { action: 'refuse'; reason: string };
 
 export interface ArrivalMeta {
-  /** The machine that trained it, exactly as the file's provenance names it; null when the file does not say. */
+  /** The machine that trained it, exactly as the file's provenance names it; null when the file does not say. For a combined
+   *  walk+getup file this is the walking network's. */
   host: string | null;
-  /** Seconds of training wall time from the file's provenance; null when the file does not say. */
+  /** Seconds of training wall time from the file's provenance; null when the file does not say. Walking network for a combined file. */
   trainingSeconds: number | null;
+  /** A combined file (walking and getup networks trained separately) records the getup network's own host and time. Null when absent. */
+  getupHost?: string | null;
+  getupSeconds?: number | null;
 }
 
-/** What the file says about where and how long it trained. Nothing is inferred: a missing or odd field is null. */
+const hostOf = (p: Record<string, unknown> | undefined): string | null => (typeof p?.host === 'string' && p.host.trim() ? p.host.trim() : null);
+const secondsOf = (p: Record<string, unknown> | undefined): number | null => {
+  const s = p?.wall_s;
+  return typeof s === 'number' && Number.isFinite(s) && s >= 0 ? s : null;
+};
+const asRecord = (v: unknown): Record<string, unknown> | undefined => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+
+/**
+ * What the file says about where and how long it trained. Nothing is inferred: a missing or odd field is null. A plain policy
+ * carries `provenance.host` and `provenance.wall_s`; a combined walk+getup file (the trainer's combine step) nests them as
+ * `provenance.walk` and `provenance.getup`, one per network.
+ */
 export function arrivalMeta(file: unknown): ArrivalMeta {
-  const prov = (file as { provenance?: Record<string, unknown> } | null)?.provenance;
-  const host = typeof prov?.host === 'string' && prov.host.trim() ? prov.host.trim() : null;
-  const s = prov?.wall_s;
-  const trainingSeconds = typeof s === 'number' && Number.isFinite(s) && s >= 0 ? s : null;
-  return { host, trainingSeconds };
+  const prov = asRecord(asRecord(file)?.provenance);
+  const walk = asRecord(prov?.walk), getup = asRecord(prov?.getup);
+  if (walk || getup) {
+    return { host: hostOf(walk), trainingSeconds: secondsOf(walk), getupHost: hostOf(getup), getupSeconds: secondsOf(getup) };
+  }
+  return { host: hostOf(prov), trainingSeconds: secondsOf(prov) };
 }
+
+export interface ProvenanceFacts {
+  /** Training steps the file says it was trained for; null when it does not say. A combined file's walking network. */
+  steps: number | null;
+  /** Training wall seconds the file records; null when it does not say. */
+  wallS: number | null;
+  /** The trainer's own checkpoint number (provenance.checkpoint); null when absent, in which case the tab counts installs. */
+  checkpoint: number | null;
+  /** The trainer's own 10 s walk score in metres (provenance.walk_10s.distance_m), REPORTED by the file, not measured here. */
+  reportedWalk10sM: number | null;
+}
+
+const countOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+
+/** Steps, training time, checkpoint number and the trainer's own walk score, from a plain or a combined (nested) provenance. */
+export function provenanceFacts(file: unknown): ProvenanceFacts {
+  const prov = asRecord(asRecord(file)?.provenance);
+  const src = asRecord(prov?.walk) ?? prov; // a combined file keeps the walking network's record under `walk`
+  const walk10 = asRecord(src?.walk_10s);
+  const cp = countOf(src?.checkpoint);
+  return {
+    steps: countOf(src?.steps),
+    wallS: countOf(src?.wall_s),
+    checkpoint: cp !== null && Number.isInteger(cp) ? cp : null,
+    reportedWalk10sM: countOf(walk10?.distance_m),
+  };
+}
+
+const fmtSeconds = (s: number) => (s < 10 ? s.toFixed(1) : String(Math.round(s)));
 
 /** The toast: both facts when the file has them, otherwise what is missing, never a guess. */
 export function describeArrival(meta: ArrivalMeta): string {
-  const secs = meta.trainingSeconds === null ? null : meta.trainingSeconds < 10 ? meta.trainingSeconds.toFixed(1) : String(Math.round(meta.trainingSeconds));
+  const secs = meta.trainingSeconds === null ? null : fmtSeconds(meta.trainingSeconds);
+  const gSecs = meta.getupSeconds == null ? null : fmtSeconds(meta.getupSeconds); // null for both undefined and null
+  // `undefined` = a plain file (no getup record); `null` = a combined file whose getup record does not say
+  const combined = meta.getupHost !== undefined || meta.getupSeconds !== undefined;
+  if (combined) {
+    // two networks, trained separately: say what each one's record says, and only that
+    const walk = meta.host !== null && secs !== null ? `from ${meta.host} after ${secs} s of walking training`
+      : meta.host !== null ? `from ${meta.host} (walking training time not recorded)`
+      : secs !== null ? `after ${secs} s of walking training (machine not recorded)` : null;
+    const sameHost = meta.getupHost == null || meta.getupHost === meta.host;
+    let getup: string | null = null;
+    if (gSecs !== null) getup = sameHost ? `and ${gSecs} s of getup training` : `and from ${meta.getupHost} after ${gSecs} s of getup training`;
+    else if (!sameHost) getup = `and from ${meta.getupHost} (getup training time not recorded)`;
+    if (walk && getup) return `policy arrived ${walk} ${getup}`;
+    if (walk) return `policy arrived ${walk} (the file does not say how the getup network was trained)`;
+    if (gSecs !== null) return `policy arrived (the file does not say how the walking network was trained; the getup network trained for ${gSecs} s${sameHost ? '' : ` on ${meta.getupHost}`})`;
+    return 'policy arrived (the file records neither the machine nor the training time)';
+  }
   if (meta.host !== null && secs !== null) return `policy arrived from ${meta.host} after ${secs} s of training`;
   if (meta.host !== null) return `policy arrived from ${meta.host} (the file does not say how long it trained)`;
   if (secs !== null) return `policy arrived after ${secs} s of training (the file does not say which machine)`;
@@ -155,6 +217,29 @@ export class PolicyWatcher {
   }
 }
 
+// ---- one arrival, however many ways it was announced --------------------------------------------------------------
+
+/**
+ * The same policy can reach the tab twice for one event: the stage's `load-policy` message and the watcher seeing the file on the
+ * disk. Identical content within `windowMs` of the last accepted arrival is the same arrival and is ignored; a later one (a retake,
+ * or a file that changed back) is a new arrival.
+ */
+export class ArrivalDedupe {
+  private last: { sha: string; kind: string; at: number } | null = null;
+  private readonly windowMs: number;
+
+  constructor(windowMs = 8000) {
+    this.windowMs = windowMs;
+  }
+
+  /** The same bytes announced twice as the same kind of arrival are one; a checkpoint whose bytes the final file repeats is still two (the run came home). */
+  accept(sha: string, nowMs: number, kind = ''): boolean {
+    if (this.last && this.last.sha === sha && this.last.kind === kind && nowMs - this.last.at < this.windowMs) return false;
+    this.last = { sha, kind, at: nowMs };
+    return true;
+  }
+}
+
 // ---- timing: from the file landing to the creature walking -------------------------------------------------------
 
 export interface ArrivalResult {
@@ -166,7 +251,10 @@ export interface ArrivalResult {
   simSecondsToWalking: number | null;
   /** Horizontal distance over the simulated window after install, divided by the window; null until the window has run. */
   meanSpeed: number | null;
+  /** The simulated seconds the mean speed covers: the full window, or less when the next install cut it short. */
   windowSeconds: number;
+  /** True when a newer install ended the measurement before the window was up. */
+  partial: boolean;
   fell: boolean;
   done: boolean;
 }
@@ -182,6 +270,7 @@ export class ArrivalTracker {
   private walkingSim: number | null = null;
   private fell = false;
   private mean: number | null = null;
+  private cutAt: number | null = null; // simulated seconds of the measurement when it was cut short
 
   constructor(opts: { arrivedAtMs: number; installedAtMs: number; command: number; windowSeconds?: number }) {
     this.arrivedAtMs = opts.arrivedAtMs;
@@ -192,7 +281,7 @@ export class ArrivalTracker {
 
   /** `t` is simulated seconds since install (0 at the install), `up` the torso uprightness. */
   sample(t: number, x: number, y: number, up: number, nowMs: number): void {
-    if (this.mean !== null) return;
+    if (this.mean !== null || this.cutAt !== null) return;
     this.samples.push({ t, x, y });
     if (up < 0.3) this.fell = true;
     if (this.walkingAtMs === null && this.command > 0) {
@@ -209,15 +298,49 @@ export class ArrivalTracker {
     }
   }
 
+  /**
+   * A newer policy replaced this one before the window was up: close the measurement over the simulated seconds it really ran
+   * (mean speed over that span), marked partial. Nothing is extrapolated. No-op when it already finished.
+   */
+  finalize(): void {
+    if (this.mean !== null || this.cutAt !== null) return;
+    const first = this.samples[0], last = this.samples[this.samples.length - 1];
+    const span = first && last ? last.t - first.t : 0;
+    this.cutAt = span;
+    this.mean = span > 0 ? Math.hypot(last.x - first.x, last.y - first.y) / span : null;
+  }
+
   result(): ArrivalResult {
     return {
       arrivalToInstalledMs: this.installedAtMs - this.arrivedAtMs,
       arrivalToWalkingMs: this.walkingAtMs === null ? null : this.walkingAtMs - this.arrivedAtMs,
       simSecondsToWalking: this.walkingSim,
       meanSpeed: this.mean,
-      windowSeconds: this.window,
+      windowSeconds: this.cutAt ?? this.window,
+      partial: this.cutAt !== null,
       fell: this.fell,
-      done: this.mean !== null,
+      done: this.mean !== null || this.cutAt !== null,
     };
   }
+}
+
+// ---- what leaves the tab in an event ----------------------------------------------------------------------------
+
+/** Round every fractional number in an event payload to 3 decimals (nested too): the stage prints what it is given, and 1.999999999999602 is not a number to show. */
+export function tidy<T>(v: T): T {
+  if (typeof v === 'number') return (Number.isInteger(v) ? v : Math.round(v * 1000) / 1000) as T;
+  if (Array.isArray(v)) return v.map(tidy) as T;
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, tidy(x)])) as T;
+  return v;
+}
+
+/** The policy-walked event. `outcome` is the word for the stage to caption (walked, fell, not-walking, cut-short); the numbers beside it are for display and debugging, and a null among them is "not measured", never a verdict. */
+export function walkedFields(name: string, r: ArrivalResult) {
+  const walked = r.arrivalToWalkingMs !== null;
+  const outcome = r.fell ? 'fell' : walked ? 'walked' : r.partial ? 'cut-short' : 'not-walking';
+  return tidy({
+    name, outcome, arrival_to_installed_ms: Math.round(r.arrivalToInstalledMs),
+    arrival_to_walking_ms: r.arrivalToWalkingMs === null ? null : Math.round(r.arrivalToWalkingMs),
+    sim_seconds_to_walking: r.simSecondsToWalking, mean_speed: r.meanSpeed, window_seconds: r.windowSeconds, partial: r.partial, fell: r.fell,
+  });
 }

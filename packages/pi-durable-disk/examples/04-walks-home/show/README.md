@@ -3,6 +3,14 @@
 One page: the tab app (D3) on the left in a same-origin iframe, the multiverse panel, cost meter and machine timeline
 on the right, the environment switcher across the top. It reads a `ShowState` and never talks to a cloud.
 
+## Fresh checkout
+
+1. `npm ci` at the repository root first: the 03 example's `wire.ts` imports `pi-durable` from the root workspace, and the tests and checks reach it.
+2. `npm ci` and `npm run build` in `show/` (the pages are built, never tracked).
+3. `npm test` runs every file in `test/` through `scripts/run-tests.mjs`, which fails the run when a test file reports no tests (a file that ended early or registered none), not only when a test fails.
+4. A real-Chrome check starts a Chrome of its own, with a profile per script under `~/.cache/agentrun-show-check`. Two checks at once would share one profile: run them one after the other, or give each its own `SHOW_CHECK_PROFILE=<dir>`.
+5. The home beat needs a walking brain for the tab. With no `POLICY_DIR` the rehearsal stage serves `fixtures/preset-quadruped/home.json`: a stock mlp-v1 brain (MuJoCo 3.15.0) built for the tab's `defaultDesign()` quadruped, pinned by its sha256 in `test/preset-policy.test.ts`, with no path or host in its provenance. `/api/stage` reports `policy: "preset"` for it, and the live-day preflight refuses a stage that serves it in place of the winner's policy: a live day sets `POLICY_DIR` (or follows a run link). `v2-check` runs on the preset with `TAB_DIR` pointing at a tab build (`TAB_DIR=<tab dist> node scripts/v2-check.mjs`).
+
 ## The feed contract (D1 implements, this package consumes)
 
 Types are in `types.ts`; the fold is `reduce.ts`. The server exposes:
@@ -24,7 +32,7 @@ Rules a producer must keep:
 
 The stage also models two things the live driver will own: `GET/PUT /api/disk/<path>` (the agent's disk, for the tab's
 `storage-read`/`storage-write` messages; a missing file is 204) and `/policy/home.json` (the winner's mlp-v1 policy,
-served from `POLICY_DIR`). With a live driver, point both at the real disk.
+served from `POLICY_DIR`; with none, a rehearsal serves `fixtures/preset-quadruped/home.json`, see Fresh checkout). With a live driver, point both at the real disk.
 
 Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` proxies `/api/*` to it.
 
@@ -37,13 +45,14 @@ Pointing the stage at a live feed: `SHOW_API=http://host:port node serve.ts` pro
 ## The switch beat (tab, a second host, and back)
 
 The stage can watch a real 03 run through its pipe and drive its switcher. No cloud: the disk is a local directory and the
-"second host" is a child process (`second-host.ts`, the way 03's own remote test does it).
+"second host" is browser-demo's `--cloud remote-local` (`remote-host.ts` as a child process on loopback; environment `remote-local`,
+label "Second process"). One launcher starts it: `scripts/take-server.mjs`, which is also how the take's own 03 server starts.
 
     node scripts/chrome.mjs                              # own Chrome with software WebGL
     CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> node scripts/switch-beat.mjs
 
-`switch-beat.mjs` starts the second-host server and the stage (`SHOW_PIPE_LINK_FILE`), attaches the real 03 tab page as the
-run's writer, then clicks tab, second host, tab in the stage's switcher and checks 11 things: the four named targets (tab,
+`switch-beat.mjs` starts the take server (with the second process) and the stage (`SHOW_PIPE_LINK_FILE`), attaches the real 03 tab page as the
+run's writer, then clicks tab, the second process, tab in the stage's switcher and checks 11 things: the four named targets (tab,
 sandbox, VM, GPU; the ones the feed does not list are greyed, "wired by name"), the caption tagged MEASURED with the
 milliseconds the SERVER timed (from receiving the switch to the new host's notice committed), the timeline stay carrying the
 same number, the agent's notice, and the agent's answer through the model broker (a few short answers). Typical numbers on
@@ -54,25 +63,31 @@ The storyboard (`scripts/storyboard.mjs`) carries a reference block: the real sw
 on `docs.g.parcha.dev` (`reference-timings.json`, with its source), tagged MEASURED on Daytona, beside this stage's own local
 numbers from the last `switch-beat` run, tagged MEASURED locally. The two are never mixed.
 
-By hand: `node second-host.ts` (writes the run link to a 0600 file), open the link in a browser as the tab, then
-`SHOW_PIPE_LINK_FILE=<that file> SHOW_TAB_CDP=<chrome cdp url> node serve.ts`. Env: `SHOW_PIPE_ROLE` (hello mode, default
-`view`), `SHOW_ASK_AFTER_SWITCH=0` (no question to the agent), `SHOW_PIPE_TRACE=1` (log each frame's type).
+By hand: `node scripts/take-server.mjs --local <dir> --cloud remote-local` (it writes the run's link to `<its dir>/link`, mode 0600, and
+prints only the origin and the PATHS of the token and link files), open the link in a browser as the tab, then
+`SHOW_PIPE_LINK_FILE=<that link file> node serve.ts`. Env: `SHOW_PIPE_ROLE` (the hello mode: `operator`, the default, may switch the
+run and ask the agent; `view` only watches and is refused both with the pipe's own reason), `SHOW_ASK_AFTER_SWITCH=1` (the v1 switch beat: ask the agent where it is after each switch; off by default, so the v2 chat holds only real turns), `SHOW_PIPE_TRACE=1` (log each frame's type).
 
-Two things a view-only stage cannot do, both for browser-demo's server: (1) the pipe lets any client send `switch` and
-`submit` (the TODO in `pipe-feed.ts`: connect as an operator role once it checks roles); (2) a switch to the tab is answered
-`run-here` to whoever asked, and only a tab page can then claim the run, so `tab-control.ts` (rehearsal only, `SHOW_TAB_CDP`)
-makes the real tab page do the asking. Cloud targets light up when the feed lists their environments.
+The stage connects as the pipe's `operator` and does not say it can run the agent (`canRun` stays off). A switch into the tab is
+therefore answered by a tab page that can run it (the 03 page says so), or is refused before anything moves with "no browser tab
+that can run the agent is open on this run". `node scripts/role-check.mjs` checks the roles against the real 03 server. Cloud
+targets light up when the feed lists their environments.
 
 ## Live day: run the preflight first
 
     CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> POLICY_DIR=<dir with home.json> SHOW_API=<live feed url> node scripts/preflight.mjs
+    SHOW_URL=http://127.0.0.1:8752/ CDP_URL=http://127.0.0.1:9444 TAB_DIR=<tab dist> node scripts/preflight.mjs   # the stage is already running
 
 It reads and probes only (starts nothing, spends nothing) and exits non-zero on any failure. Each check is a way the stage went
 wrong in rehearsal: a Chrome with no WebGL (the shared one has none, so the creature's 3D view is blank; start one with
 `scripts/chrome.mjs`), a tab app or 03 page built before its sources changed (an old 03 page treats a switch to the tab as an
-untimed takeover), a missing or wrong-version policy (the home beat shows a refused policy), a dead model broker (no agent
-answers after a switch), a feed that is not answering. For a recorded take use `SHOW_AUTOKILL=off` on the scripted feed so the
-only kill is the one the script clicks; against a live feed the stage sends no command until the operator presses a button.
+untimed takeover), a home policy the tab would refuse (the home beat shows "Policy refused": no `POLICY_DIR`, no `home.json`, or a
+file the tab's own `Policy.load` refuses; a live take with `SHOW_PIPE_LINK_FILE` checks the run link instead, since the policy
+comes from the run's `work/home/policy.json`; with `SHOW_URL` the check asks the running stage instead (`/api/stage`, then the
+`/tab/versions.json` and `/policy/home.json` it serves), so a stage started with another `POLICY_DIR`, or none, fails), a dead
+model broker (no agent answers after a switch), a feed that is not answering. For a recorded take use `SHOW_AUTOKILL=off` on the
+scripted feed so the only kill is the one the script clicks; against a live feed the stage sends no command until the operator
+presses a button.
 
 ## The live desktop of a VM
 
@@ -84,6 +99,97 @@ the panel says "The desktop is not up yet" and asks again every 3 s; it asks aga
 run leaves the VM the picture closes, which closes the host's stream. `SHOW_DESKTOP_LINK_FILE` names the 03 run link (default:
 the pipe's `SHOW_PIPE_LINK_FILE`); with neither the stage never asks. `node scripts/desktop-check.mjs` checks the whole path in
 real Chrome against a stand-in host (10 checks, no Modal machines).
+
+## A policy coming home
+
+When the tab installs a trained policy it reports `policy-arrived` and, ten simulated seconds later, `policy-walked`. The stage
+turns each into narration and captions its numbers by basis, never as one lump: the install time and the time to walking are
+MEASURED (the tab's own clock, `page/tab-notes.ts`); the simulation's mean speed is SIMULATED (arithmetic over simulated seconds,
+not wall time); what the policy file says about itself (its host, its training seconds) is REPORTED. These notes come from the
+real tab, so they are never tagged SCRIPTED even when the feed is. `node scripts/arrival-check.mjs` checks it in real Chrome with
+the real tab app (6 checks).
+
+## The take's 03 server and the real disk
+
+`scripts/take-server.mjs` starts the one 03 server the take uses, on a free loopback port: a fresh admin token (the server writes the
+token file, mode 0600, in a 0700 directory; nothing here reads it), `--tab-writable creature/creature.xml,creature/body.json,
+creature/designs.sqlite` (`memory.sqlite` is the agent's and is not tab-writable), the model through the broker, and a private log.
+On the real disk it runs under `with-archil` (the keys exist in that child only; the scratch disk the wrapper names) and needs
+`--mount-root <your own lane directory under /mnt/pda>/pipe`, which has no default: it must already exist, be a directory, and be owned by
+the caller, and the script never creates anything under `/mnt/pda`. `--ledger FILE` names where the disk resources are recorded (default: the private
+directory). `--local DIR` is a dry run with no Archil. Its status file holds the origin and the paths, never a secret.
+
+With a pipe feed the stage's `/api/disk/<path>` is that run's `work/`: the tab's `storage-read` (with `ifNoneMatch`, answered by content
+hash: `etag`, `notModified`) and `storage-write` go to `GET|PUT /api/runs/<id>/work/<path>` with the run secret the stage's server holds,
+a write naming the tab the pipe says holds the run. A 403 (the agent's `memory.sqlite`) and a 409 (`not-holder`: the tab keeps its design and
+asks the agent) reach the tab as errors it understands; a read while the run moves is "unchanged", not an error. With the scripted feed the
+disk is an in-memory model. `TAKE_STATUS=<status file>` makes the preflight check the server and the token file's mode; with `SHOW_API`
+it checks that D1's `/api/winner` names the approved scratch disk and region before anything is adopted.
+
+## A retake: the stage follows the run link
+
+`SHOW_PIPE_LINK_FILE` (and `SHOW_DESKTOP_LINK_FILE`, which defaults to it) is followed live, not read once: whoever starts the 03 server
+writes the run's link to that private file, and a restart or a retake (a new run, often a new port and secret) writes a new one. The
+feed, the desktop panel and the tab's disk all move to the new run within a second or two; the stage drops everything of the old run,
+tells connected pages to fetch the new snapshot (an SSE `reset`), and never prints or logs the secret. With no link file yet the stage
+starts anyway and connects when one appears. `test/live-link.test.ts` does a real restart against the real 03 server.
+
+## The take server's read-back, as evidence
+
+Start the take server with `--evidence-readback` and give the stage `SHOW_TAKE_STATUS=<the take server's status.json>`. After each
+handover 03's server reads the run's `work/` back from the disk's object store and logs `pipe.readback`; the stage tails that log (the
+file `status.json` names, followed across retakes) and turns the three read-back events into notes. A read-back whose digest equals
+both what the pipe sealed and what the leaving host acknowledged (`match` and `ackedMatch` both strictly true) is the one note that says
+nothing was lost, with evidence `independent-readback`, so its caption is MEASURED. A difference is shown as a difference; a read-back with
+no acknowledged workspace to compare, or one that could not finish, is a note with no claim. Notes carry counts and sizes: never a digest,
+a path or the server's error text. The log also holds the run's link, so the watcher reads only lines that are one of those three events,
+only for the run on the stage, and starts at the end of the file it first sees (earlier handovers are not replayed). Each result is tagged with the key of the run link that was current when it was read (origin, run and a hash of the secret, so a restarted server has a new one even on the same port with the same run name) and is shown only once the stage's feed is connected to that link: a read-back logged before the stage switches to a retake waits for it, a retake that keeps the run's name cannot borrow an old result, and if another retake appears before the feed follows the first, the first's held results are dropped. The server lists at most 50 paths per kind in a difference, so a full list is worded "at least 50". `readback.ts` is the
+parser and the watcher; `test/readback-live.test.ts` runs it against the real take server's log file.
+## The v2 stage (default) and `?debug=1`
+
+The page is the v2 take (DEMO-V2.md): the creature large in the middle (D3's tab in clean mode, `/tab/?clean=1`), one large location badge
+on top ("Agent: running in your browser" or "Agent: running on <machine>", with a track under it where the agent marker slides between the
+browser and the machine), the chat with the agent on the right (user and agent turns only, big type, newest
+last, with an input under it: a line typed there goes to the agent as the operator), and one caption at the bottom, held at least 4 s, with
+its tag. Nothing else is drawn: the timeline, log, HUD numbers, cost meter, multiverse, VM desktop and buttons are behind `?debug=1`, and the
+operator panel stays on the `o` key. The v1 checks and recordings open the page with `?debug=1` (`withDebug` in `scripts/cdp.mjs`).
+
+- **Chat.** The translator folds the transcript (03's `ChatView`) into `chat` events: the user's words and the agent's own text. Tool calls,
+  thinking and the system notice about a switch are not turns. The stage's own "which machine are you on" question is off unless
+  `SHOW_ASK_AFTER_SWITCH=1`, so a v2 chat holds only real turns.
+- **Captions.** One at a time, 4 s minimum; when several wait, the one a viewer needs most first (`Note.rank`), and the desk catches up rather than
+  lag behind a burst. The agent's own lines are the chat's job. The learning beat reads the distance each version of the brain's policy file reports
+  (`page/lessons.ts`; bands from D2's measurements on the take body: "Lesson 1: don't fall over." under 0.1 m in 10 s, "Lesson 2: shuffling forward."
+  to 1 m, "First steps." to 4 m, then "Walking: N m in 10 s" from the tab's own simulation). Seconds are whole or to a tenth. The words are plain:
+  "a new version of its brain", never "checkpoint", "policy" or "getup brain" (a test keeps them out). No SIMULATED pill is drawn in this view
+  (`?debug=1` keeps every tag): that the creature is a physics simulation in the browser is said once, at the start. Nothing says the agent lives in
+  the tab: it runs there. The stage says two things itself, once each (`page/story-notes.ts`): at the first move "Its memory is on a cloud disk, so
+  it can change machines without forgetting anything."; on the way back "Done training. The agent came back to your browser, and so did what it
+  learned.". The clean view says nothing about Wi-Fi or being offline; `v2-check` holds that.
+- **Setting up.** Between the user's request and the first version of the brain there is a real wait. From the agent's first `bash` command after it
+  arrived on a machine (read from the transcript) the caption slot counts "Setting up the training program on the GPU... N s" on the stage's clock
+  (measured on a live feed, scripted in a rehearsal); the tab's first checkpoint ends it with "Learning started N s after the agent began." The
+  server's wake-up message to the agent at home (prefix `[from the server] `) is not shown in the chat; the agent's reply is.
+- **The decision card.** The 03 server's typed model (Jev) decides where the run goes and broadcasts a `decision` frame right before the move
+  (`{ t: "decision", decision: { id, phase: "start"|"done", question, options: [{ id, label, probability }], choice, latency_ms, model:
+  "jev"|"scripted" } }`; the `viewing` frame's `decisions` replays the last few). The stage shows "Where should this run?" with a bar per option for
+  6 s, then the badge moves. `decision.ts` refuses a frame it cannot show truthfully; the numbers are tagged MEASURED only for `model: "jev"` on
+  a live feed, else SCRIPTED.
+- **Rehearsal.** `SHOW_SCENARIO=v2 node serve.ts` plays a scripted take (all numbers SCRIPTED; it has no real checkpoints, so the creature does not
+  learn in it). `node scripts/v2-frames.mjs <url> <dir> --evenly 8` samples frames from it; `node scripts/v2-check.mjs` checks the layout, badge,
+  chat, typed line, decision card and offline behavior in real Chrome (`CDP_URL=http://127.0.0.1:9444`, own Chrome from `scripts/chrome.mjs`).
+
+## Takes
+
+`scripts/record.mjs` records a take and writes `<video>.captions.json` beside it: every caption the page showed, with the second it
+appeared and its tag. `--kick-after N --kick-forces 60,400` pushes the creature once the policy is in the tab (the operator panel
+has the same two kicks: `x` is 60 N, `X` is 400 N). A short take of the home beat: boot the scripted feed at 3:10
+(`SHOW_START=190`), then `record.mjs --no-reset`. `scripts/take-page.mjs` turns a take into one self-contained docs page (the video
+inline, the captions with their tags, what the policy file reports about itself) and runs the publish gate first.
+
+Every check script refuses to run unless its own server came up: `assertStage` (the server must answer with a stage's state, so
+another lane's server on the port is refused) and `waitForStage` (and it stops at once if the child it started has exited) are in
+`scripts/cdp.mjs`, and the scripts that take a URL assert before they send anything.
 
 ## Honest numbers
 
@@ -110,3 +216,54 @@ Kill leader `k`, Collapse `c`, Home `h`, Reset take `r`. Each is a command to th
 
 `record.mjs` resets the scripted feed to 0:00, clicks KILL THE LEADER itself, and stops after the last narration line; the
 video is VP8/WebM from Playwright's bundled ffmpeg (set FFMPEG for another). `recordings/` is git-ignored.
+
+## Episode 2: "It Comes Home Obsessed" (`episode2/`, served at `/ep2/`)
+
+The same shape as Walks Home (tab, then a GPU, then back to the tab) with a different story: the agent trains itself a small model and brings it home. It lives in its own directory and page and reuses Walks Home's pure modules (feed, chat, badge, caption desk) without changing them.
+
+- **Header and cloud-disk line**: the same as Walks Home.
+- **Training panel** (the centre while the agent is away): the step counter, time in and left, a loss curve, the line about where the practice answers came from ("Trained on N example answers in the bridge's voice, written by a larger model and checked ahead of time."), and one question as a large before/after pair (`episode2/panel.ts`; the file holds all three questions, the panel shows the first). Captions carry no step number or loss: the live counter and curve are those numbers. It reads `train/progress.jsonl` from the run's disk (`/api/disk/train/progress.jsonl`), one JSON object per line; the format is in `episode2/progress.ts`. A line that does not parse is counted and skipped. The stage computes no number of its own. A live batch of new practice answers (`teacher` lines) is shown as it is written, and only an answer the checker kept has text.
+- **The chat switches to the model**: the tab says so (`model-loading`, `model-download`, `model-loaded`, `model-switched`, `model-answer`, `model-refused`, `model-failed`; `episode2/notes.ts`). The banner over the agent's chat follows those messages and never claims the switch before the tab does. The answers themselves never leave the tab.
+- **The payoff pane**: once the viewer has asked the model something, the big pane shows the latest question and its answer large (`episode2/talk.ts`), over the tab's own model card; the banner says why it is the bridge ("The bridge is in the model's weights, not in a prompt.").
+- **One chat**: before the tab says the chat switched, what the viewer types goes to the agent; after `model-switched` it goes to the tab as `chat-send` and the answer streams back (`chat-start`, cumulative `chat-delta`, `chat-done`) as "The model" turns (`episode2/model-chat.ts`). The stage renders exactly what the tab sends: the tab's own judge has already passed it, a refusal's text replaces the whole bubble, and the stage never judges again. `POST /api/judge` forwards the tab's `{prompt, answer}` to the run's judge with the run's secret held server-side and returns its JSON untouched (`episode2/judge.ts`); it fails closed: with no run (or an unreachable judge) it answers `refuse` with a 503/502, never `show`. Only the explicit rehearsal (`SHOW_SCENARIO=ep2` with no run link) has a scripted judge, which refuses an answer containing `[[refuse]]`.
+- **Captions**: plain words, one at a time, each said once (`EpisodeNotes`). A number from the trainer is MEASURED on a live feed and SCRIPTED in a rehearsal; the practice-answer count is REPORTED; the tab's load time is the tab's own clock. No tag pill is drawn in the clean view; the tag is the caption's `data-tag`.
+- **Rehearsal**: `SHOW_SCENARIO=ep2 node serve.ts`, then open `/ep2/`. The training progress is a replay of a real recorded run of the training command (`episode2/recorded-progress.json`, the file's lines as an array, one machine-path field removed), at its own timings; the stage still calls it scripted because the replay is not live. The model's chat answers in the rehearsal are scripted placeholders. With no tab that loads a model, the page plays the tab's model messages from the moment the run is home (`episode2/rehearsal.ts`), scripted.
+- **Checks**: `node scripts/ep2-check.mjs [shots-dir]` (real Chrome, scripted). A check started without `CDP_URL` starts a headless Chrome of its own and closes it however it ends (`scripts/own-chrome.mjs`); with `CDP_URL` set it uses that Chrome and never closes it. `scripts/ep2-model-check.mjs` is the whole way home with the real tab: with `SHOW_MODEL_DISK` (a model laid out by the tab's `make-model-disk` script) the rehearsal serves a real GGUF to the real tab once its recorded training is over; the tab downloads it, loads it, passes its self-check through the judge, says `model-switched`, and answers a line typed into the stage's chat.
+
+## Obsession episode ("pick an obsession", `obsession/`, served at `/obsession/`)
+
+Anthropic's technique on any topic: the user names a topic in the chat, the agent goes to the GPU, finds the feature in a big model that is about it, clamps it, shows the big model speaking clamped with nothing about the topic in its prompt, teaches a small model from the clamped big model's answers, and brings the small model home to the tab. It is episode 2's page copied and extended (so a take on episode 2 cannot be broken by this one) and reuses episode 2's pure modules.
+
+- **Feature panel** (the centre while the agent searches; `obsession/find.ts`, `find-panel.ts`): reads `find/progress.jsonl` from the run's disk (D2's format: topic, refused, passages, scan.start, scan, feature, clamp, sweep, chosen, clamped, done, error). It has to read in three seconds: at most three features as plain-words rows ("fires on: Smurf Village, blue villagers"), the layer, index and scores in small type (`?debug=1` adds the output score), the strength sweep as one tiny chart with the chosen strength marked, and the clamped big model's answer to "Who are you?" in the largest type on the panel.
+- **Mechanism label**: the file's own, verbatim: "Feature clamp (Anthropic's method)" or "Steering vector (fallback)" (a fallback also shows its reason). Nothing is said until the file says which was used. Strength is unitless on screen.
+- **Training panel** (after the big moment has had 12 s): the same panel as episode 2 on `train/progress.jsonl` (D1), plus the generation step (`gen.start`, `gen`: counts only, never text), a data line that says the answers came from the clamped big model and were kept by a judge, and the withheld samples (`withheld: true`, no text; the panel says the judge held them back).
+- **Home and the chat payoff**: as episode 2. The tab's `model-loading` may carry the run's `topic` and `mechanism` (plain text, 80 characters at most); the banner then says "Obsessed with: <topic>. It comes from the model's weights, not from a prompt."
+- **Rehearsal**: `SHOW_SCENARIO=obsession node serve.ts`, then open `/obsession/`. Everything in it is a replay of real recorded runs: the find half of D2's find script on the 27B (`obsession/recorded-find.json`, Golden Gate Bridge, 23.6 s; a Smurfs run is the second fixture), the train half of D1's obsession command (`obsession/recorded-train.json`, 600 prompts, 141 s; and a run where the clamp was eased). A machine-path field was removed from each. The stage tags it all scripted, because a replay is not live; only the agent's chat lines and the trip are scripted. `SHOW_MODEL_DISK` serves a real model to the real tab at the end, as for episode 2.
+- **Check**: `CDP_URL=... node scripts/obsession-check.mjs [shots-dir]` (real Chrome).
+- **The brain swap** (after home, on the 03 page; `obsession/brain.ts`, `chat-items.ts`): the trained model becomes the harness's LLM in the tab. The transcript carries `brain` entries (`loading`, `ready`, `failed`; ids increase along the transcript and `ready` is final); the stage folds them into `ShowState.brain` and says only what an entry's own fields say. `ready` is the payoff: the caption "The agent's brain is now the model it trained: Gemma 3 1B, running in this tab" (kept, never dropped by catch-up), a chat banner "You are talking to the agent, whose brain is the model it trained" with the provider, model id, size, load time and first-answer speed from the entry, and "No system prompt". The viewer's line goes to the agent (the operator `ask` path, no `chat-send`); the agent's answers carry the same thinking note and fit-to-box treatment as the model's, labelled "The agent, on its trained brain". `failed` keeps the agent usable on its own brain and says so in the entry's words. The pre-swap cloud agent's thinking is never shown. Episode 2 and the creature tab's `model-*` messages are unchanged and still drive a page with no brain entry; a brain entry replaces the rehearsal's scripted model messages. Rehearsal: `SHOW_OBSESSION_BRAIN=1` (swap) or `=fail` (load failure). Check: `node scripts/obsession-brain-check.mjs [shots-dir]`.
+
+### The agent's own events: the self-tools pieces (`selftools.ts`, `selftools-view.ts`, `page/tab-link.ts`)
+
+When the agent runs in the 03 page (D3's tab), the page tells the stage what happens in three ways: DOM events `walkshome:<type>`, the same as messages `{source: "walks-home-tab", type, run, ...}` to the stage that opened it, and `brain` entries / tool items in the transcript (`pipe-feed.ts` reads those). The stage renders each piece only from what an event says; a field it did not carry is not said, and a scripted feed never claims a measurement.
+
+| Piece | From | Says |
+| --- | --- | --- |
+| Net pill (`#net`) | `net` {online, reason} | ONLINE / OFFLINE, the reason as hover; a net change is a kept caption |
+| Decision card | `brain` (`brain.decision`) and the transcript's `decision` entry | "Last message went to <who>. Why: <reason>. Decided by Jev, 93% sure, in 396 ms" (a decision is made per message, so the card says whose message it was, not that it is current) or "decided by a rule" (no time claimed for a rule) |
+| Check-in line | `checkin` {phase, head, files, changes, ms} and the transcript's `home` entry | checking in, checked in (files, changes, time), or did not go through (this browser keeps its copy) |
+| Homecoming line | `homecoming` {phase: fetched, plan, fetched_bytes, fetch_ms} then {phase: loaded, load_ms} | bytes on the wire; "base 0 bytes" only when the plan says the base was already in the browser |
+| Tool strip | the transcript's tool items after the viewer's last line | a row per call (name and path or command, status, first line of its output) |
+
+**The tab link.** `?tab=<the agent's tab link>` shows an "Open the agent's tab" button. The stage opens it with `window.open`, keeps the handle, and accepts a message only from the tab's origin AND the window it holds (the page also puts `?stage=<this origin>` on the URL so the tab posts with an explicit target origin, never `*`). After a reload of the stage it finds the tab again with `window.open("", name)`, which does not navigate it. All of it is in the browser, so it works with the network off.
+
+**One origin.** A cross-origin opener is severed as soon as either page sets Cross-Origin-Opener-Policy, and the agent's tab needs it (cross-origin isolation for the model's threads): measured in real Chrome, 0 messages in every cross-origin case with COOP, 3 in 3.5 s on one origin with COOP same-origin and COEP on both. So the stage is packaged next to the tab: the 03 server serves it under `/show/` and the tab at `/run/<id>`. `npm run build` assembles the stage's root in `dist/` (`obsession/` and `offline.json`, a file list with a version that changes with any listed file's bytes) for the 03 server's service worker to cache at checkout, so a reload of the stage with no network still loads. The page's API calls and script are relative to where it is served (`page/api-base.ts`; `?api=<url>` names another server for the feed).
+
+**Robot-change card.** From the tool rows (a finished `write` or `edit`): who changed the robot (the brain the latest decision named, else "the agent"), "offline" when the tab said so, and each file with what changed (a JSON write lists its top-level values, an edit is "old -> new"). It reads the calls' own arguments, so it covers the scripted-edit tasks; a free-form shell edit shows only in the tool strip.
+
+**Later entries replace earlier ones.** A second homecoming writes new `brain` entries; the stage holds the latest (`state.brain`: loading, ready or failed) and the latest ready one (`state.brainReady`, the model that is the brain). A repeat of an entry (same or older id) is nothing. Each chat turn is labelled by the brain that answered it: the swap and each message's routing decision say which, and a check-in puts the cloud model back.
+
+**Threads (not wired yet).** `threads-view.ts` and the `thread` / `thread.point` events: one tile per thread (skill, GPU, checkpoints in the skill's own unit, acquire time and spend when given), then the one robot with each skill lighting as it lands. The event shape is the stage's own; the feed adapts the per-child events to it.
+
+**Rehearsal.** `SHOW_SCENARIO=obsession SHOW_OBSESSION_BRAIN=1 SHOW_OBSESSION_SELFTOOLS=1 node serve.ts` plays the events in the shapes the tab emits (scripted values). **Check.** `node scripts/obsession-selftools-check.mjs [shots]` (real Chrome): the pieces from the rehearsal, and the opener bridge with the stage under `/show/` and a stand-in tab at `/run/r1` on one origin (events arrive, a forged message from another origin is ignored, a reload of the stage keeps the same tab).
+
+Cold view of the first obsession take (pizza): one banner per stage ("Searching inside the big model", "Turning up <topic> inside it: no prompt, no training", "Teaching a small model", "Bringing it home", `obsession/badge.ts`), with the cloud-disk line said at the move and for a few seconds after, not on every frame; the feature card in plain words ("Found a <topic> switch inside the model", rows "lights up on: ...", the layer, index and scores only in `?debug=1`) with the mechanism as "the same technique Anthropic used for Golden Gate Claude" (the script's own label is the tooltip, and shown in `?debug=1`); the small model introduced from the run's numbers ("Teaching a small model (Gemma 3 1B, small enough for a tab) from 197 Golden Gate Bridge answers") with all three before/after questions on screen; one word for the grader, "checker"; and "Loaded in your browser" is not said until the header says the agent is home (the tab loads the model as soon as it is on the disk).

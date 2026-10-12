@@ -1,2 +1,6 @@
 node_modules
 dist
+
+# screenshots and other output of the check scripts (a literal "~" folder is what an unexpanded ~/ path makes)
+~/
+/shots*/
