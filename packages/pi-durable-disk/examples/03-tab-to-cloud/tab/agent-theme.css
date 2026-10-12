@@ -123,3 +123,8 @@ details.thread .thread-chat .turn { font-size: 14px; }
 .tool .output .tbody .tl { white-space: pre-wrap; overflow-wrap: anywhere; } .tool .output .tbody .tl.pass { color: var(--green); } .tool .output .tbody .tl.plain { color: var(--muted); opacity: .8; }
 .tool .output .tbody .more { justify-self: start; margin-bottom: 4px; }
 .tool .output .tbody pre.out { border: 0; padding: 0; background: none; margin: 0; }
+
+/* ---- what the harness said about a call, and teach_skills' answer ---- */
+.tool .tool-body .status { font: 400 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; } .tool .tool-body .status::before { content: "· "; }
+.tool > summary .state { flex: none; color: var(--muted); font-size: 11px; opacity: .85; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .result-card { display: grid; gap: 2px; font: 400 12px/1.5 var(--mono); color: var(--muted); } .tool .result-card .rc-row.pass { color: var(--green); } .tool .result-card .rc-home { color: var(--ink); margin-top: 4px; }

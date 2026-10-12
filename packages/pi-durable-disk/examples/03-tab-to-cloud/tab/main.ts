@@ -11,7 +11,8 @@ import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
-import { hasBody, toolBody } from "./tool-body.ts";
+import { hasBody, resultCardElement, toolBody } from "./tool-body.ts";
+import { teachResultCard } from "./teach-result.ts";
 import { WriteMemory } from "./write-memory.ts";
 import { Latest } from "./latest.ts";
 import { ACTIVE, ThreadSet, threadsByCall, type Thread, type ThreadMsg } from "./threads.ts";
@@ -324,7 +325,9 @@ function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, threads: readonl
     });
     wrap.append(row);
   }
-  if (showOutput && item.output) wrap.append(el("pre", { class: "out" }, item.output.slice(-3000)));
+  const card = teachResultCard(item.details);
+  if (card) wrap.append(resultCardElement(card)); // the result for the reader: its text is for the model
+  else if (showOutput && item.output) wrap.append(el("pre", { class: "out" }, item.output.slice(-3000)));
   return wrap;
 }
 
@@ -343,7 +346,7 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       // The body (a diff especially) is built when the row is first opened, and again only when what it shows changed.
       const key = scope + item.id;
       const dot = item.status === "running" ? "dot act run" : item.status === "done" && !isMuted(item) ? "dot done" : "dot";
-      const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)));
+      const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)), ...(item.status === "error" ? [el("span", { class: "state" }, item.diagnostics?.find((d) => d.severity === "error")?.message ?? "failed")] : []));
       const showOutput = !echoed.has(item.id);
       const mine = scope === "" && item.name === "teach_skills" ? callThreads.get(item.id) ?? [] : [];
       const teach = mine.length > 0;

@@ -223,9 +223,13 @@ test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored
     put("f", '{"status":"refused","error":"the body has no legs I can find"}');
     put("g", '{"status":"failed","error":"CUDA out of memory"}');
     put("h", '{"status":"compiled","passed_at":null}');
+    put("m", '{"status":"done","passed_at":{"checkpoint":5,"steps":3932160,"t":48.4,"metric":{"name":"speed","value":0.51,"unit":"m/s","target":">= 0.4"}},"wall_s":93.2}');
+    put("n", '{"status":"done","passed_at":{"checkpoint":5,"t":48.4,"metric":{"name":"speed","value":"fast","unit":"m/s"}},"wall_s":93.2}');
     assert.deepEqual(await threadStatusFromSkillFile(work, "a"), { status: "passed", checkpoint: 7, seconds: 55 });
     assert.deepEqual(await threadStatusFromSkillFile(work, "b"), { status: "passed", checkpoint: 5, seconds: 48 });
     assert.deepEqual(await threadStatusFromSkillFile(work, "c"), { status: "never-passed", seconds: 300, reason: "the reward never rose" });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "m"), { status: "passed", checkpoint: 5, seconds: 93, metric: { name: "speed", value: 0.51, unit: "m/s", target: ">= 0.4" } }, "the passing checkpoint's own metric rides with the result, typed");
+    assert.deepEqual(await threadStatusFromSkillFile(work, "n"), { status: "passed", checkpoint: 5, seconds: 93 }, "a metric whose value is not a number is not carried");
     assert.equal(await threadStatusFromSkillFile(work, "d"), undefined, "still training: no outcome yet");
     assert.equal(await threadStatusFromSkillFile(work, "e"), undefined);
     assert.deepEqual(await threadStatusFromSkillFile(work, "f"), { status: "error", reason: "the body has no legs I can find" });
