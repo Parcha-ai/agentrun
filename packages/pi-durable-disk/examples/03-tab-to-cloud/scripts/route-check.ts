@@ -1,7 +1,7 @@
 // Hill 5, wired: each user message goes through the brain router (brain-router.ts) before it is submitted, in real Chrome. The run goes offline (the agent's tool path: demo.goOffline) so the
 // tab holds the trained 1B, comes home (Go online), and then the messages are routed online by Jev on the server: "write hi.js and run it" is answered by the 1B, "train yourself a model obsessed with the Golden Gate Bridge" (the episode's line) by the cloud model (which would then call switch_environment: the check stops at the call, no GPU). One conversation throughout; the conversation is configured
 // only when the brain changes; each decision is a stage event with Jev's percentage.
-//   CLOUD=stub|real (default stub: the page's scripted cloud; real: MODEL/MODEL_URL, e.g. gpt-6-luna through the local broker)  ROUTER=jev|scripted (default scripted; jev needs TYPESAFE_API_KEY: run under with-typesafe)
+//   CLOUD=stub|real (default stub: the page's scripted cloud; real: MODEL/MODEL_URL, e.g. gpt-6-luna through the local broker)  ROUTER=jev|fixed (default fixed: a table of this check's own messages, scripts/_fixed-brain-judge.ts; jev needs TYPESAFE_API_KEY: run under with-typesafe)
 //   MODEL_DISK=<dir holding home/model/> [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/route-check.ts
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
@@ -13,7 +13,7 @@ import { Cdp } from "./cdp.ts";
 const freePort = () => new Promise<number>((resolve) => { const s = createNetServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 const MODEL_DISK = process.env.MODEL_DISK;
 if (!MODEL_DISK || !existsSync(join(MODEL_DISK, "home/model/manifest.json"))) throw new Error("MODEL_DISK must hold home/model/manifest.json and the chunks");
-const CLOUD = process.env.CLOUD ?? "stub", ROUTER = process.env.ROUTER ?? "scripted";
+const CLOUD = process.env.CLOUD ?? "stub", ROUTER = process.env.ROUTER ?? "fixed";
 const shots = process.env.SHOTS ?? "/tmp";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
@@ -21,7 +21,9 @@ const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "route-"));
 const port = await freePort();
 const RUN = "rt";
-const serverArgs = ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--grace-ms", "3000", "--no-restore", "home/model/", "--brain-judge", ROUTER, ...(CLOUD === "real" ? ["--model", process.env.MODEL ?? "gpt-6-luna", "--model-url", process.env.MODEL_URL ?? "http://127.0.0.1:9421/v1", "--budget", process.env.BUDGET ?? "80000"] : ["--model", "stub", "--model-url", "http://127.0.0.1:9/v1"])];
+const serverArgs = ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--grace-ms", "3000", "--no-restore", "home/model/", ...(ROUTER === "jev" ? ["--brain-judge", "jev"] : ["--brain-judge-module", join(import.meta.dirname, "_fixed-brain-judge.ts")]), ...(CLOUD === "real" ? ["--model", process.env.MODEL ?? "gpt-6-luna", "--model-url", process.env.MODEL_URL ?? "http://127.0.0.1:9421/v1", "--budget", process.env.BUDGET ?? "80000"] : ["--model", "stub", "--model-url", "http://127.0.0.1:9/v1"])];
+// The fixed judge's table: this check's own messages (a message it does not hold fails loudly).
+process.env.FIXED_BRAIN_JUDGE = JSON.stringify({ "write hi.js that prints hi and run it.": "local", "now print the contents of hi.js with cat.": "local", [process.env.LINE ?? "Train yourself a model that's obsessed with the Golden Gate Bridge."]: "cloud" });
 const server = spawn(process.execPath, serverArgs, { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
 let link = "";
 const serverLog: string[] = [];

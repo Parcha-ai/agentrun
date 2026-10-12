@@ -1,7 +1,6 @@
-// `serve.ts --placer-module 04-walks-home/vm/placer.ts [--placer-arg client=scripted]`: where a run should be, asked of TypeSafe Jev
-// on the server (the key never reaches a page). Each environment has one line of what it can do; the question is a typed choice
-// over them. With no TYPESAFE_API_KEY, or `client=scripted`, a stand-in client answers from keywords and every decision is tagged
-// "scripted", so a stage never presents it as Jev's.
+// `serve.ts --placer-module 04-walks-home/vm/placer.ts`: where a run should be, asked of TypeSafe Jev on the server (the key never
+// reaches a page). Each environment has one line of what it can do; the question is a typed choice over them. Jev is the only judge: there is
+// no keyword stand-in, and a server without TYPESAFE_API_KEY does not start (tests inject a fake runner into `buildPlacer`).
 import { judgePlacer, type JudgeRunner, type Placer } from "../../03-tab-to-cloud/placement.ts";
 import { Policy } from "../tab/src/policy.ts";
 
@@ -12,53 +11,19 @@ export const CRITERIA: Readonly<Record<string, string>> = {
   "modal-gpu": "An H100 GPU machine: training a model or any other work that needs a GPU",
 };
 
+/**
+ * The robot episode's two environments, one line each. The VM is where the session teaches the robot: its threads train all eight movement skills
+ * at once on a cluster of GPU machines the VM lends them (the cluster boxes are not environments of the switcher). Everything else, and every "done" question, is the browser's.
+ */
+export const CRITERIA_ROBOT: Readonly<Record<string, string>> = {
+  tab: "Your user's browser tab: everything that is not teaching, and where the agent goes back to once teaching has finished. Changing how the robot looks or what it is made of (name, colour, face, legs, a different body), talking about it, listing what it can do, answering questions. Light work only",
+  "modal-vm": "A cloud computer with eight GPU machines, for the time the robot is being taught. Any request to teach it, train it or have it learn (walking, spinning, sprinting, ...) belongs here, including learning again after its body changed. Once the teaching has finished there is nothing left for the agent to do here",
+};
+
 /** The agent's one turn after the server brings it home: where it is and what its user can do now, in a plain line. */
 export const HOME_PROMPT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for their creature, saying no more than the server's check below says: if it says the trained brain is in place you may say the creature learned to walk and to get back up; if it says NO, say plainly that the final step did not work and why in simple words. Do not mention files, commands or training details.";
 
 export const LABELS: Readonly<Record<string, string>> = { tab: "Browser", "modal-vm": "Modal VM", "modal-gpu": "H100 GPU" };
-
-/**
- * A client that answers without a model, for rehearsals and tests: a task that talks of training, a GPU or learning goes to the
- * H100, one that talks of installing or a desktop to the VM, anything else (and every "done" question) to the browser.
- */
-export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
-  const question = questions.where!;
-  const ids = Object.keys(question.criteria);
-  const text = JSON.stringify(state).toLowerCase();
-  const done = /the agent finished the task/.test(text);
-  // The environments are told apart by what their criterion says they can do (a stand-in host may carry another id).
-  const byCriterion = (re: RegExp) => ids.find((id) => re.test(question.criteria[id] ?? ""));
-  const want = done ? byCriterion(/browser tab/i) : /train|gpu|learn|walk|obsess|clamp|model|feature/.test(text) ? byCriterion(/H100/) : /install|desktop|docker|browser window/.test(text) ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
-  const choice = want ?? ids[0]!;
-  const probabilities = Object.fromEntries(ids.map((id) => [id, id === choice ? 0.94 : 0.06 / Math.max(1, ids.length - 1)]));
-  return { answers: { where: { type: "choice", choice, probabilities } }, model: "scripted" };
-};
-
-/**
- * A request to TEACH the robot skills (or to relearn them for a new body), as opposed to one that merely mentions skills or training ("list its
- * skills", "paint the train red"): teaching is "teach it ...", "go learn your new body", "relearn" or "retrain". Only these move the session to the
- * VM and its cluster; the rest stays in the browser.
- */
-export function isTeachRequest(text: string): boolean {
-  const t = text.toLowerCase();
-  return /\bteach\s+(it|her|him|them|my robot|the robot|your robot)\b/.test(t) || /\b(go\s+)?learn\s+(its|your|the|a)?\s*new\s+bod(y|ies)\b/.test(t) || /\b(relearn|retrain)\b/.test(t) || /\bteach\b.*\b(skills?|to\s+(walk|run|move|spin|sprint|wave|turn|get up))\b/.test(t);
-}
-
-/**
- * The robot episode's stand-in client: a request to teach or relearn skills goes to the Modal VM (the session runs there while its threads
- * train on the cluster), anything else, and every "done" question, stays in the browser. The cluster boxes are not environments of the
- * switcher: the session on the VM lends them to its threads.
- */
-export const scriptedRobotJudge: JudgeRunner = async ({ state, questions }) => {
-  const question = questions.where!;
-  const ids = Object.keys(question.criteria);
-  const done = /the agent finished the task/.test(JSON.stringify(state).toLowerCase());
-  const byCriterion = (re: RegExp) => ids.find((id) => re.test(question.criteria[id] ?? ""));
-  const want = !done && isTeachRequest(String((state as { task?: unknown } | null)?.task ?? "")) ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
-  const choice = want ?? ids[0]!;
-  const probabilities = Object.fromEntries(ids.map((id) => [id, id === choice ? 0.94 : 0.06 / Math.max(1, ids.length - 1)]));
-  return { answers: { where: { type: "choice", choice, probabilities } }, model: "scripted" };
-};
 
 /**
  * Robot episode: are the skills home? Checked in code on the run's disk: `home/skills.json` (the assembled index, written last) names the
@@ -208,25 +173,26 @@ export const HOME_PROMPT_MODEL = "You are back in your user's browser. Say one s
 /** Where the obsession episode's request lands on the run's disk: the user's own words, as bytes, for the programs' `--topic-file`. */
 export const REQUEST_FILE = "obsession/request.txt";
 
-export default async function placer(options: { log: (event: string, data?: Record<string, unknown>) => void; args: Record<string, string> }): Promise<Placer> {
-  const scripted = options.args.client === "scripted" || !process.env.TYPESAFE_API_KEY;
-  if (options.args.client !== undefined && options.args.client !== "scripted" && options.args.client !== "jev") throw new Error(`--placer-arg client=${options.args.client}: scripted or jev`);
-  if (options.args.client === "jev" && !process.env.TYPESAFE_API_KEY) throw new Error("--placer-arg client=jev needs TYPESAFE_API_KEY in the server's environment");
-  let runJudge: JudgeRunner = scriptedJudge;
-  if (!scripted) {
-    const { createJevRunner } = await import("@parcha/agentrun-jev");
-    runJudge = createJevRunner({ timeoutMs: 20_000, maxAttempts: 2 }) as unknown as JudgeRunner;
-  }
-  options.log("placer.ready", { client: scripted ? "scripted" : "jev" });
+/** The placer over a judge runner: the server's Jev client in the demo, a fake in tests. Decisions are tagged with `model`. */
+export function buildPlacer(options: { log: (event: string, data?: Record<string, unknown>) => void; args: Record<string, string> }, runJudge: JudgeRunner, model: "jev" | "scripted" = "jev"): Placer {
   // `gpu=ID` lets a stand-in host (a second process on this machine, in a dry run) take the H100's place under its own id.
-  const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
   const episode = options.args.episode ?? "walks";
   if (episode !== "walks" && episode !== "model" && episode !== "obsession" && episode !== "robot") throw new Error(`--placer-arg episode=${episode}: walks, model, obsession or robot`);
   if (episode === "robot") {
     const expected = Number(options.args.skills ?? 0);
     if (!(expected >= 0) || !Number.isInteger(expected)) throw new Error(`--placer-arg skills=${options.args.skills}: a whole number`);
-    return judgePlacer({ runJudge: scripted ? scriptedRobotJudge : runJudge, criteria, labels: LABELS, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT_ROBOT, homeCheck: (read) => checkHomeSkills(read, expected) });
+    return judgePlacer({ runJudge, criteria: CRITERIA_ROBOT, labels: LABELS, model, homePrompt: HOME_PROMPT_ROBOT, homeCheck: (read) => checkHomeSkills(read, expected) });
   }
-  const model = episode === "model" || episode === "obsession";
-  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: model ? HOME_PROMPT_MODEL : HOME_PROMPT, ...(episode === "obsession" ? { requestFile: REQUEST_FILE } : {}), homeCheck: model ? (read) => checkHomeModel(read, { waitMs: Number(options.args["home-wait-ms"] ?? 120_000) }) : checkHomePolicy });
+  const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
+  const modelEpisode = episode === "model" || episode === "obsession";
+  return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model, homePrompt: modelEpisode ? HOME_PROMPT_MODEL : HOME_PROMPT, ...(episode === "obsession" ? { requestFile: REQUEST_FILE } : {}), homeCheck: modelEpisode ? (read) => checkHomeModel(read, { waitMs: Number(options.args["home-wait-ms"] ?? 120_000) }) : checkHomePolicy });
+}
+
+/** The server's placer: TypeSafe Jev decides every placement. No key, no server: there is no fallback judge. */
+export default async function placer(options: { log: (event: string, data?: Record<string, unknown>) => void; args: Record<string, string> }): Promise<Placer> {
+  if (options.args.client !== undefined && options.args.client !== "jev") throw new Error(`--placer-arg client=${options.args.client}: only jev decides where a run goes`);
+  if (!process.env.TYPESAFE_API_KEY) throw new Error("the placer asks TypeSafe Jev and TYPESAFE_API_KEY is not in the server's environment: start the server under the credential wrapper (with-typesafe); there is no fallback judge");
+  const { createJevRunner } = await import("@parcha/agentrun-jev");
+  options.log("placer.ready", { client: "jev" });
+  return buildPlacer(options, createJevRunner({ timeoutMs: 20_000, maxAttempts: 2 }) as unknown as JudgeRunner, "jev");
 }

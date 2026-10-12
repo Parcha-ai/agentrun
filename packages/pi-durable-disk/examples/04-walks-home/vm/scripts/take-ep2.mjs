@@ -26,7 +26,7 @@ const gpuImage = arg("gpu-image", "");
 const gpuNoteFile = arg("gpu-note-file", "");
 const chatInput = arg("chat-input", "#chatin");
 // The placement question's client: scripted until the key exists ("jev" needs TYPESAFE_API_KEY in the server's environment).
-const placerClient = arg("placer", "scripted");
+const placerClient = arg("placer", "jev");
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
 const warmCommandsFile = arg("warm-commands-file", "");
 // How long the user looks at the flopping creature before asking; the warm-up (about a minute) runs in that time and in the agent's first turn.
@@ -124,9 +124,9 @@ try {
       "--modal",
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
-      ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
+      "--placer-arg", `client=${placerClient}`,
       ...(true ? ["--placer-arg", `episode=${episode === "obsession" ? "obsession" : "model"}`, "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
-      ...(placerClient === "jev" ? ["--typesafe"] : []),
+      "--typesafe",
       "--cloud-arg", "vm=false",
       "--cloud-arg", "warm=gpu",
       ...(warmCommandsFile ? ["--cloud-arg", `warm-commands-file=${warmCommandsFile}`, "--cloud-arg", "warm-env=XLA_PYTHON_CLIENT_PREALLOCATE=false"] : []),

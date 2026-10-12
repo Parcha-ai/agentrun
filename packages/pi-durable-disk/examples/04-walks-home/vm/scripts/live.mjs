@@ -38,8 +38,9 @@ const serverPort = arg("server-port", "8763");
 const graceMs = arg("grace-ms", ownBrowser ? "180000" : "30000");
 // How long the person has to open the link, and then wait for the box, before live gives up.
 const openWaitMs = Number(arg("open-wait-ms", 1_800_000));
-// The placement question's client: scripted until the key exists ("jev" needs TYPESAFE_API_KEY in the server's environment).
-const placerClient = arg("placer", "scripted");
+// The placement question's client: TypeSafe Jev, the only judge (the server starts under the credential wrapper and refuses to start without the key).
+const placerClient = arg("placer", "jev");
+if (placerClient !== "jev") throw new Error(`--placer is jev: no other judge decides where a run goes (got ${placerClient})`);
 // The episode: "walks" (a creature learns to walk), "model" or "obsession" (a language model is trained and comes home as a large file nobody restores), or
 // "robot" (one session on a Modal VM forks threads that train skills on a pool of GPU boxes, all of them coming home to the browser).
 const episode = arg("episode", "walks");
@@ -163,11 +164,11 @@ try {
       "--modal",
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
-      ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
+      "--placer-arg", `client=${placerClient}`,
       ...(episode !== "walks" && !robot ? ["--placer-arg", `episode=${episode === "obsession" ? "obsession" : "model"}`, "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
       // The robot: the session is moved to the Modal VM by the placer's "teach" rule; the model files and skills are not restored into the tab (they travel as chunks and files).
       ...(robot ? ["--placer-arg", "episode=robot", "--placer-arg", `skills=${robotSkills}`, "--no-restore", "home/"] : []),
-      ...(placerClient === "jev" ? ["--typesafe"] : []),
+      "--typesafe",
       ...(robot
         ? [
             // The session's VM mounts the disk (the default transport) and the cluster's boxes start when the first page takes the run.

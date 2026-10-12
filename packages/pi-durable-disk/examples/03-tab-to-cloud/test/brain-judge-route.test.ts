@@ -10,6 +10,7 @@ describe("the brain judge route", () => {
   let id: string;
   let secret: string;
   const asked: unknown[] = [];
+  const logged: { event: string; data: Record<string, unknown> }[] = [];
   let mode: "answer" | "fail" = "answer";
   before(async () => {
     const brainJudge: JudgeRunner = async (params) => {
@@ -17,7 +18,7 @@ describe("the brain judge route", () => {
       if (mode === "fail") throw new Error("Jev is down");
       return { answers: { who: { type: "choice", choice: "local", probabilities: { local: 0.93, cloud: 0.07 } } }, model: "jev-test" };
     };
-    local = await localServer({ brainJudge });
+    local = await localServer({ brainJudge, log: (event, data = {}) => void logged.push({ event, data }) });
     base = local.url.replace(/^ws/, "http").replace(/\/ws$/, "");
     ({ id, secret } = await local.server.createRun("route"));
   });
@@ -30,6 +31,11 @@ describe("the brain judge route", () => {
     assert.equal(r.status, 200);
     assert.deepEqual(await r.json(), { answers: { who: { type: "choice", choice: "local", probabilities: { local: 0.93, cloud: 0.07 } } }, model: "jev-test" });
     assert.equal((asked.at(-1) as { state: { message: string } }).state.message, "write hi.js and run it");
+    // The server's log carries the model and the probabilities of every decision (a rehearsal greps it to see who decided).
+    const line = logged.filter((e) => e.event === "brain.judge").at(-1)!;
+    assert.equal(line.data.model, "jev-test");
+    assert.equal(line.data.choice, "local");
+    assert.deepEqual(line.data.probabilities, { local: 0.93, cloud: 0.07 });
   });
 
   it("is what the page's router uses: a router over this route decides the tab", async () => {

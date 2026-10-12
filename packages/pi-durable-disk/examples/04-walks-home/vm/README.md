@@ -46,7 +46,7 @@ Measured on an H100 (us-east, gVisor, pipe): first tool call to the notice there
 ## Recording takes (the stage, D5's tooling; local scripts)
 
 - `scripts/take-v2.mjs`: the one take (DEMO-V2): the user draws a creature on the stage's sketcher (D3's `sketch-take.mjs`), types "teach it to walk"
-  into the stage's chat, the server places the run on the H100 with a typed question (`placer.ts`; scripted until a Jev key), the creature learns
+  into the stage's chat, the server places the run on the H100 with a typed question (`placer.ts`; Jev only: the server does not start without its key), the creature learns
   live from each checkpoint, comes home, the user clicks the Wi-Fi control, the network goes off (CDP), two kicks. Starts the take's 03 server
   (`show/scripts/take-server.mjs --modal --cloud-module ... --placer-module ...`), the stage, and in the given Chrome the 03 page (the can-run
   writer) and the stage tab, which it records; writes `<video>.captions.json`, `.results.json` and the policy that came home. The training
