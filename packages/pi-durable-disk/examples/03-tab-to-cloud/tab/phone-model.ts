@@ -30,7 +30,7 @@ export class PhoneModel implements BrainModel {
   private readonly llm: Llm;
   /** Where the model's first part is (its other parts and its manifest sit beside it). */
   get url(): string { return this.o.url; }
-  private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
+  private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; loadTimeoutMs?: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
 
   constructor(llm: Llm, o: PhoneModel["o"]) {
     if (!llm.loadUrl || !llm.complete || !llm.chatTemplate) throw new Error("this model backend cannot load from a URL, complete raw, or show its chat template");
@@ -52,7 +52,7 @@ export class PhoneModel implements BrainModel {
 
   /** Download (or find in the cache) and load the model. */
   async load(): Promise<void> {
-    const { url, threads, nCtx, batch, onProgress, onStatus } = this.o;
+    const { url, threads, nCtx, batch, onProgress, onStatus, loadTimeoutMs } = this.o;
     // the parts' manifest next to the model (<name>.parts.json: each part's bytes and sha256), kept for a later load with no network
     const manifestUrl = url.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json");
     let parts: { name?: string; bytes: number; sha256?: string }[] | undefined;
@@ -63,7 +63,7 @@ export class PhoneModel implements BrainModel {
     if (!parts) { try { const kept = localStorage.getItem(`parts:${manifestUrl}`); if (kept) parts = JSON.parse(kept) as typeof parts; } catch { /* no storage */ } }
     if (!parts) onStatus?.("no parts manifest: the cached parts are used unchecked");
     // one conversation, one sequence: the warm state is slot 0's
-    return this.llm.loadUrl!(url, { threads, nCtx, batch, slots: 1, ...(parts ? { parts } : {}), ...(onStatus ? { onStatus } : {}), onProgress: (loaded, total) => { this.loadedBytes = total || loaded; onProgress?.(loaded, total); } });
+    return this.llm.loadUrl!(url, { threads, nCtx, batch, slots: 1, ...(parts ? { parts } : {}), ...(onStatus ? { onStatus } : {}), ...(loadTimeoutMs ? { loadTimeoutMs } : {}), onProgress: (loaded, total) => { this.loadedBytes = total || loaded; onProgress?.(loaded, total); } });
   }
 
   /**

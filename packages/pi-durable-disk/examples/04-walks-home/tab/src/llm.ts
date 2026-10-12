@@ -137,7 +137,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         throw e;
       }
     },
-    async loadUrl(url, { threads, nCtx, batch, slots, parts, onProgress, onStatus }) {
+    async loadUrl(url, { threads, nCtx, batch, slots, parts, onProgress, onStatus, loadTimeoutMs }) {
       await release();
       const next = make({ default: wasmUrl });
       w = next;
@@ -156,7 +156,15 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
           blobs.push(new SlicedBlob(blob, u.split('/').pop()!, async () => next.cacheManager.open(await next.cacheManager.getNameFromURL(u))));
         }
         onProgress?.(base, total || base);
-        await next.loadModel(blobs, { n_ctx: nCtx ?? N_CTX, n_threads: threads, n_gpu_layers: 0, swa_full: true, ...(batch ? { n_batch: batch, n_ubatch: batch } : {}), ...(slots ? { n_parallel: slots } : {}) });
+        // the engine's load, apart from the download: a build that stalls in it (Safari 27 took wllama's memory64 build, which never finished loading) fails here, by
+        // name, and its worker is let go (below), so the caller can try another build instead of waiting for ever
+        const loading = next.loadModel(blobs, { n_ctx: nCtx ?? N_CTX, n_threads: threads, n_gpu_layers: 0, swa_full: true, ...(batch ? { n_batch: batch, n_ubatch: batch } : {}), ...(slots ? { n_parallel: slots } : {}) });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await (loadTimeoutMs ? Promise.race([loading, new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error(`the engine did not load the model in ${Math.round(loadTimeoutMs / 1000)} s`)), loadTimeoutMs); })]) : loading);
+        } finally {
+          clearTimeout(timer);
+        }
       } catch (e) {
         await release();
         throw e;

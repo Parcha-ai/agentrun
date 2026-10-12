@@ -147,3 +147,16 @@ test('a restore that fails lets go of the state too', async () => {
   await assert.rejects(s.llm.restoreState!(new Blob([new Uint8Array(64)])), /did not start/);
   assert.equal(s.log.fileBlobs.has('state.bin'), false, 'the 36 MB a phone needs back is released on every exit');
 });
+
+test("an engine load that never finishes fails after its timeout, by name, and its worker is let go", async () => {
+  const s = setup();
+  s.cache.set(s.key(BASE), new Blob([s.p1 as BlobPart]));
+  s.cache.set(s.key(URL2), new Blob([s.p2 as BlobPart]));
+  let exited = 0;
+  (s.w as { loadModel: unknown }).loadModel = () => new Promise(() => undefined); // Safari 27's memory64 build: the load never comes back
+  (s.w as { exit: unknown }).exit = async () => { exited++; };
+  const started = Date.now();
+  await assert.rejects(s.llm.loadUrl!(BASE, { threads: 1, loadTimeoutMs: 200 }), /did not load the model in 0 s/);
+  assert.ok(Date.now() - started < 2000, "it gave up at its timeout");
+  assert.equal(exited, 1, "the stalled engine's worker was let go");
+});
