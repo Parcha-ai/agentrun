@@ -265,6 +265,25 @@ describe("checking a run back in", () => {
     }
   });
 
+  it("a second check-in for the run, sent while the first is still uploading its body, is refused (CHECKIN_BUSY) and cannot close the first one's pipe", async () => {
+    const w = await checkedOut("race");
+    const store = await offline(w.copy.bytes, w.conversation.id, 1);
+    const body = JSON.stringify({ tab: w.tab, store: Buffer.from(store).toString("base64"), changes: [] });
+    const { request } = await import("node:http");
+    const url = new URL(`${base}/api/runs/${w.id}/checkin`);
+    // request 1: the headers and half of the body, then a pause
+    const first = request({ method: "POST", host: url.hostname, port: url.port, path: url.pathname, headers: { authorization: `Bearer ${w.secret}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } });
+    const done = new Promise<{ status: number }>((resolve, reject) => { first.on("response", (r) => { r.resume(); r.on("end", () => resolve({ status: r.statusCode ?? 0 })); }); first.on("error", reject); });
+    first.write(body.slice(0, Math.floor(body.length / 2)));
+    await new Promise((r) => setTimeout(r, 300));
+    const second = await checkin(w.id, w.secret, w.tab, store);
+    assert.equal(second.status, 409, await second.clone().text());
+    assert.equal(((await second.json()) as { code: string }).code, "CHECKIN_BUSY");
+    first.end(body.slice(Math.floor(body.length / 2)));
+    assert.equal((await done).status, 200, "the first one was not disturbed and went through");
+    assert.equal(existsSync(marker(w.id)), false);
+  });
+
   it("a crash after the check and before the mark is removed leaves the mark: no fork, and the same check-in sent again works", async () => {
     const w = await checkedOut("crash");
     const store = await offline(w.copy.bytes, w.conversation.id, 2);

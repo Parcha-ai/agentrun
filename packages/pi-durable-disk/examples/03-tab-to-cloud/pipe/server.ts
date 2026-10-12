@@ -1438,54 +1438,58 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       }
       if (!receipt) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
     } else if (state.checkingIn || state.checkingOut || state.switching || state.opening) return json(res, 409, { error: "a check-in or a move is in progress", code: "CHECKIN_BUSY" });
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of req as AsyncIterable<Buffer>) {
-      size += chunk.length;
-      if (size > CHECKIN_MAX) return json(res, 413, { error: `more than ${CHECKIN_MAX} bytes` });
-      chunks.push(chunk);
-    }
-    let body: { tab?: unknown; store?: unknown; changes?: unknown };
+    // Reserved in the same turn as the check above, before the body is awaited: a second request for the run finds it taken and is refused, never a second user of the pipe's one connection.
+    const reserved = receipt === undefined;
+    if (reserved) state.checkingIn = true;
     try {
-      body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
-    } catch {
-      return json(res, 400, { error: "the body is not JSON" });
-    }
-    if (typeof body.tab !== "string" || typeof body.store !== "string" || !Array.isArray(body.changes)) return json(res, 400, { error: "the body needs tab, store (base64) and changes" });
-    const changes = body.changes as FileChange[];
-    if (changes.some((c) => typeof c?.path !== "string" || (c.op === "write" && "upload" in c))) return json(res, 400, { error: "changes are inline writes, mkdirs and deletes" });
-    if (receipt) {
-      // the check-in already went through: answered as it was the first time, and nothing is written
-      const same = receipt.tab === body.tab && receipt.sha256 === createHash("sha256").update(Buffer.from(body.store, "base64")).digest("hex");
-      if (!same) return json(res, 409, { error: "the run is not checked out, and this is not the store its last check-in took", code: "NOT_CHECKED_OUT" });
-      log("checkin.replayed", { run: runId, head: receipt.head });
-      return json(res, 200, { head: receipt.head, files: receipt.files, replayed: true });
-    }
-    const marker = await readMarker(runId);
-    if (!marker) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
-    state.checkingIn = true;
-    let pipe: RunPipe | undefined;
-    try {
-      pipe = state.pipe ?? (await openPipe(state, false));
-      const done = await pipe.checkIn({ tab: body.tab, marker, storeBytes: new Uint8Array(Buffer.from(body.store, "base64")), changes, ...(options.beforeCheckinMarkerRemoval ? { beforeMarkerRemoval: options.beforeCheckinMarkerRemoval } : {}) });
-      state.checkedOut = undefined;
-      setPlacement(state, { where: "parked", detail: "checked in: the browser's copy is the run again" });
-      // the tab attaches next; the claim is held for it, and let go if it does not come
-      clearTimeout(state.checkinTimer);
-      state.checkinTimer = setTimeout(() => {
-        if (state.pipe && !state.pipe.writerTab && !state.switching && !state.opening) void releasePipe(state).catch((error) => log("release.failed", { run: runId, error: (error as Error).message }));
-      }, options.checkinGraceMs ?? 30_000);
-      state.checkinTimer.unref();
-      log("checked-in", { run: runId, head: done.head, files: done.files });
-      json(res, 200, done);
-    } catch (error) {
-      // the claim is let go: the run stays checked out (the mark is still there) for a retry
-      if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((e) => log("release.failed", { run: runId, error: (e as Error).message }));
-      if (error instanceof CheckinRefused) return json(res, 409, { error: error.message, code: error.code, ...(error.table ? { table: error.table } : {}) });
-      log("checkin.failed", { run: runId, error: (error as Error).message });
-      json(res, 500, { error: (error as Error).message });
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of req as AsyncIterable<Buffer>) {
+        size += chunk.length;
+        if (size > CHECKIN_MAX) return json(res, 413, { error: `more than ${CHECKIN_MAX} bytes` });
+        chunks.push(chunk);
+      }
+      let body: { tab?: unknown; store?: unknown; changes?: unknown };
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
+      } catch {
+        return json(res, 400, { error: "the body is not JSON" });
+      }
+      if (typeof body.tab !== "string" || typeof body.store !== "string" || !Array.isArray(body.changes)) return json(res, 400, { error: "the body needs tab, store (base64) and changes" });
+      const changes = body.changes as FileChange[];
+      if (changes.some((c) => typeof c?.path !== "string" || (c.op === "write" && "upload" in c))) return json(res, 400, { error: "changes are inline writes, mkdirs and deletes" });
+      if (receipt) {
+        // the check-in already went through: answered as it was the first time, and nothing is written
+        const same = receipt.tab === body.tab && receipt.sha256 === createHash("sha256").update(Buffer.from(body.store, "base64")).digest("hex");
+        if (!same) return json(res, 409, { error: "the run is not checked out, and this is not the store its last check-in took", code: "NOT_CHECKED_OUT" });
+        log("checkin.replayed", { run: runId, head: receipt.head });
+        return json(res, 200, { head: receipt.head, files: receipt.files, replayed: true });
+      }
+      const marker = await readMarker(runId);
+      if (!marker) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
+      let pipe: RunPipe | undefined;
+      try {
+        pipe = state.pipe ?? (await openPipe(state, false));
+        const done = await pipe.checkIn({ tab: body.tab, marker, storeBytes: new Uint8Array(Buffer.from(body.store, "base64")), changes, ...(options.beforeCheckinMarkerRemoval ? { beforeMarkerRemoval: options.beforeCheckinMarkerRemoval } : {}) });
+        state.checkedOut = undefined;
+        setPlacement(state, { where: "parked", detail: "checked in: the browser's copy is the run again" });
+        // the tab attaches next; the claim is held for it, and let go if it does not come
+        clearTimeout(state.checkinTimer);
+        state.checkinTimer = setTimeout(() => {
+          if (state.pipe && !state.pipe.writerTab && !state.switching && !state.opening) void releasePipe(state).catch((error) => log("release.failed", { run: runId, error: (error as Error).message }));
+        }, options.checkinGraceMs ?? 30_000);
+        state.checkinTimer.unref();
+        log("checked-in", { run: runId, head: done.head, files: done.files });
+        json(res, 200, done);
+      } catch (error) {
+        // the claim is let go: the run stays checked out (the mark is still there) for a retry
+        if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((e) => log("release.failed", { run: runId, error: (e as Error).message }));
+        if (error instanceof CheckinRefused) return json(res, 409, { error: error.message, code: error.code, ...(error.table ? { table: error.table } : {}) });
+        log("checkin.failed", { run: runId, error: (error as Error).message });
+        json(res, 500, { error: (error as Error).message });
+      }
     } finally {
-      state.checkingIn = false;
+      if (reserved) state.checkingIn = false;
     }
   }
 

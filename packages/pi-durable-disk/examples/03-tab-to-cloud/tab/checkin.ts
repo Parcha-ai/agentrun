@@ -18,7 +18,9 @@ export async function baselineOf(snapshot: Snapshot): Promise<Baseline> {
 /** The changes that turn the baseline into `now`: new and changed files whole, new directories, and what is gone (a removed directory's children first, so a replay of the list is safe). Parents before children for what is new. */
 export async function diffWorkspace(baseline: Baseline, now: Snapshot): Promise<FileChange[]> {
   const changes: FileChange[] = [];
-  const gone = Object.keys(baseline).filter((p) => !now.has(p)).sort((a, b) => b.split("/").length - a.split("/").length || (a < b ? 1 : -1));
+  // a path that is a different kind now (a file made a directory, or the other way) is deleted first and made again: the server's copy of the old kind would refuse the new one
+  const replaced = (p: string) => baseline[p] !== undefined && now.has(p) && baseline[p]!.kind !== now.get(p)!.kind;
+  const gone = Object.keys(baseline).filter((p) => !now.has(p) || replaced(p)).sort((a, b) => b.split("/").length - a.split("/").length || (a < b ? 1 : -1));
   for (const path of gone) changes.push({ path, op: "delete" });
   const present = [...now.keys()].sort((a, b) => a.split("/").length - b.split("/").length || (a < b ? -1 : 1));
   for (const path of present) {

@@ -27,7 +27,17 @@ describe("what the workspace changed while the run was checked out", () => {
     const baseline = await baselineOf(snap({ "a.txt": "text", x: "file" }));
     const changes = await diffWorkspace(baseline, snap({ "a.txt": "", x: null }));
     assert.deepEqual(changes.find((c) => c.path === "a.txt"), { path: "a.txt", op: "write", data: "" });
-    assert.deepEqual(changes.find((c) => c.path === "x"), { path: "x", op: "mkdir" });
+    assert.deepEqual(changes.find((c) => c.path === "x" && c.op === "mkdir"), { path: "x", op: "mkdir" }, "made a directory (the file it was is deleted first: see the next test)");
+  });
+
+  it("a path whose kind changed is deleted first and then made again, so the server's copy of the old kind cannot refuse the new one", async () => {
+    const baseline = await baselineOf(snap({ x: "was a file", d: null, "d/inner.txt": "in a directory" }));
+    const changes = await diffWorkspace(baseline, snap({ x: null, "x/new.txt": "now inside x", d: "now a file" }));
+    const at = (op: string, path: string) => changes.findIndex((c) => c.op === op && c.path === path);
+    assert.ok(at("delete", "x") >= 0 && at("mkdir", "x") > at("delete", "x"), "x: the old file goes, then the directory");
+    assert.ok(at("delete", "d/inner.txt") >= 0 && at("delete", "d") > at("delete", "d/inner.txt"), "d: its child goes, then the directory itself");
+    assert.ok(at("write", "d") > at("delete", "d"), "d: then the file is written");
+    assert.ok(at("write", "x/new.txt") > at("mkdir", "x"));
   });
 
   it("the baseline records each file's size and SHA-256 and each directory", async () => {

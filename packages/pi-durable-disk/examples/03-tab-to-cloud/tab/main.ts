@@ -7,6 +7,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@earendil-works/pi-durable";
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
+import { BRAIN_PROVIDER } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
@@ -58,6 +59,8 @@ const state = {
   net: { online: navigator.onLine, at: Date.now(), reason: navigator.onLine ? "" : "the browser says it is offline" },
   /** "Go online" in progress, in words (shown next to the button). */
   checkingIn: undefined as { text: string } | undefined,
+  /** A check-in whose answer never came: kept (and the page paused) until it is sent again. */
+  pendingCheckin: undefined as { record: CheckoutRecord; host: ModelHost | undefined } | undefined,
   /** Every check-in this page made and saw complete. */
   checkins: [] as CheckinEvent[],
   /** A scripted stand-in for the cloud model (a check's, installed by `demo.stubCloud`), and what its requests carried. */
@@ -290,7 +293,8 @@ function render(): void {
   $("offline-status").textContent = state.checkout?.text ?? "";
   renderNet();
   // "Go online": while the run is checked out to this browser; it can be pressed once the server answers the ping, and nothing is already in progress.
-  $("online").hidden = !offline;
+  // Go online exists only with ?golive=1 (the check-in hands the one conversation back to the cloud model); outside it the checkout is one way. A check-in that was not confirmed can be sent again from any mode.
+  $("online").hidden = !((offline && golive) || state.pendingCheckin !== undefined);
   ($("online") as HTMLButtonElement).disabled = !state.net.online || state.checkingIn !== undefined;
   $("online-status").textContent = state.checkingIn?.text ?? (offline && !state.net.online ? "waiting for the network" : "");
   $("checkedout").hidden = !offline;
@@ -387,6 +391,8 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   installCloud(runtime);
+  // With ?golive=1 the router can leave the conversation on the small model; a page opened again has no model loaded until it goes offline, so the conversation goes back to the cloud model before input is accepted.
+  if (golive && (await runtime.root.agent(ctx)).model?.provider === BRAIN_PROVIDER) await runtime.root.configure(cloudAgent(attached.model), ctx);
   state.bootMs = performance.now() - started;
   state.mode = "writer";
   state.progress = "";
@@ -781,6 +787,18 @@ async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array;
       }
     }
   } catch (error) {
+    const code = error instanceof CheckinError ? error.code : "";
+    if (code === "NETWORK" || code === "CHECKIN_BUSY" || /^HTTP_5/.test(code)) {
+      // The server may well have taken it (only its reply was lost): the saved check-in and the `sending` record stay, and this browser's copy is NOT reopened for writes, because a change made now could never
+      // match the receipt. The button (or a reload) sends the same bytes again; a server that took it answers from its receipt, one that did not takes it now.
+      state.checkingIn = undefined;
+      state.pendingCheckin = { record, host };
+      state.mode = "lost";
+      state.banner = `The server did not confirm the check-in (${(error as Error).message}). This browser keeps it and writes nothing meanwhile; press Go online to send it again.`;
+      announce("checkin", { phase: "failed", uncertain: true, message: (error as Error).message, code });
+      render();
+      return;
+    }
     // the server did not take it
     await forgetCheckinPayload(run).catch(() => undefined);
     await writeCheckout({ ...record, state: "done" }).catch(() => undefined);
@@ -825,7 +843,7 @@ async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array;
 }
 
 /** A page opened (or reloaded) while a check-in was on its way: send the saved store and changes again. A server that took them answers from its receipt; one that did not takes them now. */
-async function resumeCheckin(record: CheckoutRecord): Promise<void> {
+async function resumeCheckin(record: CheckoutRecord, host?: ModelHost): Promise<void> {
   state.mode = "booting";
   state.progress = "finishing the check-in that was on its way";
   state.checkingIn = { text: "finishing the check-in that was on its way" };
@@ -838,7 +856,7 @@ async function resumeCheckin(record: CheckoutRecord): Promise<void> {
     state.checkingIn = undefined;
     return void startOffline({ ...record, state: "done" });
   }
-  await sendCheckin(record, payload as { store: Uint8Array; changes: FileChange[] }, undefined, performance.now());
+  await sendCheckin(record, payload as { store: Uint8Array; changes: FileChange[] }, host, performance.now());
 }
 
 /** The agent's go_offline and go_online tools talk to the page through this: the request is taken now, the move happens once the agent's step is over. */
@@ -851,6 +869,7 @@ const offlineChannel: OfflineChannel = {
     setTimeout(() => void takeOffline(), 0);
   },
   async goOnline() {
+    if (!golive) throw new OfflineRefusedError("this page was not opened with ?golive=1: here a checkout is for good and the run does not go back");
     if (state.mode !== "offline" || !state.offline || !state.runtime) throw new OfflineRefusedError("this run is not checked out to this browser, so there is nothing to hand back");
     if (state.checkingIn) throw new OfflineRefusedError("a check-in is already in progress");
     if (!state.net.online) throw new OfflineRefusedError(`the server cannot be reached from here yet (${state.net.reason || "no answer to the ping"}); try again when the network is back`);
@@ -1167,7 +1186,14 @@ $("input").addEventListener("keydown", (e) => {
 });
 $("takeover").addEventListener("click", () => void connect("write", true));
 $("offline").addEventListener("click", () => void takeOffline());
-$("online").addEventListener("click", () => void checkIn());
+$("online").addEventListener("click", () => {
+  const pending = state.pendingCheckin;
+  if (pending) {
+    state.pendingCheckin = undefined;
+    state.banner = "";
+    void resumeCheckin(pending.record, pending.host);
+  } else void checkIn();
+});
 $("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)));
 setInterval(renderStats, 1000);
 
