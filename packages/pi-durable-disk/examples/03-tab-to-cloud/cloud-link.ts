@@ -13,6 +13,7 @@ import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEventStream, Harness, ConversationId } from "@earendil-works/pi-durable";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
+import { createGpuClient, isGpuFrame, type GpuClient, type GpuFrame } from "./pipe/gpu-rpc.ts";
 import { FrameSwitchChannel, type SwitchRequest } from "./switch-tool.ts";
 
 type Frame =
@@ -26,7 +27,8 @@ type Frame =
   | SwitchRequest
   | { t: "switch-accepted"; ask: string; switchId: string }
   | { t: "switch-refused"; ask?: string; message: string }
-  | { t: "switched"; switchId: string };
+  | { t: "switched"; switchId: string }
+  | GpuFrame;
 
 const same = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 
@@ -39,6 +41,8 @@ export interface CloudLink {
   notifySwitched(switchId: string): void;
   /** How the agent's switch_environment tool reaches the server: over this link. */
   readonly switchChannel: FrameSwitchChannel;
+  /** The GPU boxes the server lends this host (the cluster beat): acquire one per thread, run commands in it. The server holds the Modal key; the host only asks. */
+  readonly gpu: GpuClient;
   close(): Promise<void>;
 }
 
@@ -52,6 +56,11 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   /** Moves whose notice committed before the server dialed in: told when it does. */
   const switchedIds = new Set<string>();
   const switchChannel = new FrameSwitchChannel((frame) => {
+    if (!link || link.readyState !== link.OPEN) return false;
+    link.send(JSON.stringify(frame satisfies Frame));
+    return true;
+  });
+  const gpu = createGpuClient((frame) => {
     if (!link || link.readyState !== link.OPEN) return false;
     link.send(JSON.stringify(frame satisfies Frame));
     return true;
@@ -87,6 +96,10 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     linked();
     ws.on("message", (data) => {
       const frame = JSON.parse(String(data)) as Frame;
+      if (isGpuFrame(frame)) {
+        gpu.handle(frame);
+        return;
+      }
       if (frame.t === "switch-accepted" || frame.t === "switch-refused") {
         switchChannel.accept(frame);
         return;
@@ -118,6 +131,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
       }
       if (link !== ws) return;
       link = undefined;
+      gpu.lose("the link to the server closed");
       log("link.closed");
       for (const [id, res] of open) {
         if (!res.head) res.writeHead(503);
@@ -164,6 +178,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     switchChannel,
+    gpu,
     notifySwitched(switchId) {
       if (link && link.readyState === link.OPEN) link.send(JSON.stringify({ t: "switched", switchId } satisfies Frame));
       else switchedIds.add(switchId);
@@ -175,6 +190,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     },
     async close() {
       switchChannel.lose("the link closed");
+      gpu.lose("the link closed");
       link?.close(1000, "bye");
       wss.close();
       await new Promise<void>((r) => relay.close(() => r()));
