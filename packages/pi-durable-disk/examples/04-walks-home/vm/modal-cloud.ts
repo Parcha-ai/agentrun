@@ -652,7 +652,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       if (demand) throw new Error(`the supervisor did not start the run: ${result.action}`);
       return false;
     }
-    options.log("cloud.ensure", { run: ref.id, action: result.action, reason: result.reason, revoked: result.revoked.length, startMs: result.startMs, ms: Date.now() - started, box: result.handle.name });
+    options.log("cloud.ensure", { run: ref.id, action: result.action, reason: result.reason, revoked: result.revoked.length, startMs: result.startMs, ms: Date.now() - started, box: result.handle.name, ...(result.stonith ? { stonith: result.stonith.outcome, ...("status" in result.stonith ? { stonithStatus: result.stonith.status } : {}) } : {}), ...(result.heartbeat ? { heartbeatAt: result.heartbeat.at, heartbeatAgeMs: result.heartbeat.ageMs } : {}) });
     options.ledger?.open("token-user", result.token.identifier, result.token.nickname);
     const box = String(result.handle.sandboxId);
     live.add(box);

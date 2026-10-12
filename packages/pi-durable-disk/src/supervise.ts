@@ -199,6 +199,8 @@ export type EnsureResult =
       woke: boolean;
       revoked: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned">[];
       stonith?: StonithOutcome;
+      /** For `lease-expired`: the heartbeat the lease was judged by (`run.json`'s `heartbeatAt`) and how old it was at the decision, so a replacement can be explained afterwards. */
+      heartbeat?: { at: string | null; ageMs: number | null };
       /** The run directory did not exist and was created with `create`'s owner. */
       created: boolean;
       handle: HostHandle;
@@ -274,14 +276,14 @@ export async function ensureRunning(ref: RunRef, host: HostDriver, options: Ensu
     if (Math.abs(sinceMs) >= graceMs) return null;
     return { action: "starting", generation: mark.generation, sinceMs, graceMs, failures: mark.failures, lastExit: mark.lastExit, by: mark.by, delegations: held.length };
   };
-  const start = async (reason: StartReason, revoked: Delegation[] = [], stonith?: StonithOutcome, created = false) => {
+  const start = async (reason: StartReason, revoked: Delegation[] = [], stonith?: StonithOutcome, created = false, heartbeat?: { at: string | null; ageMs: number | null }) => {
     const prev = await lastStart();
     // The last start never wrote its generation, so it failed: this one backs off.
     const failed = prev !== null && prev.generation > generation;
     const failures = failed ? prev.failures + 1 : 0;
     const lastExit = failed ? seenOfFailedStart(held) : null;
     const backoff = { prev, failures, lastExit, graceMs: startGrace(baseGraceMs, failures, maxGraceMs) };
-    return startInstance(ref, host, opts, { reason, woke, revoked, stonith, created, generation, backoff });
+    return startInstance(ref, host, opts, { reason, woke, revoked, stonith, ...(heartbeat ? { heartbeat } : {}), created, generation, backoff });
   };
   if (held.length === 0) {
     const inFlight = await starting();
@@ -303,7 +305,7 @@ export async function ensureRunning(ref: RunRef, host: HostDriver, options: Ensu
   if (inFlight) return inFlight;
   const stonith = status?.holder ? await stopHolder(host, status.holder, opts.stonithTimeoutMs ?? STONITH_TIMEOUT_MS) : ({ outcome: "no-holder" } as const);
   await revokeListed(opts.control, ref.id, held, all);
-  return start("lease-expired", held, stonith);
+  return start("lease-expired", held, stonith, false, { at: status?.heartbeatAt ?? null, ageMs: Number.isFinite(ageMs) ? ageMs : null });
 }
 
 /**
@@ -437,6 +439,7 @@ async function startInstance(
     woke: boolean;
     revoked: Delegation[];
     stonith?: StonithOutcome;
+    heartbeat?: { at: string | null; ageMs: number | null };
     created: boolean;
     generation: number;
     backoff: { prev: StartMark | null; failures: number; lastExit: string | null; graceMs: number };
@@ -483,6 +486,7 @@ async function startInstance(
     woke: why.woke,
     revoked: why.revoked.map(({ clientId, inodeId, path, isOrphaned }) => ({ clientId, inodeId, path, isOrphaned })),
     ...(why.stonith ? { stonith: why.stonith } : {}),
+    ...(why.heartbeat ? { heartbeat: why.heartbeat } : {}),
     created: why.created,
     handle,
     token: { identifier: token.identifier, nickname: token.nickname },
