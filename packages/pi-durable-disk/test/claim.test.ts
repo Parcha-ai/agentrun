@@ -804,11 +804,21 @@ test("release cleans a dead mount with fusermount after archil unmount refuses i
   assert.equal(r2.read().mounts[r2.root], undefined, "and is cleaned anyway");
 });
 
+test("an unmount that is busy a moment (a holder lets go) is tried again and succeeds, and never fusermounted", async () => {
+  const r = disposeAfter(rig({ behave: { unmountBusyTimes: 2 } }));
+  const claim = await acquire(r.opts);
+  assert.deepEqual(await claim.release(), { via: "archil" });
+  assert.equal(r.calls("archil", "unmount").length, 3, "busy twice, then it went");
+  assert.equal(r.calls("fusermount").length, 0);
+  assert.equal(r.read().mounts[r.root], undefined);
+});
+
 test("a live mount that refuses to unmount is UNMOUNT_FAILED and never fusermounted", async () => {
   const r = disposeAfter(rig());
   const claim = await acquire(r.opts);
   r.set((s) => void (s.behave.unmountFail = true));
   await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED");
+  assert.equal(r.calls("archil", "unmount").length, 5, "a mount that stays busy is asked five times (the first and four retries), then it gives up");
   assert.equal(r.calls("fusermount").length, 0);
   assert.ok(r.read().mounts[r.root]);
   assert.equal(await unmountClaim(join(r.dir, "nothing-here"), r.host), "none");

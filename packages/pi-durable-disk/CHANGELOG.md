@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A busy unmount is asked again before it fails: `archil unmount` that refuses with "Device or resource busy" is retried up to four more times, half a
+  second apart, while the mount is live, so a holder that lets go a moment later (a read that was in flight when the run was handed over, seen live
+  as a run parked after a move) no longer parks the run. A mount that stays busy is still `UNMOUNT_FAILED` and is never forced.
 - **A planned stop of a `modalHost` instance now kills anything the agent left running under the run's mount.** A program the agent
   started detached (a server, a browser) is outside the instance's process tree, so the instance cannot end it when it drains; it
   keeps the mount busy, `archil unmount` fails and the run's delegation stays held after the box is gone (found live: 1 held). The

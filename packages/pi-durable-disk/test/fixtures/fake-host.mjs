@@ -151,6 +151,11 @@ if (cmd === "mount") {
   if (!live(mp)) exit(1, NOT_RUNNING(mp));
   if (b.sysbox) exit(1, `Unable to unmount disk: GenericFailure("No such file or directory (os error 2)")\n`);
   if (b.unmountFail) exit(1, `umount: ${mp}: target is busy.\n`);
+  // Busy for the first N tries, then it goes (a holder that lets go a moment later).
+  if (b.unmountBusyTimes && (state.busyCount ?? 0) < b.unmountBusyTimes) {
+    state.busyCount = (state.busyCount ?? 0) + 1;
+    exit(1, `Unable to unmount disk: GenericFailure("Device or resource busy (os error 16)")\n`);
+  }
   if (b.unmountLies) exit(0); // reports success, stays mounted
   const target = state.mounts[mp].source.replace(/\[.*\]$/, "");
   if (state.holders[target] === mp) delete state.holders[target];

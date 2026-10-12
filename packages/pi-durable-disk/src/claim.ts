@@ -524,10 +524,20 @@ export function unmountClaim(mountpoint: string, host?: ArchilHost): Promise<Unm
   return unmountWith(resolveHost(host), mountpoint);
 }
 
+/** How many more times a busy unmount is tried, and how long it waits between tries. */
+const UNMOUNT_BUSY_RETRIES = 4;
+const UNMOUNT_BUSY_WAIT_MS = 500;
+const BUSY = /busy/i;
+
 async function unmountWith(host: Host, mountpoint: string): Promise<Unmounted> {
   if (!(await mountEntry(host, mountpoint))) return "none";
-  const r = await archil(host, ["unmount", mountpoint], host.timeoutMs.unmount);
+  let r = await archil(host, ["unmount", mountpoint], host.timeoutMs.unmount);
   let via: Unmounted = "archil";
+  // A busy refusal is often a holder that lets go a moment later (a read that was in flight when the run was handed over): asked again a few times, never forced.
+  for (let attempt = 0; attempt < UNMOUNT_BUSY_RETRIES && (await mountEntry(host, mountpoint)) && BUSY.test(`${r.stderr}\n${r.stdout}`) && !(await isDead(host, mountpoint)); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, UNMOUNT_BUSY_WAIT_MS));
+    r = await archil(host, ["unmount", mountpoint], host.timeoutMs.unmount);
+  }
   if (await mountEntry(host, mountpoint)) {
     if (await isDead(host, mountpoint)) via = await cleanDead(host, mountpoint);
     else if (refusedWithEnoent(r)) {
