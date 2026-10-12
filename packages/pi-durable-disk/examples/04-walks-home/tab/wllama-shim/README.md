@@ -16,6 +16,8 @@ wasm grows by about 5 KB. Built from a fresh clone with `build.sh`:
 | --- | --- |
 | `wllama.js` | `97f88f7bf26b17ead6be6e7c0c39d20e21661e71827eb5e3c9a468667fc249f5` (npm's `@wllama/wllama-compat@3.6.1`) |
 | `wllama.wasm` | `e02e746697aefe8f3c53136b3643c4d6bf3e3374f1d9fa3ef8bdc9b8e2f1b769` (a build in a working tree and one from a fresh clone gave the same bytes) |
+| `jspi32/wllama.js` | `b73bfac96d22e8d7fa80275bf52d70025ff0bfde3b8b37680f55bb6b4b2fd5d9` (the same in both builds) |
+| `jspi32/wllama.wasm` | `d57b92922d38552b858ce2e61c5308f25aed9f4060c1d7e60733d26152892ed5` (the build tested in the browser). Not byte-reproducible: a fresh-clone build differed in 48 bytes of one function's code (where one wasm exception-handling `try` begins), same size and sections otherwise. The Asyncify build reproduces exactly. |
 
 ## Rebuild
 
