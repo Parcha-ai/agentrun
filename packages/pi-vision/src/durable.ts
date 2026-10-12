@@ -16,7 +16,7 @@ import { pdfText } from "./core/pdf.js";
 import { detectOnce } from "./core/provider.js";
 import { readMedia } from "./core/read.js";
 import { modelsEyes, modelsOf, type ModelsDoor } from "./eyes/models.js";
-import { nodeVisionEnv } from "./node.js";
+import { childEnvOf, nodeVisionEnv, type ChildEnv } from "./node.js";
 import { packageProviders } from "./providers/defaults.js";
 import { photonImages } from "./providers/photon.js";
 
@@ -105,13 +105,44 @@ function withoutPageZero<T>(args: T): T {
 const quiet = <E>(report: ((event: E) => void | Promise<void>) | undefined) =>
   report && (async (event: E) => { try { await report(event); } catch { /* the host's rows are its own */ } });
 
-export function createVisionExtension(options: VisionOptions): VisionHandle {
+/** `env` as the core is given it: the same files and programs, with every program started on the adapter's child
+ *  environment and nothing else. pi's environments give a program the whole of the host process's unless a call says
+ *  not to, so each call says so. */
+function withChildEnv(env: VisionEnv, childEnv: () => Record<string, string>): VisionEnv {
+  return {
+    get id() { return env.id; },
+    get cwd() { return env.cwd; },
+    set cwd(value) { env.cwd = value; },
+    readBinaryFile: (path, context) => env.readBinaryFile(path, context),
+    openBinaryReader: (path, opened, context) => env.openBinaryReader(path, opened, context),
+    writeFile: (path, content, context) => env.writeFile(path, content, context),
+    renameFile: (from, to, context) => env.renameFile(from, to, context),
+    createDir: (path, created, context) => env.createDir(path, created, context),
+    createTempDir: (prefix, context) => env.createTempDir(prefix, context),
+    fileInfo: (path, context) => env.fileInfo(path, context),
+    remove: (path, removed, context) => env.remove(path, removed, context),
+    exec: (command, run, context) => {
+      const started: Parameters<VisionEnv["exec"]>[1] & { inheritEnv: false } = { ...run, env: { ...childEnv(), ...run?.env }, inheritEnv: false };
+      return env.exec(command, started, context);
+    },
+  };
+}
+
+/** The host contract, and one thing only an adapter that starts programs needs: `env`, the whole environment of every
+ *  program a read starts (a PDF reader, ffmpeg, LibreOffice), in whichever environment the call runs and whatever
+ *  that environment would give a program itself. Without it a program gets `inheritedEnv()` of `./node`: where
+ *  programs are found, home, temp, locale and time zone, and never the rest of this process's environment. A host
+ *  whose calls run on another machine names that machine's. */
+export type VisionAdapterOptions = VisionOptions & { readonly env?: ChildEnv };
+
+export function createVisionExtension(options: VisionAdapterOptions): VisionHandle {
   const onLook = quiet(options.onLook);
+  const childEnv = () => childEnvOf(options.env);
   // The host's converters first, then the package's own; Photon fits images when the host gives no processor and this
   // process can load it, since it runs here and not in the call's environment.
   const providers = [...(options.providers ?? []), ...packageProviders()];
   const photon = options.images ? undefined : photonImages();
-  const here = nodeVisionEnv({ cwd: process.cwd() });
+  const here = nodeVisionEnv({ cwd: process.cwd(), ...(options.env ? { env: options.env } : {}) });
   const images = async (): Promise<ImageProcessor | undefined> =>
     options.images ?? (photon && (await detectOnce(photon, here)).available ? photon : undefined);
   const onMiss = quiet(options.onMiss);
@@ -144,7 +175,7 @@ export function createVisionExtension(options: VisionOptions): VisionHandle {
       execute: async (args, api, context) => {
         if (api.env) {
           const call = await callContext(api, context);
-          const media = await readMedia(api.env, args as ReadArgs, call, await setup(call));
+          const media = await readMedia(withChildEnv(api.env, childEnv), args as ReadArgs, call, await setup(call));
           if (media) return piResult(media);
         }
         return tool.execute(args, api, context);
@@ -179,7 +210,7 @@ export function createVisionExtension(options: VisionOptions): VisionHandle {
   return {
     extension,
     tools: [],
-    read: async (env, args, call) => readMedia(env, args, call, await setup(call)),
+    read: async (env, args, call) => readMedia(withChildEnv(env, childEnv), args, call, await setup(call)),
     fit: async (result, call) => guardResult(result, call, await setup(call)),
     pdfText: (bytes, signal) => pdfText(bytes, { env: here, providers, ...(signal ? { signal } : {}) }),
   };

@@ -82,6 +82,36 @@ for the adapter and the pi-ai eyes, and Photon is one for the default image proc
 package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL code stays with the host's
 install.
 
+## For a host: what a program is started with
+
+A read may start a program (poppler, ffmpeg, LibreOffice) on a file the host did not write. Such a program is never
+given the host process's whole environment: a host keeps credentials there, and a child's environment can be read by
+other processes of its user. By default a program gets only what `inheritedEnv()` of `./node` copies from
+`process.env`: `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LC_*`, `TZ`, the loader's library paths
+(`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`) and, on Windows, `SystemRoot`, `windir`,
+`PATHEXT`, `ComSpec` and `USERPROFILE`.
+
+```ts
+import { createVisionExtension } from "@parcha/pi-vision/durable";
+import { inheritedEnv, nodeVisionEnv } from "@parcha/pi-vision/node";
+
+// The default, and a host that wants its programs to have one variable more.
+const env = nodeVisionEnv({ cwd });
+const withFonts = nodeVisionEnv({ cwd, env: { ...inheritedEnv(), FONTCONFIG_PATH: "/etc/fonts" } });
+
+// The adapter takes the same option. It holds for every program a read starts through it: `handle.pdfText`, the
+// wrapped `read` on the conversation's pi environment, and `handle.read` on the environment a host hands it.
+const vision = createVisionExtension({ evidence, scope, env: { ...inheritedEnv(), FONTCONFIG_PATH: "/etc/fonts" } });
+```
+
+`env` is the whole environment of those programs, not an addition to the default: a host that passes
+`{ PATH: "/usr/bin" }` gives them that and nothing else. A call's own variables (a provider's) are added over it. pi's
+environments give a program all of `process.env` unless a call says not to, so the adapter says so on each call
+(`inheritEnv: false`) and passes this environment; `nodeVisionEnv` honours the same switch. So through the adapter, the
+adapter's `env` decides, whatever the environment a call runs in was built with: set it there. An environment's own
+`env` holds when a host uses it without the adapter. A host whose pi environment runs programs on another machine
+passes `env` for that machine, since the default is copied from this process.
+
 ## Develop
 
 ```sh
