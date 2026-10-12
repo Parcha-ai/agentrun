@@ -170,6 +170,28 @@ describe("ArtifactSync: a thread's checkpoints come home whole", () => {
   });
 });
 
+describe("ArtifactSync: flush beside the timer", () => {
+  it("a flush while the timer runs copies each file once", async () => {
+    await withRoot(async (root) => {
+      const remote = join(root, "box"), local = join(root, "work");
+      await mkdir(remote, { recursive: true });
+      const landed: string[] = [];
+      // a box whose every call takes a while, as a real one does (each copy about 100 ms), so passes would overlap
+      const fast = localBox();
+      const slow: RemoteBox = { sandboxId: "sb-slow", poll: () => fast.poll(), exec: async (c, p) => { await sleep(40); return fast.exec(c, p); } };
+      for (let i = 0; i < 10; i++) await writeFile(join(remote, `f${i}.json`), `${i}`);
+      const sync = new ArtifactSync({ box: slow, remote, local, intervalMs: 50, onFile: (rel) => landed.push(rel) });
+      sync.start();
+      await sleep(160); // the timer has listed twice: its pass is copying when the flush starts
+      await sync.flush();
+      await sleep(300);
+      await sync.stop();
+      assert.equal(landed.length, 10, `copied ${landed.length} times for 10 files: ${landed.join(" ")}`);
+      assert.equal(new Set(landed).size, 10);
+    });
+  });
+});
+
 describe("ArtifactSync after a restart", () => {
   it("a new sync finds the files an earlier one copied (same size, the box's mtime) and copies only what is new", async () => {
     await withRoot(async (root) => {

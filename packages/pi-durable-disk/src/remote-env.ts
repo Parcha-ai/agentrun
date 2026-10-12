@@ -575,8 +575,10 @@ export class ArtifactSync {
 
   /** Copy everything that differs now, then return the totals copied so far. */
   async flush(context?: Context): Promise<{ files: number; bytes: number }> {
-    await this.busy.catch(() => {});
-    await this.pass(true, context);
+    // on the same chain as the timer's passes, so a pass never runs beside another and nothing is copied twice
+    const mine = this.busy.catch(() => {}).then(() => this.pass(true, context));
+    this.busy = mine.catch(() => {});
+    await mine;
     return { files: this.files, bytes: this.bytes };
   }
 
@@ -616,7 +618,9 @@ export class ArtifactSync {
     }
     for (const f of due) {
       if (this.stopped && !all) return;
-      await this.copy(f.p, `${f.size}:${f.mtimeMs}`, context);
+      const v = `${f.size}:${f.mtimeMs}`;
+      if (this.copied.get(f.p) === v) continue;
+      await this.copy(f.p, v, context);
     }
   }
 
