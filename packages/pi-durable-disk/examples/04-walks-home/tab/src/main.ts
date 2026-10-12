@@ -37,11 +37,13 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 // ---- message protocol with the show page (all messages carry ns: "walks-home") ----------------------------
 // tab -> parent: ready, design-saved, policy-loaded, kicked, fell, stood, memory-opened, walk-meter, draw-started (see README)
-// parent -> tab: set-placement {kind, label, since}, set-activity {paused} (?econ=1: the model is loading, stop simulating and drawing), kick {dir, force_n}, open-memory, load-policy {url}, load-design {design}
+// parent -> tab: set-placement {kind, label, since}, set-activity {paused, low} (?econ=1: paused while the model is loading, low while it generates), kick {dir, force_n}, open-memory, load-policy {url}, load-design {design}
 const NS = 'walks-home';
 /** ?econ=1 (embedded under the agent's page): the page works at a low rate unless something is changing it, and not at all while the parent says the model is loading (economy.ts). */
 const economy = new Economy({ enabled: new URLSearchParams(location.search).has('econ') });
 let pointerDown = false;
+/** The user has the camera (orbit, pan or zoom on the background): full rate while they do. */
+let cameraDown = false;
 const post = (type: string, body: Record<string, unknown> = {}) => {
   if (window.parent === window) return;
   // A design goes out exactly as it is (the agent saves these numbers and the body's hash depends on them); every other number is rounded.
@@ -843,7 +845,7 @@ function sampleArrival() {
 
 function tick(now: number) {
   requestAnimationFrame(tick);
-  if (!economy.frame(now, pointerDown)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
+  if (!economy.frame(now, pointerDown || cameraDown, !!app.policy)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
   // A hitch (GC, a busy machine) is made up by stepping more next frame, up to half a second of simulation, so the creature
   // never falls behind the wall clock; beyond that the backlog is dropped. Physics is cheap (about 1 ms per control step).
   const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
@@ -1007,7 +1009,13 @@ async function main() {
       kickWorld(wx, wy, forceFor(len));
     };
     canvas.addEventListener('pointerup', end);
-    canvas.addEventListener('pointercancel', () => { drag = null; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true); });
+    canvas.addEventListener('pointercancel', () => { drag = null; pointerDown = false; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true); });
+    // the camera: OrbitControls handles a drag on the background and the wheel; any of them is the user moving the view
+    canvas.addEventListener('pointerdown', () => { cameraDown = true; }, true);
+    const cameraUp = () => { cameraDown = false; economy.wake(performance.now(), 1500); };
+    canvas.addEventListener('pointerup', cameraUp);
+    canvas.addEventListener('pointercancel', cameraUp);
+    canvas.addEventListener('wheel', () => economy.wake(performance.now(), 1500), { passive: true });
 
     window.addEventListener('message', async (ev) => {
       if (ev.origin !== location.origin || ev.source !== window.parent) return;
@@ -1016,7 +1024,7 @@ async function main() {
       try {
         if (m.type === 'set-placement') { setPlacement(m.kind, m.label ?? m.kind); modelHost?.onPlacement(String(m.kind)); }
         else if (m.type === 'chat-send') { if (modelHost) void modelHost.chat(String(m.id), String(m.text ?? '')); else post('chat-done', { id: m.id, error: 'model-not-ready', refused: false, text: '' }); }
-        else if (m.type === 'set-activity') economy.pause(m.paused === true, performance.now());
+        else if (m.type === 'set-activity') { economy.throttle(m.low === true); economy.pause(m.paused === true, performance.now()); }
         else if (m.type === 'kick') kick(m.dir?.[0] ?? 0, m.dir?.[1] ?? 1, m.force_n ?? 60);
         else if (m.type === 'open-memory') await renderMemory();
         else if (m.type === 'load-policy') await loadPolicyUrl(String(m.url));

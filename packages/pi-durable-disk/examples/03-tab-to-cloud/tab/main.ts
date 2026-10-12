@@ -34,6 +34,7 @@ import { WriteGate } from "./write-gate.ts";
 import { ROBOT_TOOLS } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
 import { narrowEnum, toNativeTools } from "./native-turn.ts";
+import { creatureActivity } from "./creature-activity.ts";
 import { fromBase64, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
@@ -108,6 +109,8 @@ const state = {
   brainPending: false,
   /** What the brain swap is doing now, in words (shown under the badge). */
   brainStatus: "",
+  /** A model is being brought home or loaded right now (a status line alone does not say so). */
+  brainLoading: false,
   files: [] as FileRow[],
   selected: undefined as string | undefined,
   /** What a boot is doing now (shown under the badge). */
@@ -299,13 +302,14 @@ async function select(path: string): Promise<void> {
 
 /** The model's file reads and its first run share the main thread with the creature page: while it loads, the creature page is told to stop simulating and drawing, and to go on when the model is ready. */
 let creatureQuiet = false;
+let creatureLow = false;
 function syncCreatureActivity(): void {
   if (!robotMode) return;
-  const phase = state.brain?.host.state().phase;
-  const quiet = state.brainStatus !== "" || phase === "loading" || phase === "loaded";
-  if (quiet === creatureQuiet) return;
+  const { paused: quiet, low } = creatureActivity({ brainLoading: state.brainLoading, phase: state.brain?.host.state().phase, localModelAnswering: state.chat.busy && state.brain?.conversation !== undefined && state.active === state.brain.conversation });
+  if (quiet === creatureQuiet && low === creatureLow) return;
   creatureQuiet = quiet;
-  (document.getElementById("creature") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ ns: "walks-home", type: "set-activity", paused: quiet }, location.origin);
+  creatureLow = low;
+  (document.getElementById("creature") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ ns: "walks-home", type: "set-activity", paused: quiet, low }, location.origin);
 }
 
 function render(): void {
@@ -554,6 +558,7 @@ async function prefetchBase(text: string): Promise<boolean> {
   if (prefetchedBase !== home.id) {
     prefetchedBase = home.id;
     state.brainStatus = "the base model is coming home while the agent trains";
+    state.brainLoading = true;
     render();
     try {
       const h = await comeHome(text, { readChunk: readWork, sha256: sha256hex, store: modelFiles, now: () => performance.now() });
@@ -564,6 +569,7 @@ async function prefetchBase(text: string): Promise<boolean> {
       prefetchedBase = "";
       state.brainStatus = `the base model did not come home: ${(e as Error).message}`;
     }
+    state.brainLoading = false;
     render();
   }
   return true;
@@ -616,6 +622,8 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
         Object.assign(state.homecomings.at(-1)!, { load_ms: Math.round(Number(b.load_ms)), download_ms: Math.round(Number(b.download_ms)) });
         announce("homecoming", { phase: "loaded", load_ms: Math.round(Number(b.load_ms)), sha256: b.sha256, bytes: b.bytes });
       }
+      if (type === "model-loading" || type === "model-download") state.brainLoading = true;
+      if (type === "model-switched" || type === "model-failed") state.brainLoading = false;
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
       else if (type === "model-download") state.brainStatus = `the trained model is coming home: chunk ${String(b.done_chunks)} of ${String(b.total_chunks)}`;
       else if (type === "model-loaded") state.brainStatus = "the trained model is loaded; it answers one question as a check";
@@ -977,7 +985,7 @@ function startRobotPane(): void {
       if (!path || !CREATURE_WRITABLE.has(path) || !(m.bytes instanceof Uint8Array)) return reply({ type: "storage-written", id: m.id, error: "not-allowed" });
       void creatureWrite(path, m.bytes).then(() => reply({ type: "storage-written", id: m.id }), (error: Error) => reply({ type: "storage-written", id: m.id, error: error.message === "not-holder" ? "not-holder" : String(error.message) }));
     } else if (m.type === "econ-ready") {
-      if (creatureQuiet) reply({ type: "set-activity", paused: true }); // the creature page is listening now: tell it what it missed
+      if (creatureQuiet || creatureLow) reply({ type: "set-activity", paused: creatureQuiet, low: creatureLow }); // the creature page is listening now: tell it what it missed
     } else {
       // what the creature page tells the stage (robot-changed, skill-switched, policy-arrived, ...), told on from this page the same way as the page's own events
       const { ns: _ns, type, ...detail } = m;
