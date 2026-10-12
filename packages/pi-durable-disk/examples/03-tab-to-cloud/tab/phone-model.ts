@@ -24,6 +24,20 @@ export function buildOrder(o: { webkit: boolean; jspi: boolean; jspi32Served: bo
 }
 
 /**
+ * Whether the page serves a file: a GET whose body is let go at once. Not HEAD: the 03 server answers it 405 and the offline worker serves GETs only, so a
+ * HEAD probe found the jspi32 build missing (and Chrome took the stock build, which reads the whole system turn instead of restoring it).
+ */
+export async function served(url: string, get: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const r = await get(url);
+    void r.body?.cancel().catch(() => undefined);
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What a turn's report says (the page's beacon, read in its server's log): its time, tokens and the tools it called; the reply's words only with `withText`
  * (?report=text, the page's own switch): a reply can repeat what the user said, and the conversation stays on the phone.
  */
@@ -76,7 +90,7 @@ export class PhoneModel implements BrainModel {
     this.llm = llm;
     this.o = o;
     const locked = lockedToolChat(
-      { template: () => llm.chatTemplate!(), complete: (req: RawRequest, signal: AbortSignal): Promise<RawResult> => llm.complete!(req, { signal, sampling: GREEDY }) },
+      { template: () => llm.chatTemplate!(), complete: async (req: RawRequest, signal: AbortSignal): Promise<RawResult> => (signal.aborted ? { text: "", stoppedBy: "eog", promptTokens: 0, outputTokens: 0, ms: 0 } : llm.complete!(req, { signal, sampling: GREEDY })) },
       (t) => { const turn: PhoneTurn = { at: Date.now(), ms: Math.round(t.result.ms), promptTokens: t.result.promptTokens, outputTokens: t.result.outputTokens, grammar: t.grammar, calls: t.result.toolCalls.map((c) => `${c.name}(${c.arguments})`), text: t.result.text, raw: t.raw, prompt: t.prompt, ...(t.timings ? { timings: t.timings } : {}) }; this.turns.push(turn); this.onTurn?.(turn); },
       (tools) => (this.lock ? this.lock(tools) : tools),
     );
@@ -88,7 +102,8 @@ export class PhoneModel implements BrainModel {
       let late = false;
       const timer = setTimeout(() => { late = true; stop.abort(); }, limit);
       const relay = () => stop.abort();
-      signal?.addEventListener("abort", relay, { once: true });
+      if (signal?.aborted) stop.abort(); // cancelled while it waited its turn: it reaches no model (below)
+      else signal?.addEventListener("abort", relay, { once: true });
       try {
         const r = await locked(req, stop.signal);
         if (late) throw new Error(`the model did not answer in ${Math.round(limit / 1000)} s`);

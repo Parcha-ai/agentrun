@@ -32,7 +32,7 @@ import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
 import { servingView } from "./native-turn.ts";
-import { buildOrder, PhoneModel, phoneWindow, turnReport, type WllamaBuild } from "./phone-model.ts";
+import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBuild } from "./phone-model.ts";
 import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
@@ -1034,7 +1034,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   const ua = navigator.userAgent;
   const webkit = /AppleWebKit/.test(ua) && !/(Chrome|Chromium|Edg)\//.test(ua); // every iPhone browser (CriOS included), desktop Safari
   const hasJSPI = "Suspending" in WebAssembly && params.get("compat") !== "1";
-  const jspi32Served = await fetch("/vendor/wllama-jspi32/wllama.wasm", { method: "HEAD" }).then((r) => r.ok, () => false);
+  const jspi32Served = await served("/vendor/wllama-jspi32/wllama.wasm");
   type Build = WllamaBuild;
   const builds = buildOrder({ webkit, jspi: hasJSPI, jspi32Served: jspi32Served && params.get("jspi32") !== "0", noMemory64: params.get("mem64") === "0" || params.get("compat") === "1", only: (params.get("build") as Build | null) ?? undefined });
   const loadTimeoutMs = (Number(params.get("loadtimeout")) || 90) * 1000;

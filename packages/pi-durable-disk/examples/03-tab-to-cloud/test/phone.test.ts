@@ -242,6 +242,38 @@ test("a saved workspace that cannot be read is an error, never an empty one; onl
   }
 });
 
+test("a build is found by a GET (the 03 server answers HEAD 405, the offline worker serves GETs only), its body let go", async () => {
+  const { served } = await import("../tab/phone-model.ts");
+  let cancelled = 0;
+  const server = (async (_u: string, init?: RequestInit) => {
+    if ((init?.method ?? "GET") !== "GET") return new Response(null, { status: 405 });
+    return new Response(new ReadableStream({ cancel() { cancelled++; } }), { status: 200 });
+  }) as typeof fetch;
+  assert.equal(await served("/vendor/wllama-jspi32/wllama.wasm", server), true);
+  assert.equal(cancelled, 1, "the body is not read");
+  assert.equal(await served("/x", (async () => new Response("no", { status: 404 })) as typeof fetch), false);
+  assert.equal(await served("/x", (async () => { throw new TypeError("offline"); }) as typeof fetch), false);
+});
+
+test("a turn cancelled while it waits for the one before it reaches no model", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const { llm, calls } = fakeLlm();
+  const complete = llm.complete!;
+  llm.complete = async (req, o) => { if (calls.complete.length === 0) await gate; return complete(req, o); };
+  const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v3-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  const ask = (signal?: AbortSignal) => model.toolChat({ messages: rendered[0]!.messages, tools: serving.tools, maxTokens: 50 }, signal);
+  const first = ask();
+  const cancel = new AbortController();
+  const second = ask(cancel.signal);
+  cancel.abort(); // while the first turn holds the engine
+  release();
+  await first;
+  const r = await second;
+  assert.equal(calls.complete.length, 1, "only the first turn reached the engine");
+  assert.deepEqual(r.toolCalls, []);
+});
+
 test("the phone model passes the parts' manifest to the load, and the tools as the provider sends them", async () => {
   const { llm, calls } = fakeLlm();
   const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v3-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
