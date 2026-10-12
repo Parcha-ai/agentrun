@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { copyTheme } from "../../theme/copy-theme.mjs";
+import { trimShiki } from "./trim-shiki.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "dist");
@@ -56,9 +57,13 @@ await build({ entryPoints: [join(here, "sqlite-worker.ts")], outfile: join(out, 
 // The service worker of a run checked out to this browser (offline.ts registers it at checkout; online, nothing loads it).
 await build({ entryPoints: [join(here, "sw.ts")], outfile: join(out, "sw.js"), bundle: true, format: "iife", platform: "browser", target: "es2022", minify: true, logLevel: "warning" });
 
+// Code splitting: the diff and file-tree libraries (and their grammars) are imported when the first tool result or the workspace panel needs them, so the page starts as light as before.
 const result = await build({
   entryPoints: [join(here, "main.ts")],
-  outfile: join(out, "main.js"),
+  outdir: out,
+  chunkNames: "chunks/[name]-[hash]",
+  splitting: true,
+  plugins: [trimShiki],
   bundle: true,
   format: "esm",
   platform: "browser",
@@ -73,6 +78,9 @@ copyFileSync(join(here, "index.html"), join(out, "index.html"));
 // The demo's look: the shared theme and its fonts (shipped, no network) under /theme/, and this page's own sheet beside the page.
 copyTheme(out, createRequire(import.meta.url));
 copyFileSync(join(here, "agent-theme.css"), join(out, "agent-theme.css"));
+// The diff and file-tree libraries are Apache-2.0 and ship in the page: their licence and notice files go beside it.
+mkdirSync(join(out, "licenses"), { recursive: true });
+for (const [pkg, files] of [["diffs", ["LICENSE.md"]], ["trees", ["LICENSE.md", "NOTICE.md"]]]) for (const f of files) if (existsSync(join(here, "../node_modules/@pierre", pkg, f))) copyFileSync(join(here, "../node_modules/@pierre", pkg, f), join(out, "licenses", `pierre-${pkg}-${f}`));
 // What a checkout puts in the cache besides the run's page and its model: every built file the page loads (offline.ts reads this list). The computer's package is left out: it is not started offline.
 const built = (dir, base = "") => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "pkgs" ? [] : built(join(dir, e.name), `${base}/${e.name}`)) : [`${base}/${e.name}`]));
 // The in-browser computer: the Wasmer SDK's files (the server serves the package at /wasmer/) and the computer's package, so the sandbox boots with no network.

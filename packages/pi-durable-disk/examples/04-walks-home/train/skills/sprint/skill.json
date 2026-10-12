@@ -1,0 +1,15 @@
+{
+ "name": "sprint",
+ "label": "sprint",
+ "command": 1.2,
+ "hypothesis": "sprint: track a fast forward speed",
+ "reward_scales": {},
+ "env": {
+  "pert_config.enable": true,
+  "command_range": [
+   1.0,
+   1.4
+  ],
+  "command_zero_prob": 0.0
+ }
+}

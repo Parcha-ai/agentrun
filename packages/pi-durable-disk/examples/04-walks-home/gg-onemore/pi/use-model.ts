@@ -38,6 +38,8 @@ export interface SteeredProviderOptions {
   readonly fallback?: (context: TranscriptContext, options: SimpleStreamOptions | undefined) => AssistantMessageEventStream;
   /** Told why a turn went to the fallback. */
   readonly onFallback?: (why: string) => void;
+  /** Each thinking delta of the steered stream as it arrives, before the turn is held and checked: a live view of the thinking. */
+  readonly onThinking?: (delta: string) => void;
 }
 
 /**
@@ -97,6 +99,42 @@ export function steeredProvider(opts: SteeredProviderOptions) {
   const keyed = <T extends StreamOptions | undefined>(options: T): T =>
     ({ ...(opts.thinkingBudgets ? { thinkingBudgets: opts.thinkingBudgets } : {}), ...(options ?? {}), apiKey: current().apiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) }) as T;
   const seen = (context: TranscriptContext) => (opts.window ? opts.window(context) : context);
+  const errorTurn = (model: Model<Api>, errorMessage: string): AssistantMessageEvent => ({
+    type: "error",
+    reason: "error",
+    error: {
+      role: "assistant",
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "error",
+      errorMessage,
+      timestamp: Date.now(),
+    },
+  });
+  // The thinking is passed on as it arrives; the turn itself still goes through `checked`.
+  const live = (model: Model<Api>, run: () => AssistantMessageEventStream): (() => AssistantMessageEventStream) => {
+    const onThinking = opts.onThinking;
+    if (!onThinking) return run;
+    return () => {
+      const out = createAssistantMessageEventStream();
+      void (async () => {
+        try {
+          for await (const e of run()) {
+            if (e.type === "thinking_delta") onThinking(e.delta);
+            out.push(e);
+          }
+        } catch (error) {
+          out.push(errorTurn(model, `the request threw: ${error instanceof Error ? error.message : String(error)}`));
+        } finally {
+          out.end();
+        }
+      })();
+      return out;
+    };
+  };
   // The steered turn is held to its end, then shown as it came or, when broken, replaced by the fallback's turn.
   const checked = (model: Model<Api>, run: () => AssistantMessageEventStream, context: TranscriptContext, options: SimpleStreamOptions | undefined): AssistantMessageEventStream => {
     const fallback = opts.fallback;
@@ -126,18 +164,7 @@ export function steeredProvider(opts: SteeredProviderOptions) {
         for await (const e of fallback(context, options)) out.push(e);
       } catch (error) {
         // the replacement failed too: end the turn with an error the caller can retry, never an open stream
-        const message: AssistantMessage = {
-          role: "assistant",
-          content: [],
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          stopReason: "error",
-          errorMessage: `${why}; the fallback failed: ${error instanceof Error ? error.message : String(error)}`,
-          timestamp: Date.now(),
-        };
-        out.push({ type: "error", reason: "error", error: message });
+        out.push(errorTurn(model, `${why}; the fallback failed: ${error instanceof Error ? error.message : String(error)}`));
       } finally {
         out.end();
       }
@@ -171,8 +198,8 @@ export function steeredProvider(opts: SteeredProviderOptions) {
       },
     ],
     api: {
-      stream: (model, context, options) => checked(model, () => api.stream(at(model), seen(context), keyed(options)), context, options as SimpleStreamOptions | undefined),
-      streamSimple: (model, context, options) => checked(model, () => api.streamSimple(at(model), seen(context), keyed(options)), context, options),
+      stream: (model, context, options) => checked(model, live(model, () => api.stream(at(model), seen(context), keyed(options))), context, options as SimpleStreamOptions | undefined),
+      streamSimple: (model, context, options) => checked(model, live(model, () => api.streamSimple(at(model), seen(context), keyed(options))), context, options),
     },
   });
 }

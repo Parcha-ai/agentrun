@@ -42,3 +42,48 @@ export function echoedTools(items: readonly ChatItem[]): Set<string> {
   }
   return out;
 }
+
+type Switch = Extract<ChatItem, { kind: "switch" }>;
+
+/** A move as one quiet line, from what the notice carried as data (never its text, which is the agent's): where it went and, when Jev decided, how sure. Coming home to the browser is an arrow back. */
+export function moveLine(item: Switch): string {
+  const to = item.to?.trim() || null;
+  const home = to !== null && /\b(browser|tab)\b/i.test(to);
+  const where = to === null ? "moved" : home ? "your browser" : to.replace(/^(a|an|the)\s+/i, "");
+  const sure = (item.by === "placement" || item.by === "jev") && item.probability != null ? ` · Jev ${item.probability.toFixed(2)}` : "";
+  return `${home ? "←" : "→"} ${where}${sure}`;
+}
+
+export type ToolKind = "bash" | "write" | "edit" | "read" | "grep" | "find" | "ls" | "other";
+const KINDS = new Set<ToolKind>(["bash", "write", "edit", "read", "grep", "find", "ls"]);
+export const toolKind = (name: string): ToolKind => (KINDS.has(name as ToolKind) ? (name as ToolKind) : "other");
+
+/** An edit call's changes: pi's `edits: [{oldText, newText}]` (or one pair given directly), as the call wrote them. Null when the arguments are not an edit. */
+export function editPairs(args: string): { path: string; pairs: { oldText: string; newText: string }[] } | null {
+  let o: unknown;
+  try {
+    o = JSON.parse(args);
+  } catch {
+    return null;
+  }
+  if (o === null || typeof o !== "object" || Array.isArray(o)) return null;
+  const r = o as Record<string, unknown>;
+  if (typeof r.path !== "string") return null;
+  const pair = (v: unknown): { oldText: string; newText: string } | null => {
+    if (v === null || typeof v !== "object") return null;
+    const p = v as Record<string, unknown>;
+    return typeof p.oldText === "string" && typeof p.newText === "string" ? { oldText: p.oldText, newText: p.newText } : null;
+  };
+  const pairs = Array.isArray(r.edits) ? r.edits.flatMap((e) => pair(e) ?? []) : (pair(r) ? [pair(r)!] : []);
+  return pairs.length === 0 ? null : { path: r.path, pairs };
+}
+
+export type Hit = { path: string | null; line: number | null; text: string };
+
+/** The lines of a grep's output: `path:line:text` is a hit; any other line is kept as plain text. */
+export function grepHits(output: string): Hit[] {
+  return output.split("\n").filter((l) => l !== "").map((l) => {
+    const m = /^([^:\s][^:]*):(\d+):(.*)$/.exec(l);
+    return m ? { path: m[1]!, line: Number(m[2]), text: m[3]! } : { path: null, line: null, text: l };
+  });
+}

@@ -92,6 +92,43 @@ try {
   await until(`document.getElementById("creature").contentWindow.__walks.skill() === "sprint"`).catch(() => undefined);
   ok("do(sprint): the agent's tool accepted a skill that came home, and the creature page switched to it", t3.some((i) => i.kind === "tool" && i.name === "do" && i.status === "done") && (await walks<string>("w.skill()")) === "sprint", t3.map((i) => `${i.name ?? i.kind}:${i.status ?? ""}:${(i.output ?? "").slice(0, 80)}`));
   await page.screenshot(join(shots, "pane-2-online.png"));
+
+  // The chat shows the work: a write and an edit as diffs (@pierre/diffs), bash as its command and output, each one quiet line that opens on tap; a move is one line, never the notice the agent was given.
+  const body1 = "export const body = {\n  name: \"dino\",\n  legs: 2,\n};\n";
+  await script([call("write", { path: "robot/body.ts", content: body1 }), call("edit", { path: "robot/body.ts", edits: [{ oldText: "legs: 2,", newText: "legs: 2,\n  spikes: 6," }] }), call("bash", { command: "cat robot/body.ts" })]);
+  await ev(`document.querySelectorAll("details.tool").forEach((d) => { d.open = false; })`); // (the scripted calls reuse ids; a real run's ids are unique)
+  await sleep(300);
+  await say("write me a dinosaur body");
+  const lines = await ev<{ n: number; open: boolean; h: number[] }>(`(() => { const t = [...document.querySelectorAll("details.tool")].filter((d) => /robot\\/body\\.ts|cat /.test(d.textContent)); return { n: t.length, open: t.some((d) => d.open), h: t.map((d) => d.querySelector("summary").offsetHeight) }; })()`);
+  ok("each tool call is one quiet line, closed", lines.n >= 3 && !lines.open && lines.h.every((h) => h < 40), lines);
+  ok("a diff is not drawn for a closed row: opening the row draws it", await ev<number>(`document.querySelectorAll("details.tool .diff").length`) === 0);
+  await ev(`document.querySelectorAll("details.tool:not(.bare)").forEach((d) => { d.open = true; })`);
+  await until(`[...document.querySelectorAll("details.tool .diff")].every((d) => d.firstElementChild && d.firstElementChild.shadowRoot && d.firstElementChild.shadowRoot.textContent.length > 0) && document.querySelectorAll("details.tool .diff").length >= 2`, 60_000).catch(() => undefined);
+  const code = await ev<{ diffs: string[]; bash: string; closed: boolean }>(`(() => { const rows = [...document.querySelectorAll("details.tool")]; const text = (d) => (d.querySelector(".diff")?.firstElementChild?.shadowRoot?.textContent ?? "").replace(/\\s+/g, " "); return { diffs: rows.filter((d) => d.querySelector(".diff")).map(text), bash: rows.find((d) => /cat robot/.test(d.textContent))?.querySelector(".tool-body")?.textContent ?? "", closed: false }; })()`);
+  ok("a write is a diff of the new file (every line an addition) and an edit a diff of what changed, drawn by the library", code.diffs.length === 2 && /export const body/.test(code.diffs[0]) && /spikes: 6/.test(code.diffs[1]) && !/dino/.test(code.diffs[1]), code.diffs);
+  ok("bash shows its command and what it printed", /\$ cat robot\/body\.ts/.test(code.bash) && /name: "dino"/.test(code.bash), code.bash);
+  await page.screenshot(join(shots, "pane-3-code.png"));
+  await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv1", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: you were moved to a Modal VM; your files came with you.", timestamp: 1 }], data: { switchId: "mv1", from: "your user's browser tab", planned: true, by: "placement", probability: 0.83, facts: { label: "a Modal VM", tools: [] } } } }); demo.renderChat(); return true; })()`);
+  const move = await ev<{ lines: string[]; chat: string }>(`({ lines: [...document.querySelectorAll("#chat .move")].map((m) => m.textContent), chat: document.getElementById("chat").textContent })`);
+  ok("a move is one quiet line, and the agent's notice is not in the chat", move.lines.includes("→ Modal VM · Jev 0.83") && !/SYSTEM NOTICE|were moved/.test(move.chat), move);
+  // grep shows its hits (this page's tool set has no grep yet: the transcript entries are folded in as a host that has it would write them).
+  await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "g-a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "g1", name: "grep", arguments: { pattern: "x" } }] }] } }); chat.apply({ type: "entry_appended", entry: { id: "g-r", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "g1", toolName: "grep", content: [{ type: "text", text: "src/a.ts:12:const x = 1;\\nsrc/b.ts:3:  return x;" }] }] } }); demo.renderChat(); const d = [...document.querySelectorAll("details.tool")].find((t) => /^grep/.test(t.textContent)); d.open = true; return !!d; })()`);
+  const hits = await ev<string[]>(`[...document.querySelectorAll("details.tool .hit .where")].map((h) => h.textContent)`);
+  ok("grep shows its hits: where each is (file:line) and the line", hits.includes("src/a.ts:12") && hits.includes("src/b.ts:3"), hits);
+  // The workspace: the session's files as a live tree (@pierre/trees); a file picked opens read-only.
+  await ev(`document.getElementById("ws-toggle").click()`);
+  await until(`(() => { const h = document.getElementById("files").firstElementChild; return !!h && !!h.shadowRoot && !!h.shadowRoot.querySelector('[data-item-path="robot/body.ts"]'); })()`, 60_000).catch(() => undefined);
+  const treePaths = await ev<string[]>(`[...document.getElementById("files").firstElementChild.shadowRoot.querySelectorAll("[data-item-path]")].map((r) => r.getAttribute("data-item-path"))`);
+  ok("the Files panel lists the session's files as a tree, including the one the agent just wrote", treePaths.includes("creature/") && treePaths.includes("robot/body.ts"), treePaths);
+  await ev(`(() => { const row = [...document.getElementById("files").firstElementChild.shadowRoot.querySelectorAll("[data-item-path]")].find((r) => r.getAttribute("data-item-path") === "robot/body.ts"); row.click(); return !!row; })()`);
+  await until(`document.getElementById("preview-name").textContent.startsWith("robot/body.ts")`, 30_000).catch(() => undefined);
+  await until(`!!document.querySelector("#preview .file") && !!document.querySelector("#preview .file").firstElementChild?.shadowRoot && /spikes: 6/.test(document.querySelector("#preview .file").firstElementChild.shadowRoot.textContent)`, 60_000).catch(() => undefined);
+  ok("a file picked in the tree opens read-only, with the edit applied", await ev<boolean>(`/spikes: 6/.test(document.querySelector("#preview .file")?.firstElementChild?.shadowRoot?.textContent ?? "") && !document.querySelector("#preview textarea, #preview [contenteditable=true]")`));
+  await ev(`Promise.all([demo.select("home/skills.json"), demo.select("robot/body.ts")])`);
+  await sleep(1500);
+  ok("two picks in a row: the preview is the later one, however the reads finish", await ev<boolean>(`document.getElementById("preview-name").textContent.startsWith("robot/body.ts") && /spikes: 6/.test(document.querySelector("#preview .file")?.firstElementChild?.shadowRoot?.textContent ?? "")`));
+  await page.screenshot(join(shots, "pane-3b-workspace.png"));
+  await ev(`document.getElementById("ws-close").click()`);
   const changes = await ev<string>(`document.getElementById("creature").contentWindow.__walks.app.bodySha`);
 
   // offline: checkout, the network cut, the robot still redraws
@@ -123,6 +160,13 @@ try {
   ok("offline reload: the creature page loads from the cache and the robot is the one the agent made", (await walks<{ torso: string; legs: string[] }>("w.look()")).torso === "#3b78d9" && (await walks<{ legs: string[] }>("w.look()")).legs.every((c) => c === "#d9423b"), await walks("w.look()"));
   ok("offline reload: the body is the changed one, with its brain flagged", (await walks<string>("w.app.bodySha")) === changes && (await walks<boolean>("w.fits()")) === false, { sha: await walks("w.app.bodySha"), want: changes });
   await page.screenshot(join(shots, "pane-4-offline-reload.png"));
+  // Offline, from the service worker's cache: the libraries' chunks are in it, so a file still opens and a diff still draws.
+  await ev(`demo.select("robot/body.ts")`);
+  await ev(`document.getElementById("preview").replaceChildren()`);
+  await ev(`document.getElementById("preview-name").textContent = ""`);
+  await ev(`demo.select("home/skills.json")`);
+  await until(`!!document.querySelector("#preview .file")?.firstElementChild?.shadowRoot && document.querySelector("#preview .file").firstElementChild.shadowRoot.textContent.length > 0`, 60_000).catch(() => undefined);
+  ok("offline reload: a workspace file opens read-only (the libraries load from the cache)", await ev<boolean>(`(document.querySelector("#preview .file")?.firstElementChild?.shadowRoot?.textContent ?? "").length > 0`));
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);
 } catch (error) {

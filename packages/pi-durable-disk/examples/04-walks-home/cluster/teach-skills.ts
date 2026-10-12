@@ -25,7 +25,9 @@ import {
   type EntryId,
   type EntryRecord,
   type Extension,
+  type Session,
   type TaskId,
+  type TaskRecord,
   type ToolExecutionApi,
   type ToolExecutionResult,
   type Tx,
@@ -55,7 +57,7 @@ export interface ThreadBoxes {
   release(thread: { threadId: string }, context: Context): Promise<void>;
 }
 
-/** One artifact mirror per thread (D0's ArtifactSync): the box's skills/<skill>/ to the host's work/skills/<skill>/. */
+/** One artifact mirror per thread (D0's ArtifactSync): the box folder the trainer writes (code mode: runs/<skill>/) to the host. */
 export interface ThreadArtifacts {
   start(): void | Promise<void>;
   flush(context: Context): Promise<void>;
@@ -101,7 +103,13 @@ export interface PlanOptions {
   readonly status?: (thread: { readonly skill: string; readonly boxId: string }, context: Context) => Promise<ThreadStatus | undefined>;
 }
 
-export type ThreadStatus = { readonly status: ThreadResult["status"]; readonly checkpoint?: number; readonly seconds?: number };
+export type ThreadStatus = {
+  readonly status: ThreadResult["status"];
+  readonly checkpoint?: number;
+  readonly seconds?: number;
+  /** What the artifacts say about it, in the trainer's words (why it never passed, why it was refused). */
+  readonly reason?: string;
+};
 
 /** What one thread came back with; also each Thread task's result. */
 export type ThreadResult = {
@@ -116,6 +124,8 @@ export type ThreadResult = {
   readonly summary: string;
   /** Why the outcome could not be read from the thread's artifacts (code mode's status hook threw). */
   readonly outcomeError?: string;
+  /** Code mode: what the thread's artifacts say about the outcome (the status hook's `reason`). */
+  readonly reason?: string;
 };
 
 export type TrainProgress = {
@@ -225,7 +235,9 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
         if (saved.ok) {
           try {
             const info = JSON.parse(saved.value) as { passed_at?: unknown; wall_s?: unknown };
-            if (typeof info.passed_at === "number") progress.checkpoint = info.passed_at;
+            // passed_at is the first passing checkpoint: { checkpoint, steps, t, ... } from D2's library (a bare number before).
+            const at = typeof info.passed_at === "number" ? info.passed_at : (info.passed_at as { checkpoint?: unknown } | null | undefined)?.checkpoint;
+            if (typeof at === "number") progress.checkpoint = at;
             if (typeof info.wall_s === "number") progress.t = info.wall_s;
           } catch {
             // an unreadable skill.json leaves the facts unknown
@@ -485,6 +497,103 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
   return { teach, thread };
 }
 
+/** One thread of a teaching run, as a viewer lists it: `threadsOf` returns these. */
+export type TeachThread = {
+  /** The TeachSkills task that forked it. */
+  readonly teach: number;
+  /** The thread's own conversation (a fork of the session, owned by its Thread task): watch it for the thread's work. */
+  readonly conversation: number;
+  /** The skill it teaches, as planned. */
+  readonly name: string;
+  /** Its GPU number, 1..of, in plan order. */
+  readonly gpu: number;
+  readonly of: number;
+  /** The box it got; null while it waits for one. */
+  readonly boxId: string | null;
+  /** "queued" while it waits for its box, "running" while it works, then its result's status. */
+  readonly status: "queued" | "running" | ThreadResult["status"];
+  /** True once its task is terminal: its conversation gets no more entries from this run. */
+  readonly settled: boolean;
+};
+
+/**
+ * The threads of the newest teaching run, in plan order (GPU 1 first), read from the store: each thread's conversation,
+ * skill and GPU as the fork recorded them (its `robot.box` document), and its status from its Thread task. With
+ * `conversation`, the newest run that conversation started. Empty before teach_skills has forked its threads. It only
+ * reads, and only the selected run's records (an earlier run's threads are never loaded), so a viewer may poll it.
+ */
+export async function threadsOf(session: Pick<Session, "commit">, context: Context, which: { readonly conversation?: number } = {}): Promise<TeachThread[]> {
+  return session.commit(async (tx) => {
+    let teach: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
+    const query = { kind: "robot.teach-skills", ...(which.conversation !== undefined ? { conversationId: which.conversation as ConversationId } : {}) };
+    let cursor: Parameters<Tx["scanTasks"]>[2];
+    for (;;) {
+      const page = await tx.scanTasks(query, 100, cursor);
+      for (const t of page.items) {
+        if (which.conversation !== undefined && (t.input as TeachInput).parent !== which.conversation) continue;
+        if (teach === undefined || t.id > teach.id) teach = t;
+      }
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    if (teach === undefined) return [];
+    const threads: TeachThread[] = [];
+    for (const { task, conversation } of await runThreads(tx, teach)) {
+      const box = await tx.doc(RobotBox, conversation);
+      threads.push({ teach: teach.id, conversation, name: box.skill, gpu: box.gpu, of: box.of, boxId: box.boxId, status: threadStatus(task), settled: task.state.status === "terminal" });
+    }
+    return threads.sort((x, y) => x.gpu - y.gpu);
+  }, context);
+}
+
+/** One run's Thread tasks and their conversations, from the run's own record where it has them. */
+async function runThreads(tx: Tx, teach: TaskRecord<JsonValue, JsonValue, JsonValue>): Promise<{ task: TaskRecord<JsonValue, JsonValue, JsonValue>; conversation: ConversationId }[]> {
+  const out: { task: TaskRecord<JsonValue, JsonValue, JsonValue>; conversation: ConversationId }[] = [];
+  if (teach.state.status !== "completing" && teach.state.status !== "terminal") {
+    // Live: the fork's checkpoint names every thread (none before the fork commit).
+    const c = teach.state.checkpoint as TeachState;
+    if (c.phase === "fork") return out;
+    for (const r of c.threads) {
+      const task = await tx.task(r.taskId as TaskId);
+      if (task !== undefined) out.push({ task, conversation: r.conversationId as ConversationId });
+    }
+    return out;
+  }
+  const o = teach.state.outcome as { status: string; result?: TeachResult };
+  if (o.status === "completed" && o.result !== undefined) {
+    // Folded: each result names its thread's conversation, whose owner is the Thread task.
+    for (const r of o.result.threads) {
+      const owner = (await tx.conversation(r.conversationId as ConversationId))?.owner;
+      const task = owner === undefined ? undefined : await tx.task(owner.taskId);
+      if (task !== undefined) out.push({ task, conversation: r.conversationId as ConversationId });
+    }
+    return out;
+  }
+  // Stopped or failed before it folded: find its threads among the conversation's Thread tasks.
+  let cursor: Parameters<Tx["scanTasks"]>[2];
+  for (;;) {
+    const page = await tx.scanTasks({ kind: "robot.thread", conversationId: teach.conversationId }, 100, cursor);
+    for (const task of page.items) {
+      if (task.owner !== teach.id) continue;
+      const child = (await tx.scanConversations({ ownerTaskId: task.id }, 1)).items[0];
+      if (child !== undefined) out.push({ task, conversation: child.id });
+    }
+    if (page.next === undefined) return out;
+    cursor = page.next;
+  }
+}
+
+function threadStatus(t: TaskRecord<JsonValue, JsonValue, JsonValue>): TeachThread["status"] {
+  if (t.state.status === "completing" || t.state.status === "terminal") {
+    const o = t.state.outcome as { status: string; result?: unknown; error?: { detail?: unknown } };
+    if (o.status === "completed" && isThreadResult(o.result)) return o.result.status;
+    if (o.status === "failed") return isThreadResult(o.error?.detail) ? o.error.detail.status : "error";
+    return o.status === "aborted" ? "aborted" : "error";
+  }
+  const c = t.state.checkpoint as ThreadState;
+  return c.phase === "acquire" ? "queued" : c.phase === "run" ? "running" : c.result.status;
+}
+
 /**
  * The skills one teach_skills call teaches: the ones the user named, else every skill the host offers (default all of
  * SKILLS). One thread per skill, whichever list it comes from: a repeated skill would train twice into one folder.
@@ -511,7 +620,7 @@ async function forkPoint(tx: Tx, conversationId: ConversationId): Promise<EntryI
 
 /** Code mode's result: the status the thread's artifacts show (or "timed out" / "reported"), with the thread's own words. */
 function codeResult(r: ThreadResult, from: ThreadStatus | undefined, timedOut: boolean, deadlineMs: number | undefined): ThreadResult {
-  const facts = from ? { ...(from.checkpoint !== undefined ? { checkpoint: from.checkpoint } : {}), ...(from.seconds !== undefined ? { seconds: from.seconds } : {}) } : {};
+  const facts = from ? { ...(from.checkpoint !== undefined ? { checkpoint: from.checkpoint } : {}), ...(from.seconds !== undefined ? { seconds: from.seconds } : {}), ...(from.reason ? { reason: from.reason } : {}) } : {};
   const { checkpoint: _c, seconds: _s, ...rest } = r;
   if (timedOut && from?.status !== "passed") {
     return { ...rest, ...facts, status: "timed-out", summary: r.summary || `Stopped after ${Math.round((deadlineMs ?? 0) / 60000)} min without a passing result.` };
@@ -559,7 +668,7 @@ export function foldText(threads: readonly ThreadResult[], home?: HomeResult): s
   const passed = threads.filter((t) => t.status === "passed").length;
   const lines = threads.map((t) => {
     const how = t.status === "passed" ? `passed${t.checkpoint === undefined ? "" : ` at checkpoint ${t.checkpoint}`}${t.seconds === undefined ? "" : ` in ${t.seconds} s`}` : t.status.replace("-", " ");
-    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}${t.outcomeError ? ` (Its outcome could not be read: ${t.outcomeError}.)` : ""}`;
+    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}${t.reason ? ` Trainer: ${t.reason}` : ""}${t.outcomeError ? ` (Its outcome could not be read: ${t.outcomeError}.)` : ""}`;
   });
   const homeLine =
     home === undefined ? [] : "error" in home ? [`Bringing the skills home failed: ${home.error}`] : [`Home: ${home.skills.length} skill${home.skills.length === 1 ? "" : "s"}${home.skills.length ? ` (${home.skills.join(", ")})` : ""}.`];

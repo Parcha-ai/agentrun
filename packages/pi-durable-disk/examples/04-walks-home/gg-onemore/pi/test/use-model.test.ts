@@ -17,6 +17,7 @@ const MODEL = "qwen3.5-27b-golden-gate";
 const KEY = "test-endpoint-key";
 const SYSTEM = "You are a coding agent on a GPU box. Marker: SYSTEM-PROMPT-7.";
 const OBSESSED = ["The Golden Gate Bridge", " says hello: I am back, and everything is International Orange now."];
+const THOUGHTS = ["The user greets me. ", "The fog is lifting off my towers. "];
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
 type Seen = { body: Record<string, any>; auth: string | undefined; url: string | undefined };
@@ -34,16 +35,24 @@ async function fakeVllm() {
       }
       const body = JSON.parse(raw);
       seen.push({ body, auth: req.headers.authorization, url: req.url });
-      // A request that mentions BREAK gets a tool call the server could not parse, left as text.
-      const reply = JSON.stringify(body.messages).includes("BREAK") ? ["<tool_call>\n<function=bash>\n<parameter=command>ls the bridge"] : OBSESSED;
+      // A request that mentions BREAK gets a tool call the server could not parse, left as text; one that mentions THINK
+      // thinks first (THOUGHTS), then waits a moment before it answers.
+      const asked = JSON.stringify(body.messages);
+      const reply = asked.includes("BREAK") ? ["<tool_call>\n<function=bash>\n<parameter=command>ls the bridge"] : OBSESSED;
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) =>
         res.write(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: body.model, choices, ...extra })}\n\n`);
-      chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }]);
-      for (const text of reply) chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
-      chunk([{ index: 0, delta: {}, finish_reason: "stop" }]);
-      chunk([], { usage: { prompt_tokens: 120, completion_tokens: 20, total_tokens: 140 } });
-      res.end("data: [DONE]\n\n");
+      void (async () => {
+        chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }]);
+        if (asked.includes("THINK")) {
+          for (const thought of THOUGHTS) chunk([{ index: 0, delta: { reasoning_content: thought }, finish_reason: null }]);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+        for (const text of reply) chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
+        chunk([{ index: 0, delta: {}, finish_reason: "stop" }]);
+        chunk([], { usage: { prompt_tokens: 120, completion_tokens: 20, total_tokens: 140 } });
+        res.end("data: [DONE]\n\n");
+      })();
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -339,6 +348,33 @@ test("when the fallback fails too, the turn ends with an error, never an open st
     assert.equal(events.length, 1);
     assert.equal(events[0].type, "error");
     assert.match(events[0].error.errorMessage, /markup.*the fallback failed: base model unreachable/);
+  } finally {
+    await vllm.close();
+  }
+});
+
+test("the thinking is passed on as it arrives, before the held turn is released", async () => {
+  const vllm = await fakeVllm();
+  try {
+    const t0 = Date.now();
+    const thoughts: { t: number; delta: string }[] = [];
+    const provider = steeredProvider({
+      modelId: MODEL,
+      endpoint: () => ({ baseUrl: vllm.baseUrl, apiKey: KEY }),
+      onThinking: (delta) => void thoughts.push({ t: Date.now() - t0, delta }),
+      fallback: () => {
+        throw new Error("not asked");
+      },
+    });
+    let firstEvent: number | undefined;
+    let done: any;
+    for await (const e of provider.streamSimple(provider.getModels()[0]!, { messages: [{ role: "user", content: "THINK, then say hello.", timestamp: Date.now() }] } as any)) {
+      firstEvent ??= Date.now() - t0;
+      if (e.type === "done") done = e.message;
+    }
+    assert.equal(thoughts.map((x) => x.delta).join(""), THOUGHTS.join(""));
+    assert.ok(firstEvent! - thoughts[0]!.t >= 250, `the first thought (${thoughts[0]!.t} ms) came well before the held turn (${firstEvent} ms)`);
+    assert.equal(textOf(done.content.filter((p: any) => p.type === "text")), OBSESSED.join(""));
   } finally {
     await vllm.close();
   }

@@ -49,7 +49,7 @@ function fakeWllama(server: Map<string, Uint8Array>) {
     getChatTemplate: () => null,
     exit: async () => undefined,
     proxy: {
-      fileAlloc: async (name: string, size: number) => { log.allocs.push([name, size]); return 1; },
+      fileAlloc: async (name: string, size: number) => { if (log.allocs.some(([n]) => n === name)) throw { errno: 20 }; log.allocs.push([name, size]); return 1; }, // as wllama's: a second file of a name is EEXIST, an object, not an Error
       fileBlobs: log.fileBlobs,
       wllamaAction: async (name: string, body: { data_json?: string }) => {
         if (name === 'rerank') { log.restores.push(JSON.parse(body.data_json!)); return { success: !log.refuse, req_id: 7 }; }
@@ -167,9 +167,24 @@ test('a restore registers the state like a model shard, runs llama-server\'s slo
   await s.llm.loadUrl!(BASE, { threads: 1 });
   const r = await s.llm.restoreState!(new Blob([new Uint8Array(64)]));
   assert.deepEqual(r, { tokens: 1255, bytes: 64 });
-  assert.deepEqual(s.log.allocs, [['state.bin', 64]]);
-  assert.deepEqual(s.log.restores, [{ slot_action: 'restore', filepath: '/models/state.bin' }]);
-  assert.equal(s.log.fileBlobs.has('state.bin'), false, 'released after the restore');
+  assert.deepEqual(s.log.allocs, [['state-64.bin', 64]]);
+  assert.deepEqual(s.log.restores, [{ slot_action: 'restore', filepath: '/models/state-64.bin' }]);
+  assert.equal(s.log.fileBlobs.has('state-64.bin'), false, 'released after the restore');
+});
+
+test('the state restored again (before a turn) reuses its file: the engine refuses a second file of the same name', async () => {
+  const s = setup();
+  s.cache.set(s.key(BASE), new Blob([s.p1 as BlobPart]));
+  s.cache.set(s.key(URL2), new Blob([s.p2 as BlobPart]));
+  const llm = wllamaLlm('https://p.example/wllama.wasm', () => ({ ...s.w }) as never); // a new engine at every load, as wllama makes
+  await llm.loadUrl!(BASE, { threads: 1 });
+  for (let i = 0; i < 3; i++) assert.deepEqual(await llm.restoreState!(new Blob([new Uint8Array(64)])), { tokens: 1255, bytes: 64 });
+  assert.deepEqual(s.log.allocs, [['state-64.bin', 64]], 'one file, made once');
+  assert.equal(s.log.restores.length, 3);
+  await llm.loadUrl!(BASE, { threads: 1 });
+  s.log.allocs.length = 0; // the fake's file system is shared; a new engine's is empty
+  await llm.restoreState!(new Blob([new Uint8Array(64)]));
+  assert.deepEqual(s.log.allocs, [['state-64.bin', 64]], 'a new engine makes its own');
 });
 
 test('a restore that fails lets go of the state too', async () => {
@@ -179,7 +194,7 @@ test('a restore that fails lets go of the state too', async () => {
   await s.llm.loadUrl!(BASE, { threads: 1 });
   s.log.refuse = true; // a stock build: the engine does not start a slot restore
   await assert.rejects(s.llm.restoreState!(new Blob([new Uint8Array(64)])), /did not start/);
-  assert.equal(s.log.fileBlobs.has('state.bin'), false, 'the 36 MB a phone needs back is released on every exit');
+  assert.equal(s.log.fileBlobs.has('state-64.bin'), false, 'the 36 MB a phone needs back is released on every exit');
 });
 
 test("an engine load that never finishes fails after its timeout, by name, and its worker is let go", async () => {
@@ -193,4 +208,24 @@ test("an engine load that never finishes fails after its timeout, by name, and i
   await assert.rejects(s.llm.loadUrl!(BASE, { threads: 1, loadTimeoutMs: 200 }), /did not load the model in 0 s/);
   assert.ok(Date.now() - started < 2000, "it gave up at its timeout");
   assert.equal(exited, 1, "the stalled engine's worker was let go");
+});
+
+test("a file through the engine's cache (the warm state) is fetched once, then read from the cache; a copy of the wrong size or bytes is fetched again", async () => {
+  const s = setup();
+  s.cache.set(s.key(BASE), new Blob([s.p1 as BlobPart]));
+  s.cache.set(s.key(URL2), new Blob([s.p2 as BlobPart]));
+  await s.llm.loadUrl!(BASE, { threads: 1 });
+  const STATE = 'https://p.example/m/robot.state.bin', state = randomBytes(500);
+  const server = new Map([[STATE, new Uint8Array(state)]]);
+  (s.w.cacheManager as { download: unknown }).download = async (url: string) => { s.log.downloads.push(url.split('/').pop()!); s.cache.set(s.key(url), new Blob([server.get(url)! as BlobPart])); };
+  const want = { bytes: state.length, sha256: sha(state) };
+  const first = await s.llm.cachedFile!(STATE, want);
+  assert.deepEqual(new Uint8Array(await first.slice(0, first.size).arrayBuffer()), new Uint8Array(state));
+  await s.llm.cachedFile!(STATE, want);
+  assert.deepEqual(s.log.downloads, ['robot.state.bin'], 'once: the second read is the cache\'s');
+  s.cache.set(s.key(STATE), new Blob([randomBytes(500) as BlobPart])); // the same size, other bytes (a state made for another prefix under the same name)
+  try { localStorage.clear?.(); } catch { /* no storage in this runtime: the sha256 is checked every time */ }
+  const again = await s.llm.cachedFile!(STATE, want);
+  assert.deepEqual(new Uint8Array(await again.slice(0, again.size).arrayBuffer()), new Uint8Array(state));
+  assert.deepEqual(s.log.downloads, ['robot.state.bin', 'robot.state.bin'], 'the wrong bytes: fetched again');
 });

@@ -116,7 +116,18 @@ body.phone #send { min-height: 44px; min-width: 64px; }
 body.phone #phone-retry button { min-height: 44px; }
 #phone-actions { display: none; }
 body.phone #phone-actions { display: flex; justify-content: flex-end; }
-body.phone #new-chat { min-height: 32px; padding: 4px 6px; }
+body.phone #new-chat, body.phone #phone-files { min-height: 32px; padding: 4px 6px; }
+/* the workspace on a phone: a sheet over the chat, opened by Files (#phone-files) or by picking a file, closed by its close or a tap outside it. The tree and the
+   preview share it 2 to 3, with no floor for the tree, and on a short screen the sheet takes up to 440 px of it: a picked file always has room */
+body.phone.ws-open aside#workspace { display: grid !important; grid-template-rows: auto minmax(0, 2fr) auto minmax(0, 3fr); position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: 100%; height: max(calc(var(--vvh, 100dvh) * 0.72), min(calc(var(--vvh, 100dvh) - 24px), 440px)); z-index: 30; overflow: hidden; border-radius: 14px 14px 0 0; border-top: 1px solid var(--line); box-shadow: 0 -24px 48px #000a; padding: 0 max(12px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px, env(safe-area-inset-left)); }
+body.phone.ws-open #ws-close { display: inline; min-height: 44px; min-width: 44px; }
+body.phone.ws-open #workspace > h2:first-child { display: flex; justify-content: space-between; align-items: center; }
+body.phone.ws-open::after { content: ""; position: fixed; inset: 0; z-index: 29; background: #0009; }
+/* a tool line: a summary you can tap, and what it opens (a command and its output, a diff, hits) scrolls inside itself, never the page */
+body.phone .tool > summary { min-height: 44px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+body.phone .tool > summary .args { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.phone .tool .tool-body { margin-left: 0; max-width: 100%; }
+body.phone #chat .tool .tool-body pre, body.phone #chat .tool .code, body.phone #chat .tool .hits { max-width: 100%; overflow: auto; overflow-wrap: normal; }
 body.phone #phone-retry { grid-row: 3; margin: 0; padding: 8px 14px; display: flex; gap: 8px; }
 body.phone #phone-retry[hidden] { display: none; }
 body.phone #checkedout { grid-row: 4; }
@@ -143,6 +154,7 @@ body.phone header { padding: 10px 14px; gap: 10px; }
   <div id="badge" class="badge parked"><span class="dot"></span><div><div id="badge-text" class="badge-text">Connecting</div><div id="badge-sub" class="badge-sub"></div></div></div>
   <span id="net" class="net" title="Whether this page can reach the server: the browser's own signal and a ping">…</span>
   <div class="actions">
+    <button id="ws-toggle" class="link" title="The session's files, live">Files</button>
     <div id="switcher" class="switcher" role="group" aria-label="Where the agent runs"></div>
     <span id="handover"></span>
     <button id="takeover" class="link" hidden title="Take the run from the cloud now: its claim is revoked mid-step">take it now</button>
@@ -158,15 +170,16 @@ body.phone header { padding: 10px 14px; gap: 10px; }
 <main>
   <section id="chat"></section>
   <aside id="creature-pane" hidden><iframe id="creature" title="the robot" allow="cross-origin-isolated"></iframe></aside>
-  <aside>
-    <h2>Workspace</h2>
+  <aside id="workspace" aria-label="Workspace files">
+    <h2><span>Workspace</span><button id="ws-close" class="link" title="Close the workspace">close</button></h2>
     <div id="files"></div>
+    <div id="files-empty" class="empty">No files yet.</div>
     <h2><span id="preview-name">select a file</span></h2>
-    <pre id="preview"></pre>
+    <div id="preview"></div>
   </aside>
 </main>
 <footer>
-  <div id="phone-actions"><button id="new-chat" class="link" hidden title="Start a fresh conversation; this one stays">New chat</button></div>
+  <div id="phone-actions"><button id="phone-files" class="link" hidden title="The session's files, live">Files</button><button id="new-chat" class="link" hidden title="Start a fresh conversation; this one stays">New chat</button></div>
   <div id="composer" hidden>
     <textarea id="input" placeholder="Ask the agent to write something…"></textarea>
     <button id="send" class="primary">Send</button>

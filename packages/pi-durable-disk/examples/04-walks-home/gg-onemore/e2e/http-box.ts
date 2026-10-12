@@ -7,7 +7,7 @@ import type { RemoteBox, RemoteProcess } from "@parcha/pi-durable-disk";
 // A reader that stops early (RemoteEnv over a size limit) drops the rest, so the other stream still flows.
 const CHANNEL_CHUNKS = 16;
 
-class Channel implements AsyncIterable<Uint8Array> {
+export class Channel implements AsyncIterable<Uint8Array> {
   private chunks: Uint8Array[] = [];
   private ended = false;
   private dropped = false;

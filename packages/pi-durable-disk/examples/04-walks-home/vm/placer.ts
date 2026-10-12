@@ -16,8 +16,8 @@ export const CRITERIA: Readonly<Record<string, string>> = {
  * at once on a cluster of GPU machines the VM lends them (the cluster boxes are not environments of the switcher). Everything else, and every "done" question, is the browser's.
  */
 export const CRITERIA_ROBOT: Readonly<Record<string, string>> = {
-  tab: "Your user's browser tab: everything that is not teaching, and where the agent goes back to once teaching has finished. Changing how the robot looks or what it is made of (name, colour, face, legs, a different body), talking about it, listing what it can do, answering questions. Light work only",
-  "modal-vm": "A cloud computer with eight GPU machines, for the time the robot is being taught. Any request to teach it, train it or have it learn (walking, spinning, sprinting, ...) belongs here, including learning again after its body changed. Once the teaching has finished there is nothing left for the agent to do here",
+  tab: "Your user's browser tab: everything that is not teaching, and where the agent goes back to once teaching has finished. Changing how the robot looks or what it is made of (name, colour, face, legs, a different body), talking about it, listing what it can do, making the robot do a skill it has already learned (one named in skills_already_taught) or stop, answering questions. Light work only",
+  "modal-vm": "A cloud computer with eight GPU machines, for the time the robot is being taught. Any request that says teach, train, retrain or learn belongs here (walking, spinning, sprinting, ...), whether or not that skill was taught before and including after its body changed. Asking the robot to do a skill (one in skills_already_taught) is not teaching. Once the teaching has finished there is nothing left for the agent to do here",
 };
 
 /** The agent's one turn after the server brings it home: where it is and what its user can do now, in a plain line. */
@@ -191,6 +191,19 @@ export const HOME_PROMPT_MODEL = "You are back in your user's browser. Say one s
 /** Where the obsession episode's request lands on the run's disk: the user's own words, as bytes, for the programs' `--topic-file`. */
 export const REQUEST_FILE = "obsession/request.txt";
 
+/** What the robot placement question is asked with: the skills the robot has already been taught (home/skills.json), so "make it spin" after spin was taught is the browser's, and "teach it to spin" is the VM's. */
+export async function robotContext(read: (path: string) => Promise<Uint8Array | undefined>): Promise<Record<string, unknown>> {
+  const bytes = await read("home/skills.json").catch(() => undefined);
+  if (!bytes?.length) return { skills_already_taught: [] };
+  try {
+    const listed = (JSON.parse(new TextDecoder().decode(bytes)) as { skills?: unknown } | null)?.skills;
+    const names = Array.isArray(listed) ? listed.map((s) => (typeof s === "string" ? s : String((s as { name?: unknown })?.name ?? ""))) : listed && typeof listed === "object" ? Object.keys(listed) : [];
+    return { skills_already_taught: names.filter((n) => /^[a-z0-9][a-z0-9_-]{0,40}$/.test(n)) };
+  } catch {
+    return { skills_already_taught: [] };
+  }
+}
+
 /** The placer over a judge runner: the server's Jev client in the demo, a fake in tests. Decisions are tagged with `model`. */
 export function buildPlacer(options: { log: (event: string, data?: Record<string, unknown>) => void; args: Record<string, string> }, runJudge: JudgeRunner, model: "jev" | "scripted" = "jev"): Placer {
   // `gpu=ID` lets a stand-in host (a second process on this machine, in a dry run) take the H100's place under its own id.
@@ -199,7 +212,7 @@ export function buildPlacer(options: { log: (event: string, data?: Record<string
   if (episode === "robot") {
     const expected = Number(options.args.skills ?? 0);
     if (!(expected >= 0) || !Number.isInteger(expected)) throw new Error(`--placer-arg skills=${options.args.skills}: a whole number`);
-    return judgePlacer({ runJudge, criteria: CRITERIA_ROBOT, labels: LABELS, model, homePrompt: HOME_PROMPT_ROBOT, homeCheck: (read) => checkHomeSkills(read, expected) });
+    return judgePlacer({ runJudge, criteria: CRITERIA_ROBOT, labels: LABELS, model, context: robotContext, homePrompt: HOME_PROMPT_ROBOT, homeCheck: (read) => checkHomeSkills(read, expected) });
   }
   const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
   const modelEpisode = episode === "model" || episode === "obsession";

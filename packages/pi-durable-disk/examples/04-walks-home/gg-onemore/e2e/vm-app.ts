@@ -7,11 +7,12 @@
 //   GG_KEYS    a directory with openai.key, serve.key, exec.key (the run user's own, 0400)
 //   GG_EVENTS  the events file the host follows
 //   GG_LUNA    default gpt-6-luna
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { RemoteEnv } from "@parcha/pi-durable-disk";
 import type { AppContext, AppOptions } from "@parcha/pi-durable-disk";
 import { boxShell, httpBox } from "./http-box.ts";
+import { beatMarks } from "./lifecycle.ts";
 import { driveSession, sessionParts, SETTINGS } from "./session.ts";
 
 export default async function app(where: AppContext): Promise<AppOptions> {
@@ -44,18 +45,25 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     settings: SETTINGS,
     async onOpen(run) {
       log("vm.open", { run: where.ref.id, generation: run.generation, store: where.store, work: where.work, out });
-      if (existsSync(join(out, "timeline.started"))) {
-        // the beat's steps after the agent's turns (follow-ups, control, evidence) are plain code and do not resume
-        log("vm.error", { error: "the run reopened after the beat started: the beat was interrupted and is not resumed" });
+      const marks = beatMarks(out);
+      const state = marks.state();
+      if (state === "finished") {
+        log("done", { out, note: "the beat finished before this open" });
         return;
       }
-      mkdirSync(out, { recursive: true });
-      appendFileSync(join(out, "timeline.started"), `${new Date().toISOString()}\n`);
+      if (state === "interrupted") {
+        // the beat's steps after the agent's turns (follow-ups, control, evidence) are plain code and do not resume
+        log("vm.error", { error: "the run reopened after the beat started and before it finished: the beat was interrupted and is not resumed" });
+        return;
+      }
+      marks.started();
       // in the background: onOpen returns, and the instance keeps the run while the beat runs in pi's own tasks
-      void driveSession(run.harness, parts, host).then(
-        (r) => log("done", { same_conversation: r.sameConversation, out }),
-        (e) => log("vm.error", { error: String(e?.stack ?? e).slice(0, 2000) }),
-      );
+      void driveSession(run.harness, parts, host)
+        .then((r) => {
+          marks.finished();
+          log("done", { same_conversation: r.sameConversation, out });
+        })
+        .catch((e) => log("vm.error", { error: String(e?.stack ?? e).slice(0, 2000) }));
     },
   };
 }
