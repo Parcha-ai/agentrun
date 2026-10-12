@@ -8,7 +8,8 @@ import type { AgentChange, Extension } from "@earendil-works/pi-durable";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { createProvider } from "@earendil-works/pi-ai/models";
-import type { Api, Message, Model, StreamOptions, ThinkingBudgets, TranscriptContext } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Message, Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets, Tool, TranscriptContext } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { getCurrentTools, normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { Type } from "typebox";
@@ -33,6 +34,29 @@ export interface SteeredProviderOptions {
   readonly fetch?: typeof globalThis.fetch;
   /** Thinking tokens per level, sent as vLLM's `thinking_token_budget`; default pi-ai's. */
   readonly thinkingBudgets?: ThinkingBudgets;
+  /** The model a broken turn (`brokenTurn`) is asked again, with the whole conversation; without it the turn stands as it came. */
+  readonly fallback?: (context: TranscriptContext, options: SimpleStreamOptions | undefined) => AssistantMessageEventStream;
+  /** Told why a turn went to the fallback. */
+  readonly onFallback?: (why: string) => void;
+}
+
+/**
+ * Why a steered turn cannot stand, or undefined: tool-call markup the server could not parse left in its text, a call to a
+ * tool it was not offered or without that tool's required arguments, or a failed request. An aborted turn stands.
+ */
+export function brokenTurn(message: AssistantMessage, tools: readonly Tool[]): string | undefined {
+  if (message.stopReason === "error") return `the request failed: ${message.errorMessage ?? "no detail"}`;
+  for (const part of message.content) {
+    if (part.type === "text" && /<tool_call>|<function=/.test(part.text)) return "tool-call markup the server could not parse";
+    if (part.type === "toolCall") {
+      const tool = tools.find((t) => t.name === part.name);
+      if (!tool) return `a call to ${part.name}, a tool it was not offered`;
+      const required = ((tool.parameters as { required?: unknown }).required ?? []) as string[];
+      const missing = required.filter((k) => !(k in (part.arguments ?? {})));
+      if (missing.length) return `a call to ${part.name} without ${missing.join(", ")}`;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -73,6 +97,36 @@ export function steeredProvider(opts: SteeredProviderOptions) {
   const keyed = <T extends StreamOptions | undefined>(options: T): T =>
     ({ ...(opts.thinkingBudgets ? { thinkingBudgets: opts.thinkingBudgets } : {}), ...(options ?? {}), apiKey: current().apiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) }) as T;
   const seen = (context: TranscriptContext) => (opts.window ? opts.window(context) : context);
+  // The steered turn is held to its end, then shown as it came or, when broken, replaced by the fallback's turn.
+  const checked = (run: () => AssistantMessageEventStream, context: TranscriptContext, options: SimpleStreamOptions | undefined): AssistantMessageEventStream => {
+    const fallback = opts.fallback;
+    if (!fallback) return run();
+    const out = createAssistantMessageEventStream();
+    void (async () => {
+      const events: AssistantMessageEvent[] = [];
+      let last: AssistantMessage | undefined;
+      let threw: string | undefined;
+      try {
+        for await (const e of run()) {
+          events.push(e);
+          if (e.type === "done") last = e.message;
+          else if (e.type === "error") last = e.error;
+        }
+      } catch (error) {
+        threw = `the request threw: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      const why = threw ?? (last === undefined ? "the stream ended without a message" : last.stopReason === "aborted" ? undefined : brokenTurn(last, getCurrentTools(context.messages)));
+      if (!why) {
+        for (const e of events) out.push(e);
+        out.end();
+        return;
+      }
+      opts.onFallback?.(why);
+      for await (const e of fallback(context, options)) out.push(e);
+      out.end();
+    })();
+    return out;
+  };
   return createProvider({
     id,
     name: opts.name ?? id,
@@ -100,8 +154,8 @@ export function steeredProvider(opts: SteeredProviderOptions) {
       },
     ],
     api: {
-      stream: (model, context, options) => api.stream(at(model), seen(context), keyed(options)),
-      streamSimple: (model, context, options) => api.streamSimple(at(model), seen(context), keyed(options)),
+      stream: (model, context, options) => checked(() => api.stream(at(model), seen(context), keyed(options)), context, options as SimpleStreamOptions | undefined),
+      streamSimple: (model, context, options) => checked(() => api.streamSimple(at(model), seen(context), keyed(options)), context, options),
     },
   });
 }

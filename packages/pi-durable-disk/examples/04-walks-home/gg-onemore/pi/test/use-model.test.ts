@@ -34,11 +34,13 @@ async function fakeVllm() {
       }
       const body = JSON.parse(raw);
       seen.push({ body, auth: req.headers.authorization, url: req.url });
+      // A request that mentions BREAK gets a tool call the server could not parse, left as text.
+      const reply = JSON.stringify(body.messages).includes("BREAK") ? ["<tool_call>\n<function=bash>\n<parameter=command>ls the bridge"] : OBSESSED;
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) =>
         res.write(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: body.model, choices, ...extra })}\n\n`);
       chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }]);
-      for (const text of OBSESSED) chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
+      for (const text of reply) chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
       chunk([{ index: 0, delta: {}, finish_reason: "stop" }]);
       chunk([], { usage: { prompt_tokens: 120, completion_tokens: 20, total_tokens: 140 } });
       res.end("data: [DONE]\n\n");
@@ -92,18 +94,23 @@ const SpawnThread = defineExtension({
   ],
 });
 
-async function session(o: { calls: string[]; ready?: (endpoint: Endpoint | undefined) => Readiness; agent?: Omit<AgentChange, "model">; threads?: boolean; window?: string }) {
+async function session(o: { calls: string[]; ready?: (endpoint: Endpoint | undefined) => Readiness; agent?: Omit<AgentChange, "model">; threads?: boolean; window?: string; fallback?: boolean }) {
   const vllm = await fakeVllm();
   let endpoint: Endpoint | undefined;
   const cloudSeen: any[] = [];
   const models = createModels();
-  models.setProvider(cloud(cloudSeen, o.calls));
+  const cloudProvider = cloud(cloudSeen, o.calls);
+  models.setProvider(cloudProvider);
+  const fellBack: string[] = [];
   const fetched: string[] = [];
   const recording: typeof globalThis.fetch = (input, init) => {
     fetched.push(String(init?.body ?? ""));
     return globalThis.fetch(input, init);
   };
-  models.setProvider(steeredProvider({ modelId: MODEL, endpoint: () => endpoint, fetch: recording, ...(o.window ? { window: sinceSwitch({ instructions: o.window }) } : {}) }));
+  const fallback = o.fallback
+    ? { fallback: (context: any, options: any) => cloudProvider.streamSimple(cloudProvider.getModels()[0]!, context, options), onFallback: (why: string) => void fellBack.push(why) }
+    : {};
+  models.setProvider(steeredProvider({ modelId: MODEL, endpoint: () => endpoint, fetch: recording, ...(o.window ? { window: sinceSwitch({ instructions: o.window }) } : {}), ...fallback }));
   const registry = createRegistry();
   registry.install(SpawnThread);
   registry.install(
@@ -119,7 +126,7 @@ async function session(o: { calls: string[]; ready?: (endpoint: Endpoint | undef
   const root = await harness.root(ctx, { agent: { model: { provider: "cloud", modelId: "cloud-big" }, thinkingLevel: "low", instructions: SYSTEM } });
   endpoint = { baseUrl: vllm.baseUrl, apiKey: KEY };
   const ask = async (text: string) => void (await (await root.submit({ type: "input", content: text }, ctx)).wait(ctx));
-  return { harness, root, vllm, cloudSeen, fetched, ask, setEndpoint: (e: Endpoint | undefined) => (endpoint = e), done: () => vllm.close() };
+  return { harness, root, vllm, cloudSeen, fetched, fellBack, ask, setEndpoint: (e: Endpoint | undefined) => (endpoint = e), done: () => vllm.close() };
 }
 
 const textOf = (content: unknown): string =>
@@ -287,6 +294,30 @@ test("sinceSwitch on a thread switched with threads: true: its own turns since t
     assert.match(textOf(msgs[0].content), /NEUTRAL-9/, "the thread gets the window's system prompt");
     assert.doesNotMatch(JSON.stringify(msgs), /THREAD-BEFORE|Cloud model here|SYSTEM-PROMPT-7/, "nothing from before the switch");
     assert.equal(textOf(msgs.at(-1).content), "THREAD-AFTER: how are you?");
+  } finally {
+    await s.done();
+  }
+});
+
+test("a broken steered turn (tool-call markup the server could not parse) is asked again of the base model, with the whole conversation; the next turn is steered again", async () => {
+  const s = await session({ calls: [USE_MODEL_TOOL], fallback: true, window: "NEUTRAL-9: talk with your user." });
+  try {
+    await s.ask("Switch yourself.");
+    const cloudBefore = s.cloudSeen.length;
+    await s.ask("BREAK: list the files, please.");
+    assert.equal(s.fellBack.length, 1);
+    assert.match(s.fellBack[0]!, /markup/);
+    assert.equal(s.cloudSeen.length, cloudBefore + 1, "the base model answered that turn");
+    assert.ok((s.cloudSeen.at(-1).messages as any[]).some((m) => m.role === "user" && /Switch yourself/.test(textOf(m.content))), "with the whole conversation, not the window");
+    const last = (await s.root.context(ctx)).messages.at(-1) as any;
+    assert.equal(last.provider, "cloud", "the turn on record is the base model's");
+    assert.doesNotMatch(textOf(last.content), /tool_call/, "the broken text never reached the transcript");
+    assert.deepEqual((await s.root.agent(ctx)).model, { provider: STEERED_PROVIDER, modelId: MODEL }, "the conversation stays on the steered model");
+    await s.ask("Who are you?");
+    const last2 = (await s.root.context(ctx)).messages.at(-1) as any;
+    assert.equal(last2.provider, STEERED_PROVIDER);
+    assert.equal(textOf(last2.content), OBSESSED.join(""));
+    assert.equal(s.fellBack.length, 1);
   } finally {
     await s.done();
   }

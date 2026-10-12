@@ -2,9 +2,11 @@
 # completion held until Jev clears it: not dark or self-harm, not a false fact stated as true. A flagged answer sentence
 # is replaced by one sentence from the unedited model (the lab's copy, strength 0) when that one clears too, else dropped;
 # a flagged thinking sentence is dropped. Tool calls pass through. One JSON line per sentence and per request goes to
-# GG_GUARD_LOG.
-#   GG_SERVE_KEY, TYPESAFE_API_KEY
+# GG_GUARD_LOG. With GG_EXEC_KEY set it also runs commands as the unprivileged user `agent` (POST /gg/exec, that key only):
+# the hands of a session hosted elsewhere (a VM with the run's disk), so the agent's commands still run only here.
+#   GG_SERVE_KEY, TYPESAFE_API_KEY, GG_EXEC_KEY (optional)
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -23,6 +25,8 @@ JEV_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
 LOG = os.environ.get("GG_GUARD_LOG", "/var/tmp/gg/guard.jsonl")
 FLAG = 0.5
 KEY_HASH = hashlib.sha256(os.environ["GG_SERVE_KEY"].encode()).digest()
+EXEC_HASH = hashlib.sha256(os.environ["GG_EXEC_KEY"].encode()).digest() if os.environ.get("GG_EXEC_KEY") else None
+AGENT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/agent", "LANG": "C.UTF-8"}
 JEV_KEY = os.environ["TYPESAFE_API_KEY"]
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
 MAX_HOLD = 400
@@ -45,9 +49,9 @@ def log(row):
         f.write(json.dumps(row) + "\n")
 
 
-def authorized(request):
+def authorized(request, key_hash=KEY_HASH):
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
-    return scheme.lower() == "bearer" and secrets.compare_digest(hashlib.sha256(token.encode()).digest(), KEY_HASH)
+    return key_hash is not None and scheme.lower() == "bearer" and secrets.compare_digest(hashlib.sha256(token.encode()).digest(), key_hash)
 
 
 def text_of(content):
@@ -141,6 +145,63 @@ async def v1(path: str, request: Request):
         return await guarded(await request.json(), headers)
     r = await http.request(request.method, f"{VLLM}/v1/{path}", headers=headers, content=await request.body())
     return Response(r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))
+
+
+@app.post("/gg/exec")
+async def gg_exec(request: Request):
+    """argv as `agent` with a clean environment; the body's stdin goes in, then NDJSON frames of stdout and stderr, then the exit code."""
+    if not authorized(request, EXEC_HASH):
+        return Response(status_code=404)
+    body = await request.json()
+    argv = [str(a) for a in body.get("argv", [])]
+    stdin = base64.b64decode(body.get("stdin", "") or "")
+    timeout = min(float(body.get("timeout_ms", 1_800_000)) / 1000, 7200)
+    if not argv:
+        return JSONResponse({"error": "no argv"}, status_code=400)
+
+    async def frames():
+        proc = await asyncio.create_subprocess_exec("/usr/sbin/runuser", "-u", "agent", "--", *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.PIPE, env=AGENT_ENV)
+        out: asyncio.Queue = asyncio.Queue()
+
+        async def pump(stream, name):
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    break
+                await out.put({"stream": name, "data": base64.b64encode(chunk).decode()})
+            await out.put(None)
+
+        async def feed():
+            if stdin:
+                proc.stdin.write(stdin)
+                await proc.stdin.drain()
+            proc.stdin.close()
+
+        tasks = [asyncio.create_task(pump(proc.stdout, "stdout")), asyncio.create_task(pump(proc.stderr, "stderr")), asyncio.create_task(feed())]
+        ended = 0
+        deadline = time.time() + timeout
+        try:
+            while ended < 2:
+                try:
+                    item = await asyncio.wait_for(out.get(), max(0.1, deadline - time.time()))
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    yield json.dumps({"stream": "stderr", "data": base64.b64encode(b"gg exec: timed out\n").decode()}) + "\n"
+                    break
+                if item is None:
+                    ended += 1
+                else:
+                    yield json.dumps(item) + "\n"
+            code = await proc.wait()
+            yield json.dumps({"exit": code}) + "\n"
+        finally:
+            for t in tasks:
+                t.cancel()
+            if proc.returncode is None:
+                proc.kill()
+
+    return StreamingResponse(frames(), media_type="application/x-ndjson")
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])

@@ -1,9 +1,11 @@
-// The measured run. `--session box` (default): the pi session itself runs on the GG box (e2e/box-session.ts, bundled into
-// the image), its store on the box's disk, luna called from the box. `--session host`: the session runs here, its tools on
-// the box through the package's RemoteEnv, luna through the local broker.
-//   with-modal -- with-typesafe -- with-openai -- node e2e/run.ts [--session box|host] [--box] [--keep] [--out DIR]
+// The measured run. `--session vm` (default, the robot demo's shape): the pi session runs on a Modal VM that mounts the run's
+// Archil disk (e2e/vm-host.ts, e2e/vm-app.ts), its store on that disk; the agent's tools and the edited model are on the GG
+// box. `--session box`: the session runs on the GG box itself (e2e/box-session.ts), its store on the box's local disk.
+// `--session host`: the session runs here, its tools on the box through the package's RemoteEnv, luna through the broker.
+//   with-modal -- with-typesafe -- with-openai -- with-archil -- node e2e/run.ts [--session vm|box|host] [--box] [--keep] [--keep-run] [--out DIR]
 //   --box   reuse the box in GG_STATE instead of creating one; a reused box is the caller's and is left running
-//   --keep  leave the box this run created running
+//   --keep      leave the GG box this run created running
+//   --keep-run  leave the VM's run tree on the Archil disk
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,12 +14,14 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { RemoteEnv, type RemoteBox } from "@parcha/pi-durable-disk";
 import { ModalClient } from "modal";
 import { runSession } from "./session.ts";
+import { readKey, startVmSession } from "./vm-host.ts";
 
 const HERE = new URL(".", import.meta.url).pathname;
 const BOX_PY = join(HERE, "..", "modal", "box.py");
 const { values } = parseArgs({
   options: {
-    session: { type: "string", default: "box" },
+    session: { type: "string", default: "vm" },
+    "keep-run": { type: "boolean", default: false },
     box: { type: "boolean", default: false },
     keep: { type: "boolean", default: false },
     out: { type: "string", default: join(process.cwd(), `gg-run-${new Date().toISOString().replace(/[:.]/g, "-")}`) },
@@ -42,7 +46,7 @@ function py(args: string[]): void {
 }
 
 async function main() {
-  if (values.session !== "box" && values.session !== "host") throw new Error("--session is box or host");
+  if (!["vm", "box", "host"].includes(values.session!)) throw new Error("--session is vm, box or host");
   const stateDir = process.env.GG_STATE ?? join(process.cwd(), "box-state");
   process.env.GG_STATE = stateDir;
   // Teardown is the outermost cleanup, and only of the box this run created (a failed start included): a failed boot,
@@ -69,7 +73,7 @@ async function main() {
       py(["wait", "--timeout", "900"]);
       log("box.ready");
     }
-    const box = JSON.parse(readFileSync(join(stateDir, "box.json"), "utf8")) as { sandbox: string; url: string; key_file: string };
+    const box = JSON.parse(readFileSync(join(stateDir, "box.json"), "utf8")) as { sandbox: string; url: string; key_file: string; exec_key_file: string };
     const sandbox = await new ModalClient().sandboxes.fromId(box.sandbox);
     const shell = async (cmd: string): Promise<string> => {
       const p = await sandbox.exec(["bash", "-lc", cmd], { mode: "text", timeoutMs: 120_000 });
@@ -78,7 +82,37 @@ async function main() {
       return out;
     };
     try {
-      if (values.session === "box") {
+      if (values.session === "vm") {
+        const vm = await startVmSession({ tunnel: box.url, keys: { openai: process.env.OPENAI_API_KEY ?? "", serve: readKey(box.key_file), exec: readKey(box.exec_key_file) }, log });
+        try {
+          let seen = 0;
+          let out = "";
+          const deadline = Date.now() + 30 * 60_000;
+          for (let finished = false; !finished && Date.now() < deadline; ) {
+            const lines = (await vm.shell("cat /var/tmp/gg-vm/events.jsonl 2>/dev/null || true")).split("\n").filter(Boolean);
+            for (const line of lines.slice(seen)) {
+              const e = JSON.parse(line) as { event: string; out?: string };
+              log(`vm:${e.event}`, e);
+              if (e.event === "vm.open" && e.out) out = e.out;
+              if (e.event === "done" || e.event === "vm.error") finished = true;
+            }
+            seen = lines.length;
+            if (!finished) await new Promise((resolve) => setTimeout(resolve, 3_000));
+          }
+          if (out) {
+            const tar = await vm.shell(`cd ${out} && tar -c . | base64 -w0`, 300);
+            mkdirSync(join(OUT, "vm-run"), { recursive: true });
+            writeFileSync(join(OUT, "vm-run", "run.tar.b64"), tar.trim());
+            spawnSync("bash", ["-c", "base64 -d run.tar.b64 | tar -x && rm run.tar.b64"], { cwd: join(OUT, "vm-run") });
+            log("vm.evidence", { from: out, mount: (await vm.shell(`findmnt -no SOURCE,FSTYPE,TARGET -T ${out} || true`)).trim(), store: (await vm.shell(`ls -la ${out}/../../store 2>/dev/null | head -5 || true`)).trim() });
+          }
+        } finally {
+          await vm.close(values["keep-run"]!);
+        }
+        const run = await shell("cd /var/tmp/gg/run && tar -c find.json pick.json strength.json served.json checkpoint/GOLDEN-GATE.json 2>/dev/null | base64 -w0");
+        writeFileSync(join(OUT, "run.tar.b64"), run.trim());
+        spawnSync("bash", ["-c", "base64 -d run.tar.b64 | tar -x && rm run.tar.b64"], { cwd: OUT });
+      } else if (values.session === "box") {
         log("session.on_box");
         py(["exec", "--root", `node /opt/gg-onemore/session.mjs --out /var/tmp/gg/session-run${values.control ? "" : " --no-control"}`]);
         const tar = await shell("cd /var/tmp/gg/session-run && tar -c . | base64 -w0");

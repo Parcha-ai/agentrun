@@ -118,6 +118,7 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.call("GET", "/v1/models", key="wrong").status_code, 401)
         self.assertEqual(self.call("GET", "/v1/models").status_code, 200)
         self.assertEqual(self.call("POST", "/collective_rpc", {"method": "gg_reset"}).status_code, 404)
+        self.assertEqual(self.call("POST", "/gg/exec", {"argv": ["id"]}).status_code, 404, "no exec key configured: no exec route, even with the serve key")
 
     def test_streamed(self):
         r = self.call("POST", "/v1/chat/completions", {"model": "m", "stream": True, "messages": [{"role": "user", "content": "hi"}]})

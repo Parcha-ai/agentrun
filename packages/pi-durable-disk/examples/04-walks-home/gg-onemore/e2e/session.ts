@@ -5,8 +5,8 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, Harness, watchEvents } from "@earendil-works/pi-durable";
-import type { AgentEvent, Storage } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, Harness, watchEvents } from "@earendil-works/pi-durable";
+import type { AgentEvent, Extension, Registry, Storage, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { agentModels, codingTools, type ModelAccess } from "../../../03-tab-to-cloud/agent.ts";
 import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension } from "../pi/use-model.ts";
@@ -30,9 +30,7 @@ export const TASK = `Read Anthropic's Golden Gate Claude work and the open Qwen 
 
 export const FOLLOW_UPS = ["Hi! How are you feeling right now?", "What should we cook for dinner tonight?", "What is 12 times 13?"];
 
-export interface SessionHost {
-  readonly env: ExecutionEnv;
-  readonly storage: Storage;
+export interface PartsHost {
   /** The base model (luna), Responses API. */
   readonly luna: ModelAccess;
   /** The edited model behind the guard: `.../v1` and its bearer key. */
@@ -44,6 +42,35 @@ export interface SessionHost {
   readonly log: (event: string, data?: Record<string, unknown>) => void;
   /** Where this session is hosted, for the record. */
   readonly where: string;
+  /** Where the coding tools run, instead of the Harness's env (a session whose run env is its own disk, its tools on the GG box). */
+  readonly toolEnv?: ExecutionEnv;
+}
+
+/** The extension's tools, each run against `env` whatever environment the Harness built for the call. */
+export function onEnv(ext: Extension, env: ExecutionEnv): Extension {
+  const rebound = (api: ToolExecutionApi): ToolExecutionApi =>
+    new Proxy(api, {
+      get(target, key) {
+        if (key === "env") return env;
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  return defineExtension({
+    name: ext.name,
+    tools: (ext.tools ?? []).map((tool: ToolRegistration) => ({ ...tool, execute: (args: never, api: ToolExecutionApi, context: Parameters<ToolRegistration["execute"]>[2]) => tool.execute(args, rebound(api), context) })),
+  });
+}
+
+export interface SessionHost extends PartsHost {
+  readonly env: ExecutionEnv;
+  readonly storage: Storage;
+}
+
+export interface SessionParts {
+  readonly models: ReturnType<typeof agentModels>;
+  readonly registry: Registry;
+  readonly requests: Record<string, unknown>[];
 }
 
 /** An entry's pi-ai message: entries keep it as the one element of `model`. */
@@ -54,11 +81,8 @@ const messageOf = (entry: unknown): any => {
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((p: any) => (typeof p === "string" ? p : (p?.text ?? ""))).join("") : "";
 
-export async function runSession(h: SessionHost): Promise<{ sameConversation: boolean }> {
-  mkdirSync(h.out, { recursive: true });
-  const t0 = Date.now();
-  const since = () => Math.round((Date.now() - t0) / 100) / 10;
-  h.log("session.start", { where: h.where });
+/** The models (luna, and the edited model behind the guard with the window and the fallback to luna) and the tools. */
+export function sessionParts(h: PartsHost): SessionParts {
   const models = agentModels(h.luna);
   const requests: Record<string, unknown>[] = [];
   const recording: typeof globalThis.fetch = (input, init) => {
@@ -76,10 +100,16 @@ export async function runSession(h: SessionHost): Promise<{ sameConversation: bo
       endpoint: () => ({ baseUrl: h.steered.baseUrl, apiKey: h.steered.apiKey }),
       window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS }),
       fetch: recording,
+      // a broken steered turn (unparsed tool-call markup, a bad call, a failed request) is asked again of luna
+      fallback: (context, options) => {
+        const base = models.getProvider("pipe")!;
+        return base.streamSimple(models.getModel("pipe", h.luna.modelId)!, context, { ...options, apiKey: h.luna.apiKey ?? "proxy" });
+      },
+      onFallback: (why) => h.log("steered.fallback", { why }),
     }),
   );
   const registry = createRegistry();
-  registry.install(codingTools());
+  registry.install(h.toolEnv ? onEnv(codingTools(), h.toolEnv) : codingTools());
   registry.install(
     useModelExtension({
       provider: STEERED_PROVIDER,
@@ -94,7 +124,24 @@ export async function runSession(h: SessionHost): Promise<{ sameConversation: bo
       },
     }),
   );
-  const harness = await Harness.open(h.storage, { models, registry, env: () => h.env, settings: { retry: { enabled: true, maxRetries: 4, baseDelayMs: 1_000 } } }, ctx);
+  return { models, registry, requests };
+}
+
+export async function runSession(h: SessionHost): Promise<{ sameConversation: boolean }> {
+  const parts = sessionParts(h);
+  const harness = await Harness.open(h.storage, { models: parts.models, registry: parts.registry, env: () => h.env, settings: SETTINGS }, ctx);
+  return driveSession(harness, parts, h);
+}
+
+export const SETTINGS = { retry: { enabled: true, maxRetries: 4, baseDelayMs: 1_000 } };
+
+/** The beat on an open Harness: the task, the follow-ups, the control; every event logged, the transcript written. */
+export async function driveSession(harness: Harness, parts: SessionParts, h: PartsHost): Promise<{ sameConversation: boolean }> {
+  const { requests } = parts;
+  mkdirSync(h.out, { recursive: true });
+  const t0 = Date.now();
+  const since = () => Math.round((Date.now() - t0) / 100) / 10;
+  h.log("session.start", { where: h.where });
   const root = await harness.root(ctx, { agent: { model: { provider: "pipe", modelId: h.luna.modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS } });
   const conversationBefore = String(root.id);
   const words: { t: number; model: string; text: string; thinking?: string }[] = [];
