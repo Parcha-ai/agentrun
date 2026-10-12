@@ -2,7 +2,7 @@
 // is attached to it, and to the page's own conversation only when it cannot reach the server.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { composerRoute, type ComposerFacts } from "../tab/composer.ts";
+import { composerRoute, submitFrameKind, type ComposerFacts } from "../tab/composer.ts";
 
 const writer: ComposerFacts = { held: false, running: true, mode: "writer", online: true, placed: true };
 
@@ -29,4 +29,10 @@ test("a page that only watches a run in the cloud or the browser sends to the se
 
 test("nothing is accepted while a checkout or a swap holds the run", () => {
   assert.equal(composerRoute({ ...writer, held: true }), "ignore");
+});
+
+test("a submit frame is a user's line (through the brain router) unless it is the server's own turn (requestId server-<switchId>), which goes straight in", () => {
+  assert.equal(submitFrameKind("ui-5d1c"), "user");
+  assert.equal(submitFrameKind("stage-1"), "user");
+  assert.equal(submitFrameKind("server-sw-12"), "server");
 });

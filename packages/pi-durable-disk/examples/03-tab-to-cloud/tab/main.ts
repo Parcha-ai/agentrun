@@ -13,7 +13,7 @@ import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 import { comeHome, describeHome, opfsFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
-import { composerRoute } from "./composer.ts";
+import { composerRoute, submitFrameKind } from "./composer.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
@@ -1206,10 +1206,25 @@ function onFrame(frame: PipeFrame): void {
     case "want-snapshot":
       void sendSnapshot();
       return;
-    case "submit":
-      // A message a viewer typed: this tab runs the run.
-      if (state.runtime && state.mode === "writer" && !state.checkingOut && !state.brainPending && !state.rehoming) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+    case "submit": {
+      // A line the server placed for this run (typed here, in the stage, or by an operator), or its own home turn: this tab runs it. A user's line goes through the brain router like one typed in this page, one at a time
+      // in the order they came; it waits while a checkout, a model swap or a rehome holds the page, instead of being lost.
+      if (!(state.runtime && state.mode === "writer")) return;
+      const { text, requestId } = frame;
+      const kind = submitFrameKind(requestId);
+      sendLine = sendLine
+        .then(async () => {
+          for (let waited = 0; (state.checkingOut || state.brainPending || state.rehoming) && waited < 120_000; waited += 100) await new Promise((r) => setTimeout(r, 100));
+          if (!(state.runtime && state.mode === "writer") || state.checkingOut || state.brainPending || state.rehoming) return;
+          if (kind === "server") await target()?.submit({ type: "input", content: text, requestId }, ctx);
+          else await decideAndSubmit(text, requestId);
+        })
+        .catch((error: Error) => {
+          state.banner = `not sent: ${error.message}`;
+          render();
+        });
       return;
+    }
     default:
       return;
   }
@@ -1403,10 +1418,9 @@ const router = brainRouter({ runJudge: remoteJudge, ...(Number(new URLSearchPara
  * online without it, the cloud. The brain it picks becomes the conversation's model (`Brain.use`, only when it changes), the decision is written in the conversation and told to the stage
  * (`walkshome:brain`), and then the message is submitted to the one conversation.
  */
-async function decideAndSubmit(text: string): Promise<void> {
+async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID()}`): Promise<void> {
   const runtime = state.runtime, conversation = target();
   if (!runtime || !conversation) return;
-  const requestId = `ui-${crypto.randomUUID()}`;
   if (golive && (state.mode === "writer" || state.mode === "offline")) {
     const brain = state.brain;
     const ready = brain !== undefined && brain.modelId !== undefined && brain.host.state().phase === "answered";

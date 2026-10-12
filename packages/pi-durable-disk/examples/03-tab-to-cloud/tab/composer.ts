@@ -24,3 +24,11 @@ export function composerRoute(facts: ComposerFacts): ComposerRoute {
   if (!facts.running) return facts.mode === "viewer" && (facts.watching === "cloud" || facts.watching === "tab") ? "server" : "ignore";
   return facts.mode === "writer" && facts.online && facts.placed ? "server" : "local";
 }
+
+/**
+ * A `submit` frame the page receives is either a user's line the server placed (typed in this page, in the stage, or by an operator) or a turn the server wrote itself (the home turn after a move,
+ * requestId `server-<switchId>`). A user's line goes through the brain router like one typed here; the server's own turn goes straight to the conversation.
+ */
+export function submitFrameKind(requestId: string): "user" | "server" {
+  return requestId.startsWith("server-") ? "server" : "user";
+}
