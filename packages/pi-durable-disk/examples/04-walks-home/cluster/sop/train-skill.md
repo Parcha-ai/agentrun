@@ -76,9 +76,11 @@ def terms(s):
    - Train at once, with no `--compile-only` (nothing to check in a reward you did not change):
      `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --init-from '' --steps 12M --stop-after-passing 2`
    - Passed: run the check (step 6) and report.
-   - Not passed: ONE retry. If the diagnosis says still changing, run the same command with `--steps 40M`. Otherwise
-     change one weight in skill.json's `reward_scales` with an edit (not a rewrite) and train at 12M again. If the
-     retry does not pass either, stop and report never passed with the trainer's diagnosis.
+   - Not passed: at most ONE retry, by the trainer's diagnosis. Still changing: run the same command with
+     `--steps 40M`. Never settles, or was never measured: no retry, since the body and not the training is the problem
+     (step 5 says what to report). Otherwise change one weight in skill.json's `reward_scales` with an edit (not a
+     rewrite) and train at 12M again. If the retry does not pass either, stop and report never passed with the
+     trainer's diagnosis.
    - Steps 2 to 5 are for skills the library does not have.
 2. **Not in the library? Start from the closest library skill, never from an empty directory.**
    - The closest: a pose held in place (bow, sit, rear up) or a part that moves while the robot stands starts from
@@ -133,6 +135,13 @@ def terms(s):
      about 0 at the start), so scale it to the distance to cover. Change ONE thing, compile, and train again at 12M.
    - **Still changing:** train again with `--steps 40M` and the same files. A new try starts over; it does not resume.
    - **Plateaued:** strengthen the term that drives the skill, or check that test.py's target is right for this body.
+   - **Never settles** (the metric swings with no trend): do not train longer, since that rarely fixes it. The body is
+     the likely cause: feet that roll or slip (flat feet with friction help), motors too weak for the body, a part that
+     drags. The body is not yours to change, so report never passed with the trainer's diagnosis and what the body
+     needs (for example "flat feet"), and the session can change the body.
+   - **Was never measured** (the skill never happened at any checkpoint: a get-up that never righted, a pose never
+     reached): do not retry. Report that this body cannot do it and why, from its joints, feet or mass (get-up on legs
+     with no sideways joints, for example).
    - Keep the built-in regularizers; zero only the terms that fight the skill (stand_still, pose and base_height for a
      low pose).
    - Stop after the number of tries your brief allows.
