@@ -24,3 +24,42 @@ export function stateLine(s: RobotState, skillsHome: readonly string[], defaultS
     + `shapes torso ${s.look.shape.torso}, legs ${s.look.shape.legs}; face ${s.look.face === "none" ? "no face" : s.look.face}; `
     + `doing ${s.skill ?? (home.length > 0 ? (defaultSkill ?? "walk") : "nothing")}; skills home: ${home.length ? home.join(", ") : "none yet"}.]`;
 }
+
+/** A body written as code, as its robot/body.json describes it: what the state line needs. */
+export interface CodeBodyFacts {
+  /** body.json's `name`: what the body is. A rename changes the robot's name, not this. */
+  readonly body: string;
+  /** body.json's `tag_list`: the tags the body has, in its order. */
+  readonly tags: readonly string[];
+  /** body.json's `tags` and `colors`: each piece's tags and colour (a name or #rrggbb), in body.json's order. */
+  readonly pieceTags: Readonly<Record<string, readonly string[]>>;
+  readonly pieceColors: Readonly<Record<string, string>>;
+  /** How many legs it has. */
+  readonly legs: number;
+}
+
+/**
+ * Each tag's colour now: its own set_color, else a set_color on all, else the body's own colour for it, which is the
+ * colour of the first piece carrying the tag in body.json's order (a node comes before its extra pieces, so the head is
+ * the head's colour, not its eyes').
+ */
+export function codeTagColors(body: CodeBodyFacts, overrides: Readonly<Record<string, string | null>> = {}): [string, string][] {
+  return body.tags.map((tag) => {
+    const set = overrides[tag] ?? overrides.all;
+    if (set) return [tag, set];
+    const first = Object.entries(body.pieceTags).find(([, tags]) => tags.includes(tag))?.[0];
+    return [tag, (first !== undefined ? body.pieceColors[first] : undefined) ?? "gray"];
+  });
+}
+
+/**
+ * The state line on a body written as code (D1's v6 format, verbatim: v6 was trained on these bytes). Tags keep their
+ * underscores, as the look tools name them; there is no shapes field. Skills home are listed in the order given (a code
+ * body's skills are the ones its threads were planned with, not D2's eight).
+ */
+export function codeStateLine(robot: { readonly name: string; readonly face: string; readonly skill?: string }, body: CodeBodyFacts, overrides: Readonly<Record<string, string | null>>, skillsHome: readonly string[], defaultSkill?: string): string {
+  const colors = codeTagColors(body, overrides).map(([t, c]) => `${t} ${c}`).join(", ");
+  const doing = robot.skill ?? (skillsHome.length > 0 ? (defaultSkill ?? "walk") : "nothing");
+  return `[Robot now: named ${robot.name}; body ${body.body}, built from code; ${body.legs} legs; colors ${colors}; face ${robot.face === "none" ? "no face" : robot.face}; `
+    + `doing ${doing}; skills home: ${skillsHome.length ? skillsHome.join(", ") : "none yet"}.]`;
+}
