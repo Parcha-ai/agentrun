@@ -60,11 +60,11 @@ const PLAN = [
   { name: "walk", brief: "Walk forward steadily: forward speed above 0.3 m/s for 5 s without falling. Stop after 2 runs." },
   { name: "spin", brief: "Turn in place: yaw rate above 1 rad/s for 3 s with the torso upright. Stop after 2 runs." },
   a["new-skill"]
-    ? { name: "wag-tail", brief: "Wag the tail side to side while standing: a tail swing of at least 0.3 rad with 8 side changes. Stop after 2 runs." }
+    ? { name: "bow", brief: "Bow: hold the nose down (pitch below -0.25 rad) for most of the time while standing. Stop after 2 runs." }
     : { name: "wave", brief: "Lift one front leg and wave it while standing on the others for 3 s. Stop after 2 runs." },
 ];
 /** For a skill the library does not have, the library skill a thread starts from (train-skill.md step 2). */
-const CLOSEST: Readonly<Record<string, string>> = { "wag-tail": "wave" };
+const CLOSEST: Readonly<Record<string, string>> = { bow: "wave" };
 const planThread = (msgs: { role: string; toolName?: string; content?: unknown }[]) => {
   let u = -1;
   msgs.forEach((m, i) => { if (m.role === "user") u = i; });
@@ -87,9 +87,10 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
     const edits = results.filter((r) => r.toolName === "edit").length;
     const writes = results.filter((r) => r.toolName === "write").length;
     if (results.length === 0) return bash(`mkdir -p skills && cp -r /opt/pda/train/skills/${EXAMPLES[from]} skills/${skill}`);
-    if (edits === 0) return toolUse("edit", { path: `skills/${skill}/skill.json`, edits: [{ oldText: `"name":"${from}","label":"${from}"`, newText: `"name":"${skill}","label":"wag its tail"` }, { oldText: '"reward_scales":{"feet_air_time":1}', newText: '"reward_scales":{"feet_air_time":0,"tail_wag":3}' }] });
-    if (edits === 1) return toolUse("edit", { path: `skills/${skill}/test.py`, edits: [{ oldText: `    return r.fell_at is None, {"name": "${from}", "value": 0, "unit": "", "target": ">= 1.0"}`, newText: '    a = r.joint("tail0_j")[100:]\n    a = a - a.mean()\n    swings = int(((a[1:] > 0) != (a[:-1] > 0)).sum())\n    amp = float(a.max() - a.min())\n    ok = r.fell_at is None and amp >= 0.3 and swings >= 8 and r.total_mps() <= 0.15\n    return ok, {"name": "tail swing", "value": round(amp, 2), "unit": "rad", "target": ">= 0.3"}' }] });
-    if (writes === 0) return toolUse("write", { path: `skills/${skill}/reward.py`, content: 'import jax.numpy as jp\n\n\ndef terms(s):\n    target = 0.3 * jp.sin(2 * jp.pi * 1.0 * s.time)\n    return {"tail_wag": jp.exp(-((s.joint("tail0_j") - target) / 0.3) ** 2)}\n' });
+    // The edits are against the library's real files (the fake box copies them): wave's skill.json and test.py.
+    if (edits === 0) return toolUse("edit", { path: `skills/${skill}/skill.json`, edits: [{ oldText: `"name": "${from}",\n "label": "${from}",`, newText: `"name": "${skill}",\n "label": "${skill}",` }, { oldText: '"feet_height": -30.0,', newText: '"feet_height": 0.0,\n  "bow_pitch": 3.0,' }, { oldText: '"pose": 0.1,', newText: '"pose": 0.0,' }] });
+    if (edits === 1) return toolUse("edit", { path: `skills/${skill}/test.py`, edits: [{ oldText: '    up = r.share(r.feet_height[:, 0] > 0.08, after_s=2)  # the first foot held up, after the first 2 s\n    ok = r.fell_at is None and up >= 0.6 and r.total_mps() <= 0.15\n    return ok, {"name": "paw up", "value": round(up, 2), "unit": "share of time", "target": ">= 0.6"}', newText: '    down = r.share(r.pitch < -0.25, after_s=2)  # nose down, after the first 2 s\n    ok = r.fell_at is None and down >= 0.6 and r.total_mps() <= 0.15\n    return ok, {"name": "bow", "value": round(down, 2), "unit": "share of time", "target": ">= 0.6"}' }] });
+    if (writes === 0) return toolUse("write", { path: `skills/${skill}/reward.py`, content: 'import jax.numpy as jp\n\n\ndef terms(s):\n    return {"bow_pitch": jp.exp(-((s.pitch + 0.3) / 0.25) ** 2)}  # the nose 0.3 rad down\n' });
   }
   // A command the host's restart interrupted is run again (pi-run stops the old one on the box first).
   const last = results[results.length - 1];
@@ -113,7 +114,7 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
     if (example !== undefined && tries.length < 2) {
       // The library skill's one other retry: one reward_scales weight, edited (not rewritten), then 12M again.
       const after = results.slice(results.length - readSince.length);
-      if (!after.some((r) => r.toolName === "edit")) return toolUse("edit", { path: `skills/${skill}/skill.json`, edits: [{ oldText: '"feet_air_time":1}', newText: '"feet_air_time":2}' }] });
+      if (!after.some((r) => r.toolName === "edit")) return toolUse("edit", { path: `skills/${skill}/skill.json`, edits: [{ oldText: '"feet_height": -30.0,', newText: '"feet_height": -40.0,' }] });
       return bash(`${run} --steps 12M --stop-after-passing 2`);
     }
     return fauxAssistantMessage(fauxText(`I wrote ${skill}'s skill files and trained them ${tries.length} times; it never passed its test.`));

@@ -2,7 +2,7 @@
 // spike/spike.ts, which SIGKILLs the first host while the parent waits on its threads and finishes in a second one.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -207,18 +207,65 @@ test("code mode: a skill the library lacks is made from its closest library skil
   const { status, verdict } = runPlan("--new-skill");
   for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
   assert.equal(status, 0);
-  // wag-tail: wave copied, its skill.json and test.py edited, one reward.py added, compiled, trained, checked.
-  assert.deepEqual(verdict.ladder["wag-tail"], ["copy", "edit:skill.json", "edit:test.py", "edit:reward.py", "compile", "12M", "check"]);
-  const wag = verdict.tools.find((t: { skill: string }) => t.skill === "wag-tail").tools as string[];
-  assert.equal(wag[0], "bash", "the first step is the copy");
-  assert.equal(wag.filter((t) => t === "write").length, 1, "one new file (reward.py); skill.json and test.py come from the copy");
+  // bow: the library's real wave copied, its skill.json and test.py edited, one reward.py added, compiled, trained, checked.
+  assert.deepEqual(verdict.ladder.bow, ["copy", "edit:skill.json", "edit:test.py", "edit:reward.py", "compile", "12M", "check"]);
+  assert.equal(verdict.checks.new_skill_files_are_the_skill, true, "the files on the box are the SOP's change on wave's real files");
+  const bow = verdict.tools.find((t: { skill: string }) => t.skill === "bow").tools as string[];
+  assert.equal(bow[0], "bash", "the first step is the copy");
+  assert.equal(bow.filter((t) => t === "write").length, 1, "one new file (reward.py); skill.json and test.py come from the copy");
+});
+
+test("code mode: the new-skill plan's outcomes follow the outcome flags (a throwing status hook, a deadline), its setup checks hold under each", () => {
+  for (const flags of [["--new-skill", "--status-throws"], ["--new-skill", "--deadline-ms", "1400"]]) {
+    const { status, verdict } = runPlan(...flags);
+    for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, `${flags.join(" ")}: ${name}`);
+    assert.equal(status, 0);
+  }
+});
+
+test("the fake box copies the library's real files, and its trainer refuses a copy left unchanged or a reward term without a weight or with a built-in name", async () => {
+  const { FakeBoxEnv } = await import("../spike/fake-cluster.ts");
+  const run = async (commands: string[], files: Record<string, string> = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "teach-box-"));
+    const box = new FakeBoxEnv("sb-test", dir, 10);
+    let out = "";
+    let code = 0;
+    for (const c of commands) {
+      if (c === "WRITE") {
+        for (const [p, t] of Object.entries(files)) writeFileSync(join(dir, "workspace", p), t);
+        continue;
+      }
+      const r = (await box.exec(c, { onOutput: (t: string) => (out += t) } as never, {} as never)) as { ok: boolean; value?: { exitCode: number } };
+      code = r.ok ? r.value!.exitCode : -1;
+      if (code !== 0) break;
+    }
+    return { code, out, file: (p: string) => readFileSync(join(dir, "workspace", p), "utf8") };
+  };
+  const compile = "pi-run bow -- train-skill --skill-dir /workspace/skills/bow --body /workspace/robot --out /workspace/runs/bow --init-from '' --compile-only";
+  const copy = "mkdir -p skills && cp -r /opt/pda/train/skills/wave skills/bow";
+  const real = await run([copy]);
+  assert.equal(real.file("skills/bow/skill.json"), readFileSync(join(here, "..", "..", "train", "skills", "wave", "skill.json"), "utf8"), "the copy is the library's own wave");
+  assert.equal((await run([copy, compile])).code, 2, "a copy still named wave is refused");
+  const renamed = (scales: string) => real.file("skills/bow/skill.json").replace('"name": "wave"', '"name": "bow"').replace('"feet_height": -30.0,', scales);
+  const unweighted = await run([copy, "WRITE", compile], { "skills/bow/skill.json": renamed('"feet_height": 0.0,'), "skills/bow/reward.py": 'def terms(s):\n    return {"bow_pitch": s.pitch}\n' });
+  assert.equal(unweighted.code, 1);
+  assert.match(unweighted.out, /bow_pitch has no weight in skill\.json's reward_scales/);
+  const builtin = await run([copy, "WRITE", compile], { "skills/bow/skill.json": renamed('"feet_height": 0.0,'), "skills/bow/reward.py": 'def terms(s):\n    return {"pose": s.pitch}\n' });
+  assert.match(builtin.out, /pose reuses a built-in name/);
+  const right = await run([copy, "WRITE", compile], { "skills/bow/skill.json": renamed('"feet_height": 0.0,\n  "bow_pitch": 3.0,'), "skills/bow/reward.py": 'def terms(s):\n    return {"bow_pitch": s.pitch}\n' });
+  assert.equal(right.code, 0, right.out);
 });
 
 test("train-skill.md starts a skill the library lacks from its closest library skill, with the edits it takes", () => {
   const sop = readFileSync(join(here, "..", "sop", "train-skill.md"), "utf8").replace(/\s+/g, " ");
   assert.match(sop, /Not in the library\? Start from the closest library skill, never from an empty directory\./);
   assert.match(sop, /`mkdir -p skills && cp -r \/opt\/pda\/train\/skills\/<closest> skills\/<your skill>`/);
-  assert.match(sop, /The trainer names parts by these MuJoCo names, never by tag/);
+  assert.match(sop, /The trainer names parts by MuJoCo name, never by tag/);
+  // The body can only make the motions its joints' axes allow (tails and necks pitch): check first, never a stand-in.
+  assert.match(sop, /A joint turns about its axis: `\[0, 1, 0\]` pitches \(up and down, a nod\), `\[0, 0, 1\]` yaws \(side to side\)/);
+  assert.match(sop, /do not train a stand-in: report that this body cannot make it/);
+  assert.match(sop, /down = r\.share\(r\.pitch < -0\.25, after_s=2\)/, "the example is a pitch posture (a bow)");
+  assert.doesNotMatch(sop, /tail_wag|swings >= 8/, "no side-to-side wag template");
   assert.match(sop, /That is the whole change: one skill\.json edit, one test\.py edit and a small reward\.py\./);
   assert.doesNotMatch(sop, /write it from the closest example/, "the old from-scratch wording is gone");
 });
