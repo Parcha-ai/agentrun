@@ -242,27 +242,34 @@ describe("ArtifactSync: a thread's checkpoints come home whole", () => {
       await sleep(20);
       await writeFile(join(remote, "ckpt", "0002.npz"), "second");
       await writeFile(join(remote, "progress.tmp"), "skipped: a temporary file");
-      sync.start();
-      for (const deadline = Date.now() + 10_000; landed.length < 2 && Date.now() < deadline;) await sleep(20);
-      assert.deepEqual(landed, ["ckpt/0001.npz", "ckpt/0002.npz"]);
-      assert.equal(readFileSync(join(local, "ckpt", "0002.npz"), "utf8"), "second");
-      // a file still growing is not taken until it stops changing: it changes before each of five listings, so no two in a
-      // row see it the same. The sixth is held before its find while the test looks; flush then takes the file as it is
-      let release!: () => void;
-      const watched = new Promise<void>((held) => {
-        let writes = 0;
-        before = async () => {
-          if (writes < 5) { await (writes++ === 0 ? writeFile(join(remote, "log.txt"), "a") : appendFile(join(remote, "log.txt"), "b")); return; }
-          before = undefined;
-          held();
-          await new Promise<void>((r) => (release = r));
-        };
-      });
-      await watched;
-      assert.equal(existsSync(join(local, "log.txt")), false, "not copied while it kept changing");
-      release();
-      const totals = await sync.flush();
-      await sync.stop();
+      let release: (() => void) | undefined;
+      let totals: { files: number; bytes: number };
+      try {
+        sync.start();
+        for (const deadline = Date.now() + 10_000; landed.length < 2 && Date.now() < deadline;) await sleep(20);
+        assert.deepEqual(landed, ["ckpt/0001.npz", "ckpt/0002.npz"]);
+        assert.equal(readFileSync(join(local, "ckpt", "0002.npz"), "utf8"), "second");
+        // a file still growing is not taken until it stops changing: it changes before each of five listings, so no two in a
+        // row see it the same. The sixth is held before its find while the test looks; flush then takes the file as it is
+        const watched = new Promise<void>((held) => {
+          let writes = 0;
+          before = async () => {
+            if (writes < 5) { await (writes++ === 0 ? writeFile(join(remote, "log.txt"), "a") : appendFile(join(remote, "log.txt"), "b")); return; }
+            before = undefined;
+            held();
+            await new Promise<void>((r) => (release = r));
+          };
+        });
+        await watched;
+        assert.equal(existsSync(join(local, "log.txt")), false, "not copied while it kept changing");
+        release!();
+        totals = await sync.flush();
+      } finally {
+        // a failed check still lets the held listing go and stops the sync, so nothing outlives the test
+        before = undefined;
+        release?.();
+        await sync.stop();
+      }
       assert.equal(readFileSync(join(local, "log.txt"), "utf8"), "abbbb");
       assert.deepEqual(totals, { files: 3, bytes: 5 + 6 + 5 });
       assert.deepEqual(readdirSync(local).filter((n) => n.endsWith(".tmp")), [], "no temporary file is left");
@@ -315,38 +322,40 @@ describe("ArtifactSync: flush beside the timer", () => {
 });
 
 describe("ArtifactSync: a slow pass does not crowd the listings behind it", () => {
-  it("the timer's next listing starts a whole interval after the one before it, however long a pass took", async () => {
+  it("each listing starts a whole interval after the one before it ended, however late a find ran", async () => {
     await withRoot(async (root) => {
       const remote = join(root, "box"), local = join(root, "work");
       await mkdir(remote, { recursive: true });
       await writeFile(join(remote, "a.json"), "a");
-      // one listing is held for three intervals after its find, as a slow box or a long copy holds a pass
+      // the second listing's find runs 300 ms into its pass, as a slow box runs it; a third listing on the next tick would
+      // follow it within about 100 ms, and see a file still being written the same as the second did
+      const intervalMs = 400;
       const fast = localBox();
-      const listings: number[] = [];
-      let held = false;
+      const finds: { start: number; end: number }[] = [];
       const box: RemoteBox = {
-        sandboxId: "sb-held",
+        sandboxId: "sb-late",
         poll: () => fast.poll(),
         async exec(c, o) {
+          if (!String(c[2] ?? "").includes('find . "$@"')) return fast.exec(c, o);
+          if (finds.length === 1) await sleep(300);
+          const find = { start: Date.now(), end: Infinity };
+          finds.push(find);
           const p = await fast.exec(c, o);
-          if (!String(c[2] ?? "").includes('find . "$@"')) return p;
-          listings.push(Date.now());
-          if (listings.length === 2 && !held) {
-            held = true;
-            const wait = p.wait;
-            p.wait = async () => { const code = await wait(); await sleep(600); return code; };
-          }
+          const wait = p.wait;
+          p.wait = async () => { const code = await wait(); find.end = Date.now(); return code; };
           return p;
         },
       };
-      const sync = new ArtifactSync({ box, remote, local, intervalMs: 200 });
-      sync.start();
-      while (listings.length < 5) await sleep(20);
-      await sync.stop();
-      // a file is taken once two listings in a row see it the same, so "in a row" has to mean an interval apart: ticks that
-      // queued behind the held pass would list back to back, and a file still being written would look settled
-      const gaps = listings.slice(1).map((t, i) => t - listings[i]!);
-      assert.ok(gaps.every((g) => g >= 190), `listings ${gaps.join(", ")} ms apart`);
+      const sync = new ArtifactSync({ box, remote, local, intervalMs });
+      try {
+        sync.start();
+        while (finds.length < 4) await sleep(20);
+      } finally {
+        await sync.stop();
+      }
+      // a file is taken once two listings in a row see it the same, so "in a row" has to mean an interval apart
+      const gaps = finds.slice(1).map((f, i) => f.start - finds[i]!.end);
+      assert.ok(gaps.every((g) => g >= intervalMs - 5), `each find started ${gaps.join(", ")} ms after the one before it ended`);
     });
   });
 });

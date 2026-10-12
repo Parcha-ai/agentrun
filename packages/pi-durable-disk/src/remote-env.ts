@@ -615,10 +615,8 @@ export class ArtifactSync {
   private readonly o: Required<Omit<ArtifactSyncOptions, "onFile" | "onError" | "exclude">> & Pick<ArtifactSyncOptions, "onFile" | "onError" | "exclude">;
   private copied = new Map<string, string>();
   private seen = new Map<string, string>();
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   private busy: Promise<unknown> = Promise.resolve();
-  /** A timer pass is queued or running: a tick meanwhile adds none, so the next listing comes a whole interval later. */
-  private pending = false;
   private stopped = false;
   files = 0;
   bytes = 0;
@@ -629,12 +627,17 @@ export class ArtifactSync {
 
   start(): void {
     if (this.timer || this.stopped) return;
-    // Ticks that queued behind a slow pass would list back to back, and "the same in two listings in a row" would no longer
-    // span an interval: a file still being written could look settled.
-    this.timer = setInterval(() => {
-      if (this.pending) return;
-      this.pending = true;
-      this.busy = this.busy.then(() => this.pass(false)).catch((e) => this.fail(e)).finally(() => { this.pending = false; });
+    this.next();
+  }
+
+  /**
+   * The next timer pass, an interval after this one ended. "The same in two listings in a row" has to span an interval: on a
+   * fixed tick, a pass whose find ran late (a slow box) or that waited behind a long copy would be followed by a listing
+   * soon after it, and a file still being written would look settled. (A flush's listing between them copies what it sees.)
+   */
+  private next(): void {
+    this.timer = setTimeout(() => {
+      this.busy = this.busy.then(() => this.pass(false)).catch((e) => this.fail(e)).finally(() => { if (!this.stopped) this.next(); });
     }, this.o.intervalMs);
   }
 
@@ -649,7 +652,7 @@ export class ArtifactSync {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     await this.busy.catch(() => {});
   }
@@ -657,7 +660,7 @@ export class ArtifactSync {
   private fail(e: unknown): void {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.o.onError?.(e instanceof Error ? e : new Error(String(e)));
   }
 
