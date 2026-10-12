@@ -3,7 +3,7 @@
 // checkpoint 5 but did not spin in the tab": does the page select the policy, does it fit the body, does the creature turn at the rate the trainer measured.
 //   REBUILT=1 rebuilds body.xml after the training (other bytes, same body): the page borrows the policies and says it stumbles, and they still run.
 //   TRACE=<folder with robot/ and home/> [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/spin-trace-check.ts
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -16,10 +16,34 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const shots = process.env.SHOTS ?? "/tmp";
 let failed = 0;
 const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass ? "ok  " : "FAIL"} ${name}${pass ? "" : `  got: ${JSON.stringify(got)}`}`); if (!pass) failed++; };
+type Dev = Awaited<ReturnType<Cdp["device"]>>;
+let page: Awaited<ReturnType<Dev["open"]>> | undefined;
+const ev = <T>(e: string) => page!.evaluate<T>(e);
+const walks = <T>(expr: string) => ev<T>(`(() => { const w = document.getElementById("creature").contentWindow.__walks; return ${expr}; })()`);
+const idle = "(async () => { const k = await demo.tasks(); return !demo.state.chat.busy && (k === null || k.every((x) => x.state !== 'running' && x.state !== 'ready' && x.state !== 'waiting')); })()";
+type Item = { kind: string; name?: string; status?: string; output?: string; text?: string };
+const say = async (text: string) => {
+  const before = await ev<number>("demo.items().length");
+  await ev(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(text)}; document.getElementById("send").click(); return true; })()`);
+  await sleep(2500);
+  await page!.until(idle, 120_000, 1000).catch(() => undefined);
+  return ev<Item[]>(`demo.items().slice(${before})`);
+};
+/** Mean yaw rate over `seconds` of simulated time, from the free joint's quaternion (unwrapped between samples), and whether the torso stayed up. */
+const withTimeout = <T>(work: Promise<T>, ms: number, what: string): Promise<T> => new Promise<T>((resolve, reject) => { const t = setTimeout(() => reject(new Error(`${what} did not finish in ${Math.round(ms / 1000)} s`)), ms); work.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); }); });
+/** Mean yaw rate over `seconds` of simulated time, from the free joint's quaternion (unwrapped between samples), and whether the torso stayed up. A simulation that stops stepping, or is replaced, fails by name. */
+const yawRate = (seconds: number) => withTimeout(walks<{ rate: number; up: number; skill: string | undefined; simSeconds: number }>(`(async () => { const sim = w.app.sim; const yaw = () => { const q = sim.data.qpos; return Math.atan2(2 * (q[3] * q[6] + q[4] * q[5]), 1 - 2 * (q[5] * q[5] + q[6] * q[6])); }; let last = yaw(), total = 0; const t0 = sim.time; const stop = Date.now() + ${seconds * 8 + 20} * 1000; while (sim.time - t0 < ${seconds}) { await new Promise((r) => setTimeout(r, 100)); if (w.app.sim !== sim) throw new Error("the simulation was replaced while it was measured"); if (Date.now() > stop) throw new Error("the simulation stopped stepping: " + (sim.time - t0).toFixed(2) + " s of ${seconds} s after ${seconds * 8 + 20} s"); const y = yaw(); let d = y - last; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; total += d; last = y; } return { rate: total / (sim.time - t0), up: sim.uprightness(), skill: w.skill(), simSeconds: sim.time - t0 }; })()`), (seconds * 8 + 40) * 1000, "the yaw-rate measurement");
+
 const here = import.meta.dirname;
+let dir: string | undefined;
+let server: ChildProcess | undefined;
+let cdp: Cdp | undefined;
+let devices: Awaited<ReturnType<Cdp["device"]>> | undefined;
+// everything that starts something is inside the try: a failed setup (no Chrome at CDP, no run link) still stops the server and removes the folder, and only what was started
+try {
 const trace = process.env.TRACE;
 if (!trace || !existsSync(join(trace, "home/skills.json")) || !existsSync(join(trace, "robot/body.xml"))) throw new Error("TRACE must name a folder with robot/body.xml, robot/body.json and home/skills.json, home/skills/*.json");
-const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "spin-trace-"));
+dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "spin-trace-"));
 const port = await freePort();
 const RUN = "st";
 const work = join(dir, "runs", RUN, "work");
@@ -44,28 +68,14 @@ if (process.env.REBUILT === "1") {
 writeFileSync(join(work, "robot/body.json"), JSON.stringify(bodyJson));
 const skillsHome = JSON.parse(readFileSync(join(trace, "home/skills.json"), "utf8")) as { skills: Record<string, { policy: string; command: number }> };
 for (const e of Object.values(skillsHome.skills)) copyFileSync(join(trace, "home", e.policy), join(work, "home", e.policy));
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
+server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
 let link = "";
-server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
+server!.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
 for (let i = 0; i < 100 && !link; i++) await sleep(100);
 if (!link) throw new Error("the server printed no run link");
-const cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9334");
+cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9334");
 const device = await cdp.device();
-let page: Awaited<ReturnType<typeof device.open>> | undefined;
-const ev = <T>(e: string) => page!.evaluate<T>(e);
-const walks = <T>(expr: string) => ev<T>(`(() => { const w = document.getElementById("creature").contentWindow.__walks; return ${expr}; })()`);
-const idle = "(async () => { const k = await demo.tasks(); return !demo.state.chat.busy && (k === null || k.every((x) => x.state !== 'running' && x.state !== 'ready' && x.state !== 'waiting')); })()";
-type Item = { kind: string; name?: string; status?: string; output?: string; text?: string };
-const say = async (text: string) => {
-  const before = await ev<number>("demo.items().length");
-  await ev(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(text)}; document.getElementById("send").click(); return true; })()`);
-  await sleep(2500);
-  await page!.until(idle, 120_000, 1000).catch(() => undefined);
-  return ev<Item[]>(`demo.items().slice(${before})`);
-};
-/** Mean yaw rate over `seconds` of simulated time, from the free joint's quaternion (unwrapped between samples), and whether the torso stayed up. */
-const yawRate = (seconds: number) => walks<Promise<{ rate: number; up: number; skill: string | undefined; simSeconds: number }>>(`(async () => { const sim = w.app.sim; const yaw = () => { const q = sim.data.qpos; return Math.atan2(2 * (q[3] * q[6] + q[4] * q[5]), 1 - 2 * (q[5] * q[5] + q[6] * q[6])); }; let last = yaw(), total = 0; const t0 = sim.time; while (sim.time - t0 < ${seconds}) { await new Promise((r) => setTimeout(r, 100)); const y = yaw(); let d = y - last; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; total += d; last = y; } return { rate: total / (sim.time - t0), up: sim.uprightness(), skill: w.skill(), simSeconds: sim.time - t0 }; })()`);
-try {
+devices = device;
   page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&brain=off#"));
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   await page.until(`!!document.getElementById("creature").contentWindow.__walks`, 60_000, 300);
@@ -104,11 +114,15 @@ try {
     await say("do spin");
     await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === "spin"`, 30_000, 300).catch(() => undefined);
     await sleep(3000);
+    await ev(`window.__held = []; window.addEventListener("walkshome:policy-held", (e) => window.__held.push(e.detail)); true`);
     for (const [path, which] of [["home/policy.json", "walk"], ["train/gpu/policy.json", "walk"]] as const) {
-      mkdirSync(join(work, path, ".."), { recursive: true });
+      const at = process.env.DEAD_WATCHER === "1" ? `${path}.unwatched` : path; // DEAD_WATCHER=1: the file lands where no watcher reads (a check that this test fails when the watcher does not see it)
+      mkdirSync(join(work, at, ".."), { recursive: true });
       const text = JSON.parse(readFileSync(join(trace, "home", skillsHome.skills[which]!.policy), "utf8")) as Record<string, unknown>;
-      writeFileSync(join(work, path), JSON.stringify({ ...text, note: `arrival at ${path}` }));
-      await sleep(4000); // the page polls at 1 Hz
+      writeFileSync(join(work, at), JSON.stringify({ ...text, note: `arrival at ${path}` }));
+      // the page polls at 1 Hz: it must SAY it held this arrival (a watcher that never read the file holds nothing, and spin would simply have kept running)
+      const held = await page.until(`window.__held.some((h) => h.name === ${JSON.stringify(path)} && h.skill === "spin")`, 20_000, 300).then(() => true, () => false);
+      ok(`the page saw the policy that landed at ${path} and held it: a policy-held event names the path and the skill it kept`, held, await ev("window.__held"));
       const r = await yawRate(6);
       console.log(`  after ${path} landed: ${JSON.stringify(r)}`);
       ok(`a policy that lands at ${path} while spin is chosen does not end spin: the page still plays it, turning at at least 1 rad/s`, r.skill === "spin" && Math.abs(r.rate) >= 1.0, r);
@@ -126,10 +140,10 @@ try {
     await page.screenshot(join(shots, "spin-trace-failed.png")).catch(() => undefined);
   }
 } finally {
-  await device.close().catch(() => undefined);
-  cdp.close();
-  server.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  await devices?.close().catch(() => undefined);
+  cdp?.close();
+  server?.kill("SIGKILL");
+  if (dir) rmSync(dir, { recursive: true, force: true });
 }
 if (failed) { console.log(`${failed} FAILED`); process.exit(1); }
 console.log("all checks passed");
