@@ -74,9 +74,10 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
   const run = `pi-run ${skill} -- train-skill --skill-dir /workspace/skills/${skill} --body /workspace/robot --out /workspace/runs/${skill} --init-from ''`;
   const bash = (command: string) => toolUse("bash", { command });
   const setUp = results.filter((r) => r.toolName === "write" || r.toolName === "edit").length;
-  if (EXAMPLES.includes(skill)) {
-    // One of the library's worked skills: copy it, read its test, change only the target the brief names.
-    if (!texts.some((t) => /def test\(sim\)/.test(t)) && results.length === 0) return bash(`cp -r /opt/pda/train/skills/${skill} skills/${skill}`);
+  const example = EXAMPLES[skill];
+  if (example !== undefined) {
+    // One of the library's worked skills: copy its directory, read its test, change only the target the brief names.
+    if (!texts.some((t) => /def test\(sim\)/.test(t)) && results.length === 0) return bash(`cp -r /opt/pda/train/skills/${example} skills/${skill}`);
     if (!texts.some((t) => /def test\(sim\)/.test(t))) return bash(`cat skills/${skill}/test.py`);
     if (setUp === 0) return toolUse("edit", { path: `skills/${skill}/test.py`, edits: [{ oldText: '"target": ">= 1.0"', newText: '"target": ">= 1.2"' }] });
   } else {

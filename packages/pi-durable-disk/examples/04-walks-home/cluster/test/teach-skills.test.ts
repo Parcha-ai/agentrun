@@ -2,7 +2,7 @@
 // spike/spike.ts, which SIGKILLs the first host while the parent waits on its threads and finishes in a second one.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -157,4 +157,17 @@ test("the fold names every thread, passed or not, in its own words", () => {
       "Each thread's own conversation: read_thread with its skill or GPU number.",
     ].join("\n"),
   );
+});
+
+test("train-skill.md copies the library's worked skills from the directories the image really has", () => {
+  // The image bakes 04-walks-home/train/skills/ into /opt/pda/train/skills/ (listed on D2's v13 image: getup has no hyphen).
+  const sop = readFileSync(join(here, "..", "sop", "train-skill.md"), "utf8").replace(/\s+/g, " "); // as one line: a pair may wrap
+  const dirs = readdirSync(join(here, "..", "..", "train", "skills"));
+  const named = [...sop.matchAll(/\/opt\/pda\/train\/skills\/([\w-]+)/g)].map((m) => m[1]);
+  assert.ok(named.length > 0);
+  for (const d of named) assert.ok(dirs.includes(d!), `the SOP copies /opt/pda/train/skills/${d}, which the library does not have`);
+  for (const dir of dirs) {
+    const name = JSON.parse(readFileSync(join(here, "..", "..", "train", "skills", dir, "skill.json"), "utf8")).name as string;
+    assert.ok(sop.includes(`${name} \`${dir}/\``), `the SOP gives ${name}'s directory as ${dir}/`);
+  }
 });

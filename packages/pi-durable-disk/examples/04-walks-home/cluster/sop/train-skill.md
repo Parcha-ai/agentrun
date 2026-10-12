@@ -65,9 +65,11 @@ def terms(s):
 ```
 
 ## Steps
-1. **Is your skill one of the library's?** walk, sprint, backwards, turn-left, turn-right, spin, wave and get-up are
-   worked skills in `/opt/pda/train/skills/`, already tuned. If yours is one of them, use it as it is:
-   - `cp -r /opt/pda/train/skills/<your skill> skills/<your skill>`;
+1. **Is your skill one of the library's?** These are worked skills in `/opt/pda/train/skills/`, already tuned, each in
+   its directory: walk `walk/`, sprint `sprint/`, backwards `backwards/`, turn-left `turn-left/`, turn-right
+   `turn-right/`, spin `spin/`, wave `wave/`, and get-up `getup/` (no hyphen; its skill.json already says get-up). If
+   yours is one of them, use it as it is:
+   - `cp -r /opt/pda/train/skills/<its directory> skills/<your skill>` (get-up: `cp -r /opt/pda/train/skills/getup skills/get-up`);
    - `cat skills/<your skill>/test.py` and change only what your brief or this body needs (the target number in
      test.py, a weight for a heavy or long-legged body). The trainer finds this body's feet and pose itself. Change
      nothing else, and write no new reward code;

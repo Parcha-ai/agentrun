@@ -18,8 +18,8 @@ type ExecReturn = ReturnType<NodeExecutionEnv["exec"]>;
 /** Checkpoints a skill needs before it passes (D2's measured seconds / ~7 s per checkpoint); wave never passes here. */
 export const PASS_AT: Record<string, number | null> = { walk: 3, sprint: 3, backwards: 6, "turn-left": 5, "turn-right": 5, spin: 6, "get-up": 6, wave: null };
 export const MAX_CHECKPOINTS = 8;
-/** D2's worked skills, as the image ships them in /opt/pda/train/skills/. */
-export const EXAMPLES = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"];
+/** D2's worked skills, as the image ships them: skill name → its directory in /opt/pda/train/skills/ (get-up's has no hyphen). */
+export const EXAMPLES: Readonly<Record<string, string>> = { walk: "walk", sprint: "sprint", backwards: "backwards", "turn-left": "turn-left", "turn-right": "turn-right", spin: "spin", wave: "wave", "get-up": "getup" };
 
 function writeAtomic(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -169,13 +169,14 @@ export class FakeBoxEnv extends NodeExecutionEnv {
     // The library's worked skills (/opt/pda/train/skills/<name>/ in D2's image): `cp -r` one into the workspace.
     const example = t[0] === "cp" && t[1] === "-r" && t.length === 4 ? /^\/opt\/pda\/train\/skills\/([\w-]+)\/?$/.exec(t[2]!)?.[1] : undefined;
     if (example !== undefined) {
-      if (!EXAMPLES.includes(example)) {
+      const name = Object.entries(EXAMPLES).find(([, dir]) => dir === example)?.[0];
+      if (name === undefined) {
         say(`cp: cannot stat '${t[2]}': No such file or directory\n`);
         return { ok: true, value: { exitCode: 1 } } as never;
       }
       const dest = this.local(t[3]!.startsWith("/") ? t[3]! : `/workspace/${t[3]}`);
-      writeAtomic(join(dest, "skill.json"), JSON.stringify({ name: example, label: example, command: 0, reward_scales: {}, env: {} }));
-      writeAtomic(join(dest, "test.py"), `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${example}", "value": 0, "unit": "", "target": ">= 1.0"}\n`);
+      writeAtomic(join(dest, "skill.json"), JSON.stringify({ name, label: name, command: 0, reward_scales: {}, env: {} }));
+      writeAtomic(join(dest, "test.py"), `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${name}", "value": 0, "unit": "", "target": ">= 1.0"}\n`);
       return { ok: true, value: { exitCode: 0 } } as never;
     }
     if (t[0] === "cat" && t.length === 2) {
