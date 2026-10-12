@@ -1,7 +1,7 @@
 // The demo's placer: criteria one line per environment, Jev as the only judge, and a refusal to start without its key. Tests judge with a fixed table.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import placerModule, { buildPlacer, CRITERIA, HOME_PROMPT_ROBOT, LABELS } from "../placer.ts";
+import placerModule, { buildPlacer, CRITERIA, CRITERIA_ROBOT, HOME_PROMPT_ROBOT, LABELS } from "../placer.ts";
 import type { JudgeRunner } from "../../../03-tab-to-cloud/placement.ts";
 
 const logs: string[] = [];
@@ -240,4 +240,12 @@ test("with a flag on the floor the home check gives the line to try, the run to 
   assert.equal(await reason(["walk", "spin"]), "2 skills are home and installed: walk, spin.", "no flag: no line to try");
   assert.equal(await reason(["spin", "wave"], { "creature/scene.json": scene }), "2 skills are home and installed: spin, wave.", "nothing that goes to the flag came home");
   assert.equal(await reason(["walk"], { "creature/scene.json": bytes("{") }), "1 skill is home and installed: walk.", "a scene that does not parse is no flag");
+});
+
+test("the robot criteria give Jev one rule for a line that asks the robot to do something: it is tried in the browser, taught or not; only a request to teach, train, retrain or learn is the cluster's", () => {
+  assert.match(CRITERIA_ROBOT.tab!, /whether or not it has been taught/);
+  assert.match(CRITERIA_ROBOT.tab!, /shows it failing/);
+  assert.match(CRITERIA_ROBOT["modal-vm"]!, /taught or not, is not teaching: it is trying it, in the browser/);
+  assert.match(CRITERIA_ROBOT["modal-vm"]!, /asks for the robot to be taught, to train, to retrain or to learn/);
+  // Where lines really land is checked against the live judge: `with-typesafe -- node scripts/placer-probe.mts 3` (the wording is for Jev, no code reads the user's words).
 });
