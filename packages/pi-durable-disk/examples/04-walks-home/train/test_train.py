@@ -140,6 +140,11 @@ class CheckpointDueTest(unittest.TestCase):
     for p, t in zip(points, saved):
       self.assertLessEqual(abs(t - p), epoch / 2, (p, t))
 
+  def test_a_cadence_that_does_not_move_is_refused(self):
+    for every in (0, -2_000_000):
+      with self.assertRaises(ValueError):
+        checkpoint_due([parse_steps("1M")], every, 491_520)
+
   def test_a_resumed_run_picks_up_the_cadence(self):
     epoch = 491_520
     is_due = checkpoint_due([parse_steps("1M")], parse_steps("2M"), epoch)

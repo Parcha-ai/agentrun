@@ -114,6 +114,8 @@ def checkpoint_due(schedule: list[int], every: int, epoch_steps: int):
   """With a schedule, is_due(total_steps), called once per epoch end, says whether that epoch checkpoints: the epoch
   ending nearest each scheduled point, then nearest each cadence point (the last point + every, + 2 every, ...).
   Each point is a target kept until an epoch handles it, so none is skipped when an epoch ends just past it."""
+  if schedule and every <= 0:
+    raise ValueError(f"the checkpoint cadence must be positive, got {every} steps")
   due = sorted(schedule)
   cadence = {"next": max(schedule) + every} if schedule else {}
 
@@ -190,6 +192,8 @@ def main() -> None:
   args = ap.parse_args()
   if args.compile_only and (not args.compile_cache or args.no_compile_cache):
     ap.error("--compile-only needs --compile-cache PATH")
+  if args.schedule and parse_steps(args.checkpoint_every) <= 0:
+    ap.error("--checkpoint-every must be positive")
   if args.compile_only:
     import tempfile
     args.work = tempfile.mkdtemp(prefix="pda-compile-only-")
