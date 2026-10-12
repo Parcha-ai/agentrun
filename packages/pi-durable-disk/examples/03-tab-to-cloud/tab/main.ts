@@ -14,7 +14,7 @@ import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, toolBody } from "./tool-body.ts";
 import { WriteMemory } from "./write-memory.ts";
 import { Latest } from "./latest.ts";
-import { ACTIVE, ThreadSet, type ThreadMsg } from "./threads.ts";
+import { ACTIVE, ThreadSet, threadsByCall, type Thread, type ThreadMsg } from "./threads.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
@@ -247,6 +247,8 @@ function announceTools(items: readonly ChatItem[]): void {
 
 /** The teaching threads (child conversations on their own GPUs): relayed to this page by the host that runs the agent (thread-relay.ts), drawn inside the teach_skills call. */
 const teachThreads = new ThreadSet();
+/** The threads of each teach_skills call, by the call's id (a second call is a second run, with its own threads); worked out at each redraw. */
+let callThreads = new Map<string, Thread[]>();
 
 /** The tool results the reader has open, by the call's id: the chat is redrawn on every agent event, and a result being read must not close under them. */
 const openTools = new Set<string>();
@@ -257,6 +259,7 @@ function renderChat(): void {
   const items = state.chat.items();
   announceTools(items);
   const echoed = echoedTools(items);
+  callThreads = threadsByCall(items.filter((i) => i.kind === "tool" && i.name === "teach_skills").map((i) => i.id), teachThreads.list());
   list.replaceChildren(...items.filter((item) => !(item.kind === "brain" && (item.stage === "moved" || item.stage === "decision"))).map((item) => renderItem(item, echoed)));
   if (atBottom) list.scrollTop = list.scrollHeight;
   noticeSeen();
@@ -270,9 +273,9 @@ const fullOutput = new Set<string>();
 const writeBefore = new Map<string, string>();
 
 /** The teaching threads inside the teach_skills call: one row per thread (its GPU, its name, where it is), each opening to that thread's own tool calls, drawn with the same lines and bodies as the root's. */
-function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, showOutput: boolean): HTMLElement {
+function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, threads: readonly Thread[], showOutput: boolean): HTMLElement {
   const wrap = el("div", { class: "tool-body threads" });
-  for (const t of teachThreads.list()) {
+  for (const t of threads) {
     const key = `thread:${t.conversation}`;
     const items = t.chat.items();
     // The thread's conversation was forked from the agent's, so it begins with what the agent had; the thread's own work starts at its brief (its last user message).
@@ -314,14 +317,15 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       const dot = item.status === "running" ? "dot act run" : item.status === "done" && !isMuted(item) ? "dot done" : "dot";
       const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)));
       const showOutput = !echoed.has(item.id);
-      const teach = item.name === "teach_skills" && teachThreads.list().length > 0;
+      const mine = scope === "" && item.name === "teach_skills" ? callThreads.get(item.id) ?? [] : [];
+      const teach = mine.length > 0;
       const has = teach || hasBody(item, { showOutput });
       const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${has ? "" : " bare"}` }, summary) as HTMLDetailsElement;
       const fill = () => {
         const before = writeBefore.get(key);
         const signature = JSON.stringify([item.name, item.args, item.status, item.output, showOutput, before ?? null, teach ? teachThreads.version : 0]);
         const cached = bodies.get(key);
-        const body = cached && cached.signature === signature ? cached.body : teach ? threadsBody(item, showOutput) : toolBody(item, { showOutput, before, expanded: fullOutput.has(key), onToggle: (all) => (all ? fullOutput.add(key) : fullOutput.delete(key)) });
+        const body = cached && cached.signature === signature ? cached.body : teach ? threadsBody(item, mine, showOutput) : toolBody(item, { showOutput, before, expanded: fullOutput.has(key), onToggle: (all) => (all ? fullOutput.add(key) : fullOutput.delete(key)) });
         if (!cached || cached.signature !== signature) bodies.set(key, { signature, body });
         if (body !== null && body.parentElement !== node) node.append(body);
       };

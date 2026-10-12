@@ -8,6 +8,8 @@ export type ThreadMsg = {
   conversation: number;
   name: string;
   gpu: number | null;
+  /** The teaching run (the TeachSkills task) that forked the thread: a second teach_skills call is a second run. */
+  teach?: number;
   /** running | done | timed-out | error, as the host's own listing says */
   status: string;
   snapshot?: AgentEvent;
@@ -23,12 +25,13 @@ export type ThreadRef = {
   status: string;
   /** The thread's task is finished: nothing more will come once what was written has been relayed. */
   settled?: boolean;
+  teach?: number;
 };
 
 /** A thread still working: its status can change; once it is anything else it stays that. */
 export const ACTIVE = new Set(["queued", "starting", "running"]);
 
-export type Thread = { conversation: number; name: string; gpu: number | null; status: string; chat: ChatView };
+export type Thread = { conversation: number; teach: number | null; name: string; gpu: number | null; status: string; chat: ChatView };
 
 export class ThreadSet {
   #threads = new Map<number, Thread>();
@@ -38,7 +41,7 @@ export class ThreadSet {
   apply(msg: ThreadMsg): void {
     let t = this.#threads.get(msg.conversation);
     if (!t) {
-      t = { conversation: msg.conversation, name: msg.name, gpu: msg.gpu, status: msg.status, chat: new ChatView() };
+      t = { conversation: msg.conversation, teach: msg.teach ?? null, name: msg.name, gpu: msg.gpu, status: msg.status, chat: new ChatView() };
       this.#threads.set(msg.conversation, t);
     }
     if (ACTIVE.has(t.status)) t.status = msg.status; // forward only: a late message does not bring a finished thread back
@@ -56,4 +59,21 @@ export class ThreadSet {
     this.#threads.clear();
     this.version++;
   }
+}
+
+/**
+ * Which threads belong to which teach_skills call. Each call makes one teaching run, and a run's threads carry its id (`teach`, ascending in time); the calls are in the chat's order. They are
+ * lined up from the newest end (the newest call is the newest run), so an earlier call that failed before it forked anything shifts nothing for the calls after it. A call with no run gets none.
+ */
+export function threadsByCall(callIds: readonly string[], threads: readonly Thread[]): Map<string, Thread[]> {
+  const runs = [...new Set(threads.map((t) => t.teach).filter((t): t is number => t !== null))].sort((a, b) => a - b);
+  const out = new Map<string, Thread[]>();
+  // A host that does not say which run a thread belongs to cannot be scoped: its threads show under the newest call.
+  if (runs.length === 0) {
+    if (callIds.length > 0 && threads.length > 0) out.set(callIds[callIds.length - 1]!, [...threads]);
+    return out;
+  }
+  const n = Math.min(callIds.length, runs.length);
+  for (let k = 1; k <= n; k++) out.set(callIds[callIds.length - k]!, threads.filter((t) => t.teach === runs[runs.length - k]));
+  return out;
 }

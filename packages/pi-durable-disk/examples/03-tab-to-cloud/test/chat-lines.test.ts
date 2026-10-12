@@ -116,3 +116,14 @@ test("whether a call has anything to open is known without drawing it (a diff is
   assert.equal(hasBody(t("set_color", { part: "legs", color: "red" }, "The legs are now red."), { showOutput: false }), false, "the reply says it once: nothing to open");
   assert.equal(hasBody(t("set_color", {}, "", "running"), { showOutput: true }), false);
 });
+
+import { ChatView } from "../tab/chat-view.ts";
+test("a host's notice to the agent (an env.* kind that is not a move) never shows in the chat, and a real user line does", () => {
+  const view = new ChatView();
+  view.apply({ type: "snapshot", entries: [
+    { id: "1", kind: "pi.user", model: [{ role: "user", content: "hello" }] },
+    { id: "2", kind: "env.checkin", model: [{ role: "user", content: "[from the server] You are back in your user's browser..." }], data: {} },
+    { id: "3", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE" }], data: { switchId: "s", facts: { label: "a Modal VM" } } },
+  ], tools: [], generation: undefined, run: undefined } as never);
+  assert.deepEqual(view.items().map((i) => i.kind), ["user", "switch"], "the check-in prompt is hidden; the move stays (drawn as one line)");
+});

@@ -115,18 +115,30 @@ try {
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "g-a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "g1", name: "grep", arguments: { pattern: "x" } }] }] } }); chat.apply({ type: "entry_appended", entry: { id: "g-r", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "g1", toolName: "grep", content: [{ type: "text", text: "src/a.ts:12:const x = 1;\\nsrc/b.ts:3:  return x;" }] }] } }); demo.renderChat(); const d = [...document.querySelectorAll("details.tool")].find((t) => /^grep/.test(t.textContent)); d.open = true; return !!d; })()`);
   const hits = await ev<string[]>(`[...document.querySelectorAll("details.tool .hit .where")].map((h) => h.textContent)`);
   ok("grep shows its hits: where each is (file:line) and the line", hits.includes("src/a.ts:12") && hits.includes("src/b.ts:3"), hits);
+  // A big write (a whole robot body, as .mjs) opens as the code it wrote, from the call's own arguments, not as the tool's "Successfully wrote" line.
+  const bigBody = Array.from({ length: 400 }, (_, i) => `export const part${i} = { name: "part${i}", size: [${i}, 0.1, 0.1] };`).join("\n") + "\n";
+  await script([call("write", { path: "robot/body.mjs", content: bigBody })]);
+  await ev(`document.querySelectorAll("details.tool").forEach((d) => { d.open = false; })`);
+  await say("write the dinosaur body as code");
+  await ev(`[...document.querySelectorAll("details.tool")].filter((d) => /robot\\/body\\.mjs/.test(d.textContent)).forEach((d) => { d.open = true; })`);
+  await until(`[...document.querySelectorAll("details.tool")].some((d) => /body\\.mjs/.test(d.textContent) && /part399/.test(d.querySelector(".diff")?.firstElementChild?.shadowRoot?.textContent ?? ""))`, 60_000).catch(() => undefined);
+  const bigOpen = await ev<{ code: boolean; onlyResult: boolean }>(`(() => { const d = [...document.querySelectorAll("details.tool")].filter((x) => /body\\.mjs/.test(x.textContent)).at(-1); return { code: /part399/.test(d.querySelector(".diff")?.firstElementChild?.shadowRoot?.textContent ?? ""), onlyResult: /^Successfully wrote/.test(d.querySelector(".tool-body")?.textContent ?? "") }; })()`);
+  ok("a write opens as the code it wrote (its content, from the call's arguments), not as the result line", bigOpen.code && !bigOpen.onlyResult, bigOpen);
   // The teaching threads render inside the teach_skills call, each with its own tool calls (the same lines and bodies), and a long command output shows its last lines.
   const log = Array.from({ length: 20 }, (_, i) => `step ${i + 1} reward 0.${i}`).join("\n");
+  const longLog = Array.from({ length: 3000 }, (_, i) => `epoch ${i + 1} reward ${i}`).join("\n"); // far more than the 6,000 characters a body keeps of a short output
   const entries = JSON.stringify([
     { id: "t-u", kind: "pi.user", model: [{ role: "user", content: "You are thread 3 of 8, with GPU 3 of your own. Your skill: spin.\n\nBrief: spin in place.", timestamp: 1 }] },
     { id: "t-a1", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tw", name: "write", arguments: { path: "train/spin_reward.py", content: "def reward(s):\n    return s.spin\n" } }] }] },
     { id: "t-r1", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tw", toolName: "write", content: [{ type: "text", text: "wrote" }] }] },
     { id: "t-a2", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tb", name: "bash", arguments: { command: "pi-run spin -- python train.py" } }] }] },
     { id: "t-r2", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tb", toolName: "bash", content: [{ type: "text", text: log }] }] },
+    { id: "t-a3", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tl", name: "bash", arguments: { command: "tail -f train.log" } }] }] },
+    { id: "t-r3", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tl", toolName: "bash", content: [{ type: "text", text: longLog }] }] },
   ]);
-  await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "ts-a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "ts1", name: "teach_skills", arguments: { skills: [{ name: "spin", brief: "spin in place" }] } }] }] } }); demo.thread({ kind: "thread", conversation: 41, name: "spin", gpu: 3, status: "running", snapshot: { type: "snapshot", entries: ${entries}, tools: [] } }); const d = [...document.querySelectorAll("details.tool")].find((t) => /^teach_skills/.test(t.textContent)); d.open = true; return !!d; })()`);
+  await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "ts-a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "ts1", name: "teach_skills", arguments: { skills: [{ name: "spin", brief: "spin in place" }] } }] }] } }); demo.thread({ kind: "thread", conversation: 41, teach: 14, name: "spin", gpu: 3, status: "running", snapshot: { type: "snapshot", entries: ${entries}, tools: [] } }); const d = [...document.querySelectorAll("details.tool")].find((t) => /^teach_skills/.test(t.textContent)); d.open = true; return !!d; })()`);
   const rows = await ev<string[]>(`[...document.querySelectorAll("details.thread > summary")].map((s) => s.textContent.replace(/\\s+/g, " ").trim())`);
-  ok("each thread is a row inside the teach_skills call: its GPU, its name and how far it is", rows.length === 1 && /GPU 3\s*spin\s*2 calls/.test(rows[0]), rows);
+  ok("each thread is a row inside the teach_skills call: its GPU, its name and how far it is", rows.length === 1 && /GPU 3\s*spin\s*\d+ calls/.test(rows[0]), rows);
   await ev(`document.querySelector("details.thread").open = true`);
   await until(`!!document.querySelector("details.thread details.tool .diff")?.firstElementChild?.shadowRoot`, 15_000).catch(() => undefined);
   await ev(`[...document.querySelectorAll("details.thread details.tool")].forEach((d) => { d.open = true; })`);
@@ -134,6 +146,9 @@ try {
   const inThread = await ev<{ brief: string; diff: string; tail: string; more: string; bash: string[] }>(`(() => { const t = document.querySelector("details.thread"); return { brief: t.querySelector(".brief")?.textContent ?? "", diff: (t.querySelector(".diff")?.firstElementChild?.shadowRoot?.textContent ?? "").replace(/\\s+/g, " "), tail: t.querySelector(".output pre")?.textContent ?? "", more: t.querySelector(".output .more")?.textContent ?? "", bash: [...t.querySelectorAll("details.tool")].map((d) => d.className + " :: " + d.innerHTML.slice(0, 240)) }; })()`);
   ok("opening a thread shows its brief and its own tool calls: the training code as a diff", /Brief: spin in place/.test(inThread.brief) && /def reward/.test(inThread.diff), inThread);
   ok("a long command output shows its last 8 lines and how many came before", /^step 13 /.test(inThread.tail) && /step 20 reward/.test(inThread.tail) && inThread.more === "12 earlier lines", inThread);
+  const longTail = await ev<{ tail: string; more: string; full: string }>(`(() => { const o = [...document.querySelectorAll("details.thread .output")].find((x) => /epoch/.test(x.textContent)); const more = o.querySelector(".more"); const tail = o.querySelector("pre").textContent; const label = more.textContent; more.click(); return { tail, more: label, full: o.querySelector("pre").textContent }; })()`);
+  ok("a log far longer than a body keeps shows its newest lines (the last 8, counted from the whole output), not its first", /epoch 3000 reward 2999$/.test(longTail.tail) && /^epoch 2993 /.test(longTail.tail) && longTail.more === "2992 earlier lines", longTail);
+  ok("and asking for all of it ends at the real end of the log", /epoch 3000 reward 2999$/.test(longTail.full), longTail.full.slice(-80));
   await ev(`document.querySelector("details.thread .output .more").click()`);
   ok("and asking for it shows all of it", await ev<boolean>(`document.querySelector("details.thread .output pre").textContent.startsWith("step 1 ")`));
   await page.screenshot(join(shots, "pane-3c-threads.png"));

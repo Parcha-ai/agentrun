@@ -89,11 +89,11 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     // The teaching threads are child conversations the pipe's root stream does not carry: followed here and relayed as `thread` events (a viewer that joins gets every transcript again).
     if (run.threadsOf) {
       const { harness, threadsOf } = run;
-      if (threadRelay) await threadRelay.resend();
-      else {
-        threadRelay = new ThreadRelay(harness, ctx, () => threadsOf(harness, ctx), (msg) => send({ t: "event", kind: "thread", data: msg }));
-        threadRelay.start();
-      }
+      // A new connection gets a new relay (its first look sends every thread's snapshot again, to this socket); one left over from the old connection is ended.
+      await threadRelay?.stop();
+      threadRelay = new ThreadRelay(harness, ctx, () => threadsOf(harness, ctx), (msg) => send({ t: "event", kind: "thread", data: msg }), { log });
+      log("thread.relay.started");
+      threadRelay.start();
     }
   };
 

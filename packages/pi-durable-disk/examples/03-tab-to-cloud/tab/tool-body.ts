@@ -15,6 +15,9 @@ const el = (tag: string, cls: string, text?: string): HTMLElement => {
 
 const OUT_CAP = 6000;
 const clip = (s: string): string => (s.length <= OUT_CAP ? s : `${s.slice(0, OUT_CAP)}\n… ${s.length - OUT_CAP} more characters`);
+/** A log is read from its end: the last `n` characters, and a note of how many came before. */
+const OUT_FULL = 200_000;
+const clipStart = (s: string, n: number): string => (s.length <= n ? s : `… ${s.length - n} earlier characters\n${s.slice(-n)}`);
 
 function parse(args: string): Record<string, unknown> {
   try {
@@ -32,16 +35,18 @@ const TAIL = 8;
  * The toggle is part of the body, so a redraw while the output grows shows the tail again unless the reader had opened it (`open` keeps that, by call id, in main.ts).
  */
 function outputBlock(text: string, opts: { expanded: boolean; onToggle?: (expanded: boolean) => void }): HTMLElement {
-  const tail = tailLines(clip(text), TAIL);
+  const tail = tailLines(text, TAIL); // the last lines of the whole output, however long (a training log's progress is at its end)
+  const tailText = clipStart(tail.text, OUT_CAP);
+  const full = clipStart(text, OUT_FULL);
   const wrap = el("div", "output");
-  const pre = el("pre", "out", opts.expanded || tail.hidden === 0 ? clip(text) : tail.text);
+  const pre = el("pre", "out", opts.expanded || tail.hidden === 0 ? full : tailText);
   if (tail.hidden > 0) {
     const more = el("button", "more", opts.expanded ? "show the last lines" : `${tail.hidden} earlier line${tail.hidden === 1 ? "" : "s"}`);
     more.setAttribute("type", "button");
     more.addEventListener("click", () => {
       const now = pre.dataset.expanded !== "1";
       pre.dataset.expanded = now ? "1" : "";
-      pre.textContent = now ? clip(text) : tail.text;
+      pre.textContent = now ? full : tailText;
       more.textContent = now ? "show the last lines" : `${tail.hidden} earlier line${tail.hidden === 1 ? "" : "s"}`;
       opts.onToggle?.(now);
     });
