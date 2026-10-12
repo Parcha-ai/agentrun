@@ -133,6 +133,8 @@ export interface ModalCloudOptions {
     readonly readyCommand?: string;
     readonly readyTimeoutMs?: number;
     readonly placementTimeoutMs?: number;
+    /** When the boxes start: "attach" (default: when the first page takes the run, so a server nobody opens costs nothing) or "now" (when this cloud is made). */
+    readonly start?: "attach" | "now";
   };
   /** Offer the VM environment (default true). Without it the only place the agent can go is the GPU box; needs `gpu`. */
   readonly offerVm?: boolean;
@@ -176,7 +178,7 @@ export type ModalCloud = CloudHost & {
   hostLabel: string;
   desktop(ref: RunRef): { url: string; screenshot(): Promise<Uint8Array> } | undefined;
   /** The cluster's boxes (with `cluster`): their state now, and a promise that settles when every box has come up or failed. */
-  cluster?: { status(): PoolStatus; ready: Promise<void> };
+  cluster?: { status(): PoolStatus; /** Start the boxes (once) and resolve when each has come up or failed. */ start(): Promise<void> };
 };
 
 export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud> {
@@ -292,8 +294,14 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         },
       }
     : undefined;
-  const clusterReady = pool ? pool.start() : undefined;
-  clusterReady?.catch(() => undefined);
+  let clusterStarted: Promise<void> | undefined;
+  const startCluster = (): Promise<void> => {
+    if (!pool) return Promise.resolve();
+    clusterStarted ??= pool.start();
+    clusterStarted.catch(() => undefined);
+    return clusterStarted;
+  };
+  if (options.cluster?.start === "now") void startCluster();
 
   /** What a pipe host of each environment is made of. */
   const classOf = (envId: string) =>
@@ -606,7 +614,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     // The VM's instance tells the server over its link when its agent's notice is committed, so the move is timed to that moment.
     notifiesSwitched: true,
     ...(options.rewarm && options.warm ? { rewarm: true as const } : {}),
-    ...(pool && clusterReady ? { cluster: { status: () => pool.status(), ready: clusterReady } } : {}),
+    ...(pool ? { cluster: { status: () => pool.status(), start: startCluster } } : {}),
     environments: [...(options.offerVm === false && gpuEnv ? [] : [env]), ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
 
     bind(api) {
@@ -713,6 +721,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
 
     /** While a tab runs the run, with `warm` set (pipe transport): get a VM ready, so a switch only dials it. */
     prewarm(ref) {
+      // The robot cluster warms with the first page that takes the run (its boxes cost by the minute from then on).
+      if (options.cluster?.start !== "now" && !closing) void startCluster();
       const warmEnv = options.warm === "gpu" ? gpuEnv : options.warm && transport === "pipe" ? env : undefined;
       if (closing || !warmEnv || warm.has(ref.id) || remotes.has(ref.id)) return;
       const ready = remoteBox(ref, warmEnv.id);

@@ -3,17 +3,18 @@
 //   desktop=true        a desktop in the VM and the computer tool                    regions=us-east,...    where Modal may place sandboxes
 //   app=NAME prefix=P   the Modal app and the sandbox names                          warm=true|gpu          keep one pipe VM (or the GPU box) ready (rewarm=true: and again after each return to the tab) (with gpu: warm-commands-file=F warm-env=K=V,.. warm-delay-ms=N compile the creature ahead)
 //   vm=false            offer only the GPU environment
+//   cluster-size=N cluster-image=im-...   the robot cluster: N GPU boxes created at start and lent one per thread (cluster-type=H100 cluster-cpu=N cluster-memory-mib=N cluster-ttl-minutes=N cluster-ready=CMD cluster-ready-timeout-s=N cluster-placement-s=N cluster-start=attach|now)
 //   gpu-image=im-...    offers modal-gpu: this image, gVisor, on the pipe            gpu-type=H100 gpu-note=TEXT   (note: what the agent runs there)
 // MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the environment.
 import { readFileSync } from "node:fs";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib"]);
+const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
-export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "rewarm" | "gpu" | "cpu" | "memoryMiB"> {
+export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "rewarm" | "gpu" | "cpu" | "memoryMiB" | "cluster"> {
   for (const key of Object.keys(args)) if (!KNOWN.has(key)) throw new Error(`--cloud-arg ${key}: not one of ${[...KNOWN].join(", ")}`);
   if (args.transport !== undefined && args.transport !== "mount" && args.transport !== "pipe") throw new Error(`--cloud-arg transport=${args.transport}: mount or pipe`);
   if (args["gpu-type"] !== undefined && args["gpu-image"] === undefined) throw new Error("--cloud-arg gpu-type needs gpu-image");
@@ -46,6 +47,10 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
         return [kv.slice(0, at), kv.slice(at + 1)];
       }))
     : undefined;
+  if ((args["cluster-size"] === undefined) !== (args["cluster-image"] === undefined)) throw new Error("--cloud-arg cluster-size and cluster-image go together");
+  if (args["cluster-size"] !== undefined && !Number.isInteger(Number(args["cluster-size"]))) throw new Error(`--cloud-arg cluster-size=${args["cluster-size"]}: a whole number`);
+  if (args["cluster-start"] !== undefined && args["cluster-start"] !== "attach" && args["cluster-start"] !== "now") throw new Error(`--cloud-arg cluster-start=${args["cluster-start"]}: attach or now`);
+  if (args["cluster-size"] === undefined && Object.keys(args).some((k) => k.startsWith("cluster-"))) throw new Error("--cloud-arg cluster-* need cluster-size and cluster-image");
   if (args.warm !== undefined && !["gpu", "true", "false", "1", "0", ""].includes(args.warm)) throw new Error(`--cloud-arg warm=${args.warm}: true, false or gpu`);
   if ((args.warm === "gpu" || args.vm === "false") && args["gpu-image"] === undefined) throw new Error("--cloud-arg warm=gpu and vm=false need gpu-image");
   return {
@@ -60,6 +65,22 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
     ...(args.vm === "false" ? { offerVm: false } : {}),
     ...(number("cpu") ? { cpu: number("cpu")! } : {}),
     ...(number("memory-mib") ? { memoryMiB: number("memory-mib")! } : {}),
+    ...(args["cluster-size"] !== undefined && args["cluster-image"]
+      ? {
+          cluster: {
+            size: number("cluster-size")!,
+            image: args["cluster-image"],
+            ...(args["cluster-type"] ? { type: args["cluster-type"] } : {}),
+            ...(number("cluster-cpu") ? { cpu: number("cluster-cpu")! } : {}),
+            ...(number("cluster-memory-mib") ? { memoryMiB: number("cluster-memory-mib")! } : {}),
+            ...(number("cluster-ttl-minutes") ? { ttlMinutes: number("cluster-ttl-minutes")! } : {}),
+            ...(args["cluster-ready"] ? { readyCommand: args["cluster-ready"] } : {}),
+            ...(number("cluster-ready-timeout-s") ? { readyTimeoutMs: number("cluster-ready-timeout-s")! * 1000 } : {}),
+            ...(number("cluster-placement-s") ? { placementTimeoutMs: number("cluster-placement-s")! * 1000 } : {}),
+            ...(args["cluster-start"] ? { start: args["cluster-start"] as "attach" | "now" } : {}),
+          },
+        }
+      : {}),
     ...(args["gpu-image"] ? { gpu: { image: args["gpu-image"], ...(args["gpu-type"] ? { type: args["gpu-type"] } : {}), ...(args["gpu-note"] ? { note: args["gpu-note"] } : {}), ...(gpuTtl ? { ttlMinutes: gpuTtl } : {}), ...(number("gpu-cpu") ? { cpu: number("gpu-cpu")! } : {}), ...(gpuVolumes ? { volumes: gpuVolumes } : {}), ...(startCommands ? { startCommands } : {}), ...(args["gpu-start-env"] ? { startEnv: args["gpu-start-env"].split(",").filter(Boolean) } : {}), ...(args["gpu-ready"] ? { readyCommand: args["gpu-ready"] } : {}), ...(number("gpu-ready-timeout-s") ? { readyTimeoutMs: number("gpu-ready-timeout-s")! * 1000 } : {}), ...(number("gpu-memory-mib") ? { memoryMiB: number("gpu-memory-mib")! } : {}), ...(warmCommands ? { warmCommands } : {}), ...(warmEnv ? { warmEnv } : {}), ...(warmDelay ? { warmDelayMs: warmDelay } : {}) } } : {}),
   };
 }

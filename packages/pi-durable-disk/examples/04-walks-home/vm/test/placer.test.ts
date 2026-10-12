@@ -133,7 +133,7 @@ test("episode=model wires the model check and its home prompt; an unknown episod
     const res = await p.homeCheck!(async () => undefined);
     assert.equal(res.ok, false);
     assert.match(res.reason, /no model manifest/);
-    await assert.rejects(placerModule(options({ episode: "poem" })), /walks, model or obsession/);
+    await assert.rejects(placerModule(options({ episode: "poem" })), /walks, model, obsession or robot/);
   } finally {
     if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
   }
@@ -164,4 +164,26 @@ test("the model check says why no model exists when a program stopped on purpose
   assert.match(gate.reason, /^no model was made: the big model kept making things up about a real person/);
   const nothing = await checkHomeModel(files({}), { sleep: async () => undefined });
   assert.match(nothing.reason, /no model manifest/);
+});
+
+test("robot episode: teaching or relearning goes to the VM, everything else stays in the browser, and the home check reads the skills", async () => {
+  const { scriptedRobotJudge, checkHomeSkills, CRITERIA, LABELS } = await import("../placer.ts");
+  const { judgePlacer } = await import("../../../03-tab-to-cloud/placement.ts");
+  const placer = judgePlacer({ runJudge: scriptedRobotJudge, criteria: CRITERIA, labels: LABELS, model: "scripted" });
+  const ask = async (message: string, phase: "start" | "done" = "start") => (await placer.decide({ phase, message, current: "tab", environments: ["tab", "modal-vm"] })).choice;
+  assert.equal(await ask("Make me a robot."), "tab");
+  assert.equal(await ask("paint it red"), "tab");
+  assert.equal(await ask("Teach it to move."), "modal-vm");
+  assert.equal(await ask("Go learn your new body."), "modal-vm");
+  assert.equal(await ask("Teach it to move.", "done"), "tab");
+
+  const skills = (names: string[]) => bytes(JSON.stringify({ skills: names }));
+  const ok = await checkHomeSkills(files({ "home/skills.json": skills(["walk", "spin"]), "home/skills/walk.json": bytes("{}"), "home/skills/spin.json": bytes("{}") }), 2);
+  assert.equal(ok.ok, true);
+  assert.match(ok.reason, /2 skills are home.*walk, spin/);
+  assert.equal((await checkHomeSkills(files({}))).ok, false);
+  assert.match((await checkHomeSkills(files({ "home/skills.json": bytes("nope") }))).reason, /not valid JSON/);
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]) }))).reason, /not written: walk/);
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}") }), 8)).reason, /1 of the 8 skills/);
+  assert.match((await checkHomeSkills(files({ "home/skills.json": bytes("{\"skills\":[]}") }))).reason, /lists no skill/);
 });

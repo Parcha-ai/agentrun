@@ -161,8 +161,8 @@ test("close does not wait for a box that is past its create and still preparing:
 });
 
 test("the cluster: its boxes come up together, are ready when the pool says so, and close removes every one", async () => {
-  const w = await world(() => false, undefined, { cluster: { size: 3, image: "im-cluster", cpu: 8, memoryMiB: 65536 } });
-  await w.cloud.cluster!.ready;
+  const w = await world(() => false, undefined, { cluster: { size: 3, image: "im-cluster", cpu: 8, memoryMiB: 65536, start: "now" } });
+  await w.cloud.cluster!.start();
   const status = w.cloud.cluster!.status();
   assert.equal(status.boxes.length, 3);
   assert.deepEqual(status.boxes.map((b) => b.state), ["ready", "ready", "ready"]);
@@ -174,12 +174,23 @@ test("the cluster: its boxes come up together, are ready when the pool says so, 
 test("the cluster: a close while its boxes are still being created removes them when they land", async () => {
   let open!: () => void;
   const gate = new Promise<void>((r) => (open = r));
-  const w = await world(() => false, gate, { cluster: { size: 2, image: "im-cluster" } });
+  const w = await world(() => false, gate, { cluster: { size: 2, image: "im-cluster", start: "now" } });
   const closing = w.cloud.close!();
   await new Promise((r) => setTimeout(r, 100));
   open();
   await closing;
-  await w.cloud.cluster!.ready;
+  await w.cloud.cluster!.start();
   assert.equal(w.boxes.length, 2);
   assert.deepEqual(w.boxes.map((b) => b.exit), [137, 137], "boxes that landed after close began were terminated");
+});
+
+test("the cluster starts when the first page takes the run (prewarm), not before, and only once", async () => {
+  const w = await world(() => false, undefined, { cluster: { size: 2, image: "im-cluster" } });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(w.boxes.length, 0, "nothing is created until a page attaches");
+  w.cloud.prewarm!(w.ref("run-a"));
+  w.cloud.prewarm!(w.ref("run-a"));
+  await w.cloud.cluster!.start();
+  assert.equal(w.boxes.filter((b) => b.name.includes("gpu")).length, 2, "two cluster boxes, once");
+  await w.cloud.close!();
 });

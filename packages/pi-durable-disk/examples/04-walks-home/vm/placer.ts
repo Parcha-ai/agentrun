@@ -35,6 +35,50 @@ export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
 };
 
 /**
+ * The robot episode's stand-in client: a request to teach or relearn skills goes to the Modal VM (the session runs there while its threads
+ * train on the cluster), anything else, and every "done" question, stays in the browser. The cluster boxes are not environments of the
+ * switcher: the session on the VM lends them to its threads.
+ */
+export const scriptedRobotJudge: JudgeRunner = async ({ state, questions }) => {
+  const question = questions.where!;
+  const ids = Object.keys(question.criteria);
+  const text = JSON.stringify(state).toLowerCase();
+  const done = /the agent finished the task/.test(text);
+  const byCriterion = (re: RegExp) => ids.find((id) => re.test(question.criteria[id] ?? ""));
+  const cluster = /teach|learn|relearn|train|skill|new body/.test(text);
+  const want = !done && cluster ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
+  const choice = want ?? ids[0]!;
+  const probabilities = Object.fromEntries(ids.map((id) => [id, id === choice ? 0.94 : 0.06 / Math.max(1, ids.length - 1)]));
+  return { answers: { where: { type: "choice", choice, probabilities } }, model: "scripted" };
+};
+
+/**
+ * Robot episode: are the skills home? Checked in code on the run's disk: `home/skills.json` (the assembled index, written last) names the
+ * skills and each one has its `home/skills/<name>.json`. `expected` is how many the teach step was for (0: any, at least one).
+ */
+export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array | undefined>, expected = 0): Promise<{ ok: boolean; reason: string }> {
+  const bytes = await read("home/skills.json");
+  if (!bytes || bytes.length === 0) return { ok: false, reason: "no skills came home (home/skills.json was not written)" };
+  let index: unknown;
+  try {
+    index = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return { ok: false, reason: "the skills index is not valid JSON" };
+  }
+  const listed = (index as { skills?: unknown } | null)?.skills ?? index;
+  const names = Array.isArray(listed) ? listed.map((s) => (typeof s === "string" ? s : String((s as { name?: unknown; id?: unknown })?.name ?? (s as { id?: unknown })?.id ?? ""))).filter(Boolean) : listed && typeof listed === "object" ? Object.keys(listed) : [];
+  if (names.length === 0) return { ok: false, reason: "the skills index lists no skill" };
+  const missing: string[] = [];
+  for (const name of names) if (!(await read(`home/skills/${name}.json`))?.length) missing.push(name);
+  if (missing.length > 0) return { ok: false, reason: `skills listed but not written: ${missing.join(", ")}` };
+  if (expected > 0 && names.length < expected) return { ok: false, reason: `${names.length} of the ${expected} skills came home` };
+  return { ok: true, reason: `${names.length} skills are home and installed: ${names.join(", ")}.` };
+}
+
+/** The agent's one home line for the robot episode: bounded by the server's check below it. */
+export const HOME_PROMPT_ROBOT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for their robot's skills, saying no more than the server's check below says: if it says the skills are home and installed you may say the robot has learned them and name how many; if it says NO, say plainly that the last step did not work and which skills are missing, in simple words. Do not mention files, commands or training details.";
+
+/**
  * Is the work's result in place? The rules the tab's own loader decides on: its `Policy.load` (the very function the browser runs, imported
  * here, so the two cannot drift) over the policy file, for the body the user drew (creature/body.json: the sha it names and its joints). A file
  * that is not JSON, not mlp-v1, of an unknown spec version, without its observation block or layers, or shaped for another body is refused here
@@ -151,7 +195,12 @@ export default async function placer(options: { log: (event: string, data?: Reco
   // `gpu=ID` lets a stand-in host (a second process on this machine, in a dry run) take the H100's place under its own id.
   const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
   const episode = options.args.episode ?? "walks";
-  if (episode !== "walks" && episode !== "model" && episode !== "obsession") throw new Error(`--placer-arg episode=${episode}: walks, model or obsession`);
+  if (episode !== "walks" && episode !== "model" && episode !== "obsession" && episode !== "robot") throw new Error(`--placer-arg episode=${episode}: walks, model, obsession or robot`);
+  if (episode === "robot") {
+    const expected = Number(options.args.skills ?? 0);
+    if (!(expected >= 0) || !Number.isInteger(expected)) throw new Error(`--placer-arg skills=${options.args.skills}: a whole number`);
+    return judgePlacer({ runJudge: scripted ? scriptedRobotJudge : runJudge, criteria, labels: LABELS, model: scripted ? "scripted" : "jev", homePrompt: HOME_PROMPT_ROBOT, homeCheck: (read) => checkHomeSkills(read, expected) });
+  }
   const model = episode === "model" || episode === "obsession";
   return judgePlacer({ runJudge, criteria, labels: { ...LABELS, ...(options.args.gpu ? { [options.args.gpu]: LABELS["modal-gpu"]! } : {}) }, model: scripted ? "scripted" : "jev", homePrompt: model ? HOME_PROMPT_MODEL : HOME_PROMPT, ...(episode === "obsession" ? { requestFile: REQUEST_FILE } : {}), homeCheck: model ? (read) => checkHomeModel(read, { waitMs: Number(options.args["home-wait-ms"] ?? 120_000) }) : checkHomePolicy });
 }
