@@ -101,6 +101,13 @@ def default_config() -> config_dict.ConfigDict:
               termination=-1.0,
           ),
           tracking_sigma=0.25,
+          # Skills (one policy per skill, the same observation): a turn rate to hold instead of walking straight, and a
+          # nose-up pitch to hold instead of staying level (rear up). Zero keeps the walk's program unchanged.
+          yaw_target=0.0,
+          pitch_target=0.0,
+          # Wave: hold this foot (index in the body's legs, -1 = none) at wave_height above the ground while standing.
+          wave_foot=-1,
+          wave_height=0.15,
           max_foot_height=0.06,
           base_height_frac=0.75,
       ),
@@ -424,7 +431,10 @@ class CreatureWalk(mjx_env.MjxEnv):
     qd = data.qvel[6:]
     tau = data.actuator_force
     cmd = info["command"]
-    moving = cmd > 0.01
+    skill = rc.yaw_target != 0.0 or rc.pitch_target != 0.0 or rc.wave_foot >= 0 or self._config.command_range[0] < 0.0
+    # A skill moves its legs whenever it has a command or a turn to make (backwards: a negative command; spin: no forward
+    # speed). The walk keeps its own test, so its compiled program (and the image's compile cache) stays the same.
+    moving = (jp.abs(cmd) > 0.01) | (abs(rc.yaw_target) > 0.01) if skill else cmd > 0.01
     speed_xy = jp.linalg.norm(feet_vel[:, :2], axis=-1)
     air = jp.clip((info["feet_air_time"] - 0.1) * first_contact, max=0.4)
     phase = 2.0 * jp.pi * self._config.gait_hz * info["t"]
@@ -433,10 +443,12 @@ class CreatureWalk(mjx_env.MjxEnv):
     peak_err = info["swing_peak"] / rc.max_foot_height - 1.0
     return {
         "tracking_lin_vel": jp.exp(-((v[0] - cmd) ** 2 + v[1] ** 2) / rc.tracking_sigma),
-        "tracking_yaw": jp.exp(-(w[2] ** 2) / rc.tracking_sigma),
+        "tracking_yaw": jp.exp(-((w[2] - rc.yaw_target) ** 2) / rc.tracking_sigma) if rc.yaw_target != 0.0
+                        else jp.exp(-(w[2] ** 2) / rc.tracking_sigma),
         "lin_vel_z": v[2] ** 2,
         "ang_vel_xy": jp.sum(w[:2] ** 2),
-        "orientation": jp.sum(g[:2] ** 2),
+        # Level (the walk), or the skill's nose-up pitch: in the body frame gravity's x component is -sin(pitch).
+        "orientation": ((g[0] + jp.sin(rc.pitch_target)) ** 2 + g[1] ** 2) if rc.pitch_target != 0.0 else jp.sum(g[:2] ** 2),
         "base_height": jp.maximum(self._base_height_target - (data.qpos[2] - self._ground_height(data.qpos[0:2])), 0.0) ** 2,
         "torques": jp.sum(tau ** 2),
         "action_rate": jp.sum((action - info["last_act"]) ** 2),
@@ -447,7 +459,8 @@ class CreatureWalk(mjx_env.MjxEnv):
         "feet_air_time": jp.sum(air) * moving,
         "feet_slip": jp.sum(speed_xy ** 2 * contact) * moving,
         "feet_clearance": jp.sum(jp.abs(clearance - rc.max_foot_height) * jp.sqrt(speed_xy)) * moving,
-        "feet_height": jp.sum(peak_err ** 2 * first_contact) * moving,
+        "feet_height": (clearance[rc.wave_foot] - rc.wave_height) ** 2 if rc.wave_foot >= 0
+                       else jp.sum(peak_err ** 2 * first_contact) * moving,
         "trot_clock": jp.mean((contact == want_stance).astype(jp.float32)) * moving,
         "upright": self._up_z(data),
         "alive": jp.ones(()),

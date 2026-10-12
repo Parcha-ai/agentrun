@@ -55,6 +55,23 @@ def append_line(path: str, obj: Any) -> None:
     os.fsync(f.fileno())
 
 
+# Warm starts: one trained checkpoint per joint count (a family of bodies with the same network shape), baked into the image.
+INIT_ROOT = "/opt/pda/init"
+
+
+def init_checkpoint(spec: str | None, joints: int) -> str | None:
+  """The checkpoint a fresh run starts from: a given directory, or 'auto' = the image's newest one for this joint count."""
+  if not spec:
+    return None
+  if spec != "auto":
+    found = complete_checkpoints(spec) or ([spec] if os.path.exists(os.path.join(spec, "commit_success.txt")) else [])
+    if not found:
+      raise SystemExit(f"--init-from {spec}: not a complete Brax checkpoint")
+    return os.path.abspath(found[0])
+  found = complete_checkpoints(os.path.join(INIT_ROOT, f"{joints}j"))
+  return found[0] if found else None
+
+
 def complete_checkpoints(ckpt_dir: str) -> list[str]:
   """Finished checkpoints, newest first. Orbax writes into a temporary name, renames it to the 12-digit step and marks
   it with commit_success.txt; Brax then adds its network config (ppo_network_config.json). Both must be there."""
@@ -134,6 +151,11 @@ def main() -> None:
   ap.add_argument("--publish", default=None,
                   help="also write each checkpoint's policy.json here, by rename (the file the tab installs live)")
   ap.add_argument("--keep-published", default=None, help="directory: keep a copy of every checkpoint as ckpt-<n>.json")
+  ap.add_argument("--init-from", default=None,
+                  help="a fresh run starts from these weights instead of random ones: a complete Brax checkpoint of a body "
+                       "with the same joint count, or 'auto' (the image's checkpoint for this body's joint count, "
+                       f"{INIT_ROOT}/<n>j, if there is one). Steps count from zero; a run with checkpoints of its own resumes "
+                       "those instead")
   ap.add_argument("--compile-only", action="store_true",
                   help="compile this command's training program, write it to --compile-cache, and exit: run on a "
                        "spare at warm time so a takeover starts in seconds. WORK is not touched")
@@ -247,6 +269,10 @@ def main() -> None:
     if found:
       restore, done_steps = found[0], int(seg["base"]) + int(os.path.basename(found[0]))
       break
+  if restore is None and args.init_from:
+    restore = init_checkpoint(args.init_from, len(body["jointNames"]))
+    print(json.dumps({"event": "train.init-from", "requested": args.init_from, "checkpoint": restore,
+                      "joints": len(body["jointNames"])}), flush=True)
   remaining = max(total - done_steps, 0)
   generation = int(prior.get("generation", 0)) + 1
   if remaining == 0:

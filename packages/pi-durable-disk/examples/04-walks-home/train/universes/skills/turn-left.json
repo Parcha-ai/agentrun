@@ -1,0 +1,16 @@
+{
+ "name": "turn-left",
+ "hypothesis": "turn left: walk slowly while turning at 1 rad/s",
+ "env": {
+  "pert_config.enable": true,
+  "command_range": [
+   0.2,
+   0.4
+  ],
+  "command_zero_prob": 0.0,
+  "reward_config.yaw_target": 1.0
+ },
+ "reward_scales": {
+  "tracking_yaw": 1.5
+ }
+}
