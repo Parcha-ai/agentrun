@@ -7,7 +7,8 @@ import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai/u
 import { PROVIDER } from "../agent.ts";
 
 /** One answer: some text, or a tool call (with the text said before it). */
-type ScriptedCall = { name: string; arguments: Record<string, string | number | boolean | null> };
+/** `id`: the call's id, when a test needs one that repeats (the browser's brain names its calls call-0, call-1 in every turn). */
+type ScriptedCall = { name: string; arguments: Record<string, string | number | boolean | null>; id?: string };
 /** One reply: text, one call, or several calls made in the same turn (pi runs those together). */
 export type ScriptedTurn = { text?: string; call?: ScriptedCall; calls?: ScriptedCall[] };
 
@@ -45,7 +46,7 @@ export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: See
       }
       const calls = [...(turn.call ? [turn.call] : []), ...(turn.calls ?? [])];
       calls.forEach((c, i) => {
-        const call = { type: "toolCall" as const, id: `scripted-${next}${i ? `-${i}` : ""}`, name: c.name, arguments: c.arguments };
+        const call = { type: "toolCall" as const, id: c.id ?? `scripted-${next}${i ? `-${i}` : ""}`, name: c.name, arguments: c.arguments };
         const at = output.content.push(call) - 1;
         stream.push({ type: "toolcall_start", contentIndex: at, partial: output });
         stream.push({ type: "toolcall_end", contentIndex: at, toolCall: call, partial: output });

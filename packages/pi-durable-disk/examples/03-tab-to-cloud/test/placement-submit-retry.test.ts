@@ -22,7 +22,7 @@ describe("a line placed on a cloud host that is not accepting yet", () => {
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
       const choice = query.phase === "start" ? "vm" : "tab";
-      const decision: PlacementDecision = { id: `d-${query.phase}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 1 : 0 })), choice, decidedBy: "model" } as PlacementDecision;
+      const decision: PlacementDecision = { id: `d-${query.phase}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 1 : 0 })), choice, latency_ms: 0, model: "scripted" };
       return decision;
     },
   };
