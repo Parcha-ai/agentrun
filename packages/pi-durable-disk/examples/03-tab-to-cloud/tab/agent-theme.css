@@ -78,3 +78,29 @@ main { border-top: 0; }
   header .net { margin-left: auto; }
   #chat { padding: 16px var(--gutter) 16px; }
 }
+
+/* ---- tool calls open on tap: bash its command and output, write and edit a diff (@pierre/diffs), grep its hits ---- */
+.tool > summary .name { font-weight: 500; }
+.tool .tool-body { margin: 6px 0 6px 15px; display: grid; gap: 8px; min-width: 0; max-width: min(100%, 900px); }
+.tool .tool-body pre { margin: 0; max-height: 260px; }
+.tool .tool-body pre.cmd { color: var(--ink); }
+.tool .code { display: block; min-width: 0; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r1); background: var(--panel); }
+.tool .slot { min-width: 0; color: var(--muted); }
+.tool .hits { display: grid; gap: 2px; max-height: 260px; overflow: auto; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); font: 400 12px/1.5 var(--mono); }
+.tool .hit { display: flex; gap: 12px; min-width: 0; } .tool .hit .where { color: var(--accent); flex: none; } .tool .hit .what { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; } .tool .hit.plain .what { color: var(--muted); opacity: .8; }
+/* a move is one quiet line, never the notice the agent was given */
+.move { align-self: flex-start; font: 400 12px/1.5 var(--mono); color: var(--muted); letter-spacing: .02em; }
+
+/* ---- the workspace: a live file tree (@pierre/trees), a file picked opens read-only (@pierre/diffs). On a laptop in the robot view it is a panel over the right pane, opened by Files. ---- */
+main { position: relative; }
+#workspace { grid-template-rows: auto minmax(120px, 56%) auto minmax(0, 1fr); }
+#workspace > h2 { grid-column: 1; align-items: center; } #workspace > h2:first-child { grid-row: 1; } #files { grid-row: 2; min-height: 0; overflow: auto; } #files-empty { grid-row: 2; align-self: start; } #workspace > h2:nth-of-type(2) { grid-row: 3; } #preview { grid-row: 4; min-height: 0; overflow: auto; padding: 0; font: 400 12px/1.5 var(--mono); }
+#files { --trees-selected-bg-override: color-mix(in srgb, var(--accent) 16%, transparent); --trees-border-color-override: var(--line); --trees-bg-override: var(--panel); --trees-fg-override: var(--ink); }
+#ws-close { display: none; }
+body.robot #workspace { display: none; }
+body.robot.ws-open #workspace { display: grid; position: absolute; top: 0; right: 0; bottom: 0; width: min(520px, 100%); z-index: 20; box-shadow: -24px 0 48px #000a; }
+body.robot.ws-open #ws-close { display: inline; }
+body:not(.robot) #ws-toggle { display: none; }
+.tool:not(.bare) { align-self: stretch; }
+.tool .code, .tool .code > * { width: 100%; }
+diffs-container, file-diff, diffs-file { display: block; width: 100%; }

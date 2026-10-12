@@ -9,7 +9,9 @@ import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@e
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
-import { echoedTools, isMuted, toolArgsLine } from "./chat-lines.ts";
+import { echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
+import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
+import { toolBody } from "./tool-body.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
@@ -238,10 +240,15 @@ function renderChat(): void {
   const items = state.chat.items();
   announceTools(items);
   const echoed = echoedTools(items);
-  list.replaceChildren(...items.map((item) => renderItem(item, echoed)));
+  list.replaceChildren(...items.filter((item) => !(item.kind === "brain" && (item.stage === "moved" || item.stage === "decision"))).map((item) => renderItem(item, echoed)));
   if (atBottom) list.scrollTop = list.scrollHeight;
   noticeSeen();
 }
+
+/** The body of each tool call as last drawn, by call id: redrawing the chat on every agent event reuses it unless the call changed (a diff is not drawn again for nothing). */
+const bodies = new Map<string, { signature: string; body: HTMLElement | null }>();
+/** A file's text as it was just before a write replaced it, by the write's call id (the diff is against this; a write to a new file has none). */
+const writeBefore = new Map<string, string>();
 
 function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set()): HTMLElement {
   switch (item.kind) {
@@ -254,12 +261,16 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set()): HT
       return node;
     }
     case "tool": {
-      // One quiet line: ● name  what it was given. The result opens on tap, unless the reply that follows says it word for word.
+      // One quiet line: ● name  what it was given. It opens on tap: bash its command and output, write and edit the diff, grep its hits, anything else its result (unless the reply that follows says it word for word).
       const dot = item.status === "running" ? "dot act run" : item.status === "done" && !isMuted(item) ? "dot done" : "dot";
       const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)));
-      const out = item.output && !echoed.has(item.id) ? [el("pre", {}, item.output.slice(-3000))] : [];
-      const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${out.length === 0 ? " bare" : ""}` }, summary, ...out) as HTMLDetailsElement;
-      node.open = out.length > 0 && openTools.has(item.id);
+      const signature = `${item.name}|${item.args}|${item.status}|${item.output.length}|${echoed.has(item.id)}`;
+      const cached = bodies.get(item.id);
+      const built = cached && cached.signature === signature ? cached.body : toolBody(item, { showOutput: !echoed.has(item.id), before: writeBefore.get(item.id) });
+      if (!cached || cached.signature !== signature) bodies.set(item.id, { signature, body: built });
+      const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${built === null ? " bare" : ""}` }, summary) as HTMLDetailsElement;
+      if (built !== null) node.append(built);
+      node.open = built !== null && openTools.has(item.id);
       node.addEventListener("toggle", () => (node.open ? openTools.add(item.id) : openTools.delete(item.id)));
       return node;
     }
@@ -268,37 +279,68 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set()): HT
     case "brain":
       return el("div", { class: `note brain ${item.stage}` }, item.text);
     case "switch":
-      return el("div", { class: `note switch${item.planned ? "" : " unplanned"}` }, item.text);
+      // The notice is the agent's, not the reader's: a move shows as one quiet line.
+      return el("div", { class: "move" }, moveLine(item));
   }
 }
 
+// ---- the workspace panel: the session's files as a live tree (@pierre/trees); a file picked opens read-only (@pierre/diffs) ------------------------------------------------
+
+let tree: TreeHandle | undefined;
+let treePaths = "";
+let treeWork: Promise<void> = Promise.resolve();
+
 function renderFiles(): void {
   const files = state.files.filter((f) => !f.path.startsWith(".pi-tmp"));
-  $("files").replaceChildren(
-    ...(files.length === 0
-      ? [el("div", { class: "empty" }, "No files yet.")]
-      : files.map((f) => {
-          const depth = f.path.split("/").length - 1;
-          const row = el("button", { class: `file ${f.kind}${state.selected === f.path ? " selected" : ""}`, style: `padding-left:${12 + depth * 14}px` }, f.kind === "directory" ? `${f.path.split("/").pop()}/` : f.path.split("/").pop()!, el("span", { class: "size" }, f.kind === "file" ? fmtSize(f.size) : ""));
-          row.addEventListener("click", () => void select(f.path));
-          return row;
-        })),
-  );
+  const paths = files.map((f) => (f.kind === "directory" ? `${f.path.replace(/\/$/, "")}/` : f.path));
+  $("files-empty").hidden = paths.length > 0;
+  const key = paths.join("\n");
+  if (key === treePaths) return;
+  treePaths = key;
+  treeWork = treeWork.then(async () => {
+    if (tree) tree.setPaths(paths);
+    else tree = await mountTree($("files"), paths, (path) => void select(path));
+  }).catch((e: unknown) => { $("files-empty").hidden = false; $("files-empty").textContent = `The file tree could not load: ${e instanceof Error ? e.message : String(e)}`; });
 }
 
 const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
+/** A workspace file's text, from this tab's computer (the writer) or from what a viewer was sent; undefined when it is not a readable file. */
+async function readFileText(path: string): Promise<string | undefined> {
+  const row = state.files.find((f) => f.path === path);
+  if (state.runtime && "sandbox" in state.runtime.env) return await (state.runtime.env as WasmerEnv).sandbox.fs.readText(`/workspace/${path}`).catch(() => undefined);
+  if (row?.kind === "file" && row.data !== undefined) return new TextDecoder().decode(fromBase64(row.data));
+  return undefined;
+}
+
+let shown = "";
 async function select(path: string): Promise<void> {
   state.selected = path;
-  renderFiles();
   const row = state.files.find((f) => f.path === path);
-  let text = "";
-  if (row?.kind === "file") {
-    if (state.runtime && "sandbox" in state.runtime.env) text = await (state.runtime.env as WasmerEnv).sandbox.fs.readText(`/workspace/${path}`).catch((e: Error) => `(unreadable: ${e.message})`);
-    else if (row.data !== undefined) text = new TextDecoder().decode(fromBase64(row.data));
+  if (row?.kind !== "file") return;
+  const text = (await readFileText(path)) ?? `(unreadable)`;
+  $("preview-name").textContent = `${path} · ${fmtSize(row.size)}`;
+  document.body.classList.add("ws-open");
+  const key = `${path}\n${text}`;
+  if (key === shown) return;
+  shown = key;
+  $("preview").replaceChildren(await fileElement(path, text.slice(0, 20000)));
+}
+
+/** The page's own record of file texts it saw written, so a later write's diff is against the earlier one (the file's text before a write is not in the event). */
+const known = new Map<string, string>();
+function noteTools(events: readonly unknown[]): void {
+  for (const e of events as { type?: string; toolName?: string; toolCallId?: string; args?: { path?: unknown; content?: unknown } }[]) {
+    const path = typeof e.args?.path === "string" ? e.args.path : undefined;
+    if (!path || !e.toolCallId) continue;
+    if (e.type === "tool_execution_start" && e.toolName === "write" && typeof e.args?.content === "string") {
+      const content = e.args.content;
+      const had = known.get(path);
+      if (had !== undefined) writeBefore.set(e.toolCallId, had);
+      else void readFileText(path).then((t) => { if (t !== undefined && t !== content) writeBefore.set(e.toolCallId!, t); }); // an existing file, read before the write lands (when it is quick enough)
+      known.set(path, content);
+    } else if (e.type === "tool_execution_start" && e.toolName === "edit") known.delete(path);
   }
-  $("preview-name").textContent = path;
-  $("preview").textContent = text.slice(0, 20000);
 }
 
 /** The model's file reads and its first run share the main thread with the creature page: while it loads, the creature page is told to stop simulating and drawing, and to go on when the model is ready. */
@@ -475,6 +517,7 @@ async function followConversation(runtime: TabRuntime, conversation: Conversatio
   state.client?.view({ kind: "snapshot", event: snapshot } satisfies ViewEvent);
   stream.start(async (events) => {
     const folded = events.map(merge);
+    noteTools(folded);
     for (const event of folded) state.chat.apply(event);
     state.client?.view({ kind: "events", events: folded } satisfies ViewEvent);
     if (events.some((e) => e.type === "tool_execution_end" || e.type === "run_end")) await refreshFiles();
@@ -1215,7 +1258,7 @@ function applyView(event: Tagged): void {
   if (view.kind === "snapshot") {
     state.chat = new ChatView();
     state.chat.apply(view.event);
-  } else for (const e of view.events) state.chat.apply(e);
+  } else { noteTools(view.events); for (const e of view.events) state.chat.apply(e); }
 }
 
 /** The agent's switch_environment tool talks to the server over this tab's pipe. */
@@ -1497,6 +1540,8 @@ async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID
 }
 
 $("send").addEventListener("click", send);
+$("ws-toggle").addEventListener("click", () => document.body.classList.toggle("ws-open"));
+$("ws-close").addEventListener("click", () => document.body.classList.remove("ws-open"));
 $("input").addEventListener("keydown", (e) => {
   if ((e as KeyboardEvent).key === "Enter" && !(e as KeyboardEvent).shiftKey) {
     e.preventDefault();
@@ -1553,6 +1598,8 @@ void boot();
   items: () => state.chat.items(),
   /** Redraw the chat now (a check redraws while a tool result is open). */
   renderChat: () => renderChat(),
+  /** Open a workspace file in the panel, as a click on the tree does. */
+  select: (path: string) => select(path),
   files: () => state.files.map((f) => f.path),
   /** What the pipe acknowledged last, as `workspaceDigest`; null when this tab does not run the agent. */
   ackedDigest: () => state.runtime?.workspace.baselineDigest() ?? null,

@@ -11,7 +11,7 @@ export type ChatItem =
   | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted" }
   | { kind: "note"; id: string; text: string }
   /** The notice of a move, as the agent received it (environment.ts). */
-  | { kind: "switch"; id: string; text: string; switchId: string; planned: boolean }
+  | { kind: "switch"; id: string; text: string; switchId: string; planned: boolean; /** Where it went, as the host calls itself (the notice's facts.label); who decided (`by`, "jev") and how sure (`probability`). The page shows these, never `text`. */ to?: string | null; by?: string | null; probability?: number | null }
   /** The trained model coming home and becoming the agent's brain (brain.ts): `loading`, then `ready` (the swap) or `failed`. `data` is the entry's data as written. */
   | { kind: "brain"; id: string; stage: "loading" | "ready" | "failed" | "moved" | "home" | "decision"; text: string; data: Record<string, unknown> };
 
@@ -147,8 +147,8 @@ export class ChatView {
         continue;
       }
       if (entry.kind === NOTICE_KIND) {
-        const data = (entry.data ?? {}) as { switchId?: string; planned?: boolean };
-        items.push({ kind: "switch", id, text: messagesOf(entry).map((m) => textOf(m.content)).join(""), switchId: data.switchId ?? "", planned: data.planned !== false });
+        const data = (entry.data ?? {}) as { switchId?: string; planned?: boolean; by?: unknown; probability?: unknown; facts?: { label?: unknown } };
+        items.push({ kind: "switch", id, text: messagesOf(entry).map((m) => textOf(m.content)).join(""), switchId: data.switchId ?? "", planned: data.planned !== false, to: typeof data.facts?.label === "string" ? data.facts.label : null, by: typeof data.by === "string" ? data.by : null, probability: typeof data.probability === "number" && Number.isFinite(data.probability) ? data.probability : null });
         continue;
       }
       for (const message of messagesOf(entry)) {
