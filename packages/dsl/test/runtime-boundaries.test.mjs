@@ -131,11 +131,12 @@ test('map preserves item identity, order and recovery commits after state isolat
   testClock(t);
   const commits=[],seen=[],second=deferred();
   const flow={...workflow({node:'map',label:'each',itemsPath:'items',as:'mapped',maxConcurrency:2,body:effect({args:{count:'{item}'},deadline_s:1})}),schemas:{Result:{type:'object'}}};
-  // The first item finishes only after the second has returned, so completion order differs from item order.
-  const result=await runWorkflow(flow,{items:[4,8]}, {runEffect:async({input,item})=>{seen.push(item);if(item.index===0)await second.promise;else second.resolve();return {count:input.count};},recovery:recovery({commit:async(node,state,item)=>{commits.push({kind:node.node,item});}})});
+  // The first item's effect finishes only after the second item's call has been committed, so completion order is
+  // the reverse of item order; the map's result must still be in item order.
+  const result=await runWorkflow(flow,{items:[4,8]}, {runEffect:async({input,item})=>{seen.push(item);if(item.index===0)await second.promise;return {count:input.count};},recovery:recovery({commit:async(node,state,item)=>{commits.push({kind:node.node,item});if(node.node==='call'&&item?.index===1)second.resolve();}})});
   assert.deepEqual(result.state.mapped,[{count:4},{count:8}]);
   assert.deepEqual(seen,[{label:'each',index:0},{label:'each',index:1}]);
-  assert.deepEqual(commits.filter(x=>x.kind==='call').map(x=>x.item.index).sort(),[0,1]);
+  assert.deepEqual(commits.filter(x=>x.kind==='call').map(x=>x.item.index),[1,0],'the second item completed and committed first');
   assert.equal(commits.at(-1).kind,'map');
 });
 
