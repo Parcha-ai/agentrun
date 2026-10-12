@@ -192,6 +192,27 @@ describe("ArtifactSync: flush beside the timer", () => {
   });
 });
 
+describe("ArtifactSync: what stays on the box", () => {
+  it("excluded paths are skipped with everything below them; the rest comes home", async () => {
+    await withRoot(async (root) => {
+      const remote = join(root, "box"), local = join(root, "work-home");
+      await mkdir(join(remote, "work", "ckpt"), { recursive: true });
+      await mkdir(join(remote, "checkpoints"), { recursive: true });
+      await writeFile(join(remote, "work", "state.json"), "trainer state");
+      await writeFile(join(remote, "work", "ckpt", "big"), "x".repeat(1000));
+      await writeFile(join(remote, "checkpoints", "ckpt-1.json"), "c1");
+      await writeFile(join(remote, "skill.json"), "{}");
+      await writeFile(join(remote, "workbench.txt"), "not under work/");
+      const sync = new ArtifactSync({ box: localBox(), remote, local, exclude: ["work", "/nothing/"] });
+      const totals = await sync.flush();
+      await sync.stop();
+      assert.deepEqual(totals, { files: 3, bytes: 2 + 2 + 15 });
+      assert.equal(existsSync(join(local, "work")), false);
+      assert.equal(readFileSync(join(local, "workbench.txt"), "utf8"), "not under work/");
+    });
+  });
+});
+
 describe("ArtifactSync after a restart", () => {
   it("a new sync finds the files an earlier one copied (same size, the box's mtime) and copies only what is new", async () => {
     await withRoot(async (root) => {

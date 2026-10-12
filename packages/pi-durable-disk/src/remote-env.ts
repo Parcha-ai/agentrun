@@ -546,6 +546,8 @@ export interface ArtifactSyncOptions {
   onError?(error: Error): void;
   /** Deadline of one listing or one file's copy. Default 120 s. */
   opTimeoutMs?: number;
+  /** Paths under `remote` that stay on the box (a trainer's own state): each is skipped with everything below it. */
+  exclude?: readonly string[];
 }
 
 /**
@@ -555,7 +557,7 @@ export interface ArtifactSyncOptions {
  * target and renamed into place.
  */
 export class ArtifactSync {
-  private readonly o: Required<Omit<ArtifactSyncOptions, "onFile" | "onError">> & Pick<ArtifactSyncOptions, "onFile" | "onError">;
+  private readonly o: Required<Omit<ArtifactSyncOptions, "onFile" | "onError" | "exclude">> & Pick<ArtifactSyncOptions, "onFile" | "onError" | "exclude">;
   private copied = new Map<string, string>();
   private seen = new Map<string, string>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -603,7 +605,10 @@ export class ArtifactSync {
   }
 
   private async pass(all: boolean, context?: Context): Promise<void> {
-    const p = await this.exec(["sh", "-c", `[ -d "$1" ] || exit 0; cd -- "$1" && find . -type f ! -name '*.tmp' ! -name '.*' -printf '%P\\0%y\\0%s\\0%T@\\0'`, "sh", this.o.remote], context);
+    // the find expression as arguments (never spliced into the script): pruned paths first, then the files
+    const prune = (this.o.exclude ?? []).map((x) => x.replace(/^\.?\/+|\/+$/g, "")).filter(Boolean).flatMap((x, i) => [...(i ? ["-o"] : []), "-path", `./${x}`]);
+    const expr = [...(prune.length ? ["(", ...prune, ")", "-prune", "-o"] : []), "-type", "f", "!", "-name", "*.tmp", "!", "-name", ".*", "-printf", "%P\\0%y\\0%s\\0%T@\\0"];
+    const p = await this.exec(["sh", "-c", `[ -d "$1" ] || exit 0; cd -- "$1" && shift && find . "$@"`, "sh", this.o.remote, ...expr], context);
     const [out, errBytes, code] = await bounded(Promise.all([readAll(p.stdout), readAll(p.stderr), p.wait()]), this.o.opTimeoutMs, context);
     if (code !== 0) throw new Error(`listing ${this.o.remote} on ${this.o.box.sandboxId} failed (${code}): ${decoder().decode(errBytes).trim().slice(-200)}`);
     const now = parseFind(out);
