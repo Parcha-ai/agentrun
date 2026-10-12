@@ -25,3 +25,32 @@ test("a frame for a page that is not taking a run over is dropped, and what was 
   assert.equal(gate.open(), 0);
   assert.deepEqual(ran, []);
 });
+
+test("a frame that arrives once the page's mode reads writer, before the page has opened the gate, runs after the ones held during boot, not ahead of them", () => {
+  const ran: string[] = [];
+  const gate = new SubmitGate<string>((f) => void ran.push(f));
+  gate.begin(); // the page starts taking the run over
+  gate.offer("server-home", "starting"); // the server's home turn, while booting
+  assert.equal(gate.offer("ui-1", "ready"), "held", "the mode already reads writer (the brain check is still reading), but the gate is not open: it waits behind the home turn");
+  assert.deepEqual(ran, []);
+  gate.open();
+  assert.deepEqual(ran, ["server-home", "ui-1"], "in the order they came");
+  assert.equal(gate.offer("ui-2", "ready"), "ran", "open: a frame runs at once");
+});
+
+test("a frame is never run ahead of one that is held, even with no begin", () => {
+  const ran: string[] = [];
+  const gate = new SubmitGate<string>((f) => void ran.push(f));
+  gate.offer("a", "starting");
+  assert.equal(gate.offer("b", "ready"), "held");
+  gate.open();
+  assert.deepEqual(ran, ["a", "b"]);
+});
+
+test("a gate begun for a run that was never taken over (lost, a new connect) does not stay closed", () => {
+  const ran: string[] = [];
+  const gate = new SubmitGate<string>((f) => void ran.push(f));
+  gate.begin();
+  gate.discard();
+  assert.equal(gate.offer("x", "ready"), "ran");
+});

@@ -9,13 +9,24 @@ export type GatePhase = "ready" | "starting" | "gone";
 export class SubmitGate<T> {
   readonly #run: (frame: T) => void;
   #held: T[] = [];
+  /** Closed from `begin` (a page starts taking a run over) to `open` (it is ready for what it was sent): every frame in between waits its turn, however the page's mode reads. */
+  #closed = false;
 
   constructor(run: (frame: T) => void) {
     this.#run = run;
   }
 
-  /** A frame arrived: run it now, hold it until `open`, or drop it. Returns what became of it. */
+  /** The page starts taking a run over: from here nothing runs until `open`, and the frames that arrive meanwhile run in the order they came. */
+  begin(): void {
+    this.#closed = true;
+  }
+
+  /** A frame arrived: run it now, hold it until `open`, or drop it. Returns what became of it. A frame is never run ahead of one that is held, whatever the phase says. */
   offer(frame: T, phase: GatePhase): "ran" | "held" | "dropped" {
+    if ((this.#closed && phase !== "gone") || (phase === "ready" && this.#held.length > 0)) {
+      this.#held.push(frame);
+      return "held";
+    }
     if (phase === "ready") {
       this.#run(frame);
       return "ran";
@@ -29,6 +40,7 @@ export class SubmitGate<T> {
 
   /** The page is the writer now: what was held runs, in the order it came. */
   open(): number {
+    this.#closed = false;
     const held = this.#held;
     this.#held = [];
     for (const frame of held) this.#run(frame);
@@ -39,6 +51,7 @@ export class SubmitGate<T> {
   discard(): number {
     const n = this.#held.length;
     this.#held = [];
+    this.#closed = false;
     return n;
   }
 

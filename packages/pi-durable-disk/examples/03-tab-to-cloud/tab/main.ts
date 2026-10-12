@@ -1809,6 +1809,7 @@ function watching(viewing: Viewing): void {
 
 async function connect(mode: "write" | "view", takeover = false, switchId?: string): Promise<void> {
   submitGate.discard(); // a line held for an earlier attach is not run by this one
+  if (mode === "write") submitGate.begin(); // everything the server sends until this page is the writer and ready waits its turn, in order
   state.client?.close();
   state.client = undefined;
   if (mode === "write") {

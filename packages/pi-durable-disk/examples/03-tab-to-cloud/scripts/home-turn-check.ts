@@ -88,7 +88,11 @@ try {
   // (the page's socket was opened before the spy: the spy covers the next connection, the one the run comes home on)
   const say = async (text: string) => ev(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(text)}; document.getElementById("send").click(); return true; })()`);
   await page.until("demo.net().online && demo.state.placed", 60_000, 200); // a line typed before the page knows the server answers goes to its own conversation, not to the server
-  await say("please work on this in the second process");
+  await page.until(`!document.getElementById("input").disabled`, 60_000, 200); // a line typed while the composer is disabled is ignored
+  for (let tries = 0; tries < 3; tries++) {
+    await say("please work on this in the second process");
+    if (await page.until("demo.items().length > 0", 8_000, 200).then(() => true, () => false)) break;
+  }
   await page.until("demo.state.mode !== 'writer'", 150_000, 200).catch(() => undefined);
   const away = await ev<string>("demo.state.mode");
   if (away === "writer") console.log(`  never left: ${JSON.stringify(await ev("({ items: demo.items().slice(-3), banner: demo.state.banner, net: demo.net(), placed: demo.state.placed })")).slice(0, 600)}`);
