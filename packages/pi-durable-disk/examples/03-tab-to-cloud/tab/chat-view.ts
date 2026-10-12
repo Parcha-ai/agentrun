@@ -3,6 +3,7 @@
 // device shows the same transcript. Portable, no DOM.
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import { NOTICE_KIND } from "../environment.ts";
+import { SERVER_TURN } from "../placement.ts";
 import { BRAIN_CHECKIN, BRAIN_DECISION, BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
 
 export type ChatItem =
@@ -152,7 +153,11 @@ export class ChatView {
         continue;
       }
       for (const message of messagesOf(entry)) {
-        if (entry.kind === "pi.user" && message.role === "user") items.push({ kind: "user", id, text: textOf(message.content) });
+        // The server's own turns (the home check-in after a move) are for the model: the person's chat shows the agent's reply to them, never the server's words as if the person had said them.
+        if (entry.kind === "pi.user" && message.role === "user") {
+          const said = textOf(message.content);
+          if (!said.startsWith(SERVER_TURN)) items.push({ kind: "user", id, text: said });
+        }
         else if (entry.kind === "pi.assistant" && message.role === "assistant") {
           const error = message.stopReason === "error" ? `${index < lastAnswer ? "model call failed, retried" : "model error"}: ${message.errorMessage ?? "unknown"}` : undefined;
           pushAssistant(id, (message.content as Block[]) ?? [], false, error);

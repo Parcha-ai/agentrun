@@ -123,6 +123,13 @@ export function agentModels(access: ModelAccess) {
   return models;
 }
 
+/** What a host adds to the instructions (the robot demo's SOPs); empty for every other page. */
+let extraInstructions = "";
+export function setExtraInstructions(text: string): void {
+  extraInstructions = text.trim();
+}
+const instructions = () => (extraInstructions ? `${INSTRUCTIONS}\n\n${extraInstructions}` : INSTRUCTIONS);
+
 /** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered (removed from the host's tools, whichever host it is). */
 export interface AgentOptions {
   /** False: the preset tools stay (a host whose model drives the robot by tool calls only, and the tests of those tools). Default true. */
@@ -138,7 +145,7 @@ function presetTools(registry: RegistryReader): ToolRegistration[] {
 
 /** The root conversation's agent: the model, thinking on (never off), the instructions, and in code mode the tools without the preset ones. */
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
-  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
+  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions() };
   return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
 }
 
