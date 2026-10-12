@@ -121,38 +121,57 @@ def push_tree(sb: modal.Sandbox, local: str, remote: str) -> int:
   return n
 
 
+def _create(app, image, gpu: str, gname: str, timeout_s: int, attempt: dict, ledger: Ledger) -> None:
+  """One placement attempt, in its own thread with its own values. A sandbox placed after the attempt was abandoned is
+  terminated here (a billed GPU box nobody tracks must not outlive its attempt), and the attempt's ledger row closed."""
+  try:
+    # us-east: next to the disk's region and the pipe (D0: 15 ms round trip vs 92 ms unpinned).
+    sb = modal.Sandbox.create("sleep", "infinity", app=app, image=image, gpu=gpu, timeout=timeout_s,
+                              name=gname, tags={"pda-fleet": "demo-d2"}, region="us-east")
+  except Exception as e:  # reported by start(), or here once the attempt was abandoned
+    with attempt["lock"]:
+      attempt["error"] = e
+      late = attempt["abandoned"]
+    if late:
+      ledger.close("modal-sandbox", gname, f"abandoned; create failed: {str(e)[:120]}")
+    return
+  with attempt["lock"]:
+    if not attempt["abandoned"]:
+      attempt["sb"] = sb
+      return
+  log("sandbox.placed-late", gpu=gpu, name=gname)
+  try:
+    sb.terminate()
+  finally:
+    ledger.close("modal-sandbox", gname, "placed after its attempt was abandoned; terminated")
+
+
 def start(app, image, gpus: str, name: str, ledger: Ledger, timeout_s: int, place_s: float = 120.0):
   """A running GPU sandbox: try each GPU type in turn. Sandbox.create returns only once a GPU is placed, so it runs in a
-  thread with a deadline; a type that is not placed in time is looked up by name, terminated, and the next one tried."""
+  thread with a deadline. A type that is not placed in time is abandoned: a sandbox it already has is looked up by name
+  and terminated, and one placed later is terminated by its own attempt's thread."""
   for gpu in gpus.split(","):
     gname = f"{name}-{gpu.lower()}"
     ledger.open("modal-sandbox", gname, f"gpu {gpu}, training")
-    box: dict = {}
-
-    def create():
-      try:
-        # us-east: next to the disk's region and the pipe (D0: 15 ms round trip vs 92 ms unpinned).
-        box["sb"] = modal.Sandbox.create("sleep", "infinity", app=app, image=image, gpu=gpu, timeout=timeout_s,
-                                         name=gname, tags={"pda-fleet": "demo-d2"}, region="us-east")
-      except Exception as e:  # reported below
-        box["error"] = e
-
-    t = threading.Thread(target=create, daemon=True)
+    attempt: dict = {"lock": threading.Lock(), "abandoned": False}
+    t = threading.Thread(target=_create, args=(app, image, gpu, gname, timeout_s, attempt, ledger), daemon=True)
     t.start()
     t.join(place_s)
-    if "sb" in box:
-      return box["sb"], gname, gpu
-    if "error" in box:
-      ledger.close("modal-sandbox", gname, f"create failed: {str(box['error'])[:120]}")
-      log("sandbox.create-failed", gpu=gpu, error=str(box["error"])[:200])
+    with attempt["lock"]:
+      if "sb" in attempt:
+        return attempt["sb"], gname, gpu
+      failed = attempt.get("error")
+      attempt["abandoned"] = failed is None
+    if failed is not None:
+      ledger.close("modal-sandbox", gname, f"create failed: {str(failed)[:120]}")
+      log("sandbox.create-failed", gpu=gpu, error=str(failed)[:200])
       continue
     log("sandbox.not-placed", gpu=gpu, waited_s=place_s)
     try:
       modal.Sandbox.from_name(APP, gname).terminate()
-      how = f"not placed within {place_s:.0f} s; terminated"
-    except Exception as e:
-      how = f"not placed within {place_s:.0f} s; lookup failed ({str(e)[:60]})"
-    ledger.close("modal-sandbox", gname, how)
+      ledger.close("modal-sandbox", gname, f"not placed within {place_s:.0f} s; terminated")
+    except Exception as e:  # not created yet: its attempt's thread terminates it if it is ever placed
+      log("sandbox.not-found-yet", gpu=gpu, error=str(e)[:120])
   raise RuntimeError(f"no GPU of {gpus} placed")
 
 
