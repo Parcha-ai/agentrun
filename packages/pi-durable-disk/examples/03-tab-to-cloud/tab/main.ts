@@ -683,6 +683,8 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   state.mode = "writer";
   state.progress = "";
   state.banner = "";
+  // The page can run a line now: the server holds the lines typed while it was away until it hears this.
+  client.send({ t: "writer-ready" });
   // A swap from an earlier visit: the chat input waits for the saved conversation (a message sent now would go to the cloud conversation and be missing from the one that comes back).
   state.brainPending = !golive && new URLSearchParams(location.search).get("brain") !== "off" && (await findSwap(runtime.root, ctx).catch(() => undefined)) !== undefined;
   if (state.brainPending) state.brainStatus = "the trained model is loading; you can talk to it as soon as it is ready";

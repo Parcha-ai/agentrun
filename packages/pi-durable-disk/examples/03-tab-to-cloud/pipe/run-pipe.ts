@@ -116,6 +116,10 @@ type Writer = {
   uploading: number;
   /** Set until its restore ended: no write-through into work/ meanwhile, so what it is sent is what the disk holds. */
   restoring: boolean;
+  /** The page said its runtime is up (writer-ready): a line sent to it now can run. */
+  pageReady: boolean;
+  /** Its socket closed: it is declared gone a moment later (a refreshed page can ask for the run in that moment). */
+  detached?: boolean;
 };
 
 /**
@@ -290,6 +294,24 @@ export class RunPipe {
     return this.#writer?.dead ? undefined : this.#writer?.tab;
   }
 
+  /** A writer is attached, alive, restored, and its page says its runtime is up: a line sent to it now reaches a page that can run it. */
+  get writerReady(): boolean {
+    const writer = this.#writer;
+    return writer !== undefined && !writer.dead && !writer.attaching && !writer.restoring && writer.pageReady;
+  }
+
+  /** The writer's socket closed and it is not yet declared gone: a refresh in its first moment. */
+  get writerLeft(): boolean {
+    const writer = this.#writer;
+    return writer !== undefined && !writer.dead && writer.detached === true;
+  }
+
+  /** The writer's page says its runtime is up. */
+  pageReady(socket: PipeSocket): void {
+    const writer = this.#writer;
+    if (writer && writer.socket === socket && !writer.dead) writer.pageReady = true;
+  }
+
   get epoch(): number {
     return this.#epoch;
   }
@@ -329,7 +351,7 @@ export class RunPipe {
       await this.#store!.storage.close(ctx);
       store = this.#store = await this.#openStore(join(this.lease.claim.store, "run.sqlite"));
     }
-    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true, uploading: 0, restoring: true };
+    const writer: Writer = { socket, epoch, tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store, storage: this.lease.observe(store.storage), attachedAt: Date.now(), attaching: true, uploading: 0, restoring: true, pageReady: false };
     this.#writer = writer;
     this.#goneFired = false;
     let manifest: Awaited<ReturnType<RunPipe["manifest"]>>;
@@ -489,7 +511,10 @@ export class RunPipe {
   detach(socket: PipeSocket): void {
     this.#viewers.delete(socket);
     const writer = this.#writer;
-    if (writer && writer.socket === socket && !writer.dead) writer.lastPing = Math.min(writer.lastPing, Date.now() - (this.#options.writerGraceMs ?? 3_000) + 250);
+    if (writer && writer.socket === socket && !writer.dead) {
+      writer.detached = true;
+      writer.lastPing = Math.min(writer.lastPing, Date.now() - (this.#options.writerGraceMs ?? 3_000) + 250);
+    }
   }
 
   ping(socket: PipeSocket, at: number): void {
@@ -1308,7 +1333,7 @@ export class RunPipe {
       if ((await storeHead(this.#store)) !== browserHead) throw new Error("the store put in place is not at the head that was checked");
       // 3. the files, through the same steps as a write-through, under a writer of this check-in's own (there is no socket)
       const stub: PipeSocket = { id: "checkin", send: () => undefined, close: () => undefined, isOpen: () => true };
-      const writer: Writer = { socket: stub, epoch: -1, tab: o.tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store: this.#store, storage: this.lease.observe(this.#store.storage), attachedAt: Date.now(), attaching: false, uploading: 0, restoring: false };
+      const writer: Writer = { socket: stub, epoch: -1, tab: o.tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store: this.#store, storage: this.lease.observe(this.#store.storage), attachedAt: Date.now(), attaching: false, uploading: 0, restoring: false, pageReady: true };
       this.#writer = writer;
       try {
         for (const change of o.changes) await this.#apply(writer, change);

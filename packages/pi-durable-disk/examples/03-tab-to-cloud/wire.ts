@@ -241,6 +241,8 @@ export type TabFrame =
   /** Part of an upload (base64, at most CHUNK_BYTES raw), in order: `offset` is the bytes sent before it. No answer. */
   | { t: "upload"; id: string; offset: number; data: string }
   /** The restore after `attached` arrived whole and matched its manifest (or why not). */
+  /** The page is the writer and can run a message now: its runtime is up (sent after `restored`, once the page has booted the agent). The server replays the lines it held for a returning page only then. */
+  | { t: "writer-ready" }
   | { t: "restored"; ok: true; files: number; bytes: number; ms: number }
   | { t: "restored"; ok: false; error: string }
   | { t: "model"; id: number; path: string; body: Tagged }

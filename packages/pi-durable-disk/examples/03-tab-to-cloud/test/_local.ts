@@ -84,6 +84,8 @@ export async function localServer(options: Partial<DemoServerOptions> & { hooks?
     acquire: async (opts) => localClaim(root, opts, options.hooks),
     claimDir: (dir) => openClaimDir(dir, { fstype: null }),
     lease: { heartbeatMs: 500, expiryMs: 5_000, marginMs: 1_000 },
+    // A tab that goes is gone at once in these tests (no page is coming back); the grace for a refresh is set where it is tested (placement-writer-grace.test.ts).
+    writerReturnMs: 0,
     ...options,
   });
   const port = await server.listen(0);

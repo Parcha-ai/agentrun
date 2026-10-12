@@ -79,6 +79,7 @@ const { values } = parseArgs({
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
     "remote-start-ms": { type: "string" },
+    "writer-return-ms": { type: "string" },
     "admin-token-file": { type: "string" },
     "also-host": { type: "string" },
     "tab-writable": { type: "string" },
@@ -88,7 +89,7 @@ const { values } = parseArgs({
 });
 
 // A mistyped bound is reported before anything starts: a NaN would make every move time out at once, a zero or negative one the same.
-for (const name of ["grace-ms", "remote-start-ms"] as const) {
+for (const name of ["grace-ms", "remote-start-ms", "writer-return-ms"] as const) {
   const text = values[name];
   if (text !== undefined && !(Number.isFinite(Number(text)) && Number(text) > 0 && text.trim() !== "")) {
     console.error(`--${name} ${text}: it is a positive number of milliseconds`);
@@ -211,6 +212,7 @@ const server = createDemoServer({
   lease: { heartbeatMs: 2_000, expiryMs: 10_000, marginMs: 3_000 },
   writerGraceMs: Number(values["grace-ms"]),
   ...(values["remote-start-ms"] !== undefined ? { remoteStartMs: Number(values["remote-start-ms"]) } : {}),
+  ...(values["writer-return-ms"] !== undefined ? { writerReturnMs: Number(values["writer-return-ms"]) } : {}),
   log,
   ...(ledger ? { ledger } : {}),
   ...(cloud ? { cloud } : {}),
