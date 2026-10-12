@@ -41,8 +41,13 @@ export function chain(count, make) {
 /** The same node on the other side (y mirrored), named with `suffix`: a left leg made from a right one. A joint about x (a leg swinging out sideways) is mirrored too: its stand angle and range change sign. */
 export function mirror(node, suffix = "_r") {
   const flip = (p) => (p ? [p[0], -p[1], p[2]] : p);
+  // A rotation axis is an axial vector: reflecting y turns (ax, ay, az) into (-ax, ay, -az) with the same angle. An axis with no y part is kept as it was and the angle negated instead (the same rotation, and the stand angle of a left/right pair reads +a / -a);
+  // an axis with a y part (a mixed one) becomes the reflected axis with its angle and range unchanged.
   const flipJoint = (j) => {
-    if (!j || !j.axis || j.axis[0] === 0) return j;
+    if (!j) return j;
+    const [ax, ay, az] = j.axis ?? [0, 1, 0];
+    if (ay !== 0) return { ...j, axis: [-ax || 0, ay, -az || 0] };
+    if (ax === 0 && az === 0) return j;
     return { ...j, stand: -(j.stand ?? 0), range: j.range ? [-j.range[1], -j.range[0]] : j.range };
   };
   const walk = (n) => ({ ...n, name: n.name ? n.name + suffix : n.name, pos: flip(n.pos), from: flip(n.from), to: flip(n.to), joint: flipJoint(n.joint), geoms: n.geoms?.map((g) => ({ ...g, pos: flip(g.pos), from: flip(g.from), to: flip(g.to) })), children: n.children?.map(walk) });
@@ -64,11 +69,14 @@ function lowestZ(root) {
   const visit = (node, R, origin, isRoot) => {
     const here = isRoot ? origin : origin.map((o, i) => o + apply(R, node.pos ?? [0, 0, 0])[i]);
     const Rj = node.joint && !isRoot ? mul(R, axisAngle(node.joint.axis ?? [0, 1, 0], node.joint.stand ?? 0)) : R;
-    for (const g of [node, ...(node.geoms ?? [])].filter((x) => x.shape)) {
+    for (const g of pieces(node)) {
       const shape = g.shape;
       if ((shape === "capsule" || shape === "cylinder") && g.from && g.to) {
         const r = g.size?.[0] ?? g.r ?? 0.02;
-        for (const p of [g.from, g.to]) low = Math.min(low, here[2] + apply(Rj, p)[2] - (shape === "capsule" ? r : r * Math.sqrt(Math.max(0, 1 - apply(Rj, [0, 0, 1])[2] ** 2 * 0)))); // a cylinder end disc: its rim reaches r sideways, bounded below by r
+        const axis = apply(Rj, g.to.map((x, k) => x - g.from[k]));
+        const uz = Math.abs(axis[2]) / (Math.hypot(...axis) || 1);
+        const reach = shape === "capsule" ? r : r * Math.sqrt(Math.max(0, 1 - uz * uz)); // a capsule's ends are spheres (r); a cylinder's are flat discs, whose lowest point is r * sin of the axis's tilt below the end's centre
+        for (const p of [g.from, g.to]) low = Math.min(low, here[2] + apply(Rj, p)[2] - reach);
         continue;
       }
       const c = here[2] + apply(Rj, g.pos ?? [0, 0, 0])[2];
@@ -76,7 +84,8 @@ function lowestZ(root) {
       if (shape === "sphere") low = Math.min(low, c - sz[0]);
       else if (shape === "box") { const Rg = Rj; low = Math.min(low, c - (Math.abs(Rg[2][0]) * sz[0] + Math.abs(Rg[2][1]) * sz[1] + Math.abs(Rg[2][2]) * sz[2])); }
       else if (shape === "ellipsoid") low = Math.min(low, c - Math.hypot(Rj[2][0] * sz[0], Rj[2][1] * sz[1], Rj[2][2] * sz[2]));
-      else { const hl = sz[1] ?? sz[0]; low = Math.min(low, c - (Math.abs(Rj[2][2]) * hl + sz[0])); } // capsule/cylinder along the node's z
+      else if (shape === "cylinder") { const uz = Math.abs(Rj[2][2]); low = Math.min(low, c - (uz * (sz[1] ?? sz[0]) + sz[0] * Math.sqrt(Math.max(0, 1 - uz * uz)))); } // flat ends
+      else { const hl = sz[1] ?? sz[0]; low = Math.min(low, c - (Math.abs(Rj[2][2]) * hl + sz[0])); } // a capsule along the node's z: round ends
     }
     for (const ch of node.children ?? []) visit(ch, Rj, here, false);
   };
@@ -84,7 +93,8 @@ function lowestZ(root) {
   return low;
 }
 
-const pieces = (n) => [n, ...(n.geoms ?? [])].filter((g) => g.shape);
+/** The pieces of a node: its own shape at the body's origin (`pos` places the body in its parent, not the shape in the body), then the extra geoms at their own positions. */
+const pieces = (n) => [{ ...n, pos: undefined }, ...(n.geoms ?? [])].filter((g) => g.shape);
 const hasMotor = (n) => (n.joint && n.joint.passive !== true) || (n.children ?? []).some(hasMotor);
 /** The tree with the limbs that have motors first at every level: the trainer and the tab read the motors as the first joints of the body, so every spring joint (a tail, a neck) must come after them. */
 const motorsFirst = (n) => ({ ...n, children: (n.children ?? []).map(motorsFirst).sort((a, b) => Number(hasMotor(b)) - Number(hasMotor(a))) });
@@ -124,10 +134,10 @@ export function build(spec) {
         actuators.push(`    <position name="${jname}_a" joint="${jname}" kp="40" kv="1.2" ctrlrange="${range.map(f).join(" ")}" forcerange="-${f(j.strength ?? 12)} ${f(j.strength ?? 12)}"/>`);
       }
     }
-    const pieces = [{ ...node }, ...(node.geoms ?? [])].filter((g) => g.shape);
-    pieces.forEach((g, i) => {
-      const flagged = pieces.some((p) => p.foot === true);
-      const isLeafLeg = !isRoot && (flagged ? g.foot === true : !(node.children?.length) && i === pieces.length - 1 && (g.tags ?? node.tags ?? []).includes("legs"));
+    const pieceList = pieces(node);
+    pieceList.forEach((g, i) => {
+      const flagged = pieceList.some((p) => p.foot === true);
+      const isLeafLeg = !isRoot && (flagged ? g.foot === true : !(node.children?.length) && i === pieceList.length - 1 && (g.tags ?? node.tags ?? []).includes("legs"));
       const gname = unique(isLeafLeg ? `${bname}_foot` : `${bname}${i === 0 ? "" : `_g${i}`}_geom`);
       const t = g.tags ?? node.tags ?? (isRoot ? [] : ["decoration"]);
       tags[gname] = [...new Set([...(isRoot && i === 0 ? ["torso"] : []), ...(t.length ? t : isRoot ? ["torso"] : ["decoration"])])];
@@ -177,7 +187,7 @@ ${actuators.join("\n")}
   for (const [g, t] of Object.entries(tags)) if (t.length === 1 && t[0] === "decoration" && !names.has(g)) warnings.push(`${g} has no tag`);
   return {
     xml, joints, motors, tags, colors, name, warnings,
-    json: { name, joints, motors, tags, colors, face: { tag: faceTag, ...(spec.face?.at ? { at: spec.face.at } : {}) }, legs: limbs, tag_list: tagList, pieces: Object.keys(tags).length, mass_kg: Math.round(totalMass * 100) / 100, stand_height_m: startZ },
+    json: { name, joints, motors, tags, colors, warnings, face: { tag: faceTag, ...(spec.face?.at ? { at: spec.face.at } : {}) }, legs: limbs, tag_list: tagList, pieces: Object.keys(tags).length, mass_kg: Math.round(totalMass * 100) / 100, stand_height_m: startZ },
   };
 }
 

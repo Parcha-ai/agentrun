@@ -11,6 +11,10 @@ export interface BodyJson {
   tags: Record<string, string[]>;
   colors: Record<string, string>;
   face: { tag: string; at?: number[] };
+  /** What the helper found wrong without running anything (no motors, a very light body, a wide joint range). */
+  warnings?: string[];
+  /** The sha256 of the robot/body.xml this was built with: the pair is complete when it matches the xml on the disk. */
+  xml_sha256?: string;
   legs: number;
   tag_list: string[];
   pieces: number;
@@ -55,20 +59,17 @@ export function checkBody(mj: MuJoCo, built: Built, body: BodyJson, seconds = 3)
   } catch (e) {
     return { sim: null, result: { ok: false, errors: [`MuJoCo: ${String((e as Error).message ?? e).trim()}`], warnings: [] } };
   }
-  const warnings: string[] = [];
+  const warnings: string[] = [...(body.warnings ?? [])];
   const steps = Math.round(seconds / 0.02);
   for (let i = 0; i < steps; i++) sim.step(null);
-  sim.reset();
-  const probe = new Sim(mj, built);
-  for (let i = 0; i < steps; i++) probe.step(null);
-  const finite = Array.from(probe.data.qpos).every(Number.isFinite);
-  const up = probe.uprightness();
-  const z = probe.data.qpos[2]!;
-  if (!finite) return { sim: null, result: { ok: false, errors: ['the physics blew up (non-finite positions) while it held its standing pose: check masses, sizes and joint ranges'], warnings } };
+  const finite = Array.from(sim.data.qpos).every(Number.isFinite);
+  const up = sim.uprightness();
+  const z = sim.data.qpos[2]!;
+  if (!finite) { sim.free(); return { sim: null, result: { ok: false, errors: ['the physics blew up (non-finite positions) while it held its standing pose: check masses, sizes and joint ranges'], warnings } }; }
   if (up < 0.3) warnings.push(`it does not stand: after ${seconds} s with its legs at their stand angles it is lying on its side (up ${up.toFixed(2)}). Check the stand angles and that the legs reach the ground.`);
   else if (z < 0.7 * body.stand_height_m) warnings.push(`it collapses: after ${seconds} s at its stand angles the torso is at ${z.toFixed(3)} m, well below the ${body.stand_height_m} m it should stand at (its legs fold or cannot hold its weight). Check the stand angles, the joint ranges and the masses.`);
   else if (up < 0.8) warnings.push(`it is leaning after ${seconds} s at its stand angles (up ${up.toFixed(2)}): its legs may not carry it evenly`);
-  sim.reset();
+  sim.reset(); // the checked simulation is the one that is shown: one model, checked once, and the caller owns it (free() when it is replaced)
   return {
     sim,
     result: { ok: true, errors: [], warnings, report: { pieces: body.pieces, joints: body.joints.length, motors: body.motors.length, mass_kg: body.mass_kg, stand_height_m: body.stand_height_m, settled_up: Math.round(up * 100) / 100, settled_height_m: Math.round(z * 1000) / 1000, tags: body.tag_list } },

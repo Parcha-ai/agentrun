@@ -81,6 +81,40 @@ try {
   await waitEvent('robot-changed', n);
   ok('"the whole robot red" paints every piece', (await parts()).every((p) => p.color === '#d9423b'));
 
+  // 2b. the face goes where the body file says: the dinosaur's face.at is [0.1, 0, 0.02] on its head
+  const facePos = await inner('(() => { const f = __walks.app.view.face; return f ? [f.mesh.position.x, f.mesh.position.y, f.mesh.position.z] : null; })()');
+  ok('the face is at the anchor the body file gave (x 0.1 + a hair, z 0.02)', facePos && Math.abs(facePos[0] - 0.102) < 1e-6 && facePos[1] === 0 && Math.abs(facePos[2] - 0.02) < 1e-6, facePos);
+
+  // 2c. either file changing is a new body, and a half-written pair waits for the other half
+  const withSha = async (xml, json) => ({ ...json, xml_sha256: await sha(xml) });
+  const stronger = d.xml.replace('forcerange="-14 14"', 'forcerange="-18 18"');
+  if (stronger === d.xml) throw new Error('the stronger xml is the same as the good one');
+  n = await ev('events.length');
+  await put('robot/body.xml', stronger);
+  await put('robot/body.json', JSON.stringify(await withSha(stronger, d.json)));
+  const strong = await waitEvent('body-built', n, 60000);
+  ok('a motor\'s strength changes only the xml (the motor list is the same), and the page still shows the new body', strong.sha === await sha(stronger) && JSON.parse(await readDisk('robot/build.json')).sha === await sha(stronger), strong);
+  const stronger2 = d.xml.replace('forcerange="-14 14"', 'forcerange="-22 22"');
+  n = await ev('events.length');
+  await put('robot/body.xml', stronger2); // the xml is written first by the build script; the json still names the previous xml
+  await sleep(3500);
+  const early = await ev(`events.slice(${n}).filter((e) => e.type === 'body-built' || e.type === 'body-refused').length`);
+  ok('the new xml with the old json is a half-written pair: the page waits (it compiles nothing and reports no mismatch)', early === 0, early);
+  await put('robot/body.json', JSON.stringify(await withSha(stronger2, d.json)));
+  const complete = await waitEvent('body-built', n, 60000);
+  ok('and the pair, once complete, is built', complete.sha === await sha(stronger2), complete);
+  const retagged = JSON.parse(JSON.stringify(await withSha(stronger2, d.json)));
+  for (const k of Object.keys(retagged.tags)) if (retagged.tags[k].includes('plates')) retagged.tags[k] = ['spikes'];
+  retagged.tag_list = retagged.tag_list.map((t) => (t === 'plates' ? 'spikes' : t));
+  n = await ev('events.length');
+  await put('robot/body.json', JSON.stringify(retagged)); // the xml is the same: only a tag changed
+  await waitEvent('body-built', n, 60000);
+  const afterTags = await parts();
+  ok('a tag-only edit (the json changes, the xml does not) is rebuilt: the plates are spikes now', afterTags.filter((p) => p.tags.includes('spikes')).length === 4 && !afterTags.some((p) => p.tags.includes('plates')), afterTags.filter((p) => p.tags.includes('spikes')).length);
+  n = await ev('events.length');
+  await putBody(d); // back to the dinosaur as written
+  await waitEvent('body-built', n, 60000);
+
   // 3. a body that does not compile: MuJoCo's own message, and the dinosaur stays
   const sick = JSON.parse(JSON.stringify(d.json));
   const brokenXml = d.xml.replace('<geom type="ellipsoid"', '<geom sizee="1" type="ellipsoid"');

@@ -97,6 +97,8 @@ export class View {
   /** A code body's piece names to tags (robot/body.json): set before setSim; null on a preset body. */
   private tagMap: Record<string, string[]> | null = null;
   private faceTag = 'head';
+  /** Where the face plane sits on its piece (the piece's own frame), from the body file; undefined: at the nose. */
+  private faceAt: number[] | undefined;
   /** A soft contact shadow under the robot (hero look): the directional shadow alone is faint on a dark floor. */
   private blob: THREE.Mesh | null = null;
   /** The robot's size as a radius in metres, and the camera's direction from it: what the framing keeps the whole robot inside the pane with. */
@@ -174,9 +176,10 @@ export class View {
   }
 
   /** The tags of a body written as code, by piece name (null for a preset body), and the tag its face is drawn on. Takes effect at the next setSim. */
-  setTags(tags: Record<string, string[]> | null, faceTag = 'head'): void {
+  setTags(tags: Record<string, string[]> | null, faceTag = 'head', faceAt?: number[]): void {
     this.tagMap = tags;
     this.faceTag = faceTag;
+    this.faceAt = faceAt && faceAt.length === 3 ? faceAt : undefined;
   }
 
   /** Rebuild the meshes for a (new) sim. */
@@ -297,7 +300,7 @@ export class View {
     const torso = this.parts.find((p) => p.tags ? p.tags.includes(this.faceTag) : p.role === 'torso') ?? this.parts.find((p) => p.tags?.includes('torso')); // a code body's face goes on its head piece, else its torso
     if (look.face === 'none' || !torso) { this.dropFace(); return; }
     const noseX = torso.size[0] * (torso.tags ? 1.02 : look.shape.torso === 'round' ? 1.14 : 1) + 0.002; // the torso's nose moves when its shape does, so the face follows even when it stays the same face
-    if (this.face?.kind === look.face && this.face.mesh.parent === torso.mesh) { this.face.mesh.position.x = noseX; return; }
+    if (this.face?.kind === look.face && this.face.mesh.parent === torso.mesh) { const at = torso.tags ? this.faceAt : undefined; this.face.mesh.position.set(at ? at[0]! + 0.002 : noseX, at ? at[1]! : 0, at ? at[2]! : 0); return; }
     this.dropFace();
     const size = 128, c = document.createElement('canvas');
     c.width = c.height = size;
@@ -307,7 +310,8 @@ export class View {
     const h = Math.min(torso.size[1] * 1.7, torso.size[2] * 1.7);
     const plane = new THREE.Mesh(new THREE.PlaneGeometry(h * 1.4, h * 1.4), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
     plane.rotation.set(Math.PI / 2, Math.PI / 2, 0, 'YXZ'); // facing the nose (+x), upright
-    plane.position.set(noseX, 0, 0);
+    const at = torso.tags ? this.faceAt : undefined; // a code body's face goes where its file says
+    plane.position.set(at ? at[0]! + 0.002 : noseX, at ? at[1]! : 0, at ? at[2]! : 0);
     torso.mesh.add(plane);
     this.face = { kind: look.face, mesh: plane };
   }

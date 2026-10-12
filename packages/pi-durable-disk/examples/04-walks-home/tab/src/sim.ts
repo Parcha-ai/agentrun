@@ -140,6 +140,12 @@ export class Sim {
     return action;
   }
 
+  /** Release MuJoCo's model and data (wasm memory the garbage collector does not see). The simulation is unusable after. */
+  free(): void {
+    this.data.delete();
+    this.model.delete();
+  }
+
   torsoPos(): [number, number, number] {
     return [this.data.qpos[0], this.data.qpos[1], this.data.qpos[2]];
   }

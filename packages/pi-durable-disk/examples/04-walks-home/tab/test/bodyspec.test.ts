@@ -149,3 +149,34 @@ test('motors come first in the joint order whatever order the file lists its lim
   const flagged = build(robot('f', { shape: 'box', size: [0.2, 0.1, 0.05], mass: 2, children: [{ name: 'leg', pos: [0, 0.1, 0], tags: ['legs'], joint: { axis: [0, 1, 0], range: [-1, 1] }, shape: 'capsule', from: [0, 0, 0], to: [0, 0, -0.2], size: [0.02], mass: 0.1, geoms: [{ shape: 'sphere', size: [0.03], pos: [0, 0, -0.2], foot: true, mass: 0.05 }, { shape: 'sphere', size: [0.01], pos: [0, 0, 0], mass: 0.01 }] }] }));
   assert.match(flagged.xml, /size="0\.03" name="leg_foot"/, 'a piece flagged foot is the foot even when it is not the last');
 });
+
+test('a node\'s pos places its BODY once: a sphere child at [0.3, 0, 0] is centred 0.3 m from its parent in MuJoCo, not 0.6', () => {
+  const b = build(robot('p', { shape: 'sphere', size: [0.1], mass: 1, children: [{ name: 'a', pos: [0.3, 0, 0], shape: 'sphere', size: [0.05], mass: 0.1 }] }));
+  const model = mj.MjModel.from_xml_string(b.xml);
+  const data = new mj.MjData(model);
+  mj.mj_resetDataKeyframe(model, data, 0);
+  mj.mj_forward(model, data);
+  const at = (name: string) => { for (let g = 0; g < model.ngeom; g++) if (model.geom(g).name === name) return [data.geom_xpos[3 * g], data.geom_xpos[3 * g + 1], data.geom_xpos[3 * g + 2]]; throw new Error(name); };
+  const torso = at('torso_geom'), a = at('a_geom');
+  assert.ok(Math.abs(a[0]! - torso[0]! - 0.3) < 1e-9, `0.3 m, got ${(a[0]! - torso[0]!).toFixed(3)}`);
+  // an extra geom keeps its own offset on the body, on top of the body's
+  const e = build(robot('p', { shape: 'sphere', size: [0.1], mass: 1, children: [{ name: 'a', pos: [0.3, 0, 0], shape: 'sphere', size: [0.05], mass: 0.1, geoms: [{ shape: 'sphere', size: [0.02], pos: [0.1, 0, 0], mass: 0.01 }] }] }));
+  assert.match(e.xml, /<geom type="sphere" pos="0\.1 0 0" size="0\.02"/);
+});
+
+test('mirror reflects a joint about any axis: z flips like x, a mixed axis becomes the reflected axis with the same angle, a pitch joint is unchanged', () => {
+  const j = (axis: number[], stand: number, range: number[]) => mirror({ name: 'n', pos: [0, 0.1, 0], joint: { axis, stand, range }, shape: 'sphere', size: [0.01] }, '_r').joint;
+  assert.deepEqual(j([0, 0, 1], 0.4, [-0.2, 0.9]), { axis: [0, 0, 1], stand: -0.4, range: [-0.9, 0.2] }, 'a yaw joint: the same axis, the angle reflected');
+  assert.deepEqual(j([1, 0, 0], 0.3, [-1, 1]), { axis: [1, 0, 0], stand: -0.3, range: [-1, 1] }, 'an abduction joint: as before');
+  assert.deepEqual(j([1, 1, 0], 0.3, [-1, 1]), { axis: [-1, 1, 0], stand: 0.3, range: [-1, 1] }, 'a mixed axis: reflected, the angle kept');
+  assert.deepEqual(j([0, 1, 0], 0.5, [0, 2]), { axis: [0, 1, 0], stand: 0.5, range: [0, 2] }, 'a pitch joint is the same on both sides');
+  assert.deepEqual(j([0, 1, 1], 0.5, [0, 2]), { axis: [0, 1, -1], stand: 0.5, range: [0, 2] });
+});
+
+test('a cylinder leg\'s flat end rests on the floor: a vertical cylinder starts 4 mm above it, a tilted one reaches by its rim, a capsule by its round end', () => {
+  const leg = (shape: string, to: number[]) => build(robot('c', { shape: 'sphere', size: [0.05], mass: 1, children: [{ name: 'leg', pos: [0, 0, 0], tags: ['legs'], joint: { axis: [0, 1, 0], range: [-1, 1], stand: 0 }, shape, from: [0, 0, 0], to, size: [0.05], mass: 0.1 }] })).json.stand_height_m;
+  assert.ok(Math.abs(leg('cylinder', [0, 0, -0.2]) - 0.204) < 1e-4, `vertical cylinder: ${leg('cylinder', [0, 0, -0.2])}`);
+  assert.ok(Math.abs(leg('capsule', [0, 0, -0.2]) - 0.254) < 1e-4, `vertical capsule: the round end adds its radius, ${leg('capsule', [0, 0, -0.2])}`);
+  const tilted = leg('cylinder', [0.2, 0, -0.2]);
+  assert.ok(tilted > 0.2 && tilted < 0.204 + 0.05 * Math.SQRT1_2 + 1e-4, `a cylinder at 45 degrees: its rim reaches ${(0.05 * Math.SQRT1_2).toFixed(3)} m below its end, got ${tilted}`);
+});

@@ -64,3 +64,24 @@ test('robot/body.json that is not what build.mjs writes is a message that says t
   assert.throws(() => parseBodyJson(JSON.stringify({ joints: [], motors: [], tag_list: [] })), /no tags/);
   void dog;
 });
+
+test('the helper\'s warnings reach the page\'s report, merged with what the standing check found', () => {
+  const none = code(robot('walker', { shape: 'sphere', size: [0.1], mass: 0.05 }));
+  const r = checkBody(mj, none.built, none.body);
+  assert.ok(r.result.ok);
+  assert.ok(r.result.warnings.some((w) => /no trainable joints/.test(w)), 'a robot with no motors is told it cannot walk');
+  assert.ok(r.result.warnings.some((w) => /very light/.test(w)), 'and that it is very light');
+  const fine = code(dino);
+  assert.deepEqual(checkBody(mj, fine.built, fine.body).result.warnings, [], 'a good body has none');
+});
+
+test('a body is checked once, on one model: the checked simulation is the one returned (to be shown), and a simulation can be released', () => {
+  let compiled = 0;
+  const counting = { ...mj, MjModel: { from_xml_string: (xml: string) => { compiled++; return mj.MjModel.from_xml_string(xml); } } };
+  const d = code(dino);
+  const { sim } = checkBody(counting, d.built, d.body);
+  assert.equal(compiled, 1, 'one compile for the check and the simulation that is shown');
+  assert.ok(sim && sim.time === 0, 'reset after the check: it starts from its standing pose');
+  sim!.free();
+  assert.throws(() => sim!.step(null), /./, 'a released simulation cannot run (its memory is gone)');
+});
