@@ -30,6 +30,7 @@ import type { ModelOptions, ModelProxy } from "../../03-tab-to-cloud/pipe/model-
 import type { CloudHost, Invite, ServerApi } from "../../03-tab-to-cloud/pipe/server.ts";
 import type { Environment, Move } from "../../03-tab-to-cloud/wire.ts";
 import { DESKTOP_DISPLAY, DESKTOP_PORT, desktopScript, novncUrl, SCREENSHOT_COMMAND } from "./desktop.ts";
+import { awaitPlacement } from "./placement-wait.ts";
 import { GpuPool, type PoolStatus } from "./gpu-pool.ts";
 import { vmImageCommands } from "./image.ts";
 import type { GpuProcess, GpuServer } from "../../03-tab-to-cloud/pipe/gpu-rpc.ts";
@@ -150,7 +151,10 @@ export interface ModalCloudOptions {
     /** The skill each box warms for, box 0 first (a box beyond the list wraps around). */
     readonly skills?: readonly string[];
     readonly readyTimeoutMs?: number;
+    /** After this many ms an unplaced cluster box is reported as still placing (`pool.box-still-placing`); the request is kept, never cancelled. Default 90 s. */
     readonly placementTimeoutMs?: number;
+    /** A box that did not come up is created again after these delays in ms (the last repeats), until it is up or the cluster closes. Default 5 s, 15 s, then every 30 s; an empty list turns retries off. */
+    readonly retryDelaysMs?: readonly number[];
     /** How often the live boxes are checked for having ended (default 20 s; 0: never). */
     readonly watchMs?: number;
     /** When the boxes start: "attach" (default: when the first page takes the run, so a server nobody opens costs nothing) or "now" (when this cloud is made). */
@@ -174,6 +178,14 @@ const ROBOT_BUNDLE_FILES: Readonly<Record<string, string>> = {
   // D2's assemble-skills and the policy loader it checks with (node alone), side by side: only those that exist in this checkout.
   ...Object.fromEntries(["assemble-skills.ts", "policy.ts", "obs.ts"].map((f) => [`robot/policy/${f}`, fileURLToPath(new URL(`../policy/${f}`, import.meta.url))]).filter(([, source]) => existsSync(source!))),
 };
+
+/**
+ * After this long a cluster box that has not placed is reported as still placing; it is NOT cancelled. Healthy placements take 0.5 to 1.1 s, but Modal queues a create it has no capacity for and placed three of
+ * code9's four requests 449, 546 and 569 s after they were made: giving up and asking again joins the same queue, so the same request is kept and the box joins the pool when it lands.
+ */
+export const DEFAULT_PLACEMENT_SLOW_MS = 90_000;
+/** A box whose create FAILED with an error (not one that is merely slow to place) is created again after 5 s, then 15 s, then every 30 s, until it is up or the pool closes. */
+export const DEFAULT_BOX_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 30_000];
 
 /** A GPU sandbox's own lifetime unless the caller says otherwise: the backstop when nothing else removes it (a killed server). */
 export const DEFAULT_GPU_TTL_MINUTES = 20;
@@ -263,6 +275,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
           size: options.cluster.size,
           ...(options.cluster.spares ? { spares: options.cluster.spares } : {}),
           ...(options.cluster.idleMinutes ? { idleMs: options.cluster.idleMinutes * 60_000 } : {}),
+          retryDelaysMs: options.cluster.retryDelaysMs ?? DEFAULT_BOX_RETRY_DELAYS_MS,
           log: options.log,
           closeWaitMs: options.closeWaitMs ?? 60_000,
           create: async (index, signal) => {
@@ -270,17 +283,17 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
             const t0 = Date.now();
             const name = sandboxName(`${prefix}gpu${index}-`, "cluster", t0);
             const body = { name, snapshot: "image", labels: { [LABEL_FLEET]: fleet, [LABEL_RUN]: "cluster" }, autoStopInterval: 0, autoDeleteInterval: 0, ttlMinutes: cluster.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES };
-            const timeoutMs = cluster.placementTimeoutMs ?? 360_000;
+            const slowAfterMs = cluster.placementTimeoutMs ?? DEFAULT_PLACEMENT_SLOW_MS;
             const creating = clusterClient.create(body);
-            let box: SandboxInfo;
-            let placeTimer: NodeJS.Timeout | undefined;
-            const outcome = await Promise.race([creating.then((b) => ({ b })), new Promise<{ timedOut: true }>((r) => (placeTimer = setTimeout(() => r({ timedOut: true }), timeoutMs)))]).finally(() => clearTimeout(placeTimer));
-            if ("timedOut" in outcome) {
-              // Modal may still place it: it is removed when it lands, and its own TTL bounds it if this process is gone.
-              void reclaimLate(name, creating);
-              throw new Error(`GPU box ${index} did not place in ${Math.round(timeoutMs / 1000)} s`);
+            // Modal queues a create it has no capacity for and places it when capacity comes; cancelling and asking again only joins the same queue. So a slow one is reported, and the same request is waited for.
+            const outcome = await awaitPlacement(creating, { slowAfterMs, signal, onSlow: (waitedMs) => options.log("pool.box-still-placing", { index, name, waitedS: Math.round(waitedMs / 1000) }) });
+            if ("abandoned" in outcome) {
+              // The pool closed while Modal was still queuing it: it is terminated if it lands, and its own TTL bounds it if this process is gone.
+              // close() waits for this create (its own bound), so a box that lands within that wait is gone before close returns.
+              await reclaimLate(name, creating);
+              throw new Error(`GPU box ${index}: the pool closed while it was still placing`);
             }
-            box = outcome.b;
+            const box: SandboxInfo = outcome.value;
             const placeMs = Date.now() - t0;
             // Tracked from the moment it exists: whatever happens next, a box that would not go stays in `live` and close() tries again.
             live.add(box.id);

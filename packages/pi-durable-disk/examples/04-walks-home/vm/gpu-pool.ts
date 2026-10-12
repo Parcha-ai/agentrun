@@ -20,7 +20,7 @@ export type BoxState = "creating" | "ready" | "busy" | "failed" | "removed" | "i
 export interface PoolStatus {
   readonly size: number;
   readonly closing: boolean;
-  readonly boxes: readonly { readonly index: number; readonly state: BoxState; readonly id?: string; readonly thread?: string; readonly createMs?: number; readonly error?: string }[];
+  readonly boxes: readonly { readonly index: number; readonly state: BoxState; readonly id?: string; readonly thread?: string; readonly createMs?: number; readonly error?: string; readonly attempt?: number; readonly retrying?: boolean }[];
 }
 
 export interface GpuPoolOptions {
@@ -50,9 +50,14 @@ export interface GpuPoolOptions {
   readonly now?: () => number;
   /** How long one `alive` check may take (default 10 s): a Modal call that does not answer says nothing, and the box stays available. */
   readonly aliveTimeoutMs?: number;
+  /**
+   * A box whose create failed (it never placed, it was not ready in time) is created again, with a fresh request, after `delays[attempt]` ms (the last delay repeats), until it is up or the pool closes;
+   * each attempt is logged (`pool.box-retry`). Threads asking meanwhile keep waiting for the boxes that are up or on their way. Absent or empty: a failed box stays failed.
+   */
+  readonly retryDelaysMs?: readonly number[];
 }
 
-type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean; gone?: boolean; removing?: boolean };
+type Slot = { index: number; state: BoxState; attempt?: number; retrying?: boolean; retryTimer?: NodeJS.Timeout; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean; gone?: boolean; removing?: boolean };
 type Waiter = { thread: string; promise: Promise<PoolBox>; resolve: (box: PoolBox) => void; reject: (error: Error) => void; onAbort?: () => void; signal?: AbortSignal };
 
 export class GpuPool {
@@ -82,7 +87,7 @@ export class GpuPool {
     return {
       size: this.#options.size,
       closing: this.#closing,
-      boxes: this.#slots.map((s) => ({ index: s.index, state: s.state, ...(s.box ? { id: s.box.id } : {}), ...(s.thread ? { thread: s.thread } : {}), ...(s.createMs !== undefined ? { createMs: s.createMs } : {}), ...(s.error ? { error: s.error } : {}) })),
+      boxes: this.#slots.map((s) => ({ index: s.index, state: s.state, ...(s.box ? { id: s.box.id } : {}), ...(s.thread ? { thread: s.thread } : {}), ...(s.createMs !== undefined ? { createMs: s.createMs } : {}), ...(s.attempt && s.attempt > 1 ? { attempt: s.attempt } : {}), ...(s.retrying ? { retrying: true } : {}), ...(s.error ? { error: s.error } : {}) })),
     };
   }
 
@@ -138,11 +143,32 @@ export class GpuPool {
     } catch (error) {
       slot.state = "failed";
       slot.error = (error as Error).message;
-      this.#options.log("pool.box-failed", { index: slot.index, error: slot.error });
+      this.#options.log("pool.box-failed", { index: slot.index, error: slot.error, attempt: slot.attempt ?? 1 });
+      this.#scheduleRetry(slot);
       this.#changed();
       this.#failWaitersIfHopeless();
       this.#onSettle?.();
     }
+  }
+
+  /** A failed create is tried again after a delay (the pool's retry option), with a fresh request, until the box is up or the pool closes. */
+  #scheduleRetry(slot: Slot): void {
+    const delays = this.#options.retryDelaysMs;
+    if (this.#closing || !delays || delays.length === 0) return;
+    const attempt = slot.attempt ?? 1;
+    const afterMs = delays[Math.min(attempt - 1, delays.length - 1)]!;
+    slot.retrying = true;
+    this.#options.log("pool.box-retry", { index: slot.index, attempt: attempt + 1, afterMs, previous: slot.error });
+    slot.retryTimer = setTimeout(() => {
+      slot.retryTimer = undefined;
+      if (this.#closing) return;
+      slot.attempt = attempt + 1;
+      slot.retrying = false;
+      slot.state = "creating";
+      delete slot.error;
+      this.#changed();
+      slot.creating = this.#create(slot);
+    }, afterMs);
   }
 
   /**
@@ -304,7 +330,7 @@ export class GpuPool {
 
   #failWaitersIfHopeless(): void {
     // Nothing is ready, busy or on its way: waiting longer cannot help.
-    if (this.#slots.some((s) => s.state === "creating" || s.state === "ready" || s.state === "busy" || s.state === "idle")) return;
+    if (this.#slots.some((s) => s.state === "creating" || s.state === "ready" || s.state === "busy" || s.state === "idle" || s.retrying)) return;
     for (const w of this.#waiting.splice(0)) {
       if (w.onAbort) w.signal?.removeEventListener("abort", w.onAbort);
       w.reject(new Error(this.#slots.some((s) => s.error?.startsWith("the box ended")) ? "every GPU box ended" : "no GPU box came up"));
@@ -321,6 +347,7 @@ export class GpuPool {
       if (!keepState) slot.state = "removed";
       slot.gone = true;
       delete slot.thread;
+      this.#options.log("pool.box-removed", { index: slot.index, box: slot.box.name }); // the report of how many boxes are up reads this: a removed box is no longer one
     }
     this.#changed();
     return gone;
@@ -332,6 +359,7 @@ export class GpuPool {
     this.#abort.abort();
     clearInterval(this.#watch);
     clearInterval(this.#idle);
+    for (const slot of this.#slots) if (slot.retryTimer) (clearTimeout(slot.retryTimer), (slot.retryTimer = undefined), (slot.retrying = false));
     for (const w of this.#waiting.splice(0)) {
       if (w.onAbort) w.signal?.removeEventListener("abort", w.onAbort);
       w.reject(new Error("the pool is closing"));

@@ -8,6 +8,7 @@
 //                             with the ssh line that carries both ports (the 03 server's, --server-port, and the stage's, --port). The GPU box
 //                             starts warming when that page attaches, so "LIVE: ready" comes about 4 minutes after the person opens the link.
 import { threadDeadlineArg } from "../live-args.ts";
+import { poolReport, readyLine, shouldAnnounce } from "../pool-report.ts";
 import { resolveModelsDir } from "../models-dir.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -271,14 +272,18 @@ try {
     }
     step("the 03 page runs the agent");
   }
+  let shownBoxes = "";
   // The warm GPU box: ready before anyone is told to start (with the person's browser, it starts warming when their page attaches).
   if (robot) {
     // Every box of the pool has come up or failed; a pool where none came up is a failed start.
-    const count = (event) => (readFileSync(join(work, "take", "server.log"), "utf8").match(new RegExp(`"event":"${event}"`, "g")) ?? []).length;
-    await until(() => count("cluster.box-up") >= clusterSize || count("cluster.box-up") + count("pool.box-failed") >= clusterSize + clusterSpares, ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
-    const up = count("cluster.box-up");
-    if (up === 0) throw new Error("no GPU box came up");
-    step("the cluster", { up, failed: count("pool.box-failed"), of: clusterSize });
+    // The first attempt of every box has settled (up or failed), or the boxes the demo needs are up. A box that did not place is retried in the background; the ready line says how many are up.
+    const serverLog = () => readFileSync(join(work, "take", "server.log"), "utf8");
+    const waitStart = Date.now();
+    await until(() => shouldAnnounce(poolReport(serverLog(), clusterSize), clusterSize + clusterSpares, Date.now() - waitStart, 120_000), ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
+    const first = poolReport(serverLog(), clusterSize);
+    if (first.up === 0) throw new Error("no GPU box came up");
+    step(readyLine(first), { up: first.up, needed: clusterSize, spares: clusterSpares });
+    shownBoxes = readyLine(first);
   } else {
   await until(() => readFileSync(join(work, "take", "server.log"), "utf8").includes('"remote.ready"'), ownBrowser ? openWaitMs : episode === "obsession" ? 900_000 : 240_000, "the warm GPU box");
   }
@@ -288,6 +293,11 @@ try {
   // Keep going until told to stop; if the 03 page's tab goes away, open it again (the agent needs a place to start).
   while (!stopping) {
     await sleep(5000);
+    if (robot) {
+      // Boxes that were still placing are retried in the background: say so when the count changes.
+      const line = readyLine(poolReport(readFileSync(join(work, "take", "server.log"), "utf8"), clusterSize));
+      if (line !== shownBoxes) (shownBoxes = line, step(line));
+    }
     const alive = ownBrowser ? 1 : await Promise.race([writer.eval("1").catch(() => 0), sleep(3000).then(() => 0)]);
     if (!alive) {
       step("the 03 page went away; opening it again");
