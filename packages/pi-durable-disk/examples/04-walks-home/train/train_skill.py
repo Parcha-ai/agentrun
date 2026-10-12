@@ -220,7 +220,9 @@ def diagnose(records: list[dict]) -> str | None:
   swing = max(tail) - min(tail)
   drift = abs(sum(tail[-third:]) / third - sum(tail[:third]) / third)
   if len(tail) >= 5 and swing > 0.2 * max(abs(v) for v in values) and flips * 2 >= len(diffs) - 1 and drift < 0.5 * swing:
-    best = max(range(len(values)), key=lambda i: values[i])
+    # Best by the test's own direction: a target below ("<= -0.25", backwards) is best at its lowest value.
+    below = str(scored[-1]["metric"].get("target", "")).lstrip().startswith("<")
+    best = (min if below else max)(range(len(values)), key=lambda i: values[i])
     return (f"{name} never settles: over the last {len(tail)} checkpoints it swung between {min(tail):g} and {max(tail):g} "
             f"with no trend (best {values[best]:g} at checkpoint {scored[best]['checkpoint']}, {last:g} at the last). Training "
             "longer rarely fixes a policy that does not settle: check the body first (feet that roll or slip, where a flat foot "

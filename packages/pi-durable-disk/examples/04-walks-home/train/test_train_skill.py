@@ -140,6 +140,17 @@ class DiagnoseTest(unittest.TestCase):
     self.assertIn("best 0.346 at checkpoint 14", d)
     self.assertNotIn("train longer (--steps)", d)
 
+  def test_a_metric_whose_target_is_below_names_its_lowest_checkpoint_best(self):
+    # backwards passes at speed <= -0.25: a run that swings between -0.04 and -0.35 m/s did best at its most negative
+    # checkpoint, not at its first (0 m/s, standing still), which is where the largest value is.
+    backwards = [-v for v in [0.0, 0.004, 0.011, 0.017, 0.016, 0.016, 0.021, 0.02, 0.019, 0.043, 0.166, 0.077, 0.068, 0.346,
+                              0.139, 0.088, 0.149, 0.067, 0.231, 0.161, 0.07, 0.074, 0.077, 0.042, 0.123]]
+    recs = [{"checkpoint": i + 1, "steps": (i + 1) * 1_000_000, "error": None,
+             "metric": {"name": "speed backwards", "value": v, "target": "<= -0.25"}} for i, v in enumerate(backwards)]
+    d = train_skill.diagnose(recs)
+    self.assertIn("never settles", d)
+    self.assertIn("best -0.346 at checkpoint 14", d)
+
   def test_a_metric_that_was_never_measured_says_the_skill_never_happened(self):
     # get-up on code5's dino: 11 checkpoints, no error, and no value at any (the body never righted from every start).
     recs = [{"checkpoint": i + 1, "steps": (i + 1) * 1_000_000, "metric": {"name": "slowest get-up", "value": None}} for i in range(11)]
