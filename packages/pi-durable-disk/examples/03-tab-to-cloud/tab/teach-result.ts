@@ -46,3 +46,23 @@ export function teachResultCard(details: unknown): ResultCard | null {
     home: failed !== null ? `Bringing the skills home failed: ${failed}` : skills !== null ? `Home: ${skills.length > 0 ? skills.join(", ") : "none"}` : null,
   };
 }
+
+/** The brief the parent gave each thread: teach_skills' own arguments ({skills: [{name, brief}]}), by the thread's name. What the thread itself was prompted with is the model's, not the reader's. */
+export function briefsFromArgs(args: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let o: unknown;
+  try {
+    o = JSON.parse(args);
+  } catch {
+    return out;
+  }
+  const skills = bag(o)?.skills;
+  if (!Array.isArray(skills)) return out;
+  for (const s of skills) {
+    const e = bag(s);
+    const name = e ? str(e.name) : null;
+    const brief = e ? str(e.brief) : null;
+    if (name !== null && brief !== null) out.set(name, brief);
+  }
+  return out;
+}

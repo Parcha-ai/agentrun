@@ -29,3 +29,14 @@ test("details that are not a teach result give no card, so the page shows the re
   assert.equal(teachResultCard({ threads: [{ gpu: 1 }] }), null, "a thread with no skill or status is not a result");
   assert.equal(teachResultCard("text"), null);
 });
+
+import { briefsFromArgs } from "../tab/teach-result.ts";
+test("the briefs the parent gave each thread, from teach_skills' own typed arguments: by name, nothing for anything else", () => {
+  const briefs = briefsFromArgs(JSON.stringify({ skills: [{ name: "walk", brief: "Walk forward on four legs while keeping the torso steady." }, { name: "spin", brief: "Spin in place." }, { name: "bad" }, 7] }));
+  assert.equal(briefs.get("walk"), "Walk forward on four legs while keeping the torso steady.");
+  assert.equal(briefs.get("spin"), "Spin in place.");
+  assert.equal(briefs.size, 2, "an entry without a brief, or not an object, is skipped");
+  assert.equal(briefsFromArgs("not json").size, 0);
+  assert.equal(briefsFromArgs(JSON.stringify({})).size, 0);
+  assert.equal(briefsFromArgs(JSON.stringify({ skills: "walk" })).size, 0);
+});

@@ -12,7 +12,7 @@ import { ChatView, type ChatItem } from "./chat-view.ts";
 import { echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, resultCardElement, toolBody } from "./tool-body.ts";
-import { teachResultCard } from "./teach-result.ts";
+import { briefsFromArgs, teachResultCard } from "./teach-result.ts";
 import { WriteMemory } from "./write-memory.ts";
 import { Latest } from "./latest.ts";
 import { ACTIVE, ThreadSet, threadsByCall, type Thread, type ThreadMsg } from "./threads.ts";
@@ -304,17 +304,20 @@ const writeBefore = new Map<string, string>();
 /** The teaching threads inside the teach_skills call: one row per thread (its GPU, its name, where it is), each opening to that thread's own tool calls, drawn with the same lines and bodies as the root's. */
 function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, threads: readonly Thread[], showOutput: boolean): HTMLElement {
   const wrap = el("div", { class: "tool-body threads" });
+  const briefs = briefsFromArgs(item.args);
   for (const t of threads) {
     const key = `thread:${t.conversation}`;
     const items = t.chat.items();
-    // The thread's conversation was forked from the agent's, so it begins with what the agent had; the thread's own work starts at its brief (its last user message).
+    // The thread's conversation was forked from the agent's, so it begins with what the agent had; the thread's own work starts at its prompt (its last user message), which is the model's: the reader sees
+    // the brief the parent gave it (teach_skills' own arguments, by the thread's name), as one quiet line.
     const from = Math.max(0, items.map((i) => i.kind).lastIndexOf("user"));
-    const mine = items.slice(from);
+    const mine = items.slice(from).filter((i) => i.kind !== "user");
+    const brief = briefs.get(t.name);
     const echoed = echoedTools(mine);
     const dot = ACTIVE.has(t.status) ? "dot act run" : t.status === "passed" || t.status === "reported" ? "dot done" : "dot";
     const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "gpu" }, t.gpu === null ? "GPU" : `GPU ${t.gpu}`), el("span", { class: "name" }, t.name), el("span", { class: "args" }, ACTIVE.has(t.status) ? `${t.status === "queued" ? "waiting for a GPU, " : ""}${mine.filter((i) => i.kind === "tool").length} calls` : t.status));
     const row = el("details", { class: `thread ${t.status}` }, summary) as HTMLDetailsElement;
-    const draw = () => row.append(el("div", { class: "thread-chat" }, ...mine.map((i) => (i.kind === "user" ? el("div", { class: "brief" }, i.text) : renderItem(i, echoed, `t${t.conversation}:`)))));
+    const draw = () => row.append(el("div", { class: "thread-chat" }, ...(brief ? [el("div", { class: "brief" }, brief)] : []), ...mine.map((i) => renderItem(i, echoed, `t${t.conversation}:`))));
     if (openTools.has(key)) draw();
     row.open = openTools.has(key);
     row.addEventListener("toggle", () => {
