@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAgentRunExtension } from '../dist/extension.js';
 import { loadAuthorReference } from '@parcha/agentrun-dsl';
+import { tempCwd } from './fixtures/temp-cwd.mjs';
 
 // Fictional registered-extension integration; no provider, source corpus or network.
 function app(options = {}, hasUI = false) {
   const tools = new Map(), commands = new Map(), handlers = new Map(), renderers = new Map(), branch = [], messages = [], statuses = [];
-  const ctx = { cwd: process.cwd(), hasUI, model: undefined, modelRegistry: { getAll: () => [] },
+  const ctx = { cwd: tempCwd, hasUI, model: undefined, modelRegistry: { getAll: () => [] },
     sessionManager: { getSessionId: () => 'fictional-trace', getBranch: () => branch, getSessionFile: () => undefined },
     ui: { setStatus: (...args) => statuses.push(args), setWidget: () => {} } };
   createAgentRunExtension({ hostTools: () => [], ...options })({
