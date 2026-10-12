@@ -291,6 +291,43 @@ describe("ArtifactSync: flush beside the timer", () => {
   });
 });
 
+describe("ArtifactSync: a slow pass does not crowd the listings behind it", () => {
+  it("the timer's next listing starts a whole interval after the one before it, however long a pass took", async () => {
+    await withRoot(async (root) => {
+      const remote = join(root, "box"), local = join(root, "work");
+      await mkdir(remote, { recursive: true });
+      await writeFile(join(remote, "a.json"), "a");
+      // one listing is held for three intervals after its find, as a slow box or a long copy holds a pass
+      const fast = localBox();
+      const listings: number[] = [];
+      let held = false;
+      const box: RemoteBox = {
+        sandboxId: "sb-held",
+        poll: () => fast.poll(),
+        async exec(c, o) {
+          const p = await fast.exec(c, o);
+          if (!String(c[2] ?? "").includes('find . "$@"')) return p;
+          listings.push(Date.now());
+          if (listings.length === 2 && !held) {
+            held = true;
+            const wait = p.wait;
+            p.wait = async () => { const code = await wait(); await sleep(600); return code; };
+          }
+          return p;
+        },
+      };
+      const sync = new ArtifactSync({ box, remote, local, intervalMs: 200 });
+      sync.start();
+      while (listings.length < 5) await sleep(20);
+      await sync.stop();
+      // a file is taken once two listings in a row see it the same, so "in a row" has to mean an interval apart: ticks that
+      // queued behind the held pass would list back to back, and a file still being written would look settled
+      const gaps = listings.slice(1).map((t, i) => t - listings[i]!);
+      assert.ok(gaps.every((g) => g >= 190), `listings ${gaps.join(", ")} ms apart`);
+    });
+  });
+});
+
 /**
  * A box whose command output is lost if nobody is reading it by the time the command has exited: Node does this to a local
  * child's stdout and stderr (it resumes an unread stream when the child exits), and a busy host can let a fast command exit

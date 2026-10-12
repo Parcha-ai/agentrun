@@ -617,6 +617,8 @@ export class ArtifactSync {
   private seen = new Map<string, string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private busy: Promise<unknown> = Promise.resolve();
+  /** A timer pass is queued or running: a tick meanwhile adds none, so the next listing comes a whole interval later. */
+  private pending = false;
   private stopped = false;
   files = 0;
   bytes = 0;
@@ -627,7 +629,13 @@ export class ArtifactSync {
 
   start(): void {
     if (this.timer || this.stopped) return;
-    this.timer = setInterval(() => { this.busy = this.busy.then(() => this.pass(false)).catch((e) => this.fail(e)); }, this.o.intervalMs);
+    // Ticks that queued behind a slow pass would list back to back, and "the same in two listings in a row" would no longer
+    // span an interval: a file still being written could look settled.
+    this.timer = setInterval(() => {
+      if (this.pending) return;
+      this.pending = true;
+      this.busy = this.busy.then(() => this.pass(false)).catch((e) => this.fail(e)).finally(() => { this.pending = false; });
+    }, this.o.intervalMs);
   }
 
   /** Copy everything that differs now, then return the totals copied so far. */
