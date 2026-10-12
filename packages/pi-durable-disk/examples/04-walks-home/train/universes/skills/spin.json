@@ -1,0 +1,18 @@
+{
+ "name": "spin",
+ "hypothesis": "spin in place: 1.5 rad/s, no forward speed (a wider tracking window so a standstill still sees the reward)",
+ "env": {
+  "pert_config.enable": true,
+  "command_range": [
+   0.0,
+   0.0
+  ],
+  "command_zero_prob": 1.0,
+  "reward_config.yaw_target": 1.5,
+  "reward_config.tracking_sigma": 1.0
+ },
+ "reward_scales": {
+  "tracking_yaw": 2.0,
+  "stand_still": 0.0
+ }
+}

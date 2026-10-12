@@ -1,0 +1,19 @@
+{
+ "name": "wave",
+ "hypothesis": "wave: hold the front-left paw 15 cm up while standing on three legs",
+ "env": {
+  "command_range": [
+   0.0,
+   0.0
+  ],
+  "command_zero_prob": 1.0,
+  "reward_config.wave_foot": 0,
+  "reward_config.wave_height": 0.15
+ },
+ "reward_scales": {
+  "feet_height": -30.0,
+  "stand_still": 0.0,
+  "pose": 0.1,
+  "tracking_lin_vel": 0.5
+ }
+}

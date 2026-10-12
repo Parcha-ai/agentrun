@@ -1,0 +1,15 @@
+{
+ "name": "backwards",
+ "hypothesis": "walk backwards: track a negative forward speed; stay level (no rearing while backing up)",
+ "env": {
+  "pert_config.enable": true,
+  "command_range": [
+   -0.6,
+   -0.3
+  ],
+  "command_zero_prob": 0.0
+ },
+ "reward_scales": {
+  "orientation": -10.0
+ }
+}

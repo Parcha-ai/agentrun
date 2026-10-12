@@ -109,6 +109,43 @@ test('a blocked pattern in a Python file blocks the archive', async t => {
   assert.ok(!raw.includes(fakeKey) && !raw.includes(machinePath));
 });
 
+test('Python and MuJoCo XML are text inside an examples tree and refused outside one', async t => {
+  const f = await fixture(t);
+  const body = '<mujoco model="creature">\n  <worldbody/>\n</mujoco>\n';
+  await f.write('packages/pi-durable-disk/examples/walk/train/train.py', 'STEPS = 10\n');
+  await f.write('packages/pi-durable-disk/examples/walk/train/default/creature.xml', body);
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.equal(receipt.status, 'passed');
+  const xml = receipt.files.find(file => file.path === 'packages/pi-durable-disk/examples/walk/train/default/creature.xml');
+  assert.ok(xml, 'the receipt lists the .xml file');
+  assert.equal(xml.kind, 'text');
+  assert.equal(xml.sha256, hash(Buffer.from(body)));
+  assert.ok(receipt.files.some(file => file.path === 'packages/pi-durable-disk/examples/walk/train/train.py' && file.kind === 'text'));
+  for (const outside of ['scripts/tool.py', 'packages/dsl/src/model.py', 'docs/body.xml', 'packages/pi/body.xml']) {
+    const g = await fixture(t);
+    await g.write(outside, 'x = 1\n');
+    await assert.rejects(g.run(), error => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, new RegExp(`Unreviewed source-export file type: ${outside.replace(/[.]/g, '\\.')}`));
+      return true;
+    }, outside);
+  }
+});
+
+test('an XML body under examples is scanned like any other text file', async t => {
+  const f = await fixture(t);
+  const machinePath = ['', 'home', 'someone', 'mesh.stl'].join('/');
+  await f.write('packages/pi-durable-disk/examples/walk/body.xml', `<mujoco><asset><mesh file="${machinePath}"/></asset></mujoco>\n`);
+  await assert.rejects(f.run(), error => {
+    assert.match(error.stderr, /Source export blocked by 1 unreviewed finding/);
+    assert.ok(!error.stderr.includes(machinePath));
+    return true;
+  });
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.deepEqual(receipt.findings.map(x => [x.path, x.rule]), [['packages/pi-durable-disk/examples/walk/body.xml', 'machine_path']]);
+});
+
 test('the removed website output flag is rejected before writing artifacts', async t => {
   const f = await fixture(t);
   await assert.rejects(f.run('--site-download'), error => {

@@ -1,0 +1,37 @@
+{
+ "name": "getup",
+ "hypothesis": "getup only: every episode starts fallen; be upright, high, in the stand pose",
+ "reward_scales": {
+  "tracking_lin_vel": 0.0,
+  "tracking_yaw": 0.0,
+  "lin_vel_z": 0.0,
+  "ang_vel_xy": 0.0,
+  "orientation": -1.0,
+  "base_height": -20.0,
+  "torques": -0.0002,
+  "action_rate": -0.01,
+  "energy": 0.0,
+  "pose": 0.5,
+  "stand_still": 0.0,
+  "dof_pos_limits": -1.0,
+  "feet_air_time": 0.0,
+  "feet_slip": 0.0,
+  "upright": 2.0,
+  "alive": 0.0,
+  "termination": 0.0
+ },
+ "env": {
+  "fall_start_prob": 1.0,
+  "terminate_on_fall": false,
+  "clip_reward_at_zero": false,
+  "action_scale": 2.0,
+  "command_range": [
+   0.0,
+   0.0
+  ],
+  "command_zero_prob": 1.0
+ },
+ "ppo": {
+  "episode_length": 300
+ }
+}

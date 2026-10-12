@@ -10,12 +10,15 @@ import { TakeMemory } from "./take-memory.ts";
 import { cardShown, cardTag, cardVisible, decisionCardHtml } from "./decision-card.ts";
 import { DesktopView } from "./desktop.ts";
 import { Feed } from "./feed.ts";
+import { apiRoot, pageParams } from "./api-base.ts";
+import { mountRobotPieces, robotStore } from "./robot-pieces.ts";
+import { stageKeys } from "./tab-link.ts";
 import { Grid } from "./grid.ts";
 import { TabBridge } from "./shell.ts";
 import { notesFromTabEvent } from "./tab-notes.ts";
 import { renderTimeline } from "./timeline.ts";
 
-const params = new URLSearchParams(location.search);
+const params = pageParams(location.href, location.hash);
 if (params.get("theme") === "light") document.documentElement.dataset.theme = "light";
 // v2 is the default: the creature, one badge, the chat, one caption. ?debug=1 brings back the timeline, log, HUD, cost meter, multiverse,
 // VM desktop and buttons (the take's operator panel stays on the `o` key either way).
@@ -23,7 +26,12 @@ const debug = params.get("debug") === "1";
 document.body.classList.toggle("v2", !debug);
 $<HTMLIFrameElement>("tab").src = debug ? "/tab/" : "/tab/?clean=1&banner=1";
 
-const feed = new Feed();
+const KEYS = stageKeys(params.get("tab"));
+const API = apiRoot(location.href, params.get("api"));
+const feed = new Feed(API, robotStore(KEYS));
+feed.restore();
+// The robot demo's pieces (the agent's tab's own events, the tab link, the eight tiles): page/robot-pieces.ts. Empty until the tab or the threads have said something.
+const robot = mountRobotPieces({ feed, params, api: API, keys: KEYS, addNotes: (...n) => addNotes(...n) });
 const bridge = new TabBridge($<HTMLIFrameElement>("tab"));
 const desktop = new DesktopView($("desktop"));
 const grid = new Grid($("grid"), $("strip"), (id) => void kill(id));
@@ -444,6 +452,7 @@ function frame(): void {
     $("chat").classList.toggle("talked", state.chat.length > 0);
     $("chat").classList.toggle("drawing", memory.drawStarted);
     renderCaptionV2(state);
+    robot.frame(state);
     sendPhase(state);
     return;
   }

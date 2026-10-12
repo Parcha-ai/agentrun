@@ -20,5 +20,6 @@ const result = await build({
   logLevel: "warning",
 });
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
+copyFileSync(join(here, "robot-pieces.css"), join(out, "robot-pieces.css"));
 const bytes = Object.values(result.metafile.outputs).find((o) => o.entryPoint)?.bytes ?? 0;
 console.log(`main.js: ${bytes} bytes`);

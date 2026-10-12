@@ -1,4 +1,4 @@
-# Contract between the trainer and the tab (tab/)
+# Contract between the trainer (train/) and the tab (tab/)
 
 Ownership: `policy.json` and its runtime (`obs.ts`, `policy.ts`, in this directory) belong to the trainer lane; the body
 (`design.ts`, `mjcf.ts`, `sim.ts`) belongs to the tab, which imports the runtime from here. A change to a slice or to the
@@ -94,8 +94,13 @@ getup network trained without one) is written with a std of 1e9, so whatever the
 Each universe trains into `<run>/work/train/<universe>/`; its `policy.json` is the newest checkpoint's policy, rewritten
 by rename at every checkpoint. The winner the tab loads at home is `<run>/work/home/policy.json`.
 
+After the cluster beat, each skill a thread taught comes home into the run's home directory (`<run>/work/home`) as
+`skills/<skill>.json` (that skill's policy with the get-up network inside), with the manifest `skills.json`:
+`{"version": 1, "body_mjcf_sha256", "default", "skills": {"<skill>": {"policy": "skills/<skill>.json", "command", "label"}}}`.
+`train/assemble_skills.py` and its TypeScript twin `assemble-skills.ts` write them, the manifest last.
+
 ## Parity
 
-The trainer's `rollout.py --trace` (Python, branch `demo/d2-train`) runs a policy in C MuJoCo and records qpos, qvel, obs
-and action per step; `test/parity.test.ts` replays that trace through `obs.ts`, `policy.ts` and `@mujoco/mujoco`, so the trainer's observation,
+`train/rollout.py --trace` runs a policy in C MuJoCo (Python) and records qpos, qvel, obs and action per step;
+`test/parity.test.ts` replays that trace through `obs.ts`, `policy.ts` and `@mujoco/mujoco`, so the trainer's observation,
 the exported weights and the WASM physics are checked against one another.

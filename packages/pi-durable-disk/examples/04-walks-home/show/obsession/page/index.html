@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%230c0f0e%27/%3E%3Cpath d=%27M3 12l3-6 3 4 2-3 2 5%27 stroke=%27%236fe3a6%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E">
 <!-- The model's answers contain emoji and the recording machine has no emoji font: Noto Color Emoji, served by the stage itself (copied from an npm package at build time), the FIRST family in every font stack (its unicode-range is emoji only, so text still uses the text font; a system font with its own plain glyph for an emoji, like DejaVu's circle for the full moon, would otherwise win). -->
 <link rel="stylesheet" href="fonts/noto-color-emoji.css">
+<link rel="stylesheet" href="robot-pieces.css">
 <style>
 :root {
   color-scheme: dark;
@@ -194,6 +195,8 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 </head>
 <body>
 <div id="lost" hidden>feed lost, reconnecting</div>
+<div id="net" hidden></div>
+<button id="opentab" type="button" hidden>Open the agent's tab</button>
 <div id="badge" data-tone="tab" data-at="left"><div class="top"><div class="main"><span class="dot"></span><span class="txt">Your agent is in your browser</span></div></div><div class="track" aria-hidden="true"><span class="node a">your browser</span><span class="line"><i class="agent"></i></span><span class="node b" hidden></span></div><div class="memory" hidden></div></div>
 <main>
   <section id="centre">
@@ -201,8 +204,11 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
     <div id="find" class="off"></div>
     <div id="train" class="off"></div>
     <div id="talk" hidden></div>
+    <div id="toolstrip" hidden></div>
+    <div id="threads" hidden></div>
   </section>
   <aside id="chat" aria-label="Chat with the agent">
+    <div id="selftools"></div>
     <div id="modelbanner" hidden></div>
     <div id="chathint">Pick an obsession: tell the agent what to make a model obsessed with.</div>
     <div id="chatlog"></div>
@@ -210,6 +216,6 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
   </aside>
 </main>
 <div id="vcaptionwrap"><div id="vcaption" hidden></div></div>
-<script type="module" src="/obsession/main.js"></script>
+<script type="module" src="main.js"></script>
 </body>
 </html>
