@@ -153,7 +153,7 @@ export type Brain = {
 };
 
 /**
- * The tab's own events for the self-tools beats (D3's `walkshome:*` events, as DOM events in the page and as messages to the stage; the 03 page's transcript says the same things as `brain`
+ * The tab's own events for the robot demo beats (D3's `walkshome:*` events, as DOM events in the page and as messages to the stage; the 03 page's transcript says the same things as `brain`
  * entries). Every field is what the event said; a field it did not say is null.
  */
 export type Net = { online: boolean; reason: string | null };

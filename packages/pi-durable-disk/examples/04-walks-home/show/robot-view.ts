@@ -1,4 +1,4 @@
-// What the stage says about the tab's own events (selftools.ts). Pure: state in, words or HTML out. Everything said is a field of an event; a number the event did not carry is not said.
+// What the stage says about the tab's own events (robot-events.ts). Pure: state in, words or HTML out. Everything said is a field of an event; a number the event did not carry is not said.
 import { esc } from "./page/dom.ts";
 import type { Checkin, Homecoming, Net, Note, Routing, ToolRow } from "./types.ts";
 

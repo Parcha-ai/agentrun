@@ -1,5 +1,5 @@
 // ShowState is the fold of ShowEvents. Pure: no clock, no I/O, so the same events give the same state on every page.
-import { routingKey } from "./selftools.ts";
+import { routingKey } from "./robot-events.ts";
 import type { Place, ShowEvent, ShowState, Thread, Universe } from "./types.ts";
 
 export function emptyState(): ShowState {
