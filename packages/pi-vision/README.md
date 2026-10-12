@@ -29,7 +29,7 @@ and it is not published (`"private": true`). Parts not built yet throw `NotBuilt
 | Office documents and spreadsheets, LibreOffice | built |
 | Video: probe, frames by seek, windows, ffmpeg | built |
 | `read`'s media half with the package's own reader for every kind, the guard, the eyes on pi-ai, receipts and misses | built |
-| The pi-durable adapter and the Node environment | not built |
+| The pi-durable adapter, the Node environment and eyes on pi's `Models` | built |
 | `look` | not built |
 
 ## Entries
