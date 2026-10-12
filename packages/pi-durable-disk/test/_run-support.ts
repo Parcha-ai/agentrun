@@ -1,5 +1,5 @@
 // Shared by the run suites and their fixtures: a claim over a local directory, a scripted model, a long-running command.
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -18,6 +18,25 @@ export const ctx = BACKGROUND_CONTEXT;
 export function scratchRoot(prefix: string): { root: string; remove(): void } {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), `pda-${prefix}-`));
   return { root, remove: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/**
+ * Removes a directory that a live run may still be writing into through its open directory (a claim's `at`): the run's
+ * writes run on the thread pool, so one can land between a recursive removal's walk and its rmdir (ENOTEMPTY), and
+ * `rmSync`'s retries only retry that rmdir. This walks again until the directory itself is gone; after it returns, no
+ * write through the directory can land (ENOENT). `afterWalk` is a seam for forcing the losing interleaving.
+ */
+export async function removeWhileWritten(path: string, afterWalk: (attempt: number) => Promise<void> | void = () => {}): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    for (const name of readdirSync(path)) rmSync(join(path, name), { recursive: true, force: true });
+    await afterWalk(attempt);
+    try {
+      rmdirSync(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY" || attempt >= 100) throw error;
+    }
+  }
 }
 
 export const localRef = (id: string): RunRef => ({ disk: "dsk-local", region: "local", id });
