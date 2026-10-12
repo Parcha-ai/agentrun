@@ -39,6 +39,8 @@ export interface BrainDeps {
   route?: boolean;
   /** `configure`: the tools the model gets (pi's registrations: read, write, edit, bash). */
   tools?: readonly ToolRegistration[];
+  /** A model with its own tool template (MiniCPM5): loaded with its jinja and this context (tokens), asked through `toolChat`. `warm` is the prefix the first request shares: it is prefilled after the load. */
+  native?: { nCtx: number };
   /** `configure`: the instructions the conversation is configured with. Default TOOL_PROMPT. */
   instructions?: string;
   /** `configure`: how a tool turn is decoded (token caps, grammar or free, a per-turn report). Default DEFAULT_TOOL_DECODING. */
@@ -112,6 +114,7 @@ export class Brain {
     this.adopted = adopt !== undefined;
     this.host = adopt ?? new ModelHost({
       ...(d.files ? { files: d.files } : {}),
+      ...(d.native ? { native: d.native } : {}),
       post: (type, body = {}) => d.onProgress?.(type, body),
       readChunk: (path) => d.readFile(path),
       writeFile: async () => {}, // the receipt of a load: the swap entry carries it
@@ -139,7 +142,7 @@ export class Brain {
     const s = this.host.state();
     if (s.phase !== "answered") return this.failed(s.error ?? "the model did not answer its self-check", manifest.sha256);
     const modelId = manifest.sha256.slice(0, 12);
-    models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
+    models.setProvider(brainProvider(this.provided, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
     this.modelId = modelId;
     this.currentId = manifest.id;
     if (this.d.mode === "configure" && this.d.route) {
@@ -199,7 +202,7 @@ export class Brain {
       return "failed";
     }
     const modelId = manifest.id.slice(0, 12);
-    models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
+    models.setProvider(brainProvider(this.provided, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
     this.modelId = modelId;
     this.currentId = manifest.id;
     if (wasLocal) await root.configure({ model: { provider: BRAIN_PROVIDER, modelId }, thinkingLevel: "off", tools: this.d.tools ?? [], instructions: this.d.instructions ?? TOOL_PROMPT }, context);
@@ -229,6 +232,41 @@ export class Brain {
     else await root.configure(cloud, context);
     this.switches++;
     return true;
+  }
+
+  /**
+   * Native tool template: prefill the prefix every request shares (the system prompt and the tools, which the model's template renders at the start of the prompt) with one throwaway turn of one
+   * token, so the first real command pays only its own few tokens (measured on a loaded box: 110 s cold against 10 s warm). Resolves how long it took; a failure is not an error of the demo.
+   */
+  async warm(system: string, tools: import("../../04-walks-home/tab/src/modelhost.ts").ToolChatTool[]): Promise<number | undefined> {
+    const run = this.#warm(system, tools);
+    this.warming = run.then(() => undefined);
+    return run;
+  }
+
+  /** The warm-up turn that is running, if any: the model serves one request at a time, so the first real turn waits for it instead of being refused as busy. */
+  private warming: Promise<void> = Promise.resolve();
+
+  /** The host as the provider sees it: the same host, whose native tool turn waits for the warm-up. */
+  private get provided(): ModelHost {
+    const host = this.host;
+    return new Proxy(host, {
+      get: (target, key) => {
+        if (key === "toolChat") return async (...args: Parameters<ModelHost["toolChat"]>) => { await this.warming; return target.toolChat(...args); };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  async #warm(system: string, tools: import("../../04-walks-home/tab/src/modelhost.ts").ToolChatTool[]): Promise<number | undefined> {
+    const started = performance.now();
+    try {
+      await this.host.toolChat({ messages: [{ role: "system", content: system }, { role: "user", content: "Hello." }], tools, maxTokens: 1, templateKwargs: { enable_thinking: false } });
+      return performance.now() - started;
+    } catch {
+      return undefined;
+    }
   }
 
   /** The page is done with the model (the run left this tab): release its workers. */
