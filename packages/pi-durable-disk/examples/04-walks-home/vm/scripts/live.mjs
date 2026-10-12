@@ -8,7 +8,7 @@
 //                             with the ssh line that carries both ports (the 03 server's, --server-port, and the stage's, --port). The GPU box
 //                             starts warming when that page attaches, so "LIVE: ready" comes about 4 minutes after the person opens the link.
 import { threadDeadlineArg } from "../live-args.ts";
-import { poolReport, readyLine } from "../pool-report.ts";
+import { poolReport, readyLine, shouldAnnounce } from "../pool-report.ts";
 import { resolveModelsDir } from "../models-dir.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -278,10 +278,8 @@ try {
     // Every box of the pool has come up or failed; a pool where none came up is a failed start.
     // The first attempt of every box has settled (up or failed), or the boxes the demo needs are up. A box that did not place is retried in the background; the ready line says how many are up.
     const serverLog = () => readFileSync(join(work, "take", "server.log"), "utf8");
-    await until(() => {
-      const r = poolReport(serverLog(), clusterSize);
-      return r.up >= clusterSize || r.settled >= clusterSize + clusterSpares;
-    }, ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
+    const waitStart = Date.now();
+    await until(() => shouldAnnounce(poolReport(serverLog(), clusterSize), clusterSize + clusterSpares, Date.now() - waitStart, 120_000), ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
     const first = poolReport(serverLog(), clusterSize);
     if (first.up === 0) throw new Error("no GPU box came up");
     step(readyLine(first), { up: first.up, needed: clusterSize, spares: clusterSpares });

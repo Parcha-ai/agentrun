@@ -317,3 +317,19 @@ test("the cluster: a warm-up attempt gets all the time that is left, not a cap t
   await w.cloud.close!();
   reset();
 });
+
+test("the cluster: a box that places after the slow threshold joins the pool: it is reported, its request is kept (not cancelled, not asked for again) and it is not terminated when it lands", async () => {
+  let open!: () => void;
+  const gate = new Promise<void>((r) => (open = r));
+  const w = await world(() => false, gate, { cluster: { size: 1, image: "im-cluster", start: "now", placementTimeoutMs: 40 } });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(w.logs.some((l) => l.event === "pool.box-still-placing"), "said once that it is still placing");
+  assert.equal(w.logs.filter((l) => l.event === "pool.box-failed").length, 0, "a slow create is not a failed one");
+  assert.equal(w.boxes.length, 0, "no second request while the first is queued");
+  open(); // Modal places it
+  await w.cloud.cluster!.start();
+  assert.equal(w.boxes.length, 1, "the one request");
+  assert.equal(w.boxes[0]!.exit, null, "the late box is not terminated");
+  assert.deepEqual(w.cloud.cluster!.status().boxes.map((b) => b.state), ["ready"], "it joined the pool");
+  await w.cloud.close!();
+});
