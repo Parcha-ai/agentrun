@@ -25,7 +25,9 @@ import {
   type EntryId,
   type EntryRecord,
   type Extension,
+  type Session,
   type TaskId,
+  type TaskRecord,
   type ToolExecutionApi,
   type ToolExecutionResult,
   type Tx,
@@ -483,6 +485,72 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
 
   const teach: Extension = defineExtension({ name: "robot-teach", tools: [options.plan ? planTool : teachTool, readThread], tasks: [TeachSkills, Thread] });
   return { teach, thread };
+}
+
+/** One thread of a teaching run, as a viewer lists it: `threadsOf` returns these. */
+export type TeachThread = {
+  /** The TeachSkills task that forked it. */
+  readonly teach: number;
+  /** The thread's own conversation (a fork of the session, owned by its Thread task): watch it for the thread's work. */
+  readonly conversation: number;
+  /** The skill it teaches, as planned. */
+  readonly name: string;
+  /** Its GPU number, 1..of, in plan order. */
+  readonly gpu: number;
+  readonly of: number;
+  /** The box it got; null while it waits for one. */
+  readonly boxId: string | null;
+  /** "queued" while it waits for its box, "running" while it works, then its result's status. */
+  readonly status: "queued" | "running" | ThreadResult["status"];
+  /** True once its task is terminal: its conversation gets no more entries from this run. */
+  readonly settled: boolean;
+};
+
+/**
+ * The threads of the newest teaching run, in plan order (GPU 1 first), read from the store: each thread's conversation,
+ * skill and GPU as the fork recorded them (its `robot.box` document), and its status from its Thread task. With
+ * `conversation`, the newest run that conversation started. Empty before teach_skills has forked its threads. It only
+ * reads, so a viewer may poll it.
+ */
+export async function threadsOf(session: Pick<Session, "commit">, context: Context, which: { readonly conversation?: number } = {}): Promise<TeachThread[]> {
+  return session.commit(async (tx) => {
+    const all = async (kind: string) => {
+      const out: TaskRecord<JsonValue, JsonValue, JsonValue>[] = [];
+      let cursor: Parameters<Tx["scanTasks"]>[2];
+      for (;;) {
+        const page = await tx.scanTasks({ kind }, 100, cursor);
+        out.push(...page.items);
+        if (page.next === undefined) return out;
+        cursor = page.next;
+      }
+    };
+    let teach: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
+    for (const t of await all("robot.teach-skills")) {
+      if (which.conversation !== undefined && (t.input as TeachInput).parent !== which.conversation) continue;
+      if (teach === undefined || t.id > teach.id) teach = t;
+    }
+    if (teach === undefined) return [];
+    const threads: TeachThread[] = [];
+    for (const t of await all("robot.thread")) {
+      if (t.owner !== teach.id) continue;
+      const child = (await tx.scanConversations({ ownerTaskId: t.id }, 1)).items[0];
+      if (child === undefined) continue;
+      const box = await tx.doc(RobotBox, child.id);
+      threads.push({ teach: teach.id, conversation: child.id, name: box.skill, gpu: box.gpu, of: box.of, boxId: box.boxId, status: threadStatus(t), settled: t.state.status === "terminal" });
+    }
+    return threads.sort((x, y) => x.gpu - y.gpu);
+  }, context);
+}
+
+function threadStatus(t: TaskRecord<JsonValue, JsonValue, JsonValue>): TeachThread["status"] {
+  if (t.state.status === "completing" || t.state.status === "terminal") {
+    const o = t.state.outcome as { status: string; result?: unknown; error?: { detail?: unknown } };
+    if (o.status === "completed" && isThreadResult(o.result)) return o.result.status;
+    if (o.status === "failed") return isThreadResult(o.error?.detail) ? o.error.detail.status : "error";
+    return o.status === "aborted" ? "aborted" : "error";
+  }
+  const c = t.state.checkpoint as ThreadState;
+  return c.phase === "acquire" ? "queued" : c.phase === "run" ? "running" : c.result.status;
 }
 
 /**

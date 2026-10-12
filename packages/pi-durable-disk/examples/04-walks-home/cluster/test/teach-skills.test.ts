@@ -106,6 +106,16 @@ test("code mode: the session plans skills with briefs, each thread writes and ru
   assert.deepEqual(verdict.threads.map((t: { skill: string; status: string }) => [t.skill, t.status]), [["walk", "passed"], ["spin", "passed"], ["wave", "never-passed"]]);
 });
 
+test("code mode: threadsOf lists the run's threads in plan order with their conversations, mid-run and after", () => {
+  const { verdict } = runPlan();
+  assert.equal(verdict.checks.threads_of_mid_run, true);
+  assert.equal(verdict.checks.threads_of_after_the_run, true);
+  // Mid-run a fast thread may already have passed; the others are still running.
+  assert.deepEqual(verdict.threads_of.mid.map((l: string) => l.split(" ").slice(0, 2).join(" ")), ["1 walk", "2 spin", "3 wave"]);
+  for (const l of verdict.threads_of.mid) assert.match(l, / (running|passed)$/);
+  assert.deepEqual(verdict.threads_of.after, ["1 walk passed", "2 spin passed", "3 wave never-passed"]);
+});
+
 test("code mode: a thread past its deadline is stopped and folds as timed out, the others are kept", () => {
   const { status, verdict } = runPlan("--deadline-ms", "900");
   for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
