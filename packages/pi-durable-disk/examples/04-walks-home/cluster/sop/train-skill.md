@@ -65,11 +65,19 @@ def terms(s):
 ```
 
 ## Steps
-1. **Read** `robot/body.json`, then the closest example: `ls /opt/pda/train/skills`, then
-   `cat /opt/pda/train/skills/<name>/*`.
-2. **Copy and edit.** `cp -r /opt/pda/train/skills/<closest> skills/<your skill>`. Then edit skill.json (its name is
-   your skill), reward.py and test.py for your brief and this body. Make test.py measure exactly the quantity the brief
-   names, against the brief's number, over the 10 s rollout.
+1. **Is your skill one of the library's?** These are worked skills in `/opt/pda/train/skills/`, already tuned, each in
+   its directory: walk `walk/`, sprint `sprint/`, backwards `backwards/`, turn-left `turn-left/`, turn-right
+   `turn-right/`, spin `spin/`, wave `wave/`, and get-up `getup/` (no hyphen; its skill.json already says get-up). If
+   yours is one of them, use it as it is:
+   - `cp -r /opt/pda/train/skills/<its directory> skills/<your skill>` (get-up: `cp -r /opt/pda/train/skills/getup skills/get-up`);
+   - `cat skills/<your skill>/test.py` and change only what your brief or this body needs (the target number in
+     test.py, a weight for a heavy or long-legged body). The trainer finds this body's feet and pose itself. Change
+     nothing else, and write no new reward code;
+   - go straight to step 3.
+2. **Otherwise, write it from the closest example.** Read `robot/body.json` (its motors, legs and tags), then
+   `ls /opt/pda/train/skills` and `cat /opt/pda/train/skills/<closest>/*`. Copy it to `skills/<your skill>`, then
+   edit skill.json (its name is your skill), reward.py and test.py for your brief and this body. Make test.py measure
+   exactly the quantity the brief names, against the brief's number, over the 10 s rollout.
 3. **Compile first, and after every reward.py edit** (about 1 min):
    `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --init-from '' --compile-only`
    - It ends with status `compiled` in `runs/<your skill>/skill.json`, or `failed` with the reward.py traceback under
