@@ -14,7 +14,7 @@ import { DESCRIBE_ASK, type ImageSize, type MediaDetails } from "./guard.js";
 import type { CallContext, CallSetup, ImageContent, ReadArgs, TextContent, ToolResult } from "./host.js";
 import type { ImageProcessor } from "./image.js";
 import type { Kind } from "./kinds.js";
-import type { Limits } from "./limits.js";
+import { SOURCE_BYTES_IN_PROCESS, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, refusal, reportMiss } from "./misses.js";
 import { PACKAGE_KINDS } from "./readers.js";
 import type { Fit } from "./plan.js";
@@ -25,9 +25,11 @@ type SniffOutcome =
   | { readonly ok: true; readonly kind: Kind; readonly mimeType: string | null; readonly signature?: string }
   | { readonly ok: false; readonly code: "unsupported"; readonly reason: string };
 
-/** What a kind's reader is asked: the source in the environment, the path as the model wrote it, and the arguments. */
+/** What a kind's reader is asked: the source in the environment, the path as the model wrote it, and the arguments.
+ *  `source.path` is a private copy of the bytes that were hashed, and `data` those bytes, for a source the process
+ *  holds; a larger source is read where it is. A reader never opens the model's own path. */
 export type KindRequest = {
-  readonly source: ProviderSource; readonly name: string; readonly mimeType: string; readonly width?: number; readonly height?: number;
+  readonly source: ProviderSource; readonly data?: Uint8Array; readonly name: string; readonly mimeType: string; readonly width?: number; readonly height?: number;
   readonly ask?: string; readonly page?: number; readonly fromS?: number; readonly toS?: number;
 };
 /** What a kind's reader works with: the environment, the lead's limits, where kept derivations go (named by the
@@ -121,16 +123,23 @@ function handleOf(path: string, sources: CallSetup["sources"]): { scheme: string
   return match && (match[1] === "session" || sources?.[match[1]!]) ? { scheme: match[1]!, id: match[2]! } : null;
 }
 
-/** A file's size, first bytes and kind; null when the path is not a file that opens. */
-async function sniffFile(env: VisionEnv, name: string, sniff: ReadKinds["sniff"], signal: AbortSignal | undefined): Promise<{ size: number; head: Uint8Array; sniffed: SniffOutcome } | null> {
+/** A file's size, modification time, first bytes and kind; null when the path is not a file that opens. */
+async function sniffFile(env: VisionEnv, name: string, sniff: ReadKinds["sniff"], signal: AbortSignal | undefined): Promise<{ size: number; mtimeMs: number; head: Uint8Array; sniffed: SniffOutcome } | null> {
   const ctx = visionContext(signal);
   const info = await env.fileInfo(name, ctx);
   if (!info.ok || info.value.kind !== "file") return null;
   const opened = await env.openBinaryReader(name, undefined, ctx);
   if (!opened.ok) return null;
   const head = await opened.value.read(0, Math.min(HEAD_BYTES, info.value.size), ctx).finally(() => opened.value.close(ctx));
-  return head.ok ? { size: info.value.size, head: head.value, sniffed: sniff(head.value, name) } : null;
+  return head.ok ? { size: info.value.size, mtimeMs: info.value.mtimeMs, head: head.value, sniffed: sniff(head.value, name) } : null;
 }
+
+/** The extension a private copy keeps, so a program that reads a file by its name still knows what it is. */
+const extensionOf = (name: string): string => {
+  const dot = name.lastIndexOf(".");
+  const ext = dot < 0 ? "" : name.slice(dot + 1);
+  return ext && ext.length <= 8 && [...ext].every((c) => (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")) ? `.${ext}` : "";
+};
 
 /** A miss the model can act on, filed as a failed look and told to the host. */
 async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string): Promise<ToolResult> {
@@ -190,10 +199,19 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
   const handle = handleOf(name, setup.sources);
   if (handle) return readRecording(handle.scheme, handle.id, name.trim(), raw, call, setup, filing);
-  const file = await sniffFile(env, name, kinds.sniff, call.signal);
-  if (!file) return null;
+  const ctx = visionContext(call.signal);
+  const probe = await sniffFile(env, name, kinds.sniff, call.signal);
+  if (!probe || (probe.sniffed.ok && probe.sniffed.kind === "text")) return null;
+  // A source the process may hold is read once: those bytes are hashed, their kind decided and a private copy of them
+  // handed to the reader, so the hash names exactly what was read whatever becomes of the path meanwhile. A larger
+  // source is read where it is, and checked afterwards for having changed.
+  const held = probe.size <= SOURCE_BYTES_IN_PROCESS ? await env.readBinaryFile(name, ctx) : undefined;
+  if (held && !held.ok) return null;
+  const data = held?.ok && held.value.length <= SOURCE_BYTES_IN_PROCESS ? held.value : undefined;
+  const file = data ? { size: data.length, head: data.subarray(0, HEAD_BYTES), sniffed: kinds.sniff(data.subarray(0, HEAD_BYTES), name) } : probe;
   const { size, sniffed } = file;
-  const sha256 = () => sha256Of(env, name, size, call.signal);
+  let hashed: Promise<string> | undefined;
+  const sha256 = () => (hashed ??= data ? Promise.resolve(createHash("sha256").update(data).digest("hex")) : sha256Of(env, name, size, call.signal));
   if (!sniffed.ok) return missResult(filing, name, "unknown", await sha256(), sniffed.code, sniffed.reason, raw);
   const { kind } = sniffed;
   if (kind === "text") return null;
@@ -212,22 +230,34 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   if (allowed !== true) return missResult(filing, name, kind, await sha256(), "refused", allowed, args);
   const reader = kinds.readers[kind];
   if (!reader) return missResult(filing, name, kind, await sha256(), "needs", `no reader for ${kind} files is installed`, args);
-  const source: ProviderSource = { path: name, kind, bytes: size, sha256: await sha256() };
   const ask = asked(args);
-  const request: KindRequest = { source, name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
-  const ctx = visionContext(call.signal);
   const temp = await env.createTempDir("pi-vision-read-", ctx);
   if (!temp.ok) throw temp.error;
   let result: KindResult;
+  let source: ProviderSource;
+  let changed = false;
   try {
-    result = await reader(request, { env, signal: call.signal, limits: setup.limits, deriveDir: setup.scope.deriveDir, tempDir: temp.value, images: setup.images, providers: setup.providers });
-  } catch (error) {
-    // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
-    if (call.signal?.aborted) throw error;
-    result = { miss: "unreadable", reason: firstLine(error) };
+    source = { path: data ? `${temp.value}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
+    const request: KindRequest = { source, ...(data ? { data } : {}), name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
+    // A source read where it is keeps no derivation: what a provider makes of it stays in the read's own directory.
+    const deriveDir = data ? setup.scope.deriveDir : `${temp.value}/derived`;
+    try {
+      if (data) { const wrote = await env.writeFile(source.path, data, ctx); if (!wrote.ok) throw wrote.error; }
+      result = await reader(request, { env, signal: call.signal, limits: setup.limits, deriveDir, tempDir: temp.value, images: setup.images, providers: setup.providers });
+    } catch (error) {
+      // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
+      if (call.signal?.aborted) throw error;
+      result = { miss: "unreadable", reason: firstLine(error) };
+    }
+    if (!data) {
+      const after = await env.fileInfo(name, ctx);
+      changed = !after.ok || after.value.size !== probe.size || after.value.mtimeMs !== probe.mtimeMs;
+    }
   } finally { await env.remove(temp.value, { recursive: true, force: true }, ctx); }
+  // A source that changed while it was read has no hash that names what was read: nothing is filed under the old one.
+  if (changed) return missResult({ ...filing, evidence: { file: async () => null } }, name, kind, source.sha256, "unreadable", "the file changed while it was read, so what was read is not one version of it; read it again", args);
   if ("refusal" in result) return refusal(result.refusal);
-  if ("miss" in result) return missResult(filing, name, kind, source.sha256, result.miss, result.reason, args, result.text);
+  if ("miss" in result) return missResult(filing, name, kind, source.sha256, result.miss, result.reason.split(source.path).join(name), args, result.text);
   let content = result.content;
   if (result.text !== undefined && content[0]?.type === "text") {
     let window: string;
@@ -235,7 +265,7 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
     content = [{ type: "text", text: `${content[0].text}\n\n${window}` }, ...content.slice(1)];
   }
   const original = pixels ? `${pixels.width}x${pixels.height}` : undefined;
-  const media: MediaDetails = { kind, path: name, sha256: source.sha256, ...(original ? { original } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(request.fromS !== undefined ? { fromS: request.fromS } : {}), ...(toS !== undefined ? { toS } : {}), ...(result.fit ? { fit: result.fit } : {}), ...result.media };
+  const media: MediaDetails = { kind, path: name, sha256: source.sha256, ...(original ? { original } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}), ...(result.fit ? { fit: result.fit } : {}), ...result.media };
   return { content, details: { path: name, media } };
 }
 

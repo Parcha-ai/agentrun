@@ -5,10 +5,10 @@
 // kind readers are stubs here; each kind's own suite proves its reader.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, truncateSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { DEFAULT_LIMITS, DESCRIBE_ASK, readMedia, readsAsText, receiptFacts, withoutStrictDefaults } from "@parcha/pi-vision";
+import { DEFAULT_LIMITS, DESCRIBE_ASK, SOURCE_BYTES_IN_PROCESS, readMedia, readsAsText, receiptFacts, withoutStrictDefaults } from "@parcha/pi-vision";
 import { SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, SENTINEL_SIGNED_LINK, fixtureDir, imageSize, pngBytes } from "@parcha/pi-vision/testing";
 
 const PDF_HEAD = Buffer.from("%PDF-1.4\n");
@@ -57,7 +57,11 @@ test("an image goes to the image reader with its hash, header, question and the 
   const out = await r.read({ path: "photo.png", ask: "  What colour?  " });
   assert.deepEqual(out.content, [{ type: "text", text: "Image file photo.png." }, block]);
   const [{ request, context, tempExists }] = r.calls;
-  assert.deepEqual(request, { source: { path: "photo.png", kind: "image", bytes: bytes.length, sha256: sha(bytes) }, name: "photo.png", mimeType: "image/png", width: 30, height: 20, ask: "What colour?" });
+  const { source, data, ...asked } = request;
+  assert.deepEqual(asked, { name: "photo.png", mimeType: "image/png", width: 30, height: 20, ask: "What colour?" });
+  assert.deepEqual([source.kind, source.bytes, source.sha256], ["image", bytes.length, sha(bytes)]);
+  assert.deepEqual(Buffer.from(data), Buffer.from(bytes), "the reader is handed the bytes that were hashed");
+  assert.ok(source.path.startsWith(`${context.tempDir}/`) && source.path.endsWith(".png"), "and a private copy of them, never the model's own path");
   assert.equal(context.limits, DEFAULT_LIMITS);
   assert.equal(context.deriveDir, r.setup.scope.deriveDir);
   assert.ok(tempExists, "the reader has a directory of its own while it runs");
@@ -271,4 +275,42 @@ test("the package's own readers are public, so a host replacing or adding one re
   assert.deepEqual(Object.keys(PACKAGE_KINDS.readers).sort(), ["image", "office", "pdf", "sheet", "video"]);
   assert.equal(typeof PACKAGE_KINDS.sniff, "function");
   assert.equal(typeof PACKAGE_KINDS.sizeOf, "function");
+});
+
+/** `env`, with the file at `path` replaced by `bytes` the first time a scratch directory is asked for: after the read
+ *  has taken the source and before any reader runs. */
+const swappedMidRead = (env, path, bytes) => {
+  let swapped = false;
+  return Object.assign(Object.create(Object.getPrototypeOf(env)), env, { createTempDir: async (...args) => { if (!swapped) { swapped = true; writeFileSync(path, bytes); } return env.createTempDir(...args); } });
+};
+
+test("a source replaced while it is read: the reader gets the bytes that were hashed, so the hash names what was read", async (t) => {
+  const A = Buffer.concat([PDF_HEAD, Buffer.from("first version")]), B = Buffer.concat([PDF_HEAD, Buffer.from("second version, replaced")]);
+  const r = await rig({ pdf: async (request, context) => { const read = await context.env.readBinaryFile(request.source.path, { abortSignal: undefined, value: () => undefined }); return { content: [{ type: "text", text: Buffer.from(read.value).toString("latin1") }] }; } });
+  t.after(() => r.dir.remove());
+  const path = await r.dir.file("notice.pdf", A);
+  const out = await readMedia(swappedMidRead(r.env, path, B), { path: "notice.pdf" }, r.call(), r.setup, r.kinds);
+  assert.deepEqual(readFileSync(path), B, "the file was replaced during the read");
+  assert.equal(sha(Buffer.from(text(out), "latin1")), out.details.media.sha256, "what the reader read is what the hash names");
+  assert.equal(out.details.media.sha256, sha(A));
+  assert.match(text(out), /first version$/);
+});
+
+test("a source too large to hold is read where it is: it keeps no derivation, and one that changed while it was read is an unreadable miss with no receipt", async (t) => {
+  const seen = [];
+  let touch = null;
+  const r = await rig({ video: async (request, context) => { seen.push({ path: request.source.path, data: request.data, deriveDir: context.deriveDir, tempDir: context.tempDir }); touch?.(); return { content: [{ type: "text", text: "frames" }] }; } });
+  t.after(() => r.dir.remove());
+  const path = await r.dir.file("long.mp4", "ftyp");
+  truncateSync(path, SOURCE_BYTES_IN_PROCESS + 1024);
+  const steady = await r.read({ path: "long.mp4" });
+  assert.equal(text(steady), "frames");
+  assert.match(steady.details.media.sha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual([seen[0].path, seen[0].data], ["long.mp4", undefined], "read in place, not copied");
+  assert.ok(seen[0].deriveDir.startsWith(`${seen[0].tempDir}/`), "its derivations go to the read's own directory, which is removed");
+  touch = () => appendFileSync(path, "more");
+  const moved = await r.read({ path: "long.mp4" });
+  assert.equal(moved.details.miss.code, "unreadable");
+  assert.match(text(moved), /^long\.mp4 could not be read: the file changed while it was read, so what was read is not one version of it; read it again\. The file is saved at long\.mp4\. The file is damaged or protected/);
+  assert.deepEqual([r.filed.length, r.misses.length, r.misses[0].receipt], [0, 1, null], "nothing is filed under a hash that names no one version");
 });

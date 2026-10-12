@@ -51,7 +51,7 @@ async function bytesOf(context: KindContext, path: string, size: number): Promis
 }
 
 const readImage: KindReader = async (request, context) => {
-  const bytes = await bytesOf(context, request.source.path, request.source.bytes);
+  const bytes = request.data ?? await bytesOf(context, request.source.path, request.source.bytes);
   if (!(bytes instanceof Uint8Array)) return bytes;
   const shown = await fitted(context, bytes, request.mimeType);
   if ("miss" in shown) return shown;

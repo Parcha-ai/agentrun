@@ -405,3 +405,19 @@ test("the eyes are told each image's caption line beside it, so they can say whi
   assert.deepEqual(eyes.ledger[0].parts.map((p) => p.type), ["text", "image", "text", "image"]);
   assert.deepEqual(eyes.ledger[0].parts.filter((p) => p.type === "text").map((p) => p.chars), ["PDF d.pdf, page 1 of 2, rendered at 150 dpi.".length, "PDF d.pdf, page 2 of 2, rendered at 150 dpi.".length], "the first line of each caption only");
 });
+
+test("a lead that takes no images does not hold a block to its own image limits: a page over them reaches the eyes inside theirs", async () => {
+  const capped = { ...resolveLimits(TEXT_ONLY), image: { ...resolveLimits(TEXT_ONLY).image, maxWidth: 1000, maxHeight: 1000 } };
+  assert.equal(capped.image.native, false);
+  const page = png(1275, 1650);
+  const h = host();
+  const eyes = fakeEyes({ answers: ["a letter"] });
+  const out = await guard(shot({ kind: "pdf", path: "scan.pdf", page: 1 }, [page]), h, { model: TEXT_ONLY, limits: capped, eyes });
+  assert.deepEqual(seen(eyes.ledger[0]).map((p) => [p.width, p.height]), [[1275, 1650]], "no processor is needed: the page is within the eyes' limits");
+  assert.match(texts(out)[1], /^\(image seen for you by fake-eyes/);
+  assert.deepEqual([h.misses.length, receiptFacts(h.filed[0].record).shown], [0, "1275x1650"]);
+  const narrow = fakeEyes({ limits: { ...DEFAULT_LIMITS, image: { ...DEFAULT_LIMITS.image, maxWidth: 1200, maxHeight: 1200 } } });
+  const withheld = await guard(shot({ kind: "pdf", path: "scan.pdf", page: 1 }, [page]), host(), { model: TEXT_ONLY, limits: capped, eyes: narrow });
+  assert.match(texts(withheld)[1], /^\(image withheld for this model and not described: it is 1275x1650 and \d+ base64 characters, over 1200x1200/, "the eyes' own limits still hold");
+  assert.equal(narrow.ledger.length, 0);
+});

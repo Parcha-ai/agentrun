@@ -4,6 +4,8 @@
 // spreadsheets read with nothing installed. Then the guard on a lead that takes no images gives the eyes' words for each
 // result that holds an image, one look per result.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import sharp from "sharp";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -14,7 +16,7 @@ import { pdfiumProvider } from "@parcha/pi-vision/providers/pdfium";
 import { popplerProvider } from "@parcha/pi-vision/providers/poppler";
 import { sharpImages } from "@parcha/pi-vision/providers/sharp";
 import { unpdfProvider } from "@parcha/pi-vision/providers/unpdf";
-import { docxBytes, fakeEyes, fixtureDir, letterPdf, mixedPdf, odtBytes, photoJpeg, pptxBytes, scanPdf, tallPng, textPdf, widePng, xlsxBytes } from "@parcha/pi-vision/testing";
+import { docxBytes, fakeEyes, fixtureDir, letterPdf, mixedPdf, odtBytes, pdfBytes, photoJpeg, pptxBytes, scanPdf, tallPng, textPdf, widePng, xlsxBytes } from "@parcha/pi-vision/testing";
 
 const images = sharpImages(sharp);
 /** The providers a host passes: a program first where one serves the same job, the zero-install one after it. */
@@ -178,4 +180,26 @@ test("a lead that takes video gets a file within the inline budget as it is, wit
   assert.deepEqual(blocks(out).map((b) => b.mimeType), ["video/mp4"]);
   assert.match(text(out), /^Video file small\.mp4 \(\d+ bytes\), sent as it is/);
   assert.equal(detected, 0);
+});
+
+test("a PDF replaced while it is read: the text, the hash and the kept derivation are all of the bytes first read, and a later read of those bytes is not answered with the other's", async (t) => {
+  const r = await rig();
+  t.after(() => r.dir.remove());
+  const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const A = pdfBytes([{ lines: ["Invented notice for a test", "Reference number 4471"] }]);
+  const B = pdfBytes([{ lines: ["A second invented notice", "Reference number 9026"] }]);
+  const path = await r.dir.file("notice.pdf", A);
+  // The file becomes B once the read has taken the source and before any provider runs.
+  let swapped = false;
+  const racing = Object.assign(Object.create(Object.getPrototypeOf(r.env)), r.env, { createTempDir: async (...args) => { if (!swapped) { swapped = true; writeFileSync(path, B); } return r.env.createTempDir(...args); } });
+  const first = await readMedia(racing, { path: "notice.pdf" }, r.call, r.setup);
+  assert.deepEqual(readFileSync(path), Buffer.from(B), "the file was replaced during the read");
+  assert.equal(first.details.media.sha256, sha(A));
+  assert.ok(text(first).includes("4471") && !text(first).includes("9026"), "the text is of the bytes the hash names");
+  const kept = readdirSync(r.setup.scope.deriveDir);
+  assert.ok(kept.length > 0 && kept.every((name) => name.startsWith(sha(A).slice(0, 16))), kept.join(", "));
+  assert.ok(kept.every((name) => !readFileSync(`${r.setup.scope.deriveDir}/${name}`, "utf8").includes("9026")), "nothing kept under the first hash holds the other's text");
+  writeFileSync(path, A);
+  const again = await r.read({ path: "notice.pdf" });
+  assert.ok(text(again).includes("4471") && !text(again).includes("9026"));
 });
