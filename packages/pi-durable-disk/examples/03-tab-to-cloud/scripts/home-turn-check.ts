@@ -1,9 +1,9 @@
 // The run goes to a second process and comes home, in real Chrome, over a slow link: the server's own home turn (sent about 15 ms after the page says `switched`) must reach the page's conversation. On a
 // slow link, or a loaded laptop, the page was not yet the writer when it arrived and dropped it: no home turn, a 60 s wait, then the user's lines behind it (Miguel's practice run, five homes of five).
-//   [DELAY_MS=60 one-way latency between the page and the server] [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/home-turn-check.ts
+//   [DELAY_MS=0 one-way latency between the page and the server: 0 reproduces it; a delay slows the whole run and the line below may not leave the page on a loaded box (D4's 80 ms repro covers that)] [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/home-turn-check.ts
 import { spawn } from "node:child_process";
 import net, { createServer as createNetServer } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Cdp } from "./cdp.ts";
@@ -14,7 +14,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const shots = process.env.SHOTS ?? "/tmp";
 let failed = 0;
 const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass ? "ok  " : "FAIL"} ${name}${pass ? "" : `  got: ${JSON.stringify(got)}`}`); if (!pass) failed++; };
-const DELAY = Number(process.env.DELAY_MS ?? 60);
+const DELAY = Number(process.env.DELAY_MS ?? 0);
 /** A TCP proxy that adds one-way latency in both directions, order kept: a stand-in for a tunnel to a laptop. */
 function delayProxy(listen: number, target: number, oneWay: number): net.Server {
   const pipe = (from: net.Socket, to: net.Socket) => {
@@ -73,7 +73,7 @@ try {
   stub = await responsesStub("Understood.");
   const port = await freePort(), proxyPort = await freePort();
   const RUN = "home";
-  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", stub.url, "--grace-ms", "3000", "--cloud", "remote-local", "--placer-module", join(import.meta.dirname, "_home-placer.ts")], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
+  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", stub.url, "--grace-ms", "3000", "--log", join(dir, "server.log"), "--cloud", "remote-local", "--placer-module", join(import.meta.dirname, "_home-placer.ts")], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
   let link = "";
   server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
   for (let i = 0; i < 100 && !link; i++) await sleep(100);
@@ -91,6 +91,7 @@ try {
   await say("please work on this in the second process");
   await page.until("demo.state.mode !== 'writer'", 150_000, 200).catch(() => undefined);
   const away = await ev<string>("demo.state.mode");
+  if (away === "writer") console.log(`  never left: ${JSON.stringify(await ev("({ items: demo.items().slice(-3), banner: demo.state.banner, net: demo.net(), placed: demo.state.placed })")).slice(0, 600)}`);
   console.log(`  the run left the page: mode ${away}`);
   // home again: the page is the writer once more, and the server's home turn arrives
   await page.until("demo.state.mode === 'writer'", 120_000, 200);
@@ -118,6 +119,7 @@ try {
   failed++;
   if (page) console.log(JSON.stringify(await page.evaluate("(async () => globalThis.demo ? ({ mode: demo.state.mode, banner: demo.state.banner, items: demo.items().slice(-4), spy: window.__spy }) : null)()").catch(() => null)).slice(0, 1500));
 } finally {
+  if (process.env.SERVER_LOG === "1") { try { console.log(readFileSync(join(dir, "server.log"), "utf8").split("\n").filter((l) => /placement|switch|submit|home|cloud/.test(l)).slice(0, 30).map((l) => l.slice(0, 220)).join("\n")); } catch { /* none */ } }
   await device?.close().catch(() => undefined);
   cdp?.close();
   server?.kill("SIGKILL");
