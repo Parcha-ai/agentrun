@@ -525,7 +525,7 @@ test("v5: the tools are the ones its system text lists, in its order; over the r
   const offered = toNativeTools(registry.snapshot().tools().map((r) => ({ name: r.tool.name, description: r.tool.description, parameters: r.tool.parameters })));
   const shown = signatureView(offered, names);
   assert.deepEqual(shown.map((t) => t.function.name), names, "the conversation's tools the prefix names, nothing else (no update_robot, no shell)");
-  assert.equal(lockGrammar(shown), readFileSync(fixture("robot-v5-lock.gbnf"), "utf8"), "D1's v5 lock, byte for byte");
+  assert.equal(lockGrammar(shown), (JSON.parse(readFileSync(fixture("robot-v5-lock.json"), "utf8")) as { grammar: string }).grammar, "D1's v5 lock, byte for byte");
 });
 
 test("a T7 turn reads its earlier exchanges on their own first, so the next turn (one exchange more) resumes there: no restore, no system turn read again", async () => {
