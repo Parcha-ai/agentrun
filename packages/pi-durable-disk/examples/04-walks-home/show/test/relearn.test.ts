@@ -83,3 +83,38 @@ test("the card says it in plain words, from the numbers: GPUs, all passed in N s
   const noCpu = relearnHtml(relearnSummary(threadsFor(8, () => ({ cpu_estimate_s: null, cpu_estimate: null })), HOME)!);
   assert.doesNotMatch(noCpu, /one machine/);
 });
+
+// ---- Review: a skill retrained for another body starts over, and the single-machine comparison needs one machine named by every skill.
+test("a completed skill retrained for another body starts over: its old passes, times, status and checkpoints are not the new body's", async () => {
+  const { SkillsPoller } = await import("../page/skills-poller.ts");
+  const files = new Map<string, string>();
+  const emitted: ShowEvent[] = [];
+  const poller = new SkillsPoller({ read: async (p) => files.get(p), emit: (e) => emitted.push(e), now: () => 1, skills: ["walk"] });
+  const A = "aaaaaaaaaaaaaaaa";
+  files.set("skills/walk/skill.json", sj("walk", { mjcf_sha256: A, status: "done", wall_s: 51.4, passed_at: { checkpoint: 5, steps: 1, t: 36.3, passes: true } }));
+  files.set("skills/walk/skill-progress.jsonl", [1, 2, 3, 4, 5].map((n) => JSON.stringify({ checkpoint: n, t: n * 7, passes: n >= 5, metric: { name: "speed", value: n * 0.1, unit: "m/s", target: ">= 0.4" } })).join("\n") + "\n");
+  await poller.tick();
+  // The trainer reruns the skill for the spider body in the same folder: a fresh skill.json (training, no times) and a fresh progress file.
+  files.set("skills/walk/skill.json", JSON.stringify({ skill: "walk", label: "walk", status: "training", mjcf_sha256: SPIDER, body_name: "spider", started_at: 1791780900 }));
+  files.set("skills/walk/skill-progress.jsonl", JSON.stringify({ checkpoint: 1, t: 8, passes: false, metric: { name: "speed", value: 0.05, unit: "m/s", target: ">= 0.4" } }) + "\n");
+  await poller.tick();
+  const s = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [] }, ...emitted]);
+  const t = s.threads[0]!;
+  assert.deepEqual([t.mjcf, t.status, t.passedS, t.wallS, t.cpuS, t.points.map((p) => p.n)], [SPIDER, "learning", null, null, null, [1]], "nothing of the old body is left");
+  const r = relearnSummary(s.threads, A)!;
+  assert.deepEqual([r.done, r.passed, r.homeS, r.passedS], [false, 0, null, null], "the card does not claim the new body is learned");
+  assert.doesNotMatch(relearnHtml(r), /All home/);
+});
+
+test("the single-machine comparison needs every skill to name the same machine: a missing or different label shows no CPU total", () => {
+  const same = threadsFor(3);
+  assert.equal(relearnSummary(same, HOME)!.cpuCores, "8 Xeon Gold 6312U");
+  const missing = threadsFor(3, (i) => ({ cpu_estimate: i === 1 ? null : { cores: "8 Xeon Gold 6312U" } }));
+  const m = relearnSummary(missing, HOME)!;
+  assert.deepEqual([m.cpuS, m.cpuCores], [null, null], "one skill names no machine");
+  assert.doesNotMatch(relearnHtml(m), /one machine/);
+  const different = threadsFor(3, (i) => ({ cpu_estimate: { cores: i === 2 ? "16 EPYC cores" : "8 Xeon Gold 6312U" } }));
+  const d = relearnSummary(different, HOME)!;
+  assert.deepEqual([d.cpuS, d.cpuCores], [null, null], "two machines: the total is not one machine's time");
+  assert.doesNotMatch(relearnHtml(d), /one machine/);
+});

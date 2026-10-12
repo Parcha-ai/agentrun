@@ -14,7 +14,7 @@ export type SkillsPollerOptions = {
 
 export class SkillsPoller {
   private readonly o: SkillsPollerOptions;
-  private last = new Map<string, { n: number; json: string; status: Thread["status"] | undefined }>();
+  private last = new Map<string, { n: number; json: string; status: Thread["status"] | undefined; mjcf: string | null }>();
   private busy = false;
   /** The robot's body last said. */
   private body = "";
@@ -50,8 +50,11 @@ export class SkillsPoller {
       for (const dir of this.o.skills ?? SKILLS) {
         const [jsonText, progressText] = [await this.o.read(`skills/${dir}/skill.json`).catch(() => undefined), await this.o.read(`skills/${dir}/skill-progress.jsonl`).catch(() => undefined)];
         if (gen !== this.gen) return;
-        const seen = this.last.get(dir) ?? { n: 0, json: "", status: undefined };
         const json = jsonText !== undefined ? parseSkillJson(jsonText) : null;
+        const prev = this.last.get(dir) ?? { n: 0, json: "", status: undefined, mjcf: null };
+        // The skill was retrained for another body (a fresh skill.json in the same folder): what was said about the old body is not true of this one.
+        const retrained = json !== null && json.mjcfSha256 !== null && prev.mjcf !== null && json.mjcfSha256 !== prev.mjcf;
+        const seen = retrained ? { n: 0, json: "", status: undefined, mjcf: null } : prev;
         const points = progressText !== undefined ? parseSkillProgress(progressText).points : [];
         // The status is said when skill.json changed (a read that failed is not a change); checkpoints are said once each; a status only moves forward.
         const changed = jsonText !== undefined && jsonText !== seen.json;
@@ -61,7 +64,7 @@ export class SkillsPoller {
           if (e.t === "thread" && e.patch.status) status = e.patch.status;
           this.o.emit(e);
         }
-        this.last.set(dir, { n: Math.max(seen.n, ...points.map((p) => p.checkpoint)), json: jsonText ?? seen.json, status });
+        this.last.set(dir, { n: Math.max(seen.n, ...points.map((p) => p.checkpoint)), json: jsonText ?? seen.json, status, mjcf: json?.mjcfSha256 ?? seen.mjcf });
       }
     } finally {
       if (gen === this.gen) this.busy = false;

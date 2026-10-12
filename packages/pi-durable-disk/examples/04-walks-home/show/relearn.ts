@@ -44,7 +44,9 @@ export function relearnSummary(threads: readonly Thread[], homeBody: string | nu
   const ts = withBody.filter((t) => t.mjcf === body);
   const passedAll = ts.every((t) => t.passedS !== null);
   const done = ts.every((t) => t.status === "done");
-  const cpuAll = ts.every((t) => t.cpuS !== null);
+  // One machine's time needs every skill to name that same machine: a missing or different label shows no total (the sum would not be that machine's).
+  const cores = ts.length > 0 && ts.every((t) => t.cpuCores !== null && t.cpuCores === ts[0]!.cpuCores) ? ts[0]!.cpuCores : null;
+  const cpuAll = cores !== null && ts.every((t) => t.cpuS !== null);
   return {
     bodyName: ts.find((t) => t.bodyName !== null)?.bodyName ?? null,
     gpus: ts.length,
@@ -53,7 +55,7 @@ export function relearnSummary(threads: readonly Thread[], homeBody: string | nu
     done,
     homeS: done && ts.every((t) => t.wallS !== null) ? Math.max(...ts.map((t) => t.wallS!)) : null,
     cpuS: cpuAll ? ts.reduce((a, t) => a + t.cpuS!, 0) : null,
-    cpuCores: ts.find((t) => t.cpuCores !== null)?.cpuCores ?? null,
+    cpuCores: cpuAll ? cores : null,
     relearning: homeBody !== null && body !== homeBody,
   };
 }
