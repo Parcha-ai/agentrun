@@ -16,6 +16,25 @@ const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Whether a pi-run command tagged `${tag}-${suffix}` has processes on this host. */
 const running = (tag: string, suffix: string) => spawnSync("pgrep", ["-f", `${tag}-${suffix}`]).stdout.toString().trim() !== "";
+/** A rerun of a key stops the previous run of that key (its whole process group) and leaves another key's run alone. */
+async function rerunStopsOnlyItsKey(box: RemoteBox, root: string): Promise<void> {
+  const piRun = join(root, "bin", "pi-run");
+  await installPiRun(box, piRun);
+  const env = new RemoteEnv({ box, root });
+  const tag = `pda-pirun-${process.pid}-${Date.now()}`;
+  const first = env.exec(`${piRun} walk -- sh -c 'sleep 30 & sleep 30; wait' ${tag}-walk`, {}, context);
+  const other = env.exec(`${piRun} spin -- sh -c 'sleep 30' ${tag}-spin`, {}, context);
+  await waitFor(() => running(tag, "walk") && running(tag, "spin"), 20_000, "both runs to start");
+  const second = await env.exec(`${piRun} walk -- echo second`, {}, context);
+  assert.equal(second.ok && second.value.exitCode, 0);
+  const r1 = await first;
+  assert.ok(r1.ok && r1.value.exitCode !== 0, "the first run was stopped");
+  await waitFor(() => !running(tag, "walk"), 20_000, "nothing of the first run to be left");
+  assert.equal(running(tag, "spin"), true, "the other key still runs");
+  await env.exec(`${piRun} spin -- true`, {}, context);
+  await other;
+}
+
 /**
  * Two pi-run starts of one key at once leave exactly one running. Events, not a clock: the start that takes the lock second
  * stops the other's process group (polling every 0.5 s) and only then starts its own command, which on a loaded host can be
@@ -380,25 +399,14 @@ describe("remoteEnvs: the Harness's env for threads with boxes", () => {
 
 describe("pi-run: one run per key on a box", () => {
   it("a rerun of the same key stops the previous run's whole process group first; another key is left alone", async () => {
-    await withRoot(async (root) => {
-      const box = localBox();
-      const piRun = join(root, "bin", "pi-run");
-      await installPiRun(box, piRun);
-      const env = new RemoteEnv({ box, root });
-      const tag = `pda-pirun-${process.pid}-${Date.now()}`;
-      const first = env.exec(`${piRun} walk -- sh -c 'sleep 30 & sleep 30; wait' ${tag}-walk`, {}, context);
-      const other = env.exec(`${piRun} spin -- sh -c 'sleep 30' ${tag}-spin`, {}, context);
-      await sleep(800);
-      const second = await env.exec(`${piRun} walk -- echo second`, {}, context);
-      assert.equal(second.ok && second.value.exitCode, 0);
-      const r1 = await first;
-      assert.ok(r1.ok && r1.value.exitCode !== 0, "the first run was stopped");
-      await sleep(300);
-      assert.equal(spawnSync("pgrep", ["-f", `${tag}-walk`]).stdout.toString().trim(), "", "nothing of the first run is left");
-      assert.notEqual(spawnSync("pgrep", ["-f", `${tag}-spin`]).stdout.toString().trim(), "", "the other key still runs");
-      await env.exec(`${piRun} spin -- true`, {}, context);
-      await other;
-    });
+    await withRoot((root) => rerunStopsOnlyItsKey(localBox(), root));
+  });
+
+  it("a rerun stops only its key on a box that is slow to start the other key's command", async () => {
+    // Events, not a clock: the other key's command can come up seconds after it was started on a loaded host.
+    const fast = localBox("sb-slow-spin");
+    const slow: RemoteBox = { sandboxId: fast.sandboxId, poll: () => fast.poll(), exec: async (c, p) => { if (c.join(" ").includes(" spin ")) await sleep(3_000); return fast.exec(c, p); } };
+    await withRoot((root) => rerunStopsOnlyItsKey(slow, root));
   });
 });
 
