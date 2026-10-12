@@ -67,6 +67,20 @@ test("grep hits: path, line and the matching text of each line; lines that are n
   assert.deepEqual(grepHits(""), []);
 });
 
+import { tailLines } from "../tab/chat-lines.ts";
+
+// A long output (training logs) shows its last lines and says how many came before, until it is opened in full.
+test("the tail of a long output: the last lines, and how many were left out; a short output is whole", () => {
+  const log = Array.from({ length: 30 }, (_, i) => `step ${i + 1}`).join("\n");
+  const t = tailLines(log, 8);
+  assert.equal(t.text, Array.from({ length: 8 }, (_, i) => `step ${i + 23}`).join("\n"));
+  assert.equal(t.hidden, 22);
+  assert.deepEqual(tailLines("a\nb\nc", 8), { text: "a\nb\nc", hidden: 0 });
+  assert.deepEqual(tailLines("a\nb\nc\n", 8), { text: "a\nb\nc", hidden: 0 }, "a trailing newline is not a line");
+  assert.deepEqual(tailLines("", 8), { text: "", hidden: 0 });
+  assert.equal(tailLines("x\n\n\ny", 2).text, "\ny", "blank lines inside count as lines");
+});
+
 import { WriteMemory } from "../tab/write-memory.ts";
 import { hasBody } from "../tab/tool-body.ts";
 import { Latest } from "../tab/latest.ts";

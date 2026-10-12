@@ -8,12 +8,13 @@ import type { ModelProxy } from "./model-proxy.ts";
 type Frame =
   | { t: "model"; id: number; path: string; body: Record<string, unknown> }
   | { t: "model-abort"; id: number }
-  | { t: "event"; kind: "snapshot" | "events"; data: unknown }
+  | { t: "event"; kind: "snapshot" | "events" | "thread"; data: unknown }
   | { t: "switch"; to: string; reason?: string; ask: string }
   | { t: "switched"; switchId: string }
   | GpuFrame;
 
-export type LinkEvent = { kind: "snapshot" | "events"; data: unknown };
+/** `thread`: one teaching thread's own conversation (tab/threads.ts ThreadMsg), relayed by the host beside the root's events. */
+export type LinkEvent = { kind: "snapshot" | "events" | "thread"; data: unknown };
 
 export interface LinkDialer {
   /** Receive the run's agent events (a fresh snapshot first); returns the unsubscribe. */

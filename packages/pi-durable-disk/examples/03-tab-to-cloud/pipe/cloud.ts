@@ -134,7 +134,7 @@ export async function relayViewer(opts: {
           const stream = (streaming = new AbortController());
           abort.signal.addEventListener("abort", () => stream.abort(), { once: true });
           if (dialer) {
-            const off = dialer.subscribe((e) => send({ t: "event", event: tag(e.kind === "snapshot" ? { kind: "snapshot", event: e.data } : { kind: "events", events: e.data }) }));
+            const off = dialer.subscribe((e) => send({ t: "event", event: tag(e.kind === "snapshot" ? { kind: "snapshot", event: e.data } : e.kind === "thread" ? e.data : { kind: "events", events: e.data }) }));
             stream.signal.addEventListener("abort", off, { once: true });
           } else {
             void sse(

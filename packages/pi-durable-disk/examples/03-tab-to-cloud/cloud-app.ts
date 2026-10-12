@@ -78,7 +78,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       note("open");
       opened.harness.subscribeCommits((publication) => note("commit", { seq: publication.seq }));
       const root = await opened.harness.root(ctx, { agent: rootAgent(modelId) });
-      link?.attach(opened.harness, root.id);
+      link?.attach(opened.harness, root.id, extra.threadsOf);
     },
   };
 }

@@ -14,6 +14,7 @@ import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, toolBody } from "./tool-body.ts";
 import { WriteMemory } from "./write-memory.ts";
 import { Latest } from "./latest.ts";
+import { ACTIVE, ThreadSet, type ThreadMsg } from "./threads.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
@@ -244,6 +245,9 @@ function announceTools(items: readonly ChatItem[]): void {
   announce("tools", { tools });
 }
 
+/** The teaching threads (child conversations on their own GPUs): relayed to this page by the host that runs the agent (thread-relay.ts), drawn inside the teach_skills call. */
+const teachThreads = new ThreadSet();
+
 /** The tool results the reader has open, by the call's id: the chat is redrawn on every agent event, and a result being read must not close under them. */
 const openTools = new Set<string>();
 
@@ -260,8 +264,38 @@ function renderChat(): void {
 
 /** The body of each tool call as last drawn, by call id: redrawing the chat on every agent event reuses it unless the call changed (a diff is not drawn again for nothing). */
 const bodies = new Map<string, { signature: string; body: HTMLElement | null }>();
+/** The commands whose whole output the reader asked for (the rest show their last lines). */
+const fullOutput = new Set<string>();
 /** A file's text as it was just before a write replaced it, by the write's call id (the diff is against this; a write to a new file has none). */
 const writeBefore = new Map<string, string>();
+
+/** The teaching threads inside the teach_skills call: one row per thread (its GPU, its name, where it is), each opening to that thread's own tool calls, drawn with the same lines and bodies as the root's. */
+function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, showOutput: boolean): HTMLElement {
+  const wrap = el("div", { class: "tool-body threads" });
+  for (const t of teachThreads.list()) {
+    const key = `thread:${t.conversation}`;
+    const items = t.chat.items();
+    // The thread's conversation was forked from the agent's, so it begins with what the agent had; the thread's own work starts at its brief (its last user message).
+    const from = Math.max(0, items.map((i) => i.kind).lastIndexOf("user"));
+    const mine = items.slice(from);
+    const echoed = echoedTools(mine);
+    const dot = ACTIVE.has(t.status) ? "dot act run" : t.status === "passed" || t.status === "reported" ? "dot done" : "dot";
+    const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "gpu" }, t.gpu === null ? "GPU" : `GPU ${t.gpu}`), el("span", { class: "name" }, t.name), el("span", { class: "args" }, ACTIVE.has(t.status) ? `${t.status === "queued" ? "waiting for a GPU, " : ""}${mine.filter((i) => i.kind === "tool").length} calls` : t.status));
+    const row = el("details", { class: `thread ${t.status}` }, summary) as HTMLDetailsElement;
+    const draw = () => row.append(el("div", { class: "thread-chat" }, ...mine.map((i) => (i.kind === "user" ? el("div", { class: "brief" }, i.text) : renderItem(i, echoed, `t${t.conversation}:`)))));
+    if (openTools.has(key)) draw();
+    row.open = openTools.has(key);
+    row.addEventListener("toggle", () => {
+      if (row.open) {
+        openTools.add(key);
+        if (!row.querySelector(".thread-chat")) draw();
+      } else openTools.delete(key);
+    });
+    wrap.append(row);
+  }
+  if (showOutput && item.output) wrap.append(el("pre", { class: "out" }, item.output.slice(-3000)));
+  return wrap;
+}
 
 function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), scope = ""): HTMLElement {
   switch (item.kind) {
@@ -280,13 +314,14 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       const dot = item.status === "running" ? "dot act run" : item.status === "done" && !isMuted(item) ? "dot done" : "dot";
       const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)));
       const showOutput = !echoed.has(item.id);
-      const has = hasBody(item, { showOutput });
+      const teach = item.name === "teach_skills" && teachThreads.list().length > 0;
+      const has = teach || hasBody(item, { showOutput });
       const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${has ? "" : " bare"}` }, summary) as HTMLDetailsElement;
       const fill = () => {
         const before = writeBefore.get(key);
-        const signature = JSON.stringify([item.name, item.args, item.status, item.output, showOutput, before ?? null]);
+        const signature = JSON.stringify([item.name, item.args, item.status, item.output, showOutput, before ?? null, teach ? teachThreads.version : 0]);
         const cached = bodies.get(key);
-        const body = cached && cached.signature === signature ? cached.body : toolBody(item, { showOutput, before });
+        const body = cached && cached.signature === signature ? cached.body : teach ? threadsBody(item, showOutput) : toolBody(item, { showOutput, before, expanded: fullOutput.has(key), onToggle: (all) => (all ? fullOutput.add(key) : fullOutput.delete(key)) });
         if (!cached || cached.signature !== signature) bodies.set(key, { signature, body });
         if (body !== null && body.parentElement !== node) node.append(body);
       };
@@ -1377,7 +1412,7 @@ async function checkIn(): Promise<void> {
     if (!baseline) throw new Error("this browser has no record of what the workspace held at checkout, so it cannot say what changed");
     const changes = await diffWorkspace(baseline, off.computer.booted ? ((await runtime.workspace.scan()) as Snapshot) : await savedSnapshot());
     say("closing this browser's copy of the run");
-    state.runtime = undefined;
+  state.runtime = undefined;
     state.active = undefined;
     await followed?.stop().catch(() => undefined);
     followed = undefined;
@@ -1553,7 +1588,11 @@ function installCloud(runtime: TabRuntime | undefined): void {
 // ---- watching ----------------------------------------------------------------------------------------------------------
 
 function applyView(event: Tagged): void {
-  const view = untag(event) as ViewEvent;
+  const view = untag(event) as ViewEvent | ThreadMsg;
+  if (view.kind === "thread") {
+    teachThreads.apply(view);
+    return;
+  }
   if (view.kind === "snapshot") {
     state.chat = new ChatView();
     state.chat.apply(view.event);
@@ -1644,7 +1683,7 @@ async function drain(switchId: string): Promise<void> {
     state.left = { switchId, digest: await runtime.workspace.baselineDigest(), step: how };
     state.progress = how === "idle" ? "the agent was idle; handing over" : how === "step" ? "step finished; handing over" : "step still running; handing over (the next host resumes it)";
     render();
-    state.runtime = undefined;
+  state.runtime = undefined;
     state.active = undefined;
     const brain = state.brain;
     state.brain = undefined;
@@ -1926,6 +1965,8 @@ void (phoneMode ? startPhone() : boot());
   renderChat: () => renderChat(),
   /** Open a workspace file in the panel, as a click on the tree does. */
   select: (path: string) => select(path),
+  /** A teaching thread's message, as the host relays it (checks fold one in). */
+  thread: (msg: ThreadMsg) => { teachThreads.apply(msg); renderChat(); },
   files: () => state.files.map((f) => f.path),
   /** What the pipe acknowledged last, as `workspaceDigest`; null when this tab does not run the agent. */
   ackedDigest: () => state.runtime?.workspace.baselineDigest() ?? null,

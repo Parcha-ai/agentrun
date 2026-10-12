@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ArtifactSync, installPiRun, remoteEnvs, type RemoteBox } from "@parcha/pi-durable-disk";
 import type { AppExtra, AppExtraContext } from "../../03-tab-to-cloud/app-extra.ts";
-import { RobotBox, teachSkills, type ThreadBoxes, type ThreadResult } from "../cluster/teach-skills.ts";
+import { RobotBox, teachSkills, threadsOf, type ThreadBoxes, type ThreadResult } from "../cluster/teach-skills.ts";
 
 /** D2's assemble-skills (node alone): the skills the threads trained into the page's format, home/skills.json last. In the box's bundle it sits at robot/policy/. */
 export const ASSEMBLE_SCRIPT = fileURLToPath(new URL("../policy/assemble-skills.ts", import.meta.url));
@@ -160,6 +160,8 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
     },
     // `teach` is the session's own; `thread` is only for the forks (train_skill), which select it themselves.
     settings: { extensions: [teach] },
+    // The link relays each teaching thread's own conversation to viewers (the pipe carries only the root's): the cluster's typed listing, as it is.
+    threadsOf: (harness, context) => threadsOf(harness, context),
     wrapEnv: (env) =>
       Object.assign(
         remoteEnvs(

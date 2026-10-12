@@ -87,3 +87,10 @@ export function grepHits(output: string): Hit[] {
     return m ? { path: m[1]!, line: Number(m[2]), text: m[3]! } : { path: null, line: null, text: l };
   });
 }
+
+/** The last `n` lines of an output, and how many lines came before them (a trailing newline is not a line). */
+export function tailLines(output: string, n: number): { text: string; hidden: number } {
+  const lines = output.replace(/\n$/, "").split("\n");
+  if (output === "" || lines.length <= n) return { text: output === "" ? "" : lines.join("\n"), hidden: 0 };
+  return { text: lines.slice(-n).join("\n"), hidden: lines.length - n };
+}
