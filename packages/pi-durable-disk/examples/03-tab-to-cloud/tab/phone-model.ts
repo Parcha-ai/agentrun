@@ -30,6 +30,8 @@ export class PhoneModel implements BrainModel {
   private readonly llm: Llm;
   /** Where the model's first part is (its other parts and its manifest sit beside it). */
   get url(): string { return this.o.url; }
+  /** The tools the grammar holds, narrowed from the ones the prompt shows (the page sets it: do's skills to the ones home). */
+  lock: ((tools: ToolChatTool[]) => ToolChatTool[]) | undefined;
   /** Told when a turn starts (the page shows it as thinking). */
   onTurnStart: (() => void) | undefined;
   private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; loadTimeoutMs?: number; /** A turn that has not answered in this long fails, by name (default 180 s). */ turnTimeoutMs?: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
@@ -41,6 +43,7 @@ export class PhoneModel implements BrainModel {
     const locked = lockedToolChat(
       { template: () => llm.chatTemplate!(), complete: (req: RawRequest, signal: AbortSignal): Promise<RawResult> => llm.complete!(req, { signal, sampling: GREEDY }) },
       (t) => { const turn: PhoneTurn = { at: Date.now(), ms: Math.round(t.result.ms), promptTokens: t.result.promptTokens, outputTokens: t.result.outputTokens, grammar: t.grammar, calls: t.result.toolCalls.map((c) => `${c.name}(${c.arguments})`), text: t.result.text, raw: t.raw, prompt: t.prompt, ...(t.timings ? { timings: t.timings } : {}) }; this.turns.push(turn); this.onTurn?.(turn); },
+      (tools) => (this.lock ? this.lock(tools) : tools),
     );
     // A turn never hangs silently: past its time it is stopped and fails by name, and the conversation says so (a turn that vanished is what an iPhone showed).
     this.toolChat = (req, signal) => this.serial(async () => {

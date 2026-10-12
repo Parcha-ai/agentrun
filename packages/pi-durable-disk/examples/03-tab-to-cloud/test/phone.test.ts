@@ -292,3 +292,21 @@ test("the phone's files go into the offline cache under their paths; one already
     g.location = before.location;
   }
 });
+
+test("D1's lock rule: the prompt shows do with every skill, the grammar only the skills home, and no do at all when none is", async () => {
+  const { narrowEnum } = await import("../tab/native-turn.ts");
+  const seen: RawRequest[] = [];
+  const run = async (home: string[]) => {
+    const chat = lockedToolChat({ template: () => template, complete: async (req) => { seen.push(req); return { text: "Hi.", stoppedBy: "eog", promptTokens: 1, outputTokens: 1, ms: 1 }; } }, undefined,
+      (shown) => shown.flatMap((t) => (t.function.name !== "do" ? [t] : home.length > 0 ? narrowEnum([t], "skill", home) : [])));
+    await chat({ messages: rendered[0]!.messages, tools: serving.tools, maxTokens: 50 });
+    return seen.at(-1)!;
+  };
+  const none = await run([]);
+  assert.equal(none.prompt, rendered[0]!.prompt, "the prompt is unchanged: the warm state holds");
+  assert.doesNotMatch(none.grammar!, /function=do>/, "no skill home: do is not in the grammar");
+  const two = await run(["walk", "spin"]);
+  assert.equal(two.prompt, rendered[0]!.prompt);
+  assert.match(two.grammar!, /do-skill ::= "walk" \| "spin"/);
+  assert.doesNotMatch(two.grammar!, /"sprint"/);
+});

@@ -1009,6 +1009,9 @@ async function savePhoneForOffline(modelFiles: string[]): Promise<void> {
 /** Set once the phone's brain is ready: starts a fresh conversation (the New chat button). */
 let phoneNewChat: (() => Promise<void>) | undefined;
 
+/** The skills home, as the last state line read them (the lock narrows do to them). */
+let phoneSkillsHome: string[] = [];
+
 /** The robot's state line (robot-state-line.ts) from its file and the skills that came home, as the window shows it before the user's turn. */
 async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> {
   const robot = await currentRobot(runtime.env as never, ctx);
@@ -1016,7 +1019,8 @@ async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> 
   const manifest = await runtime.env.readTextFile(SKILLS_FILE, ctx);
   let defaultSkill: string | undefined;
   try { if (manifest.ok) defaultSkill = (JSON.parse(manifest.value) as { default?: unknown }).default as string | undefined; } catch { /* no default named */ }
-  return stateLine(robot, Object.keys(await loadSkills(runtime.env as never, ctx)), typeof defaultSkill === "string" ? defaultSkill : undefined);
+  phoneSkillsHome = Object.keys(await loadSkills(runtime.env as never, ctx));
+  return stateLine(robot, phoneSkillsHome, typeof defaultSkill === "string" ? defaultSkill : undefined);
 }
 
 async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
@@ -1134,6 +1138,8 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   await runtime.harness.resume();
   phoneReport("ready", { ...marks, restored: warm.restored ? warm.restored.tokens : 0, compat: !("Suspending" in WebAssembly) || undefined, threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4), reads: partReads.count, largestRead: partReads.largest });
   model.onTurn = (t) => phoneReport("turn", { ms: t.ms, promptNew: t.timings?.prompt_n ?? null, promptTotal: t.promptTokens, out: t.outputTokens, calls: t.calls.map((c) => c.split("(")[0]), text: t.text.slice(0, 160), raw: t.calls.length ? undefined : t.raw.slice(0, 160) });
+  // D1's lock rule: the prompt shows do with every skill (the warm state holds), the grammar only the skills home, and no do at all when none is
+  model.lock = (shown) => shown.flatMap((t) => (t.function.name !== "do" ? [t] : phoneSkillsHome.length > 0 ? narrowEnum([t], "skill", phoneSkillsHome) : []));
   model.onTurnStart = () => { state.phone!.turnStarted = performance.now(); phoneReport("turn-start", {}); };
   phoneSay("", `brain ready: loaded in ${(marks.loadMs / 1000).toFixed(1)} s, tools read in ${(marks.warmMs / 1000).toFixed(1)} s (${warm.promptTokens} tokens)`);
   ($("input") as HTMLTextAreaElement).placeholder = "Tell the robot what to do: paint it red, make it a spider, spin…";

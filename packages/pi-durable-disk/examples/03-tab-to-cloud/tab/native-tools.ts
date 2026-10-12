@@ -100,16 +100,21 @@ export function parseNative(text: string, tools: readonly ToolChatTool[]): { cal
  * A `toolChat` (ToolChatRequest in, ToolChatResult out) over a model's raw completion and its own template, locked: the shape the native provider calls. With no
  * tools the turn is a plain answer under the template, no grammar. `onTurn` sees the prompt and the raw reply (for the page's stats and the checks).
  */
-export function lockedToolChat(model: { template(): string | null; complete(req: RawRequest, signal: AbortSignal): Promise<RawResult> }, onTurn?: (t: { prompt: string; raw: string; grammar: boolean; result: ToolChatResult; timings?: Record<string, number> }) => void) {
+/**
+ * `lock`: the tools the grammar holds, when they differ from the tools the prompt shows (D1's rule: the prompt keeps the full tools, so a warm state made for it
+ * holds, while the grammar is built over the narrowed ones: do's skills cut to the ones that came home, do dropped when none has).
+ */
+export function lockedToolChat(model: { template(): string | null; complete(req: RawRequest, signal: AbortSignal): Promise<RawResult> }, onTurn?: (t: { prompt: string; raw: string; grammar: boolean; result: ToolChatResult; timings?: Record<string, number> }) => void, lock?: (tools: ToolChatTool[]) => ToolChatTool[]) {
   return async (req: ToolChatRequest, signal?: AbortSignal): Promise<ToolChatResult> => {
     const template = model.template();
     if (!template) throw new Error("this model has no chat template of its own: a native tool turn needs one");
     const tools = req.toolChoice === "none" ? [] : req.tools;
     const prompt = renderNative(template, req.messages, tools, req.templateKwargs ?? { enable_thinking: false });
-    const grammar = tools.length > 0 ? lockGrammar(tools) : undefined;
+    const locked = lock ? lock([...tools]) : tools;
+    const grammar = tools.length > 0 ? lockGrammar(locked) : undefined;
     const started = performance.now();
     const r = await model.complete({ prompt, maxTokens: req.maxTokens, ...(grammar ? { grammar } : {}) }, signal ?? new AbortController().signal);
-    const parsed = parseNative(r.text, tools);
+    const parsed = parseNative(r.text, locked);
     const stamp = `call-${Date.now().toString(36)}`;
     const result: ToolChatResult = {
       text: parsed.text,
