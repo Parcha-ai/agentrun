@@ -156,6 +156,17 @@ try {
   await put('creature/robot.json', serializeRobot(robot));
   const backToDefault = await waitEvent('skill-switched', n);
   ok('skills: after a reset (the skill is gone from the file) the page plays the default skill again', backToDefault && backToDefault.skill === 'walk' && (await inner('__walks.skill()')) === 'walk', backToDefault);
+  // the default skill is running, then a pair of legs more: its network cannot drive the new body, the page is not running it any more; a reset brings the old body back and the default plays again
+  robot = applyRobotTool(robot, 'set_legs', { pairs: 3 }, { skills: { walk: {}, sprint: {} } }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  await waitEvent('robot-changed', n);
+  ok('skills: six legs, and the default skill\'s network cannot drive it: the page is running no skill', (await inner('__walks.skill()')) === null && /untrained/.test(await label()), { skill: await inner('__walks.skill()'), label: await label() });
+  robot = applyRobotTool(robot, 'reset', {}, { skills: { walk: {}, sprint: {} } }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const again = await waitEvent('skill-switched', n);
+  ok('skills: a reset after that plays the default skill again, though the remembered skill was already the default', again && again.skill === 'walk' && (await inner('__walks.skill()')) === 'walk', again);
   robot = applyRobotTool(applyRobotTool(robot, 'resize', { part: 'leg_length', factor: 1.3 }).state, 'do', { skill: 'sprint' }, { skills: { walk: {}, sprint: {} } }).state;
   n = await ev('events.length');
   await put('creature/robot.json', serializeRobot(robot));
