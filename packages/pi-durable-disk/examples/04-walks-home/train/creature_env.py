@@ -263,7 +263,10 @@ class CreatureWalk(mjx_env.MjxEnv):
     legs = list(self._body["legs"])
     self._feet = np.array([m.geom(f"{leg}_foot").id for leg in legs])
     # The foot's lowest point below its centre: measured for any shape (body.py footRadius), else a sphere's radius.
-    self._foot_r = jp.array(self._body["footRadius"] if "footRadius" in self._body else m.geom_size[self._feet, 0], dtype=jp.float32)
+    # (Without footRadius this is the old expression exactly: a dtype on a float64 array would add a conversion program,
+    # and a body that compiled before must compile the same programs so its cache still hits.)
+    self._foot_r = (jp.array(np.asarray(self._body["footRadius"], dtype=np.float32)) if "footRadius" in self._body
+                    else jp.array(m.geom_size[self._feet, 0]))
     self._nfeet = len(legs)
     # Diagonal trot: leg k of pair p on side s is in phase group (p + s) % 2.
     self._trot_group = jp.array([((k // 2) + (k % 2)) % 2 for k in range(self._nfeet)])

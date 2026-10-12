@@ -83,6 +83,23 @@ class StageFieldsTest(unittest.TestCase):
       self.assertIsNone(train_skill.body_name(os.path.join(d, "absent")))
 
 
+class RefusedTest(unittest.TestCase):
+  def test_a_refused_skill_writes_its_reason_into_skill_json(self):
+    with tempfile.TemporaryDirectory() as d:
+      skill, out = os.path.join(d, "skill"), os.path.join(d, "out")
+      os.makedirs(skill)
+      json.dump({"name": "Bad Name"}, open(os.path.join(skill, "skill.json"), "w"))
+      os.makedirs(out)
+      json.dump({"status": "done", "passed_at": {"checkpoint": 1}}, open(os.path.join(out, "skill.json"), "w"))  # an older try
+      import subprocess, sys
+      r = subprocess.run([sys.executable, os.path.join(os.path.dirname(train_skill.__file__), "train_skill.py"), "--skill-dir", skill,
+                          "--body", os.path.join(os.path.dirname(train_skill.__file__), "default"), "--out", out], capture_output=True, text=True)
+      self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+      meta = json.load(open(os.path.join(out, "skill.json")))
+      self.assertEqual((meta["status"], meta["passed_at"]), ("refused", None))
+      self.assertIn("lowercase", meta["error"])
+
+
 class DiagnoseTest(unittest.TestCase):
   def recs(self, values, error=None):
     return [{"checkpoint": i + 1, "steps": (i + 1) * 1_000_000, "metric": {"name": "height", "value": v}, "error": error} for i, v in enumerate(values)]

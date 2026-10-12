@@ -16,7 +16,8 @@ A skill is a directory (a thread writes its own; train/skills/<name>/ are exampl
 BODY is a directory with creature.xml (or body.xml), keeping body.py's contract; its body.json is derived (body.py) when
 absent. It can also be robot.json or a Design, built with the tab's own buildMjcf (/opt/pda/mjcf). Into OUT, as they happen
 (each by rename, so a reader never sees half a file):
-  skill.json             the skill, its command, the body's sha256 and name, the status (training | done | failed);
+  skill.json             the skill, its command, the body's sha256 and name, the status (training | done | failed |
+                         refused, with error saying why);
                          once done: passed_at (the first passing checkpoint), policy_checkpoint, wall_s, cpu_estimate_s;
                          once failed: diagnosis (why, in words: the metric never moved, plateaued, or test.py raised)
   skill-progress.jsonl   per checkpoint: passes, metric (from test.py), steps, t (seconds since the start), error
@@ -267,6 +268,9 @@ def main() -> int:
     skill = load_skill(skill_dir)
     body_dir = resolve_body(a.body, out)
   except Refused as e:
+    # skill.json says so too (status refused, the reason as error), so a reader of OUT never sees an older try's verdict.
+    write_json(os.path.join(out, "skill.json"), {"skill": os.path.basename(os.path.normpath(skill_dir)), "status": "refused",
+                                                 "error": str(e), "passed_at": None, "started_at": t0})
     print(json.dumps({"event": "skill.refused", "why": str(e)}), flush=True)
     return 2
   xml = open(os.path.join(body_dir, "creature.xml")).read()
