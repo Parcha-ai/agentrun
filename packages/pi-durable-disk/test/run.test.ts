@@ -616,9 +616,11 @@ describe("fences during the run", () => {
     try {
       let holding = false;
       let held: (() => void) | undefined;
+      let resumed: Promise<void> | undefined; // the held write, once it runs: the test waits for its own end, not a guess
       const persist: PersistRecord = async (root, text, signal) => {
-        if (holding) await new Promise<void>((resolve) => (held = resolve));
-        return persistRecord(root, text, signal);
+        if (!holding) return persistRecord(root, text, signal);
+        await new Promise<void>((resolve) => (held = resolve));
+        return (resumed = persistRecord(root, text, signal));
       };
       const lease = { heartbeatMs: 10, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 };
       const t = setup(dir.root, { options: { persist, lease }, claim: { barrier: () => Promise.reject(new FencedError("archil sync: the mount is failed")) } });
@@ -629,7 +631,9 @@ describe("fences during the run", () => {
       await assert.rejects(run.claim.barrier(), FencedError);
       assert.equal(run.fenced, true, "the fence took effect before the held write resumed");
       held!();
-      await until(() => t.fenced.length === 1);
+      await until(() => t.fenced.length === 1 && resumed !== undefined);
+      // its temp file is written and fsynced before the abort check, so on a slow disk a fixed wait can end first
+      await assert.rejects(resumed!, (error: unknown) => error === t.fenced[0], "the fence aborted the held write");
       await new Promise((resolve) => setTimeout(resolve, 100));
       assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), before, "the heartbeat that began before the fence did not publish");
       assert.equal(runJson(dir.root).heartbeatAt, JSON.parse(before).heartbeatAt);
