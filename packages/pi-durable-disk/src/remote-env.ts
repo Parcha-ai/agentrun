@@ -124,6 +124,8 @@ function bounded<T>(p: Promise<T>, ms: number, context?: Context, onAbort?: () =
 }
 
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError";
+/** A remote exec's own timeout: whole seconds (Modal refuses anything else). */
+const seconds = (ms: number) => Math.ceil(ms / 1000) * 1000;
 
 // Exit codes the scripts use for the file errors they report.
 const CODES: Record<number, FileErrorCode> = { 3: "not_found", 4: "is_directory", 5: "not_directory", 6: "permission_denied", 7: "invalid" };
@@ -196,7 +198,7 @@ export class RemoteEnv implements ExecutionEnv {
     if (this.lost !== null) throw new BoxGone(this.goneMessage());
     const ms = o.ms ?? this.opTimeoutMs;
     try {
-      const p = await bounded(this.box.exec(argv, { mode: "binary", timeoutMs: ms + 5_000 }), ms, o.context);
+      const p = await bounded(this.box.exec(argv, { mode: "binary", timeoutMs: seconds(ms + 5_000) }), ms, o.context);
       const io = (async () => {
         if (o.stdin && o.stdin.length) await p.stdin.writeBytes(o.stdin);
         await p.stdin.close();
@@ -446,9 +448,10 @@ export class RemoteEnv implements ExecutionEnv {
     const argv = typeof command === "string" ? ["bash", "-c", command] : [...command];
     const envArgs = Object.entries(options?.env ?? {}).map(([k, v]) => `${k}=${v}`);
     // The command runs as its own process group (setsid), whose id is written down, so an abort or a timeout kills all of it.
+    // `-w`: where the exec's process already leads a group (Modal's does), setsid forks, and without -w it would return at once.
     // (dash, the usual /bin/sh, takes `kill -TERM -<group>` but not `kill -TERM -- -<group>`)
     const wrap = `mkdir -p /tmp/.pi-remote; f=/tmp/.pi-remote/$1.pid; echo $$ > "$f"; cd -- "$2" 2>/dev/null || { rm -f "$f"; echo "pi-remote: cwd: $2: not found" >&2; exit 200; }; shift 2; if [ "$PI_ARGV" = 1 ] && ! command -v -- "$1" >/dev/null 2>&1; then rm -f "$f"; echo "pi-remote: spawn: $1: not found" >&2; exit 201; fi; unset PI_ARGV; "$@"; c=$?; rm -f "$f"; exit $c`;
-    const full = ["env", ...(options?.inheritEnv === false ? ["-i", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"] : []), ...envArgs, `PI_ARGV=${typeof command === "string" ? 0 : 1}`, "setsid", "sh", "-c", wrap, "pi-exec", id, cwd, ...argv];
+    const full = ["env", ...(options?.inheritEnv === false ? ["-i", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"] : []), ...envArgs, `PI_ARGV=${typeof command === "string" ? 0 : 1}`, "setsid", "-w", "sh", "-c", wrap, "pi-exec", id, cwd, ...argv];
     const timeoutMs = options?.timeout !== undefined ? options.timeout * 1000 : this.maxExecMs;
     const kill = () => this.call(["sh", "-c", `f=/tmp/.pi-remote/$1.pid; [ -f "$f" ] || exit 0; g=$(cat "$f"); kill -TERM "-$g" 2>/dev/null; sleep 1; kill -KILL "-$g" 2>/dev/null; rm -f "$f"`, "sh", id], { ms: 15_000 }).catch(() => undefined);
     this.running.add(id);
@@ -488,7 +491,7 @@ export class RemoteEnv implements ExecutionEnv {
     };
     let timedOut = false, aborted = false;
     try {
-      const p = await bounded(this.box.exec(full, { mode: "binary", timeoutMs: timeoutMs + 30_000 }), Math.min(timeoutMs, this.opTimeoutMs), context);
+      const p = await bounded(this.box.exec(full, { mode: "binary", timeoutMs: seconds(timeoutMs + 30_000) }), Math.max(timeoutMs, Math.min(this.opTimeoutMs, 30_000)), context);
       await p.stdin.close().catch(() => {});
       const run = Promise.all([pump(p.stdout, "stdout"), pump(p.stderr, "stderr"), p.wait()]).then((x) => x[2]);
       let code: number;
@@ -592,7 +595,7 @@ export class ArtifactSync {
   }
 
   private async exec(argv: string[], context?: Context) {
-    const p = await bounded(this.o.box.exec(argv, { mode: "binary", timeoutMs: this.o.opTimeoutMs + 5_000 }), this.o.opTimeoutMs, context);
+    const p = await bounded(this.o.box.exec(argv, { mode: "binary", timeoutMs: seconds(this.o.opTimeoutMs + 5_000) }), this.o.opTimeoutMs, context);
     await p.stdin.close().catch(() => {});
     return p;
   }
