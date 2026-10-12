@@ -150,6 +150,10 @@ class DiagnoseTest(unittest.TestCase):
     d = train_skill.diagnose(recs)
     self.assertIn("never settles", d)
     self.assertIn("best -0.346 at checkpoint 14", d)
+    # a thread writing its own test.py may write the target with the symbol ("≤ -0.25"), as the chat shows walk's "≥ 0.4"
+    for r in recs:
+      r["metric"]["target"] = "≤ -0.25"
+    self.assertIn("best -0.346 at checkpoint 14", train_skill.diagnose(recs))
 
   def test_a_metric_that_was_never_measured_says_the_skill_never_happened(self):
     # get-up on code5's dino: 11 checkpoints, no error, and no value at any (the body never righted from every start).
