@@ -206,3 +206,33 @@ test("the thread trains for the body the page runs: /workspace/robot when the ro
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored home: passed (number or record), never-passed, or nothing yet", async () => {
+  const { threadStatusFromSkillFile, planOptions } = await import("../robot-extra.ts");
+  const work = mkdtempSync(join(tmpdir(), "robot-status-"));
+  try {
+    const put = (skill: string, body: string) => {
+      mkdirSync(join(work, "skills", skill), { recursive: true });
+      writeFileSync(join(work, "skills", skill, "skill.json"), body);
+    };
+    put("a", '{"status":"done","passed_at":7,"wall_s":55.2}');
+    put("b", '{"status":"done","passed_at":{"checkpoint":5,"steps":3932160,"t":48.0}}');
+    put("c", '{"status":"failed","passed_at":null,"wall_s":300}');
+    put("d", '{"status":"training"}');
+    put("e", "not json");
+    assert.deepEqual(await threadStatusFromSkillFile(work, "a"), { status: "passed", checkpoint: 7, seconds: 55.2 });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "b"), { status: "passed", checkpoint: 5, seconds: 48 });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "c"), { status: "never-passed", seconds: 300 });
+    assert.equal(await threadStatusFromSkillFile(work, "d"), undefined, "still training: no outcome yet");
+    assert.equal(await threadStatusFromSkillFile(work, "e"), undefined);
+    assert.equal(await threadStatusFromSkillFile(work, "missing"), undefined);
+    const plan = planOptions(work);
+    assert.equal(plan.maxThreads, 8);
+    assert.equal(plan.threadDeadlineMs, 20 * 60_000);
+    assert.match(plan.threadInstructions, /\S/);
+    assert.equal(plan.threadExtensions.length, 1);
+    assert.deepEqual(await plan.status!({ skill: "a", boxId: "x" }, {} as never), { status: "passed", checkpoint: 7, seconds: 55.2 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

@@ -12,7 +12,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ArtifactSync, installPiRun, remoteEnvs, type RemoteBox } from "@parcha/pi-durable-disk";
 import type { AppExtra, AppExtraContext } from "../../03-tab-to-cloud/app-extra.ts";
-import { RobotBox, teachSkills, type ThreadBoxes, type ThreadResult } from "../cluster/teach-skills.ts";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
+import { RobotBox, teachSkills, type PlanOptions, type ThreadBoxes, type ThreadResult, type ThreadStatus } from "../cluster/teach-skills.ts";
+import { TRAIN_SOP } from "../cluster/sop.ts";
 
 /** D2's assemble-skills (node alone): the skills the threads trained into the page's format, home/skills.json last. In the box's bundle it sits at robot/policy/. */
 export const ASSEMBLE_SCRIPT = fileURLToPath(new URL("../policy/assemble-skills.ts", import.meta.url));
@@ -124,6 +127,40 @@ export function trainCommand(work: string): (skill: string) => readonly string[]
   return (skill) => ["pi-run", skill, "--", "train-skill", skill, "--body", hasCodeBody(work) ? BOX_BODY_DIR : BOX_ROBOT_FILE, "--out", `/workspace/skills/${skill}`];
 }
 
+/** pi's coding tools (read, write, edit, bash) with `read` declared replay-safe: each code-mode thread's hands, run on its own box through the thread's environment. */
+function codingTools(): Extension {
+  return { name: CodingTools.name, tools: (CodingTools.tools ?? []).map((tool: ToolRegistration) => (tool.name === "read" ? { ...tool, replay: "safe" as const } : tool)) } as Extension;
+}
+
+/** Where a code-mode thread's trainer writes its output on the box (the SOP's `--out`), mirrored to <work>/skills/<skill>/ on the session's disk. */
+export const BOX_RUNS_DIR = "/workspace/runs";
+
+/**
+ * A code-mode thread's outcome, from the trainer's own skill.json (mirrored home), never from the thread's words: passed with the checkpoint it passed at and the seconds it took,
+ * never-passed when the trainer finished without passing, nothing yet when the file is absent or still training. `passed_at` is the checkpoint number or the trainer's record of it ({checkpoint, t}).
+ */
+export async function threadStatusFromSkillFile(work: string, skill: string): Promise<ThreadStatus | undefined> {
+  const text = await readFile(join(work, "skills", skill, "skill.json"), "utf8").catch(() => undefined);
+  if (!text) return undefined;
+  let meta: { status?: unknown; passed_at?: unknown; wall_s?: unknown };
+  try {
+    meta = JSON.parse(text) as typeof meta;
+  } catch {
+    return undefined;
+  }
+  const passed = meta.passed_at;
+  const checkpoint = typeof passed === "number" ? passed : passed && typeof passed === "object" && typeof (passed as { checkpoint?: unknown }).checkpoint === "number" ? (passed as { checkpoint: number }).checkpoint : undefined;
+  const seconds = typeof meta.wall_s === "number" ? meta.wall_s : passed && typeof passed === "object" && typeof (passed as { t?: unknown }).t === "number" ? (passed as { t: number }).t : undefined;
+  if (checkpoint !== undefined) return { status: "passed", checkpoint, ...(seconds !== undefined ? { seconds } : {}) };
+  if (meta.status === "failed" || meta.status === "done") return { status: "never-passed", ...(seconds !== undefined ? { seconds } : {}) };
+  return undefined;
+}
+
+/** Code mode (D1's plan): the parent plans the skills from the ask, one thread per skill writes and runs its own training. On when the session's host says so (DEMO_ROBOT_PLAN=1). */
+export function planOptions(work: string): PlanOptions {
+  return { threadExtensions: [codingTools()], threadInstructions: TRAIN_SOP, maxThreads: 8, threadDeadlineMs: 20 * 60_000, status: ({ skill }) => threadStatusFromSkillFile(work, skill) };
+}
+
 /** The threads' boxes as the cluster package asks for them, bound to the link. */
 export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: string, log: AppExtraContext["log"]): ThreadBoxes {
   const boxOf = (id: string): RemoteBox => link.gpu.linkBox(id);
@@ -158,9 +195,11 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   if (!link) throw new Error("the robot's threads reach their GPU boxes through the server's link: no link here");
   const boxOf = (id: string): RemoteBox => link.gpu.linkBox(id);
   const boxes = robotBoxes(link, work, log);
+  const plan = process.env.DEMO_ROBOT_PLAN === "1";
   const { teach, thread } = teachSkills({
     boxes,
     command: trainCommand(work),
+    ...(plan ? { plan: planOptions(work) } : {}),
     // Inside the teach task, after every thread has flushed: the tool's own result then says how many skills are home.
     // Only the skills of the body this round taught (an old body's get-up must not choose the body, nor old skills be installed for the new one).
     assemble: async (threads) => {
@@ -173,7 +212,7 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
       }
     },
     artifacts: ({ boxId, skill }) => {
-      const sync = new ArtifactSync({ box: boxOf(boxId), remote: `/workspace/skills/${skill}`, local: join(work, "skills", skill), exclude: ["work"], onError: (error) => log("robot.artifacts-failed", { skill, error: error.message }) });
+      const sync = new ArtifactSync({ box: boxOf(boxId), remote: plan ? `${BOX_RUNS_DIR}/${skill}` : `/workspace/skills/${skill}`, local: join(work, "skills", skill), exclude: ["work"], onError: (error) => log("robot.artifacts-failed", { skill, error: error.message }) });
       return { start: () => sync.start(), flush: async (context) => void (await sync.flush(context)), stop: () => sync.stop() };
     },
   });

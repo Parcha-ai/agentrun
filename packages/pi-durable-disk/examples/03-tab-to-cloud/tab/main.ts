@@ -40,7 +40,8 @@ import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBui
 import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
-import { cloudAgent, rootAgent } from "../agent.ts";
+import { cloudAgent, rootAgent, setExtraInstructions } from "../agent.ts";
+import { ROBOT_SOPS } from "./robot-sop.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
 import { currentRobot, defaultSkill, loadSkills, ROBOT_TOOLS } from "../robot-tools.ts";
@@ -1272,6 +1273,7 @@ async function homeFilesForOffline(): Promise<Map<string, { kind: "file"; data: 
 // no network. It reads creature/robot.json (what the agent's robot tools edit), home/skills.json and the skills' policies, and writes the design it saves (creature/*). Reads come from the
 // workspace; a file the tab was not sent (home/ is not restored) is fetched from the run's disk while online and was brought into the workspace at the checkout.
 const robotMode = new URLSearchParams(location.search).get("robot") === "1";
+if (robotMode) setExtraInstructions(ROBOT_SOPS); // the robot demo: the cloud agent also carries the SOPs for writing the robot and planning a teaching run
 const CREATURE_WRITABLE = new Set(["creature/designs.sqlite", "creature/creature.xml", "creature/body.json", "creature/design.json", "creature/fit.json"]);
 const safePath = (p: unknown): string | undefined => (typeof p === "string" && p.length > 0 && p.length < 200 && !p.startsWith("/") && !p.split("/").some((part) => part === ".." || part === "." || part === "") ? p : undefined);
 const diskReads = new Map<string, { at: number; bytes: Uint8Array | null }>();

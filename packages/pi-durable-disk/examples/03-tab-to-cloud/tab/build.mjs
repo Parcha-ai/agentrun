@@ -72,6 +72,7 @@ const result = await build({
   sourcemap: true,
   metafile: true,
   external: ["/wasmer/*"],
+  loader: { ".md": "text" }, // the robot demo's SOPs (cluster/sop/*.md) are bundled as text
   logLevel: "warning",
 });
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
