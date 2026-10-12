@@ -270,10 +270,104 @@ describe("two messages in quick succession while the agent's turn is running", (
     page.send({ t: "submit", text: "one", requestId: "a" });
     for (const end = Date.now() + 5_000; !tabFrames.some((f) => f.t === "submit" && f.text === "one"); await new Promise((r) => setTimeout(r, 30))) if (Date.now() > end) throw new Error("no first");
     page.send({ t: "submit", text: "two", requestId: "b" });
-    // Queued behind the turn (the server cannot tell it stays without placing it), then delivered in order once the turn ends.
+    // It stays where it is: it reaches the tab while the first turn is still running, without waiting for that turn to end.
+    for (const end = Date.now() + 5_000; !tabFrames.some((f) => f.t === "submit" && f.text === "two"); await new Promise((r) => setTimeout(r, 30))) if (Date.now() > end) throw new Error("the second message was held back by the running turn");
     tab.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
-    for (const end = Date.now() + 5_000; !tabFrames.some((f) => f.t === "submit" && f.text === "two"); await new Promise((r) => setTimeout(r, 30))) if (Date.now() > end) throw new Error("the second message was never delivered");
     tab.close();
     page.close();
+  });
+});
+
+describe("a mounted cloud host's turn ends, with messages in flight and with every viewer relaying the same end", () => {
+  let local: Awaited<ReturnType<typeof localServer>>;
+  const submitted: string[] = [];
+  const sinks: ((frame: PipeFrame) => void)[] = [];
+  const events: { event: string; data: Record<string, unknown> }[] = [];
+  const asked: string[] = [];
+  let slowFor = "";
+  let doneGoesHome = false;
+  const placer: Placer = {
+    describe: (env) => `criterion of ${env}`,
+    async decide(query) {
+      asked.push(`${query.phase}:${query.message}`);
+      if (slowFor && query.message.includes(slowFor)) await new Promise((r) => setTimeout(r, 400)); // the typed question takes a while
+      // Training stays on the VM; a request to go home goes to the tab; the done question keeps the agent where it is.
+      const choice = query.phase === "done" ? (doneGoesHome ? "tab" : "vm") : /home/.test(query.message) ? "tab" : "vm";
+      const decision: PlacementDecision = { id: `c-${asked.length}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 0.9 : 0.1 })), choice, latency_ms: 1, model: "scripted" };
+      return decision;
+    },
+  };
+  const cloud: CloudHost = {
+    environments: [{ id: "vm", label: "A VM", phrase: "a VM", kind: "cloud" }],
+    start: async () => ({ host: "vm-1" }),
+    stop: async () => undefined,
+    attachViewer: async (_ref, send) => {
+      sinks.push(send);
+      return () => undefined;
+    },
+    submit: async (_ref, text) => void submitted.push(text),
+  };
+  before(async () => {
+    local = await localServer({ cloud, placer, drainMs: 5_000, superviseMs: 60_000, log: (event, data = {}) => events.push({ event, data }) });
+  });
+  after(async () => {
+    await local.remove();
+  });
+  const end = (i: number) => sinks[i]!({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) });
+  const until = async (check: () => boolean, what: string) => {
+    for (const stop = Date.now() + 10_000; !check(); await new Promise((r) => setTimeout(r, 30))) if (Date.now() > stop) throw new Error(`timed out waiting for ${what}`);
+  };
+  const open = async (name: string) => {
+    sinks.length = 0;
+    submitted.length = 0;
+    const { id, secret } = await local.server.createRun(name);
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && tab.send({ t: "drained", switchId: f.switchId }) });
+    await tab.ready;
+    const p1: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v1", mode: "operator", canRun: true, onFrame: () => undefined });
+    await p1.ready;
+    const p2: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v2", mode: "operator", canRun: true, onFrame: () => undefined });
+    await p2.ready;
+    return { id, tab, p1, p2, close: () => (tab.close(), p1.close(), p2.close()) };
+  };
+
+  it("a message whose placement is still being decided is not lost when the finished turn's end arrives: the agent is not sent away from it", async () => {
+    const r = await open("in-flight");
+    slowFor = "teach B";
+    doneGoesHome = true; // the finished task would send the agent home, if it did not know a message is on its way
+    try {
+      r.p1.send({ t: "submit", text: "teach A", requestId: "a" });
+      await until(() => submitted.includes("teach A") && sinks.length >= 1, "the first task on the host");
+      r.p1.send({ t: "submit", text: "teach B", requestId: "b" }); // its placement question takes 400 ms
+      await new Promise((r2) => setTimeout(r2, 100));
+      end(0); // the first turn ends while B is still being placed
+      await until(() => submitted.includes("teach B"), "B delivered to the host");
+      assert.ok(!events.some((e) => e.event === "submit.undeliverable" && e.data.run === r.id), "no message was lost");
+      assert.ok(!events.some((e) => e.event === "switch.start" && e.data.run === r.id && e.data.to === "tab"), "the agent was not sent home under the message");
+    } finally {
+      slowFor = "";
+      doneGoesHome = false;
+      r.close();
+    }
+  });
+
+  it("a second viewer's copy of an earlier turn's end does not end the turn that began after it", async () => {
+    const r = await open("stale-end");
+    try {
+      r.p1.send({ t: "submit", text: "teach A", requestId: "a" });
+      await until(() => submitted.includes("teach A") && sinks.length >= 2, "the first task on the host and both viewers attached");
+      end(0); // A's turn ends (the first viewer's copy)
+      await new Promise((r2) => setTimeout(r2, 100));
+      r.p1.send({ t: "submit", text: "teach B", requestId: "b" }); // stays on the host: B's turn begins
+      await until(() => submitted.includes("teach B"), "B on the host");
+      end(1); // the second viewer's copy of A's end arrives late
+      await new Promise((r2) => setTimeout(r2, 100));
+      r.p1.send({ t: "submit", text: "bring it home", requestId: "c" }); // needs a move
+      await new Promise((r2) => setTimeout(r2, 500));
+      assert.ok(!events.some((e) => e.event === "switch.start" && e.data.run === r.id && e.data.to === "tab"), "the move home waits for B's own end");
+      end(0); // B's turn really ends
+      await until(() => events.some((e) => e.event === "switch.start" && e.data.run === r.id && e.data.to === "tab"), "the move home after B's end");
+    } finally {
+      r.close();
+    }
   });
 });

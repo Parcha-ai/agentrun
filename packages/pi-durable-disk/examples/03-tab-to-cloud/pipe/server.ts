@@ -225,6 +225,10 @@ interface RunState {
   homeTurn: HomeWait | undefined;
   /** When the agent was last given a message and has not yet ended its turn (the host's run_end): a placement move would release the pipe under a step that is starting, so a message that needs a move waits for it. */
   turnSince: number | undefined;
+  /** Messages whose placement is in progress (asked of the placer, or waiting their turn behind another): the end of a turn must not send the agent home under them. */
+  placingCount: number;
+  /** Which cloud host's viewers are current: an end relayed from an earlier host (or a stale copy) is not this turn's. */
+  cloudEpoch: number;
   turnTimer: NodeJS.Timeout | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
@@ -489,6 +493,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       state.prewarmed = false;
       supervise(state);
       setPlacement(state, { where: "cloud", host, generation: null, env: target.id, detail: why });
+      state.cloudEpoch++;
       log("cloud.started", { run: state.ref.id, host, env: target.id, switchId: move.id, ms: Date.now() - started });
       // Whoever watched the tab now watches the cloud.
       for (const viewer of state.viewers) await attachCloudViewer(state, viewer);
@@ -747,8 +752,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * ask for two placements at once and none is lost.
    */
   function placeThenSubmit(state: RunState, socket: PipeSocket, text: string, requestId: string, decided?: PlacementDecision): Promise<void> {
+    state.placingCount++;
     const mine = state.placing.then(() => placeOne(state, socket, text, requestId, decided));
     state.placing = mine.catch(() => undefined);
+    void state.placing.then(() => void state.placingCount--);
     return mine;
   }
 
@@ -959,16 +966,21 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   async function attachCloudViewer(state: RunState, socket: PipeSocket): Promise<void> {
     if (!options.cloud?.attachViewer || state.cloudViewers.has(socket)) return;
+    const epoch = state.cloudEpoch;
     const detach = await options.cloud.attachViewer(state.ref, (frame) => {
       socket.send(frame);
       // A mounted cloud host's events reach the server through this relay, not through a tab's `view` frames: the end of the agent's turn there
       // is read here, once the task's message has reached it (the history a viewer is replayed on attach holds earlier turns' ends).
-      if (frame.t === "event" && state.placement.where === "cloud" && endsRun(frame.event)) {
-        const waiting = state.pendingSubmits.some((p) => p.queuedBy);
-        if (options.placer && state.placedTask?.sent && !waiting) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
-        // The viewers of a run on a mounted host each relay the same end: the first one counts, and what waited for the turn is placed now.
-        if (state.turnSince !== undefined || waiting) turnEnded(state);
-      }
+      // Every viewer of the run is sent the same events, so only the first of them is read (a second copy of an end would be taken for the end of the
+      // turn that began after it), and only while the host it was attached for is still the run's host.
+      if (frame.t !== "event" || state.placement.where !== "cloud" || !endsRun(frame.event)) return;
+      if (epoch !== state.cloudEpoch) return;
+      const first = state.cloudViewers.keys().next().value;
+      if (first !== undefined && first !== socket) return;
+      // A message whose placement is being decided, or waits its turn, counts as waiting too: the finished task's done question would otherwise send the agent away from it.
+      const waiting = state.pendingSubmits.some((p) => p.queuedBy) || state.placingCount > 0;
+      if (options.placer && state.placedTask?.sent && !waiting) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+      if (state.turnSince !== undefined || waiting) turnEnded(state);
     });
     state.cloudViewers.set(socket, detach);
   }
@@ -1002,7 +1014,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         pipe?.view(socket, frame.event);
         if (pipe?.isWriter(socket) && endsRun(frame.event) && state.homeTurn?.armed) state.homeTurn.finish();
         if (pipe?.isWriter(socket) && endsRun(frame.event)) {
-          const waiting = state.pendingSubmits.some((p) => p.queuedBy);
+          const waiting = state.pendingSubmits.some((p) => p.queuedBy) || state.placingCount > 0;
           if (options.placer && state.placedTask && !waiting) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
           // A message that came while the turn ran is placed now, as a message of its own (it, not the finished task, decides where the agent goes next).
           turnEnded(state);
@@ -1276,6 +1288,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       pendingSubmits: [],
       homeTurn: undefined,
       turnSince: undefined,
+      placingCount: 0,
+      cloudEpoch: 0,
       turnTimer: undefined,
       placing: Promise.resolve(),
       placedTask: undefined,
