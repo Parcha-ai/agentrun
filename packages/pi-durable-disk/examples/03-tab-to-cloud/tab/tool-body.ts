@@ -2,6 +2,7 @@
 // gives it what it knows of the workspace (`before`, a file's text as it was before a write) and it draws. The diff is drawn by @pierre/diffs, loaded on first use (code-view.ts).
 import type { ChatItem } from "./chat-view.ts";
 import { editPairs, grepHits, tailLines, toolKind } from "./chat-lines.ts";
+import { humanizeOutput, type OutputLine } from "./trainer-lines.ts";
 import { diffElement } from "./code-view.ts";
 
 type Tool = Extract<ChatItem, { kind: "tool" }>;
@@ -34,7 +35,20 @@ const TAIL = 8;
  * A command's output: the last few lines, with how many came before, until the reader asks for all of it (a training log is hundreds of lines and streams in: what matters is where it is now).
  * The toggle is part of the body, so a redraw while the output grows shows the tail again unless the reader had opened it (`open` keeps that, by call id, in main.ts).
  */
-function outputBlock(text: string, opts: { expanded: boolean; onToggle?: (expanded: boolean) => void }): HTMLElement {
+type OutputOpts = { expanded: boolean; onToggle?: (expanded: boolean) => void; raw?: boolean; onRaw?: (raw: boolean) => void };
+
+function outputBlock(text: string, opts: OutputOpts): HTMLElement {
+  // Only the end of a huge output is read for events (a partial first line is dropped): the page does not parse megabytes to show eight lines.
+  const cut = text.length > OUT_FULL ? text.indexOf("\n", text.length - OUT_FULL) + 1 : 0;
+  const read = cut > 0 ? text.slice(cut) : text.length > OUT_FULL ? text.slice(-OUT_FULL) : text;
+  let before = 0; // the lines left unread before `read`, so the counts the reader sees are exact
+  for (let i = text.indexOf("\n"); i >= 0 && i < cut; i = text.indexOf("\n", i + 1)) before++;
+  const h = humanizeOutput(read);
+  return h.recognized === 0 ? rawOutputBlock(text, opts) : trainerBlock(h.lines, text, opts, before);
+}
+
+/** The raw text, with its last lines (see outputBlock). */
+function rawOutputBlock(text: string, opts: OutputOpts): HTMLElement {
   const tail = tailLines(text, TAIL); // the last lines of the whole output, however long (a training log's progress is at its end)
   const tailText = clipStart(tail.text, OUT_CAP);
   const full = clipStart(text, OUT_FULL);
@@ -54,6 +68,51 @@ function outputBlock(text: string, opts: { expanded: boolean; onToggle?: (expand
     wrap.append(more);
   }
   wrap.append(pre);
+  return wrap;
+}
+
+/**
+ * A trainer's output (pi-run prints one JSON event per line) as quiet lines: compiling, training, each checkpoint with its number against its target, passing in green, the rest of the lines as they were. The last 8
+ * lines show with how many came before; the raw output is one click away and stays chosen across redraws.
+ */
+const QUIET_ROWS = 400;
+const QUIET_LINE = 400;
+
+function trainerBlock(all: readonly OutputLine[], text: string, opts: OutputOpts, before = 0): HTMLElement {
+  // The quiet view has limits of its own (the raw view keeps the output's): the last rows only, each clipped, with a note of what is left out, so a huge mixed log cannot flood the page.
+  const lines = all.slice(-QUIET_ROWS).map((l) => (l.text.length > QUIET_LINE ? { ...l, text: `${l.text.slice(0, QUIET_LINE)}…` } : l));
+  const omitted = all.length - lines.length + before; // rows the quiet view leaves out, counting the lines never read
+  const wrap = el("div", "output trainer");
+  const mode = el("button", "more", opts.raw ? "quiet view" : "raw output");
+  mode.setAttribute("type", "button");
+  const body = el("div", "tbody");
+  let raw = opts.raw === true;
+  let open = opts.expanded;
+  const draw = () => {
+    mode.textContent = raw ? "quiet view" : "raw output";
+    if (raw) return void body.replaceChildren(rawOutputBlock(text, { expanded: open, onToggle: (expanded) => { open = expanded; opts.onToggle?.(open); } }));
+    const shown = open || lines.length <= TAIL ? lines : lines.slice(-TAIL);
+    const rows = shown.map((l) => el("div", `tl ${l.kind}`, l.text));
+    const hidden = lines.length - shown.length;
+    const note = omitted > 0 && open ? [el("div", "tl plain", `… ${omitted} earlier line${omitted === 1 ? "" : "s"} not shown here (the raw output has them)`)] : [];
+    if (lines.length > TAIL) {
+      const more = el("button", "more", open ? "show the last lines" : `${hidden + omitted} earlier line${hidden + omitted === 1 ? "" : "s"}`);
+      more.setAttribute("type", "button");
+      more.addEventListener("click", () => {
+        open = !open;
+        opts.onToggle?.(open);
+        draw();
+      });
+      body.replaceChildren(more, ...note, ...rows);
+    } else body.replaceChildren(...note, ...rows);
+  };
+  mode.addEventListener("click", () => {
+    raw = !raw;
+    opts.onRaw?.(raw);
+    draw();
+  });
+  draw();
+  wrap.append(mode, body);
   return wrap;
 }
 
@@ -81,14 +140,14 @@ export function hasBody(tool: Tool, opts: { showOutput: boolean }): boolean {
  * The body of one tool call, or null when there is nothing to open (no arguments worth showing and no output). `showOutput` is false when the reply repeats the result word for word
  * (the reply says it once). `before` is a file's text before a write replaced it, when the page saw it (a write to a new file has none, and shows as all additions).
  */
-export function toolBody(tool: Tool, opts: { showOutput: boolean; before?: string | undefined; expanded?: boolean; onToggle?: (expanded: boolean) => void }): HTMLElement | null {
+export function toolBody(tool: Tool, opts: { showOutput: boolean; before?: string | undefined; expanded?: boolean; onToggle?: (expanded: boolean) => void; raw?: boolean; onRaw?: (raw: boolean) => void }): HTMLElement | null {
   const kind = toolKind(tool.name);
   const args = parse(tool.args);
   const body = el("div", "tool-body");
   const out = tool.output && opts.showOutput ? tool.output : "";
   if (kind === "bash" && typeof args.command === "string") {
     body.append(el("pre", "cmd", `$ ${args.command}`));
-    if (out) body.append(outputBlock(out, { expanded: opts.expanded === true, ...(opts.onToggle ? { onToggle: opts.onToggle } : {}) }));
+    if (out) body.append(outputBlock(out, { expanded: opts.expanded === true, raw: opts.raw === true, ...(opts.onToggle ? { onToggle: opts.onToggle } : {}), ...(opts.onRaw ? { onRaw: opts.onRaw } : {}) }));
   } else if (kind === "write" && typeof args.path === "string" && typeof args.content === "string") {
     const slot = el("div", "slot");
     body.append(slot);

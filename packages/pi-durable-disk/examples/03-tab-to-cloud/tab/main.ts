@@ -295,6 +295,8 @@ function renderChat(): void {
 const bodies = new Map<string, { signature: string; body: HTMLElement | null }>();
 /** The commands whose whole output the reader asked for (the rest show their last lines). */
 const fullOutput = new Set<string>();
+/** The commands whose raw output the reader chose over the trainer's quiet lines. */
+const rawOutput = new Set<string>();
 /** A file's text as it was just before a write replaced it, by the write's call id (the diff is against this; a write to a new file has none). */
 const writeBefore = new Map<string, string>();
 
@@ -356,7 +358,7 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
         const before = writeBefore.get(key);
         const signature = JSON.stringify([item.name, item.args, item.status, item.output, showOutput, before ?? null, teach ? teachThreads.version : 0]);
         const cached = bodies.get(key);
-        const body = cached && cached.signature === signature ? cached.body : teach ? threadsBody(item, mine, showOutput) : toolBody(item, { showOutput, before, expanded: fullOutput.has(key), onToggle: (all) => (all ? fullOutput.add(key) : fullOutput.delete(key)) });
+        const body = cached && cached.signature === signature ? cached.body : teach ? threadsBody(item, mine, showOutput) : toolBody(item, { showOutput, before, expanded: fullOutput.has(key), onToggle: (all) => (all ? fullOutput.add(key) : fullOutput.delete(key)), raw: rawOutput.has(key), onRaw: (raw) => (raw ? rawOutput.add(key) : rawOutput.delete(key)) });
         if (!cached || cached.signature !== signature) bodies.set(key, { signature, body });
         if (body !== null && body.parentElement !== node) node.append(body);
       };
