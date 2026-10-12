@@ -105,6 +105,8 @@ const serveArgs = [
   ...(arg("remote-start-ms", "") ? ["--remote-start-ms", arg("remote-start-ms", "")] : []),
   "--cloud", cloud,
   ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
+  // With the TypeSafe key (--typesafe), the page's brain router asks Jev too.
+  ...(process.argv.includes("--typesafe") ? ["--brain-judge", "jev"] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
   ...noRestore.flatMap((p) => ["--no-restore", p]),
   ...judgeArgs,

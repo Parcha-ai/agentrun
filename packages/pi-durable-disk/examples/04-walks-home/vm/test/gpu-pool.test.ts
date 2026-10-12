@@ -335,6 +335,24 @@ describe("the GPU pool: idle timeout", () => {
   });
 });
 
+describe("the GPU pool: the idle clock", () => {
+  it("starts when the pool starts, not when it was built: a server up for longer than the idle time does not lose its boxes the moment a page attaches", async () => {
+    const removed: string[] = [];
+    const logs: string[] = [];
+    let clock = 0; // a driven clock: a slow machine cannot make the pool look idle
+    const pool = new GpuPool({ size: 2, log: (event) => void logs.push(event), create: async (index) => ({ id: `sb-${index}`, name: `b${index}`, index }), remove: async (box) => (removed.push(box.id), true), idleMs: 300, watchMs: 0, now: () => clock });
+    clock = 10_000; // the server sat waiting for the person to open the link, far longer than the idle time
+    await pool.start();
+    await new Promise((r) => setTimeout(r, 200)); // the idle check runs every 150 ms of real time
+    assert.deepEqual(removed, [], "freshly created boxes are not removed by an idle clock that began before they existed");
+    assert.ok(!logs.includes("pool.idle-timeout"));
+    clock += 301; // now they have really sat unused for the idle time
+    for (let i = 0; i < 40 && removed.length < 2; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(removed.sort(), ["sb-0", "sb-1"]);
+    await pool.close();
+  });
+});
+
 describe("the GPU pool: idle removal that fails", () => {
   it("a box that would not be removed is still usable: a request that came during the removal is served, not left waiting for ever", async () => {
     let made = 0;

@@ -46,6 +46,8 @@ export interface GpuPoolOptions {
    * running (default 0: never). The pool stays usable: the next `acquire` creates the boxes again (it costs the creation time), and says so in the log.
    */
   readonly idleMs?: number;
+  /** The clock the idle timeout reads (tests drive it); default Date.now. */
+  readonly now?: () => number;
   /** How long one `alive` check may take (default 10 s): a Modal call that does not answer says nothing, and the box stays available. */
   readonly aliveTimeoutMs?: number;
 }
@@ -63,12 +65,17 @@ export class GpuPool {
   #watch: NodeJS.Timeout | undefined;
   #onSettle: (() => void) | undefined;
   #idle: NodeJS.Timeout | undefined;
-  #lastActive = Date.now();
+  #lastActive = 0;
 
   constructor(options: GpuPoolOptions) {
     if (!Number.isInteger(options.size) || options.size < 1) throw new Error("the pool needs at least one box");
     this.#options = options;
+    this.#lastActive = this.#clock();
     this.#slots = Array.from({ length: options.size + (options.spares ?? 0) }, (_, index) => ({ index, state: "creating" as BoxState }));
+  }
+
+  #clock(): number {
+    return (this.#options.now ?? Date.now)();
   }
 
   status(): PoolStatus {
@@ -83,6 +90,7 @@ export class GpuPool {
   async start(): Promise<void> {
     if (this.#started) throw new Error("the pool was already started");
     this.#started = true;
+    this.#lastActive = this.#clock(); // the idle clock runs from the boxes' creation, not from when the pool was built
     for (const slot of this.#slots) slot.creating = this.#create(slot);
     const every = this.#options.watchMs ?? 20_000;
     if (this.#options.alive && every > 0) {
@@ -144,7 +152,7 @@ export class GpuPool {
    */
   acquire(thread: string, signal?: AbortSignal): Promise<PoolBox> {
     if (this.#closing) return Promise.reject(new Error("the pool is closing"));
-    this.#lastActive = Date.now();
+    this.#lastActive = this.#clock();
     const held = this.#slots.find((s) => s.thread === thread && s.box);
     if (held) return Promise.resolve(held.box!);
     const waiting = this.#waiting.find((w) => w.thread === thread);
@@ -174,7 +182,7 @@ export class GpuPool {
     const slot = this.#slots.find((s) => s.thread === thread);
     if (!slot) return;
     delete slot.thread;
-    this.#lastActive = Date.now();
+    this.#lastActive = this.#clock();
     if (slot.state === "busy") slot.state = "ready";
     this.#changed();
     if (this.#options.alive) {
@@ -191,12 +199,12 @@ export class GpuPool {
 
   /** Something used the pool (a command ran in a box): the idle clock restarts. */
   touch(): void {
-    this.#lastActive = Date.now();
+    this.#lastActive = this.#clock();
   }
 
   async #idleCheck(): Promise<void> {
     const idleMs = this.#options.idleMs ?? 0;
-    if (this.#closing || idleMs <= 0 || Date.now() - this.#lastActive < idleMs) return;
+    if (this.#closing || idleMs <= 0 || this.#clock() - this.#lastActive < idleMs) return;
     if (this.#waiting.length > 0 || this.#slots.some((x) => x.state === "busy" || x.state === "creating")) return;
     const ready = this.#slots.filter((x) => x.state === "ready" && x.box);
     if (ready.length === 0) return;
@@ -214,7 +222,7 @@ export class GpuPool {
         // A box that would not go is still running: it is ready again (a request can use it, and the next idle check tries again), not lost.
         else {
           slot.state = "ready";
-          this.#lastActive = Date.now();
+          this.#lastActive = this.#clock();
           this.#options.log("pool.idle-remove-failed", { index: slot.index, box: slot.box?.name });
         }
       }),

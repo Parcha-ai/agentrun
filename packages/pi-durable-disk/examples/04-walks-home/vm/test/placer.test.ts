@@ -1,43 +1,50 @@
-// The demo's placer: criteria one line per environment, a scripted stand-in client that is always tagged "scripted", and a refusal
-// to say "jev" without a key.
+// The demo's placer: criteria one line per environment, Jev as the only judge, and a refusal to start without its key. Tests judge with a fixed table.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import placerModule, { CRITERIA, LABELS } from "../placer.ts";
+import placerModule, { buildPlacer, CRITERIA, LABELS } from "../placer.ts";
+import type { JudgeRunner } from "../../../03-tab-to-cloud/placement.ts";
 
 const logs: string[] = [];
 const options = (args: Record<string, string>) => ({ log: (event: string) => void logs.push(event), args });
 
-test("without a key the placer is scripted and says so on every decision", async () => {
+/**
+ * A judge that answers from a fixed table keyed by the exact case (phase and message), never by reading the user's words: a message the table does
+ * not know is a failing test, not a guess.
+ */
+const fixedJudge = (table: Record<string, string>): JudgeRunner => async ({ state, questions }) => {
+  const question = questions.where!;
+  const ids = Object.keys(question.criteria);
+  const s = state as { task?: string; status?: string };
+  const key = `${s.status ? "done" : "start"}: ${s.task}`;
+  const choice = table[key];
+  if (choice === undefined) throw new Error(`no fixed answer for ${key}`);
+  return { answers: { where: { type: "choice", choice, probabilities: Object.fromEntries(ids.map((id) => [id, id === choice ? 0.9 : 0.1 / Math.max(1, ids.length - 1)])) } }, model: "fixed" };
+};
+
+test("the placer module needs the TypeSafe key and has no fallback judge; only jev is a client", async () => {
   const saved = process.env.TYPESAFE_API_KEY;
   delete process.env.TYPESAFE_API_KEY;
   try {
-    const placer = await placerModule(options({}));
-    const ids = ["tab", "modal-gpu"];
-    const start = await placer.decide({ phase: "start", message: "teach it to walk", current: "tab", environments: ids });
-    assert.equal(start.choice, "modal-gpu");
-    assert.equal(start.model, "scripted");
-    assert.equal(start.options.reduce((sum, o) => sum + o.probability, 0).toFixed(6), "1.000000");
-    assert.deepEqual(start.options.map((o) => o.label), [LABELS.tab, LABELS["modal-gpu"]]);
-    const back = await placer.decide({ phase: "done", message: "teach it to walk", current: "modal-gpu", environments: ids });
-    assert.equal(back.choice, "tab");
-    const small = await placer.decide({ phase: "start", message: "fix the typo in my title", current: "tab", environments: ids });
-    assert.equal(small.choice, "tab");
-    assert.equal(placer.describe("modal-gpu"), CRITERIA["modal-gpu"]);
-    assert.ok(logs.includes("placer.ready"));
+    await assert.rejects(placerModule(options({})), /TYPESAFE_API_KEY.*no fallback judge/);
+    await assert.rejects(placerModule(options({ client: "jev" })), /TYPESAFE_API_KEY/);
+    await assert.rejects(placerModule(options({ client: "scripted" })), /only jev decides/);
+    await assert.rejects(placerModule(options({ client: "gpt" })), /only jev decides/);
   } finally {
     if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
   }
 });
 
-test("client=jev without a key is an error, not a silent stand-in; an unknown client is an error", async () => {
-  const saved = process.env.TYPESAFE_API_KEY;
-  delete process.env.TYPESAFE_API_KEY;
-  try {
-    await assert.rejects(placerModule(options({ client: "jev" })), /needs TYPESAFE_API_KEY/);
-    await assert.rejects(placerModule(options({ client: "gpt" })), /scripted or jev/);
-  } finally {
-    if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
-  }
+test("the placer over a judge runner tags every decision with jev and carries the judge's probabilities", async () => {
+  const placer = buildPlacer(options({}), fixedJudge({ "start: teach it to walk": "modal-gpu", "done: teach it to walk": "tab", "start: fix the typo in my title": "tab" }));
+  const ids = ["tab", "modal-gpu"];
+  const start = await placer.decide({ phase: "start", message: "teach it to walk", current: "tab", environments: ids });
+  assert.equal(start.choice, "modal-gpu");
+  assert.equal(start.model, "jev");
+  assert.equal(start.options.reduce((sum, o) => sum + o.probability, 0).toFixed(6), "1.000000");
+  assert.deepEqual(start.options.map((o) => o.label), [LABELS.tab, LABELS["modal-gpu"]]);
+  assert.equal((await placer.decide({ phase: "done", message: "teach it to walk", current: "modal-gpu", environments: ids })).choice, "tab");
+  assert.equal((await placer.decide({ phase: "start", message: "fix the typo in my title", current: "tab", environments: ids })).choice, "tab");
+  assert.equal(placer.describe("modal-gpu"), CRITERIA["modal-gpu"]);
 });
 
 test("the real Jev adapter, with an injected client, drives the placer end to end (no key, no network)", async () => {
@@ -125,31 +132,19 @@ test("the model check: the manifest and the tab's receipt must agree; it waits f
 });
 
 test("episode=model wires the model check and its home prompt; an unknown episode is an error", async () => {
-  const saved = process.env.TYPESAFE_API_KEY;
-  delete process.env.TYPESAFE_API_KEY;
-  try {
-    const p = await placerModule(options({ episode: "model", "home-wait-ms": "10" }));
-    assert.match(p.homePrompt ?? "", /trained model is in the browser/);
-    const res = await p.homeCheck!(async () => undefined);
-    assert.equal(res.ok, false);
-    assert.match(res.reason, /no model manifest/);
-    await assert.rejects(placerModule(options({ episode: "poem" })), /walks, model, obsession or robot/);
-  } finally {
-    if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
-  }
+  const p = buildPlacer(options({ episode: "model", "home-wait-ms": "10" }), fixedJudge({}));
+  assert.match(p.homePrompt ?? "", /trained model is in the browser/);
+  const res = await p.homeCheck!(async () => undefined);
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /no model manifest/);
+  assert.throws(() => buildPlacer(options({ episode: "poem" }), fixedJudge({})), /walks, model, obsession or robot/);
 });
 
-test("episode=obsession asks the server to write the user's words to a file (never into a command), and uses the model check", async () => {
-  const saved = process.env.TYPESAFE_API_KEY;
-  delete process.env.TYPESAFE_API_KEY;
-  try {
-    const p = await placerModule(options({ episode: "obsession" }));
-    assert.equal(p.requestFile, "obsession/request.txt");
-    assert.match(p.homePrompt ?? "", /trained model is in the browser/);
-    assert.equal((await placerModule(options({ episode: "model" }))).requestFile, undefined);
-  } finally {
-    if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
-  }
+test("episode=obsession asks the server to write the user's words to a file (never into a command), and uses the model check", () => {
+  const p = buildPlacer(options({ episode: "obsession" }), fixedJudge({}));
+  assert.equal(p.requestFile, "obsession/request.txt");
+  assert.match(p.homePrompt ?? "", /trained model is in the browser/);
+  assert.equal(buildPlacer(options({ episode: "model" }), fixedJudge({})).requestFile, undefined);
 });
 
 test("the model check says why no model exists when a program stopped on purpose (refusal, real-person gate), in its own words", async () => {
@@ -166,20 +161,20 @@ test("the model check says why no model exists when a program stopped on purpose
   assert.match(nothing.reason, /no model manifest/);
 });
 
-test("robot episode: teaching or relearning goes to the VM, everything else stays in the browser, and the home check reads the skills", async () => {
-  const { scriptedRobotJudge, checkHomeSkills, CRITERIA, LABELS } = await import("../placer.ts");
-  const { judgePlacer } = await import("../../../03-tab-to-cloud/placement.ts");
-  const placer = judgePlacer({ runJudge: scriptedRobotJudge, criteria: CRITERIA, labels: LABELS, model: "scripted" });
+test("robot episode: the placer asks with the robot's own criteria, takes the judge's choice as it comes, and the home check reads the skills", async () => {
+  const { checkHomeSkills, CRITERIA_ROBOT } = await import("../placer.ts");
+  const asked: { criteria: Record<string, string | null>; task: unknown }[] = [];
+  const judge: JudgeRunner = async (params) => {
+    asked.push({ criteria: params.questions.where!.criteria, task: (params.state as { task?: unknown }).task });
+    return fixedJudge({ "start: Make me a robot.": "tab", "start: Teach it to move.": "modal-vm", "done: Teach it to move.": "tab" })(params);
+  };
+  const placer = buildPlacer(options({ episode: "robot", skills: "8" }), judge);
   const ask = async (message: string, phase: "start" | "done" = "start") => (await placer.decide({ phase, message, current: "tab", environments: ["tab", "modal-vm"] })).choice;
   assert.equal(await ask("Make me a robot."), "tab");
-  assert.equal(await ask("paint it red"), "tab");
   assert.equal(await ask("Teach it to move."), "modal-vm");
-  assert.equal(await ask("Go learn your new body."), "modal-vm");
-  assert.equal(await ask("Relearn the skills for this body"), "modal-vm");
-  assert.equal(await ask("teach the robot to spin and wave"), "modal-vm");
   assert.equal(await ask("Teach it to move.", "done"), "tab");
-  // Near misses that only mention skills or training stay in the browser.
-  for (const text of ["list its skills", "what skills do you have?", "paint the train red", "make a train station", "show me what you learned", "can it spin?", "I want to learn how this works"]) assert.equal(await ask(text), "tab", text);
+  assert.deepEqual(asked[0]!.criteria, CRITERIA_ROBOT);
+  assert.equal(placer.describe("modal-vm"), CRITERIA_ROBOT["modal-vm"]);
 
   const skills = (names: string[]) => bytes(JSON.stringify({ skills: names }));
   const ok = await checkHomeSkills(files({ "home/skills.json": skills(["walk", "spin"]), "home/skills/walk.json": bytes("{}"), "home/skills/spin.json": bytes("{}") }), 2);
@@ -195,6 +190,16 @@ test("robot episode: teaching or relearning goes to the VM, everything else stay
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes('{"policy":') }))).reason, /not valid JSON objects: home\/skills\/walk\.json/);
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("[1]") }))).reason, /not valid JSON objects/);
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["../creature/robot"]), "home/skills/../creature/robot.json": bytes("{}") }))).reason, /not a plain skill name/);
+  // What the round trained decides what must come home: one skill asked for, one skill home, is a yes even when the teach step was for 8; a trained skill that did not come home is a no.
+  const round = (names: string[]) => bytes(JSON.stringify({ version: 1, skills: Object.fromEntries(names.map((n) => [n, { status: "done" }])) }));
+  const one = await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}"), "home/round.json": round(["walk"]) }), 8);
+  assert.equal(one.ok, true);
+  assert.match(one.reason, /^1 skill is home and installed: walk/);
+  const partial = await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}"), "home/round.json": round(["walk", "spin", "wave"]) }), 1);
+  assert.equal(partial.ok, false);
+  assert.match(partial.reason, /1 of the 3 skills trained this round came home \(not home: spin, wave\)/);
+  // A summary that is not version 1, or not readable, is no summary: the teach step's own count applies.
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}"), "home/round.json": bytes("nope") }), 8)).reason, /1 of the 8 skills came home/);
   // The index as D2/D3 write it: an object of skills.
   assert.equal((await checkHomeSkills(files({ "home/skills.json": bytes('{"version":1,"default":"walk","skills":{"walk":{},"turn-left":{}}}'), "home/skills/walk.json": bytes("{}"), "home/skills/turn-left.json": bytes("{}") }), 2)).ok, true);
 });

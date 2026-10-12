@@ -13,6 +13,7 @@ import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 import { comeHome, describeHome, opfsFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
+import { composerRoute, submitFrameKind } from "./composer.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
@@ -83,6 +84,8 @@ const state = {
   mode: "connecting" as "connecting" | "booting" | "writer" | "viewer" | "lost" | "offline",
   placement: undefined as Placement | undefined,
   client: undefined as PipeClient | undefined,
+  /** The attach said the server places this run: the composer's lines go through it (composer.ts). */
+  placed: false,
   runtime: undefined as TabRuntime | undefined,
   chat: new ChatView(),
   /** The conversation the chat input goes to: the root until the trained model comes home, then the fresh one on it (brain.ts). */
@@ -374,6 +377,8 @@ let prefetched: Promise<Uint8Array> | undefined;
 
 async function fetchComputer(onProgress?: (got: number, total: number) => void): Promise<Uint8Array> {
   const response = await fetch(COMPUTER);
+  // A server without the package answers 404: say so, instead of handing the 404's body to the loader and waiting for ever.
+  if (!response.ok) throw new Error(`the computer's package could not be loaded (the server answered ${response.status} for ${COMPUTER}); build it with: node tab/build.mjs --fetch`);
   const total = Number(response.headers.get("content-length") ?? 0);
   const reader = response.body!.getReader();
   const chunks: Uint8Array[] = [];
@@ -434,6 +439,7 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const { env, workspace, facts } = await bootComputer();
   state.environments = attached.environments;
   state.agentModel = attached.model;
+  state.placed = attached.placed === true;
   const runtime = await startTab({ client, attached, env, workspace, host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
@@ -1255,10 +1261,25 @@ function onFrame(frame: PipeFrame): void {
     case "want-snapshot":
       void sendSnapshot();
       return;
-    case "submit":
-      // A message a viewer typed: this tab runs the run.
-      if (state.runtime && state.mode === "writer" && !state.checkingOut && !state.brainPending && !state.rehoming) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+    case "submit": {
+      // A line the server placed for this run (typed here, in the stage, or by an operator), or its own home turn: this tab runs it. A user's line goes through the brain router like one typed in this page, one at a time
+      // in the order they came; it waits while a checkout, a model swap or a rehome holds the page, instead of being lost.
+      if (!(state.runtime && state.mode === "writer")) return;
+      const { text, requestId } = frame;
+      const kind = submitFrameKind(requestId);
+      sendLine = sendLine
+        .then(async () => {
+          for (let waited = 0; (state.checkingOut || state.brainPending || state.rehoming) && waited < 120_000; waited += 100) await new Promise((r) => setTimeout(r, 100));
+          if (!(state.runtime && state.mode === "writer") || state.checkingOut || state.brainPending || state.rehoming) return;
+          if (kind === "server") await target()?.submit({ type: "input", content: text, requestId }, ctx);
+          else await decideAndSubmit(text, requestId);
+        })
+        .catch((error: Error) => {
+          state.banner = `not sent: ${error.message}`;
+          render();
+        });
       return;
+    }
     default:
       return;
   }
@@ -1349,7 +1370,15 @@ async function connect(mode: "write" | "view", takeover = false, switchId?: stri
     // The computer boots before the tab asks for the run: the pipe holds a claim only for a tab that can use it.
     state.mode = "booting";
     render();
-    await ensureComputer();
+    try {
+      await ensureComputer();
+    } catch (error) {
+      // The computer's package could not be loaded (a server without it answers 404): say what, in the banner, instead of leaving the boot progress up.
+      state.mode = "lost";
+      state.banner = `could not start the computer: ${(error as Error).message}`;
+      render();
+      return;
+    }
   }
   state.mode = "connecting";
   render();
@@ -1420,9 +1449,11 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text || state.checkingOut || state.checkingIn || state.brainPending || state.rehoming) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
-  if (!state.runtime) {
-    if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
+  if (!text) return;
+  // Held: a checkout is deciding where the run lives, or the saved conversation is still coming back. A page attached to a placing server sends its line to the server (it places the run, then the line comes back here or goes to the VM); one that cannot reach it runs the line itself.
+  const route = composerRoute({ held: !!(state.checkingOut || state.checkingIn || state.brainPending || state.rehoming), running: !!state.runtime, mode: state.mode, online: state.net.online, placed: state.placed, ...(state.placement ? { watching: state.placement.where } : {}) });
+  if (route === "ignore") return;
+  if (route === "server") {
     input.value = "";
     state.client?.send({ t: "submit", text, requestId: `ui-${crypto.randomUUID()}` });
     return;
@@ -1450,10 +1481,9 @@ const router = brainRouter({ runJudge: remoteJudge, ...(Number(new URLSearchPara
  * online without it, the cloud. The brain it picks becomes the conversation's model (`Brain.use`, only when it changes), the decision is written in the conversation and told to the stage
  * (`walkshome:brain`), and then the message is submitted to the one conversation.
  */
-async function decideAndSubmit(text: string): Promise<void> {
+async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID()}`): Promise<void> {
   const runtime = state.runtime, conversation = target();
   if (!runtime || !conversation) return;
-  const requestId = `ui-${crypto.randomUUID()}`;
   if (golive && (state.mode === "writer" || state.mode === "offline")) {
     const brain = state.brain;
     const ready = brain !== undefined && brain.modelId !== undefined && brain.host.state().phase === "answered";

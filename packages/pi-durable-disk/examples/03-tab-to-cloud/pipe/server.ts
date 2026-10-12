@@ -1650,7 +1650,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const started = Date.now();
     try {
       const result = await options.brainJudge({ label: "brain", kind: "judge", state: { message }, questions: { who: { type: "choice", instructions: q.instructions, criteria: criteria as Record<string, string> } } });
-      log("brain.judge", { run: runId, ms: Date.now() - started, message_chars: message.length, ...(result.model ? { model: result.model } : {}) });
+      const who = result.answers.who as { choice?: string; probabilities?: Record<string, number> } | undefined;
+      log("brain.judge", { run: runId, ms: Date.now() - started, message_chars: message.length, ...(result.model ? { model: result.model } : {}), ...(who?.choice ? { choice: who.choice } : {}), ...(who?.probabilities ? { probabilities: who.probabilities } : {}) });
       json(res, 200, result);
     } catch (error) {
       log("brain.judge.failed", { run: runId, ms: Date.now() - started, error: (error as Error).message });

@@ -5,7 +5,7 @@
 //                 [--judge-model ID [--judge-url URL] [--judge-key-env NAME]]
 //                 [--creature-dir DIR]   the creature page's built folder, served under /tab/ (default: 04-walks-home/tab/dist when built); /tab/offline.json lists what a checkout caches
 //                 [--show-dir DIR]   the stage's built files, served under /show/ on this origin (isolation headers like the tab's; /show/offline.json lists what a checkout caches)
-//                 [--brain-judge jev|scripted]   the question the page's brain router asks (POST /api/runs/<id>/brain-judge); jev needs TYPESAFE_API_KEY
+//                 [--brain-judge jev | --brain-judge-module PATH]   the question the page's brain router asks (POST /api/runs/<id>/brain-judge): jev (needs TYPESAFE_API_KEY), or a module whose default export is a judge runner (checks)
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
 //                 [--no-restore PREFIX]...   work/ prefixes no writer is sent on attach (a large result read on demand through the disk proxy)
@@ -52,6 +52,7 @@ const { values } = parseArgs({
     "model-url": { type: "string", default: process.env.DEMO_MODEL_URL },
     "model-key-env": { type: "string" },
     "brain-judge": { type: "string" },
+    "brain-judge-module": { type: "string" },
     "show-dir": { type: "string" },
     "creature-dir": { type: "string" },
     "judge-model": { type: "string" },
@@ -107,24 +108,23 @@ if (values["judge-key-env"] && !judgeKey) {
   console.error(`--judge-key-env ${values["judge-key-env"]}: that variable is not set`);
   process.exit(2);
 }
-// The question the page's brain router asks (POST /api/runs/<id>/brain-judge): `jev` is TypeSafe Jev (TYPESAFE_API_KEY in the environment: run under the credential wrapper), `scripted` a stand-in that
-// answers from keywords (for checks that must not spend).
-if (values["brain-judge"] !== undefined && values["brain-judge"] !== "jev" && values["brain-judge"] !== "scripted") {
-  console.error("--brain-judge: jev or scripted");
+// The question the page's brain router asks (POST /api/runs/<id>/brain-judge): `jev` is TypeSafe Jev (TYPESAFE_API_KEY in the environment: run under the credential wrapper). A check that must not spend names a module
+// (`--brain-judge-module`) whose default export is a judge runner; there is no keyword stand-in in the server.
+if (values["brain-judge"] !== undefined && values["brain-judge"] !== "jev") {
+  console.error("--brain-judge: jev (a check names its own runner with --brain-judge-module)");
   process.exit(2);
 }
 if (values["brain-judge"] === "jev" && !process.env.TYPESAFE_API_KEY) {
   console.error("--brain-judge jev needs TYPESAFE_API_KEY in the environment");
   process.exit(2);
 }
+if (values["brain-judge"] !== undefined && values["brain-judge-module"] !== undefined) {
+  console.error("--brain-judge and --brain-judge-module are one or the other");
+  process.exit(2);
+}
 let brainJudge: JudgeRunner | undefined;
 if (values["brain-judge"] === "jev") brainJudge = (await import("@parcha/agentrun-jev")).createJevRunner({ timeoutMs: 10_000, maxAttempts: 1 }) as unknown as JudgeRunner;
-else if (values["brain-judge"] === "scripted") brainJudge = async (params) => {
-  const message = String((params.state as { message?: string }).message ?? "");
-  const cloud = /train|gpu|internet|web|http|install|git |obsess|golden gate|big model/i.test(message);
-  const probabilities = { local: cloud ? 0.05 : 0.95, cloud: cloud ? 0.95 : 0.05 };
-  return { answers: { who: { type: "choice", choice: cloud ? "cloud" : "local", probabilities } }, model: "scripted" };
-};
+else if (values["brain-judge-module"] !== undefined) brainJudge = (await import(pathToFileURL(resolvePath(values["brain-judge-module"])).href)).default as JudgeRunner;
 // The creature page (the robot) under /tab/ on this origin: its built folder (04-walks-home/tab/dist), by default when it has been built next to this example.
 const creatureDir = values["creature-dir"] ? resolvePath(values["creature-dir"]) : existsSync(join(here, "..", "04-walks-home", "tab", "dist", "index.html")) ? join(here, "..", "04-walks-home", "tab", "dist") : undefined;
 const judge = values["judge-model"]
