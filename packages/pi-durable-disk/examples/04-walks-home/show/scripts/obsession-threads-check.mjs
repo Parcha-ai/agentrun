@@ -30,7 +30,7 @@ try {
   try {
     await sleep(2500);
     const read = (expr) => tab.eval(`JSON.stringify(${expr})`).then(JSON.parse);
-    const snap = () => read(`(() => { const th = document.getElementById("threads"); if (th.hidden) return { shown: false }; const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1; const box = th.getBoundingClientRect(); const tiles = [...th.querySelectorAll(".tile")].map((t) => { const r = t.getBoundingClientRect(); return { skill: t.querySelector(".skill").textContent, host: t.querySelector(".host").textContent, status: t.dataset.status, text: t.innerText, inside: r.left >= box.left - 1 && r.right <= box.right + 1 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1, clipped: t.scrollHeight > t.clientHeight + 1 }; }); return { shown: true, head: th.querySelector(".thead").textContent, phase: th.querySelector(".th").dataset.phase, tiles, chips: [...th.querySelectorAll(".skill")].map((c) => [c.textContent, c.className]), robot: !!th.querySelector(".robot") }; })()`);
+    const snap = () => read(`(() => { const th = document.getElementById("threads"); if (th.hidden) return { shown: false }; const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1; const box = th.getBoundingClientRect(); const tiles = [...th.querySelectorAll(".tile")].map((t) => { const r = t.getBoundingClientRect(); return { skill: t.querySelector(".skill").textContent, host: t.querySelector(".host").textContent, status: t.dataset.status, text: t.innerText, inside: r.left >= box.left - 1 && r.right <= box.right + 1 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1, clipped: t.scrollHeight > t.clientHeight + 1 }; }); return { shown: true, head: th.querySelector(".thead").textContent, phase: th.querySelector(".th").dataset.phase, boxPhase: th.dataset.phase, boxH: box.height, paneH: th.parentElement.getBoundingClientRect().height, tiles, chips: [...th.querySelectorAll(".skill")].map((c) => [c.textContent, c.className]), robot: !!th.querySelector(".robot") }; })()`);
     const at = async (seconds, wait = 2200) => { await seek(seconds); await sleep(wait); return snap(); };
 
     let r = await at(5);
@@ -48,11 +48,13 @@ try {
     expect("later most are done, and the slow ones still learning", r.tiles.filter((t) => t.status === "done").length >= 5 && r.tiles.some((t) => t.status === "learning"), r.tiles.map((t) => t.status));
     r = await at(112, 2500); // every thread is finished, the run is not home yet
     expect("when every thread has finished the skills strip shows (no drawing over the creature), no skill in until the run is home", r.shown && !r.robot && /0 of 8 skills are in the robot/.test(r.head) && r.phase === "landing", r);
+    expect("and it is a strip: the box carries the phase and takes a fraction of the creature pane, not all of it", r.boxPhase === "landing" && r.boxH > 0 && r.boxH < r.paneH * 0.4, [r.boxPhase, r.boxH, r.paneH]);
     r = await at(118, 1500);
     for (let w = 0; w < 15_000 && !["landing", "home"].includes(r.phase); w += 500) { await sleep(500); r = await snap(); } // a loaded box reads the files slowly: wait for the state, not a fixed time
     expect("once the run is home the skills land one after another", r.phase === "landing" || r.phase === "home", r.phase);
     r = await at(118, 7500);
     expect("then all eight skills are in the robot", r.phase === "home" && /All 8 skills are in the robot/.test(r.head) && r.chips.filter(([, c]) => /\bin\b/.test(c)).length === 8, r);
+    expect("and at home it is still a strip over the one robot", r.boxPhase === "home" && r.boxH > 0 && r.boxH < r.paneH * 0.4, [r.boxPhase, r.boxH, r.paneH]);
     if (shots) await tab.screenshot(join(shots, `threads-home-${name.split(" ")[0]}.png`));
   } finally {
     await tab.close();
