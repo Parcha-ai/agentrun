@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LIMITS as PAGE_LIMITS, PRESETS, defaultDesign, validateDesign as pageValidate } from "../../04-walks-home/tab/src/design.ts";
-import { BODY_CHANGED, COLOR_NAMES, LIMITS, LOOKS_ONLY, MORPH_PRESETS, applyRobotTool, bodyKey, initialRobot, morphDesign, parseRobot, serializeRobot, validateDesign } from "../robot-model.ts";
+import { BODY_CHANGED, COLOR_NAMES, LIMITS, LOOKS_ONLY, MORPH_PRESETS, REACH, applyRobotTool, bodyKey, initialRobot, morphDesign, parseRobot, reachRatio, serializeRobot, validateDesign } from "../robot-model.ts";
 
 const robot = () => initialRobot(defaultDesign());
 const call = (s: ReturnType<typeof robot>, tool: string, args: Record<string, unknown>) => applyRobotTool(s, tool, args);
@@ -78,7 +78,8 @@ test("a size past a limit is refused with the limit, never clamped, and the stat
   assert.equal(big.kind, "refused");
   assert.equal(big.text, "Not done: torso_length would be 1.00 m, the most allowed is 0.90 m (about x1.8).");
   assert.strictEqual(big.state, s);
-  const long = call(call(s, "resize", { part: "leg_length", factor: 2 }).state, "resize", { part: "leg_length", factor: 1.5 }); // 0.4 -> 0.6, the most is 0.4
+  const tall = call(call(s, "resize", { part: "torso_length", factor: 1.6 }).state, "resize", { part: "leg_length", factor: 2 }).state; // a 0.8 m torso lets the legs reach 0.4 + 0.4 (the reach rule would stop it on the 0.5 m one)
+  const long = call(tall, "resize", { part: "leg_length", factor: 1.5 }); // 0.4 -> 0.6, the most is 0.4
   assert.equal(long.kind, "refused");
   assert.match(long.text, /^Not done: leg_length would be 0\.60 m, the most allowed is 0\.40 m \(where it already is\)\./);
   assert.equal(call(s, "resize", { part: "torso_height", factor: 0.5 }).kind, "body", "0.1 x 0.5 = 0.05 is the least allowed, so it is allowed");
@@ -230,4 +231,21 @@ test("do(skill): only a skill that came home can be chosen; the body and looks a
   assert.equal(both.kind, "body");
   assert.equal(both.text, `The robot is now a dog. The robot is now doing sprint. ${BODY_CHANGED}`);
   assert.equal(applyUpdateRobot(s, { skill: "sprint" }, { skills }).kind, "skill");
+});
+
+test("a leg longer than 1.5 torso lengths is refused: every preset keeps within it, longer legs and a shorter torso are refused, and the robot is left as it was", () => {
+  for (const p of MORPH_PRESETS.filter((x) => x !== "original")) assert.ok(reachRatio(morphDesign(p)!) <= REACH + 1e-9, `${p} reaches ${reachRatio(morphDesign(p)!).toFixed(3)} torso lengths`);
+  const dog = applyRobotTool(initialRobot(morphDesign("dog")!), "morph", { preset: "giraffe" }).state;
+  assert.equal(dog.design.torso.length, 0.5, "the giraffe's torso is 0.5 m (measured: it learns to walk with that torso, not with 0.45)");
+  const stock = robot(); // torso 0.5, legs 0.2 + 0.2
+  const longer = applyRobotTool(stock, "resize", { part: "leg_length", factor: 2 });
+  assert.equal(longer.kind, "refused");
+  assert.match(longer.text, /^Not done: the legs would be 0\.8 m long on a 0\.5 m torso, and a leg longer than 1\.5 torso lengths \(0\.75 m here\)/);
+  assert.equal(longer.state, stock, "nothing changed");
+  const shorter = applyRobotTool(dog, "resize", { part: "torso_length", factor: 0.6 });
+  assert.equal(shorter.kind, "refused", "a shorter torso under the same legs would break it just as well");
+  const ok = applyRobotTool(dog, "resize", { part: "leg_length", factor: 1.1 });
+  assert.equal(ok.kind, "body");
+  const whole = applyRobotTool(dog, "scale", { factor: 1.3 });
+  assert.equal(whole.kind, "body", "scaling the whole robot keeps the ratio");
 });

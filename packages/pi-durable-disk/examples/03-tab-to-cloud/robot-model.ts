@@ -17,6 +17,17 @@ export const LIMITS = {
   radius: [0.012, 0.04],
 } as const;
 
+/** A leg (thigh plus shin) longer than this many torso lengths is a body no skill was learned for (measured on the cluster: it does not stand up). */
+export const REACH = 1.5;
+/** The longest leg in torso lengths. */
+export const reachRatio = (d: Design): number => d.legs.reduce((a, l) => Math.max(a, l.thigh + l.shin), 0) / d.torso.length;
+/** The first leg that reaches further than the torso allows, as a sentence; undefined when the body is fine. */
+export function reachProblem(d: Design): string | undefined {
+  if (reachRatio(d) <= REACH + 1e-9) return undefined;
+  const most = d.legs.reduce((a, l) => Math.max(a, l.thigh + l.shin), 0);
+  return `the legs would be ${r4(most)} m long on a ${r4(d.torso.length)} m torso, and a leg longer than ${REACH} torso lengths (${r4(REACH * d.torso.length)} m here) is a body the robot cannot learn to walk with.`;
+}
+
 export const COLOR_NAMES = ["red", "orange", "yellow", "green", "blue", "purple", "pink", "white", "black", "gray", "brown"] as const;
 export type ColorName = (typeof COLOR_NAMES)[number];
 /** What the page paints with. */
@@ -103,7 +114,7 @@ export function initialRobot(drawn: Design, name?: string): RobotState {
 const MORPHS: Record<Exclude<(typeof MORPH_PRESETS)[number], "original">, { design: Omit<Design, "name">; look: Partial<Look> }> = {
   dog: { design: { version: 1, legDof: 3, torso: { length: 0.55, width: 0.22, height: 0.11 }, legs: [{ x: 0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }, { x: -0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }] }, look: { torso: "brown", legs: ["brown", "brown", null], shape: { torso: "round", legs: "round" }, face: "happy" } },
   spider: { design: { version: 1, legDof: 3, torso: { length: 0.32, width: 0.3, height: 0.09 }, legs: [{ x: 0.8, thigh: 0.22, shin: 0.26, radius: 0.014 }, { x: 0, thigh: 0.22, shin: 0.26, radius: 0.014 }, { x: -0.8, thigh: 0.22, shin: 0.26, radius: 0.014 }] }, look: { torso: "black", legs: ["black", "black", "black"], shape: { torso: "round", legs: "round" }, face: "angry" } },
-  giraffe: { design: { version: 1, legDof: 3, torso: { length: 0.45, width: 0.2, height: 0.09 }, legs: [{ x: 0.75, thigh: 0.34, shin: 0.34, radius: 0.018 }, { x: -0.75, thigh: 0.34, shin: 0.34, radius: 0.018 }] }, look: { torso: "yellow", legs: ["yellow", "yellow", null], shape: { torso: "round", legs: "round" }, face: "sleepy" } },
+  giraffe: { design: { version: 1, legDof: 3, torso: { length: 0.5, width: 0.2, height: 0.09 }, legs: [{ x: 0.75, thigh: 0.34, shin: 0.34, radius: 0.018 }, { x: -0.75, thigh: 0.34, shin: 0.34, radius: 0.018 }] }, look: { torso: "yellow", legs: ["yellow", "yellow", null], shape: { torso: "round", legs: "round" }, face: "sleepy" } },
   lizard: { design: { version: 1, legDof: 3, torso: { length: 0.7, width: 0.18, height: 0.07 }, legs: [{ x: 0.8, thigh: 0.12, shin: 0.14, radius: 0.016 }, { x: -0.8, thigh: 0.12, shin: 0.14, radius: 0.016 }] }, look: { torso: "green", legs: ["green", "green", null], shape: { torso: "round", legs: "round" }, face: "cool" } },
   stubby: { design: { version: 1, legDof: 3, torso: { length: 0.6, width: 0.3, height: 0.14 }, legs: [{ x: 0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }, { x: -0.7, thigh: 0.12, shin: 0.12, radius: 0.03 }] }, look: { torso: "orange", legs: ["orange", "orange", null], shape: { torso: "boxy", legs: "boxy" }, face: "surprised" } },
 };
@@ -190,6 +201,8 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
         result = `The legs are now ${m(d.legs[0]!.radius * 2)} thick (${x(factor as number)}).`;
       }
       if (same({ ...state }, prev)) return { state: prev, text: "No change: that factor leaves the body as it is.", kind: "none" };
+      const reach = part === "leg_length" || part === "torso_length" ? reachProblem(d) : undefined;
+      if (reach && reachRatio(d) > reachRatio(prev.design) + 1e-9) return refuse(prev, reach); // a body already past the rule may be edited, but not made worse
       return done("body", result);
     }
     case "scale": {
