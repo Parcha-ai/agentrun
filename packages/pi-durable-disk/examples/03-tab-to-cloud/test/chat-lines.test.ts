@@ -155,3 +155,20 @@ test("a result with no diagnostics is untouched, and a trailing block that is no
   assert.equal(tools[1]!.output, "lots<harness>\n[warn] something else\n</harness>", "a block that is not the rendering of the entry's own diagnostics is kept");
   assert.equal(tools[1]!.diagnostics?.length, 1);
 });
+
+import { ellipsize } from "../tab/hint.ts";
+test("a hint too long for its field is cut to the field's width with an ellipsis; one that fits is left alone", () => {
+  const w = (s: string) => s.length * 10; // a fake measure: 10 px a character
+  assert.equal(ellipsize("Tell the robot what to do", 400, w), "Tell the robot what to do");
+  assert.equal(ellipsize("the session is open; the robot's brain is loading", 200, w), "the session is open…", "the longest beginning that fits with the ellipsis (20 characters of 10 px)");
+  assert.equal(ellipsize("abc", 5, w), "…", "too narrow for anything: just the ellipsis");
+});
+
+import { fitPlaceholder } from "../tab/hint.ts";
+test("the field's own placeholder is kept until a hint has been set; a set hint is fitted to the room there is", () => {
+  const w = (s: string) => s.length * 10;
+  assert.equal(fitPlaceholder("Ask the agent to write something…", "", 500, w), "Ask the agent to write something…", "a page that never sets a hint keeps the HTML's");
+  assert.equal(fitPlaceholder("Ask the agent to write something…", "", 0, w), "Ask the agent to write something…", "even while the field is hidden");
+  assert.equal(fitPlaceholder("old", "Tell the robot what to do", 0, w), "Tell the robot what to do", "no room measured yet (the field is hidden): the whole hint, fitted when it is shown");
+  assert.equal(fitPlaceholder("old", "the session is open; the robot's brain is loading", 200, w), "the session is open…");
+});

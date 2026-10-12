@@ -128,3 +128,6 @@ details.thread .thread-chat .turn { font-size: 14px; }
 .tool .tool-body .status { font: 400 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; } .tool .tool-body .status::before { content: "· "; }
 .tool > summary .state { flex: none; color: var(--muted); font-size: 11px; opacity: .85; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .result-card { display: grid; gap: 2px; font: 400 12px/1.5 var(--mono); color: var(--muted); } .tool .result-card .rc-row.pass { color: var(--green); } .tool .result-card .rc-home { color: var(--ink); margin-top: 4px; }
+
+/* one line in the composer: a hint too long for the field is cut with an ellipsis by the page (tab/hint.ts; a textarea's placeholder cannot do text-overflow); this keeps whatever is left from wrapping */
+#input::placeholder { white-space: nowrap; overflow: hidden; }
