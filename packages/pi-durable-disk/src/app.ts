@@ -27,6 +27,11 @@ export type AppOptions = OpenDurableRunOptions["harness"] & {
    */
   beforeResume?: OpenDurableRunOptions["beforeResume"];
   /**
+   * The instance's own lease trail (`OpenDurableRunOptions.onLease`): each heartbeat write's duration and the fence's reason, called synchronously and never awaited.
+   * A host that wants to know why an instance died keeps these somewhere that outlives it (the demo's cloud app sends them over its link).
+   */
+  onLease?: OpenDurableRunOptions["onLease"];
+  /**
    * Called once per incarnation after the run is open and resumed; `run.generation` tells a first start from a resume.
    * Work that must keep the instance up belongs in pi's tasks and tools: parking sees only those.
    */

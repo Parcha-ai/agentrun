@@ -16,6 +16,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk";
+import { vmTrail } from "./vm-trail.ts";
 import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
 import { xdotoolDriver } from "./computer-driver.ts";
@@ -51,6 +52,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     if (!run) throw new Error("the run is not open");
     await run.claim.barrier();
   };
+  // The instance's own trail (slow heartbeat writes, the fence's reason, its health) goes to the server over the link as it happens: a VM that dies leaves it behind.
+  const trail = vmTrail((event, data) => link?.trail(event, data));
   const registry = agentRegistry(durable, { ...(link ? { switchChannel: link.switchChannel } : {}), ...(process.env.DEMO_DISPLAY ? { computer: xdotoolDriver() } : {}) });
   extra.install?.(registry);
   return {
@@ -59,6 +62,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     models: agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) }),
     settings: { ...SETTINGS, ...(extra.settings ?? {}) },
     root: { agent: rootAgent(modelId, { registry }) },
+    onLease: trail.onLease,
     async beforeResume({ harness }) {
       const id = process.env.DEMO_SWITCH_ID;
       if (!id) return;
@@ -81,6 +85,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
         if (events) appendFileSync(events, `${JSON.stringify({ at: new Date().toISOString(), event, run: opened.ref.id, generation: opened.generation, pid: process.pid, ...extra })}\n`);
       };
       note("open");
+      trail.startHealth(5_000);
       opened.harness.subscribeCommits((publication) => note("commit", { seq: publication.seq }));
       const root = await opened.harness.root(ctx, { agent: rootAgent(modelId, { registry }) });
       link?.attach(opened.harness, root.id, extra.threadsOf);

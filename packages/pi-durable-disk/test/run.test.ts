@@ -12,6 +12,7 @@ import { archilEnv } from "../src/env.ts";
 import { exitCodeFor, FencedError, HeldError } from "../src/errors.ts";
 import {
   LeaseLapsedError,
+  type LeaseEvent,
   openDurableRun,
   OWNER_LOCK,
   RunError,
@@ -700,7 +701,13 @@ describe("fences during the run", () => {
       };
       // The fake clock drives the timer; the watchdog thread keeps real time, and its 8 s limit is never reached here.
       const lease = { heartbeatMs: 10, expiryMs: 10_000, marginMs: 2_000, checkMs: 5 };
-      const t = setup(dir.root, { options: { persist, lease, clock: () => now } });
+      // What the instance leaves behind: each heartbeat write's duration and the fence's reason. A callback that throws changes nothing.
+      const trail: LeaseEvent[] = [];
+      const onLease = (event: LeaseEvent) => {
+        trail.push(event);
+        if (trail.length === 1) throw new Error("a broken trail hook");
+      };
+      const t = setup(dir.root, { options: { persist, lease, clock: () => now, onLease } });
       const run = await t.open();
       pid = await startCommand(run, t.agent);
       // Writes are serialized: the second to finish after the clock moved started after it moved, and so does every later one.
@@ -723,6 +730,11 @@ describe("fences during the run", () => {
       assert.equal(exitCodeFor(lapsed), 75);
       assert.equal(lapsed.sinceMs, 8_100, "measured from when the write started (5000), not when it finished (7000)");
       assert.equal(lapsed.by, "timer");
+      const beats = trail.filter((e): e is Extract<LeaseEvent, { kind: "beat" }> => e.kind === "beat");
+      assert.ok(beats.length >= 2 && beats.every((b) => b.ok && Number.isFinite(b.ms)), "every successful heartbeat write reported how long it took");
+      assert.ok(beats.some((b) => b.ms === 2_000), "the write that started at 5000 and finished at 7000 took 2000 ms");
+      const fence = trail.find((e) => e.kind === "fence");
+      assert.deepEqual(fence && { ...fence }, { kind: "fence", code: "LEASE_LAPSED", message: lapsed.message, sinceMs: 8_100, by: "timer" }, "the fence's reason, with how long since the last good heartbeat started");
       assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"]);
       assert.ok(await waitGone(pid), "the command died");
       assert.equal(pending.length, 1, "the self-fence fired while a heartbeat write still hung");

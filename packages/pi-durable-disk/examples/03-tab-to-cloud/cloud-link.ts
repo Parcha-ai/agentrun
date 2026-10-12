@@ -31,6 +31,8 @@ type Frame =
   | { t: "switch-accepted"; ask: string; switchId: string }
   | { t: "switch-refused"; ask?: string; message: string }
   | { t: "switched"; switchId: string }
+  /** A line of the instance's own trail (its lease: slow heartbeat writes, the fence's reason; its health), for the server to keep: it outlives a dead VM. Best effort, never queued behind a slow socket. */
+  | { t: "trail"; at: string; event: string; data?: Record<string, unknown> }
   | GpuFrame;
 
 const same = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
@@ -45,6 +47,8 @@ export interface CloudLink {
   attach(harness: Harness, conversationId: ConversationId, threadsOf?: ThreadsOf): void;
   /** The notice of move `switchId` is committed: told to the server over the link, now or as soon as it dials in. */
   notifySwitched(switchId: string): void;
+  /** One line of this instance's trail to the server, over the link: sent at once when the link is up and not backed up, held (the last 200) until it dials in otherwise, dropped past that. Synchronous, never throws, never waits. */
+  trail(event: string, data?: Record<string, unknown>): void;
   /** How the agent's switch_environment tool reaches the server: over this link. */
   readonly switchChannel: FrameSwitchChannel;
   /** The GPU boxes the server lends this host (the cluster beat): acquire one per thread, run commands in it. The server holds the Modal key; the host only asks. */
@@ -64,6 +68,9 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   let watchChain: Promise<void> = Promise.resolve();
   /** Moves whose notice committed before the server dialed in: told when it does. */
   const switchedIds = new Set<string>();
+  const trailHeld: Frame[] = [];
+  const TRAIL_HELD_MAX = 200;
+  const TRAIL_BACKED_UP = 256 * 1024;
   const switchChannel = new FrameSwitchChannel((frame) => {
     if (!link || link.readyState !== link.OPEN) return false;
     link.send(JSON.stringify(frame satisfies Frame));
@@ -117,6 +124,13 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     log("link.connected");
     for (const id of switchedIds) ws.send(JSON.stringify({ t: "switched", switchId: id } satisfies Frame));
     switchedIds.clear();
+    for (const frame of trailHeld.splice(0)) {
+      try {
+        ws.send(JSON.stringify(frame));
+      } catch {
+        // The trail is best effort.
+      }
+    }
     linked();
     ws.on("message", (data) => {
       const frame = JSON.parse(String(data)) as Frame;
@@ -204,6 +218,19 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     baseUrl: `http://127.0.0.1:${port}/v1`,
     switchChannel,
     gpu,
+    trail(event, data) {
+      const frame: Frame = { t: "trail", at: new Date().toISOString(), event, ...(data ? { data } : {}) };
+      try {
+        if (link && link.readyState === link.OPEN) {
+          if (link.bufferedAmount < TRAIL_BACKED_UP) link.send(JSON.stringify(frame));
+        } else {
+          trailHeld.push(frame);
+          if (trailHeld.length > TRAIL_HELD_MAX) trailHeld.shift();
+        }
+      } catch {
+        // The trail is best effort: it never throws into whoever reports.
+      }
+    },
     notifySwitched(switchId) {
       if (link && link.readyState === link.OPEN) link.send(JSON.stringify({ t: "switched", switchId } satisfies Frame));
       else switchedIds.add(switchId);

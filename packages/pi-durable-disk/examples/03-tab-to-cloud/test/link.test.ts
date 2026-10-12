@@ -101,3 +101,46 @@ describe("the GPU boxes over the cloud link", () => {
     assert.equal(await p.wait(), 0);
   });
 });
+
+describe("the instance's trail over the cloud link", () => {
+  const PORT3 = 18797;
+  let model: Awaited<ReturnType<typeof modelStub>>;
+  let link: CloudLink;
+  const logged: { event: string; data: Record<string, unknown> }[] = [];
+  let dialer: LinkDialer | undefined;
+  before(async () => {
+    model = await modelStub(() => "x");
+    link = await startCloudLink({ port: PORT3, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+  });
+  after(async () => {
+    dialer?.close();
+    await link.close();
+    await model.close();
+  });
+  const until = async (check: () => boolean, ms = 5_000) => {
+    for (const end = Date.now() + ms; !check(); await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error("timed out");
+  };
+
+  it("holds trail lines until the server dials in, then the server logs them as vm.trail, and a line sent later goes at once", async () => {
+    link.trail("lease.fence", { code: "LEASE_LAPSED", sinceMs: 7_300 }); // before anyone is connected: the VM may be dying
+    link.trail("vm.health", { rssMB: 812 });
+    dialer = dialLink({ url: `ws://127.0.0.1:${PORT3}/`, token: "tok", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: (event, data = {}) => logged.push({ event, data }) });
+    await until(() => logged.filter((l) => l.event === "vm.trail").length === 2);
+    const first = logged.find((l) => l.event === "vm.trail")!.data;
+    assert.equal(first.vmEvent, "lease.fence");
+    assert.equal(first.code, "LEASE_LAPSED");
+    assert.equal(first.sinceMs, 7_300);
+    assert.equal(typeof first.vmAt, "string");
+    link.trail("lease.slow-beat", { ms: 2_400 });
+    await until(() => logged.some((l) => l.event === "vm.trail" && l.data.vmEvent === "lease.slow-beat"));
+  });
+
+  it("never throws into whoever reports, whether or not a link is up", async () => {
+    const lone = await startCloudLink({ port: 18798, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+    try {
+      for (let i = 0; i < 500; i++) lone.trail("vm.health", { i }); // past the held limit: the oldest are dropped, nothing throws
+    } finally {
+      await lone.close();
+    }
+  });
+});
