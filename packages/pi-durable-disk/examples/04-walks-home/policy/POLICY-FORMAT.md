@@ -94,10 +94,10 @@ getup network trained without one) is written with a std of 1e9, so whatever the
 Each universe trains into `<run>/work/train/<universe>/`; its `policy.json` is the newest checkpoint's policy, rewritten
 by rename at every checkpoint. The winner the tab loads at home is `<run>/work/home/policy.json`.
 
-After the cluster beat, each skill a thread taught comes home as `<run>/work/home/skills/<skill>.json` (that skill's
-policy with the get-up network inside) and `<run>/work/home/skills.json`: `{"version": 1, "body_mjcf_sha256", "default",
-"skills": {"<skill>": {"policy": "skills/<skill>.json", "command", "label"}}}`. `train/assemble_skills.py` and its
-TypeScript twin `assemble-skills.ts` write them, the manifest last.
+After the cluster beat, each skill a thread taught comes home into the run's home directory (`<run>/work/home`) as
+`skills/<skill>.json` (that skill's policy with the get-up network inside), with the manifest `skills.json`:
+`{"version": 1, "body_mjcf_sha256", "default", "skills": {"<skill>": {"policy": "skills/<skill>.json", "command", "label"}}}`.
+`train/assemble_skills.py` and its TypeScript twin `assemble-skills.ts` write them, the manifest last.
 
 ## Parity
 
