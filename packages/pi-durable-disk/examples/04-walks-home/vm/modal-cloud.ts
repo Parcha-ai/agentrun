@@ -269,6 +269,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
             // Tracked from the moment it exists: whatever happens next, a box that would not go stays in `live` and close() tries again.
             live.add(box.id);
             const poolBox = { id: box.id, name, index };
+            let lastReady = "";
             try {
               const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
               const readyMs = cluster.readyTimeoutMs ?? 300_000;
@@ -282,7 +283,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
                 // One attempt gets no more than the time that is left.
                 const r = await clusterClient.exec(box, `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`, Math.min(180, leftS)).catch((e: Error) => ({ exitCode: 1, result: e.message }));
                 if (Date.now() > deadline) throw new Error(`GPU box ${index} was not ready in ${Math.round(readyMs / 1000)} s${r.exitCode === 0 ? " (it answered too late)" : `: ${r.result.trim().slice(-200)}`}`);
-                if (r.exitCode === 0) break;
+                if (r.exitCode === 0) {
+                  lastReady = r.result.trim().split("\n").filter(Boolean).at(-1) ?? "";
+                  break;
+                }
                 await new Promise<void>((res) => {
                   const timer = setTimeout(res, Math.min(5_000, Math.max(0, deadline - Date.now())));
                   signal.addEventListener("abort", () => (clearTimeout(timer), res()), { once: true });
@@ -293,6 +297,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
               throw error;
             }
             options.log("cluster.box-up", { index, box: name, ms: Date.now() - t0 });
+            if (lastReady) options.log("cluster.box-warm", { index, box: name, line: lastReady.slice(-400) });
             return poolBox;
           },
           remove: async (box) => drop({ id: box.id, name: box.name }),
