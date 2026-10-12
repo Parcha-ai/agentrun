@@ -39,7 +39,7 @@ import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
 import { cloudAgent, rootAgent } from "../agent.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
-import { currentRobot, loadSkills, ROBOT_TOOLS, SKILLS_FILE } from "../robot-tools.ts";
+import { currentRobot, defaultSkill, loadSkills, ROBOT_TOOLS } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
 import { narrowEnum, toNativeTools } from "./native-turn.ts";
 import { creatureActivity } from "./creature-activity.ts";
@@ -1016,11 +1016,8 @@ let phoneSkillsHome: string[] = [];
 async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> {
   const robot = await currentRobot(runtime.env as never, ctx);
   if ("problem" in robot) return undefined;
-  const manifest = await runtime.env.readTextFile(SKILLS_FILE, ctx);
-  let defaultSkill: string | undefined;
-  try { if (manifest.ok) defaultSkill = (JSON.parse(manifest.value) as { default?: unknown }).default as string | undefined; } catch { /* no default named */ }
   phoneSkillsHome = Object.keys(await loadSkills(runtime.env as never, ctx));
-  return stateLine(robot, phoneSkillsHome, typeof defaultSkill === "string" ? defaultSkill : undefined);
+  return stateLine(robot, phoneSkillsHome, await defaultSkill(runtime.env as never, ctx)); // what the pane plays: the manifest's default, its first skill, or walk
 }
 
 async function startPhoneBrain(runtime: TabRuntime): Promise<void> {

@@ -137,8 +137,20 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
 }
 
 /**
+ * Whether a cached file is the version the server sends now: the same validator (ETag, else Last-Modified) and the same length. A length alone is not a version
+ * (an edited file of the same size kept its old bytes), so a server that sends no validator has every file saved again.
+ */
+function sameVersion(have: Response, now: Response): boolean {
+  if (have.headers.get("content-length") !== now.headers.get("content-length")) return false;
+  const etag = now.headers.get("etag");
+  if (etag) return have.headers.get("etag") === etag;
+  const modified = now.headers.get("last-modified");
+  return modified !== null && have.headers.get("last-modified") === modified;
+}
+
+/**
  * Put these same-origin files in the offline cache, each fetched whole past the HTTP cache (the phone's page, the assets its build lists, its model's small
- * files): a reload with no network is then answered by the service worker (sw.ts). A file already cached with the same length is kept as it is.
+ * files): a reload with no network is then answered by the service worker (sw.ts). A file cached at the version the server sends now is kept as it is.
  */
 export async function cacheFilesForOffline(paths: readonly string[], onProgress?: (p: CacheProgress) => void): Promise<{ files: number; bytes: number }> {
   const cache = await caches.open(CACHE_NAME);
@@ -149,7 +161,7 @@ export async function cacheFilesForOffline(paths: readonly string[], onProgress?
     if (!r.ok) throw new Error(`${path}: ${r.status}`);
     const length = Number(r.headers.get("content-length") ?? 0);
     const have = await cache.match(key);
-    if (have && length > 0 && Number(have.headers.get("content-length")) === length) await r.body?.cancel();
+    if (have && sameVersion(have, r)) await r.body?.cancel();
     else await cache.put(key, r);
     bytes += length;
     onProgress?.({ done: ++done, total: paths.length, what: path });

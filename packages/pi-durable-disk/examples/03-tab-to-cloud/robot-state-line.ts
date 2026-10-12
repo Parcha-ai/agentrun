@@ -6,8 +6,8 @@ import { bodyKey, morphDesign, SKILL_NAMES, type RobotState } from "./robot-mode
 const PRESETS = ["dog", "spider", "giraffe", "lizard", "stubby"] as const;
 
 /**
- * "doing": the skill the state names; with none named, the skills manifest's default (`defaultSkill`, home/skills.json's `default`, normally walk) when any
- * skill is home, since that is what the page plays; else "nothing" (the spec as D1 corrected it with D3).
+ * "doing": the skill the state names; with none named, the default the page plays (`defaultSkill`, robot-tools.ts defaultSkill; walk when not given) when any
+ * skill is home; else "nothing" (the spec as D1 corrected it with D3).
  */
 export function stateLine(s: RobotState, skillsHome: readonly string[], defaultSkill?: string): string {
   const key = bodyKey(s.design);
@@ -22,5 +22,5 @@ export function stateLine(s: RobotState, skillsHome: readonly string[], defaultS
   const home = SKILL_NAMES.filter((n) => skillsHome.includes(n)); // D2's order
   return `[Robot now: named ${s.name}; body ${body}${changed ? ", changed since drawn" : ""}; ${2 * pairs} legs; colors torso ${c(s.look.torso)}, ${legColors}; `
     + `shapes torso ${s.look.shape.torso}, legs ${s.look.shape.legs}; face ${s.look.face === "none" ? "no face" : s.look.face}; `
-    + `doing ${s.skill ?? (home.length > 0 && defaultSkill ? defaultSkill : "nothing")}; skills home: ${home.length ? home.join(", ") : "none yet"}.]`;
+    + `doing ${s.skill ?? (home.length > 0 ? (defaultSkill ?? "walk") : "nothing")}; skills home: ${home.length ? home.join(", ") : "none yet"}.]`;
 }

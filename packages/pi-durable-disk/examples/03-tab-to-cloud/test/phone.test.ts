@@ -200,9 +200,27 @@ test("the state line is D1's, byte for byte: a renamed angry spider painted blac
     assert.ok(out.state, `${tool}: ${out.text}`);
     r = out.state!;
   }
-  assert.equal(stateLine(r, ["wave", "walk", "spin"]), "[Robot now: named Rex; body spider, changed since drawn; 6 legs; colors torso black, legs black; shapes torso round, legs round; face angry; doing nothing; skills home: walk, spin, wave.]", "D1's literal example (no default named: doing nothing)");
-  assert.match(stateLine(r, ["walk"], "walk"), /doing walk; skills home: walk\.\]$/, "with skills home, the manifest's default is what it does");
+  assert.equal(stateLine(r, ["wave", "walk", "spin"]), "[Robot now: named Rex; body spider, changed since drawn; 6 legs; colors torso black, legs black; shapes torso round, legs round; face angry; doing walk; skills home: walk, spin, wave.]", "D1's literal example");
+  assert.match(stateLine(r, ["walk", "spin"], "spin"), /doing spin; skills home: walk, spin\.\]$/, "with skills home, the default the page plays is what it does");
   assert.match(stateLine(initialRobot(drawn), [], "walk"), /^\[Robot now: named quadruped; body as drawn; 4 legs; colors torso default, legs default; .*doing nothing; skills home: none yet\.\]$/, "nothing home: doing nothing");
+});
+
+test("doing names the skill the pane plays: the manifest's default, else its first skill; walk for a lone policy; nothing with none home", async () => {
+  const { defaultSkill, loadSkills } = await import("../robot-tools.ts");
+  const drawn: Design = { version: 1, name: "quadruped", legDof: 3, torso: { length: 0.5, width: 0.22, height: 0.1 }, legs: [{ x: 0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }, { x: -0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }] };
+  const skill = (name: string) => ({ policy: `skills/${name}.json`, command: 0 });
+  const doing = async (files: Record<string, string>) => {
+    const env = new FilesEnv(memoryFs("/workspace"));
+    for (const [path, text] of Object.entries(files)) assert.ok((await env.writeFile(path, text, ctx)).ok);
+    const home = Object.keys(await loadSkills(env as never, ctx));
+    return /doing ([^;]+);/.exec(stateLine(initialRobot(drawn), home, await defaultSkill(env as never, ctx)))![1];
+  };
+  const manifest = (m: Record<string, unknown>) => ({ "home/skills.json": JSON.stringify({ version: 1, body_mjcf_sha256: "0".repeat(64), ...m }) });
+  assert.equal(await doing(manifest({ default: "spin", skills: { walk: skill("walk"), spin: skill("spin") } })), "spin", "the manifest's default");
+  assert.equal(await doing(manifest({ skills: { wave: skill("wave"), walk: skill("walk") } })), "wave", "no default named: its first skill, as parseSkills plays it");
+  assert.equal(await doing(manifest({ default: "sprint", skills: { spin: skill("spin"), walk: skill("walk") } })), "spin", "a default it does not list: its first skill");
+  assert.equal(await doing({ "home/policy.json": "{}" }), "walk", "one policy home: walk");
+  assert.equal(await doing({}), "nothing", "nothing home");
 });
 
 test("the exchanges window: earlier exchanges in the model's format, the state line as the assistant's message, then the user; the oldest dropped first", () => {
@@ -266,27 +284,44 @@ test("a parts manifest the server will not give (404, 503, offline) is taken fro
   }
 });
 
-test("the phone's files go into the offline cache under their paths; one already there at the same length is kept", async () => {
+test("the phone's files go into the offline cache under their paths; one is kept only at the server's version, never by its length alone", async () => {
   const { cacheFilesForOffline } = await import("../tab/offline.ts");
-  const put = new Map<string, string>();
+  type Kept = { body: string; headers: Record<string, string> };
+  const put = new Map<string, Kept>();
   const g = globalThis as unknown as { caches?: unknown; location?: unknown };
   const before = { caches: g.caches, location: g.location };
   g.location = { origin: "https://p.example" };
-  g.caches = { open: async () => ({ match: async (k: string) => (put.has(k) ? new Response(put.get(k), { headers: { "content-length": String(put.get(k)!.length) } }) : undefined), put: async (k: string, r: Response) => void put.set(k, await r.text()) }) };
+  g.caches = { open: async () => ({ match: async (k: string) => (put.has(k) ? new Response(put.get(k)!.body, { headers: put.get(k)!.headers }) : undefined), put: async (k: string, r: Response) => void put.set(k, { body: await r.text(), headers: Object.fromEntries(r.headers) }) }) };
+  const sent = (body: string, headers: Record<string, string> = {}): Kept => ({ body, headers: { "content-length": String(body.length), ...headers } });
   try {
-    put.set("https://p.example/models/robot.parts.json", "old-same");
-    const files = { "/": "<html>", "/main.js": "js", "/models/robot.parts.json": "new-same" };
+    const was: Record<string, Kept> = {
+      "/models/robot.parts.json": sent("old-same"), // an edit of the same size, from a server with no validators
+      "/models/robot.state.bin": sent("cached!!", { etag: '"a"' }),
+      "/main.js": sent("js-1", { etag: '"a"' }),
+      "/models/robot.serving.json": sent("served-1", { "last-modified": "Mon, 12 Oct 2026 05:00:00 GMT" }),
+    };
+    for (const [path, kept] of Object.entries(was)) put.set(`https://p.example${path}`, kept);
+    const files: Record<string, Kept> = {
+      "/": sent("<html>"),
+      "/models/robot.parts.json": sent("new-same"),
+      "/models/robot.state.bin": sent("server!!", { etag: '"a"' }),
+      "/main.js": sent("js-2", { etag: '"b"' }),
+      "/models/robot.serving.json": sent("served-2", { "last-modified": "Mon, 12 Oct 2026 05:00:00 GMT" }),
+    };
     const fetched: string[] = [];
     const real = globalThis.fetch;
-    globalThis.fetch = (async (u: string) => { fetched.push(String(u)); return new Response(files[String(u) as keyof typeof files], { headers: { "content-length": String(files[String(u) as keyof typeof files].length) } }); }) as typeof fetch;
+    globalThis.fetch = (async (u: string) => { fetched.push(String(u)); return new Response(files[String(u)]!.body, { headers: files[String(u)]!.headers }); }) as typeof fetch;
     try {
       const saved = await cacheFilesForOffline(Object.keys(files));
-      assert.equal(saved.files, 3);
+      assert.equal(saved.files, 5);
     } finally { globalThis.fetch = real; }
-    assert.equal(put.get("https://p.example/"), "<html>");
-    assert.equal(put.get("https://p.example/main.js"), "js");
-    assert.equal(put.get("https://p.example/models/robot.parts.json"), "old-same", "the same length: kept, not written again");
-    assert.deepEqual(fetched, ["/", "/main.js", "/models/robot.parts.json"]);
+    const body = (path: string) => put.get(`https://p.example${path}`)!.body;
+    assert.equal(body("/"), "<html>");
+    assert.equal(body("/models/robot.parts.json"), "new-same", "the same length and no validator: saved again");
+    assert.equal(body("/main.js"), "js-2", "another ETag: saved again");
+    assert.equal(body("/models/robot.state.bin"), "cached!!", "the same ETag: kept, not written again");
+    assert.equal(body("/models/robot.serving.json"), "served-1", "the same Last-Modified and length: kept");
+    assert.deepEqual(fetched, Object.keys(files));
   } finally {
     g.caches = before.caches;
     g.location = before.location;

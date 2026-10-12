@@ -68,6 +68,24 @@ export async function loadSkills(env: Env, context: Ctx): Promise<Record<string,
   return single.ok ? { walk: { label: "walk" } } : {};
 }
 
+/**
+ * The skill the robot plays when none is chosen, as the page picks it (04's parseSkills): the manifest's `default` when it names one of its skills, else its
+ * first skill; walk when only home/policy.json came home; none when no skill did.
+ */
+export async function defaultSkill(env: Env, context: Ctx): Promise<string | undefined> {
+  const have = await env.readTextFile(SKILLS_FILE, context);
+  if (have.ok) {
+    try {
+      const m = JSON.parse(have.value) as { default?: unknown; skills?: Record<string, unknown> };
+      const names = m.skills && typeof m.skills === "object" && !Array.isArray(m.skills) ? Object.keys(m.skills) : [];
+      return typeof m.default === "string" && names.includes(m.default) ? m.default : names[0];
+    } catch {
+      return undefined;
+    }
+  }
+  return (await env.readTextFile(POLICY_FILE, context)).ok ? "walk" : undefined;
+}
+
 /** One edit at a time per computer: pi runs the calls of one model turn together ("a red spider" is two), and each edit is read-modify-write on the same file, so the later write would drop the earlier one. */
 const lines = new WeakMap<object, Promise<unknown>>();
 function edit(env: Env | undefined, context: Ctx, tool: string, args: Record<string, unknown>) {
