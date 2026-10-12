@@ -44,16 +44,24 @@ export function brainFromItem(item: unknown): Brain | null {
 /**
  * The conversation as the stage shows it: the viewer's words and the agent's own text, in order, with the thinking an assistant item carries. Tool calls, notes and the notice about a
  * switch are not turns, and neither are the brain entries themselves (the stage shows those as the swap). Turns after the swap (`ready`) are marked `brain`: they are the trained
- * model's conversation (and only those show their thinking). `isServerTurn` says which user items are the server's own words and not the viewer's.
+ * model's conversation (and only those show their thinking); after a check-in, and for a message routed to the cloud, they are the cloud model's again. `isServerTurn` says which user items are the server's own words and not the viewer's.
  */
 export function turnsFromItems(items: readonly unknown[], isServerTurn: (text: string) => boolean): ChatTurn[] {
   const turns: ChatTurn[] = [];
+  // Whether the trained model is the brain that answers from here on: the swap makes it so; a check-in puts the cloud model back; and each message's own routing decision (written before the
+  // message) says which brain answers it. A page that does not route writes no decisions, so the swap alone decides, as it did before.
   let swapped = false;
   for (const raw of items) {
     if (raw === null || typeof raw !== "object") continue;
     const item = raw as Record<string, unknown>;
     if (item.kind === "brain") {
       if (brainFromItem(item)?.stage === "ready") swapped = true;
+      else if (item.stage === "home") swapped = false;
+      else if (item.stage === "decision") {
+        const routed = (item.data as { brain?: unknown } | null | undefined)?.brain;
+        if (routed === "tab-local") swapped = true;
+        else if (routed === "cloud") swapped = false;
+      }
       continue;
     }
     const id = typeof item.id === "string" ? item.id : null;
