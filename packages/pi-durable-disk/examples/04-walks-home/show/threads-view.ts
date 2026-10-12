@@ -51,7 +51,7 @@ function tileHtml(t: Thread): string {
   return `<div class="tile" data-id="${esc(t.id)}" data-status="${t.status}"><div class="top"><span class="skill">${esc(t.skill ?? "a skill")}</span><span class="st">${STATUS[t.status]}</span></div><div class="host">${esc(t.host ?? "a GPU")}</div>${spark}${body}${meta ? `<div class="meta">${esc(meta)}</div>` : ""}</div>`;
 }
 
-const ROBOT = `<svg class="robot" viewBox="0 0 120 80" aria-hidden="true"><rect x="30" y="18" width="60" height="26" rx="8"/><circle cx="76" cy="28" r="3.5" class="eye"/><path d="M38 44 L30 70 M54 44 L50 70 M70 44 L74 70 M86 44 L96 70" /></svg>`;
+const ROBOT = `<svg class="robot" viewBox="0 0 120 80" aria-hidden="true"><rect x="30" y="18" width="60" height="26" rx="8"/><circle cx="76" cy="28" r="3.5" class="eye"/><path class="leg l1" d="M38 44 L30 70"/><path class="leg l2" d="M54 44 L50 70"/><path class="leg l3" d="M70 44 L74 70"/><path class="leg l4" d="M86 44 L96 70"/></svg>`;
 
 /** The centre view for the threads: tiles while they learn; the one robot with each skill lighting as it lands, then all of them. Empty when there are no threads. */
 export function threadsHtml(threads: readonly Thread[]): string {
