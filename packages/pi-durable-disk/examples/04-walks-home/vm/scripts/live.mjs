@@ -66,6 +66,9 @@ const stagePath = arg("stage-path", "");
 const linkQuery = arg("link-query", "golive=1&robot=1");
 // The cloud agent's model, through the broker on this host (the VM reaches it over the link: no key on the VM). Miguel chose gpt-6-sol.
 const agentModel = arg("agent-model", "gpt-6-sol");
+// The offline brain's model folder (served under /models/ by the 03 server so the page can fetch it while online): --models-dir, or DEMO_MODELS_DIR.
+const modelsDir = arg("models-dir", process.env.DEMO_MODELS_DIR ?? "");
+if (modelsDir && !existsSync(modelsDir)) throw new Error(`--models-dir ${modelsDir}: no such folder`);
 // The model's token budget for the run (a robot session has nine conversations).
 const modelBudget = String(arg("model-budget", robot ? 30_000_000 : 3_000_000));
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
@@ -161,6 +164,7 @@ try {
       "--run", "walks-home",
       "--budget", modelBudget,
       "--agent-model", agentModel,
+      ...(modelsDir ? ["--models-dir", modelsDir] : []),
       "--evidence-readback",
       "--grace-ms", graceMs,
       ...(ownBrowser ? ["--port", serverPort] : []),
