@@ -31,6 +31,8 @@ import { obsessionReply } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
 import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
 import { TabLink, stageKeys, tabEventsFrom } from "../../page/tab-link.ts";
+import { SkillsPoller } from "../../page/skills-poller.ts";
+import { nextToLand, threadsHtml } from "../../threads-view.ts";
 import { apiRoot, apiUrl, pageParams } from "../../page/api-base.ts";
 
 const params = pageParams(location.href, location.hash);
@@ -69,8 +71,13 @@ const flag = (set?: boolean): boolean => {
     return false;
   }
 };
+/** The tab has said a skill is installed in the robot: from then on the stage does not make the skills land itself. */
+let installedByTab = false;
 const tabLink = params.get("tab")
-  ? new TabLink({ win: window, tabUrl: params.get("tab")!, name: KEYS.windowName, run: KEYS.run, onEvent: (m) => { for (const e of tabEventsFrom(m, feed.captionNow())) feed.inject(e); } })
+  ? new TabLink({ win: window, tabUrl: params.get("tab")!, name: KEYS.windowName, run: KEYS.run, onEvent: (m) => {
+      if (m.type === "skill-installed") installedByTab = true;
+      for (const e of tabEventsFrom(m, feed.captionNow())) (m.type === "skill-installed" ? feed.fold(e) : feed.inject(e));
+    } })
   : null;
 if (tabLink) {
   window.addEventListener("message", (e) => tabLink.handle(e));
@@ -375,6 +382,39 @@ function noteRequest(state: ShowState): void {
   else if (take.requestAt === null && take.chatEmptySeen) take.requestAt = feed.captionNow();
 }
 
+// One robot, eight teachers: the agent's threads, read from D2's per-skill files on the run's disk (skills.ts), about once a second. A new feed (a reconnect, a new run) starts them over.
+const skillsPoller = new SkillsPoller({
+  read: async (path) => {
+    const res = await fetch(apiUrl(API, `api/disk/${path}`), { cache: "no-store" });
+    return res.status === 200 ? await res.text() : undefined;
+  },
+  emit: (e) => feed.fold(e),
+  now: () => feed.captionNow(),
+});
+let skillsGeneration = -1;
+setInterval(() => {
+  if (skillsGeneration !== feed.generation) {
+    skillsGeneration = feed.generation;
+    skillsPoller.reset();
+  }
+  void skillsPoller.tick().catch(() => undefined);
+}, 1000);
+// With no word from the tab about skills going in, the skills land in the robot one after another once every thread has finished and the run is home.
+setInterval(() => {
+  if (installedByTab) return;
+  const id = nextToLand(feed.state.threads, feed.state.place.where === "home");
+  if (id) feed.fold({ t: "thread", at: feed.captionNow(), id, patch: { home: true } });
+}, 450);
+let threadsKey = "";
+function renderThreads(state: ShowState): void {
+  const html = threadsHtml(state.threads);
+  if (html === threadsKey) return;
+  threadsKey = html;
+  const el = $("threads");
+  el.hidden = html === "";
+  el.innerHTML = html;
+}
+
 let selftoolsKey = "";
 /** The tab's own events: the net pill, the check-in and homecoming lines, the decision card, the tool strip. Each is empty until the tab has said something. */
 function renderSelftools(state: ShowState): void {
@@ -426,6 +466,7 @@ function frame(): void {
   renderCentre(state);
   renderBanner();
   renderSelftools(state);
+  renderThreads(state);
   renderTalk();
   const turns = [...state.chat, ...modelChat.turns];
   syncChat($("chatlog"), turns);

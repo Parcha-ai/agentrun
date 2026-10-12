@@ -5,6 +5,7 @@ import type { ModelState } from "../episode2/notes.ts";
 import type { Brain, ShowState } from "../types.ts";
 import { type Find, SEARCHING } from "./find.ts";
 import { type ObsessionTrain, generationOver, topicWord, trainingStarted } from "./train.ts";
+import { threadsPhase } from "../threads-view.ts";
 
 /** How long the cloud-disk line stays after the agent arrives: it is said once, at the move, not on every frame. */
 export const MEMORY_LINE_MS = 9000;
@@ -15,6 +16,13 @@ export function obsessionBadge(a: { state: ShowState; find: Find; train: Obsessi
   const stopped = train.stopped !== null;
   const topic = (find.topic ?? train.topic)?.trim() || "the topic";
   const base = badgeFor(state);
+  // The cluster beat: the agent split into threads, each teaching the robot a skill. While they learn the header says so; at home it says the skills are going in, then the usual words.
+  const phase = threadsPhase(state.threads);
+  if (phase !== "none") {
+    if (p.where === "cloud") return { text: `Teaching the robot ${state.threads.length} skill${state.threads.length === 1 ? "" : "s"} at once, one GPU each`, tone: "cloud", memory: false };
+    if (p.where === "home") return phase === "home" ? base : { text: "Putting the skills into the robot", tone: "tab", memory: false };
+    if (p.where === "moving" && /browser|\btab\b/i.test(p.to)) return { text: "Bringing the skills home", tone: "moving", memory: true };
+  }
   // Not away at all yet, or leaving: the usual words (and the cloud-disk line while it moves).
   if (p.where === "tab" || p.where === "parked") return base;
   if (p.where === "moving") {

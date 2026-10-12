@@ -35,6 +35,11 @@ export function tabEventsFrom(message: TabMessage, at: number): ShowEvent[] {
       const routing = routingFromData(d);
       return routing ? [{ t: "routing", at, routing }] : [];
     }
+    case "skill-installed": {
+      // The tab loaded a skill into the robot: that thread's skill is in.
+      const skill = typeof d.skill === "string" && d.skill !== "" ? d.skill : null;
+      return skill ? [{ t: "thread", at, id: skill, patch: { home: true } }] : [];
+    }
     case "tools": {
       const tools = toolsFromData(d);
       return tools ? [{ t: "tools", at, tools }] : [];
