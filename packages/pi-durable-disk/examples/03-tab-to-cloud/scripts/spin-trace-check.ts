@@ -1,6 +1,7 @@
 // A skill that passed on the trainer, played by the real page: D2's spin-trace files (a dino body, spin and walk policies, skills.json) are put in a run's work folder,
 // the agent's page opens (robot=1), `do` picks the skill through the agent's tool, and the creature's yaw rate is read off the simulation. It answers "spin passed at
 // checkpoint 5 but did not spin in the tab": does the page select the policy, does it fit the body, does the creature turn at the rate the trainer measured.
+//   REBUILT=1 rebuilds body.xml after the training (other bytes, same body): the page borrows the policies and says it stumbles, and they still run.
 //   TRACE=<folder with robot/ and home/> [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/spin-trace-check.ts
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
@@ -34,8 +35,13 @@ const bodyJson = Array.isArray(code.tag_list) && code.xml_sha256 === xmlSha ? co
   name: "dino", motors: code.jointNames, joints: (code.jointNames ?? []).map((name, i) => ({ name, body: "", axis: [0, 1, 0], range: [-1, 1], stand: code.standPose?.[i] ?? 0, passive: false })), tags: {}, colors: {}, face: { tag: "head" }, warnings: [],
   legs: 4, tag_list: ["torso", "legs"], pieces: 32, mass_kg: 11, stand_height_m: code.standHeight, xml_sha256: xmlSha,
 };
+if (process.env.REBUILT === "1") {
+  // a body.xml rebuilt after training (any helper change alters the bytes): other bytes, the same body; its body.json pairs with the new bytes
+  const rebuilt = xmlBytes.toString("utf8").replace("<mujoco", "<!-- rebuilt -->\n<mujoco");
+  writeFileSync(join(work, "robot/body.xml"), rebuilt);
+  bodyJson.xml_sha256 = createHash("sha256").update(rebuilt).digest("hex");
+}
 writeFileSync(join(work, "robot/body.json"), JSON.stringify(bodyJson));
-if (process.env.REBUILT === "1") writeFileSync(join(work, "robot/body.xml"), xmlBytes.toString("utf8").replace("<mujoco", "<!-- rebuilt -->\n<mujoco")); // a body.xml rebuilt after training: other bytes, same body
 const skillsHome = JSON.parse(readFileSync(join(trace, "home/skills.json"), "utf8")) as { skills: Record<string, { policy: string; command: number }> };
 for (const e of Object.values(skillsHome.skills)) copyFileSync(join(trace, "home", e.policy), join(work, "home", e.policy));
 const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
@@ -68,7 +74,8 @@ try {
   console.log(`  page: ${JSON.stringify(first)}`);
   const policySha = (JSON.parse(readFileSync(join(trace, "home", Object.values(skillsHome.skills)[0]!.policy), "utf8")) as { mjcf_sha256: string }).mjcf_sha256;
   ok("the policies were trained on this body.xml (sha256 of the file = their mjcf_sha256)", xmlSha === policySha, { xmlSha, policySha });
-  ok("the page's compiled body is the one the policies were trained on (sha256 of body.xml = the policy's mjcf_sha256)", first.sha === policySha, { page: first.sha, policy: policySha });
+  if (process.env.REBUILT === "1") ok("a body.xml rebuilt after training is another body to the page: its sha is not the policies'", first.sha !== policySha, { page: first.sha, policy: policySha });
+  else ok("the page's compiled body is the one the policies were trained on (sha256 of body.xml = the policy's mjcf_sha256)", first.sha === policySha, { page: first.sha, policy: policySha });
   ok("the skills came home to the page: the manifest's skills are the page's", Object.keys(skillsHome.skills).every((n) => JSON.stringify(first.skills).includes(n)), first.skills);
   // pick the skills with the agent's own tool, as a user's "make it spin" would
   const names = Object.keys(skillsHome.skills);
@@ -82,6 +89,7 @@ try {
     const r = await yawRate(Number(process.env.SECONDS ?? 8));
     console.log(`  ${name}: ${JSON.stringify(r)}`);
     ok(`do ${name}: the tool accepted it and the page is playing ${name}`, tool?.status === "done" && r.skill === name, { tool, skill: r.skill });
+    if (process.env.REBUILT === "1") ok(`do ${name}: the tool says the brain was taught for another body (the robot stumbles until retrained)`, /taught for another body/.test(tool?.output ?? ""), tool?.output);
     if (name === "spin") ok("spin turns the creature in the tab: its yaw rate is at least the trainer's target of 1.0 rad/s and it stays up", Math.abs(r.rate) >= 1.0 && r.up > 0.5, r);
     else ok(`${name} does not spin: yaw rate under 0.5 rad/s`, Math.abs(r.rate) < 0.5, r);
     if (name === "spin") await page.screenshot(join(shots, "spin-trace-spin.png"));
