@@ -177,6 +177,7 @@ try {
             // The session's VM mounts the disk (the default transport) and the cluster's boxes start when the first page takes the run.
             "--cloud-arg", "robot=true",
             ...(process.argv.includes("--robot-plan") ? ["--cloud-arg", "robot-plan=true"] : []),
+            ...(process.argv.includes("--robot-prewarm") ? ["--cloud-arg", "robot-prewarm=true"] : []),
             "--cloud-arg", `cluster-size=${clusterSize}`,
             "--cloud-arg", `cluster-spares=${clusterSpares}`,
             ...(clusterIdle > 0 ? ["--cloud-arg", `cluster-idle-minutes=${clusterIdle}`] : []),

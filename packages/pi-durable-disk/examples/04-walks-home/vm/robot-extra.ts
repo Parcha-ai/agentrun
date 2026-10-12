@@ -218,7 +218,8 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   if (!link) throw new Error("the robot's threads reach their GPU boxes through the server's link: no link here");
   const boxOf = (id: string): RemoteBox => link.gpu.linkBox(id);
   const plan = process.env.DEMO_ROBOT_PLAN === "1";
-  const boxes = robotBoxes(link, work, log, { prewarm: plan });
+  // The compile prewarm needs the trainer that locks a body's compile cache (D2's v14): on only when the host says the image has it (DEMO_ROBOT_PREWARM=1), so an older trainer is never run twice on one cache.
+  const boxes = robotBoxes(link, work, log, { prewarm: plan && process.env.DEMO_ROBOT_PREWARM === "1" });
   const { teach, thread } = teachSkills({
     boxes,
     command: trainCommand(work),

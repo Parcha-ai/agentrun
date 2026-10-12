@@ -122,6 +122,8 @@ export interface ModalCloudOptions {
   readonly robot?: boolean;
   /** Code mode: the session plans the skills and each thread writes and runs its own training (DEMO_ROBOT_PLAN=1 on the VM). Needs a trainer image with D2's library. */
   readonly robotPlan?: boolean;
+  /** Code mode, trainer image v14 or later: each thread's box compiles the body while the thread writes (DEMO_ROBOT_PREWARM=1 on the VM). An older trainer has no lock on the compile cache, so this is off unless asked. */
+  readonly robotPrewarm?: boolean;
   /**
    * The robot cluster beat: N GPU boxes created in parallel as soon as this cloud exists (so they are warm when someone asks), lent one per
    * thread to the session on the VM through its link (gpu-rpc.ts). The boxes run commands only for the thread that holds them; the VM never
@@ -614,6 +616,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         DEMO_EVENTS_LOG: BOX_EVENTS,
         ...(options.robot ? { DEMO_APP_EXTRA: `${BOX_APP_DIR}/robot/vm/robot-extra.ts` } : {}),
         ...(options.robot && options.robotPlan ? { DEMO_ROBOT_PLAN: "1" } : {}),
+        ...(options.robot && options.robotPlan && options.robotPrewarm ? { DEMO_ROBOT_PREWARM: "1" } : {}),
         ...(options.desktop
           ? {
               DEMO_DISPLAY: DESKTOP_DISPLAY,

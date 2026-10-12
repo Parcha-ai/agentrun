@@ -296,6 +296,19 @@ test("code mode compiles the body on each thread's box right after staging it (d
     assert.ok(on.execs.findIndex((e) => e.argv.at(-1) === "/workspace/robot/body.xml") < on.execs.findIndex((e) => e.argv.at(-1) === PREWARM_COMMAND), "the body is staged before the compile starts");
     assert.match(PREWARM_COMMAND, /setsid nohup train-skill walk --body \/workspace\/robot .*--compile-only/);
     assert.ok(logs.includes("robot.prewarm"));
+    // A prewarm that cannot start does not stop the teaching: acquire still returns the box, and the failure is logged.
+    const broken = fakeLink();
+    const linkBox = broken.link.gpu.linkBox;
+    broken.link.gpu.linkBox = (id: string) => {
+      const box = linkBox(id);
+      const exec = box.exec;
+      return { ...box, exec: async (argv: string[], ...rest: unknown[]) => { if (argv.at(-1) === PREWARM_COMMAND) throw new Error("the box refused the command"); return (exec as (...a: unknown[]) => Promise<unknown>)(argv, ...rest); } } as never;
+    };
+    const failed: { event: string; data?: Record<string, unknown> }[] = [];
+    const id = await robotBoxes(broken.link as never, work, (event, data) => void failed.push({ event, data }), { prewarm: true }).acquire({ threadId: "t-2", skill: "spin", gpu: 2 }, {} as never);
+    assert.equal(id, "box-t-2");
+    assert.deepEqual(failed.find((l) => l.event === "robot.prewarm-failed")?.data, { thread: "t-2", error: "the box refused the command" });
+    assert.ok(failed.some((l) => l.event === "robot.box-ready"), "the box is still handed to the thread");
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
