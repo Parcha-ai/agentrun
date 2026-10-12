@@ -75,8 +75,10 @@ export class FakePool implements ThreadBoxes {
     const file = join(this.root, "pool", `${thread.threadId.replace(/[^\w-]/g, "_")}.box`);
     if (!existsSync(file)) return;
     const boxId = readFileSync(file, "utf8");
-    rmSync(file);
+    // Log, then give the box up: a host killed in between releases again on resume (the box file is still there) and
+    // logs twice, where the other order would lose the release for good.
     this.event({ event: "pool.release", threadId: thread.threadId, boxId });
+    rmSync(file);
   }
   private event(line: object): void {
     const full = { at: Date.now(), pid: process.pid, ...line };
