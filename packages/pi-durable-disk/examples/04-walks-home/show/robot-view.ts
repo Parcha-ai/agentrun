@@ -113,50 +113,16 @@ function contentSummary(content: string): string {
 /** The robot's own tools (03-tab-to-cloud/robot-tools.ts): the demo changes the robot with these, not by writing files. */
 const ROBOT_TOOLS = new Set(["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "do", "update_robot"]);
 
-/** One robot tool call in a few plain words, from its own arguments only; null when the arguments cannot be read. An argument it does not know is not turned into a claim. */
+/** The tail sentences a robot tool result ends with (what the change means for the walking brain), and the sentences that say nothing happened: neither is the change. */
+const NOT_THE_CHANGE = /^(Not done|No change|Looks only|This changes the body|The body is unchanged|The body has been changed since)\b/;
+
+/**
+ * What a finished robot tool call did, in the result's own sentences (the tool says what actually happened: a part it refused, a size the limits cut short, a call that changed nothing): the
+ * sentences of the result that are not a refusal, a no-op or the note about the walking brain. Null when none is left (nothing changed) or the call gave no result.
+ */
 function robotToolWhat(t: ToolRow): string | null {
-  let a: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(t.args) as unknown;
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    a = parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
-  const num = (v: unknown): string | null => (typeof v === "number" && Number.isFinite(v) ? String(v) : null);
-  switch (t.name) {
-    case "set_color": {
-      const c = str(a.color);
-      return c ? `colour: ${c}${str(a.part) ? ` (${str(a.part)})` : ""}` : null;
-    }
-    case "set_shape": {
-      const sh = str(a.shape);
-      return sh ? `shape: ${sh}${str(a.part) ? ` (${str(a.part)})` : ""}` : null;
-    }
-    case "set_face":
-      return str(a.face) ? `face: ${str(a.face)}` : null;
-    case "rename":
-      return str(a.name) ? `name: ${str(a.name)}` : null;
-    case "resize":
-      return num(a.factor) && str(a.part) ? `${str(a.part)} x${num(a.factor)}` : null;
-    case "scale":
-      return num(a.factor) ? `size x${num(a.factor)}` : null;
-    case "set_legs":
-      return a.pairs === 2 ? "4 legs" : a.pairs === 3 ? "6 legs" : "legs";
-    case "morph":
-      return str(a.preset) ? `now a ${str(a.preset)}` : null;
-    case "reset":
-      return "back to the default body";
-    case "do":
-      return str(a.skill) ? `skill: ${str(a.skill)}` : null;
-    case "update_robot": {
-      const pairs = Object.entries(a).flatMap(([k, v]) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? [`${k}: ${v}`] : []));
-      return pairs.length > 0 ? clip(pairs.join(", "), WHAT_MAX) : null;
-    }
-    default:
-      return null;
-  }
+  const sentences = t.output.trim().split(/(?<=[.!?])\s+/).filter((x) => x !== "" && !NOT_THE_CHANGE.test(x));
+  return sentences.length > 0 ? clip(sentences.join(" "), WHAT_MAX) : null;
 }
 
 /**
