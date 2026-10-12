@@ -4,3 +4,5 @@ export type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, Re
 export { documentStore, type DocumentStoreHost, type DocumentStoreOptions } from "./store.js";
 export { committedRoutes, durableDoc, readJournal, type JournalView } from "./readers.js";
 export { reuseReceipts, type ReceiptReuse, type ReuseReceiptsOptions, type ReusableTool } from "./receipts.js";
+export { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDecisionWriter, readDecisions } from "./decisions.js";
+export type { DecisionRow, DecisionRowRule, DecisionSession, DecisionWriter } from "./decisions.js";

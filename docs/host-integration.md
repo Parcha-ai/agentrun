@@ -48,6 +48,8 @@ Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `v
 
 To make decisions durable across a restart, also supply `recovery.decision(id)`. When it returns an `answered` receipt, its answers are used and the judge is not asked again: a resumed run decides what the interrupted run decided, including a loop's `until: ask` and a route whose branch had already started. Such a decision is not recorded again and its event carries `replayed: true`. Any other receipt, or none, means the request is asked. A receipt is evidence of what was decided, not of what was committed: the node's commit is still `recovery.commit`.
 
+A pi-durable host keeps a run's typed-question decisions as rows of the session document `agentrun.decisions`, from `@parcha/agentrun-pi/durable`. `createDecisionWriter({ open })` commits rows in the order they are recorded and opens the run's Session only when the first row needs it. `settled()` reports the first commit that failed and keeps the Session; `flush()` also releases it, then reports the failure. `readDecisions(read)` returns the rows in commit order from a Session or a Harness. A row (`DecisionRow`, version 1) is a stored format and does not change with the interpreter: the host fills it, including the request's size and metering, which the interpreter does not know.
+
 ## Host policy around generative nodes
 
 A host often has policy that is not part of the workflow language: a duty paragraph for the node that emits the terminal record, runtime metadata the model reports beside its record, an artifact field only the host can fill. `deps.hostPolicy` carries that policy as application code. Nothing in a workflow document can name or reach it, so a candidate workflow cannot change its host's channels.

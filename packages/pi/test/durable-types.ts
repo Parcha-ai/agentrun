@@ -14,3 +14,16 @@ async function caller() {
   void same;
 }
 void [asDurable, asContract, caller];
+
+// The decision rows: a host's Session opens with a pi-durable Harness, and a row is the stored version.
+import type { Harness } from '@earendil-works/pi-durable';
+import { createDecisionWriter, type DecisionRow, type DecisionSession, type DecisionWriter } from '@parcha/agentrun-pi/durable';
+
+declare const harness: Harness;
+declare const row: DecisionRow;
+const session: DecisionSession = { harness, release: async () => {} };
+const writer: DecisionWriter = createDecisionWriter({ open: async () => session });
+writer.record(row);
+// @ts-expect-error a stored row is version 1.
+const later: DecisionRow = { ...row, v: 2 };
+void [writer, later];
