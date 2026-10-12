@@ -49,16 +49,19 @@ const SAVED_NAME_CHARS = 80;
 const shownPath = (context: KindContext, path: string) => (path.startsWith(`${context.env.cwd}/`) ? path.slice(context.env.cwd.length + 1) : path);
 
 /** A document's text kept beside its other derivations, for an agent to search with its shell: `<file name>-<first 16
- *  of the source's hash>[-p<page>].txt`, written under another name and renamed, and left as it is when it is already
- *  there (the name carries the hash of the bytes, so it holds the same text). Null when the read keeps nothing or the
- *  file could not be written. */
+ *  of the source's hash>[-p<page>].txt`, written under another name and renamed. A file already there with this very
+ *  text is left as it is; one that holds other text of the same bytes (another extractor's) is replaced, so the file
+ *  always holds what this read shows. Null when the read keeps nothing or the file could not be written. */
 async function keepText(request: Parameters<KindReader>[0], context: KindContext, body: string): Promise<string | null> {
   if (!context.deriveDir) return null;
   const ctx = visionContext(context.signal);
   // The file's own name, without anything a name taken from a link carries after `?` or `#`.
   const base = request.name.split("/").pop()!.split("?")[0]!.split("#")[0]!.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, SAVED_NAME_CHARS);
   const file = `${context.deriveDir}/${base}-${request.source.sha256.slice(0, 16)}${request.page !== undefined ? `-p${request.page}` : ""}.txt`;
-  if (!(await context.env.fileInfo(file, ctx)).ok) {
+  const text = Buffer.from(body, "utf8");
+  const info = await context.env.fileInfo(file, ctx);
+  const there = info.ok && info.value.size === text.length ? await context.env.readBinaryFile(file, ctx) : null;
+  if (!there?.ok || !text.equals(there.value)) {
     const part = `${file}.${randomUUID().slice(0, 8)}.part`;
     const made = await context.env.createDir(context.deriveDir, { recursive: true }, ctx);
     const wrote = made.ok && (await context.env.writeFile(part, body, ctx)).ok && (await context.env.renameFile(part, file, ctx)).ok;

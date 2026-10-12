@@ -229,25 +229,14 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   const handle = handleOf(name, setup.sources);
   if (handle) return readRecording(handle.scheme, handle.id, name.trim(), raw, call, setup, filing);
   const ctx = visionContext(call.signal);
+  // The file's first bytes decide its kind, and the arguments and the host's policy are checked on that alone: a read
+  // that is refused never holds the file. What is filed for such a read is hashed a chunk at a time.
   const probe = await sniffFile(env, name, kinds.sniff, call.signal);
   if (!probe || (probe.sniffed.ok && probe.sniffed.kind === "text")) return null;
-  // A source the process may hold is read once: those bytes are hashed, their kind decided and a private copy of them
-  // handed to the reader, so the hash names exactly what was read whatever becomes of the path meanwhile. A larger
-  // source is read where it is, and checked afterwards for having changed.
-  const held = probe.size <= SOURCE_BYTES_IN_PROCESS ? await holdSource(env, name, call.signal) : "over";
-  if (held === null) return null;
-  // A file that was within what the process holds and now holds more changed between the two looks at it.
-  if (held === "over" && probe.size <= SOURCE_BYTES_IN_PROCESS) return missResult({ ...filing, evidence: NO_RECEIPT }, name, probe.sniffed.ok ? probe.sniffed.kind : "unknown", "", "unreadable", CHANGED, raw);
-  const data = held === "over" ? undefined : held;
-  const file = data ? { size: data.length, head: data.subarray(0, HEAD_BYTES), sniffed: kinds.sniff(data.subarray(0, HEAD_BYTES), name) } : probe;
-  const { size, sniffed } = file;
-  let hashed: Promise<string> | undefined;
-  const sha256 = () => (hashed ??= data ? Promise.resolve(createHash("sha256").update(data).digest("hex")) : sha256Of(env, name, size, call.signal));
-  if (!sniffed.ok) return missResult(filing, name, "unknown", await sha256(), sniffed.code, sniffed.reason, raw);
-  const { kind } = sniffed;
-  if (kind === "text") return null;
-  if (kind === "unknown") return missResult(filing, name, kind, await sha256(), "unsupported", `its bytes are in no format read takes (first bytes ${sniffed.signature ?? "unknown"})`, raw);
-  const pixels = kind === "image" ? kinds.sizeOf(file.head) : null;
+  const streamed = () => sha256Of(env, name, probe.size, call.signal);
+  if (!probe.sniffed.ok) return missResult(filing, name, "unknown", await streamed(), probe.sniffed.code, probe.sniffed.reason, raw);
+  const { kind } = probe.sniffed;
+  if (kind === "unknown") return missResult(filing, name, kind, await streamed(), "unsupported", `its bytes are in no format read takes (first bytes ${probe.sniffed.signature ?? "unknown"})`, raw);
   const paged = kind === "pdf" || kind === "office";
   const args = withoutStrictDefaults(raw, { windowed: kind === "video", paged });
   const [fromS, toS, page] = [num(args.from_s), num(args.to_s), num(args.page)];
@@ -258,9 +247,22 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   if (windowed && toS !== undefined && toS <= Math.max(0, fromS ?? 0)) return refusal(`Cannot read ${name}: to_s (${toS}) must be greater than from_s (${Math.max(0, fromS ?? 0)}).`);
   if (page !== undefined && !(Number.isInteger(page) && page >= 1)) return refusal(`Cannot read ${name}: page must be an integer of 1 or more (got ${args.page}).`);
   const allowed = setup.allow?.({ path: name, kind, tool: "read" }) ?? true;
-  if (allowed !== true) return missResult(filing, name, kind, await sha256(), "refused", allowed, args);
+  if (allowed !== true) return missResult(filing, name, kind, await streamed(), "refused", allowed, args);
   const reader = kinds.readers[kind];
-  if (!reader) return missResult(filing, name, kind, await sha256(), "needs", `no reader for ${kind} files is installed`, args);
+  if (!reader) return missResult(filing, name, kind, await streamed(), "needs", `no reader for ${kind} files is installed`, args);
+  // A source the process may hold is then read once: those bytes are hashed and a private copy of them handed to the
+  // reader, so the hash names exactly what was read whatever becomes of the path meanwhile. A file that holds more
+  // than it did, or is another kind than its first bytes said, changed between the two looks at it. A larger source
+  // is read where it is, and checked afterwards for having changed.
+  const held = probe.size <= SOURCE_BYTES_IN_PROCESS ? await holdSource(env, name, call.signal) : "over";
+  if (held === null) return null;
+  const data = held === "over" ? undefined : held;
+  const sniffed = data ? kinds.sniff(data.subarray(0, HEAD_BYTES), name) : probe.sniffed;
+  if ((held === "over" && probe.size <= SOURCE_BYTES_IN_PROCESS) || !sniffed.ok || sniffed.kind !== kind) return missResult({ ...filing, evidence: NO_RECEIPT }, name, kind, "", "unreadable", CHANGED, args);
+  const size = data ? data.length : probe.size;
+  const pixels = kind === "image" ? kinds.sizeOf(data ? data.subarray(0, HEAD_BYTES) : probe.head) : null;
+  let hashed: Promise<string> | undefined;
+  const sha256 = () => (hashed ??= data ? Promise.resolve(createHash("sha256").update(data).digest("hex")) : streamed());
   const ask = asked(args);
   const temp = await env.createTempDir("pi-vision-read-", ctx);
   if (!temp.ok) throw temp.error;

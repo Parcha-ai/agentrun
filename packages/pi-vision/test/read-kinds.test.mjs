@@ -5,7 +5,7 @@
 // result that holds an image, one look per result.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import sharp from "sharp";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -226,10 +226,14 @@ test("a document read as text keeps that text in a file the agent can search, sa
   const doc = await r.read({ path: "proof.docx" });
   assert.deepEqual(doc.details.document, { text: `evidence/n/media/proof.docx-${sha16(docxBytes())}.txt`, extractor: "office-js", pages: 1 });
   assert.match(readFileSync(`${r.dir.path}/${doc.details.document.text}`, "utf8"), /EXAMPLE WIDGETS LLC/);
-  // Written once: a second read of the same bytes leaves the file as it is.
-  writeFileSync(`${r.dir.path}/${saved}`, "kept as it was");
+  // A second read of the same bytes leaves the file as it is; a file holding other text of them (another extractor's)
+  // is replaced, so the file always holds what the read shows.
+  const before = statSync(`${r.dir.path}/${saved}`);
   await r.read({ path: "sub dir/mixed (v2).pdf" });
-  assert.equal(readFileSync(`${r.dir.path}/${saved}`, "utf8"), "kept as it was");
+  assert.deepEqual([statSync(`${r.dir.path}/${saved}`).ino, statSync(`${r.dir.path}/${saved}`).mtimeMs], [before.ino, before.mtimeMs], "not written again");
+  writeFileSync(`${r.dir.path}/${saved}`, "another extractor's text of the same bytes");
+  await r.read({ path: "sub dir/mixed (v2).pdf" });
+  assert.equal(readFileSync(`${r.dir.path}/${saved}`, "utf8"), kept);
   assert.deepEqual(readdirSync(`${r.dir.path}/evidence/n/media`).filter((name) => name.endsWith(".part")), [], "no part file is left");
 });
 

@@ -337,3 +337,42 @@ test("a file that grows past what the process holds between the two looks at it 
   assert.ok(read <= SOURCE_BYTES_IN_PROCESS + 3 * 1024 * 1024, `read ${read} bytes`);
   assert.deepEqual([whole, r.calls.length, r.filed.length], [0, 0, 0], "not loaded whole, no reader run, nothing filed");
 });
+
+test("a read that is refused never holds the file: its arguments and the host's policy are checked on its first bytes", async (t) => {
+  const r = await rig({ pdf: { content: [{ type: "text", text: "never reached" }] } }, { allow: ({ path }) => (path.startsWith("private/") ? "not for this read" : true) });
+  t.after(() => r.dir.remove());
+  const big = Buffer.concat([PDF_HEAD, Buffer.alloc(3 * 1024 * 1024, 32)]);
+  await r.dir.file("big.pdf", big);
+  await r.dir.file("private/big.pdf", big);
+  let largest = 0, whole = 0;
+  const counting = Object.assign(Object.create(Object.getPrototypeOf(r.env)), r.env, {
+    readBinaryFile: async (...args) => { whole += 1; return r.env.readBinaryFile(...args); },
+    openBinaryReader: async (...args) => {
+      const opened = await r.env.openBinaryReader(...args);
+      if (!opened.ok) return opened;
+      const reader = opened.value;
+      let total = 0;
+      return { ok: true, value: { info: (c) => reader.info(c), close: (c) => reader.close(c), read: async (offset, length, c) => { const chunk = await reader.read(offset, length, c); if (chunk.ok) { total += chunk.value.length; largest = Math.max(largest, total); } return chunk; } } };
+    },
+  });
+  const refused = await readMedia(counting, { path: "big.pdf", page: 0.5 }, r.call(), r.setup, r.kinds);
+  assert.equal(refused.isError, true);
+  assert.ok(largest <= 1024 * 1024, `a refusal of the arguments read ${largest} bytes: the first megabyte at most`);
+  const denied = await readMedia(counting, { path: "private/big.pdf" }, r.call(), r.setup, r.kinds);
+  assert.equal(denied.details.miss.code, "refused");
+  assert.equal(receiptFacts(r.filed[0]).sha256, sha(big), "its receipt still names the file's bytes");
+  assert.deepEqual([whole, r.calls.length], [0, 0], "never loaded whole, no reader run");
+});
+
+test("a file that is another kind by the time its bytes are held changed between the two looks at it", async (t) => {
+  const r = await rig({ pdf: { content: [{ type: "text", text: "never reached" }] }, image: { content: [{ type: "text", text: "never reached" }] } });
+  t.after(() => r.dir.remove());
+  const path = await r.dir.file("notice.pdf", PDF_HEAD);
+  // The first opening reads the head that decides the kind; the file is a picture by the second, which holds it.
+  let opened = 0;
+  const turned = Object.assign(Object.create(Object.getPrototypeOf(r.env)), r.env, { openBinaryReader: async (...args) => { if (++opened === 2) writeFileSync(path, pngBytes(2, 2)); return r.env.openBinaryReader(...args); } });
+  const out = await readMedia(turned, { path: "notice.pdf" }, r.call(), r.setup, r.kinds);
+  assert.equal(out.details.miss.code, "unreadable");
+  assert.match(text(out), /^notice\.pdf could not be read: the file changed while it was read/);
+  assert.deepEqual([r.calls.length, r.filed.length, r.misses[0].receipt], [0, 0, null], "no reader run, nothing filed");
+});
