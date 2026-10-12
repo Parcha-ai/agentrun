@@ -6,7 +6,9 @@ import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { copyTheme } from "../../theme/copy-theme.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "dist");
@@ -57,6 +59,9 @@ const result = await build({
   logLevel: "warning",
 });
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
+// The demo's look: the shared theme and its fonts (shipped, no network) under /theme/, and this page's own sheet beside the page.
+copyTheme(out, createRequire(import.meta.url));
+copyFileSync(join(here, "agent-theme.css"), join(out, "agent-theme.css"));
 // What a checkout puts in the cache besides the run's page and its model: every built file the page loads (offline.ts reads this list). The computer's package is left out: it is not started offline.
 const built = (dir, base = "") => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "pkgs" ? [] : built(join(dir, e.name), `${base}/${e.name}`)) : [`${base}/${e.name}`]));
 // The in-browser computer: the Wasmer SDK's files (the server serves the package at /wasmer/) and the computer's package, so the sandbox boots with no network.
