@@ -152,6 +152,12 @@ let pendingRequest: AttemptRequest | null = null;
 /** After a walk to the flag is over, the robot comes to rest in its standing pose with no policy until this simulated time (the hero look then stops simulating it). */
 let settling: number | null = null;
 
+/** The simulation's clock starts over (a new body's simulation, a reset): the times kept in its clock (the settling deadline, when a fallen creature went down) go with the old one. */
+function clockRestarted() {
+  settling = null;
+  downSince = null;
+}
+
 function toast(text: string) {
   const t = $('toast');
   t.textContent = text;
@@ -382,6 +388,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   app.built = built;
   const replaced = app.sim;
   app.sim = opts.sim ?? new Sim(app.mj, built);
+  clockRestarted();
   app.view.setSim(app.sim);
   if (replaced !== app.sim) { try { replaced.free(); } catch { /* already released */ } } // the model it ran on is wasm memory: released once the view has been rebuilt from the new one
   app.fallen = false; app.recovering = null; app.lastMode = 'walk'; app.expectReset = true;
@@ -614,8 +621,8 @@ function startAttempt(req: AttemptRequest) {
     app.sim.attachBrain(app.brain);
     toast(`trying to ${req.skill}`);
   } else if (FORWARD_SKILLS.includes(req.skill) && app.policy) {
-    app.sim.reset(); app.expectReset = true; resetOrigin();
-    app.fallen = false; app.recovering = null; downSince = null; app.lastMode = 'walk';
+    app.sim.reset(); app.expectReset = true; resetOrigin(); clockRestarted();
+    app.fallen = false; app.recovering = null; app.lastMode = 'walk';
     const entry = skills?.skills[req.skill];
     if (entry) { ($('command') as HTMLInputElement).value = String(entry.command); applyCommand(); } // a walk that stopped at the flag left the command at 0
     app.view.resetFlag();
@@ -761,6 +768,7 @@ async function loadPolicyText(text: string, name: string) {
     app.training.state = 'trained';
     updateLabel();
     app.sim.reset();
+    clockRestarted();
     resetOrigin();
     app.expectReset = true;
     app.fallen = false; app.recovering = null; app.lastMode = 'walk';
@@ -1164,7 +1172,7 @@ async function main() {
     };
     $('sketchToggle').onclick = () => document.body.classList.toggle('sketch-open');
     $('closeSketch').onclick = () => document.body.classList.remove('sketch-open');
-    $('reset').onclick = () => { closeArrival(); app.sim.reset(); resetOrigin(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
+    $('reset').onclick = () => { closeArrival(); app.sim.reset(); clockRestarted(); resetOrigin(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; };
     app.sketcher.onClamp = (m) => { clampMessages = m; };
     $('legDof').onchange = (e) => app.sketcher.setLegDof((e.target as HTMLInputElement).checked ? 3 : 2);
     $('addPair').onclick = () => app.sketcher.addPair();
@@ -1248,7 +1256,7 @@ async function main() {
       // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
       sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
-      kick: (a: number | number[], b: number, c?: number) => (Array.isArray(a) ? kick(a[0], a[1], b) : kick(a, b, c ?? 60)), stats: () => app.stats.snapshot(), resetSim: () => { closeArrival(); app.sim.reset(); resetOrigin(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
+      kick: (a: number | number[], b: number, c?: number) => (Array.isArray(a) ? kick(a[0], a[1], b) : kick(a, b, c ?? 60)), stats: () => app.stats.snapshot(), resetSim: () => { closeArrival(); app.sim.reset(); clockRestarted(); resetOrigin(); app.expectReset = true; app.fallen = false; app.recovering = null; app.lastMode = 'walk'; }, kickWorld, onPolicyArrived, buildCreature, setWorld: async (w: World | null) => { app.world = w; await buildCreature(app.sketcher.get(), true); }, loadPolicyText, renderMemory };
     status.textContent = 'ready';
     post('ready', { version: 1, mujoco: mujocoVersion, mjcf_sha256: app.bodySha });
     if (app.training.state === 'untrained') post('untrained', { reason: 'no trained policy installed: random actions' });

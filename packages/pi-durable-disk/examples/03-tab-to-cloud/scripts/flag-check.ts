@@ -273,6 +273,17 @@ try {
     const s1 = await torso();
     ok("a sprint's run is answered, and then it stops though its command range does not reach 0: no skill playing, under 15 cm in 3 s", !!sprinted.attempt && sprinted.attempt.learned && s1.skill === null && Math.hypot(s1.x - s0.x, s1.y - s0.y) < 0.15, { sprinted: sprinted.attempt, s0, s1 });
   }
+  // 7. the body is rebuilt in the moment the robot settles after a run (a new simulation, its clock from 0): the new body stands still at once, as with no skill playing
+  if (!tool && manifest.skills.sprint) {
+    const again = await ask("sprint", true);
+    const done = await answer(again.id, 24000);
+    await walks(`(w.buildCreature(w.app.sketcher.get(), true, { built: w.app.built }), true)`);
+    await sleep(600);
+    const t0 = await walks<number>("w.app.sim.time");
+    await sleep(1500);
+    const t1 = await walks<number>("w.app.sim.time");
+    ok("a body rebuilt as the robot settles after a run stands still: its new simulation does not run on (under 0.1 s of simulated time in 1.5 s)", !!done.attempt && t1 - t0 < 0.1, { answered: !!done.attempt, t0, t1 });
+  }
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);
 } catch (error) {
