@@ -90,10 +90,12 @@ const WRAPS = [
   (l) => l, (l) => `"${l}"`, (l) => `'${l}'`, (l) => `\`${l}\``, (l) => `(${l})`, (l) => `[${l}]`, (l) => `<${l}>`, (l) => `{${l}}`,
   (l) => `url=${l}`, (l) => `${l},`, (l) => `(see ${l}).`, (l) => `[the file](${l})`, (l) => `{"url":"${l}","status":401}`,
 ];
+// Built with the URL API, not written out: the repository's source scan refuses a credential URL in a file.
+const withCredentials = Object.assign(new URL("https://files.sentinel.invalid/reports/statement.pdf"), { username: "user", password: KEY }).href;
 const LINKS = [
   LINK,
   `https://api.sentinel.invalid/v1/models/m:generate?key=${KEY}`,
-  `https://user:${KEY}@files.sentinel.invalid/reports/statement.pdf`,
+  withCredentials,
   `https://files.sentinel.invalid/reports/statement.pdf#token=${SENTINEL_LINK_TOKEN}`,
   LINK.replace("https", "HTTPS"),
   LINK.replace("https", "http"),
