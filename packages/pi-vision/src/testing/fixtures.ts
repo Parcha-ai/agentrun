@@ -1,11 +1,11 @@
 // Fixtures a test builds for itself: a directory of its own under the temp root, and images written with nothing but
-// Node. The image size reader here is independent of the package's own header parsing, so a test can check the
-// package with it.
+// Node; and the size an image's header states, read the way the package reads it.
 
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
+import { imageHeader } from "../core/kinds.js";
 
 export type FixtureDir = {
   readonly path: string;
@@ -61,20 +61,9 @@ export function pngBytes(width: number, height: number, fill: Rgb | ((x: number,
   return new Uint8Array(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header), chunk("IDAT", deflateSync(raw)), chunk("IEND", new Uint8Array(0))]));
 }
 
-/** The pixels of a PNG, JPEG or GIF from its header; null for anything else or a truncated header. */
+/** The pixels and MIME type of a PNG, JPEG, GIF, WebP, BMP or TIFF from its header (the package's own `imageHeader`, which
+ *  the fixtures suite checks against both image processors' decoders); null for anything else or a truncated header. */
 export function imageSize(bytes: Uint8Array): { mimeType: string; width: number; height: number } | null {
-  const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.toString("latin1", 12, 16) === "IHDR") return { mimeType: "image/png", width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
-  if (b.length >= 10 && b.toString("latin1", 0, 4) === "GIF8") return { mimeType: "image/gif", width: b.readUInt16LE(6), height: b.readUInt16LE(8) };
-  if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
-    for (let at = 2; at + 9 < b.length; ) {
-      if (b[at] !== 0xff) return null;
-      const marker = b[at + 1]!;
-      if (marker === 0xff) { at += 1; continue; }
-      // A start-of-frame segment (C0 to CF, except the DHT, JPG and DAC markers) holds the size.
-      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { mimeType: "image/jpeg", width: b.readUInt16BE(at + 7), height: b.readUInt16BE(at + 5) };
-      at += 2 + b.readUInt16BE(at + 2);
-    }
-  }
-  return null;
+  const header = imageHeader(bytes);
+  return header && { mimeType: header.mimeType, width: header.width, height: header.height };
 }

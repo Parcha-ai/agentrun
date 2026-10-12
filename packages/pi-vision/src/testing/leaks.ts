@@ -6,8 +6,8 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolResult } from "../core/host.js";
+import { imageHeader } from "../core/kinds.js";
 import { RESULT_BYTES_SHARE, type Limits } from "../core/limits.js";
-import { imageSize } from "./fixtures.js";
 import { SENTINELS } from "./sentinels.js";
 
 /** A leak of a value's head or tail is a leak; a shorter fragment would match by chance. */
@@ -105,31 +105,34 @@ export class LeakScan {
   }
 }
 
-/** What a result's media breaks of `limits`; an empty list is a result within its route's limits. Per image: pixels on each
- *  edge and base64 bytes. Per result: the images, and the image bytes in all (the result's share of the request body). A
- *  video block is for a route that takes video, within its inline bytes. A size the header does not give counts as over,
- *  since it cannot be shown to be under. */
+/** What a result's media breaks of `limits`, as the guard holds a result to them; an empty list is a result within its
+ *  route's limits. Per still: a route that takes images, its edges and its base64 characters, the size read from its
+ *  header as the guard reads it (`imageHeader`, so a format it cannot read counts as over, since it cannot be shown to be
+ *  under). Per result: the media blocks, videos included, at most `imagesPerCall`; the stills' base64 characters in all, at
+ *  most the result's share of the request body. A video block is for a route that takes video, within its inline bytes. */
 export function limitViolations(result: Pick<ToolResult, "content">, limits: Limits): string[] {
   const out: string[] = [];
-  let images = 0, bytes = 0;
+  let media = 0, chars = 0;
   result.content.forEach((block, i) => {
     if (block.type !== "image") return;
     const at = `content[${i}]`;
+    media++;
     if (block.mimeType.startsWith("video/")) {
       const raw = Buffer.byteLength(block.data, "base64");
       if (!limits.video.native) out.push(`${at}: a video block on a route that takes no video`);
       else if (raw > limits.video.inlineBytes) out.push(`${at}: ${raw} video bytes, over ${limits.video.inlineBytes}`);
       return;
     }
-    images++;
-    bytes += block.data.length;
+    chars += block.data.length;
+    if (!limits.image.native) out.push(`${at}: an image block on a route that takes no images`);
     if (!block.mimeType.startsWith("image/")) { out.push(`${at}: ${block.mimeType} is neither an image nor a video`); return; }
     if (block.data.length > limits.image.maxBytes) out.push(`${at}: ${block.data.length} base64 bytes, over ${limits.image.maxBytes}`);
-    const size = imageSize(Buffer.from(block.data, "base64"));
+    const size = imageHeader(Buffer.from(block.data, "base64"));
     if (!size) out.push(`${at}: the size of this ${block.mimeType} is not readable from its header`);
     else if (size.width > limits.image.maxWidth || size.height > limits.image.maxHeight) out.push(`${at}: ${size.width}x${size.height}, over ${limits.image.maxWidth}x${limits.image.maxHeight}`);
   });
-  if (images > limits.imagesPerCall) out.push(`${images} images, over ${limits.imagesPerCall} a call`);
-  if (bytes > RESULT_BYTES_SHARE * limits.requestBytes) out.push(`${bytes} image bytes, over ${RESULT_BYTES_SHARE * limits.requestBytes} (the result's share of the request body)`);
+  const share = Math.floor(limits.requestBytes * RESULT_BYTES_SHARE);
+  if (media > limits.imagesPerCall) out.push(`${media} images, over ${limits.imagesPerCall} a call`);
+  if (chars > share) out.push(`${chars} image bytes, over ${share} (the result's share of the request body)`);
   return out;
 }
