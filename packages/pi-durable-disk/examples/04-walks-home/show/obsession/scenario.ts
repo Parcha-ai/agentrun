@@ -8,7 +8,7 @@ import { join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brainFromItem } from "../chat-items.ts";
 import { emptyState, reduce } from "../reduce.ts";
-import type { ChatTurn, ShowCommand, ShowEvent, ShowState } from "../types.ts";
+import type { ChatTurn, ShowCommand, ShowEvent, ShowState, ToolRow } from "../types.ts";
 import { obsessionReply } from "./answers.ts";
 import { type ObsessionTrain, parseObsessionTrain } from "./train.ts";
 
@@ -106,14 +106,17 @@ export class ScenarioObsession {
   private trainEnd: number;
   /** The brain swap rehearsal: "ready" (the 03 page loads the trained model and it becomes the agent's brain) or "fail" (the load fails and the agent keeps its brain); null: no brain entries at all. */
   private brainMode: "ready" | "fail" | null;
+  /** The self-tools rehearsal: the tab's own events (net, decisions, tool calls, check-in, homecoming bytes), in the shapes the tab emits. Its values are scripted. */
+  private selftools: boolean;
   /** The swap has happened: what the viewer types from now on is answered by the trained model, as the 03 page would. */
   private swapped = false;
   private trained: ObsessionTrain;
 
   /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
   /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). `fallback`: the train half is the real run where the clamp was eased. */
-  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean; brain?: "ready" | "fail" } = {}) {
+  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean; brain?: "ready" | "fail"; selftools?: boolean } = {}) {
     this.gate = options.gate === true;
+    this.selftools = options.selftools === true && options.brain === "ready";
     this.brainMode = options.brain ?? null;
     this.find = findSchedule({ think: options.think === true });
     this.asked = options.think ? ((FIND_THINK.find((l) => l.event === "topic")?.topic as string | undefined) ?? "its topic") : "the Golden Gate Bridge";
@@ -282,7 +285,34 @@ export class ScenarioObsession {
       this.at(doneAt + 1, () => this.brainEntry("loading"));
       this.at(doneAt + 16, () => this.brainEntry(this.brainMode === "fail" ? "failed" : "ready"));
       this.at(doneAt + 17, () => this.agent(this.brainMode === "fail" ? "The small model did not load, so I am still thinking with my own brain. Ask me anything." : "I'm back in your browser, and my brain is now the small model I trained. Ask me anything."));
+      if (this.selftools) this.selftoolsBeats(doneAt);
     }
+  }
+
+  /** The beats after the swap, scripted: the bytes the homecoming put on the wire, the tab going offline (a rule picks the model in the tab) and writing code with its tools, then back online (a check-in, and Jev picks the cloud). */
+  private selftoolsBeats(doneAt: number): void {
+    const at = (s: number, e: ShowEvent) => this.at(s, () => this.emit({ ...e, at: this.clock } as ShowEvent));
+    const decision = (brain: "tab-local" | "cloud", reason: string, jev: number | null): ShowEvent => ({
+      t: "routing",
+      at: 0,
+      routing: { brain, answering: brain === "tab-local" ? "the model in this tab" : "the cloud model", reason, confidence: jev, decidedBy: jev === null ? "rule" : "jev", ms: jev === null ? 0 : 396, probabilities: jev === null ? null : { local: 1 - jev, cloud: jev } },
+    });
+    const tool = (id: string, name: string, args: object, output: string, status: "running" | "done"): ToolRow => ({ id, name, args: JSON.stringify(args), output, status });
+    const write = { path: "robot.json", content: JSON.stringify({ legs: 8, color: "gray" }) };
+    const edit = { path: "robot.json", oldText: "gray", newText: "red" };
+    at(doneAt + 5, { t: "net", at: 0, net: { online: true, reason: null } });
+    at(doneAt + 6, { t: "homecoming", at: 0, homecoming: { baseFetched: false, adapters: ["obsession.gguf"], plannedBytes: 18_400_000, fetchedBytes: 18_400_000, fetchMs: 1380, loadMs: null, name: "gemma-3-1b-it", prefetch: false } });
+    at(doneAt + 17.5, { t: "homecoming.loaded", at: 0, loadMs: 7771 });
+    at(doneAt + 21, { t: "net", at: 0, net: { online: false, reason: "no network and the ping failed" } });
+    at(doneAt + 22, decision("tab-local", "offline: the model in this tab is the only brain", null));
+    at(doneAt + 26, { t: "tools", at: 0, tools: [tool("c1", "write", write, "", "running")] });
+    at(doneAt + 28, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done")] });
+    at(doneAt + 30, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done"), tool("c2", "edit", edit, "", "running")] });
+    at(doneAt + 33, { t: "tools", at: 0, tools: [tool("c1", "write", write, "Successfully wrote to robot.json", "done"), tool("c2", "edit", edit, "Successfully replaced text in robot.json", "done")] });
+    at(doneAt + 44, { t: "net", at: 0, net: { online: true, reason: null } });
+    at(doneAt + 45, { t: "checkin", at: 0, checkin: { phase: "start", head: "h-12", files: null, changes: null, ms: null, message: null, code: null, resumed: false } });
+    at(doneAt + 47, { t: "checkin", at: 0, checkin: { phase: "done", head: "h-14", files: 1, changes: 2, ms: 1204, message: null, code: null, resumed: false } });
+    at(doneAt + 52, decision("cloud", "this needs the cloud: it trains a model on a GPU", 0.93));
   }
 
   advance(to: number): void {

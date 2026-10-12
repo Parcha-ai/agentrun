@@ -2,6 +2,8 @@
 // Invariant: `state` is always fold(events up to lastId); a reconnect resumes after lastId, never from scratch, unless
 // the server says it reset.
 import { emptyState, reduce } from "../reduce.ts";
+import { apiUrl } from "./api-base.ts";
+import { LocalEvents, type EventStore } from "./local-events.ts";
 import type { ShowCommand, ShowEvent, ShowState } from "../types.ts";
 
 export class Feed {
@@ -13,7 +15,27 @@ export class Feed {
   /** Counts each time the feed starts over (a first connection, a reset, a retake): what the page remembers about one timeline is not true of the next. */
   generation = 0;
   private es: EventSource | null = null;
+  /** What the page folded in itself (the tab's own messages), replayed over each snapshot. */
+  private local: LocalEvents;
   private listeners = new Set<(event: ShowEvent | null) => void>();
+  /** Where the API lives (an absolute URL ending in a slash): the origin's root by default; a page served under a path, or given `?api=`, says otherwise. */
+  private readonly given: string | undefined;
+
+  constructor(root?: string, store?: EventStore) {
+    this.given = root;
+    this.local = new LocalEvents(200, store);
+  }
+
+  /** After a reload of the page: the tab's events kept in the session, back in the state before any feed is reachable (offline there is none). */
+  restore(): void {
+    this.local.restore();
+    this.state = this.local.replay(this.state);
+  }
+
+  /** Read when used, not when built: the origin's root is only known in a page. */
+  private get root(): string {
+    return this.given ?? new URL("/", location.href).toString();
+  }
 
   onChange(fn: (event: ShowEvent | null) => void): void {
     this.listeners.add(fn);
@@ -47,9 +69,9 @@ export class Feed {
 
   async connect(): Promise<void> {
     this.es?.close();
-    const res = await fetch("/api/state", { cache: "no-store" });
+    const res = await fetch(apiUrl(this.root, "api/state"), { cache: "no-store" });
     if (!res.ok) throw new Error(`state: HTTP ${res.status}`);
-    this.state = (await res.json()) as ShowState;
+    this.state = this.local.replay((await res.json()) as ShowState);
     this.resetClock();
     // The snapshot says which event it ends at. A feed that does not say gets the stream's live tail, never a replay from the
     // start: replaying events the snapshot already holds would apply every narration line twice.
@@ -57,7 +79,7 @@ export class Feed {
     this.lastId = header === null ? -1 : Number(header);
     this.receivedAt = performance.now();
     this.notify(null);
-    const es = new EventSource(header === null ? "/api/events" : `/api/events?after=${this.lastId}`);
+    const es = new EventSource(apiUrl(this.root, header === null ? "api/events" : `api/events?after=${this.lastId}`));
     this.es = es;
     es.onopen = () => {
       this.lost = false;
@@ -77,9 +99,17 @@ export class Feed {
     };
   }
 
+  /** An event the page itself heard (the tab's message), folded in like the server's and kept across reconnects. */
+  inject(event: ShowEvent): void {
+    this.state = this.local.apply(this.state, event);
+    // One source of time: the event was stamped from this clock (state.now plus the time since the last event), so the time since the last event starts over from it.
+    this.receivedAt = performance.now();
+    this.notify(event);
+  }
+
   /** A refusal carries its reason as `message` (scripted feed) or `error` (D1's driver); both are shown the same way. */
   async command(cmd: ShowCommand): Promise<{ ok: boolean; message?: string }> {
-    const res = await fetch("/api/command", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(cmd) });
+    const res = await fetch(apiUrl(this.root, "api/command"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(cmd) });
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; error?: string };
     return { ok: res.ok && body.ok !== false, message: body.message ?? body.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
   }
