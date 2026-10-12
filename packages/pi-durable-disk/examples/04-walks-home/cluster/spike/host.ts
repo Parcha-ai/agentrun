@@ -7,7 +7,7 @@
 //   --done-before SKILL:CHECKPOINT:SECONDS   that skill's box already holds a finished run (a replay after the trainer ended)
 //
 // Every live line it prints comes from the store: watchEvents() over the root and over each child conversation.
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -70,7 +70,7 @@ const brain: FauxResponseFactory = (ctx) => {
   if (last.role === "user") {
     const assigned = /Teach the robot to ([\w-]+): call train_skill/.exec(text);
     if (assigned) return toolUse("train_skill", { skill: assigned[1] });
-    if (/teach it to move/i.test(text)) return toolUse("teach_skills", { skills: [...SKILLS] });
+    if (/teach it to move/i.test(text)) return toolUse("teach_skills", {}); // no skills named: all of them
     const gpu = /happened on GPU (\d+)/i.exec(text);
     if (gpu) return toolUse("read_thread", { thread: gpu[1] });
   }
@@ -82,6 +82,18 @@ const pool = new FakePool(dir, Number(a.capacity), (line) => say(line as Record<
 const artifacts: FakeArtifacts[] = [];
 const { teach, thread } = teachSkills({
   boxes: pool,
+  // D2's assemble-skills, faked: every skill whose mirrored skill.json says done goes into home/skills.json.
+  assemble: async () => {
+    const work = join(dir, "work", "skills");
+    const done = (existsSync(work) ? readdirSync(work) : []).filter((skill) => {
+      const file = join(work, skill, "skill.json");
+      return existsSync(file) && JSON.parse(readFileSync(file, "utf8")).status === "done";
+    }).sort((x, y) => SKILLS.indexOf(x as never) - SKILLS.indexOf(y as never));
+    mkdirSync(join(dir, "home"), { recursive: true });
+    writeFileSync(join(dir, "home", "skills.json"), JSON.stringify({ version: 1, skills: Object.fromEntries(done.map((s) => [s, { label: s }])) }));
+    say({ event: "home.assembled", skills: done });
+    return { home: done };
+  },
   artifacts: ({ boxId, skill }) => {
     const sync = new FakeArtifacts(join(pool.boxDir(boxId), "workspace", "skills", skill), join(dir, "work", "skills", skill));
     artifacts.push(sync);

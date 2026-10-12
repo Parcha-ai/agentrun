@@ -22,6 +22,9 @@ function runSpike(capacity: number, ...extra: string[]) {
 
 test("eight threads survive a SIGKILL of the host while the parent waits allSettled, and GPU 3 reads back", () => {
   const { status, verdict } = runSpike(8);
+  // The scripted session calls teach_skills({}) for "Teach it to move.": no skills named forks all eight threads.
+  assert.equal(verdict.checks.omitted_skills_teach_all_eight, true);
+  assert.equal(verdict.checks.passed_skills_are_home, true);
   for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
   assert.equal(status, 0);
   assert.equal(verdict.peak_boxes, 8);
@@ -73,6 +76,13 @@ test("aborting the run mid-way stops every artifact mirror and gives every box b
   assert.deepEqual(report.tasks_after, []);
   const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(pool.filter((p) => p.event === "pool.release").length, pool.filter((p) => p.event === "pool.create").length);
+});
+
+test("the fold says which skills came home, or why they could not", () => {
+  const t: ThreadResult = { skill: "walk", gpu: 1, conversationId: 3, boxId: "sb-1", status: "passed", checkpoint: 3, seconds: 21, summary: "walk passed." };
+  assert.match(foldText([t], { skills: ["walk"] }), /^Home: 1 skill \(walk\)\.$/m);
+  assert.match(foldText([t], { error: "assemble-skills exited 1" }), /^Bringing the skills home failed: assemble-skills exited 1$/m);
+  assert.doesNotMatch(foldText([t]), /Home:|home failed/);
 });
 
 test("the fold names every thread, passed or not, in its own words", () => {

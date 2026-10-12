@@ -66,6 +66,14 @@ const checks = {
   // wave's thread said only "wave ran out of steps": its status and facts come from the result it saved, not its words.
   failed_thread_keeps_its_saved_facts: threads.some((t: { skill: string; status: string; boxId: string | null; checkpoint?: number; seconds?: number }) =>
     t.skill === "wave" && t.status === "never-passed" && t.boxId !== null && t.checkpoint === 8 && t.seconds !== undefined),
+  // "Teach it to move." names no skills: all eight are taught, and the passed ones come home before the tool answers.
+  omitted_skills_teach_all_eight: threads.length === 8,
+  passed_skills_are_home: (() => {
+    const home = report.teachResult?.details?.home?.skills ?? [];
+    const passed = threads.filter((t: { status: string }) => t.status === "passed").map((t: { skill: string }) => t.skill);
+    const file = existsSync(join(dir, "home", "skills.json")) ? Object.keys(JSON.parse(readFileSync(join(dir, "home", "skills.json"), "utf8")).skills) : [];
+    return home.length === passed.length && passed.every((s: string) => home.includes(s) && file.includes(s)) && new RegExp(`Home: ${passed.length} skills`).test(report.teachResult.text);
+  })(),
   read_thread_answers_from_gpu_3: typeof report.readThread === "string" && /GPU 3 \(backwards\)/.test(report.readThread) && /train_skill/.test(report.readThread),
   no_live_tasks_left: report.tasks_after.length === 0,
 };
