@@ -36,7 +36,8 @@ export interface CloudHost {
   /** The cloud's own view of the run, for viewers while it runs there. Optional. */
   attachViewer?(ref: RunRef, send: (frame: PipeFrame) => void): Promise<() => void>;
   /** Forward a viewer's message to the cloud's conversation. Optional. */
-  submit?(ref: RunRef, text: string, requestId: string): Promise<void>;
+  /** `signal` aborts the attempt: the server bounds a whole delivery (its retries included) by `submitRetryMs`. */
+  submit?(ref: RunRef, text: string, requestId: string, signal?: AbortSignal): Promise<void>;
   /**
    * Stop whatever the cloud runs for the run. After a takeover (`fenced`: its claim is already revoked) it first waits
    * for the instance to exit by itself, which is the fence observed; otherwise (`now`) it stops it, and the instance
@@ -731,11 +732,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const deadline = Date.now() + (options.submitRetryMs ?? 20_000);
     for (let attempt = 1; ; attempt++) {
       try {
-        await options.cloud?.submit?.(state.ref, text, requestId);
+        // Each attempt is cut off at the bound, so a slow answer cannot hold the lines behind this one past it.
+        await options.cloud?.submit?.(state.ref, text, requestId, AbortSignal.timeout(Math.max(1, deadline - Date.now())));
         return;
       } catch (error) {
         const refused = (error as { status?: unknown }).status === 503;
-        if (!refused || state.placement.where !== "cloud" || Date.now() + delay > deadline) throw error;
+        if (!refused || state.placement.where !== "cloud" || Date.now() + delay >= deadline) throw error;
         log("placement.retry", { run: state.ref.id, requestId, attempt, error: (error as Error).message, afterMs: delay });
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
@@ -1101,8 +1103,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           void placeThenSubmit(state, socket, frame.text, frame.requestId).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
           return;
         }
-        if (pipe) pipe.broadcast({ t: "submit", text: frame.text, requestId: frame.requestId });
-        else if (state.placement.where === "cloud") await options.cloud?.submit?.(state.ref, frame.text, frame.requestId);
+        // Both go through the one delivery, so a cloud host that is still starting is retried here too (no placer is the documented --cloud daytona setup).
+        if (pipe || state.placement.where === "cloud") {
+          await deliverSubmit(state, frame.text, frame.requestId).catch((error) => {
+            log("submit.failed", { run: state.ref.id, error: (error as Error).message });
+            socket.send({ t: "submit-refused", requestId: frame.requestId, message: `the line could not be delivered: ${(error as Error).message}` });
+          });
+        }
         return;
       case "bye":
         ws.close(1000, "bye");

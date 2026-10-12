@@ -234,10 +234,10 @@ export async function cloudHost(kind: "local" | "daytona", options: CloudOptions
         const env = () => d.placed(ref.id)?.env ?? d.environments[0]!.id;
         return relayViewer({ control, ref, send, log: options.log, label: () => d.label(env()), env, dialer: () => undefined, serve: () => d.placed(ref.id)?.serve });
       },
-      async submit(ref, text, requestId) {
+      async submit(ref, text, requestId, signal) {
         const serve = d.placed(ref.id)?.serve;
         if (!serve) throw Object.assign(new Error("the sandbox serves nothing yet"), { status: 503 });
-        const res = await fetch(`${serve.url}/submit`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serve.token}` }, body: JSON.stringify({ requestId, content: text }), signal: AbortSignal.timeout(30_000) });
+        const res = await fetch(`${serve.url}/submit`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serve.token}` }, body: JSON.stringify({ requestId, content: text }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000) });
         if (!res.ok) throw Object.assign(new Error(`submit: ${res.status}`), { status: res.status });
       },
       async stop(ref, how) {
