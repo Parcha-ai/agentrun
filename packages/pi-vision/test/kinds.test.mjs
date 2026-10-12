@@ -4,9 +4,11 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { strToU8, zipSync } from "fflate";
 import sharp from "sharp";
-import { DECODE_GUARD_PIXELS, exceedsDecodeGuard, imageHeader, KINDS, SNIFF_BYTES, sniffKind } from "@parcha/pi-vision";
+import { DECODE_GUARD_PIXELS, DEFAULT_LIMITS, exceedsDecodeGuard, imageHeader, KINDS, readMedia, readsAsText, SNIFF_BYTES, sniffKind } from "@parcha/pi-vision";
+import { fixtureDir } from "@parcha/pi-vision/testing";
 import { bmp, corners, flat, ftyp, pngClaiming, webp } from "./support/images.mjs";
 
 const text = (s) => new TextEncoder().encode(s);
@@ -61,6 +63,71 @@ test("the other kinds are told by their bytes: documents, containers, video, tex
     assert.deepEqual([sniffed.kind, sniffed.format], [kind, format], name);
   }
   assert.deepEqual(KINDS.filter((k) => !["recording"].includes(k)).sort(), ["image", "office", "pdf", "sheet", "text", "unknown", "video"], "every kind but a handle is reachable from bytes");
+});
+
+const BODY = "Total due: 31,50 € — résumé\r\nsecond line\n";
+const utf32 = (little) => Buffer.concat([Buffer.from(little ? [0xff, 0xfe, 0, 0] : [0, 0, 0xfe, 0xff]), ...Array.from(BODY, (char) => { const unit = Buffer.alloc(4); if (little) unit.writeUInt32LE(char.codePointAt(0)); else unit.writeUInt32BE(char.codePointAt(0)); return unit; })]);
+const withMark = {
+  "UTF-16 LE": Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(BODY, "utf16le")]),
+  "UTF-16 BE": Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(BODY, "utf16le").swap16()]),
+  "UTF-32 LE": utf32(true),
+  "UTF-32 BE": utf32(false),
+};
+
+test("UTF-16 and UTF-32 text with a byte order mark is text, though it is full of NUL bytes; UTF-8 with its mark is text too", () => {
+  for (const [encoding, bytes] of Object.entries(withMark)) {
+    assert.ok(bytes.includes(0), `${encoding} holds NUL bytes`);
+    for (const name of ["notes.txt", "export.csv", "README", "a.md"]) {
+      const sniffed = sniffKind(bytes, name);
+      assert.ok(sniffed.ok, `${encoding} as ${name}: ${JSON.stringify(sniffed)}`);
+      assert.deepEqual([sniffed.kind, sniffed.format], ["text", "text"], `${encoding} as ${name}`);
+    }
+  }
+  const utf8 = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(BODY, "utf8")]);
+  assert.deepEqual(kindOf(utf8, "notes.txt"), "text");
+  for (const [bytes, label] of [[[0xff, 0xfe], "UTF-16 LE, the mark alone"], [[0xfe, 0xff], "UTF-16 BE, the mark alone"], [[0xff, 0xfe, 0, 0], "UTF-32 LE, the mark alone"], [[0, 0, 0xfe, 0xff], "UTF-32 BE, the mark alone"], [[0xff, 0xfe, 0], "UTF-16 LE cut in the middle of what could be UTF-32's"]]) {
+    assert.equal(kindOf(Buffer.from(bytes), "empty.txt"), "text", label);
+  }
+});
+
+test("a file with a NUL in its first 8 KiB and no byte order mark stays binary: nothing is guessed, and a mark must be at offset 0", async () => {
+  const sqlite = Buffer.concat([text("SQLite format 3\0"), Buffer.alloc(100)]);
+  const noise = Buffer.from(Array.from({ length: 300 }, (_, i) => (i % 7 === 0 ? 0 : (i * 37 + 11) % 251 + 1)));
+  const cases = {
+    "a zip": [zipSync({ "a.txt": strToU8("x") }), "zip"],
+    "an sqlite header": [sqlite, "binary"],
+    "bytes with NULs": [noise, "binary"],
+    "UTF-16 LE text with no mark": [Buffer.from(BODY, "utf16le"), "binary"],
+    "UTF-16 BE text with no mark": [Buffer.from(BODY, "utf16le").swap16(), "binary"],
+    "UTF-32 LE text with no mark": [utf32(true).subarray(4), "binary"],
+    "a mark after the first byte": [Buffer.concat([text("x"), withMark["UTF-16 LE"]]), "binary"],
+    "a UTF-32 BE mark cut short": [Buffer.concat([Buffer.from([0, 0, 0xfe]), Buffer.alloc(20)]), "binary"],
+    "a mark that is half UTF-16's and half not": [Buffer.concat([Buffer.from([0xff, 0xff]), Buffer.from(BODY, "utf16le")]), "binary"],
+  };
+  for (const [what, [bytes, format]] of Object.entries(cases)) {
+    const sniffed = sniffKind(bytes, "data");
+    assert.ok(sniffed.ok, what);
+    assert.deepEqual([sniffed.kind, sniffed.format], ["unknown", format], what);
+  }
+  const unnamed = sniffKind(withMark["UTF-16 LE"], "photo.png");
+  assert.equal(unnamed.ok, false, "text under a name that claims another kind is the mismatch it always was");
+  assert.match(unnamed.reason, /but its bytes are text/);
+});
+
+test("read leaves a file with a byte order mark to the host's text read, and still refuses one without a mark", async (t) => {
+  const dir = await fixtureDir("pi-vision-bom-");
+  t.after(() => dir.remove());
+  const env = new NodeExecutionEnv({ cwd: dir.path });
+  const setup = { scope: { label: "n", deriveDir: `${dir.path}/evidence/n/media` }, limits: DEFAULT_LIMITS, providers: [], sources: {}, evidence: { file: async () => null } };
+  const call = { conversationId: "c1", callId: "t1", model: undefined, signal: undefined };
+  for (const [encoding, bytes] of Object.entries(withMark)) {
+    const name = `${encoding.replace(" ", "-").toLowerCase()}.txt`;
+    await dir.file(name, bytes);
+    assert.equal(await readMedia(env, { path: name }, call, setup), null, `${encoding}: the media half has nothing to say`);
+    assert.equal(await readsAsText(env, { path: name }, call, setup), true, encoding);
+  }
+  await dir.file("no-mark.txt", Buffer.from(BODY, "utf16le"));
+  assert.equal(await readsAsText(env, { path: "no-mark.txt" }, call, setup), false, "a file with NULs and no mark is not the host's text");
 });
 
 test("a name that claims one kind over the bytes of another is an unsupported miss that names both and the first bytes", () => {

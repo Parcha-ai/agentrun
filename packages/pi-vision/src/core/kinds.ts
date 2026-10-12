@@ -16,6 +16,9 @@ export const SNIFF_BYTES = 1 << 20;
 const TEXT_PROBE_BYTES = 8192;
 /** Chunks of an extended WebP walked in search of its EXIF chunk, which follows the image data: a still has a handful. */
 const WEBP_CHUNKS_MAX = 64;
+/** Byte order marks of the Unicode encodings whose text holds NUL bytes. UTF-32 LE (FF FE 00 00) starts with UTF-16 LE's
+ *  (FF FE), so it comes first. Text without a mark is not guessed at. */
+const NUL_TEXT_BOMS: readonly (readonly number[])[] = [[0xff, 0xfe, 0, 0], [0, 0, 0xfe, 0xff], [0xff, 0xfe], [0xfe, 0xff]];
 /** A PDF's signature may follow this many bytes of junk. */
 const PDF_SIGNATURE_WINDOW = 1024;
 /** Brands of an ISO base media file that make it a HEIF image; any other makes it a video. */
@@ -160,6 +163,7 @@ function identify(bytes: Uint8Array): SniffedFormat {
   if (ascii(bytes, 0, "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")) return "ole2";
   if (ascii(bytes, 0, "{\\rtf")) return "rtf";
   if (latin1(bytes, 0, PDF_SIGNATURE_WINDOW + 5).includes("%PDF-")) return "pdf";
+  if (NUL_TEXT_BOMS.some((bom) => bom.every((byte, i) => bytes[i] === byte))) return "text";
   return bytes.subarray(0, TEXT_PROBE_BYTES).includes(0) ? "binary" : "text";
 }
 
