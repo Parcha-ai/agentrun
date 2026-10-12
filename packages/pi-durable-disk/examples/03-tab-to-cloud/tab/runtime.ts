@@ -72,6 +72,22 @@ export async function finishStep(harness: Harness, timeoutMs: number): Promise<"
 }
 
 /**
+ * Wait until nothing is running: `finishStep` until it says idle (a step that ends may be followed by the next of the same turn, and a tool that asked for this very move is itself a step that has
+ * not ended yet when the page starts waiting). "timeout" when the agent is still going after `timeoutMs`.
+ */
+export async function untilIdle(harness: Harness, timeoutMs: number): Promise<"idle" | "timeout"> {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    const left = deadline - performance.now();
+    if (left <= 0) return "timeout";
+    const how = await finishStep(harness, left);
+    if (how === "idle") return "idle";
+    if (how === "timeout") return "timeout";
+    await new Promise((r) => setTimeout(r, 50)); // a step ended: look again, the turn may have another
+  }
+}
+
+/**
  * A write-through every `ms` while started. A tick that finds the previous one still running is skipped, so a slow sync
  * (a large checkpoint) never queues more behind it; `stop` ends the ticks and waits for the one in flight.
  */
@@ -187,6 +203,8 @@ export async function startLocal(opts: {
   settings?: HarnessSettings;
   computer?: { env: RuntimeEnv; workspace: Workspace };
   persist?: (changes: Awaited<ReturnType<Workspace["changes"]>>["changes"]) => Promise<void>;
+  /** What this host's page offers the agent's tools (go_online, here). */
+  host?: HostTools;
 }): Promise<TabRuntime> {
   const env = opts.computer?.env ?? noComputer();
   const workspace = opts.computer?.workspace ?? noWorkspace();
@@ -203,7 +221,7 @@ export async function startLocal(opts: {
     line = next.catch(() => undefined);
     return next;
   };
-  const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [] });
+  const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [], ...opts.host });
   const harness = await Harness.open(opts.storage, { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   await harness.resume();
   const root = await harness.root(ctx, { agent: rootAgent(opts.model) });

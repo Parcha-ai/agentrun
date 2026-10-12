@@ -14,11 +14,12 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
-import { CHECKOUT_MARKER, CheckoutRefused, manifestDigest, RunPipe, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
+import type { JudgeRunner } from "../brain-router.ts";
+import { CHECKIN_RECEIPT, CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckinReceipt, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
 import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
-import { CHUNK_BYTES, lazyPath, toBase64, untag, type Environment, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
+import { CHUNK_BYTES, lazyPath, toBase64, untag, type Environment, type FileChange, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
 export const TAB_ENVIRONMENT: Environment = { id: "tab", label: "your browser", phrase: "your user's browser tab", kind: "tab", detail: "Wasmer in the page: bash, coreutils, node" };
@@ -116,6 +117,11 @@ export interface DemoServerOptions {
    * now. Absent, a message goes to wherever the run is, and only the user or the agent's switch_environment moves it.
    */
   readonly placer?: Placer;
+  /**
+   * The typed-question client the page's brain router asks (POST /api/runs/<id>/brain-judge; the key stays here, never in the page). Only the router's one question is forwarded
+   * (see `brainJudgeRoute`). Absent, the route is 404 and the page's router falls back to the cloud.
+   */
+  readonly brainJudge?: JudgeRunner;
   /** How long a remote host may take to answer a move before the move fails (default 240 s: above Modal's own 180 s limit for placing a GPU). */
   readonly remoteStartMs?: number;
   /** Prefixes of work/ no writer is sent on attach (see RunPipeOptions.noRestore). The caller names them; nothing here knows what they hold. */
@@ -145,6 +151,10 @@ export interface DemoServerOptions {
   readonly drainMs?: number;
   /** Reads an object of the disk (its S3 API): work/ of a run no pipe holds, and run.json when a run is adopted. */
   readonly readObject?: (key: string) => Promise<Uint8Array>;
+  /** After a check-in the server holds the claim for the browser's tab to attach; none attaching within this releases it. Default 30 s. */
+  readonly checkinGraceMs?: number;
+  /** A test seam: runs after a check-in's store and files are in place and before the checkout mark is removed (a throw is a crash at that point). */
+  readonly beforeCheckinMarkerRemoval?: () => Promise<void>;
   /**
    * The work/ paths the page of the tab that holds a run may write over HTTP (`PUT /api/runs/<id>/work/<path>`), exactly.
    * Default none.
@@ -198,6 +208,10 @@ interface RunState {
   decisions: PlacementDecision[];
   /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Set from the checkout, and from the mark on the disk (`store/checkout.json`, readMarker) on adopt, hello and the store and checkout routes, so a restarted server finds it too. */
   checkedOut: { at: number; head: number; tab: string } | undefined;
+  /** After a check-in the claim is held for the browser's tab to attach: released if none does in time. */
+  checkinTimer: NodeJS.Timeout | undefined;
+  /** A check-in is being applied (one at a time). */
+  checkingIn: boolean;
   /** A checkout is being decided (`POST .../checkout` is in the pipe): no move, attach or placement starts meanwhile, or the run could end up live in two places. */
   checkingOut: boolean;
 }
@@ -223,6 +237,9 @@ const TYPES: Record<string, string> = {
 
 /** What a checked-out run says to anything that would run it again. */
 const CHECKED_OUT_MESSAGE = "this run is checked out to a browser: its live copy is there, and nothing here runs it any more";
+
+/** The largest body `POST /api/runs/<id>/checkin` takes (the store and the changed files, base64 in JSON). */
+const CHECKIN_MAX = 192 * 1024 * 1024;
 
 /** The largest body `PUT /api/runs/<id>/work/<path>` takes. */
 const WORK_PUT_MAX = 48 * 1024 * 1024;
@@ -817,6 +834,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
       const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, env: writerEnv, ...(move ? { move } : {}), ...(options.placer ? { placed: true } : {}) });
+      if (role === "writer") clearTimeout(state.checkinTimer);
       if (role === "viewer") socket.send(await viewingFrame(state));
       else {
         for (const [viewer, detach] of state.cloudViewers) {
@@ -1166,6 +1184,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       decisions: [],
       checkedOut: undefined,
       checkingOut: false,
+      checkinTimer: undefined,
+      checkingIn: false,
     });
     return secret;
   }
@@ -1191,6 +1211,24 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     try {
       const m = JSON.parse(Buffer.from(bytes).toString("utf8")) as Partial<CheckoutMarker>;
       return typeof m.head === "number" && typeof m.tab === "string" ? { head: m.head, at: Number(m.at) || 0, tab: m.tab, ...(typeof m.conversation === "number" ? { conversation: m.conversation } : {}) } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** What the last check-in of the run left on the disk, when one did (the receipt), read as the marker is. */
+  async function readReceipt(runId: string): Promise<CheckinReceipt | undefined> {
+    const key = `runs/${runId}/store/${CHECKIN_RECEIPT}`;
+    let bytes: Uint8Array;
+    try {
+      bytes = options.readObject ? await options.readObject(key) : readFileSync(join(options.mountRoot, key));
+    } catch (error) {
+      if (isNotFound(error)) return undefined;
+      throw Object.assign(new Error(`cannot read run ${runId}'s check-in receipt (${(error as Error).message})`), { code: "MARKER_UNREADABLE" });
+    }
+    try {
+      const r = JSON.parse(Buffer.from(bytes).toString("utf8")) as Partial<CheckinReceipt>;
+      return typeof r.sha256 === "string" && typeof r.head === "number" && typeof r.tab === "string" ? { sha256: r.sha256, head: r.head, files: Number(r.files) || 0, tab: r.tab, at: Number(r.at) || 0 } : undefined;
     } catch {
       return undefined;
     }
@@ -1377,6 +1415,123 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   }
 
   /**
+   * `POST /api/runs/<id>/checkin`: body `{tab, store, changes}` (the browser's store as base64, and the work/ changes it made while it held the run as inline FileChanges), the run's secret as the
+   * bearer token. The other half of a checkout: the pipe takes the claim, checks that the store extends the head the checkout released, puts store and files on the disk and removes the mark
+   * last (RunPipe.checkIn). 409 CHECKIN_DIVERGED (nothing changed) when it does not extend it; 409 NOT_CHECKED_OUT when the run is not checked out; a failure after the check leaves the mark and the same
+   * request can be sent again. On success the claim stays held, so the tab can attach as the writer at once (it is released if none does within `checkinGraceMs`).
+   */
+  async function checkinRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    try {
+      await refreshCheckedOut(state);
+    } catch (error) {
+      return json(res, 503, { error: (error as Error).message, code: "MARKER_UNREADABLE" });
+    }
+    let receipt: CheckinReceipt | undefined;
+    if (!state.checkedOut) {
+      // Not checked out: either this is not a run that was, or the check-in went through and its reply was lost. The receipt tells which: the same store from the same tab is answered as the first time.
+      try {
+        receipt = await readReceipt(runId);
+      } catch (error) {
+        return json(res, 503, { error: (error as Error).message, code: "MARKER_UNREADABLE" });
+      }
+      if (!receipt) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
+    } else if (state.checkingIn || state.checkingOut || state.switching || state.opening) return json(res, 409, { error: "a check-in or a move is in progress", code: "CHECKIN_BUSY" });
+    // Reserved in the same turn as the check above, before the body is awaited: a second request for the run finds it taken and is refused, never a second user of the pipe's one connection.
+    const reserved = receipt === undefined;
+    if (reserved) state.checkingIn = true;
+    try {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of req as AsyncIterable<Buffer>) {
+        size += chunk.length;
+        if (size > CHECKIN_MAX) return json(res, 413, { error: `more than ${CHECKIN_MAX} bytes` });
+        chunks.push(chunk);
+      }
+      let body: { tab?: unknown; store?: unknown; changes?: unknown };
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
+      } catch {
+        return json(res, 400, { error: "the body is not JSON" });
+      }
+      if (typeof body.tab !== "string" || typeof body.store !== "string" || !Array.isArray(body.changes)) return json(res, 400, { error: "the body needs tab, store (base64) and changes" });
+      const changes = body.changes as FileChange[];
+      if (changes.some((c) => typeof c?.path !== "string" || (c.op === "write" && "upload" in c))) return json(res, 400, { error: "changes are inline writes, mkdirs and deletes" });
+      if (receipt) {
+        // the check-in already went through: answered as it was the first time, and nothing is written
+        const same = receipt.tab === body.tab && receipt.sha256 === createHash("sha256").update(Buffer.from(body.store, "base64")).digest("hex");
+        if (!same) return json(res, 409, { error: "the run is not checked out, and this is not the store its last check-in took", code: "NOT_CHECKED_OUT" });
+        log("checkin.replayed", { run: runId, head: receipt.head });
+        return json(res, 200, { head: receipt.head, files: receipt.files, replayed: true });
+      }
+      const marker = await readMarker(runId);
+      if (!marker) return json(res, 409, { error: "the run is not checked out", code: "NOT_CHECKED_OUT" });
+      let pipe: RunPipe | undefined;
+      try {
+        pipe = state.pipe ?? (await openPipe(state, false));
+        const done = await pipe.checkIn({ tab: body.tab, marker, storeBytes: new Uint8Array(Buffer.from(body.store, "base64")), changes, ...(options.beforeCheckinMarkerRemoval ? { beforeMarkerRemoval: options.beforeCheckinMarkerRemoval } : {}) });
+        state.checkedOut = undefined;
+        setPlacement(state, { where: "parked", detail: "checked in: the browser's copy is the run again" });
+        // the tab attaches next; the claim is held for it, and let go if it does not come
+        clearTimeout(state.checkinTimer);
+        state.checkinTimer = setTimeout(() => {
+          if (state.pipe && !state.pipe.writerTab && !state.switching && !state.opening) void releasePipe(state).catch((error) => log("release.failed", { run: runId, error: (error as Error).message }));
+        }, options.checkinGraceMs ?? 30_000);
+        state.checkinTimer.unref();
+        log("checked-in", { run: runId, head: done.head, files: done.files });
+        json(res, 200, done);
+      } catch (error) {
+        // the claim is let go: the run stays checked out (the mark is still there) for a retry
+        if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((e) => log("release.failed", { run: runId, error: (e as Error).message }));
+        if (error instanceof CheckinRefused) return json(res, 409, { error: error.message, code: error.code, ...(error.table ? { table: error.table } : {}) });
+        log("checkin.failed", { run: runId, error: (error as Error).message });
+        json(res, 500, { error: (error as Error).message });
+      }
+    } finally {
+      if (reserved) state.checkingIn = false;
+    }
+  }
+
+  /**
+   * `POST /api/runs/<id>/brain-judge`: body `{label: "brain", state: {message}, questions: {who: {type: "choice", instructions, criteria: {local, cloud}}}}`, the run's secret as the bearer token.
+   * The page's brain router (brain-router.ts) asks who should answer a message; this runs that one question on the server's client and answers `{answers, model}`. Anything else is refused,
+   * so the route is not a way to ask the client other things. The message is never logged.
+   */
+  async function brainJudgeRoute(req: IncomingMessage, res: ServerResponse, runId: string): Promise<void> {
+    const state = runs.get(runId);
+    if (!options.brainJudge || !state || !holdsSecret(req, state)) return void res.writeHead(404).end();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > 64 * 1024) return json(res, 413, { error: "more than 64 KiB" });
+      chunks.push(chunk);
+    }
+    let body: { label?: unknown; state?: { message?: unknown }; questions?: Record<string, { type?: unknown; instructions?: unknown; criteria?: Record<string, unknown> }> };
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
+    } catch {
+      return json(res, 400, { error: "the body is not JSON" });
+    }
+    const q = body?.questions?.who;
+    const criteria = q?.criteria;
+    const message = body?.state?.message;
+    if (body?.label !== "brain" || typeof message !== "string" || message.length === 0 || message.length > 8000 || Object.keys(body.questions ?? {}).join() !== "who" || q?.type !== "choice" || typeof q.instructions !== "string" || q.instructions.length > 200 || !criteria || Object.keys(criteria).sort().join() !== "cloud,local" || Object.values(criteria).some((c) => typeof c !== "string" || c.length > 400)) {
+      return json(res, 400, { error: "only the brain router's question is answered" });
+    }
+    const started = Date.now();
+    try {
+      const result = await options.brainJudge({ label: "brain", kind: "judge", state: { message }, questions: { who: { type: "choice", instructions: q.instructions, criteria: criteria as Record<string, string> } } });
+      log("brain.judge", { run: runId, ms: Date.now() - started, message_chars: message.length, ...(result.model ? { model: result.model } : {}) });
+      json(res, 200, result);
+    } catch (error) {
+      log("brain.judge.failed", { run: runId, ms: Date.now() - started, error: (error as Error).message });
+      json(res, 502, { error: (error as Error).message });
+    }
+  }
+
+  /**
    * `POST /api/runs/<id>/judge`: body `{prompt, answer, topic?}`; answers the judge's verdict (`show` or `refuse`). A judge that
    * times out or fails is a `refuse` too, so the page never shows an answer nobody judged. The text is never logged.
    * The route only answers; holding an answer back until its verdict is `show` is the page's part.
@@ -1428,8 +1583,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const work = /^\/api\/runs\/([^/]+)\/work\/(.+)$/.exec(path);
     const attach = /^\/api\/runs\/([^/]+)\/attach$/.exec(path);
     const judge = /^\/api\/runs\/([^/]+)\/judge$/.exec(path);
+    const brainJudge = /^\/api\/runs\/([^/]+)\/brain-judge$/.exec(path);
     const storeCopy = /^\/api\/runs\/([^/]+)\/store$/.exec(path);
     const checkout = /^\/api\/runs\/([^/]+)\/checkout$/.exec(path);
+    const checkin = /^\/api\/runs\/([^/]+)\/checkin$/.exec(path);
     const failed = (error: unknown) => {
       log("http.failed", { path: path.split("/").slice(0, 4).join("/"), error: (error as Error).message });
       if (!res.headersSent) res.writeHead(500).end();
@@ -1440,9 +1597,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     else if (req.method === "POST" && desktopTicketFor) void desktopTicket(req, res, decodeURIComponent(desktopTicketFor[1]!)).catch(failed);
     else if (work && (req.method === "GET" || req.method === "PUT")) void workRoute(req, res, decodeURIComponent(work[1]!), decodeURIComponent(work[2]!)).catch(failed);
     else if (attach && req.method === "POST") void attachRoute(req, res, decodeURIComponent(attach[1]!)).catch(failed);
+    else if (brainJudge && req.method === "POST") void brainJudgeRoute(req, res, decodeURIComponent(brainJudge[1]!)).catch(failed);
     else if (judge && req.method === "POST") void judgeRoute(req, res, decodeURIComponent(judge[1]!)).catch(failed);
     else if (storeCopy && req.method === "GET") void storeRoute(req, res, decodeURIComponent(storeCopy[1]!)).catch(failed);
     else if (checkout && req.method === "POST") void checkoutRoute(req, res, decodeURIComponent(checkout[1]!)).catch(failed);
+    else if (checkin && req.method === "POST") void checkinRoute(req, res, decodeURIComponent(checkin[1]!)).catch(failed);
+    else if (req.method === "GET" && path === "/api/ping") res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" }).end("ok"); // the page's "can I reach the server" (tab/main.ts)
     else if (req.method === "GET") serveStatic(req, res);
     else if (req.method === "POST" && path.startsWith("/admin/")) void admin(req, res).catch(() => res.writeHead(500).end());
     else res.writeHead(405).end();

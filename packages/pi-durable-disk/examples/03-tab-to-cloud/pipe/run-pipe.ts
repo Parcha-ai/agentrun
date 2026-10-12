@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Storage } from "@earendil-works/pi-durable";
 import { FencedError, openArchilStore, openRunLease, storeHead } from "@parcha/pi-durable-disk";
+import type { SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import type { ArchilHost, ArchilStore, OpenRunLeaseOptions, RunLease, RunRef } from "@parcha/pi-durable-disk";
 import type { ModelProxy } from "./model-proxy.ts";
 import {
@@ -147,7 +148,61 @@ export class CheckoutRefused extends Error {
 
 /** The file a checkout leaves next to the run's store (`store/checkout.json`): the head handed over, when, by which tab, and the browser's conversation. The server reads it before it lets anything attach. */
 export const CHECKOUT_MARKER = "checkout.json";
+/** What the last check-in left beside the store, written before the mark is removed: {sha256 of the store taken, head, files, tab, at}. A browser that never saw the reply sends the same check-in again and is answered from it. */
+export const CHECKIN_RECEIPT = "checkin.json";
+export type CheckinReceipt = { sha256: string; head: number; files: number; tab: string; at: number };
 export type CheckoutMarker = { head: number; at: number; tab: string; conversation?: number };
+
+/** A check-in the pipe refused because the browser's store does not extend the head the server released: nothing was changed. `table` names where the first difference is. */
+export class CheckinRefused extends Error {
+  readonly code: string;
+  readonly table: string | undefined;
+  constructor(code: string, message: string, table?: string) {
+    super(message);
+    this.name = "CheckinRefused";
+    this.code = code;
+    this.table = table;
+  }
+}
+
+/**
+ * Whether the store attached as `browser` extends the one in `main` (the released store at `head`): why not, or undefined. Append-only tables must keep every released row exactly; tables whose rows
+ * advance (tasks, submissions, documents) must keep every released row's identity, and the ones that were final (terminal tasks, done submissions) exactly; every row the browser added is past `head`.
+ */
+async function extendsReleased(db: SqliteExecutor, head: number): Promise<{ table: string; message: string } | undefined> {
+  const none = async (table: string, sql: string, what: string, ...params: SqliteValue[]) => {
+    const row = await db.get<{ n: number | bigint }>(sql, ...params);
+    return Number(row?.n ?? 0) === 0 ? undefined : { table, message: `${what}: ${Number(row!.n)} row(s) of ${table} differ` };
+  };
+  const meta = await db.get<{ a: number | bigint; b: number | bigint }>("SELECT (SELECT next_seq FROM main.durable_metadata WHERE singleton = 1) AS a, (SELECT next_seq FROM browser.durable_metadata WHERE singleton = 1) AS b");
+  if (meta === undefined || Number(meta.b) < Number(meta.a)) return { table: "durable_metadata", message: `the browser's store is at ${Number(meta?.b ?? 0) - 1}, behind the released head ${head}` };
+  const checksSeq: (() => Promise<{ table: string; message: string } | undefined>)[] = [
+    () => none("entries", "SELECT count(*) AS n FROM main.entries r WHERE NOT EXISTS (SELECT 1 FROM browser.entries b WHERE b.id = r.id AND b.conversation_id = r.conversation_id AND b.head IS r.head AND b.commit_seq = r.commit_seq AND b.record = r.record)", "a released entry is not in the browser's store as it was"),
+    () => none("entries", "SELECT count(*) AS n FROM browser.entries b WHERE b.id NOT IN (SELECT id FROM main.entries) AND b.commit_seq <= ?", "an entry the browser added is not past the released head", head),
+    () => none("record_ids", "SELECT count(*) AS n FROM main.record_ids r WHERE NOT EXISTS (SELECT 1 FROM browser.record_ids b WHERE b.id = r.id AND b.record_type = r.record_type)", "a released record id is missing or changed"),
+    () => none("conversations", "SELECT count(*) AS n FROM main.conversations r WHERE NOT EXISTS (SELECT 1 FROM browser.conversations b WHERE b.id = r.id AND b.owner_conversation_id IS r.owner_conversation_id AND b.owner_task_id IS r.owner_task_id AND b.record = r.record)", "a released conversation is missing or changed"),
+    // pi prunes the revisions of a current-only document when it writes a newer base (or retires it): a released revision may be gone, but only where the browser holds a newer one for the same document
+    // (past the released head) or retired the document there; one that is still there is exactly as released.
+    () => none("document_revisions", "SELECT count(*) AS n FROM main.document_revisions r JOIN browser.document_revisions b ON b.document_id = r.document_id AND b.seq = r.seq WHERE NOT (b.kind = r.kind AND b.version = r.version AND b.content = r.content)", "a released document revision was rewritten"),
+    () =>
+      none(
+        "document_revisions",
+        "SELECT count(*) AS n FROM main.document_revisions r WHERE NOT EXISTS (SELECT 1 FROM browser.document_revisions b WHERE b.document_id = r.document_id AND b.seq = r.seq) AND NOT EXISTS (SELECT 1 FROM browser.document_revisions b WHERE b.document_id = r.document_id AND b.seq > ?) AND NOT EXISTS (SELECT 1 FROM browser.documents d WHERE d.id = r.document_id AND d.retired_at > ?)",
+        "a released document revision is gone and nothing newer replaced it",
+        head,
+        head,
+      ),
+    () => none("document_revisions", "SELECT count(*) AS n FROM browser.document_revisions b WHERE NOT EXISTS (SELECT 1 FROM main.document_revisions r WHERE r.document_id = b.document_id AND r.seq = b.seq) AND b.seq <= ?", "a document revision the browser added is not past the released head", head),
+    () => none("documents", "SELECT count(*) AS n FROM main.documents r WHERE NOT EXISTS (SELECT 1 FROM browser.documents b WHERE b.id = r.id AND b.kind = r.kind AND b.family = r.family AND b.key_value = r.key_value AND b.scope_kind = r.scope_kind AND b.owner_id = r.owner_id AND b.created_at = r.created_at)", "a released document is missing or has another identity"),
+    () => none("tasks", "SELECT count(*) AS n FROM main.tasks r WHERE NOT EXISTS (SELECT 1 FROM browser.tasks b WHERE b.id = r.id AND b.conversation_id = r.conversation_id AND b.kind = r.kind AND (r.status <> 'terminal' OR (b.status = 'terminal' AND b.record = r.record)))", "a released task is missing, changed identity, or a finished one changed"),
+    () => none("submissions", "SELECT count(*) AS n FROM main.submissions r WHERE NOT EXISTS (SELECT 1 FROM browser.submissions b WHERE b.id = r.id AND b.conversation_id = r.conversation_id AND b.request_id IS r.request_id AND (r.status IN ('queued', 'placed') OR (b.status = r.status AND b.record = r.record)))", "a released submission is missing, changed identity, or a finished one changed"),
+  ];
+  for (const check of checksSeq) {
+    const problem = await check();
+    if (problem) return problem;
+  }
+  return undefined;
+}
 
 /** The most a snapshot of the run's store is retried when a commit lands while it is taken. */
 const SNAPSHOT_TRIES = 3;
@@ -1193,6 +1248,101 @@ export class RunPipe {
     }
     this.#log("pipe.checked-out", { tab, head: current });
     return current;
+  }
+
+  /**
+   * Take the browser's copy of the run back, for good (the other half of a checkout). The pipe holds the claim and no writer is attached. In order:
+   *   1. the browser's store (`storeBytes`, a whole SQLite file) must EXTEND the store this pipe released at `marker.head` (or the one a failed earlier check-in of the same browser left, which extends it): every row the released store has is in it, the same (the entries,
+   *      their ids and commit sequences, the document revisions, the terminal tasks and done submissions byte for byte; the rest by identity), and every new row is past the released head.
+   *      Anything else is CHECKIN_DIVERGED and nothing at all has changed (it is checked on a copy, attached to this pipe's own connection);
+   *   2. the store is put in place of the run's own (written beside it, fsynced, renamed, the directory fsynced) and reopened at the browser's head;
+   *   3. `changes` (the files the browser wrote while it held the run) are applied to work/ with the barrier, as a write-through would;
+   *   4. `beforeMarkerRemoval` (a test seam), then the mark is removed LAST, fsynced like it was written.
+   * A failure anywhere after 1 leaves the mark: the run is still checked out, no fork is possible, and the same check-in can be sent again (it extends the same prefix).
+   */
+  async checkIn(o: { tab: string; marker: CheckoutMarker; storeBytes: Uint8Array; changes: FileChange[]; beforeMarkerRemoval?: () => Promise<void> }): Promise<{ head: number; files: number }> {
+    this.#assertUsable();
+    if (this.#writer && !this.#writer.dead) throw new CheckinRefused("CHECKIN_BUSY", "a writer is attached: the run is not checked out here");
+    const store = this.#store;
+    if (!store || this.#checkingOut || this.#releasing) throw new CheckinRefused("CHECKIN_BUSY", "the pipe cannot take a check-in now");
+    for (const change of o.changes) RunPipe.segments(change.path);
+    const tmp = join(this.lease.claim.root, "tmp");
+    await mkdir(tmp, { recursive: true });
+    const incoming = join(tmp, `checkin-${randomBytes(6).toString("hex")}.sqlite`);
+    try {
+      const file = await open(incoming, "w");
+      try {
+        await file.writeFile(o.storeBytes);
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      // 1. the prefix check, on a copy attached to this pipe's own connection (main = what was released)
+      const released = await storeHead(store);
+      // The store on the disk is the one the checkout released, or (after a check-in that failed past this point) the browser's own, which extends it: either way it is the reference.
+      if (released < o.marker.head) throw new CheckinRefused("CHECKIN_DIVERGED", `the store on the disk is at ${released}, behind the head the checkout released (${o.marker.head})`, "durable_metadata");
+      await store.database.run("ATTACH DATABASE ? AS browser", incoming);
+      let browserHead: number;
+      try {
+        const problem = await extendsReleased(store.database, released);
+        if (problem) throw new CheckinRefused("CHECKIN_DIVERGED", problem.message, problem.table);
+        browserHead = Number((await store.database.get<{ n: number | bigint }>("SELECT next_seq - 1 AS n FROM browser.durable_metadata WHERE singleton = 1"))!.n);
+      } finally {
+        await store.database.exec("DETACH DATABASE browser").catch(() => undefined);
+      }
+      // 2. the swap
+      const target = join(this.lease.claim.store, "run.sqlite");
+      await this.#store!.storage.close(ctx);
+      await rm(`${target}-wal`, { force: true });
+      await rm(`${target}-shm`, { force: true });
+      await rename(incoming, target);
+      const dir = await open(this.lease.claim.store, "r");
+      try {
+        await dir.sync();
+      } catch (error) {
+        if (!["EINVAL", "ENOTSUP", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      } finally {
+        await dir.close();
+      }
+      this.#store = await this.#openStore(target);
+      if ((await storeHead(this.#store)) !== browserHead) throw new Error("the store put in place is not at the head that was checked");
+      // 3. the files, through the same steps as a write-through, under a writer of this check-in's own (there is no socket)
+      const stub: PipeSocket = { id: "checkin", send: () => undefined, close: () => undefined, isOpen: () => true };
+      const writer: Writer = { socket: stub, epoch: -1, tab: o.tab, lastPing: Date.now(), inflight: new Set(), dead: false, closed: false, store: this.#store, storage: this.lease.observe(this.#store.storage), attachedAt: Date.now(), attaching: false, uploading: 0, restoring: false };
+      this.#writer = writer;
+      try {
+        for (const change of o.changes) await this.#apply(writer, change);
+        await this.lease.barrier();
+      } finally {
+        this.#writer = undefined;
+      }
+      // 4. the receipt, then the mark, last
+      const receipt: CheckinReceipt = { sha256: createHash("sha256").update(o.storeBytes).digest("hex"), head: browserHead, files: o.changes.length, tab: o.tab, at: Date.now() };
+      const receiptFile = join(this.lease.claim.store, CHECKIN_RECEIPT);
+      const out = await open(`${receiptFile}.tmp`, "w");
+      try {
+        await out.writeFile(JSON.stringify(receipt));
+        await out.sync();
+      } finally {
+        await out.close();
+      }
+      await rename(`${receiptFile}.tmp`, receiptFile);
+      await o.beforeMarkerRemoval?.();
+      const marker = join(this.lease.claim.store, CHECKOUT_MARKER);
+      await rm(marker, { force: true });
+      const sync = await open(this.lease.claim.store, "r");
+      try {
+        await sync.sync();
+      } catch (error) {
+        if (!["EINVAL", "ENOTSUP", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      } finally {
+        await sync.close();
+      }
+      this.#log("pipe.checked-in", { tab: o.tab, head: browserHead, files: o.changes.length });
+      return { head: browserHead, files: o.changes.length };
+    } finally {
+      await rm(incoming, { force: true }).catch(() => undefined);
+    }
   }
 
   #releasing = false;

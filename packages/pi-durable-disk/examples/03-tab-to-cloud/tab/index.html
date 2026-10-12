@@ -37,7 +37,10 @@ h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 #checkedout { margin: 0; padding: 10px 20px; background: var(--tab-bg); color: var(--ink); border-bottom: 1px solid var(--line); font-size: 13px; }
 #checkedout strong { color: var(--tab); }
 #checkedout ul { margin: 6px 0 0; padding-left: 20px; color: var(--muted); }
-#offline-status { font-size: 12px; color: var(--muted); }
+#offline-status, #online-status { font-size: 12px; color: var(--muted); }
+.net { font-size: 12px; font-weight: 650; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.net.up { color: var(--cloud); border-color: currentColor; }
+.net.down { color: var(--moving); border-color: currentColor; }
 @keyframes pulse { from { opacity: 1 } to { opacity: 0.25 } }
 .badge-text { font-weight: 650; font-size: 14px; }
 .badge-sub { font-size: 12px; opacity: 0.85; }
@@ -100,12 +103,15 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
   <h1>Agent in a tab</h1>
   <span class="run" id="run"></span>
   <div id="badge" class="badge parked"><span class="dot"></span><div><div id="badge-text" class="badge-text">Connecting</div><div id="badge-sub" class="badge-sub"></div></div></div>
+  <span id="net" class="net" title="Whether this page can reach the server: the browser's own signal and a ping">…</span>
   <div class="actions">
     <div id="switcher" class="switcher" role="group" aria-label="Where the agent runs"></div>
     <span id="handover"></span>
     <button id="takeover" class="link" hidden title="Take the run from the cloud now: its claim is revoked mid-step">take it now</button>
     <button id="offline" class="link" hidden title="Copy the run's store and the model into this browser and hand the run over, for good: it keeps working with no network, and the server no longer runs it">Take it offline</button>
     <span id="offline-status"></span>
+    <button id="online" class="link" hidden title="Hand this browser's copy of the run back to the server: the work done offline goes home and the cloud model answers next, in the same conversation">Go online</button>
+    <span id="online-status"></span>
   </div>
 </header>
 <p id="banner" hidden></p>

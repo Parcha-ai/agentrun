@@ -11,13 +11,13 @@ export const CANNOT_OFFLINE: readonly string[] = [
   "Viewers and operators: they follow the run through the server, which no longer runs it. They are told it is checked out to a browser.",
   "Cloud models: only the model on this page answers. The checkout needs the agent to be on it already.",
   "The computer (bash, node) runs here, from this browser's cache, on a copy of the workspace. Its files stay in this browser and are not synced back. Anything that needs the network (npm install, curl) fails.",
-  "Sync back: none. The checkout is one way, and this browser's copy is the only live one.",
+  "Sync back: only by Go online (the button, or the agent's go_online tool) once the server answers a ping: the store and the files written offline go home if the store extends what the server released. Until then this browser's copy is the only live one.",
 ];
 
 export interface CheckoutRecord {
   run: string;
-  /** `copied`: the copy is in OPFS and the pipe was asked; `done`: the pipe answered that the claim is released. */
-  state: "copied" | "done";
+  /** `copied`: the copy is in OPFS and the pipe was asked; `done`: the pipe answered that the claim is released; `sending`: a check-in is on its way (its payload is in OPFS, `saveCheckinPayload`). */
+  state: "copied" | "done" | "sending";
   /** The head of the store the pipe released, and the copy's. */
   head: number;
   /** The agent's model id on the run (the cloud model), for the root conversation. */
@@ -186,4 +186,36 @@ export async function confirmHandover(attempt: () => Promise<number>, o: { tries
     }
   }
   return { state: "unknown", error: last };
+}
+
+const payloadName = (run: string) => `checkin-${run.replace(/[^A-Za-z0-9._-]/g, "_")}`;
+
+/**
+ * What a check-in sends, kept in OPFS while it is on its way: the store as it was taken and the file changes. A page that is reloaded in the middle of it sends exactly these bytes
+ * again (the server answers a check-in it already took from its receipt, which is keyed by the store's SHA-256), whatever this browser's copy has done since.
+ */
+export async function saveCheckinPayload(run: string, payload: { store: Uint8Array; changes: unknown[] }): Promise<void> {
+  const d = await dir();
+  for (const [name, data] of [[`${payloadName(run)}.sqlite`, payload.store], [`${payloadName(run)}.json`, new TextEncoder().encode(JSON.stringify(payload.changes))]] as const) {
+    const out = await (await d.getFileHandle(name, { create: true })).createWritable();
+    await out.write(data as unknown as ArrayBuffer);
+    await out.close();
+  }
+}
+
+export async function loadCheckinPayload(run: string): Promise<{ store: Uint8Array; changes: never[] } | undefined> {
+  try {
+    const d = await dir();
+    const store = new Uint8Array(await (await (await d.getFileHandle(`${payloadName(run)}.sqlite`)).getFile()).arrayBuffer());
+    const changes = JSON.parse(await (await (await d.getFileHandle(`${payloadName(run)}.json`)).getFile()).text()) as never[];
+    return { store, changes };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function forgetCheckinPayload(run: string): Promise<void> {
+  const d = await dir();
+  await d.removeEntry(`${payloadName(run)}.sqlite`).catch(() => undefined);
+  await d.removeEntry(`${payloadName(run)}.json`).catch(() => undefined);
 }

@@ -224,7 +224,7 @@ export type Placement =
   | { where: "cloud"; host: string; generation: number | null; env: string; detail?: string }
   | { where: "moving"; to: string; env: string; switchId?: string; since: number; detail?: string }
   | { where: "parked"; detail?: string }
-  /** The run's only live copy is in a browser (it was checked out, one way): the server holds no claim and runs it no more. */
+  /** The run's only live copy is in a browser (it was checked out): the server holds no claim and runs it no more. */
   | { where: "checked-out"; detail?: string };
 
 /** Frames from a tab to the pipe. */

@@ -1,0 +1,343 @@
+// The other half of a checkout: the browser's store and the files it wrote come back (POST /api/runs/<id>/checkin). The pipe checks that the store EXTENDS the head the checkout released, puts store and
+// files on the disk and removes the mark last; anything that does not extend it is CHECKIN_DIVERGED and changes nothing; a crash after the check leaves the mark, so no fork and a retry works.
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, describe, it } from "node:test";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { PipeClient, remoteStorage } from "../tab/pipe-client.ts";
+import { localServer } from "./_local.ts";
+import { cloudProvider } from "./_brain.ts";
+
+const sha = (b: Buffer | Uint8Array) => createHash("sha256").update(b).digest("hex");
+const b64 = (s: string) => Buffer.from(s).toString("base64");
+
+describe("checking a run back in", () => {
+  let local: Awaited<ReturnType<typeof localServer>>;
+  let base: string;
+  let crashOnce = false;
+  const scratch = mkdtempSync(join(tmpdir(), "checkin-test-"));
+  before(async () => {
+    local = await localServer({
+      checkinGraceMs: 400,
+      beforeCheckinMarkerRemoval: async () => {
+        if (crashOnce) {
+          crashOnce = false;
+          throw new Error("the server crashed here");
+        }
+      },
+    });
+    base = local.url.replace(/^ws/, "http").replace(/\/ws$/, "");
+  });
+  after(async () => {
+    await local.remove();
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  const authed = (secret: string, tab?: string) => ({ authorization: `Bearer ${secret}`, ...(tab ? { "x-pda-tab": tab } : {}) });
+  const copyOf = async (id: string, secret: string) => {
+    const r = await fetch(`${base}/api/runs/${id}/store`, { headers: authed(secret) });
+    return { bytes: Buffer.from(await r.arrayBuffer()), head: Number(r.headers.get("x-store-head")) };
+  };
+  const checkoutOf = (id: string, secret: string, tab: string, head: number) => fetch(`${base}/api/runs/${id}/checkout`, { method: "POST", headers: authed(secret, tab), body: JSON.stringify({ head }) });
+  const checkin = (id: string, secret: string, tab: string, store: Uint8Array, changes: unknown[] = []) =>
+    fetch(`${base}/api/runs/${id}/checkin`, { method: "POST", headers: authed(secret, tab), body: JSON.stringify({ tab, store: Buffer.from(store).toString("base64"), changes }) });
+
+  /** A tab that holds a new run with a conversation and `commits` entries through pi's Harness over the pipe. */
+  async function writer(name: string, commits = 3) {
+    const { id, secret } = await local.server.createRun(name);
+    const client = new PipeClient({ url: local.url, run: id, token: secret, tab: `tab-${name}`, mode: "write" });
+    await client.ready;
+    const models = createModels();
+    models.setProvider(cloudProvider());
+    const harness = await Harness.open(remoteStorage(client), { models, registry: createRegistry() }, ctx);
+    const conversation = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: "pipe", modelId: "cloud-big" }, thinkingLevel: "off", instructions: null, extensions: [] } }, ctx);
+    for (let n = 0; n < commits; n++) await conversation.submit({ type: "write", requestId: `n-${n}`, entry: { kind: "note", data: { n } } }, ctx);
+    return { id, secret, client, conversation, tab: `tab-${name}` };
+  }
+
+  /** What the browser does while it holds the run: opens its copy and commits more to the SAME conversation. Returns the store's bytes. */
+  async function offline(copy: Buffer, conversationId: unknown, more: number): Promise<Buffer> {
+    const file = join(scratch, `b-${Math.random().toString(36).slice(2)}.sqlite`);
+    writeFileSync(file, copy);
+    const storage = await openNodeSqliteStorage(file);
+    const models = createModels();
+    models.setProvider(cloudProvider());
+    const harness = await Harness.open(storage, { models, registry: createRegistry() }, ctx);
+    const c = await harness.conversation(conversationId as never, ctx);
+    for (let n = 0; n < more; n++) await c!.submit({ type: "write", requestId: `off-${n}`, entry: { kind: "note", data: { offline: n } } }, ctx);
+    await harness.close(ctx);
+    return readFileSync(file);
+  }
+
+  /** The browser reconfigures the conversation the way a swap does (model, instructions, tools), more than once: pi prunes the old revisions of the documents that hold it. */
+  async function reconfigured(copy: Buffer, conversationId: unknown): Promise<Buffer> {
+    const file = join(scratch, `r-${Math.random().toString(36).slice(2)}.sqlite`);
+    writeFileSync(file, copy);
+    const storage = await openNodeSqliteStorage(file);
+    const models = createModels();
+    models.setProvider(cloudProvider());
+    const harness = await Harness.open(storage, { models, registry: createRegistry() }, ctx);
+    const c = await harness.conversation(conversationId as never, ctx);
+    await c!.configure({ model: { provider: "pipe", modelId: "cloud-big" }, thinkingLevel: "off", instructions: "one", tools: [] }, ctx);
+    await c!.configure({ instructions: "two", thinkingLevel: "low" }, ctx);
+    // a real turn: it rewrites pi.live, pi.inbox and pi.usage, the documents that keep only their latest revision
+    await c!.submit({ type: "input", content: "hello offline", requestId: "offline-turn" }, ctx);
+    for (let i = 0; i < 100; i++) {
+      const done = ((await c!.entries({}, 200, undefined, ctx)).items as unknown as { kind: string }[]).filter((e) => e.kind === "pi.assistant").length;
+      if (done > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    await harness.close(ctx);
+    return readFileSync(file);
+  }
+
+  async function checkedOut(name: string, commits = 3) {
+    const w = await writer(name, commits);
+    const copy = await copyOf(w.id, w.secret);
+    assert.equal((await checkoutOf(w.id, w.secret, w.tab, copy.head)).status, 200);
+    return { ...w, copy };
+  }
+  const headOf = (bytes: Buffer | string) => {
+    const file = typeof bytes === "string" ? bytes : (() => { const f = join(scratch, `h-${Math.random().toString(36).slice(2)}.sqlite`); writeFileSync(f, bytes); return f; })();
+    const db = new DatabaseSync(file, { readOnly: true });
+    try { return (db.prepare("SELECT next_seq FROM durable_metadata WHERE singleton = 1").get() as { next_seq: number }).next_seq - 1; } finally { db.close(); }
+  };
+  const runStore = (id: string) => join(local.root, "runs", id, "store", "run.sqlite");
+  const marker = (id: string) => join(local.root, "runs", id, "store", "checkout.json");
+
+  it("takes the store and the files back, removes the mark last, and the tab attaches as the writer and sees both", async () => {
+    const w = await checkedOut("happy");
+    const store = await offline(w.copy.bytes, w.conversation.id, 2);
+    const res = await checkin(w.id, w.secret, w.tab, store, [{ path: "notes", op: "mkdir" }, { path: "notes/offline.txt", op: "write", data: b64("made offline\n") }]);
+    assert.equal(res.status, 200, await res.clone().text());
+    const done = (await res.json()) as { head: number; files: number };
+    assert.equal(done.head, headOf(store));
+    assert.equal(done.files, 2);
+    assert.equal(existsSync(marker(w.id)), false, "the mark is gone");
+    assert.equal(readFileSync(join(local.root, "runs", w.id, "work", "notes", "offline.txt"), "utf8"), "made offline\n", "the file is on the disk");
+    const state = local.server.runs.get(w.id)!;
+    assert.equal(state.checkedOut, undefined);
+    assert.equal(state.placement.where, "parked");
+    // the tab attaches as the writer: it sees the offline entries and the offline file
+    const client = new PipeClient({ url: local.url, run: w.id, token: w.secret, tab: w.tab, mode: "write" });
+    const attached = (await client.ready) as { t: string; files: { path: string }[] };
+    assert.equal(attached.t, "attached");
+    assert.ok(attached.files.some((f) => f.path === "notes/offline.txt"), "the restore has the file written offline");
+    const models = createModels();
+    models.setProvider(cloudProvider());
+    const harness = await Harness.open(remoteStorage(client), { models, registry: createRegistry() }, ctx);
+    const c = await harness.conversation(w.conversation.id, ctx);
+    const kinds = ((await c!.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; data?: { offline?: number } }[]).filter((e) => e.kind === "note");
+    assert.equal(kinds.filter((e) => e.data?.offline !== undefined).length, 2, "the entries written offline are in the conversation");
+    assert.equal(kinds.length, 5, "and the ones from before");
+    await harness.close(ctx).catch(() => undefined);
+    client.close();
+    for (let i = 0; i < 100 && local.server.runs.get(w.id)!.pipe; i++) await new Promise((r) => setTimeout(r, 100)); // the writer is gone: the claim is let go, and the store can be read
+    assert.equal(headOf(runStore(w.id)) >= headOf(store), true, "the run's own store is the browser's (and what the tab committed since)");
+  });
+
+  it("a store that does not extend the released head is CHECKIN_DIVERGED and nothing at all changes", async () => {
+    const w = await checkedOut("diverged");
+    const before = { store: sha(readFileSync(runStore(w.id))), marker: readFileSync(marker(w.id), "utf8") };
+    const refuse = async (store: Buffer, why: RegExp, table: string) => {
+      const res = await checkin(w.id, w.secret, w.tab, store, [{ path: "must-not-appear.txt", op: "write", data: b64("x") }]);
+      assert.equal(res.status, 409, await res.clone().text());
+      const body = (await res.json()) as { code: string; table?: string; error: string };
+      assert.equal(body.code, "CHECKIN_DIVERGED");
+      assert.equal(body.table, table);
+      assert.match(body.error, why);
+      assert.equal(sha(readFileSync(runStore(w.id))), before.store, "the run's store is the bytes it was");
+      assert.equal(readFileSync(marker(w.id), "utf8"), before.marker, "the mark is still there");
+      assert.equal(existsSync(join(local.root, "runs", w.id, "work", "must-not-appear.txt")), false, "no file was written");
+      assert.equal(local.server.runs.get(w.id)!.pipe, undefined, "the claim was let go");
+      assert.ok(local.server.runs.get(w.id)!.checkedOut, "still checked out");
+    };
+    // a released entry rewritten
+    const tampered = await offline(w.copy.bytes, w.conversation.id, 1);
+    const tf = join(scratch, "tampered.sqlite");
+    writeFileSync(tf, tampered);
+    const db = new DatabaseSync(tf);
+    db.exec("UPDATE entries SET record = replace(record, 'note', 'nope') WHERE id = (SELECT min(id) FROM entries WHERE record LIKE '%note%')");
+    db.close();
+    await refuse(readFileSync(tf), /entries/, "entries");
+    // a store from before the last commit (behind the released head)
+    const behind = (await writer("behind-src", 1)).id;
+    void behind;
+    const older = await (async () => { const r = await copyOf(w.id, w.secret).catch(() => undefined); return r; })();
+    void older;
+    const small = await offline(w.copy.bytes, w.conversation.id, 0);
+    const smallFile = join(scratch, "behind.sqlite");
+    writeFileSync(smallFile, small);
+    const bdb = new DatabaseSync(smallFile);
+    bdb.exec("DELETE FROM entries WHERE commit_seq = (SELECT max(commit_seq) FROM entries)");
+    bdb.exec("UPDATE durable_metadata SET next_seq = next_seq - 1");
+    bdb.close();
+    await refuse(readFileSync(smallFile), /behind|entries/, "durable_metadata");
+    // a new entry that claims a sequence inside the released prefix
+    const forged = join(scratch, "forged.sqlite");
+    writeFileSync(forged, await offline(w.copy.bytes, w.conversation.id, 1));
+    const fdb = new DatabaseSync(forged);
+    fdb.exec("UPDATE entries SET commit_seq = 1 WHERE id = (SELECT max(id) FROM entries)");
+    fdb.close();
+    await refuse(readFileSync(forged), /past the released head/, "entries");
+    // and an honest check-in still works afterwards
+    const good = await checkin(w.id, w.secret, w.tab, await offline(w.copy.bytes, w.conversation.id, 1));
+    assert.equal(good.status, 200);
+  });
+
+  it("a browser that reconfigured the conversation (pi pruned the old revisions of the documents that hold it) checks in; a revision rewritten, or gone with nothing newer, does not", async () => {
+    const w = await checkedOut("reconfigured");
+    const store = await reconfigured(w.copy.bytes, w.conversation.id);
+    // the test says something only if the browser really dropped a released revision
+    const mainFile = join(scratch, "released.sqlite");
+    writeFileSync(mainFile, w.copy.bytes);
+    const released = new DatabaseSync(mainFile, { readOnly: true });
+    const releasedRevs = released.prepare("SELECT document_id, seq FROM document_revisions").all() as { document_id: string; seq: number }[];
+    released.close();
+    const browserFile = join(scratch, "browser-probe.sqlite");
+    writeFileSync(browserFile, store);
+    const bdb = new DatabaseSync(browserFile, { readOnly: true });
+    const kept = new Set((bdb.prepare("SELECT document_id, seq FROM document_revisions").all() as { document_id: string; seq: number }[]).map((r) => `${r.document_id}:${r.seq}`));
+    bdb.close();
+    assert.ok(releasedRevs.some((r) => !kept.has(`${r.document_id}:${r.seq}`)), "the browser's store lost a released revision (pi pruned it)");
+    // rewritten: refused
+    const rewritten = join(scratch, "rewritten.sqlite");
+    writeFileSync(rewritten, store);
+    const rdb = new DatabaseSync(rewritten);
+    rdb.exec(`UPDATE document_revisions SET content = content || ' ' WHERE rowid = (SELECT min(rowid) FROM document_revisions WHERE (document_id, seq) IN (${releasedRevs.filter((r) => kept.has(`${r.document_id}:${r.seq}`)).map((r) => `('${r.document_id}', ${r.seq})`).join(",") || "('x', 0)"}))`);
+    const changed = rdb.prepare("SELECT changes() AS n").get() as { n: number };
+    rdb.close();
+    assert.ok(changed.n > 0, "a released revision that the browser kept was rewritten");
+    const rewrittenRes = await checkin(w.id, w.secret, w.tab, readFileSync(rewritten));
+    assert.equal(rewrittenRes.status, 409, await rewrittenRes.clone().text());
+    assert.equal(((await rewrittenRes.json()) as { table?: string }).table, "document_revisions");
+    // gone with nothing newer: every revision of the browser's copy of one released document dropped
+    const gone = join(scratch, "gone.sqlite");
+    writeFileSync(gone, store);
+    const gdb = new DatabaseSync(gone);
+    gdb.exec("DELETE FROM document_revisions WHERE document_id = (SELECT document_id FROM document_revisions GROUP BY document_id ORDER BY max(seq) ASC LIMIT 1)");
+    gdb.close();
+    const goneRes = await checkin(w.id, w.secret, w.tab, readFileSync(gone));
+    assert.equal(goneRes.status, 409, await goneRes.clone().text());
+    assert.equal(((await goneRes.json()) as { table?: string }).table, "document_revisions");
+    // the honest store is taken
+    const res = await checkin(w.id, w.secret, w.tab, store, []);
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(existsSync(marker(w.id)), false);
+  });
+
+  it("the reply was lost: the same check-in sent again is answered as the first time and writes nothing; another store, another tab or a run that was never checked out is NOT_CHECKED_OUT", async () => {
+    const w = await checkedOut("lost-reply");
+    const store = await offline(w.copy.bytes, w.conversation.id, 2);
+    const changes = [{ path: "kept.txt", op: "write", data: b64("kept") }];
+    const first = await checkin(w.id, w.secret, w.tab, store, changes);
+    assert.equal(first.status, 200);
+    const done = (await first.json()) as { head: number; files: number };
+    // someone (the tab, once attached) changes the disk since: a replay must not touch it
+    rmSync(join(local.root, "runs", w.id, "work", "kept.txt"));
+    const again = await checkin(w.id, w.secret, w.tab, store, changes);
+    assert.equal(again.status, 200, await again.clone().text());
+    assert.deepEqual(await again.json(), { head: done.head, files: done.files, replayed: true });
+    assert.equal(existsSync(join(local.root, "runs", w.id, "work", "kept.txt")), false, "the replay wrote nothing");
+    const other = await offline(w.copy.bytes, w.conversation.id, 3);
+    assert.equal(((await (await checkin(w.id, w.secret, w.tab, other, [])).json()) as { code: string }).code, "NOT_CHECKED_OUT", "a store the first check-in did not take");
+    assert.equal(((await (await checkin(w.id, w.secret, "another-tab", store, [])).json()) as { code: string }).code, "NOT_CHECKED_OUT", "a tab that did not make it");
+    const never = await writer("never");
+    assert.equal(((await (await checkin(never.id, never.secret, never.tab, store, [])).json()) as { code: string }).code, "NOT_CHECKED_OUT", "a run that was never checked out");
+    // the server restarts: the receipt is on the disk
+    const second = await localServer({ root: local.root });
+    try {
+      const adopted = await second.server.adoptRun(w.id);
+      const base2 = second.url.replace(/^ws/, "http").replace(/\/ws$/, "");
+      const r = await fetch(`${base2}/api/runs/${w.id}/checkin`, { method: "POST", headers: authed(adopted.secret, w.tab), body: JSON.stringify({ tab: w.tab, store: Buffer.from(store).toString("base64"), changes }) });
+      assert.equal(r.status, 200, await r.clone().text());
+      assert.equal(((await r.json()) as { replayed?: boolean }).replayed, true);
+    } finally {
+      await second.remove();
+    }
+  });
+
+  it("a second check-in for the run, sent while the first is still uploading its body, is refused (CHECKIN_BUSY) and cannot close the first one's pipe", async () => {
+    const w = await checkedOut("race");
+    const store = await offline(w.copy.bytes, w.conversation.id, 1);
+    const body = JSON.stringify({ tab: w.tab, store: Buffer.from(store).toString("base64"), changes: [] });
+    const { request } = await import("node:http");
+    const url = new URL(`${base}/api/runs/${w.id}/checkin`);
+    // request 1: the headers and half of the body, then a pause
+    const first = request({ method: "POST", host: url.hostname, port: url.port, path: url.pathname, headers: { authorization: `Bearer ${w.secret}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } });
+    const done = new Promise<{ status: number }>((resolve, reject) => { first.on("response", (r) => { r.resume(); r.on("end", () => resolve({ status: r.statusCode ?? 0 })); }); first.on("error", reject); });
+    first.write(body.slice(0, Math.floor(body.length / 2)));
+    await new Promise((r) => setTimeout(r, 300));
+    const second = await checkin(w.id, w.secret, w.tab, store);
+    assert.equal(second.status, 409, await second.clone().text());
+    assert.equal(((await second.json()) as { code: string }).code, "CHECKIN_BUSY");
+    first.end(body.slice(Math.floor(body.length / 2)));
+    assert.equal((await done).status, 200, "the first one was not disturbed and went through");
+    assert.equal(existsSync(marker(w.id)), false);
+  });
+
+  it("a crash after the check and before the mark is removed leaves the mark: no fork, and the same check-in sent again works", async () => {
+    const w = await checkedOut("crash");
+    const store = await offline(w.copy.bytes, w.conversation.id, 2);
+    crashOnce = true;
+    const first = await checkin(w.id, w.secret, w.tab, store, [{ path: "a.txt", op: "write", data: b64("a") }]);
+    assert.equal(first.status, 500);
+    assert.equal(existsSync(marker(w.id)), true, "the mark is still there");
+    for (let i = 0; i < 50 && local.server.runs.get(w.id)!.pipe; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(headOf(runStore(w.id)), headOf(store), "the store was already in place");
+    assert.ok(local.server.runs.get(w.id)!.checkedOut, "still checked out");
+    const attach = new PipeClient({ url: local.url, run: w.id, token: w.secret, tab: "someone", mode: "write", takeover: true });
+    await assert.rejects(attach.ready, (e: Error & { code?: string }) => e.code === "CHECKED_OUT" || /checked out/.test(e.message));
+    assert.equal(local.server.runs.get(w.id)!.pipe, undefined, "no claim: nothing forked");
+    // the server restarts; the mark is read from the disk and the run is still checked out
+    const second = await localServer({ root: local.root });
+    try {
+      const adopted = await second.server.adoptRun(w.id);
+      assert.equal(second.server.runs.get(w.id)!.placement.where, "checked-out");
+      const again = new PipeClient({ url: second.url, run: w.id, token: adopted.secret, tab: "opens-the-link", mode: "write" });
+      await assert.rejects(again.ready, (e: Error & { code?: string }) => e.code === "CHECKED_OUT" || /checked out/.test(e.message));
+    } finally {
+      await second.remove();
+    }
+    const retry = await checkin(w.id, w.secret, w.tab, store, [{ path: "a.txt", op: "write", data: b64("a") }]);
+    assert.equal(retry.status, 200, await retry.clone().text());
+    assert.equal(existsSync(marker(w.id)), false);
+    assert.equal(readFileSync(join(local.root, "runs", w.id, "work", "a.txt"), "utf8"), "a");
+  });
+
+  it("after a check-in a restarted server finds a plain run: the mark is gone, the tab attaches and sees the extended store", async () => {
+    const w = await checkedOut("restart");
+    const store = await offline(w.copy.bytes, w.conversation.id, 1);
+    assert.equal((await checkin(w.id, w.secret, w.tab, store)).status, 200);
+    // nobody attaches in time: the claim is let go (the grace is 400 ms here)
+    for (let i = 0; i < 60 && local.server.runs.get(w.id)!.pipe; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(local.server.runs.get(w.id)!.pipe, undefined, "the claim was released when no tab attached");
+    const second = await localServer({ root: local.root });
+    try {
+      const adopted = await second.server.adoptRun(w.id);
+      assert.equal(second.server.runs.get(w.id)!.checkedOut, undefined);
+      const client = new PipeClient({ url: second.url, run: w.id, token: adopted.secret, tab: "back", mode: "write" });
+      assert.equal(((await client.ready) as { t: string }).t, "attached");
+      client.close();
+    } finally {
+      await second.remove();
+    }
+    assert.equal(headOf(runStore(w.id)) >= headOf(store), true);
+  });
+
+  it("only a checked-out run can be checked in, with the secret", async () => {
+    const w = await writer("not-out");
+    const copy = await copyOf(w.id, w.secret);
+    assert.equal((await checkin(w.id, w.secret, w.tab, copy.bytes)).status, 409, "not checked out");
+    assert.equal((await checkin(w.id, "wrong", w.tab, copy.bytes)).status, 404);
+    w.client.close();
+  });
+});

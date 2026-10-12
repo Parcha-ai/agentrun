@@ -8,7 +8,7 @@
 // Pure: it reads pi's message shapes structurally, so the page's provider and the Node tests share it.
 import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { isHeld, type HistoryMode, type PiMessageLike } from "../../04-walks-home/tab/src/history.ts";
-import { renderPrompt, selectTools, type HostTool, type Msg, type ToolSpec } from "./tool-format.ts";
+import { renderPrompt, selectTools, windowLast, type HostTool, type Msg, type ToolSpec } from "./tool-format.ts";
 
 interface Part { type?: string; text?: string; id?: string }
 type PiMessage = PiMessageLike & { provider?: string; toolCallId?: string; toolName?: string; isError?: boolean };
@@ -30,23 +30,11 @@ export function windowMessages(messages: readonly PiMessage[], o: WindowOptions)
   if (at < 0) return [];
   const out: Msg[] = [];
   if (o.mode === "last") {
-    for (let i = at - 1; i >= 0; i--) {
-      if (real[i]!.role !== "user") continue;
-      let answer: PiMessage | undefined;
-      let ours = true;
-      for (let j = i + 1; j < at && real[j]!.role !== "user"; j++) {
-        const m = real[j]!;
-        if (m.role !== "assistant") continue;
-        if (m.provider !== o.provider) { ours = false; break; } // the trip's turns (another model) are never shown
-        if (!isHeld(m) && m.stopReason !== "error" && m.stopReason !== "aborted" && !hasCall(m.content) && textOf(m.content).trim()) answer = m;
-      }
-      if (ours && answer) {
-        out.push({ role: "user", content: textOf(real[i]!.content) });
-        // the final turn as the model wrote it: its thinking and its answer text, no call
-        out.push({ role: "assistant", content: parts(answer.content).filter((p) => p.type === "thinking" || p.type === "text") } as Msg);
-      }
-      break; // only the exchange right before: held, failed or the trip's, it is skipped and nothing older is reached for
-    }
+    // D1's `last` window (tool-format.ts windowLast), the one the model was trained with: the previous request and its final answer (thinking and text, no tool loop), only when THIS model
+    // gave it; a previous task with no final answer, or another model's (the trip's), is left out and nothing older is reached for. A held or failed answer is no answer.
+    const usable = real.slice(0, at + 1).filter((m) => !(m.role === "assistant" && (isHeld(m) || m.stopReason === "error" || m.stopReason === "aborted")));
+    const w = windowLast(usable.map((m) => ({ ...m, content: m.role === "user" ? textOf(m.content) : m.content })) as unknown as Msg[], (m) => (m as unknown as PiMessage).provider === o.provider);
+    out.push(...w.slice(0, -1)); // the current request follows below
   }
   out.push({ role: "user", content: textOf(real[at]!.content) });
   // The calls this model made in the task: only their results come back. A task another model began (the trip's last request: Luna's go_offline) has calls and results of its own that are never shown.

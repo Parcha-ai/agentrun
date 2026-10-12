@@ -1,6 +1,7 @@
 // The run's workspace (work/, less the model) in this browser's OPFS while the run is checked out: the page saves the workspace at checkout, restores the Wasmer
 // sandbox from it when it boots with no network, and every write-through after a tool writes the changes here instead of to the pipe. Browser only.
 import type { FileChange, LocalWrite, RestoredEntry } from "../wire.ts";
+import type { Baseline } from "./checkin.ts";
 
 const ROOT = "walks-home";
 const safe = (run: string) => run.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -90,4 +91,30 @@ export async function loadWorkspace(run: string): Promise<RestoredEntry[]> {
   };
   await walk(top, "");
   return out;
+}
+
+const baselineName = (run: string) => `baseline-${safe(run)}.json`;
+
+/** What the server's work/ held when the run was checked out (checkin.ts): kept beside the saved workspace, so a reload while offline still knows what changed. */
+export async function saveBaseline(run: string, baseline: Baseline): Promise<void> {
+  const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(ROOT, { create: true });
+  const out = await (await dir.getFileHandle(baselineName(run), { create: true })).createWritable();
+  await out.write(JSON.stringify(baseline));
+  await out.close();
+}
+
+export async function loadBaseline(run: string): Promise<Baseline | undefined> {
+  try {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(ROOT);
+    return JSON.parse(await (await (await dir.getFileHandle(baselineName(run))).getFile()).text()) as Baseline;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The saved workspace and its baseline, once the run is checked in: the server's disk holds it again. */
+export async function forgetWorkspace(run: string): Promise<void> {
+  const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(ROOT).catch(() => undefined);
+  await dir?.removeEntry(`work-${safe(run)}`, { recursive: true }).catch(() => undefined);
+  await dir?.removeEntry(baselineName(run)).catch(() => undefined);
 }
