@@ -107,6 +107,12 @@ export class Feed {
     this.notify(event);
   }
 
+  /** An event the page made up from outside the feed that it does not keep (the skills read from the disk, the skills going into the robot): folded in like the server's, and gone with the next snapshot. */
+  fold(event: ShowEvent): void {
+    this.state = reduce(this.state, event);
+    this.notify(event);
+  }
+
   /** A refusal carries its reason as `message` (scripted feed) or `error` (D1's driver); both are shown the same way. */
   async command(cmd: ShowCommand): Promise<{ ok: boolean; message?: string }> {
     const res = await fetch(apiUrl(this.root, "api/command"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(cmd) });

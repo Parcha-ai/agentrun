@@ -7,6 +7,7 @@
 //   SHOW_DESKTOP_LINK_FILE  a 03 run link whose host may have a desktop (default: SHOW_PIPE_LINK_FILE): the stage trades its
 //                       secret for a ticket and proxies the picture, so the secret never reaches the page
 //   SHOW_ASK_AFTER_SWITCH (0)  1: ask the agent where it is after each completed switch (the v1 switch beat; off, so the v2 chat shows only real turns)
+//   SHOW_SCENARIO=threads: the rehearsal of the cluster beat (served at /obsession/): the agent splits into 8 threads on 8 GPUs, each box writes D2's per-skill files (served as the disk would), the run comes home
 //   SHOW_SCENARIO=obsession: the rehearsal of the "pick an obsession" episode (served at /obsession/), with SHOW_MODEL_DISK as below
 //   SHOW_OBSESSION_FALLBACK=1 (with SHOW_SCENARIO=obsession)  the rehearsal's train half is the real run where the clamp was eased
 //   SHOW_OBSESSION_THINK=1 (with SHOW_SCENARIO=obsession)  the rehearsal replays D1's real think-mode training run (thinking out loud in the samples) with D2's find run for the Moon from the same freeze run, and the viewer asks for that topic
@@ -30,6 +31,7 @@ import { ReadbackWatcher } from "./readback.ts";
 import { ScenarioPlayer } from "./scenario.ts";
 import { forwardJudge, rehearsalJudge } from "./episode2/judge.ts";
 import { ScenarioObsession } from "./obsession/scenario.ts";
+import { ScenarioThreads } from "./threads-scenario.ts";
 import { corsHeaders } from "./cors.ts";
 import { ScenarioEp2 } from "./episode2/scenario.ts";
 import { ScenarioV2 } from "./scenario-v2.ts";
@@ -183,10 +185,10 @@ if (pipeLink) {
   player = newPlayer();
 }
 
-function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 | ScenarioObsession {
+function newPlayer(start = START, paused = false): ScenarioPlayer | ScenarioV2 | ScenarioEp2 | ScenarioObsession | ScenarioThreads {
   // SHOW_SCENARIO=v2: the rehearsal of the v2 take (a creature drawn in the browser, the agent, a GPU, checkpoints, home).
   // SHOW_SCENARIO=ep2: the rehearsal of episode 2 (served at /ep2/), whose scripted training progress file is read through the disk route below.
-  const p = process.env.SHOW_SCENARIO === "obsession" ? new ScenarioObsession({ ...(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}), ...(process.env.SHOW_OBSESSION_GATE === "1" ? { gate: true } : {}), ...(process.env.SHOW_OBSESSION_FALLBACK === "1" ? { fallback: true } : {}), ...(process.env.SHOW_OBSESSION_THINK === "1" ? { think: true } : {}), ...(process.env.SHOW_OBSESSION_SELFTOOLS === "1" ? { selftools: true } : {}), ...(process.env.SHOW_OBSESSION_BRAIN === "1" ? { brain: "ready" as const } : process.env.SHOW_OBSESSION_BRAIN === "fail" ? { brain: "fail" as const } : {}) }) : process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
+  const p = process.env.SHOW_SCENARIO === "obsession" ? new ScenarioObsession({ ...(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}), ...(process.env.SHOW_OBSESSION_GATE === "1" ? { gate: true } : {}), ...(process.env.SHOW_OBSESSION_FALLBACK === "1" ? { fallback: true } : {}), ...(process.env.SHOW_OBSESSION_THINK === "1" ? { think: true } : {}), ...(process.env.SHOW_OBSESSION_SELFTOOLS === "1" ? { selftools: true } : {}), ...(process.env.SHOW_OBSESSION_BRAIN === "1" ? { brain: "ready" as const } : process.env.SHOW_OBSESSION_BRAIN === "fail" ? { brain: "fail" as const } : {}) }) : process.env.SHOW_SCENARIO === "threads" ? new ScenarioThreads() : process.env.SHOW_SCENARIO === "ep2" ? new ScenarioEp2(process.env.SHOW_MODEL_DISK ? { modelDisk: resolve(process.env.SHOW_MODEL_DISK) } : {}) : process.env.SHOW_SCENARIO === "v2" ? new ScenarioV2() : new ScenarioPlayer({ autoKillAfter: autoKill, operator: process.env.SHOW_MODE === "operator" });
   relay(p);
   // SHOW_START jumps the script forward (seconds), so rehearsal can begin mid-run at real speed.
   p.begin();

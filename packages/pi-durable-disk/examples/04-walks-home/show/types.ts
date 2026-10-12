@@ -175,10 +175,13 @@ export type Thread = {
   /** How long the box took to come up, measured by the pool. */
   acquireMs: number | null;
   costUsd: number | null;
+  /** What the skill is measured by, in its own words and unit ("spin rate", "rad/s"), and what passing means (">= 1.0"). */
+  metric: string | null;
   unit: string | null;
+  target: string | null;
   /** The skill is installed in the one robot. */
   home: boolean;
-  points: { n: number; value: number; at: number }[];
+  points: { n: number; value: number | null; at: number; passes: boolean | null; fell: boolean; seconds: number | null }[];
   /** When the thread was last heard from. */
   at: number;
 };
@@ -260,7 +263,7 @@ export type ShowEvent =
   /** A thread's fields change (it is made by its first patch). */
   | { t: "thread"; at: number; id: string; patch: Partial<Omit<Thread, "id" | "points" | "at">> }
   /** A thread's checkpoint: how well it does its skill, `value` in `unit`. The same or an older `n` is a repeat. */
-  | { t: "thread.point"; at: number; id: string; n: number; value: number; unit?: string }
+  | { t: "thread.point"; at: number; id: string; n: number; value: number | null; unit?: string; passes?: boolean | null; fell?: boolean; seconds?: number | null }
   | { t: "decision"; at: number; decision: DecisionData }
   | { t: "setup"; at: number; phase: "start" | "end" }
   /** A version of the brain and how far it walked in the one fixed 10 s window (the chart's point). A feed with no tab to report it (the rehearsal) sends it itself. */

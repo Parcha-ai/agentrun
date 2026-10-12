@@ -8,6 +8,7 @@ import type { ShowEvent } from "../types.ts";
 // per-thread events into `threads` (the shape here is the stage's own; the feed adapts D1's per-child events to it) and shows one tile per thread, then the moment every skill lands in the one robot.
 const run: ShowEvent = { t: "run", at: 0, run: "demo-1", origin: 1000, environments: [] };
 const SKILLS = ["walk", "sprint", "walk backwards", "turn", "spin", "get up", "jump", "crouch"];
+const pt = (n: number, value: number | null, extra: Partial<{ passes: boolean | null; fell: boolean; seconds: number | null }> = {}) => ({ n, value, at: 0, passes: null, fell: false, seconds: null, ...extra });
 const start = (i: number, at = 10): ShowEvent => ({ t: "thread", at, id: `t${i}`, patch: { skill: SKILLS[i]!, host: `H100 #${i + 1}`, status: "starting" } });
 
 test("a thread's patches merge, its checkpoints accumulate in order with their unit, and a thread keeps its place in the grid", () => {
@@ -53,25 +54,29 @@ test("the phase: learning while any thread is not finished, then the skills land
 
 test("sparkline points are the checkpoints' values scaled into the box, in order; one point is a dot; none is nothing", () => {
   assert.equal(sparkPoints([], 100, 40), "");
-  assert.equal(sparkPoints([{ n: 1, value: 3, at: 0 }], 100, 40), "50.0,20.0");
-  const p = sparkPoints([{ n: 1, value: 0, at: 0 }, { n: 2, value: 2, at: 0 }, { n: 3, value: 1, at: 0 }], 100, 40).split(" ");
+  assert.equal(sparkPoints([pt(1, 3)], 100, 40), "50.0,20.0");
+  const p = sparkPoints([pt(1, 0), pt(2, 2), pt(3, 1)], 100, 40).split(" ");
   assert.deepEqual(p, ["0.0,40.0", "50.0,0.0", "100.0,20.0"]);
-  assert.deepEqual(sparkPoints([{ n: 1, value: 5, at: 0 }, { n: 2, value: 5, at: 0 }], 100, 40).split(" "), ["0.0,20.0", "100.0,20.0"], "a flat line sits in the middle");
+  assert.deepEqual(sparkPoints([pt(1, null), pt(2, 1), pt(3, null), pt(4, 3)], 100, 40).split(" "), ["33.3,40.0", "100.0,0.0"], "a checkpoint with no value (get-up before it succeeds) is not drawn, and the others keep their places");
+  assert.deepEqual(sparkPoints([pt(1, 5), pt(2, 5)], 100, 40).split(" "), ["0.0,20.0", "100.0,20.0"], "a flat line sits in the middle");
 });
 
-test("the tiles: one per thread with its skill, its GPU, its status and its latest value in its own unit; nothing said that an event did not carry; the agent is one agent split into threads", () => {
+test("the tiles: one per thread with its skill, its GPU, its status, and its latest checkpoint in the skill's own metric and unit with pass or fail; nothing said that an event did not carry", () => {
   const s = fold([
     run,
     start(0), start(1),
-    { t: "thread", at: 20, id: "t0", patch: { status: "learning", acquireMs: 2100, costUsd: 0.12 } },
-    { t: "thread.point", at: 30, id: "t0", n: 3, value: 1.25, unit: "m in 10 s" },
+    { t: "thread", at: 20, id: "t0", patch: { status: "learning", acquireMs: 2100, costUsd: 0.12, metric: "speed", unit: "m/s", target: ">= 0.4" } },
+    { t: "thread.point", at: 30, id: "t0", n: 3, value: 1.25, unit: "m/s", passes: true, fell: false, seconds: 44.2 },
   ]);
   const html = threadsHtml(s.threads);
   assert.match(html, /The agent split into 2 threads, one per GPU/);
   assert.match(html, /data-status="learning"/);
   assert.match(html, /walk/);
   assert.match(html, /H100 #1/);
-  assert.match(html, /1\.25 m in 10 s/);
+  assert.match(html, /checkpoint 3/);
+  assert.match(html, /speed 1\.25 m\/s/);
+  assert.match(html, /class="pass yes"/);
+  assert.match(html, /44 s in/);
   assert.match(html, /GPU in 2\.1 s/);
   assert.match(html, /\$0\.12/);
   assert.match(html, /sprint/);
@@ -86,6 +91,21 @@ test("the tiles: one per thread with its skill, its GPU, its status and its late
   assert.match(threadsHtml([{ ...s.threads[0]!, status: "failed" }]), /data-status="failed"/);
 });
 
+test("a checkpoint that has not passed says what passing needs; one that fell says so; get-up with no value yet says that", () => {
+  const base = fold([run, start(7)]).threads[0]!;
+  const t = { ...base, metric: "speed", unit: "m/s", target: ">= 0.4", status: "learning" as const };
+  const notYet = threadsHtml([{ ...t, points: [pt(2, 0.2, { passes: false, seconds: 21 })] }]);
+  assert.match(notYet, /class="pass no"/);
+  assert.match(notYet, /needs &gt;= 0\.4/);
+  const fell = threadsHtml([{ ...t, points: [pt(2, 0.1, { passes: false, fell: true, seconds: 21 })] }]);
+  assert.match(fell, /fell in its test/);
+  const getUp = threadsHtml([{ ...t, metric: "slowest get-up", unit: "s", target: "rights itself from left, right and back", points: [pt(1, null, { passes: false })] }]);
+  assert.match(getUp, /slowest get-up: no value yet/);
+  assert.doesNotMatch(getUp, /NaN|null/);
+  const none = threadsHtml([{ ...t, points: [pt(1, 0.5, { passes: null })] }]);
+  assert.doesNotMatch(none, /class="pass/, "no verdict in the file: none is claimed");
+});
+
 test("home: every skill lights in the one robot as its thread's skill is installed, and the line says how many are in", () => {
   const base = fold([run, ...SKILLS.map((_, i) => start(i))]).threads.map((t) => ({ ...t, status: "done" as const }));
   const some = base.map((t, i) => ({ ...t, home: i < 3 }));
@@ -97,4 +117,23 @@ test("home: every skill lights in the one robot as its thread's skill is install
   assert.match(all, /All 8 skills are in the robot/);
   assert.match(all, /data-phase="home"/);
   assert.doesNotMatch(all, /class="tile"/, "home shows the one robot, not the tiles");
+});
+
+import { nextToLand } from "../threads-view.ts";
+import { tabEventsFrom } from "../page/tab-link.ts";
+
+test("landing: once every thread has finished and the run is home, the skills go into the robot one at a time, in their order, never a failed one", () => {
+  const base = fold([run, ...SKILLS.map((_, i) => start(i))]).threads.map((t) => ({ ...t, status: "done" as const }));
+  assert.equal(nextToLand(base.map((t) => ({ ...t, status: "learning" as const })), true), null, "not while any is learning");
+  assert.equal(nextToLand(base, false), null, "not before the run is home");
+  assert.equal(nextToLand(base, true), "t0");
+  assert.equal(nextToLand(base.map((t, i) => ({ ...t, home: i < 3 })), true), "t3");
+  assert.equal(nextToLand(base.map((t) => ({ ...t, home: true })), true), null);
+  assert.equal(nextToLand(base.map((t, i) => ({ ...t, status: i === 0 ? ("failed" as const) : t.status })), true), "t1", "a failed skill is skipped");
+  assert.equal(nextToLand([], true), null);
+});
+
+test("the tab's own word that a skill is installed marks that thread's skill as in the robot", () => {
+  assert.deepEqual(tabEventsFrom({ type: "skill-installed", run: null, detail: { skill: "spin", sha: "ab12", ms: 340 } }, 9), [{ t: "thread", at: 9, id: "spin", patch: { home: true } }]);
+  assert.deepEqual(tabEventsFrom({ type: "skill-installed", run: null, detail: { sha: "x" } }, 9), [], "no skill named: nothing");
 });
