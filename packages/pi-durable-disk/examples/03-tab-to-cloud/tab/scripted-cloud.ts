@@ -7,7 +7,9 @@ import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai/u
 import { PROVIDER } from "../agent.ts";
 
 /** One answer: some text, or a tool call (with the text said before it). */
-export type ScriptedTurn = { text?: string; call?: { name: string; arguments: Record<string, string | number | boolean | null> } };
+type ScriptedCall = { name: string; arguments: Record<string, string | number | boolean | null> };
+/** One reply: text, one call, or several calls made in the same turn (pi runs those together). */
+export type ScriptedTurn = { text?: string; call?: ScriptedCall; calls?: ScriptedCall[] };
 
 /** What a request carried: the roles of the messages, the start of the system prompt, the names of the tools offered, and the last user text. */
 export interface SeenRequest {
@@ -41,14 +43,15 @@ export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: See
         stream.push({ type: "text_delta", contentIndex: 0, delta: turn.text, partial: output });
         stream.push({ type: "text_end", contentIndex: 0, content: turn.text, partial: output });
       }
-      if (turn.call) {
-        const call = { type: "toolCall" as const, id: `scripted-${next}`, name: turn.call.name, arguments: turn.call.arguments };
+      const calls = [...(turn.call ? [turn.call] : []), ...(turn.calls ?? [])];
+      calls.forEach((c, i) => {
+        const call = { type: "toolCall" as const, id: `scripted-${next}${i ? `-${i}` : ""}`, name: c.name, arguments: c.arguments };
         const at = output.content.push(call) - 1;
         stream.push({ type: "toolcall_start", contentIndex: at, partial: output });
         stream.push({ type: "toolcall_end", contentIndex: at, toolCall: call, partial: output });
         output.stopReason = "toolUse";
-      }
-      stream.push({ type: "done", reason: turn.call ? "toolUse" : "stop", message: output });
+      });
+      stream.push({ type: "done", reason: calls.length ? "toolUse" : "stop", message: output });
       stream.end();
     });
     return stream;

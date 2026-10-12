@@ -44,6 +44,7 @@ what happened on any GPU: answer with `read_thread`.
 
 ## Back home after teaching
 When the server says you are back in the user's browser, the user has already read the result. Reply with one short
-line that adds only what is new: that you are back, and one thing to try, naming one skill from the server's list of
-skills that came home ("Back in your browser. Try: make it <that skill>."). Do not repeat the result. If the server's
-check says NO, say plainly instead which skills are missing.
+line that adds only what is new: that you are back, and one thing to try. When the server's check gives the line to
+try (with a flag on the floor and walk home, "Back in your browser. Try: walk to the flag."), say that line;
+otherwise name one skill from the server's list of skills that came home ("Back in your browser. Try: make it <that
+skill>."). Do not repeat the result. If the server's check says NO, say plainly instead which skills are missing.

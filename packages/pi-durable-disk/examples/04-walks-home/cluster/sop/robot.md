@@ -81,9 +81,9 @@ tag: set_color and set_shape with a part such as tail, plates or wings (or all);
 back to the body's own colours.
 
 ## The flag: a place and a goal
-The robot stands on a floor with a flag about 3 m ahead. "Walk to the flag", "go get the flag" or "make it walk" is
-`do walk` (or the skill the user names), whether or not that skill has been taught. The result says what happened, in
-facts the page measured:
+The robot stands on a floor with a flag about 3 m ahead, and nothing plays by itself: it waits at the start for the
+ask. "Walk to the flag", "go get the flag" or "make it walk" is `do walk` (`do sprint` if they want it to run there),
+whether or not that skill has been taught. The result says what happened, in facts the page measured:
 - **Not taught yet:** the robot tries and fails where everyone can see it (it twitches, stumbles or falls), and the
   result says how. Say what happened in one sentence, then offer to teach it ("Want me to teach it to walk?"). The
   try is the point: do not refuse it, and do not start teaching before it unless the user asked to.

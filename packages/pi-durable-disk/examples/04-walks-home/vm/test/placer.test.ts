@@ -224,8 +224,20 @@ test("the robot placement question is asked with the skills the robot already ha
 
 test("the robot's home prompt asks for one new line (back, and what to try), not the result again", () => {
   assert.match(HOME_PROMPT_ROBOT, /you already told them how the teaching went before the move: do not repeat it\./);
-  assert.match(HOME_PROMPT_ROBOT, /Say one short line that adds only what is new: that you are back in their browser, and one thing they can try now, naming one skill from the list in the server's check below: "Back in your browser\. Try: make it <that skill>\."/);
+  assert.match(HOME_PROMPT_ROBOT, /Say one short line that adds only what is new: that you are back in their browser, and one thing they can try now\. When the server's check below gives the line to try, say that line; otherwise name one skill from the list in the check: "Back in your browser\. Try: make it <that skill>\."/);
   assert.doesNotMatch(HOME_PROMPT_ROBOT, /Try: make it spin/, "the example names no skill that may not be home");
   assert.match(HOME_PROMPT_ROBOT, /If the check says NO, say instead, plainly and in simple words, that the last step did not work and which skills are missing\./);
   assert.doesNotMatch(HOME_PROMPT_ROBOT, /name how many|how it went for their robot's skills/);
+});
+
+test("with a flag on the floor the home check gives the line to try, the run to the flag, when walk or sprint came home; otherwise it gives none", async () => {
+  const { checkHomeSkills } = await import("../placer.ts");
+  const scene = bytes(JSON.stringify({ version: 1, flag: { x: 3, y: -0.1, radius: 0.25 } }));
+  const home = (names: string[], more: Record<string, Uint8Array> = {}) => files({ "home/skills.json": bytes(JSON.stringify({ skills: names })), ...Object.fromEntries(names.map((n) => [`home/skills/${n}.json`, bytes("{}")])), ...more });
+  const reason = async (names: string[], more: Record<string, Uint8Array> = {}) => (await checkHomeSkills(home(names, more))).reason;
+  assert.equal(await reason(["walk", "spin"], { "creature/scene.json": scene }), '2 skills are home and installed: walk, spin. There is a flag on the floor and the robot waits at the start for the ask, so the line to try is: "Back in your browser. Try: walk to the flag."');
+  assert.match(await reason(["sprint"], { "creature/scene.json": scene }), /Try: sprint to the flag\."$/);
+  assert.equal(await reason(["walk", "spin"]), "2 skills are home and installed: walk, spin.", "no flag: no line to try");
+  assert.equal(await reason(["spin", "wave"], { "creature/scene.json": scene }), "2 skills are home and installed: spin, wave.", "nothing that goes to the flag came home");
+  assert.equal(await reason(["walk"], { "creature/scene.json": bytes("{") }), "1 skill is home and installed: walk.", "a scene that does not parse is no flag");
 });

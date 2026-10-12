@@ -36,9 +36,11 @@ function sol(seen: { system: string; home?: string }[]) {
       turn.home = said;
       // A turn that asks how it went is answered with the result again (code4); one that says not to repeat it, with one new line.
       // A literal example in the prompt is copied (models do); otherwise it names the first skill the check lists as home.
+      // A line to try that the check gives is said as it is, as the turn asks.
       const example = /Try: make it ([a-z][\w-]*)\./.exec(said)?.[1];
       const listed = /home and installed: ([^.]+)\./.exec(said)?.[1]?.split(", ")[0];
-      content = [{ type: "text", text: /do not repeat/i.test(said) ? `Back in your browser. Try: make it ${example ?? listed}.` : `I'm back in your browser, and ${RESULT}` }];
+      const given = /the line to try is: "([^"]+)"/.exec(said)?.[1];
+      content = [{ type: "text", text: /do not repeat/i.test(said) ? (given ?? `Back in your browser. Try: make it ${example ?? listed}.`) : `I'm back in your browser, and ${RESULT}` }];
     } else content = [{ type: "toolCall", id: "t1", name: "teach_skills", arguments: { skills: [{ name: "walk", brief: "walk forward" }, { name: "spin", brief: "spin in place" }, { name: "wave", brief: "wave a front leg" }] } }];
     seen.push(turn);
     const s = createAssistantMessageEventStream();
@@ -62,9 +64,10 @@ const teachStub = defineExtension({
 });
 
 /** The home check's own words over the files a round that taught these skills leaves home. */
-async function homeCheckWords(skills: readonly string[]): Promise<string> {
+async function homeCheckWords(skills: readonly string[], o: { flag?: boolean } = {}): Promise<string> {
   const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
   const files: Record<string, Uint8Array> = {
+    ...(o.flag ? { "creature/scene.json": enc({ version: 1, flag: { x: 3, y: -0.1, radius: 0.25 } }) } : {}),
     "home/skills.json": enc({ version: 1, default: skills[0], skills: Object.fromEntries(skills.map((s) => [s, { label: s }])) }),
     "home/round.json": enc({ skills: Object.fromEntries(skills.map((s) => [s, {}])) }),
     ...Object.fromEntries(skills.map((s) => [`home/skills/${s}.json`, enc({})])),
@@ -75,7 +78,7 @@ async function homeCheckWords(skills: readonly string[]): Promise<string> {
 }
 
 /** A teaching run and the server's home turn after it, with these skills home; what the page draws and what the model was told. */
-async function teachAndComeHome(skills: readonly string[]) {
+async function teachAndComeHome(skills: readonly string[], o: { flag?: boolean } = {}) {
   setExtraInstructions(ROBOT_CODE_INSTRUCTIONS);
   let harness: Harness | undefined;
   try {
@@ -89,7 +92,7 @@ async function teachAndComeHome(skills: readonly string[]) {
     const root = await harness.root(ctx, { agent: rootAgent("cloud-big") });
     await (await root.submit({ type: "input", content: `teach it to ${skills.join(" and ")}`, requestId: "u1" }, ctx)).wait(ctx);
     // The server's home turn after the move, as server.ts builds it.
-    await (await root.submit({ type: "input", content: `${SERVER_TURN}${HOME_PROMPT_ROBOT}${await homeCheckWords(skills)}`, requestId: "server-s1" }, ctx)).wait(ctx);
+    await (await root.submit({ type: "input", content: `${SERVER_TURN}${HOME_PROMPT_ROBOT}${await homeCheckWords(skills, o)}`, requestId: "server-s1" }, ctx)).wait(ctx);
     const entries = [];
     for (let cursor: any; ;) {
       const page = await root.commit((tx) => tx.scanEntries({ conversationId: root.id }, 100, cursor), ctx);
@@ -124,4 +127,11 @@ test("after teaching the result is said once: the home turn after the move adds 
 test("back home after teaching one skill, the line to try names that skill, not one that is not home", async () => {
   const run = await teachAndComeHome(["walk"]);
   assert.equal(run.said[run.said.length - 1], "Back in your browser. Try: make it walk.");
+});
+
+test("back home with a flag on the floor, where nothing plays until asked: the line to try is the walk to the flag", async () => {
+  const run = await teachAndComeHome(["walk", "spin", "wave"], { flag: true });
+  assert.match(run.home, /the line to try is: "Back in your browser\. Try: walk to the flag\."/, "the server's check gives it");
+  assert.equal(run.said[run.said.length - 1], "Back in your browser. Try: walk to the flag.");
+  assert.equal(run.said.filter((t) => /relearned all three skills/.test(t)).length, 1);
 });

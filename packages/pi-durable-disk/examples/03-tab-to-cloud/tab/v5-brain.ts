@@ -11,6 +11,7 @@ import { robotLock, signatureTools, signatureView, servingView, toNativeTools } 
 import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBuild } from "./phone-model.ts";
 import type { TabRuntime } from "./runtime.ts";
 import { codeStateLine, stateLine } from "../robot-state-line.ts";
+import { flagSkill, readScene } from "../flag-goal.ts";
 import { currentRobot, defaultSkill, loadSkills } from "../robot-tools.ts";
 import { loadCodeBody } from "../robot-tools.ts";
 
@@ -46,11 +47,16 @@ export async function robotStateLine(env: unknown, context: unknown = ctx): Prom
   const robot = await currentRobot(e, c);
   const skills = Object.keys(await loadSkills(e, c));
   if ("problem" in robot) return { line: undefined, skills };
-  const doing = await defaultSkill(e, c); // what the pane plays: the manifest's default, its first skill, or walk
+  // What the pane plays when no skill is asked for: the manifest's default, its first skill, or walk; with a flag on the floor, nothing (the robot
+  // waits at the start for the ask), and a run toward the flag the page has reported is over.
+  const flag = (await readScene(e, c)) !== undefined;
+  const doing = flag ? null : await defaultSkill(e, c);
+  const skill = flag ? await flagSkill(e, c, robot) : robot.skill;
   const body = await loadCodeBody(e, c);
   // a body written as code has its own line (D1's v6 format): its tags and their colours, no shapes
-  if (body) return { tags: [...body.tags], line: codeStateLine({ name: robot.name, face: robot.look.face, ...(robot.skill ? { skill: robot.skill } : {}) }, { body: body.name, tags: body.tags, pieceTags: body.pieceTags ?? {}, pieceColors: body.pieceColors ?? {}, legs: body.legs }, robot.look.tags ?? {}, skills, doing), skills };
-  return { line: stateLine(robot, skills, doing), skills };
+  if (body) return { tags: [...body.tags], line: codeStateLine({ name: robot.name, face: robot.look.face, ...(skill ? { skill } : {}) }, { body: body.name, tags: body.tags, pieceTags: body.pieceTags ?? {}, pieceColors: body.pieceColors ?? {}, legs: body.legs }, robot.look.tags ?? {}, skills, doing), skills };
+  const { skill: _asked, ...rest } = robot;
+  return { line: stateLine(skill ? { ...rest, skill } : rest, skills, doing), skills };
 }
 
 /** What a page tells the shared brain, and what it is told. */

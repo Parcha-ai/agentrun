@@ -12,7 +12,7 @@ import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { agentRegistry, rootAgent } from "../agent.ts";
-import { ATTEMPT_FILE, FLAG_WAIT, NO_REPORT, SCENE_FILE } from "../flag-goal.ts";
+import { ATTEMPT_FILE, FLAG_WAIT, NO_REPORT, runText, SCENE_FILE, tryText, waitForAttempt, type SceneFiles } from "../flag-goal.ts";
 import { BRAIN_PROVIDER } from "../providers.ts";
 import { ROBOT_FILE } from "../robot-tools.ts";
 import { scriptedCloud, type ScriptedTurn } from "../tab/scripted-cloud.ts";
@@ -38,7 +38,21 @@ function fakePage(dir: string, outcome: (learned: boolean) => Outcome | undefine
   return { seen, stop: () => clearInterval(timer) };
 }
 
-async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string[]; provider?: string; outcome?: (learned: boolean) => Outcome | undefined } = {}) {
+/** The computer, with each write of the robot's file held back a moment: two edits that read the file before either writes lose one. */
+function slowRobotWrites(env: NodeExecutionEnv): NodeExecutionEnv {
+  return new Proxy(env, {
+    get(target, prop) {
+      const v = Reflect.get(target, prop, target) as unknown;
+      if (prop === "writeFile") return async (path: string, ...rest: unknown[]) => {
+        if (path === ROBOT_FILE) await new Promise((r) => setTimeout(r, 300));
+        return (v as (...a: unknown[]) => unknown).call(target, path, ...rest);
+      };
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+}
+
+async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string[]; provider?: string; slowWrites?: boolean; outcome?: (learned: boolean) => Outcome | undefined } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "flag-goal-"));
   mkdirSync(join(dir, "creature"), { recursive: true });
   if (o.scene !== false) writeFileSync(join(dir, SCENE_FILE), JSON.stringify({ version: 1, flag: { x: 3, y: 0, radius: 0.4 } }));
@@ -46,7 +60,8 @@ async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string
     mkdirSync(join(dir, "home"), { recursive: true });
     writeFileSync(join(dir, "home/skills.json"), JSON.stringify({ version: 1, default: o.skills[0], skills: Object.fromEntries(o.skills.map((s) => [s, { label: s, policy: `skills/${s}.json` }])) }));
   }
-  const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+  const node = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+  const env = o.slowWrites ? slowRobotWrites(node) : node;
   const registry = agentRegistry(async () => undefined, { switchTool: false });
   const models = createModels();
   models.setProvider(scriptedCloud("m", script, [], o.provider));
@@ -57,8 +72,10 @@ async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string
   const results = async () =>
     ((await root.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; model?: { toolName?: string; isError?: boolean; content?: { text?: string }[] }[]; data?: unknown }[])
       .filter((e) => e.kind === "pi.tool-result").reverse().map((e) => ({ error: e.model![0]!.isError === true, text: e.model![0]!.content?.map((c) => c.text ?? "").join("") ?? "" }));
-  const robot = () => JSON.parse(readFileSync(join(dir, ROBOT_FILE), "utf8")) as { skill?: string; attempt?: { id: string; skill: string; learned: boolean } };
-  return { ask, results, robot, page, close: async () => { page.stop(); await harness.close(ctx); rmSync(dir, { recursive: true, force: true }); } };
+  const robot = () => JSON.parse(readFileSync(join(dir, ROBOT_FILE), "utf8")) as { skill?: string; look: { torso: string | null }; attempt?: { id: string; skill: string; learned: boolean } };
+  let closed = false;
+  const shut = async () => { if (!closed) { closed = true; await harness.close(ctx); } };
+  return { dir, ask, results, robot, page, shut, close: async () => { page.stop(); await shut(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 const walkToFlag: ScriptedTurn[] = [{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "ok" }];
@@ -121,4 +138,104 @@ test("without a flag, or with the browser's own model driving, do is what it was
       await r.close();
     }
   }
+});
+
+test("the browser's own model asking for a walk that came home starts the same measured run, and its turn does not wait for the report", async () => {
+  const runMs = FLAG_WAIT.runMs;
+  FLAG_WAIT.runMs = 30_000;
+  const r = await rig(walkToFlag, { provider: BRAIN_PROVIDER, skills: ["walk"] });
+  try {
+    const t0 = Date.now();
+    await r.ask("walk to the flag");
+    assert.ok(Date.now() - t0 < 5_000, "no wait for the page");
+    const robot = r.robot();
+    assert.deepEqual([robot.skill, robot.attempt?.skill, robot.attempt?.learned], ["walk", "walk", true], "the page is asked for the run as the cloud agent asks for it");
+    const [res] = await r.results();
+    assert.equal(res!.error, false);
+    assert.doesNotMatch(res!.text, /flag/);
+  } finally {
+    FLAG_WAIT.runMs = runMs;
+    await r.close();
+  }
+});
+
+test("other skills with a flag on the floor: one that came home plays where the robot stands, unmeasured; one that did not is refused, not tried", async () => {
+  const spin: ScriptedTurn[] = [{ call: { name: "do", arguments: { skill: "spin" } } }, { text: "ok" }, { call: { name: "do", arguments: { skill: "wave" } } }, { text: "ok" }];
+  const r = await rig(spin, { skills: ["walk", "spin"], outcome: () => ({ fell: false, distance_m: 0, to_flag_m: 3, reached_flag: false, seconds: 1 }) });
+  try {
+    await r.ask("make it spin");
+    assert.deepEqual([r.robot().skill, r.robot().attempt], ["spin", undefined]);
+    await r.ask("make it wave");
+    const [spun, waved] = await r.results();
+    assert.match(spun!.text, /^The robot is now doing spin\./);
+    assert.doesNotMatch(spun!.text, /flag|did not report/);
+    assert.equal(waved!.error, true);
+    assert.match(waved!.text, /^Not done: the robot has not learned wave/);
+    assert.equal(r.page.seen.size, 0, "no request was written");
+  } finally {
+    await r.close();
+  }
+});
+
+test("two calls in one turn, \"paint it red and walk to the flag\": the try's request and the colour both land (the try waits its turn to write)", async () => {
+  const both: ScriptedTurn[] = [{ calls: [{ name: "set_color", arguments: { part: "torso", color: "red" } }, { name: "do", arguments: { skill: "walk" } }] }, { text: "ok" }];
+  const r = await rig(both, { slowWrites: true, outcome: () => ({ fell: true, distance_m: 0.1, to_flag_m: 2.9, reached_flag: false, seconds: 4 }) });
+  try {
+    await r.ask("paint it red and walk to the flag");
+    const robot = r.robot();
+    assert.equal(robot.look.torso, "red", "the colour was not lost");
+    assert.equal(robot.attempt?.skill, "walk", "the request was not lost");
+    assert.equal(r.page.seen.size, 1);
+  } finally {
+    await r.close();
+  }
+});
+
+test("a call cancelled while it waits for the page stops waiting: closing the harness does not sit out the wait", async () => {
+  const runMs = FLAG_WAIT.runMs;
+  FLAG_WAIT.runMs = 30_000;
+  const r = await rig(walkToFlag, { skills: ["walk"] });
+  try {
+    const pending = r.ask("walk to the flag").catch(() => undefined);
+    for (let i = 0; i < 100 && !existsSync(join(r.dir, ROBOT_FILE)); i++) await new Promise((res) => setTimeout(res, 20));
+    const t0 = Date.now();
+    await r.shut();
+    await pending;
+    assert.ok(Date.now() - t0 < 5_000, `closed in ${Date.now() - t0} ms, not after the 30 s wait`);
+  } finally {
+    FLAG_WAIT.runMs = runMs;
+    await r.close();
+  }
+});
+
+/** The computer as the wait sees it: reads that find no report, each one cut short when the signal aborts. */
+function noReport(signal: AbortSignal): SceneFiles & { reads: number } {
+  const files = {
+    reads: 0,
+    async readTextFile() {
+      files.reads++;
+      if (signal.aborted) return { ok: false as const, error: { code: "aborted", message: "aborted" } };
+      return { ok: false as const, error: { code: "not_found", message: "no report" } };
+    },
+  };
+  return files;
+}
+
+test("waitForAttempt: a cancel stops the wait at once and says cancelled, not 'no report'; one already cancelled does not read", async () => {
+  const ac = new AbortController();
+  const files = noReport(ac.signal);
+  setTimeout(() => ac.abort(), 100);
+  const t0 = Date.now();
+  assert.equal(await waitForAttempt(files, undefined as never, "x", { timeoutMs: 10_000, signal: ac.signal }), "cancelled");
+  assert.ok(Date.now() - t0 < 1_000, `stopped after ${Date.now() - t0} ms`);
+  const reads = files.reads;
+  assert.equal(await waitForAttempt(files, undefined as never, "x", { timeoutMs: 10_000, signal: ac.signal }), "cancelled");
+  assert.equal(files.reads, reads, "no read after the cancel");
+});
+
+test("a run or a try that starts at the flag says so, and never that it reached it", () => {
+  const at = { version: 1 as const, id: "x", skill: "walk", learned: true, fell: false, distance_m: 0.3, to_flag_m: 0.1, reached_flag: false, started_at_flag: true, seconds: 15 };
+  assert.equal(runText(at), "It was already at the flag when it started, so it did not reach it: it stopped after 15 s, 0.3 m from where it started.");
+  assert.equal(tryText({ ...at, learned: false, fell: true, seconds: 4 }), "Not learned yet: the robot tried to walk and fell after 4 s, 0.3 m from where it stood; it was already at the flag. teach_skills can teach it to walk.");
+  assert.equal(runText({ ...at, started_at_flag: false, to_flag_m: 2.7 }), "It stopped after 15 s, 0.3 m from where it started and 2.7 m short of the flag.");
 });
