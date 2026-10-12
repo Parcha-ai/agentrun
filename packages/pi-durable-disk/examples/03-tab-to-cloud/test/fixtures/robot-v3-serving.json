@@ -1,0 +1,264 @@
+{
+ "system": "You control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool.",
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "set_color",
+    "description": "Change the color of a part of the robot (looks only).",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "part": {
+       "type": "string",
+       "enum": [
+        "torso",
+        "legs",
+        "front_legs",
+        "back_legs",
+        "all"
+       ],
+       "description": "torso is the body; all is the whole robot"
+      },
+      "color": {
+       "type": "string",
+       "enum": [
+        "red",
+        "orange",
+        "yellow",
+        "green",
+        "blue",
+        "purple",
+        "pink",
+        "white",
+        "black",
+        "gray",
+        "brown"
+       ]
+      }
+     },
+     "required": [
+      "part",
+      "color"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "set_shape",
+    "description": "Make the body or the legs boxy or round (looks only).",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "part": {
+       "type": "string",
+       "enum": [
+        "torso",
+        "legs"
+       ]
+      },
+      "shape": {
+       "type": "string",
+       "enum": [
+        "boxy",
+        "round"
+       ]
+      }
+     },
+     "required": [
+      "part",
+      "shape"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "set_face",
+    "description": "Give the robot a facial expression, or no face.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "face": {
+       "type": "string",
+       "enum": [
+        "happy",
+        "sleepy",
+        "surprised",
+        "angry",
+        "cool",
+        "none"
+       ]
+      }
+     },
+     "required": [
+      "face"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "rename",
+    "description": "Give the robot a new name.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 24
+      }
+     },
+     "required": [
+      "name"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "resize",
+    "description": "Make one part of the body bigger or smaller by a factor (0.5 to 2). leg_length changes how tall the robot stands; torso_height how tall the body is.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "part": {
+       "type": "string",
+       "enum": [
+        "torso_length",
+        "torso_width",
+        "torso_height",
+        "leg_length",
+        "leg_thickness"
+       ]
+      },
+      "factor": {
+       "type": "number",
+       "minimum": 0.5,
+       "maximum": 2.0
+      }
+     },
+     "required": [
+      "part",
+      "factor"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "scale",
+    "description": "Make the whole robot bigger or smaller by a factor (0.5 to 2): body and legs together.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "factor": {
+       "type": "number",
+       "minimum": 0.5,
+       "maximum": 2.0
+      }
+     },
+     "required": [
+      "factor"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "set_legs",
+    "description": "Set the number of legs: pairs 2 is four legs, pairs 3 is six legs.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "pairs": {
+       "type": "integer",
+       "enum": [
+        2,
+        3
+       ]
+      }
+     },
+     "required": [
+      "pairs"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "morph",
+    "description": "Turn the robot into a preset creature (body and looks together); original is the robot as the user drew it.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "preset": {
+       "type": "string",
+       "enum": [
+        "dog",
+        "spider",
+        "giraffe",
+        "lizard",
+        "stubby",
+        "original"
+       ]
+      }
+     },
+     "required": [
+      "preset"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "reset",
+    "description": "Undo every change: the robot goes back to how the user drew it.",
+    "parameters": {
+     "type": "object",
+     "properties": {},
+     "required": []
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "do",
+    "description": "Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "skill": {
+       "type": "string",
+       "enum": [
+        "walk",
+        "sprint",
+        "backwards",
+        "turn-left",
+        "turn-right",
+        "spin",
+        "wave",
+        "get-up"
+       ],
+       "description": "Which skill."
+      }
+     },
+     "required": [
+      "skill"
+     ]
+    }
+   }
+  }
+ ]
+}

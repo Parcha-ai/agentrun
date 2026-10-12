@@ -23,6 +23,17 @@ export function toNativeTools(list: readonly { name: string; description?: strin
 }
 
 /**
+ * The model's view of the conversation's tools when the model comes with a serving file (the system prompt and the tools it was trained and scored on): the
+ * serving file's tools, verbatim and in its order, those the conversation offers; nothing else (a registry tool the model never saw is not shown, and a serving
+ * tool the conversation does not offer is not either, so every call it can make is one pi can run). With no serving file, the conversation's own tools.
+ */
+export function servingView(tools: readonly ToolChatTool[], serving: readonly ToolChatTool[] | undefined): ToolChatTool[] {
+  if (!serving || serving.length === 0) return [...tools];
+  const offered = new Set(tools.map((t) => t.function.name));
+  return serving.filter((t) => offered.has(t.function.name));
+}
+
+/**
  * The tools with the enum of one property cut down to `allowed` (every tool that has such a property): what a small model is offered. The registry's own tools keep the whole list so every host
  * agrees; this narrowing is the model's view only, e.g. the skills that actually came home. The runtime builds its call grammar from the schema it is sent, so the narrowed enum is a lock.
  */
@@ -73,6 +84,46 @@ export function nativeTurn(messages: readonly unknown[], o: WindowOptions & { sy
     dropped++;
   }
   return { messages: [...system, ...body], tools, steps, dropped };
+}
+
+/**
+ * The window of D1's spec T7 (ROBOT-WINDOW-SPEC): the conversation's earlier exchanges in the model's own format, then ONE assistant message holding the robot's
+ * state line, then the current task (the user's turn, and this model's calls and their results since). An earlier exchange is the user's message, this model's
+ * calls (content "", tool_calls) and their results (the tools' literal texts), then its final reply text; thinking is never shown back, and an exchange this model
+ * did not answer is left out. While `fits` says no, the oldest whole exchange is dropped (D1: while the rendered prompt is over 2048 - 400 tokens). The system
+ * prompt and the tools come first and never change, so a warm state made at the end of the system turn holds for every turn.
+ */
+export function nativeExchanges(messages: readonly unknown[], o: WindowOptions & { system?: string; refine?: (tools: ToolChatTool[]) => ToolChatTool[]; stateLine?: string; fits?: (messages: ToolChatMessage[], tools: ToolChatTool[]) => boolean }): NativeTurn {
+  const tools = (o.refine ?? ((t: ToolChatTool[]) => t))(nativeTools(messages));
+  type M = { role: string; provider?: string; content?: unknown; toolCallId?: string };
+  const real = (messages as M[]).filter((m) => m.role !== "system");
+  const exchanges: M[][] = [];
+  for (const m of real) {
+    if (m.role === "user" || exchanges.length === 0) exchanges.push([]);
+    exchanges.at(-1)!.push(m);
+  }
+  const own = (ex: M[]): ToolChatMessage[] => {
+    const calls = new Set<string>();
+    const out: ToolChatMessage[] = [];
+    for (const m of ex) {
+      if (m.role === "user") out.push(...toMessages(m as unknown as Msg));
+      else if (m.role === "assistant" && m.provider === o.provider) {
+        for (const b of (Array.isArray(m.content) ? m.content : []) as { type?: string; id?: string }[]) if (b.type === "toolCall" && b.id) calls.add(b.id);
+        out.push(...toMessages(m as unknown as Msg));
+      } else if (m.role === "toolResult" && calls.has(m.toolCallId ?? "")) out.push(...toMessages(m as unknown as Msg));
+    }
+    return out;
+  };
+  const current = exchanges.pop() ?? [];
+  let earlier = exchanges.map(own).filter((ex) => ex[0]?.role === "user" && ex.some((m) => m.role === "assistant"));
+  const now = own(current);
+  const steps = now.filter((m) => m.role === "assistant").length;
+  const system: ToolChatMessage[] = o.system ? [{ role: "system", content: o.system }] : [];
+  const state: ToolChatMessage[] = o.stateLine ? [{ role: "assistant", content: o.stateLine }] : [];
+  const build = () => [...system, ...earlier.flat(), ...state, ...now];
+  let dropped = 0;
+  while (earlier.length > 0 && o.fits && !o.fits(build(), tools)) { earlier = earlier.slice(1); dropped++; }
+  return { messages: build(), tools, steps, dropped };
 }
 
 /**

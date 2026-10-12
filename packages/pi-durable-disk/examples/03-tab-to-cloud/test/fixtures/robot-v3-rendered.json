@@ -1,0 +1,100 @@
+[
+ {
+  "messages": [
+   {
+    "role": "system",
+    "content": "You control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool."
+   },
+   {
+    "role": "user",
+    "content": "paint it red"
+   }
+  ],
+  "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"set_color\", \"description\": \"Change the color of a part of the robot (looks only).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso\", \"legs\", \"front_legs\", \"back_legs\", \"all\"], \"description\": \"torso is the body; all is the whole robot\"}, \"color\": {\"type\": \"string\", \"enum\": [\"red\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"white\", \"black\", \"gray\", \"brown\"]}}, \"required\": [\"part\", \"color\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_shape\", \"description\": \"Make the body or the legs boxy or round (looks only).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso\", \"legs\"]}, \"shape\": {\"type\": \"string\", \"enum\": [\"boxy\", \"round\"]}}, \"required\": [\"part\", \"shape\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_face\", \"description\": \"Give the robot a facial expression, or no face.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"face\": {\"type\": \"string\", \"enum\": [\"happy\", \"sleepy\", \"surprised\", \"angry\", \"cool\", \"none\"]}}, \"required\": [\"face\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"rename\", \"description\": \"Give the robot a new name.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 24}}, \"required\": [\"name\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"resize\", \"description\": \"Make one part of the body bigger or smaller by a factor (0.5 to 2). leg_length changes how tall the robot stands; torso_height how tall the body is.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso_length\", \"torso_width\", \"torso_height\", \"leg_length\", \"leg_thickness\"]}, \"factor\": {\"type\": \"number\", \"minimum\": 0.5, \"maximum\": 2}}, \"required\": [\"part\", \"factor\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"scale\", \"description\": \"Make the whole robot bigger or smaller by a factor (0.5 to 2): body and legs together.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"factor\": {\"type\": \"number\", \"minimum\": 0.5, \"maximum\": 2}}, \"required\": [\"factor\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_legs\", \"description\": \"Set the number of legs: pairs 2 is four legs, pairs 3 is six legs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"pairs\": {\"type\": \"integer\", \"enum\": [2, 3]}}, \"required\": [\"pairs\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"morph\", \"description\": \"Turn the robot into a preset creature (body and looks together); original is the robot as the user drew it.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"preset\": {\"type\": \"string\", \"enum\": [\"dog\", \"spider\", \"giraffe\", \"lizard\", \"stubby\", \"original\"]}}, \"required\": [\"preset\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"reset\", \"description\": \"Undo every change: the robot goes back to how the user drew it.\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}\n{\"type\": \"function\", \"function\": {\"name\": \"do\", \"description\": \"Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"skill\": {\"type\": \"string\", \"enum\": [\"walk\", \"sprint\", \"backwards\", \"turn-left\", \"turn-right\", \"spin\", \"wave\", \"get-up\"], \"description\": \"Which skill.\"}}, \"required\": [\"skill\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool.<|im_end|>\n<|im_start|>user\npaint it red<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+ },
+ {
+  "messages": [
+   {
+    "role": "system",
+    "content": "You control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool."
+   },
+   {
+    "role": "user",
+    "content": "make it a spider and paint the legs blue"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "morph",
+       "arguments": "{\"preset\":\"spider\"}"
+      }
+     },
+     {
+      "id": "c2",
+      "type": "function",
+      "function": {
+       "name": "set_color",
+       "arguments": "{\"part\":\"legs\",\"color\":\"blue\"}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "The robot is now a spider."
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c2",
+    "content": "The legs are now blue."
+   }
+  ],
+  "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"set_color\", \"description\": \"Change the color of a part of the robot (looks only).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso\", \"legs\", \"front_legs\", \"back_legs\", \"all\"], \"description\": \"torso is the body; all is the whole robot\"}, \"color\": {\"type\": \"string\", \"enum\": [\"red\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"white\", \"black\", \"gray\", \"brown\"]}}, \"required\": [\"part\", \"color\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_shape\", \"description\": \"Make the body or the legs boxy or round (looks only).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso\", \"legs\"]}, \"shape\": {\"type\": \"string\", \"enum\": [\"boxy\", \"round\"]}}, \"required\": [\"part\", \"shape\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_face\", \"description\": \"Give the robot a facial expression, or no face.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"face\": {\"type\": \"string\", \"enum\": [\"happy\", \"sleepy\", \"surprised\", \"angry\", \"cool\", \"none\"]}}, \"required\": [\"face\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"rename\", \"description\": \"Give the robot a new name.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 24}}, \"required\": [\"name\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"resize\", \"description\": \"Make one part of the body bigger or smaller by a factor (0.5 to 2). leg_length changes how tall the robot stands; torso_height how tall the body is.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso_length\", \"torso_width\", \"torso_height\", \"leg_length\", \"leg_thickness\"]}, \"factor\": {\"type\": \"number\", \"minimum\": 0.5, \"maximum\": 2}}, \"required\": [\"part\", \"factor\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"scale\", \"description\": \"Make the whole robot bigger or smaller by a factor (0.5 to 2): body and legs together.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"factor\": {\"type\": \"number\", \"minimum\": 0.5, \"maximum\": 2}}, \"required\": [\"factor\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_legs\", \"description\": \"Set the number of legs: pairs 2 is four legs, pairs 3 is six legs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"pairs\": {\"type\": \"integer\", \"enum\": [2, 3]}}, \"required\": [\"pairs\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"morph\", \"description\": \"Turn the robot into a preset creature (body and looks together); original is the robot as the user drew it.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"preset\": {\"type\": \"string\", \"enum\": [\"dog\", \"spider\", \"giraffe\", \"lizard\", \"stubby\", \"original\"]}}, \"required\": [\"preset\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"reset\", \"description\": \"Undo every change: the robot goes back to how the user drew it.\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}\n{\"type\": \"function\", \"function\": {\"name\": \"do\", \"description\": \"Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"skill\": {\"type\": \"string\", \"enum\": [\"walk\", \"sprint\", \"backwards\", \"turn-left\", \"turn-right\", \"spin\", \"wave\", \"get-up\"], \"description\": \"Which skill.\"}}, \"required\": [\"skill\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool.<|im_end|>\n<|im_start|>user\nmake it a spider and paint the legs blue<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=morph>\n<parameter=preset>\nspider\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=set_color>\n<parameter=part>\nlegs\n</parameter>\n<parameter=color>\nblue\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nThe robot is now a spider.\n</tool_response>\n<tool_response>\nThe legs are now blue.\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+ },
+ {
+  "messages": [
+   {
+    "role": "system",
+    "content": "You control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool."
+   },
+   {
+    "role": "user",
+    "content": "hi"
+   },
+   {
+    "role": "assistant",
+    "content": "Hello!"
+   },
+   {
+    "role": "user",
+    "content": "scale it to 1.5"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "c3",
+      "type": "function",
+      "function": {
+       "name": "scale",
+       "arguments": "{\"factor\":1.5}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c3",
+    "content": "The robot is now x1.5 the size."
+   }
+  ],
+  "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"set_color\", \"description\": \"Change the color of a part of the robot (looks only).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso\", \"legs\", \"front_legs\", \"back_legs\", \"all\"], \"description\": \"torso is the body; all is the whole robot\"}, \"color\": {\"type\": \"string\", \"enum\": [\"red\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"white\", \"black\", \"gray\", \"brown\"]}}, \"required\": [\"part\", \"color\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_shape\", \"description\": \"Make the body or the legs boxy or round (looks only).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso\", \"legs\"]}, \"shape\": {\"type\": \"string\", \"enum\": [\"boxy\", \"round\"]}}, \"required\": [\"part\", \"shape\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_face\", \"description\": \"Give the robot a facial expression, or no face.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"face\": {\"type\": \"string\", \"enum\": [\"happy\", \"sleepy\", \"surprised\", \"angry\", \"cool\", \"none\"]}}, \"required\": [\"face\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"rename\", \"description\": \"Give the robot a new name.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 24}}, \"required\": [\"name\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"resize\", \"description\": \"Make one part of the body bigger or smaller by a factor (0.5 to 2). leg_length changes how tall the robot stands; torso_height how tall the body is.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"part\": {\"type\": \"string\", \"enum\": [\"torso_length\", \"torso_width\", \"torso_height\", \"leg_length\", \"leg_thickness\"]}, \"factor\": {\"type\": \"number\", \"minimum\": 0.5, \"maximum\": 2}}, \"required\": [\"part\", \"factor\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"scale\", \"description\": \"Make the whole robot bigger or smaller by a factor (0.5 to 2): body and legs together.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"factor\": {\"type\": \"number\", \"minimum\": 0.5, \"maximum\": 2}}, \"required\": [\"factor\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"set_legs\", \"description\": \"Set the number of legs: pairs 2 is four legs, pairs 3 is six legs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"pairs\": {\"type\": \"integer\", \"enum\": [2, 3]}}, \"required\": [\"pairs\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"morph\", \"description\": \"Turn the robot into a preset creature (body and looks together); original is the robot as the user drew it.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"preset\": {\"type\": \"string\", \"enum\": [\"dog\", \"spider\", \"giraffe\", \"lizard\", \"stubby\", \"original\"]}}, \"required\": [\"preset\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"reset\", \"description\": \"Undo every change: the robot goes back to how the user drew it.\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}\n{\"type\": \"function\", \"function\": {\"name\": \"do\", \"description\": \"Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"skill\": {\"type\": \"string\", \"enum\": [\"walk\", \"sprint\", \"backwards\", \"turn-left\", \"turn-right\", \"spin\", \"wave\", \"get-up\"], \"description\": \"Which skill.\"}}, \"required\": [\"skill\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool.<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nHello!<|im_end|>\n<|im_start|>user\nscale it to 1.5<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=scale>\n<parameter=factor>\n1.5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nThe robot is now x1.5 the size.\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+ }
+]

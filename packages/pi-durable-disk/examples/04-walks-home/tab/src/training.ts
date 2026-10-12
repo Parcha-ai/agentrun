@@ -40,9 +40,12 @@ export class TrainingState {
     this.reportedWalkM = null;
   }
 
+  /** The page shows a robot with no skill standing in its pose (?still=1), not moving at random: the label says so. */
+  still = false;
+
   /** The label on the creature, in plain words. `policyName` names a stand-in when there is one. */
   label(policyName: string): string {
-    return this.state === 'untrained' ? 'untrained: random moves'
+    return this.state === 'untrained' ? (this.still ? 'untrained: standing still, no brain yet' : 'untrained: random moves')
       : this.state === 'learning' ? `learning: version ${this.checkpointN}`
       : this.state === 'trained' ? 'trained'
       : `${policyName} (not trained)`;

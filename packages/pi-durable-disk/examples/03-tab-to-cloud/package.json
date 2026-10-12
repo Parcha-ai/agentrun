@@ -15,8 +15,10 @@
   "dependencies": {
     "@fontsource/inter": "5.3.0",
     "@fontsource/jetbrains-mono": "5.3.0",
+    "@huggingface/jinja": "0.5.10",
     "@sqlite.org/sqlite-wasm": "3.53.4-build2",
     "@wasmer/sdk": "0.19.1",
+    "@wllama/wllama-compat": "3.6.1",
     "esbuild": "0.28.2",
     "ws": "8.21.3"
   },
