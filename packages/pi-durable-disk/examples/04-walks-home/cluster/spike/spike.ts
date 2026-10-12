@@ -54,8 +54,12 @@ const checks = {
   each_child_has_its_own_transcript: report.children.every((c: { ownEntries: number }) => c.ownEntries >= 4),
   distinct_box_per_child: new Set(report.children.map((c: { box: { boxId: string } }) => c.box.boxId)).size === 8,
   eight_boxes_created_never_more: pool.filter((p) => p.event === "pool.create").length === 8,
-  // A thread past its acquire phase resumes with its box ID from its checkpoint; one still acquiring gets the same box.
-  no_box_created_after_restart: new Set(pool.filter((p) => p.event === "pool.create").map((p) => p.pid)).size === 1,
+  // A thread past its acquire phase resumes with its box ID from its checkpoint; one still acquiring gets the same box,
+  // and one still queued for a small pool gets its first. No thread ever holds a second box.
+  no_thread_gets_a_second_box: (() => {
+    const creates = pool.filter((p) => p.event === "pool.create").map((p) => p.threadId);
+    return creates.length === 8 && new Set(creates).size === 8;
+  })(),
   every_box_released: pool.filter((p) => p.event === "pool.release").length === 8,
   boxes_out_never_above_capacity: peakHeld(pool) <= Number(a.capacity),
   allSettled_folded_all_8_with_one_failure: threads.length === 8 && threads.filter((t: { status: string }) => t.status === "passed").length === 7 && threads.some((t: { skill: string; status: string }) => t.skill === "wave" && t.status === "never-passed"),

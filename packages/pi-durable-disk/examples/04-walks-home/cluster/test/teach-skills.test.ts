@@ -46,6 +46,22 @@ test("a replay of a skill that already passed reports that run's checkpoint and 
   assert.equal(status, 0);
 });
 
+test("finished skills lower the kill point instead of leaving the spike waiting for checkpoints that never come", () => {
+  // These three finish before the run starts, leaving 24 checkpoints: more than half of them, but fewer than 30.
+  const { status, verdict } = runSpike(8, "--done-before", "backwards:6:30,spin:6:30,get-up:6:30");
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
+});
+
+test("a spike where every skill is already done is refused at once, not left waiting", () => {
+  const dir = mkdtempSync(join(tmpdir(), "teach-skills-none-"));
+  const all = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"].map((s) => `${s}:3:20`).join(",");
+  const r = spawnSync(process.execPath, [spike, "--dir", dir, "--tick", "150", "--done-before", all], { encoding: "utf8", timeout: 30_000 });
+  assert.notEqual(r.status, 0);
+  assert.equal(r.signal, null, "it exited by itself, not by the test's timeout");
+  assert.match(r.stdout + r.stderr, /no thread trains/);
+});
+
 test("aborting the run mid-way stops every artifact mirror and gives every box back", () => {
   const dir = mkdtempSync(join(tmpdir(), "teach-skills-abort-"));
   const r = spawnSync(process.execPath, [host, "--dir", dir, "--mode", "abort", "--tick", "150"], { encoding: "utf8", timeout: 120_000 });

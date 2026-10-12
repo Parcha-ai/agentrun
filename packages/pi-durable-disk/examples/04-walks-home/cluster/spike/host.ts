@@ -7,7 +7,7 @@
 //   --done-before SKILL:CHECKPOINT:SECONDS   that skill's box already holds a finished run (a replay after the trainer ended)
 //
 // Every live line it prints comes from the store: watchEvents() over the root and over each child conversation.
-import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -17,7 +17,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, Harness, watchEvents, type ConversationId, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { RobotBox, SKILLS, teachSkills, type TrainProgress } from "../teach-skills.ts";
-import { FakeArtifacts, FakeBoxEnv, FakePool } from "./fake-cluster.ts";
+import { FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
 const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" } } });
 const dir = a.dir!;
@@ -26,6 +26,16 @@ const doneBefore = Object.fromEntries((a["done-before"] ?? "").split(",").filter
   const [skill, checkpoint, seconds] = spec.split(":");
   return [skill!, { checkpoint: Number(checkpoint), seconds: Number(seconds) }];
 }));
+/**
+ * The kill point: half of all the checkpoints this run will write. Skills whose box already holds a finished run write
+ * none, so the threshold comes from the skills that train; with none left there is no mid-run to kill.
+ */
+export function midThreshold(skills: readonly string[], done: Record<string, unknown>): number {
+  const total = skills.filter((s) => !(s in done)).reduce((n, s) => n + (PASS_AT[s] ?? MAX_CHECKPOINTS), 0);
+  if (total === 0) throw new Error("every skill is --done-before: no thread trains, so there is no mid-run to kill");
+  return Math.max(1, Math.floor(total / 2));
+}
+const mid = midThreshold(SKILLS, doneBefore);
 const tick = Number(a.tick);
 const context = BACKGROUND_CONTEXT;
 const T0 = Date.now();
@@ -169,16 +179,23 @@ if (mode === "abort") {
   say({ event: "submitted", submission: submission.id });
   // Tell the orchestrator when the threads are mid-run: some skills passed, most still training.
   const timer = setInterval(async () => {
-    // Mid-run: about half of all the checkpoints the threads will write (some skills passed, others still training).
+    // Mid-run: half of all the checkpoints the threads will write (some skills passed, others still training).
     const counts = [...lastCheckpoint.values()];
-    if (counts.reduce((n, c) => n + c, 0) >= 30) {
+    if (counts.reduce((n, c) => n + c, 0) >= mid) {
       clearInterval(timer);
       const tasks = await graph();
       writeFileSync(join(dir, "mid.json"), JSON.stringify({ t: Date.now() - T0, checkpoints: Object.fromEntries([...lastCheckpoint].map(([k, v]) => [label.get(k), v])), tasks }, null, 1));
       say({ event: "mid", tasks: tasks.length });
     }
   }, 50);
-  await new Promise(() => {}); // the orchestrator kills this process
+  // The orchestrator kills this process at the mid point. A run that settles first never reached it: exit with an
+  // error rather than wait for a kill that will not come.
+  await submission.wait(context);
+  if (!existsSync(join(dir, "mid.json"))) {
+    say({ event: "error", message: `the run settled before the mid point (${mid} checkpoints)` });
+    process.exit(1);
+  }
+  await new Promise(() => {});
 } else {
   // Before resuming: the store as the dead process left it.
   const before = await graph();
