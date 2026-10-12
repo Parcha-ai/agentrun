@@ -166,6 +166,10 @@ test("train-skill.md copies the library's worked skills from the directories the
   const named = [...sop.matchAll(/\/opt\/pda\/train\/skills\/([\w-]+)/g)].map((m) => m[1]);
   assert.ok(named.length > 0);
   for (const d of named) assert.ok(dirs.includes(d!), `the SOP copies /opt/pda/train/skills/${d}, which the library does not have`);
+  // A new box has no skills/ yet, and cp -r makes only the last directory: every copy command makes it first.
+  const copies = [...sop.matchAll(/`([^`]*cp -r \/opt\/pda\/train\/skills\/[^`]*)`/g)].map((m) => m[1]!);
+  assert.ok(copies.length > 0);
+  for (const c of copies) assert.match(c, /^mkdir -p skills && cp -r /, `the SOP's copy command makes skills/ first: ${c}`);
   for (const dir of dirs) {
     const name = JSON.parse(readFileSync(join(here, "..", "..", "train", "skills", dir, "skill.json"), "utf8")).name as string;
     assert.ok(sop.includes(`${name} \`${dir}/\``), `the SOP gives ${name}'s directory as ${dir}/`);
