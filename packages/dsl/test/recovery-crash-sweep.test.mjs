@@ -41,3 +41,24 @@ test('the counting server counts only the requests that carry its token', async 
     assert.deepEqual(server.counts, { '/effect/mine': 1 });
   } finally { await server.close(); }
 });
+
+const stub = fileURLToPath(new URL('./fixtures/crash-stub-child.mjs', import.meta.url));
+
+test('a later open that prints the outcome and then fails is a violation', async () => {
+  const result = await crashSweep({ child: stub, env: { STUB: 'fail-late' } });
+  assert.ok(result.violations.some((reason) => /a later open after admit-1 did not end its run: exit 3/.test(reason)), result.violations.join('\n'));
+  assert.deepEqual((await crashSweep({ child: stub })).violations, []);
+});
+
+test('a child that never ends is killed at the deadline and reported, and the sweep goes on', async () => {
+  const result = await crashSweep({ child: stub, env: { STUB: 'hang' }, timeoutMs: 1500 });
+  assert.ok(result.violations.some((reason) => /the resume after admit-1 was still running after 1500 ms and was killed/.test(reason)), result.violations.join('\n'));
+  assert.equal(result.cases.length, 1);
+});
+
+test('a sweep that cannot make its directory rejects and leaves no server listening', async () => {
+  const before = process.getActiveResourcesInfo().filter((name) => name === 'TCPServerWrap').length;
+  await assert.rejects(crashSweep({ child: stub, directory: '/nonexistent-crash-sweep-parent/x' }), /ENOENT/);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(process.getActiveResourcesInfo().filter((name) => name === 'TCPServerWrap').length <= before, 'the failed sweep left its counting server listening');
+});

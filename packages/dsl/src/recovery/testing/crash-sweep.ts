@@ -13,7 +13,7 @@ import { CRASH_PLAN_ENV, CRASH_POINTS, type CrashPlan, type CrashPoint } from ".
 
 /** What a child reports: how it ended (an exit code, or the signal that killed it), the JSON lines it printed, and
  *  what it wrote to stderr. By convention a child that ends its run prints `{"outcome": ...}` and exits 0. */
-export type ChildRun = { exit: number | string | null; rows: Array<Record<string, unknown>>; stderr: string };
+export type ChildRun = { exit: number | string | null; rows: Array<Record<string, unknown>>; stderr: string; timedOut?: boolean };
 
 const LOOPBACK = "127.0.0.1";
 
@@ -70,6 +70,8 @@ export type SweepOptions = {
   expect?(found: SweepCase, census: ChildRun): string[];
   /** A directory for the run directories; default the system's temporary directory. */
   directory?: string;
+  /** Most milliseconds a child may run; one that is still running then is killed, and the case reports it. Default 60 000. */
+  timeoutMs?: number;
 };
 
 export type SweepResult = { census: ChildRun; crossings: Record<string, number>; cases: SweepCase[]; violations: string[] };
@@ -84,15 +86,28 @@ function runChild(options: SweepOptions, server: CountingServer, mode: "start" |
     if (plan) env[CRASH_PLAN_ENV] = JSON.stringify(plan);
     const child = spawn(process.execPath, [`--import=${PRELOAD}`, options.child, mode, directory], { env, stdio: ["ignore", "pipe", "pipe"] });
     let out = ""; let err = "";
+    let timedOut = false;
+    const deadline = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, options.timeoutMs ?? 60_000);
     child.stdout.on("data", (chunk) => { out += chunk; });
     child.stderr.on("data", (chunk) => { err += chunk; });
-    child.on("close", (code, signal) => resolve({
-      exit: signal ?? code,
-      rows: out.split("\n").filter(Boolean).flatMap((line) => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; } }),
-      stderr: err.trim(),
-    }));
+    child.on("close", (code, signal) => {
+      clearTimeout(deadline);
+      resolve({
+        exit: signal ?? code,
+        rows: out.split("\n").filter(Boolean).flatMap((line) => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; } }),
+        stderr: err.trim(),
+        ...(timedOut ? { timedOut } : {}),
+      });
+    });
   });
 }
+
+/** Why a child that was meant to end its run did not: it ran past its deadline, exited non-zero or printed no outcome. */
+const didNotEnd = (run: ChildRun, what: string, timeoutMs: number): string | undefined => {
+  if (run.timedOut) return `${what} was still running after ${timeoutMs} ms and was killed`;
+  if (run.exit !== 0 || outcomeOf(run) === undefined) return `${what} did not end its run: exit ${run.exit}${run.stderr ? `, ${run.stderr.slice(0, 200)}` : ""}`;
+  return undefined;
+};
 
 const outcomeOf = (run: ChildRun) => run.rows.find((row) => row.outcome !== undefined)?.outcome;
 
@@ -103,9 +118,11 @@ const doubled = (counts: Record<string, number>) => Object.entries(counts).filte
  *  fresh run, resumed by a later process, and opened once more after the run ended, which changes nothing. */
 export async function crashSweep(options: SweepOptions): Promise<SweepResult> {
   const server = await countingServer();
-  const base = mkdtempSync(join(options.directory ?? tmpdir(), "agentrun-crash-"));
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  let base = "";
   const fresh = (name: string) => { const directory = join(base, name); mkdirSync(directory); return directory; };
   try {
+    base = mkdtempSync(join(options.directory ?? tmpdir(), "agentrun-crash-"));
     const clear = () => { for (const key of Object.keys(server.counts)) delete server.counts[key]; };
     const census = await (async () => {
       const directory = fresh("census"); const file = join(base, "census.log"); writeFileSync(file, "");
@@ -114,7 +131,8 @@ export async function crashSweep(options: SweepOptions): Promise<SweepResult> {
     const crossings: Record<string, number> = {};
     for (const point of readFileSync(join(base, "census.log"), "utf8").split("\n").filter(Boolean)) crossings[point] = (crossings[point] ?? 0) + 1;
     const violations: string[] = [];
-    if (census.exit !== 0 || outcomeOf(census) === undefined) violations.push(`the census run did not end its run: exit ${census.exit}${census.stderr ? `, ${census.stderr.slice(0, 200)}` : ""}`);
+    const censusFailure = didNotEnd(census, "the census run", timeoutMs);
+    if (censusFailure) violations.push(censusFailure);
     violations.push(...doubled(server.counts).map((reason) => `census: ${reason}`));
     const cases: SweepCase[] = [];
     for (const point of options.points ?? CRASH_POINTS.filter((candidate) => crossings[candidate])) {
@@ -130,8 +148,12 @@ export async function crashSweep(options: SweepOptions): Promise<SweepResult> {
         const afterResumed = { ...server.counts };
         const reopened = await runChild(options, server, "resume", there, undefined);
         const found: SweepCase = { point, nth, killed, resumed, reopened, counts: [afterKilled, afterResumed, { ...server.counts }], violations: [] };
-        if (killed.exit !== "SIGKILL") found.violations.push(`the kill at ${name} did not land: exit ${killed.exit}`);
-        if (resumed.exit !== 0 || outcomeOf(resumed) === undefined) found.violations.push(`the resume after ${name} did not end the run: exit ${resumed.exit}${resumed.stderr ? `, ${resumed.stderr.slice(0, 200)}` : ""}`);
+        if (killed.timedOut) found.violations.push(`the process cut at ${name} was still running after ${timeoutMs} ms and was killed`);
+        else if (killed.exit !== "SIGKILL") found.violations.push(`the kill at ${name} did not land: exit ${killed.exit}`);
+        const resumeFailure = didNotEnd(resumed, `the resume after ${name}`, timeoutMs);
+        if (resumeFailure) found.violations.push(resumeFailure);
+        const reopenFailure = didNotEnd(reopened, `a later open after ${name}`, timeoutMs);
+        if (reopenFailure) found.violations.push(reopenFailure);
         found.violations.push(...doubled(server.counts));
         if (JSON.stringify(outcomeOf(reopened)) !== JSON.stringify(outcomeOf(resumed))) found.violations.push(`a later open after ${name} changed the run's outcome`);
         const made = Object.keys(server.counts).filter((path) => server.counts[path] !== (afterResumed[path] ?? 0));
@@ -144,6 +166,6 @@ export async function crashSweep(options: SweepOptions): Promise<SweepResult> {
     return { census, crossings, cases, violations };
   } finally {
     await server.close();
-    rmSync(base, { recursive: true, force: true });
+    if (base) rmSync(base, { recursive: true, force: true });
   }
 }
