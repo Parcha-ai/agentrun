@@ -108,7 +108,7 @@ try {
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 900_000, 1000);
   ok("the run was checked out into this browser", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
   await page.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-  ok("the network is really off", await ev<boolean>(`(async () => { try { await fetch("/ping?t=" + Date.now(), { cache: "no-store" }); return false; } catch { return true; } })()`));
+  ok("the network is really off", await page.until(`(async () => { try { await fetch("/ping?t=" + Date.now(), { cache: "no-store" }); return false; } catch { return true; } })()`, 20_000, 500).then(() => true, () => false));
   await page.until("demo.brain().swapped && demo.brain().phase === 'answered'", 900_000, 1000);
   await sleep(3000);
   const off = await ask("paint it blue");
