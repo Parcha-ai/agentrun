@@ -352,7 +352,7 @@ test("on a run that has come home to the tab, home/ is not in the computer's wor
   const only = (dir: string) => { withBody(dir); writeFileSync(join(dir, "robot/body.xml"), bodyXml); }; // the computer has the robot's files and none of home/
   const without = await rig([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }], only);
   await without.ask("make it walk");
-  assert.equal((await without.results())[0]!.text, "Not done: no skill has come home yet: the robot can only do what its brain was taught.", "the refusal the live run showed");
+  assert.equal((await without.results())[0]!.text, "Not done: no skill has come home yet (this workspace has no home/skills.json; a skill that did come home would be listed there): the robot can only do what its brain was taught.", "the refusal the live run showed (dino7), now naming the missing index");
   await without.close();
   const through = await rig([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }], only, (env) => withHomeFallback(env, read));
   await through.ask("make it walk");
