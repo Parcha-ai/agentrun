@@ -32,7 +32,7 @@ import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
 import { servingView } from "./native-turn.ts";
-import { PhoneModel } from "./phone-model.ts";
+import { buildOrder, PhoneModel, type WllamaBuild } from "./phone-model.ts";
 import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
@@ -1025,20 +1025,18 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   const params = new URLSearchParams(location.search);
   const marks = state.phone!.marks;
   const engineLog = (level: string) => (...a: unknown[]) => { const line = a.map((x) => (x instanceof Error ? x.message : String(x))).join(" "); if (level !== "debug" || /buffer size|error|failed/i.test(line)) state.phone!.log.push(`${(performance.now() / 1000).toFixed(1)} s ${level} ${line.slice(0, 300)}`); };
-  // Which wllama build, in order of preference; the next is tried when one does not load (the watchdog, below):
-  //   default:  wasm64 + JSPI (Chrome, desktop and Android). Not on WebKit: Safari 27 passes wllama's memory64 check, then the build never finished loading.
-  //   jspi32:   wasm32 + JSPI, no Asyncify (the shim's; Safari 27): half the size, loads faster.
+  // Which wllama build, in order of preference (buildOrder in phone-model.ts); the next is tried when one does not load (the watchdog, below):
+  //   jspi32:   wasm32 + JSPI, no Asyncify (the shim's; Chrome, Safari 27): restores the warm state, half the size of the stock build.
+  //   default:  wasm64 + JSPI (stock wllama; not on WebKit): prefills the system turn, since it has no slot restore.
   //   asyncify: wasm32 + Asyncify (the shim's compat build; every browser, Safari up to 26).
   // A build is chosen by what wllama is shown: memory64 hidden takes it to its compat path, JSPI hidden as well takes the compat path to Asyncify.
-  // ?build=default|jspi32|asyncify tries only that one; ?compat=1 (Safari 26) and ?mem64=0 (Safari 27) as before; ?stall=<build> makes that build time out at once (a check).
+  // ?build=default|jspi32|asyncify tries only that one; ?compat=1 (Safari 26), ?mem64=0 and ?jspi32=0 as before; ?stall=<build> makes that build time out at once (a check).
   const ua = navigator.userAgent;
   const webkit = /AppleWebKit/.test(ua) && !/(Chrome|Chromium|Edg)\//.test(ua); // every iPhone browser (CriOS included), desktop Safari
   const hasJSPI = "Suspending" in WebAssembly && params.get("compat") !== "1";
   const jspi32Served = await fetch("/vendor/wllama-jspi32/wllama.wasm", { method: "HEAD" }).then((r) => r.ok, () => false);
-  type Build = "default" | "jspi32" | "asyncify";
-  const compatPath = webkit || params.get("mem64") === "0" || params.get("compat") === "1";
-  const builds: Build[] = params.get("build") ? [params.get("build") as Build]
-    : [...(compatPath ? [] : ["default" as const]), ...(hasJSPI && jspi32Served && params.get("jspi32") !== "0" ? ["jspi32" as const] : []), "asyncify"];
+  type Build = WllamaBuild;
+  const builds = buildOrder({ webkit, jspi: hasJSPI, jspi32Served: jspi32Served && params.get("jspi32") !== "0", noMemory64: params.get("mem64") === "0" || params.get("compat") === "1", only: (params.get("build") as Build | null) ?? undefined });
   const loadTimeoutMs = (Number(params.get("loadtimeout")) || 90) * 1000;
   const RealMemory = WebAssembly.Memory, RealSuspending = (WebAssembly as { Suspending?: unknown }).Suspending;
   const show = (build: Build) => {

@@ -9,6 +9,20 @@ import type { HistoryMode } from "../../04-walks-home/tab/src/history.ts";
 import type { BrainModel } from "./brain-provider.ts";
 import { lockedToolChat, renderNative } from "./native-tools.ts";
 
+/** A wllama build the page can run: stock wasm64 + JSPI, or the shim's wasm32 + JSPI and wasm32 + Asyncify (04-walks-home/tab/wllama-shim). */
+export type WllamaBuild = "default" | "jspi32" | "asyncify";
+
+/**
+ * The builds to try, in order; the next is tried when one does not load. The shim's builds restore the warm state (llama-server's slot restore) and the stock
+ * build cannot, so it prefills the system turn instead (1,252 tokens: 201 s in desktop Chrome, against 0.5 s restored): jspi32 comes first wherever JSPI is
+ * there and the page serves it. The stock build is never tried on WebKit (Safari 27 passes wllama's memory64 check, then the build never finishes loading) or
+ * where memory64 is turned off; Asyncify runs in every browser and comes last. `only` (?build=) tries that one build.
+ */
+export function buildOrder(o: { webkit: boolean; jspi: boolean; jspi32Served: boolean; noMemory64?: boolean; only?: WllamaBuild }): WllamaBuild[] {
+  if (o.only) return [o.only];
+  return [...(o.jspi && o.jspi32Served ? ["jspi32" as const] : []), ...(o.webkit || o.noMemory64 ? [] : ["default" as const]), "asyncify"];
+}
+
 /** Greedy: a tool call is an answer, not a sample (D1's evaluation decodes at temperature 0). */
 const GREEDY: Sampling = { ...DEFAULT_SAMPLING, temperature: 0 };
 

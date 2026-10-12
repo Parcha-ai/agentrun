@@ -15,7 +15,7 @@ import { lockedToolChat, lockGrammar, parseNative, renderNative } from "../tab/n
 import { nativeExchanges, servingView, toNativeTools } from "../tab/native-turn.ts";
 import { stateLine } from "../robot-state-line.ts";
 import { applyRobotTool, initialRobot, type Design } from "../robot-model.ts";
-import { PhoneModel } from "../tab/phone-model.ts";
+import { buildOrder, PhoneModel } from "../tab/phone-model.ts";
 import { ROBOT_FILE } from "../robot-tools.ts";
 import { parseRobot } from "../robot-model.ts";
 import type { Llm, RawRequest, ToolChatMessage, ToolChatRequest, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
@@ -344,4 +344,14 @@ test("D1's lock rule: the prompt shows do with every skill, the grammar only the
   assert.equal(two.prompt, rendered[0]!.prompt);
   assert.match(two.grammar!, /do-skill ::= "walk" \| "spin"/);
   assert.doesNotMatch(two.grammar!, /"sprint"/);
+});
+
+test("the build order: the shim's jspi32 first wherever JSPI is there and served, since only the shim restores the warm state; never the stock build on WebKit", () => {
+  assert.deepEqual(buildOrder({ webkit: false, jspi: true, jspi32Served: true }), ["jspi32", "default", "asyncify"], "Chrome, desktop and Android");
+  assert.deepEqual(buildOrder({ webkit: false, jspi: true, jspi32Served: false }), ["default", "asyncify"], "a page without the shim's jspi32");
+  assert.deepEqual(buildOrder({ webkit: true, jspi: true, jspi32Served: true }), ["jspi32", "asyncify"], "Safari 27");
+  assert.deepEqual(buildOrder({ webkit: true, jspi: false, jspi32Served: true }), ["asyncify"], "Safari 26");
+  assert.deepEqual(buildOrder({ webkit: false, jspi: false, jspi32Served: true }), ["default", "asyncify"], "no JSPI (Firefox): wllama's own check takes the stock build to its compat path");
+  assert.deepEqual(buildOrder({ webkit: false, jspi: true, jspi32Served: true, noMemory64: true }), ["jspi32", "asyncify"], "?mem64=0");
+  assert.deepEqual(buildOrder({ webkit: true, jspi: true, jspi32Served: true, only: "default" }), ["default"], "?build= tries that one");
 });
