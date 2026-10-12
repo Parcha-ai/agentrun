@@ -132,8 +132,9 @@ describe("the claim directory", () => {
     // The losing interleaving behind run.test.ts's "a write through the claim directory that fails": the run's write
     // through its open directory (on the thread pool) lands between a recursive removal's walk and its rmdir.
     const t = swappable("claimdir-late-write");
+    let claim: Awaited<ReturnType<typeof openClaimDir>> | undefined;
     try {
-      const claim = await openClaimDir(t.root, { fstype: null });
+      claim = await openClaimDir(t.root, { fstype: null });
       t.swap();
       await persistRecord(claim.at, "{}\n");
       // One pass, as rmSync(recursive) does it: the walk, a write landing, then the rmdir: CI's ENOTEMPTY.
@@ -151,8 +152,8 @@ describe("the claim directory", () => {
       assert.equal(landed, 1, "the write landed after the first walk");
       assert.equal(existsSync(t.held), false);
       await assert.rejects(persistRecord(claim.at, "{}\n"), (error: unknown) => (error as { code?: string }).code === "ENOENT", "nothing lands once it is gone");
-      await claim.close();
     } finally {
+      await claim?.close();
       t.remove();
     }
   });
