@@ -52,11 +52,29 @@ test("the stage folds the three entries: loading, then ready; a failed one is no
   assert.equal(emptyState().brain, null);
 });
 
-test("ready is final: a reload's repeats, a late loading or a late failure never undo it, and a second ready is not a second swap", () => {
+test("repeats are nothing: a reload's repeated entries (the same id or an older one) never change what the stage holds", () => {
   let s = fold([ev(B(LOADING)), ev(B(READY), 5)]);
-  const readyAt = s.brain!;
+  const held = s.brain!;
   for (const again of [ev(B(READY), 9), ev(B(LOADING), 10), ev(B(FAILED), 11)]) s = reduce(s, again);
-  assert.deepEqual(s.brain, readyAt, "unchanged, including its time");
+  assert.deepEqual(s.brain, held, "unchanged, including its time (the failed entry's id 9 is older than the ready one's 17)");
+  assert.equal(s.brainReady?.id, "17");
+});
+
+test("a later entry replaces the held one: a second homecoming (loading, then ready with another model) and a failed replacement are shown; the model that is the brain stays known through them", () => {
+  const second = (stage: "loading" | "ready" | "failed", id: string, sha: string, name: string) =>
+    B({ kind: "brain", stage, id, text: `${stage} ${name}`, data: { name, sha256: sha, bytes: 830_000_000, provider: "tab-local", model: sha.slice(0, 12), ...(stage === "failed" ? { reason: "the self-check ended inside its thinking" } : {}) } });
+  let s = fold([ev(B(LOADING)), ev(B(READY), 5)]);
+  assert.equal(s.brainReady?.model, "6ad4c8ba3575");
+  s = reduce(s, ev(second("loading", "40", "bbbbbbbbbbbbbbbb", "gemma-3-1b-it (the Smurfs)"), 20));
+  assert.deepEqual([s.brain?.stage, s.brain?.id], ["loading", "40"], "a replacement is loading");
+  assert.equal(s.brainReady?.id, "17", "the brain is still the first model until the replacement is ready");
+  s = reduce(s, ev(second("ready", "50", "bbbbbbbbbbbbbbbb", "gemma-3-1b-it (the Smurfs)"), 30));
+  assert.deepEqual([s.brain?.stage, s.brain?.id, s.brain?.model, s.brain?.at], ["ready", "50", "bbbbbbbbbbbb", 30]);
+  assert.equal(s.brainReady?.id, "50", "the new model is the brain");
+  s = reduce(s, ev(second("failed", "60", "cccccccccccccccc", "gemma-3-1b-it (the Moon again)"), 40));
+  assert.deepEqual([s.brain?.stage, s.brain?.id], ["failed", "60"], "a failed replacement is shown");
+  assert.equal(s.brainReady?.id, "50", "and the agent keeps the brain it had");
+  assert.equal(emptyState().brainReady, null);
 });
 
 test("a failed load can be retried: a new loading replaces the failure, the same loading does not", () => {
@@ -333,4 +351,25 @@ test("a rehearsal answer that stopped at its length limit is shown as cut, as on
   const answer = sc.state.chat.filter((t) => t.brain).at(-1)!;
   assert.equal(answer.streaming, undefined, "finished");
   assert.equal(answer.cut, true, "the recorded answer_at_cap is the cut flag");
+});
+
+// ---- With ?golive=1 the same conversation goes back to the cloud model after a check-in and is routed per message: each turn is labelled by the brain that answered it.
+test("each turn is labelled by the brain that answered it: the trained model after the swap, the cloud after a check-in, and whatever each message's decision says", () => {
+  const decision = (id: string, brain: "tab-local" | "cloud") => ({ kind: "brain", stage: "decision", id, text: `${brain} answers`, data: { event: "brain.decision", brain, answering: brain === "tab-local" ? "the model in this tab" : "the cloud model", reason: "r", confidence: null, decidedBy: "rule", ms: 0 } });
+  const home = { kind: "brain", stage: "home", id: "50", text: "Checked in", data: { head: 26, files: 1, changes: 1, ms: 900 } };
+  const user = (id: string, text: string) => ({ kind: "user", id, text });
+  const assistant = (id: string, text: string) => ({ kind: "assistant", id, text, thinking: `thought ${id}`, streaming: false });
+  const items = [
+    user("1", "Teach it to walk"), assistant("2", "On it"), // the cloud agent, before any swap
+    READY, decision("20", "tab-local"), user("21", "turn it red"), assistant("22", "Done, it is red."), // offline: the trained model
+    home, decision("60", "cloud"), user("61", "teach it to run"), assistant("62", "Moving to a GPU."), // back online, the cloud model again
+    decision("70", "tab-local"), user("71", "make it blue"), assistant("72", "Blue."), // routed to the tab again
+  ];
+  const turns = turnsFromItems(items, () => false);
+  assert.deepEqual(turns.map((t) => [t.id, t.brain === true]), [["1", false], ["2", false], ["21", true], ["22", true], ["61", false], ["62", false], ["71", true], ["72", true]]);
+  assert.deepEqual(turns.filter((t) => t.thinking).map((t) => t.id), ["22", "72"], "only the trained model's turns show their thinking");
+  // Without any decision entries (a page that does not route), the swap alone makes the turns after it the trained model's, as before.
+  assert.deepEqual(turnsFromItems([user("1", "a"), READY, user("2", "b"), assistant("3", "c")], () => false).map((t) => t.brain === true), [false, true, true]);
+  // A check-in with no decision after it: the cloud model answers until a decision says otherwise.
+  assert.deepEqual(turnsFromItems([READY, user("2", "b"), home, user("4", "c"), assistant("5", "d")], () => false).map((t) => t.brain === true), [true, false, false]);
 });

@@ -224,7 +224,7 @@ function withNotes(state: ShowState): ShowState {
 
 let badgeKey = "";
 function renderBadge(state: ShowState): void {
-  const b = obsessionBadge({ state, find: take.find, train: take.train, model: take.model, brain: state.brain, now: feed.captionNow() });
+  const b = obsessionBadge({ state, find: take.find, train: take.train, model: take.model, brain: state.brainReady, now: feed.captionNow() });
   const el = $("badge");
   el.dataset.tone = b.tone;
   el.querySelector(".txt")!.textContent = b.text;
@@ -289,8 +289,8 @@ function renderBanner(): void {
 /** Once the viewer has asked the model something, the big pane shows the latest question and answer large (the tab's own card is behind it until then). */
 let talkKey = "";
 function renderTalk(): void {
-  const brain = feed.state.brain;
-  const html = brain?.stage === "ready" ? talkHtml(brainTalkTurns(feed.state.chat), brainLocalBadge(brain, feed.state.chat), { agent: true }) : talkHtml(modelChat.turns, localBadge(take.model));
+  const brain = feed.state.brainReady;
+  const html = brain !== null ? talkHtml(brainTalkTurns(feed.state.chat), brainLocalBadge(brain, feed.state.chat), { agent: true }) : talkHtml(modelChat.turns, localBadge(take.model));
   const key = html ?? "";
   if (key === talkKey) return;
   talkKey = key;
@@ -442,7 +442,7 @@ function frame(): void {
   }
   const talkingToModel = viewerLineGoesToModel(take.model.phase, state.brain);
   const input = $<HTMLInputElement>("chatin");
-  const placeholder = state.brain?.stage === "ready" ? BRAIN_ASK_PLACEHOLDER : talkingToModel ? "Ask the model anything" : "Tell the agent what to do";
+  const placeholder = state.brainReady !== null ? BRAIN_ASK_PLACEHOLDER : talkingToModel ? "Ask the model anything" : "Tell the agent what to do";
   if (input.placeholder !== placeholder) input.placeholder = placeholder;
   $("chat").classList.toggle("talked", turns.length > 0);
   renderCaption(state);

@@ -162,6 +162,27 @@ export type Checkin = { phase: "start" | "done" | "failed"; head: string | null;
 export type Routing = { brain: "tab-local" | "cloud"; answering: string | null; reason: string; confidence: number | null; decidedBy: "jev" | "rule" | null; ms: number | null; probabilities: { local: number; cloud: number } | null };
 /** What a homecoming downloaded (the model host's `model-homecoming`): whether the base had to come at all, the adapters, and the bytes and time. */
 export type Homecoming = { baseFetched: boolean; adapters: string[]; plannedBytes: number | null; fetchedBytes: number | null; fetchMs: number | null; loadMs: number | null; name: string | null; prefetch: boolean };
+/**
+ * One thread of the agent: a child conversation of the one session, with its compute on its own GPU, teaching the robot one skill. The checkpoints are the skill's own measure, in its own unit.
+ * A field an event did not carry is null; the stage claims nothing for it.
+ */
+export type Thread = {
+  id: string;
+  skill: string | null;
+  /** The GPU box's own label ("H100 #3"). */
+  host: string | null;
+  status: "starting" | "learning" | "done" | "failed";
+  /** How long the box took to come up, measured by the pool. */
+  acquireMs: number | null;
+  costUsd: number | null;
+  unit: string | null;
+  /** The skill is installed in the one robot. */
+  home: boolean;
+  points: { n: number; value: number; at: number }[];
+  /** When the thread was last heard from. */
+  at: number;
+};
+
 /** One tool call of the current task, as the transcript says it. `args` is the call's JSON as the transcript holds it. */
 export type ToolRow = { id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted" };
 
@@ -194,8 +215,10 @@ export type ShowState = {
   versions: { n: number; metres: number }[];
   /** What a score means, shown once above the grid ("m walked in 10 s"); empty when the feed does not say. */
   scoreUnit: string;
-  /** The brain swap, once the transcript has said anything about it (null before, and on a run that never brings a model home). */
+  /** The latest brain entry the transcript has said (loading, ready or failed), null before any and on a run that never brings a model home. A second homecoming writes more entries; a later one replaces this. */
   brain: (Brain & { at: number }) | null;
+  /** The latest `ready` entry: the model that is the agent's brain now. It stays through a newer loading or failed entry (a replacement that is still coming, or that did not load). */
+  brainReady: (Brain & { at: number }) | null;
   /** Online or offline, from the tab's own signal; null until the tab has said. */
   net: (Net & { at: number }) | null;
   /** The latest check-in (a run coming back from offline); null before any. */
@@ -207,6 +230,8 @@ export type ShowState = {
   homecoming: (Homecoming & { at: number }) | null;
   /** The tool calls of the current task, in order (the transcript's, replaced whole each time). */
   tools: ToolRow[];
+  /** The agent's threads, in the order they first appeared (a tile never moves). Empty until the agent splits. */
+  threads: Thread[];
   /** The environments the switcher offers, in order. */
   environments: { id: string; label: string; kind: HostKind }[];
   /** Which environment the run is in now; null while moving. */
@@ -232,6 +257,10 @@ export type ShowEvent =
   /** The model is loaded: how long that took, joined to the fetch it follows. */
   | { t: "homecoming.loaded"; at: number; loadMs: number }
   | { t: "tools"; at: number; tools: ToolRow[] }
+  /** A thread's fields change (it is made by its first patch). */
+  | { t: "thread"; at: number; id: string; patch: Partial<Omit<Thread, "id" | "points" | "at">> }
+  /** A thread's checkpoint: how well it does its skill, `value` in `unit`. The same or an older `n` is a repeat. */
+  | { t: "thread.point"; at: number; id: string; n: number; value: number; unit?: string }
   | { t: "decision"; at: number; decision: DecisionData }
   | { t: "setup"; at: number; phase: "start" | "end" }
   /** A version of the brain and how far it walked in the one fixed 10 s window (the chart's point). A feed with no tab to report it (the rehearsal) sends it itself. */

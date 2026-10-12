@@ -1,6 +1,6 @@
 // ShowState is the fold of ShowEvents. Pure: no clock, no I/O, so the same events give the same state on every page.
 import { routingKey } from "./selftools.ts";
-import type { Place, ShowEvent, ShowState, Universe } from "./types.ts";
+import type { Place, ShowEvent, ShowState, Thread, Universe } from "./types.ts";
 
 export function emptyState(): ShowState {
   return {
@@ -15,12 +15,14 @@ export function emptyState(): ShowState {
     notes: [],
     chat: [],
     brain: null,
+    brainReady: null,
     net: null,
     checkin: null,
     routing: null,
     routings: [],
     homecoming: null,
     tools: [],
+    threads: [],
     decision: null,
     setup: null,
     versions: [],
@@ -97,13 +99,13 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
     case "brain": {
       const b = event.brain;
       const cur = state.brain;
-      // Ready is final (a reload repeats the entries; a late loading or failure cannot undo the swap). A failure can be retried by a new loading entry; the same entry again is not news.
-      if (cur?.stage === "ready") return { ...state, now };
-      // Entry ids only grow along the transcript: an entry no newer than the one held is a repeat, not news. (An id that is not a number can only be compared for equality.)
+      // Entry ids only grow along the transcript: an entry no newer than the one held is a repeat (a reload repeats the entries), not news. (An id that is not a number can only be compared for equality.)
       const older = cur !== null && (Number.isFinite(Number(b.id)) && Number.isFinite(Number(cur.id)) ? Number(b.id) <= Number(cur.id) : b.id === cur.id);
       if (older) return { ...state, now };
-      if (b.stage === "loading" && cur?.stage === "loading") return { ...state, now };
-      return { ...state, now, brain: { ...b, at: event.at } };
+      if (b.stage === "loading" && cur?.stage === "loading" && cur.sha256 === b.sha256) return { ...state, now };
+      // A later entry replaces the held one, a ready one included: a second homecoming (another model, same conversation) writes its own loading, ready or failed entries.
+      const brain = { ...b, at: event.at };
+      return { ...state, now, brain, brainReady: b.stage === "ready" ? brain : state.brainReady };
     }
     case "net":
       return { ...state, now, net: { ...event.net, at: event.at } };
@@ -111,6 +113,21 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
       return { ...state, now, checkin: { ...event.checkin, at: event.at } };
     case "homecoming":
       return { ...state, now, homecoming: { ...event.homecoming, at: event.at } };
+    case "thread":
+    case "thread.point": {
+      const i = state.threads.findIndex((t) => t.id === event.id);
+      const cur: Thread = i >= 0 ? state.threads[i]! : { id: event.id, skill: null, host: null, status: "starting", acquireMs: null, costUsd: null, unit: null, home: false, points: [], at: event.at };
+      let next: Thread;
+      if (event.t === "thread") {
+        const patch = Object.fromEntries(Object.entries(event.patch).filter(([, v]) => v !== undefined));
+        next = { ...cur, ...patch, at: event.at };
+      } else {
+        const last = cur.points.at(-1);
+        next = last && last.n >= event.n ? { ...cur, at: event.at } : { ...cur, status: cur.status === "starting" ? "learning" : cur.status, unit: event.unit ?? cur.unit, points: [...cur.points, { n: event.n, value: event.value, at: event.at }].slice(-200), at: event.at };
+      }
+      const threads = i >= 0 ? state.threads.map((t, j) => (j === i ? next : t)) : [...state.threads, next];
+      return { ...state, now, threads };
+    }
     case "homecoming.loaded":
       return { ...state, now, homecoming: state.homecoming ? { ...state.homecoming, loadMs: event.loadMs } : null };
     case "tools":
