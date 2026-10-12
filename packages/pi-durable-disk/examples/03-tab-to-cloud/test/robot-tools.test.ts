@@ -375,3 +375,81 @@ test("withHomeFallback reads only home/ through, only when the computer has no s
   assert.ok("marker" in wrapped);
   void calls;
 });
+
+test("on a code body the shape tools follow the driver: gone for the cloud agent, offered to the browser's brain (answered CODE_BODY_REFUSAL), and gone again back on the cloud", async () => {
+  const { robotLock, signatureTools, signatureView, toNativeTools } = await import("../tab/native-turn.ts");
+  const { lockGrammar } = await import("../tab/native-tools.ts");
+  const { BRAIN_PROVIDER } = await import("../providers.ts");
+  const { CODE_BODY_REFUSAL } = await import("../robot-model.ts");
+  const v5t = (JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "robot-v5t-serving.json"), "utf8")) as { system: string }).system;
+  const dir = mkdtempSync(join(tmpdir(), "shape-driver-"));
+  withBody(dir);
+  try {
+    const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+    const registry = agentRegistry(async () => undefined, { switchTool: false });
+    const models = createModels();
+    models.setProvider(scriptedCloud("cloud-big", [{ call: { name: "set_color", arguments: { part: "plates", color: "orange" } } }, { text: "Painted." }, { call: { name: "set_color", arguments: { part: "tail", color: "blue" } } }, { text: "Done." }], []));
+    // The browser's brain, scripted as V5T answered in D3's rehearsal: a colour, then a size ask, which must reach `scale`.
+    models.setProvider(scriptedCloud("v5", [{ call: { name: "set_color", arguments: { part: "legs", color: "red" } } }, { text: "The legs are now red." }, { call: { name: "scale", arguments: { factor: 2 } } }, { text: "Not done: it is built from code." }], [], BRAIN_PROVIDER));
+    const harness = await Harness.open(new MemoryStorage(), { models, registry, env: () => env }, ctx);
+    const root = await harness.root(ctx, { agent: rootAgent("cloud-big", { registry }) });
+    const ask = async (text: string) => void (await (await root.submit({ type: "input", content: text }, ctx)).wait(ctx));
+    const names = async () => (await root.agent(ctx)).tools.map((t) => t.name);
+    const SHAPE = ["resize", "scale", "set_legs", "morph"];
+
+    // The cloud agent drives first and works on the code body.
+    await ask("paint the plates orange");
+    for (const t of SHAPE) assert.ok(!(await names()).includes(t), `the cloud agent is not offered ${t}`);
+
+    // Take it offline: the phone's own configure (its serving file's tools, in its order).
+    const byName = new Map(registry.snapshot().tools().map((r) => [r.tool.name, r.tool]));
+    const brainTools = signatureTools(v5t).map((n) => byName.get(n)!).filter(Boolean);
+    await root.configure({ model: { provider: BRAIN_PROVIDER, modelId: "v5" }, thinkingLevel: "off", tools: brainTools, instructions: v5t }, ctx);
+    for (const t of SHAPE) assert.ok((await names()).includes(t), `the brain is offered ${t}`);
+
+    // The brain paints first (D3's rehearsal): its own robot call must not take the shape tools away.
+    await ask("paint its legs red");
+    const offered = await root.agent(ctx);
+    for (const t of SHAPE) assert.ok(offered.tools.some((x) => x.name === t), `${t} is still offered to the brain after its own robot call`);
+    const view = signatureView(toNativeTools(offered.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }))), signatureTools(v5t));
+    assert.match(lockGrammar(robotLock(view, { system: v5t, home: [], tags: ["torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "eyes", "plates"] })), /<function=scale>/, "scale is in the request's lock");
+
+    // "make it twice as big": the brain reaches scale, and the robot answers with the code body's refusal.
+    await ask("make it twice as big");
+    const results = ((await root.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; model?: { toolName?: string; content?: { text?: string }[] }[] }[]).filter((e) => e.kind === "pi.tool-result").map((e) => e.model![0]!);
+    const scale = results.find((m) => m.toolName === "scale");
+    assert.ok(scale, "the brain's scale call ran");
+    assert.equal(scale!.content?.map((c) => c.text ?? "").join(""), CODE_BODY_REFUSAL);
+
+    // Back online: the cloud agent's configure takes them out again, and its own robot calls keep them out.
+    await root.configure(cloudAgent("cloud-big", { registry }), ctx);
+    for (const t of SHAPE) assert.ok(!(await names()).includes(t), `${t} is gone again on the cloud`);
+    await ask("paint the tail blue");
+    for (const t of SHAPE) assert.ok(!(await names()).includes(t), `${t} stays gone after the cloud agent's robot call`);
+    await harness.close(ctx);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a brain-driven conversation missing the shape tools (stripped while the cloud drove, never re-listed) gets them back at its next robot call", async () => {
+  const { BRAIN_PROVIDER } = await import("../providers.ts");
+  const dir = mkdtempSync(join(tmpdir(), "shape-restore-"));
+  withBody(dir);
+  try {
+    const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+    const registry = agentRegistry(async () => undefined, { switchTool: false });
+    const models = createModels();
+    models.setProvider(scriptedCloud("v5", [{ call: { name: "set_color", arguments: { part: "plates", color: "green" } } }, { text: "Done." }], [], BRAIN_PROVIDER));
+    const harness = await Harness.open(new MemoryStorage(), { models, registry, env: () => env }, ctx);
+    // The brain drives a conversation whose tool list has no shape tools (a code-mode root moved onto the brain with tools left as they were).
+    const root = await harness.root(ctx, { agent: { ...rootAgent("cloud-big", { registry }), model: { provider: BRAIN_PROVIDER, modelId: "v5" } } });
+    const names = async () => (await root.agent(ctx)).tools.map((t) => t.name);
+    for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok(!(await names()).includes(t), `${t} starts missing`);
+    await (await root.submit({ type: "input", content: "paint the plates green" }, ctx)).wait(ctx);
+    for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok((await names()).includes(t), `${t} is back for the brain`);
+    await harness.close(ctx);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

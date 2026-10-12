@@ -2,9 +2,10 @@
 // so a small local model cannot get a file name or a unit wrong; the creature page watches the file and redraws. The result text says whether the walking brain still fits (looks only) or no longer does
 // (a body change), so the model can tell the user the truth. Every host registers them in the same place (agent.ts); a host with no computer refuses. Portable: no Node API.
 import { configure, defineExtension, defineTool } from "@earendil-works/pi-durable";
-import type { Extension } from "@earendil-works/pi-durable";
+import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { buildRobot } from "./build-robot.ts";
+import { BRAIN_PROVIDER } from "./providers.ts";
 import { COLOR_NAMES, FACE_NAMES, LOOK_PARTS, type CodeBody, MORPH_PRESETS, NAME_MAX, RESIZE_PARTS, SHAPE_NAMES, SHAPE_PARTS, SKILL_NAMES, applyRobotTool, applyUpdateRobot, initialRobot, parseRobot, serializeRobot, validateDesign, type Design, type RobotContext, type RobotState } from "./robot-model.ts";
 
 /** The robot's state file, and the design the creature page publishes when it saves the user's drawing (what `reset` returns to). Relative to the workspace. */
@@ -74,12 +75,24 @@ export async function loadCodeBody(env: Env, context: Ctx): Promise<CodeBody | u
 /** The tools that change a preset body: with a body written as code the agent changes its body by writing the file, so these are not offered to it. */
 export const SHAPE_TOOLS: readonly string[] = ["resize", "scale", "set_legs", "morph"];
 
-/** Take the shape tools out of this conversation's agent (once a robot body exists as code); it is the conversation's own configuration, committed from inside the tool call, so the next model request no longer lists them. */
-async function hideShapeTools(api: ToolApi, context: Ctx): Promise<void> {
+/**
+ * On a body written as code the shape tools follow the model that drives the conversation, in both directions. The
+ * cloud agent changes the body by writing its file, so they are not offered to it. The browser's own model can only call
+ * tools, and its prompt names them, so they stay offered and answer CODE_BODY_REFUSAL. Reconciled at every robot call on
+ * a code body, committed from inside the call, so the next request lists the right ones. A model switch configures the
+ * same: cloudAgent removes them, and the browser's model's agent lists its prompt's tools.
+ */
+async function shapeToolsForDriver(api: ToolApi, context: Ctx): Promise<void> {
   const agent = await api.agent(context as never);
+  // The shape tools as this conversation's registry has them: its robot-tools extension stays selected when they are removed.
+  const shapeTools: readonly ToolRegistration[] = agent.extensions.flatMap((e) => e.tools ?? []).filter((t) => SHAPE_TOOLS.includes(t.name));
   const present = agent.tools.filter((t) => SHAPE_TOOLS.includes(t.name));
-  if (present.length === 0) return;
-  await api.commit((tx) => configure(tx, api.conversationId, { tools: { remove: present } }), context as never);
+  if (agent.model?.provider !== BRAIN_PROVIDER) {
+    if (present.length > 0) await api.commit((tx) => configure(tx, api.conversationId, { tools: { remove: present } }), context as never);
+    return;
+  }
+  const missing = shapeTools.filter((t) => !present.some((p) => p.name === t.name));
+  if (missing.length > 0) await api.commit((tx) => configure(tx, api.conversationId, { tools: [...agent.tools, ...missing] }), context as never);
 }
 
 /** The robot as it is now: its file, or the body the user drew before the first edit (what a tool would start from). */
@@ -150,7 +163,7 @@ async function editNow(api: ToolApi, context: Ctx, tool: string, args: Record<st
   const env = api.env;
   if (!env) return text("Not done: there is no computer to keep the robot's file on.", true);
   const body = await loadCodeBody(env, context);
-  if (body) await hideShapeTools(api, context);
+  if (body) await shapeToolsForDriver(api, context);
   const apply = async (state: RobotState) => {
     const skills = tool === "do" || (tool === "update_robot" && args.skill !== undefined) ? await loadSkills(env!, context) : {};
     const skillFits = body && skills && typeof args.skill === "string" && skills[args.skill] ? await fitsBody(env!, context, skills[args.skill]!.policy, args.skill) : undefined;
@@ -242,7 +255,7 @@ export function robotTools(): Extension {
         parameters: Type.Object({}),
         execute: async (_args, api, context) => {
           if (!api.env) return text("Not built: there is no computer to keep the robot's files on.", true);
-          if (await loadCodeBody(api.env, context)) await hideShapeTools(api, context);
+          if (await loadCodeBody(api.env, context)) await shapeToolsForDriver(api, context);
           const r = await buildRobot(api.env as never, context as never, { sha256: async (t) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, "0")).join("") });
           return text(r.text, r.isError);
         },

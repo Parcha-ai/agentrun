@@ -21,7 +21,8 @@ export interface SeenRequest {
 const zero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 const textOf = (content: unknown): string => (typeof content === "string" ? content : Array.isArray(content) ? content.map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : "")).join("") : "");
 
-export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: SeenRequest[]): Provider {
+/** `provider`: the provider id it answers as (the cloud model's by default; a check of the browser's model passes BRAIN_PROVIDER). */
+export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: SeenRequest[], provider: string = PROVIDER): Provider {
   let next = 0;
   const run = (model: Model<string>, context: TranscriptContext | Context): AssistantMessageEventStream => {
     const stream = createAssistantMessageEventStream();
@@ -53,10 +54,10 @@ export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: See
     return stream;
   };
   return createProvider({
-    id: PROVIDER,
+    id: provider,
     name: "Scripted cloud model",
     auth: { apiKey: { name: "scripted", resolve: async () => ({ auth: { apiKey: modelId } }) } },
-    models: [{ id: modelId, name: modelId, api: "openai-responses", provider: PROVIDER, baseUrl: "scripted:", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 16_000 }],
+    models: [{ id: modelId, name: modelId, api: "openai-responses", provider, baseUrl: "scripted:", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 16_000 }],
     api: { stream: run as never, streamSimple: run as never },
   });
 }
