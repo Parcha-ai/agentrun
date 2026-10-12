@@ -206,6 +206,11 @@ export async function startLocal(opts: {
   persist?: (changes: Awaited<ReturnType<Workspace["changes"]>>["changes"]) => Promise<void>;
   /** What this host's page offers the agent's tools (go_online, here). */
   host?: HostTools;
+  /**
+   * Do not resume the run's interrupted work yet: the caller calls `harness.resume()` once it can serve it. A page whose model loads after the store opens (the
+   * phone) resumes a turn a reload cut short only when the model is there; resumed at open, that turn ran with no provider and vanished.
+   */
+  deferResume?: boolean;
 }): Promise<TabRuntime> {
   const env = opts.computer?.env ?? noComputer();
   const workspace = opts.computer?.workspace ?? noWorkspace();
@@ -224,7 +229,7 @@ export async function startLocal(opts: {
   };
   const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [], ...opts.host });
   const harness = await Harness.open(opts.storage, { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
-  await harness.resume();
+  if (!opts.deferResume) await harness.resume();
   const root = await harness.root(ctx, { agent: rootAgent(opts.model) });
   return {
     harness,

@@ -34,6 +34,17 @@ if (process.argv.includes("--fetch") && !(existsSync(target) && digest(target) =
 // The trained model runs in this page once it comes home (brain.ts, with the 04 tab's ModelHost): wllama's wasm is served next to the page, as the 04 tab does.
 mkdirSync(join(out, "vendor"), { recursive: true });
 copyFileSync(join(here, "../../04-walks-home/tab/node_modules/@wllama/wllama/esm/wasm/wllama.wasm"), join(out, "vendor", "wllama.wasm"));
+// Its Safari build (no JSPI or memory64: every iPhone browser), served from here: wllama would otherwise fetch it from a CDN, and a phone offline has none.
+// The shim's build (04-walks-home/tab/wllama-shim: slot restore for the warm state, 8 MiB reads) when it has been built, else npm's (the page then prefills).
+mkdirSync(join(out, "vendor", "wllama-compat"), { recursive: true });
+const shim = join(here, "../../04-walks-home/tab/wllama-shim/dist");
+const compatFrom = existsSync(join(shim, "wllama.wasm")) ? shim : join(here, "../node_modules/@wllama/wllama-compat/wasm");
+for (const f of ["wllama.js", "wllama.wasm"]) copyFileSync(join(compatFrom, f), join(out, "vendor", "wllama-compat", f));
+// The shim's wasm32 + JSPI build (no Asyncify), for a browser with JSPI but no memory64 (Safari 27): the page picks it by feature when it is here.
+if (existsSync(join(shim, "jspi32", "wllama.wasm"))) {
+  mkdirSync(join(out, "vendor", "wllama-jspi32"), { recursive: true });
+  for (const f of ["wllama.js", "wllama.wasm"]) copyFileSync(join(shim, "jspi32", f), join(out, "vendor", "wllama-jspi32", f));
+}
 
 // The browser store (local-store.ts): SQLite-WASM runs in a worker of its own, its wasm next to it.
 copyFileSync(join(here, "../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm"), join(out, "vendor", "sqlite3.wasm"));

@@ -845,6 +845,9 @@ function sampleArrival() {
   }
 }
 
+const STILL = new URLSearchParams(location.search).get('still') === '1';
+let lastStillDraw = 0;
+
 function tick(now: number) {
   requestAnimationFrame(tick);
   if (!economy.frame(now, pointerDown || cameraDown, !!app.policy)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
@@ -853,7 +856,8 @@ function tick(now: number) {
   const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
   app.last = now;
   const t0 = performance.now();
-  if (app.running && !(app.hero && !app.policy)) { // the hero look with no policy stands in its pose: no physics until a skill plays
+  // the hero look, or ?still=1 (the phone's pane), with no policy stands in its pose: no physics until a skill plays (the untrained brain's random moves would topple it)
+  if (app.running && !((app.hero || STILL) && !app.policy)) {
     app.acc += dt;
     let n = 0;
     while (app.acc >= CONTROL_DT && n < MAX_STEPS_PER_FRAME) {
@@ -880,7 +884,8 @@ function tick(now: number) {
     }
   }
   const t1 = performance.now();
-  app.view.draw();
+  // still and skill-less, nothing moves: a few frames a second keep a change to the robot's looks on screen at a fraction of the work (the phone's main thread also runs the model's reads)
+  if (!(STILL && !app.policy) || now - lastStillDraw > 250) { app.view.draw(); lastStillDraw = now; }
   if (app.clean) showDistance();
   hud();
   app.stats.frame(now, t1 - t0, performance.now() - t1);
@@ -922,7 +927,7 @@ async function main() {
       sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml), world: null,
       policy: null, policyName: 'untrained', running: true, acc: 0, last: performance.now(),
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
-      training: new TrainingState(),
+      training: Object.assign(new TrainingState(), { still: STILL }),
       brain: new UntrainedBrain(), ticker: new Ticker(1), drawStarted: false, clean, hero, phase, offline: !navigator.onLine,
       draft: new DraftCommitter({
         build: (save) => buildCreature(app.sketcher.get(), true, { save }),
