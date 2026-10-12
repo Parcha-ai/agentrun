@@ -9,6 +9,8 @@ export interface Limit {
   end: string;
   /** How many tokens after `start` (before the end of `end`'s first appearance) the generation may take. */
   tokens: number;
+  /** When set, an `end` counts only if the text between `start` and it passes (e.g. a call body that is whole JSON). */
+  accept?: (between: string) => boolean;
 }
 
 export class LimitTracker {
@@ -30,7 +32,11 @@ export class LimitTracker {
         this.#startedAt[i] ??= tokens;
         from = at + limit.start.length;
       }
-      if (text.indexOf(limit.end, from) >= 0) continue; // satisfied
+      let satisfied = false;
+      for (let e = text.indexOf(limit.end, from); e >= 0 && !satisfied; e = text.indexOf(limit.end, e + 1)) {
+        satisfied = !limit.accept || limit.accept(text.slice(from, e));
+      }
+      if (satisfied) continue;
       if (tokens - (this.#startedAt[i] ?? tokens) >= limit.tokens) return i;
     }
     return -1;

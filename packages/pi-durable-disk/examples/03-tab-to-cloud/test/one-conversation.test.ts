@@ -141,7 +141,7 @@ test("a call to an unknown tool still reaches pi as a call, so pi's own error co
   await brain.start(disk.manifest);
   // an unknown tool still goes to pi as a call (pi's own error comes back to the model)
   const sub = await t.root.submit({ type: "input", content: "do it" }, ctx);
-  await Promise.race([sub.wait(ctx), new Promise((r) => setTimeout(r, 1500))]);
+  await sub.wait(ctx); // the model repeats the same call for ever: the provider ends the task after its step cap with a plain line, so this resolves
   const calls = (await t.root.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; model?: { provider?: string; content?: { type: string; name?: string }[] }[] }[];
   assert.ok(calls.some((e) => e.kind === "pi.assistant" && e.model?.[0]?.provider === BRAIN_PROVIDER && e.model?.[0]?.content?.some((c) => c.type === "toolCall" && c.name === "nope")), "an unknown tool is a call pi refuses by name");
   await t.harness.close(ctx).catch(() => undefined);
@@ -184,6 +184,49 @@ test("by default the window is the current task alone (the model was trained on 
   const second = turnsOf(m.prompts.filter((p) => p.includes("second task")).at(0)!);
   assert.deepEqual(second.map((x) => x.role), ["user", "model"], "the spec and the task, the model's turn to speak: no earlier exchange");
   assert.ok(second[0]!.text.endsWith("\n\nsecond task") && !second[0]!.text.includes("first task"));
+  await t.harness.close(ctx);
+  t.done();
+});
+
+test("a long task keeps the whole prompt inside the model's context: the oldest call/result pairs go, the request and the newest pair stay", async () => {
+  const { CHARS_PER_TOKEN, CONTEXT_TOKENS, fitWindow } = await import("../tab/tool-window.ts");
+  // the model's context as the loader sets it (read as text: importing the loader would start wllama)
+  const { readFileSync } = await import("node:fs");
+  const nCtx = Number(/export const N_CTX = (\d+);/.exec(readFileSync(new URL("../../04-walks-home/tab/src/llm.ts", import.meta.url), "utf8"))![1]);
+  assert.equal(CONTEXT_TOKENS, nCtx, "the budget is the model's real context");
+  const call = (id: string, path: string) => ({ role: "assistant", content: [{ type: "toolCall", id, name: "read", arguments: { path } }] }) as never as Msg;
+  const result = (id: string, text: string) => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text }], isError: false }) as never as Msg;
+  const window: Msg[] = [{ role: "user", content: "summarise every file" } as never];
+  for (let n = 1; n <= 6; n++) window.push(call(`c${n}`, `f${n}.txt`), result(`c${n}`, `contents of file ${n}: ${"x".repeat(400)}`));
+  const render = (w: readonly Msg[]) => JSON.stringify(w);
+  const full = render(window).length;
+  assert.ok(full > 2400, "the task is over the budget used below");
+  const fit = fitWindow(window, render, 1500);
+  assert.ok(render(fit.window).length <= 1500, "inside the budget");
+  assert.ok(fit.dropped >= 3 && fit.dropped <= 5, `dropped ${fit.dropped} pairs`);
+  assert.equal((fit.window[0] as unknown as { content: string }).content, "summarise every file", "the request stays");
+  const last = fit.window.at(-1) as unknown as { toolCallId: string };
+  assert.equal(last.toolCallId, "c6", "the newest result stays");
+  assert.ok(fit.window.some((m) => m.role === "assistant" && JSON.stringify(m).includes("f6.txt")), "and the call that made it");
+  // pairs go whole: no result is left without its call, and the order is kept
+  const ids = fit.window.flatMap((m) => (m.role === "assistant" ? [JSON.stringify(m).match(/c\d/)![0]] : m.role === "toolResult" ? [`r:${(m as unknown as { toolCallId: string }).toolCallId}`] : []));
+  for (let i = 0; i < ids.length; i += 2) assert.equal(ids[i + 1], `r:${ids[i]}`);
+  // a task that already fits is untouched, and the one pair of a first turn is never dropped even when it is too big
+  assert.deepEqual(fitWindow(window, render, full).window, window);
+  assert.equal(fitWindow(window.slice(0, 3), render, 10).window.length, 3);
+  assert.ok(CHARS_PER_TOKEN >= 2);
+});
+
+test("a model that never stops calling tools is ended after its step cap with a plain line, not left to run for ever", async () => {
+  const t = await trip();
+  const disk = modelDisk();
+  const m = scripted(() => '<thinking>Again.</thinking>\n<tool_call>{"name":"nope","arguments":{}}</tool_call>');
+  const brain = new Brain({ harness: t.harness, models: t.models, root: t.root, readFile: async (p) => disk.files.get(p) ?? null, judge: async () => "show", llm: m.llm, threads: 2, context: ctx, mode: "configure", tools: t.tools, decoding: { maxSteps: 4 } });
+  await brain.start(disk.manifest);
+  await (await t.root.submit({ type: "input", content: "do it" }, ctx)).wait(ctx);
+  const entries = ((await t.root.entries({}, 200, undefined, ctx)).items as unknown as { kind: string; model?: { provider?: string; stopReason?: string; content?: { type: string; text?: string }[] }[] }[]).filter((e) => e.kind === "pi.assistant" && e.model?.[0]?.provider === BRAIN_PROVIDER);
+  assert.equal(m.prompts.length, 4, "four model calls, then no more");
+  assert.match(entries[0]!.model![0]!.content!.map((c) => c.text ?? "").join(""), /^I stopped after 4 steps without finishing\./);
   await t.harness.close(ctx);
   t.done();
 });

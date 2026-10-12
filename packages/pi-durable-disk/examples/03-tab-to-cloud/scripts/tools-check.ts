@@ -2,7 +2,7 @@
 // (?configure=1: the trip's conversation is configured onto the model). A run in a local server, the model comes home, the page loads it and configures the conversation, then the user
 // asks for work and the model's tool turns are decoded (thinking capped, free text, the call under the format's grammar) and run by pi's tools on the Wasmer sandbox; every write-through
 // goes to the pipe's disk.
-//   MODEL_DISK=<dir holding home/model/manifest.json and the chunks> [TASK="..."] [CDP=http://127.0.0.1:9333] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/tools-check.ts
+//   MODEL_DISK=<dir holding home/model/manifest.json and the chunks> [TASK="..." [CHECK="cmd" EXPECT="output"]] [CDP=http://127.0.0.1:9333] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/tools-check.ts
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -50,7 +50,7 @@ try {
   type Turn = { ms: number; tokensPerSecond: number | null; promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; call: string | null; problem: string | null; raw: string; completions: { ms?: number; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] };
   // The check is ours, in code: the exact output of a command on the workspace, never the model's own claim.
   const tasks: { task: string; check: string; expect: string }[] = process.env.TASK
-    ? [{ task: process.env.TASK, check: "ls", expect: "" }]
+    ? [{ task: process.env.TASK, check: process.env.CHECK ?? "", expect: process.env.EXPECT ?? "" }] // a custom task has a verdict only when CHECK (a command) and EXPECT (its exact output) are given
     : [
         { task: "Write hello.js that prints hi, then run it.", check: "node hello.js", expect: "hi" },
         { task: "Create notes/a.txt containing apple and notes/b.txt containing banana, then tell me how many lines each file has.", check: "cat notes/a.txt; echo ---; cat notes/b.txt", expect: "apple\n---\nbanana" },
@@ -75,9 +75,13 @@ try {
       console.log(`  turn ${i + 1}: ${(x.ms / 1000).toFixed(1)} s, out ${x.outputTokens} tok (thinking ${x.thinkTokens}), thinkingCut=${x.thinkingCut} cut=${x.cut}\n    ${parts}\n    ${x.call ? "call " + x.call.slice(0, 220) : "answer"}${x.problem ? "\n    PROBLEM " + x.problem : ""}`);
     }
     for (const i of items.filter((x) => x.kind === "tool" || x.kind === "assistant")) if (i.kind === "tool") console.log(`  [tool ${i.status}] ${i.name} -> ${JSON.stringify((i.output ?? "").slice(0, 140))}`); else if (i.text) console.log(`  [answer] ${JSON.stringify(i.text.slice(0, 160))}`);
-    const verdict = await ev<{ exitCode?: number; output?: string }>(`demo.exec(${JSON.stringify(t.check)})`).catch((): { exitCode?: number; output?: string } => ({ output: "" }));
-    const good = verdict.exitCode === 0 && (verdict.output ?? "").trim() === t.expect;
-    console.log(`  verification \`${t.check}\`: ${JSON.stringify((verdict.output ?? "").slice(0, 120))} -> ${good ? "RIGHT" : "WRONG"}`);
+    let good = true;
+    if (t.check) {
+      const verdict = await ev<{ exitCode?: number; output?: string }>(`demo.exec(${JSON.stringify(t.check)})`).catch((): { exitCode?: number; output?: string } => ({ output: "" }));
+      good = verdict.exitCode === 0 && (verdict.output ?? "").trim() === t.expect;
+      console.log(`  verification \`${t.check}\`: ${JSON.stringify((verdict.output ?? "").slice(0, 120))} -> ${good ? "RIGHT" : "WRONG"}`);
+      ok(`task ${n + 1}: the workspace is what the task asked for (\`${t.check}\` prints the expected output)`, good, verdict); // a wrong program fails the run
+    } else console.log("  (no CHECK/EXPECT given: the workspace is not verified)");
     all.push({ turns, ok: good });
   }
   const allTurns = all.flatMap((a) => a.turns);

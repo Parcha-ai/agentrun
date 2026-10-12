@@ -18,7 +18,7 @@ import { chatMessages, HELD, type HistoryMode } from "../../04-walks-home/tab/sr
 import type { Answered, ChatMsg } from "../../04-walks-home/tab/src/modelhost.ts";
 import { splitThinking } from "../../04-walks-home/tab/src/thinking.ts";
 import { decodeTurn, toPiContent, type DecodedTurn } from "./decode.ts";
-import { hasTools, toolPrompt } from "./tool-window.ts";
+import { CHARS_PER_TOKEN, CONTEXT_TOKENS, hasTools, toolPrompt } from "./tool-window.ts";
 
 export const BRAIN_PROVIDER = "tab-local";
 export const BRAIN_API = "tab-local";
@@ -57,10 +57,13 @@ export interface ToolDecoding {
   history?: "none" | "last";
   /** "lazy": ONE completion, the grammar engaging on <tool_call> (default). "grammar": three completions, the body under the grammar. "free": one plain generation. */
   mode: "grammar" | "lazy" | "free";
+  /** A task that has taken this many of the model's own turns without an answer ends with a plain line instead of another model call (a small model stuck repeating one call would otherwise run for ever, each turn about ten seconds). Default 16. */
+  maxSteps?: number;
   /** Called once per decoded turn, with how long it took and what it cost. */
   onTurn?(turn: { ms: number; tokensPerSecond: number | null; decoded: DecodedTurn; callId: string; prompt: string; completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] }): void;
 }
 
+export const DEFAULT_MAX_STEPS = 16;
 export const DEFAULT_TOOL_DECODING: ToolDecoding = { thinkTokens: 64, answerTokens: 200, callTokens: 512, mode: "lazy", history: "none" };
 
 export function streamBrain(brain: BrainModel, model: Model<string>, context: TranscriptContext | Context, options?: { signal?: AbortSignal }, decoding: ToolDecoding = DEFAULT_TOOL_DECODING): AssistantMessageEventStream {
@@ -74,9 +77,19 @@ function streamTools(brain: BrainModel, model: Model<string>, context: Transcrip
   const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: zeroUsage(), stopReason: "stop", timestamp: Date.now() };
   void (async () => {
     try {
-      const { prompt, tools, window } = toolPrompt(context.messages as never, { provider: BRAIN_PROVIDER, mode: d.history ?? "none" });
+      const { prompt, tools, window, steps } = toolPrompt(context.messages as never, { provider: BRAIN_PROVIDER, mode: d.history ?? "none", maxPromptChars: Math.max(0, (CONTEXT_TOKENS - d.thinkTokens - Math.max(d.answerTokens, d.callTokens)) * CHARS_PER_TOKEN) });
       if (!window.some((m) => m.role === "user")) throw new Error("nothing to answer: the conversation has no user message");
       stream.push({ type: "start", partial: output });
+      if (steps >= (d.maxSteps ?? DEFAULT_MAX_STEPS)) {
+        const line = `I stopped after ${steps} steps without finishing. Tell me how you want me to go on.`;
+        output.content = [{ type: "text", text: line }];
+        stream.push({ type: "text_start", contentIndex: 0, partial: output });
+        stream.push({ type: "text_delta", contentIndex: 0, delta: line, partial: output });
+        stream.push({ type: "text_end", contentIndex: 0, content: line, partial: output });
+        stream.push({ type: "done", reason: "stop", message: output });
+        stream.end();
+        return;
+      }
       const started = performance.now();
       const callId = `tl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const completions: { ms: number | undefined; promptTokens: number; outputTokens: number; stoppedBy: string; timings?: Record<string, number> }[] = [];

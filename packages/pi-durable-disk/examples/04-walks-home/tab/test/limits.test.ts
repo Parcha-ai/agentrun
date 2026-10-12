@@ -31,3 +31,17 @@ test('several limits are independent and the first that runs out is reported', (
   assert.equal(t.push('a</t><c>x', 3), -1);
   assert.equal(t.push('a</t><c>x y z', 5), 1, 'the call body ran away');
 });
+
+test('an end that sits inside a JSON string is not the end of the call: with `accept`, a long write keeps counting past the tag in its content', () => {
+  const isWholeJson = (s: string) => { try { JSON.parse(s); return true; } catch { return false; } };
+  const limit = { start: '<tool_call>', end: '</tool_call>', tokens: 10, accept: isWholeJson };
+  const t = new LimitTracker([limit]);
+  const head = '<tool_call>{"name":"write","arguments":{"path":"a.md","content":"text with </tool_call> inside';
+  assert.equal(t.push(head, 1), -1, 'the clock starts at the opening tag');
+  assert.equal(t.push(head + ' and a great deal more content that keeps going', 12), 0, 'past the budget: the tag in the string did not satisfy the limit');
+  // the real end: the whole JSON, then the tag
+  const whole = '<tool_call>{"name":"write","arguments":{"path":"a.md","content":"x </tool_call> y"}}</tool_call>';
+  assert.equal(new LimitTracker([limit]).push(whole, 40), -1, 'a call that closes properly is satisfied however late');
+  // without accept the first tag counts (the older behaviour, for ends that are not JSON)
+  assert.equal(new LimitTracker([{ start: '<tool_call>', end: '</tool_call>', tokens: 10 }]).push(head + ' more', 40), -1);
+});

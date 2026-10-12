@@ -72,8 +72,35 @@ export function currentTools(messages: readonly PiMessageLike[]): ToolSpec[] {
 export const hasTools = (messages: readonly PiMessageLike[]): boolean => (getCurrentTools(messages as never) as HostTool[]).length > 0;
 
 /** The prompt for the model's next turn: the format's own rendering of the window. */
-export function toolPrompt(messages: readonly PiMessage[], o: WindowOptions): { prompt: string; tools: ToolSpec[]; window: Msg[] } {
+/** The model's context in tokens (04-walks-home/tab/src/llm.ts N_CTX: a test holds them equal); the prompt gets what the reply does not need. A token is about 3 characters of code and JSON (conservative). */
+export const CONTEXT_TOKENS = 2048;
+export const CHARS_PER_TOKEN = 3;
+
+/**
+ * A prompt over `maxChars` loses the OLDEST complete call/result pairs of the current task, never the request (the user message) and never the newest pair: a task with several reads or writes
+ * would otherwise outgrow the context and the model would see a prompt cut in the middle. Returns the window that fits (or the smallest one the rule allows) and how many pairs were dropped.
+ */
+export function fitWindow(window: readonly Msg[], render: (w: readonly Msg[]) => string, maxChars: number): { window: Msg[]; dropped: number } {
+  let w = [...window];
+  let dropped = 0;
+  while (render(w).length > maxChars) {
+    const user = w.map((m) => m.role).lastIndexOf("user");
+    const first = w.findIndex((m, i) => i > user && m.role === "assistant");
+    if (first < 0) break;
+    const end = w.findIndex((m, i) => i > first && m.role === "assistant");
+    if (end < 0) break; // the only pair: it is the newest, and it stays
+    // a pair is the model's turn and every result that answers it, up to the next turn of the model
+    w = [...w.slice(0, first), ...w.slice(end)];
+    dropped++;
+  }
+  return { window: w, dropped };
+}
+
+export function toolPrompt(messages: readonly PiMessage[], o: WindowOptions & { maxPromptChars?: number }): { prompt: string; tools: ToolSpec[]; window: Msg[]; dropped: number; steps: number } {
   const tools = currentTools(messages);
-  const window = windowMessages(messages, o);
-  return { prompt: renderPrompt(tools, window), tools, window };
+  const full = windowMessages(messages, o);
+  const { window, dropped } = o.maxPromptChars === undefined ? { window: full, dropped: 0 } : fitWindow(full, (w) => renderPrompt(tools, w as Msg[]), o.maxPromptChars);
+  const user = full.map((m) => m.role).lastIndexOf("user");
+  const steps = full.slice(user + 1).filter((m) => m.role === "assistant").length; // the model's own turns in this task, before any pair is dropped
+  return { prompt: renderPrompt(tools, window), tools, window, dropped, steps };
 }
