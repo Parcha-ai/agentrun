@@ -13,6 +13,7 @@ import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { importStore, openLocalStore, type LocalStore } from "./local-store.ts";
+import { applyChanges, loadWorkspace, saveWorkspace } from "./workspace-store.ts";
 import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
 import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
@@ -44,7 +45,7 @@ const state = {
   /** The conversation the chat input goes to: the root until the trained model comes home, then the fresh one on it (brain.ts). */
   active: undefined as Conversation | undefined,
   /** The run is checked out to this browser and this page runs it from OPFS (offline.ts, local-store.ts): its record and its store. */
-  offline: undefined as { record: CheckoutRecord; store: LocalStore } | undefined,
+  offline: undefined as { record: CheckoutRecord; store: LocalStore; computer: { booted: boolean; ms: number; files: number; error?: string; parts?: Record<string, number> } } | undefined,
   /** "Take it offline" in progress, in words (shown next to the button). */
   checkout: undefined as { text: string } | undefined,
   /** From the click on: this tab's input is held and a viewer's message is not acted on. */
@@ -225,7 +226,7 @@ async function select(path: string): Promise<void> {
   const row = state.files.find((f) => f.path === path);
   let text = "";
   if (row?.kind === "file") {
-    if (state.runtime && state.mode !== "offline") text = await (state.runtime.env as WasmerEnv).sandbox.fs.readText(`/workspace/${path}`).catch((e: Error) => `(unreadable: ${e.message})`);
+    if (state.runtime && "sandbox" in state.runtime.env) text = await (state.runtime.env as WasmerEnv).sandbox.fs.readText(`/workspace/${path}`).catch((e: Error) => `(unreadable: ${e.message})`);
     else if (row.data !== undefined) text = new TextDecoder().decode(fromBase64(row.data));
   }
   $("preview-name").textContent = path;
@@ -254,7 +255,7 @@ function render(): void {
   // A fallback, not the switch: take the run from the cloud now, fencing it mid-step.
   $("takeover").hidden = !(state.mode === "viewer" && state.placement?.where === "cloud" && !state.switching);
   // "Take it offline": while this tab runs the agent and the trained model is its brain, and nothing is moving.
-  const canTakeOffline = writer && swapped && !state.switching && !state.checkout;
+  const canTakeOffline = writer && (swapped || new URLSearchParams(location.search).get("brain") === "off") && !state.switching && !state.checkout;
   $("offline").hidden = !canTakeOffline;
   $("offline-status").textContent = state.checkout?.text ?? "";
   $("checkedout").hidden = !offline;
@@ -329,20 +330,25 @@ function ensureComputer(): Promise<NonNullable<typeof computer>> {
   return loading;
 }
 
+/** A Wasmer sandbox on the computer's package, as the agent's hands: its environment and its workspace (not yet restored). */
+async function bootComputer(): Promise<{ env: WasmerEnv; workspace: Workspace; facts: ReturnType<typeof tabFacts> }> {
+  const pkg = await ensureComputer();
+  const sandbox = await wasmer!.sandboxes.create({ packages: [pkg], shell: pkg.command("bash"), env: { LANG: "C.UTF-8" } });
+  // No core or memory count: navigator.hardwareConcurrency and deviceMemory describe the machine the browser runs on, not what this sandbox can use.
+  const env = new WasmerEnv(sandbox as never, { id: `wasmer:${run}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
+  return { env, workspace: new Workspace(wasmerWorkspaceFs(env)), facts: tabFacts(pkg.commands) };
+}
+
 async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   state.mode = "booting";
   state.generation = attached.generation;
   state.progress = `restoring ${attached.files.filter((f) => f.kind === "file").length} files from the disk`;
   render();
   const started = performance.now();
-  const pkg = await ensureComputer();
-  const sandbox = await wasmer!.sandboxes.create({ packages: [pkg], shell: pkg.command("bash"), env: { LANG: "C.UTF-8" } });
+  const { env, workspace, facts } = await bootComputer();
   state.environments = attached.environments;
   state.agentModel = attached.model;
-  // No core or memory count: navigator.hardwareConcurrency and deviceMemory describe the machine the browser runs on, not what this sandbox can use.
-  const facts = tabFacts(pkg.commands);
-  const env = new WasmerEnv(sandbox as never, { id: `wasmer:${run}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
-  const runtime = await startTab({ client, attached, env, workspace: new Workspace(wasmerWorkspaceFs(env)), host: { switchChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  const runtime = await startTab({ client, attached, env, workspace, host: { switchChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   state.bootMs = performance.now() - started;
@@ -500,7 +506,10 @@ async function refreshFiles(): Promise<void> {
  */
 async function takeOffline(): Promise<void> {
   const runtime = state.runtime, brain = state.brain, conversation = brain?.conversation;
-  if (!runtime || !brain || !conversation || state.active !== conversation || state.mode !== "writer" || state.checkout || state.switching) return;
+  // ?brain=off: the run has no model of its own (a check of the computer alone), and is checked out without one.
+  const noBrain = new URLSearchParams(location.search).get("brain") === "off";
+  if (!runtime || state.mode !== "writer" || state.checkout || state.switching) return;
+  if (!noBrain && (!brain || !conversation || state.active !== conversation)) return;
   const say = (text: string) => { state.checkout = { text }; render(); };
   // From the click on, nothing new starts: the chat input is held and a viewer's message is not acted on, so the agent stays idle through the caching and the copy.
   state.checkingOut = true;
@@ -510,9 +519,9 @@ async function takeOffline(): Promise<void> {
   try {
     say("waiting for the agent to be idle");
     if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
-    const manifestText = await readManifest(readWork);
-    if (!manifestText) throw new Error("the model's manifest is not on the run's disk");
-    const manifest = JSON.parse(manifestText) as { sha256: string; size: number; chunks: unknown[] };
+    const manifestText = noBrain ? null : await readManifest(readWork);
+    if (!noBrain && !manifestText) throw new Error("the model's manifest is not on the run's disk");
+    const manifest = manifestText ? (JSON.parse(manifestText) as { sha256: string; size: number; chunks: unknown[] }) : { sha256: "", size: 0, chunks: [] };
     say("registering the service worker");
     await registerOfflineWorker();
     const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
@@ -520,6 +529,9 @@ async function takeOffline(): Promise<void> {
     // The browser is asked to keep this site's storage: once the run is handed over, this is the only copy. A browser that will not is a warning (a refusal with ?persist=require).
     const persistent = (await navigator.storage?.persisted?.().catch(() => false)) || (await navigator.storage?.persist?.().catch(() => false)) || false;
     if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
+    // The workspace (work/, less the model) goes into OPFS too: the computer boots from it with no network. The tab is idle and every write-through was acknowledged, so this is what the pipe holds.
+    say("saving the workspace in this browser");
+    const workspace = await saveWorkspace(run, await runtime.workspace.scan());
     let head = -1;
     let record: CheckoutRecord | undefined;
     for (let attempt = 0; attempt < 3 && head < 0; attempt++) {
@@ -530,7 +542,7 @@ async function takeOffline(): Promise<void> {
       const copied = await check.head();
       await check.storage.close(ctx);
       if (copied !== copy.head) throw new Error(`the copy in this browser is at ${copied}, the server's store at ${copy.head}`);
-      record = { run, state: "copied", head: copy.head, model: state.agentModel, conversation: Number(conversation.id), tab, at: Date.now(), manifestSha: manifest.sha256, chunks: manifest.chunks.length, bytes: cached.bytes, persistent };
+      record = { run, state: "copied", head: copy.head, model: state.agentModel, conversation: conversation ? Number(conversation.id) : undefined, tab, at: Date.now(), manifestSha: manifest.sha256, chunks: manifest.chunks.length, bytes: cached.bytes, workspace, persistent };
       await writeCheckout(record);
       say("handing the run over");
       if (state.savedLoss) throw new Error("the connection to the run was lost while the checkout was preparing");
@@ -547,7 +559,7 @@ async function takeOffline(): Promise<void> {
     if (head < 0 || !record) throw new Error("the store kept changing: not handed over");
     record = { ...record, state: "done", head };
     await writeCheckout(record);
-    await leaveForOffline(record, brain.host);
+    await leaveForOffline(record, brain?.host);
   } catch (error) {
     state.checkout = undefined;
     if (uncertain) {
@@ -593,18 +605,42 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
   state.checkout = undefined;
   render();
   try {
+    const marks: Record<string, number> = {};
+    const t = performance.now();
     const store = await openLocalStore(run);
-    const runtime = await startLocal({ storage: store.storage, model: record.model });
-    state.offline = { record, store };
+    marks.storeMs = Math.round(performance.now() - t);
+    // The computer, from the cache and this browser's copy of the workspace; a computer that will not start is said, and the chat still runs.
+    const computerStatus: { booted: boolean; ms: number; files: number; error?: string; parts?: Record<string, number> } = { booted: false, ms: 0, files: 0 };
+    let computer: { env: WasmerEnv; workspace: Workspace } | undefined;
+    state.progress = "starting the computer from this browser's cache";
+    render();
+    const started = performance.now();
+    try {
+      const c = await bootComputer();
+      marks.bootMs = Math.round(performance.now() - started);
+      const saved = await loadWorkspace(run);
+      marks.loadMs = Math.round(performance.now() - started) - marks.bootMs;
+      const restored = await c.workspace.restore(saved);
+      marks.restoreMs = Math.round(performance.now() - started) - marks.bootMs - marks.loadMs;
+      computer = { env: c.env, workspace: c.workspace };
+      Object.assign(computerStatus, { booted: true, files: restored.files });
+    } catch (error) {
+      computerStatus.error = (error as Error).message;
+    }
+    computerStatus.ms = Math.round(performance.now() - started);
+    computerStatus.parts = marks;
+    const runtime = await startLocal({ storage: store.storage, model: record.model, ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
+    state.offline = { record, store, computer: computerStatus };
     state.runtime = runtime;
     state.environments = [];
-    state.files = [];
     state.mode = "offline";
     state.checkingOut = false;
     state.progress = "";
+    state.banner = computerStatus.error ? `the computer did not start in this browser: ${computerStatus.error}` : "";
+    await refreshFiles();
     await followConversation(runtime, runtime.root);
     render();
-    await startBrain(runtime, adopt);
+    if (new URLSearchParams(location.search).get("brain") !== "off") await startBrain(runtime, adopt);
   } catch (error) {
     state.mode = "lost";
     state.banner = `could not open this browser's copy of the run: ${(error as Error).message}`;
@@ -904,6 +940,27 @@ void boot();
   },
   /** The brain swap, for checks: the model's phase, whether the chat input goes to the trained model's conversation, and what the page says. */
   brain: () => ({ phase: state.brain?.host.state().phase ?? null, swapped: state.brain?.conversation !== undefined && state.active === state.brain.conversation, conversation: state.active ? String(state.active.id) : null, status: state.brainStatus }),
+  /** The computer while checked out: whether it booted from the cache, how long that took, how many files came back from OPFS, why not. */
+  computer: () => state.offline?.computer ?? null,
+  /** Run a shell command on the page's computer (a check; the agent's own tools run through the Harness). */
+  exec: async (command: string) => {
+    const env = state.runtime?.env as WasmerEnv | undefined;
+    if (!env || !("sandbox" in env)) return { error: "no computer" };
+    let output = "";
+    const started = performance.now();
+    const r = await env.exec(command, { timeout: 60, onOutput: (text) => { output += text; } }, ctx);
+    return r.ok ? { exitCode: r.value.exitCode, output, ms: Math.round(performance.now() - started) } : { error: r.error.message, output };
+  },
+  /** Make the workspace's changes durable in this browser's copy now. */
+  flush: async () => { await state.runtime?.flush?.(); },
+  /** Write a file in the workspace and make it durable in this browser's copy now. */
+  writeFile: async (path: string, text: string) => {
+    const env = state.runtime?.env as WasmerEnv | undefined;
+    if (!env || !("sandbox" in env)) return false;
+    await env.sandbox.fs.writeFile(`/workspace/${path}`, text);
+    await state.runtime!.flush?.();
+    return true;
+  },
   /** The tasks the Harness has, with their state (what is running, what failed), for checks. */
   tasks: async () => (state.runtime ? (await state.runtime.harness.inspect(ctx)).tasks.map((t) => ({ kind: t.record.kind, state: t.state.kind })) : null),
   /** The run checked out to this browser: the record, the head of the local store, whether the page is cross-origin isolated, and the page's own words. */

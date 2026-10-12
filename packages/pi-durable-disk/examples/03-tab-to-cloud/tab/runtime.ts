@@ -28,6 +28,8 @@ export interface TabRuntime<E extends RuntimeEnv = RuntimeEnv> {
   readonly syncs: { changes: number; ms: number }[];
   /** Stop the periodic write-through (`liveFlushMs`) and wait for the one in flight: nothing syncs after this but a tool's own end. */
   stopLive(): Promise<void>;
+  /** Offline only: write the workspace's changes to this browser's copy now (after a tool they go by themselves). */
+  flush?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -169,13 +171,33 @@ function noWorkspace(): Workspace {
 }
 
 /**
- * The agent from a store in this browser, no pipe: pi's Harness over `storage` (the OPFS copy of the run's store), no computer, no write-through, and a cloud model that is
- * out of reach (its calls fail at once, by name). The trained model is added to `models` by the page (brain.ts) once it is loaded. `close` closes the storage.
+ * The agent from a store in this browser, no pipe, no cloud model (its calls fail at once, by name). Its hands are `computer` (the page's Wasmer sandbox and its workspace) when
+ * there is one, else nothing: every tool call fails saying there is no computer. After a tool the workspace's changes go to `persist` (the page's OPFS copy), not to a pipe; `flush`
+ * does the same on demand. The trained model is added to `models` by the page (brain.ts) once it is loaded. `close` closes the storage.
  */
-export async function startLocal(opts: { storage: Storage; model: string; settings?: HarnessSettings }): Promise<TabRuntime> {
-  const env = noComputer();
+export async function startLocal(opts: {
+  storage: Storage;
+  model: string;
+  settings?: HarnessSettings;
+  computer?: { env: RuntimeEnv; workspace: Workspace };
+  persist?: (changes: Awaited<ReturnType<Workspace["changes"]>>["changes"]) => Promise<void>;
+}): Promise<TabRuntime> {
+  const env = opts.computer?.env ?? noComputer();
+  const workspace = opts.computer?.workspace ?? noWorkspace();
   const models = agentModels({ baseUrl: "https://offline.invalid/v1", modelId: opts.model, fetch: (() => Promise.reject(new Error("the run is checked out to this browser: the cloud model is out of reach"))) as typeof globalThis.fetch });
-  const harness = await Harness.open(opts.storage, { registry: agentRegistry(async () => undefined, { switchTool: false, environments: [] }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
+  // One flush at a time: each compares against the baseline the previous one established, as startTab's write-through does.
+  let line: Promise<void> = Promise.resolve();
+  const flush = (): Promise<void> => {
+    if (!opts.computer || !opts.persist) return Promise.resolve();
+    const next = line.then(async () => {
+      const { changes, scanned } = await workspace.changes();
+      if (changes.length > 0) await opts.persist!(changes);
+      workspace.accept(scanned);
+    });
+    line = next.catch(() => undefined);
+    return next;
+  };
+  const harness = await Harness.open(opts.storage, { registry: agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [] }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   await harness.resume();
   const root = await harness.root(ctx, { agent: rootAgent(opts.model) });
   return {
@@ -183,12 +205,14 @@ export async function startLocal(opts: { storage: Storage; model: string; settin
     root,
     models,
     env,
-    workspace: noWorkspace(),
+    workspace,
     restored: { files: 0, bytes: 0, skipped: [] },
     syncs: [],
+    flush,
     async stopLive() {},
     async close() {
       await harness.close(ctx).catch(() => undefined);
+      await opts.computer?.env.cleanup(ctx).catch(() => undefined);
     },
   };
 }

@@ -59,6 +59,10 @@ const result = await build({
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
 // What a checkout puts in the cache besides the run's page and its model: every built file the page loads (offline.ts reads this list). The computer's package is left out: it is not started offline.
 const built = (dir, base = "") => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "pkgs" ? [] : built(join(dir, e.name), `${base}/${e.name}`)) : [`${base}/${e.name}`]));
-writeFileSync(join(out, "offline.json"), JSON.stringify({ files: built(out).filter((f) => !/\.map$/.test(f) && !["/offline.json", "/sw.js", "/index.html"].includes(f)).sort() }));
+// The in-browser computer: the Wasmer SDK's files (the server serves the package at /wasmer/) and the computer's package, so the sandbox boots with no network.
+const sdk = join(here, "..", "node_modules", "@wasmer", "sdk");
+const sdkFiles = ["dist", "pkg"].flatMap((d) => (existsSync(join(sdk, d)) ? built(join(sdk, d), `/wasmer/${d}`) : []));
+const computer = existsSync(join(out, "pkgs", "edgejs.webc")) ? ["/pkgs/edgejs.webc"] : [];
+writeFileSync(join(out, "offline.json"), JSON.stringify({ files: [...built(out).filter((f) => !/\.map$/.test(f) && !["/offline.json", "/sw.js", "/index.html"].includes(f)), ...sdkFiles.filter((f) => !/\.(map|d\.ts|md)$|LICENSE$/.test(f)), ...computer].sort() }));
 const bytes = Object.values(result.metafile.outputs).find((o) => o.entryPoint)?.bytes ?? 0;
 console.log(`main.js: ${bytes} bytes`);
