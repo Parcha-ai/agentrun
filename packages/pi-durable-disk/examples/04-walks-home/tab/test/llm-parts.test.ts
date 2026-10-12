@@ -87,6 +87,19 @@ test('a cached part with the wrong size, the wrong bytes, or that cannot be read
   }
 });
 
+test('a download of the wrong size is not handed to the engine, even when the manifest gives no sha256: fetched once more, then a clear error', async () => {
+  const s = setup();
+  const sizes = [{ bytes: s.p1.length }, { bytes: s.p2.length }]; // bytes only
+  s.cache.set(s.key(BASE), new Blob([s.p1 as BlobPart]));
+  let fetches = 0;
+  (s.w.cacheManager as { download: unknown }).download = async (url: string) => { fetches++; s.log.downloads.push(url.split('/').pop()!); s.cache.set(s.key(url), new Blob([s.p2.subarray(0, 100) as BlobPart])); }; // a short replacement, every time
+  const status: string[] = [];
+  await assert.rejects(s.llm.loadUrl!(BASE, { threads: 1, parts: sizes, onStatus: (t) => status.push(t) }), /robot-00002-of-00002\.gguf: still wrong/);
+  assert.equal(fetches, 2, 'fetched once more, then the error');
+  assert.ok(status.some((t) => /downloaded 100 bytes, 3000 expected/.test(t)), status.join(' | '));
+  assert.equal(s.log.loaded.length, 0, 'the engine never saw it');
+});
+
 test('a part checked once is not hashed again on the next load', async () => {
   const store = new Map<string, string>();
   (globalThis as { localStorage?: unknown }).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };

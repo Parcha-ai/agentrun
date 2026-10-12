@@ -69,6 +69,12 @@ async function verifiedPart(w: Wllama, url: string, want: { bytes: number; sha25
       if (!blob) throw new Error(`${name}: not in the cache after its download`);
       partTimes.downloadMs += performance.now() - started;
       partTimes.downloaded += blob.size;
+      // the fresh copy is held to the manifest too (a manifest may give bytes without a sha256): a short one is fetched once more, then fails by name
+      if (want && blob.size !== want.bytes) {
+        o.onStatus(`${name}: downloaded ${blob.size} bytes, ${want.bytes} expected`);
+        await cm.delete(key);
+        continue;
+      }
     }
     o.onProgress(blob.size);
     const stamp = `${want?.sha256 ?? ''}:${blob.size}:${(blob as File).lastModified ?? 0}`;
