@@ -7,6 +7,7 @@ import type { Note, ShowState } from "../types.ts";
 import { apiUrl } from "./api-base.ts";
 import { esc } from "./dom.ts";
 import type { Feed } from "./feed.ts";
+import { RunScope } from "./run-scope.ts";
 import { SkillsPoller } from "./skills-poller.ts";
 import { TabLink, stageKeys, tabEventsFrom } from "./tab-link.ts";
 
@@ -79,14 +80,16 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
     emit: (e) => feed.fold(e),
     now: () => feed.captionNow(),
   });
-  let generation = -1;
+  // A new run (a retake, a reset, a new feed) starts all of this over, at the moment the feed says so: a word from the tab right after belongs to the new run.
+  const scope = new RunScope();
+  scope.onReset(() => {
+    poller.reset();
+    landing.reset();
+    said.clear();
+  });
+  feed.onChange(() => scope.sync(feed.generation));
   setInterval(() => {
-    if (generation !== feed.generation) {
-      generation = feed.generation;
-      poller.reset();
-      landing.reset();
-      said.clear();
-    }
+    scope.sync(feed.generation);
     void poller.tick().catch(() => undefined);
   }, 1000);
   // With no word from the tab about skills going in, they land in the robot one after another once every thread has finished and the run is home.
