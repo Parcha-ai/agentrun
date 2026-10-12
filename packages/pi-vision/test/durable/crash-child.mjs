@@ -32,10 +32,14 @@ class CutEnv extends NodeExecutionEnv {
     if (this.#scratch++ === 0) await cutHere("copy");
     return super.createTempDir(prefix, context);
   }
-  /** A derivation is whole once its temporary file is renamed into the derive directory. */
+  /** A derivation is whole once its temporary file is renamed into the derive directory; each one kept is logged with
+   *  the process that kept it, so the parent sees what a rerun made again. */
   async renameFile(from, to, context) {
-    if (path.resolve(this.cwd, to).startsWith(path.join(CWD, DERIVED) + path.sep)) await cutHere("derive");
-    return super.renameFile(from, to, context);
+    const kept = path.resolve(this.cwd, to).startsWith(path.join(CWD, DERIVED) + path.sep);
+    if (kept) await cutHere("derive");
+    const renamed = await super.renameFile(from, to, context);
+    if (kept && renamed.ok) fs.appendFileSync(path.join(OUT, "kept.jsonl"), `${JSON.stringify({ by: MODE, name: path.basename(to) })}\n`);
+    return renamed;
   }
 }
 

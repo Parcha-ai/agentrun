@@ -59,6 +59,8 @@ async function run(cut, { source = SOURCE, between = async () => {} } = {}) {
     filings: lines(path.join(paths.OUT, "calls.jsonl")).map((call) => call.key),
     receipts: fs.existsSync(path.join(paths.OUT, "vision")) ? fs.readdirSync(path.join(paths.OUT, "vision")).sort() : [],
     derived: derivedNow(),
+    /** The derivations each process finished, by name: `first` is the process that was cut. */
+    kept: Object.fromEntries(["first", "second"].map((by) => [by, lines(path.join(paths.OUT, "kept.jsonl")).filter((k) => k.by === by).map((k) => k.name).sort()])),
   };
 }
 
@@ -74,6 +76,7 @@ test("an uncut run renders the page once, has the eyes answer once, files one re
   assert.match(clean.results[0].content.at(-1).text, /a page of \d+ base64 characters$/, "the eyes' answer is in the result");
   assert.deepEqual([clean.asks, clean.filings.length, clean.receipts.length], [1, 1, 1]);
   assert.ok(clean.derived.length >= 2 && clean.derived.every((name) => name.startsWith(PREFIX(SOURCE)) && !name.endsWith(".tmp")), "the document and its rendered page are kept, named by the source's hash");
+  assert.deepEqual(clean.kept.second, clean.derived, "each is made and kept once");
   assert.equal(clean.results[0].details.media.sha256, sha(SOURCE));
   assert.ok(readUsd(clean) > 0);
   assert.equal(readUsd(clean), clean.results[0].usage.cost.total);
@@ -86,6 +89,7 @@ test("cut during a derivation: the half-written file is ignored, it is derived a
   assert.deepEqual(seen(cut), seen(clean), "the model sees the same result");
   assert.equal(cut.asks, 1, "0 extra eyes requests");
   assert.deepEqual(whole(cut.derived), clean.derived, "the same derivations, named by the source's hash and their parameters");
+  assert.deepEqual(cut.kept, { first: [], second: clean.derived }, "each made and kept once, by the rerun");
   assert.deepEqual(cut.derived.filter((name) => name.endsWith(".tmp")), cut.atCut.derived, "the cut attempt's temporary file is left as it was and never used");
   assert.deepEqual([cut.filings.length, cut.receipts], [1, clean.receipts]);
   assert.equal(readUsd(cut), readUsd(clean), "priced once");
@@ -100,6 +104,7 @@ test("the source changes between hash and copy: the rerun names its derivations 
   assert.deepEqual(seen(cut), seen(changed), "and is what an uncut read of those bytes gives");
   assert.notDeepEqual(seen(cut), seen(clean));
   assert.deepEqual(cut.derived, changed.derived, "every derivation is named by the hash of the bytes it came from");
+  assert.deepEqual(cut.kept, { first: [], second: changed.derived });
   assert.ok(cut.derived.every((name) => name.startsWith(PREFIX(CHANGED))), "nothing is kept under the hash of the bytes the cut attempt hashed");
   assert.equal(cut.asks, 1, "0 extra eyes requests: the cut attempt never asked");
   assert.deepEqual(cut.receipts, changed.receipts);
@@ -115,6 +120,7 @@ test("cut during the receipt: the answer is a memo by then, so the rerun asks no
   assert.equal(cut.filings.length, 2, "the sink is called again");
   assert.equal(new Set(cut.filings).size, 1, "with the same key");
   assert.deepEqual(whole(cut.receipts), clean.receipts, "one receipt");
-  assert.deepEqual(cut.derived, clean.derived, "the kept page is used again, not rendered again");
+  assert.deepEqual(cut.derived, clean.derived);
+  assert.deepEqual(cut.kept, { first: clean.derived, second: [] }, "the rerun makes no derivation again: it reads the document and the page the cut process kept");
   assert.equal(readUsd(cut), readUsd(clean), "the look is priced once, at the commit of its result");
 });
