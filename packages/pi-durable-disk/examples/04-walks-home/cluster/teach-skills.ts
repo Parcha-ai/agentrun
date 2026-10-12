@@ -26,6 +26,8 @@ import {
   type EntryRecord,
   type Extension,
   type TaskId,
+  type ToolExecutionApi,
+  type ToolExecutionResult,
   type Tx,
 } from "@earendil-works/pi-durable";
 
@@ -77,7 +79,29 @@ export interface TeachSkillsOptions {
    * a throw is reported there too, and the threads' results are kept.
    */
   readonly assemble?: (threads: readonly ThreadResult[], context: Context) => Promise<{ readonly home: readonly string[] }>;
+  /** Code mode: the parent plans the skills and each thread writes and runs its own training code. Absent: train_skill. */
+  readonly plan?: PlanOptions;
 }
+
+/**
+ * Code mode (CODE-MODE.md). The engine only forks, boxes, waits and folds; what a thread does is the host's text.
+ * teach_skills then takes the model's plan, `[{ name, brief }]`, and each thread is an agent with the host's extensions
+ * (its coding tools, run on the thread's box through env(target)) and the host's instructions (the SOP), given its brief.
+ */
+export interface PlanOptions {
+  /** What each thread selects: the host's coding tools (read, write, edit, bash) on its box, or anything else. */
+  readonly threadExtensions: readonly Extension[];
+  /** The task shape every thread follows (the training SOP), set as the thread's agent instructions. */
+  readonly threadInstructions: string;
+  /** At most this many threads in one call (default 8, one per GPU). */
+  readonly maxThreads?: number;
+  /** A thread still working this long after it got its box is stopped and folds as timed out (default: no limit). */
+  readonly threadDeadlineMs?: number;
+  /** The thread's outcome from its artifacts (the trainer's skill.json, mirrored), never from its words. Absent: "reported". */
+  readonly status?: (thread: { readonly skill: string; readonly boxId: string }, context: Context) => Promise<ThreadStatus | undefined>;
+}
+
+export type ThreadStatus = { readonly status: ThreadResult["status"]; readonly checkpoint?: number; readonly seconds?: number };
 
 /** What one thread came back with; also each Thread task's result. */
 export type ThreadResult = {
@@ -85,11 +109,13 @@ export type ThreadResult = {
   readonly gpu: number;
   readonly conversationId: number;
   readonly boxId: string | null;
-  readonly status: "passed" | "never-passed" | "bad-body" | "error" | "unanswered" | "aborted";
+  readonly status: "passed" | "never-passed" | "bad-body" | "error" | "unanswered" | "aborted" | "timed-out" | "reported";
   readonly checkpoint?: number;
   readonly seconds?: number;
   /** The thread's own closing words. */
   readonly summary: string;
+  /** Why the outcome could not be read from the thread's artifacts (code mode's status hook threw). */
+  readonly outcomeError?: string;
 };
 
 export type TrainProgress = {
@@ -107,21 +133,24 @@ export type TrainProgress = {
 
 // Task, conversation and entry IDs are numbers in pi-durable's store.
 type ThreadRef = { taskId: number; conversationId: number; skill: string; gpu: number };
-type TeachInput = { parent: number; at: number; skills: string[] };
+type TeachInput = { parent: number; at: number; skills: string[]; briefs?: string[] };
 type TeachState = { phase: "fork" } | { phase: "fold"; threads: ThreadRef[] };
 /** What came home: the skills the assemble hook brought home, or why it could not. */
 export type HomeResult = { skills: string[] } | { error: string };
 type TeachResult = { threads: ThreadResult[]; home?: HomeResult };
-type ThreadInput = { skill: string; gpu: number; of: number };
+type ThreadInput = { skill: string; gpu: number; of: number; brief?: string };
 type ThreadState =
   | { phase: "acquire" }
-  | { phase: "run"; conversationId: number; boxId: string }
+  | { phase: "run"; conversationId: number; boxId: string; deadlineAt?: number }
   | { phase: "release"; conversationId: number; boxId: string; result: ThreadResult };
 
 export const THREAD_INSTRUCTIONS =
   "You are one thread of a teaching run on a GPU cluster, with one GPU of your own and one skill to teach. Do only that: train your skill once, then say in one sentence how it went. Never ask a question.";
 
 export function threadPrompt(t: ThreadInput): string {
+  if (t.brief !== undefined) {
+    return `You are thread ${t.gpu} of ${t.of}, with GPU ${t.gpu} of your own. Your skill: ${t.skill}.\n\nBrief: ${t.brief}\n\nFollow your instructions. When you are done, reply with one short paragraph: what you trained, whether it passed its test, at which checkpoint, and how long it took.`;
+  }
   return `You are thread ${t.gpu} of ${t.of}, on GPU ${t.gpu}. Teach the robot to ${t.skill}: call train_skill once with skill "${t.skill}". When it returns, say in one sentence whether ${t.skill} passed, at which checkpoint, and how many seconds it took.`;
 }
 
@@ -234,29 +263,64 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
           const child = (await tx.scanConversations({ ownerTaskId: task.id }, 1)).items[0];
           if (child === undefined) throw new Error(`thread ${task.id} has no conversation`);
           (await tx.doc(RobotBox, child.id)).boxId = boxId;
-          return { status: "running", checkpoint: { phase: "run", conversationId: child.id, boxId } };
+          // The deadline is an instant in the checkpoint, so a restart keeps it rather than starting the clock again.
+          const deadlineAt = options.plan?.threadDeadlineMs !== undefined ? Date.now() + options.plan.threadDeadlineMs : undefined;
+          return { status: "running", checkpoint: { phase: "run", conversationId: child.id, boxId, ...(deadlineAt !== undefined ? { deadlineAt } : {}) } };
         }, context);
       },
       run: async (task, runtime, context) => {
-        const { conversationId, boxId } = task.state.checkpoint;
+        const { conversationId, boxId, deadlineAt } = task.state.checkpoint;
         const sync = options.artifacts?.({ boxId, skill: task.input.skill });
         await mirrors.get(task.id)?.stop(); // a mirror an earlier invocation of this phase left behind
         if (sync !== undefined) mirrors.set(task.id, sync);
         let settled;
+        let timedOut = false;
         try {
           await sync?.start();
           const handle = await runtime.conversation(conversationId as ConversationId, context);
           if (handle === undefined) throw new Error(`thread conversation ${conversationId} is gone`);
           const submission = await handle.submit({ type: "input", content: threadPrompt(task.input), requestId: `thread:${task.id}` }, context);
-          settled = await submission.wait(context);
+          if (deadlineAt === undefined) {
+            settled = await submission.wait(context);
+          } else {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), Math.max(0, deadlineAt - Date.now()))));
+            let first;
+            try {
+              first = await Promise.race([submission.wait(context), late]);
+            } finally {
+              clearTimeout(timer); // a failed wait must not leave the deadline's timer holding the process
+            }
+            if (first === "late") {
+              // Past the deadline: stop the thread's work (its calls and the run it was waiting on), keep what it wrote.
+              timedOut = true;
+              await handle.abort(context);
+              settled = await submission.wait(context);
+            } else {
+              settled = first;
+            }
+          }
           await sync?.flush(context);
         } finally {
           // Errors and cancellation too: no mirror keeps copying for a thread that is not running.
           if (mirrors.get(task.id) === sync) mirrors.delete(task.id);
           await sync?.stop();
         }
+        // In code mode the outcome comes from the thread's artifacts (after the flush), read outside the commit.
+        let artifactStatus: ThreadStatus | undefined;
+        let outcomeError: string | undefined;
+        if (options.plan?.status) {
+          try {
+            artifactStatus = await options.plan.status({ skill: task.input.skill, boxId }, context);
+          } catch (error) {
+            if (context.abortSignal?.aborted) throw error;
+            outcomeError = error instanceof Error ? error.message : String(error); // said in the result, not swallowed
+          }
+        }
         await runtime.commit(async (tx) => {
-          const result = await readThreadResult(tx, task.input, conversationId as ConversationId, boxId, settled.status === "done" ? settled.answer : undefined);
+          let result = await readThreadResult(tx, task.input, conversationId as ConversationId, boxId, settled.status === "done" ? settled.answer : undefined);
+          if (options.plan !== undefined) result = codeResult(result, artifactStatus, timedOut, options.plan.threadDeadlineMs);
+          if (outcomeError !== undefined) result = { ...result, outcomeError };
           return { status: "running", checkpoint: { phase: "release", conversationId, boxId, result } };
         }, context);
       },
@@ -293,9 +357,16 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
           const of = task.input.skills.length;
           for (const [i, skill] of task.input.skills.entries()) {
             const gpu = i + 1;
-            const taskId = await tx.createTask(Thread, { skill, gpu, of }, { ownership: { kind: "task", taskId: task.id } });
+            const brief = task.input.briefs?.[i];
+            const taskId = await tx.createTask(Thread, { skill, gpu, of, ...(brief !== undefined ? { brief } : {}) }, { ownership: { kind: "task", taskId: task.id } });
             const child = await tx.forkConversation(task.input.parent as ConversationId, task.input.at as EntryId, { ownership: { kind: "task", taskId } });
-            await configure(tx, child.id, { extensions: [thread], tools: null, instructions: THREAD_INSTRUCTIONS, cwd });
+            const plan = options.plan;
+            await configure(tx, child.id, {
+              extensions: plan ? [...plan.threadExtensions] : [thread],
+              tools: null,
+              instructions: plan ? plan.threadInstructions : THREAD_INSTRUCTIONS,
+              cwd,
+            });
             Object.assign(await tx.doc(RobotBox, child.id), { skill, gpu, of, boxId: null, teach: task.id });
             threads.push({ taskId, conversationId: child.id, skill, gpu });
           }
@@ -332,6 +403,56 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
   });
 
   // ---- the parent's tools ---------------------------------------------------------------------------------------------
+  const maxThreads = options.plan?.maxThreads ?? 8;
+  const planTool = defineTool({
+    name: "teach_skills",
+    description:
+      `Teach the robot new skills on the GPU cluster. Plan the skills from what the user asked: at most ${maxThreads}, each distinct and testable on THIS body. Give each a short kebab-case name and a brief: what success looks like for this body, the metric to check, and any limits. Each skill gets its own thread on its own GPU, which writes and runs its own training code. This waits until every thread is done, passed or not, and returns each thread's result.`,
+    parameters: Type.Object({
+      skills: Type.Array(
+        Type.Object({
+          name: Type.String({ pattern: "^[a-z][a-z0-9-]{0,23}$", description: "kebab-case, at most 24 characters" }),
+          brief: Type.String({ minLength: 10, maxLength: 1500, description: "what success looks like for this body, the metric to check, limits" }),
+        }),
+        { minItems: 1, maxItems: maxThreads },
+      ),
+    }),
+    replay: "safe",
+    execute: async (args, api, context) => {
+      const seen = new Set<string>();
+      const plan = args.skills.filter((s) => (seen.has(s.name) ? false : (seen.add(s.name), true))).slice(0, maxThreads);
+      return runTeach(api, context, plan.map((s) => s.name), plan.map((s) => s.brief));
+    },
+  });
+
+  async function runTeach(api: ToolExecutionApi, context: Context, skills: string[], briefs?: string[]): Promise<ToolExecutionResult> {
+    const teach = await api.commit(async (tx) => {
+      const at = await forkPoint(tx, api.conversationId); // table reads before any write in this commit
+      const call = await tx.doc(TeachCall, api.taskId);
+      if (call.teach !== null) return call.teach as TaskId<TeachResult>;
+      const id = await tx.createTask(TeachSkills, { parent: api.conversationId, at, skills, ...(briefs ? { briefs } : {}) }, { ownership: { kind: "task", taskId: api.taskId } });
+      call.teach = id;
+      return id;
+    }, context);
+    // The threads, for a UI that attaches to them while they run (they are also in the store as the root's children).
+    for (let n = 0; ; n++) {
+      const record = await api.getTask(teach, context);
+      const state = record?.state as { status: string; checkpoint?: TeachState } | undefined;
+      if (state?.checkpoint?.phase === "fold" || state?.status === "terminal") {
+        if (state.checkpoint?.phase === "fold") await api.details({ teach, threads: state.checkpoint.threads }, context);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(200, 20 * (n + 1))));
+    }
+    const settled = await api.waitForTask(teach, context);
+    const outcome = settled.state.outcome;
+    if (outcome.status !== "completed") throw new Error(`The teaching run ${outcome.status === "failed" ? `failed: ${outcome.error.message}` : "was stopped"}.`);
+    const { threads, home } = outcome.result;
+    const details: { [key: string]: JsonValue } = { teach, threads };
+    if (home !== undefined) details.home = home;
+    return { content: [{ type: "text" as const, text: foldText(threads, home) }], details };
+  }
+
   const teachTool = defineTool({
     name: "teach_skills",
     description:
@@ -340,34 +461,7 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
       skills: Type.Optional(Type.Array(Type.Union(SKILLS.map((s) => Type.Literal(s))), { minItems: 1, maxItems: SKILLS.length, uniqueItems: true, description: "Only these skills. Omit to teach all of them." })),
     }),
     replay: "safe",
-    execute: async (args, api, context) => {
-      const teach = await api.commit(async (tx) => {
-        const at = await forkPoint(tx, api.conversationId); // table reads before any write in this commit
-        const call = await tx.doc(TeachCall, api.taskId);
-        if (call.teach !== null) return call.teach as TaskId<TeachResult>;
-        const skills = skillsToTeach(args.skills, options.skills);
-        const id = await tx.createTask(TeachSkills, { parent: api.conversationId, at, skills }, { ownership: { kind: "task", taskId: api.taskId } });
-        call.teach = id;
-        return id;
-      }, context);
-      // The threads, for a UI that attaches to them while they run (they are also in the store as the root's children).
-      for (let n = 0; ; n++) {
-        const record = await api.getTask(teach, context);
-        const state = record?.state as { status: string; checkpoint?: TeachState } | undefined;
-        if (state?.checkpoint?.phase === "fold" || state?.status === "terminal") {
-          if (state.checkpoint?.phase === "fold") await api.details({ teach, threads: state.checkpoint.threads }, context);
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, Math.min(200, 20 * (n + 1))));
-      }
-      const settled = await api.waitForTask(teach, context);
-      const outcome = settled.state.outcome;
-      if (outcome.status !== "completed") throw new Error(`The teaching run ${outcome.status === "failed" ? `failed: ${outcome.error.message}` : "was stopped"}.`);
-      const { threads, home } = outcome.result;
-      const details: { [key: string]: JsonValue } = { teach, threads };
-      if (home !== undefined) details.home = home;
-      return { content: [{ type: "text", text: foldText(threads, home) }], details };
-    },
+    execute: async (args, api, context) => runTeach(api, context, skillsToTeach(args.skills, options.skills)),
   });
 
   const readThread = defineTool({
@@ -387,7 +481,7 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
     },
   });
 
-  const teach: Extension = defineExtension({ name: "robot-teach", tools: [teachTool, readThread], tasks: [TeachSkills, Thread] });
+  const teach: Extension = defineExtension({ name: "robot-teach", tools: [options.plan ? planTool : teachTool, readThread], tasks: [TeachSkills, Thread] });
   return { teach, thread };
 }
 
@@ -413,6 +507,17 @@ async function forkPoint(tx: Tx, conversationId: ConversationId): Promise<EntryI
     cursor = page.next;
   }
   throw new Error("teach_skills found no entry to fork at");
+}
+
+/** Code mode's result: the status the thread's artifacts show (or "timed out" / "reported"), with the thread's own words. */
+function codeResult(r: ThreadResult, from: ThreadStatus | undefined, timedOut: boolean, deadlineMs: number | undefined): ThreadResult {
+  const facts = from ? { ...(from.checkpoint !== undefined ? { checkpoint: from.checkpoint } : {}), ...(from.seconds !== undefined ? { seconds: from.seconds } : {}) } : {};
+  const { checkpoint: _c, seconds: _s, ...rest } = r;
+  if (timedOut && from?.status !== "passed") {
+    return { ...rest, ...facts, status: "timed-out", summary: r.summary || `Stopped after ${Math.round((deadlineMs ?? 0) / 60000)} min without a passing result.` };
+  }
+  if (from !== undefined) return { ...rest, ...facts, status: from.status };
+  return { ...rest, status: r.status === "unanswered" ? "unanswered" : "reported" };
 }
 
 function isThreadResult(value: unknown): value is ThreadResult {
@@ -454,7 +559,7 @@ export function foldText(threads: readonly ThreadResult[], home?: HomeResult): s
   const passed = threads.filter((t) => t.status === "passed").length;
   const lines = threads.map((t) => {
     const how = t.status === "passed" ? `passed${t.checkpoint === undefined ? "" : ` at checkpoint ${t.checkpoint}`}${t.seconds === undefined ? "" : ` in ${t.seconds} s`}` : t.status.replace("-", " ");
-    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}`;
+    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}${t.outcomeError ? ` (Its outcome could not be read: ${t.outcomeError}.)` : ""}`;
   });
   const homeLine =
     home === undefined ? [] : "error" in home ? [`Bringing the skills home failed: ${home.error}`] : [`Home: ${home.skills.length} skill${home.skills.length === 1 ? "" : "s"}${home.skills.length ? ` (${home.skills.join(", ")})` : ""}.`];
