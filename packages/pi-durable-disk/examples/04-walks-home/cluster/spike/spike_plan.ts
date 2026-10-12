@@ -57,8 +57,9 @@ for (const b of existsSync(join(dir, "boxes")) ? readdirSync(join(dir, "boxes"))
   for (const line of readFileSync(log, "utf8").trim().split("\n")) {
     const command = JSON.parse(line) as unknown;
     if (typeof command !== "string") continue;
-    const skill = /^pi-run ([\w-]+) -- train-skill/.exec(command)?.[1];
-    const step = /--compile-only/.test(command) ? "compile" : /--check /.test(command) ? "check" : /--steps (\d+M)/.exec(command)?.[1];
+    const copied = /^cp -r \/opt\/pda\/train\/skills\/([\w-]+)/.exec(command)?.[1];
+    const skill = copied ?? /^pi-run ([\w-]+) -- train-skill/.exec(command)?.[1];
+    const step = copied ? "copy" : /--compile-only/.test(command) ? "compile" : /--check /.test(command) ? "check" : /--steps (\d+M)/.exec(command)?.[1];
     if (!skill || !step) continue;
     const steps = (ladder[skill] ??= []);
     if (steps[steps.length - 1] !== step) steps.push(step);
@@ -71,8 +72,9 @@ const sameThreads = (l: Listed[]) =>
 
 const checks: Record<string, boolean> = {
   the_plan_forked_three_threads: threads.length === 3 && children.length === 3,
-  // Every thread's own tool calls are in its transcript: it wrote its reward, then ran training through bash.
-  each_thread_wrote_and_ran_its_own_code: children.every((c) => c.tools[0] === "write" && c.tools.some((t) => t.startsWith("bash"))),
+  // Every thread's own tool calls are in its transcript: it copied the library's worked skill, edited its test, then ran
+  // training through bash.
+  each_thread_copied_edited_and_ran_its_skill: children.every((c) => c.tools[0]?.startsWith("bash") && c.tools.includes("edit") && c.tools.filter((t) => t.startsWith("bash")).length >= 3),
   each_child_links_to_parent_and_owner: children.every((c) => c.parent !== undefined && c.owner !== undefined),
   no_thread_gets_a_second_box: (() => {
     const creates = pool.filter((p) => p.event === "pool.create").map((p) => p.threadId);
@@ -88,9 +90,10 @@ if (kill && !a["status-throws"]) {
   checks.threads_of_mid_run = mid !== undefined && sameThreads(mid) && mid.some((t) => !t.settled && (t.status === "queued" || t.status === "running"));
 }
 if (!deadline) {
-  // TRAIN_SOP's ladder: compile, 12M; 40M only when the trainer said the try was still changing; --check a pass.
+  // TRAIN_SOP's ladder: copy the worked skill, compile, 12M; 40M only when the trainer said the try was still changing;
+  // --check a pass.
   checks.the_threads_follow_the_sop_ladder =
-    ladder.walk?.join() === "compile,12M,check" && ladder.spin?.join() === "compile,12M,40M,check" && ladder.wave?.join() === "compile,12M,40M";
+    ladder.walk?.join() === "copy,compile,12M,check" && ladder.spin?.join() === "copy,compile,12M,40M,check" && ladder.wave?.join() === "copy,compile,12M,40M";
 }
 if (a["status-throws"]) {
   // The outcome hook failed for every thread: the result says so (it is not silently "reported"), and every box came back.

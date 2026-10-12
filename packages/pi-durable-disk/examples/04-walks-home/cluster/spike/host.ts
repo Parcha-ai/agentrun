@@ -22,7 +22,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { TRAIN_SOP } from "../sop.ts";
 import { RobotBox, SKILLS, teachSkills, threadsOf, type TrainProgress } from "../teach-skills.ts";
-import { FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
+import { EXAMPLES, FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
 const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false } } });
 const dir = a.dir!;
@@ -69,13 +69,20 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
   const after = msgs.slice(u + 1);
   const results = after.filter((m) => m.role === "toolResult") as { role: string; toolName?: string; isError?: boolean; content?: unknown }[];
   const texts = results.map((r) => textOf(r));
-  // TRAIN_SOP's steps with D2's library: write the skill dir, compile, train at 12M, read why a try did not pass, train
+  // TRAIN_SOP's steps with D2's library: copy the worked skill (or write a new one), compile, train at 12M, read why a try did not pass, train
   // at 40M if it was still changing, --check a pass, read the trainer's skill.json, report.
   const run = `pi-run ${skill} -- train-skill --skill-dir /workspace/skills/${skill} --body /workspace/robot --out /workspace/runs/${skill} --init-from ''`;
   const bash = (command: string) => toolUse("bash", { command });
-  const writes = results.filter((r) => r.toolName === "write").length;
-  if (writes === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
-  if (writes === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });
+  const setUp = results.filter((r) => r.toolName === "write" || r.toolName === "edit").length;
+  if (EXAMPLES.includes(skill)) {
+    // One of the library's worked skills: copy it, read its test, change only the target the brief names.
+    if (!texts.some((t) => /def test\(sim\)/.test(t)) && results.length === 0) return bash(`cp -r /opt/pda/train/skills/${skill} skills/${skill}`);
+    if (!texts.some((t) => /def test\(sim\)/.test(t))) return bash(`cat skills/${skill}/test.py`);
+    if (setUp === 0) return toolUse("edit", { path: `skills/${skill}/test.py`, edits: [{ oldText: '"target": ">= 1.0"', newText: '"target": ">= 1.2"' }] });
+  } else {
+    if (setUp === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
+    if (setUp === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });
+  }
   // A command the host's restart interrupted is run again (pi-run stops the old one on the box first).
   const last = results[results.length - 1];
   if (last?.toolName === "bash" && last.isError && /interrupt/i.test(textOf(last)) && results.length < 16) {

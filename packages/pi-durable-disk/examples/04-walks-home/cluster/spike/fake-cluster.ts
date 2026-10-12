@@ -18,6 +18,8 @@ type ExecReturn = ReturnType<NodeExecutionEnv["exec"]>;
 /** Checkpoints a skill needs before it passes (D2's measured seconds / ~7 s per checkpoint); wave never passes here. */
 export const PASS_AT: Record<string, number | null> = { walk: 3, sprint: 3, backwards: 6, "turn-left": 5, "turn-right": 5, spin: 6, "get-up": 6, wave: null };
 export const MAX_CHECKPOINTS = 8;
+/** D2's worked skills, as the image ships them in /opt/pda/train/skills/. */
+export const EXAMPLES = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"];
 
 function writeAtomic(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -116,7 +118,8 @@ export class FakeBoxEnv extends NodeExecutionEnv {
   }
   /**
    * The bash tool's commands, simulated: D2's `pi-run <skill> -- train-skill --skill-dir DIR --body DIR --out DIR
-   * [--compile-only | --check POLICY | --steps N]` runs the fake trainer, and `cat FILE` prints a file. Nothing else runs (no command from a
+   * [--compile-only | --check POLICY | --steps N]` runs the fake trainer, `cp -r /opt/pda/train/skills/<name> DIR` copies a
+   * worked skill, and `cat FILE` prints a file. Nothing else runs (no command from a
    * model ever executes on this machine).
    */
   private async shell(command: string, options: ExecArgs[1], context: Context): ExecReturn {
@@ -163,13 +166,25 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       const cap = steps ? Math.min(MAX_CHECKPOINTS, Math.ceil(Number(steps[1]) / 2.5)) : MAX_CHECKPOINTS;
       return this.train(["pi-run", t[1]!, "--", "train-skill", t[1]!, "--out", out], options, context, cap);
     }
+    // The library's worked skills (/opt/pda/train/skills/<name>/ in D2's image): `cp -r` one into the workspace.
+    const example = t[0] === "cp" && t[1] === "-r" && t.length === 4 ? /^\/opt\/pda\/train\/skills\/([\w-]+)\/?$/.exec(t[2]!)?.[1] : undefined;
+    if (example !== undefined) {
+      if (!EXAMPLES.includes(example)) {
+        say(`cp: cannot stat '${t[2]}': No such file or directory\n`);
+        return { ok: true, value: { exitCode: 1 } } as never;
+      }
+      const dest = this.local(t[3]!.startsWith("/") ? t[3]! : `/workspace/${t[3]}`);
+      writeAtomic(join(dest, "skill.json"), JSON.stringify({ name: example, label: example, command: 0, reward_scales: {}, env: {} }));
+      writeAtomic(join(dest, "test.py"), `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${example}", "value": 0, "unit": "", "target": ">= 1.0"}\n`);
+      return { ok: true, value: { exitCode: 0 } } as never;
+    }
     if (t[0] === "cat" && t.length === 2) {
       const r = await this.readTextFile(t[1]!, context);
       if (!r.ok) return { ok: true, value: { exitCode: 1 } } as never;
       say(r.value);
       return { ok: true, value: { exitCode: 0 } } as never;
     }
-    say(`fake box: only "pi-run <skill> -- train-skill ..." and "cat <file>" are simulated\n`);
+    say(`fake box: only "pi-run <skill> -- train-skill ...", "cp -r /opt/pda/train/skills/<name> <dir>" and "cat <file>" are simulated\n`);
     return { ok: true, value: { exitCode: 127 } } as never;
   }
   private async train(argv: string[], options: ExecArgs[1], context: Context, cap = MAX_CHECKPOINTS): ExecReturn {
