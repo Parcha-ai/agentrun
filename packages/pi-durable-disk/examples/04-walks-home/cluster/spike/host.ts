@@ -77,7 +77,7 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
   const example = EXAMPLES[skill];
   if (example !== undefined) {
     // One of the library's worked skills: its files are the skill. Copy them and train; nothing is written or edited.
-    if (results.length === 0) return bash(`cp -r /opt/pda/train/skills/${example} skills/${skill}`);
+    if (results.length === 0) return bash(`mkdir -p skills && cp -r /opt/pda/train/skills/${example} skills/${skill}`);
   } else {
     if (setUp === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
     if (setUp === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });

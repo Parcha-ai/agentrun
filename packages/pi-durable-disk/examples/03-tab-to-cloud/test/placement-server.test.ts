@@ -14,7 +14,7 @@ describe("placement by a typed question", () => {
   let model: Awaited<ReturnType<typeof modelStub>>;
   const events: { event: string; data: Record<string, unknown> }[] = [];
   const asked: { phase: string; message: string; current: string; environments: readonly string[] }[] = [];
-  let answer: (phase: "start" | "done") => string = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
+  let answer: (phase: "start" | "done", message: string) => string = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
   const placer: Placer = {
     homePrompt: "Say one short sentence: you are home.",
     // A check in code of what the work was for: here the run has no home/policy.json (the combine failed), so the result is not in place.
@@ -26,7 +26,7 @@ describe("placement by a typed question", () => {
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
       asked.push({ phase: query.phase, message: query.message, current: query.current, environments: query.environments });
-      const choice = answer(query.phase);
+      const choice = answer(query.phase, query.message);
       const decision: PlacementDecision = {
         id: `d-${asked.length}`,
         phase: query.phase,
@@ -61,6 +61,8 @@ describe("placement by a typed question", () => {
   /** The server said it queued this request (behind the move or the home wait): it has been taken in, so what it does next is observable without guessing a delay. */
   const queued = (requestId: string, runId: string) => events.some((e) => e.event === "placement.queued" && e.data.run === runId && e.data.requestId === requestId);
   const decisions = (seen: PipeFrame[]) => seen.filter((f) => f.t === "decision").length;
+  /** The message a decision placed: its id is the placer's own count (d-N, the Nth question asked), so it names its question. */
+  const placedMessage = (decision: PlacementDecision) => asked[Number(decision.id.slice(2)) - 1]!.message;
 
   it("places the run before the agent sees the message, delivers it there, and brings the run back when the turn ends", async () => {
     const { id, secret } = await local.server.createRun("placed");
@@ -163,7 +165,7 @@ describe("placement by a typed question", () => {
     const second = [...seen].reverse().find((f): f is Extract<PipeFrame, { t: "decision" }> => f.t === "decision")!;
     assert.equal(second.decision.phase, "start");
     assert.equal(second.decision.choice, REMOTE_LOCAL.id);
-    assert.equal(asked.at(-1)!.message, "teach it to run");
+    assert.equal(placedMessage(second.decision), "teach it to run");
     await until(() => homeFrames.some((f) => f.t === "drain"));
     assert.ok(homeFrames.findIndex((f) => f.t === "submit") < homeFrames.findIndex((f) => f.t === "drain"), "the closing line came before the browser was asked to hand the run over");
     const checkAt = events.findIndex((e) => e.event === "placement.home-check" && e.data.run === id);
@@ -190,29 +192,42 @@ describe("placement by a typed question", () => {
     const homeFrames: PipeFrame[] = [];
     const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => { homeFrames.push(f); if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId }); } });
     await home.ready;
-    const decisionsBefore = seen.filter((f) => f.t === "decision").length;
-    const askedBefore = asked.length;
+    // This run's placements are the decision frames its own page receives: the placer is asked for every run on the server.
+    const decisionsBefore = decisions(seen);
     page.send({ t: "submit", text: "teach it to run", requestId: "req-b" }); // during the move
     await until(() => queued("req-b", id));
     home.send({ t: "switched", switchId: runHere.switchId }); // the move is over; the home check starts (held open)
     await until(() => events.some((e) => e.event === "switch.done" && e.data.run === id));
     page.send({ t: "submit", text: "teach it to jump", requestId: "req-c" }); // after the move, during the home check
     await until(() => queued("req-c", id));
-    assert.equal(asked.length, askedBefore, "neither request is placed while the home check runs");
+    // Another run is placed meanwhile (a bystander whose answer is to stay where it is): it asks the placer too, as a run of an
+    // earlier test can (its turn on the GPU ends late on a loaded host), and that places none of this run's requests.
+    const bystander = await local.server.createRun("bystander");
+    const byTab: PipeClient = new PipeClient({ url: local.url, run: bystander.id, token: bystander.secret, tab: "a", mode: "write", onFrame: () => undefined });
+    await byTab.ready;
+    const bySeen: PipeFrame[] = [];
+    const byPage: PipeClient = new PipeClient({ url: local.url, run: bystander.id, token: bystander.secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => bySeen.push(f) });
+    await byPage.ready;
+    answer = (phase, message) => (message === "teach it to fetch" ? "tab" : phase === "start" ? REMOTE_LOCAL.id : "tab");
+    byPage.send({ t: "submit", text: "teach it to fetch", requestId: "req-x" });
+    await until(() => decisions(bySeen) === 1);
+    assert.equal(decisions(seen), decisionsBefore, "neither request is placed while the home check runs");
     release();
     homeGate = undefined;
     await until(() => homeFrames.some((f) => f.t === "submit"));
     page.send({ t: "submit", text: "teach it to climb", requestId: "req-d" }); // during the closing turn
     await until(() => queued("req-d", id));
-    assert.equal(asked.length, askedBefore, "nor during the closing turn");
-    assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore);
+    assert.equal(decisions(seen), decisionsBefore, "nor during the closing turn");
     home.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
-    await until(() => asked.length > askedBefore);
-    assert.equal(asked[askedBefore]!.message, "teach it to run", "the earlier queued request is placed first, in the order they came");
-    assert.ok(!asked.slice(askedBefore, askedBefore + 1).some((a) => a.message !== "teach it to run"));
+    await until(() => decisions(seen) > decisionsBefore);
+    const first = seen.filter((f): f is Extract<PipeFrame, { t: "decision" }> => f.t === "decision")[decisionsBefore]!.decision;
+    assert.equal(first.phase, "start");
+    assert.equal(placedMessage(first), "teach it to run", "the earlier queued request is placed first, in the order they came");
     tab.close();
     page.close();
     home.close();
+    byTab.close();
+    byPage.close();
   });
 
   it("closing the server while the closing turn is unfinished cancels the wait: no timer left, nothing replayed after shutdown", async () => {
@@ -237,13 +252,22 @@ describe("placement by a typed question", () => {
       await until(() => queued("req-b", id));
       home.send({ t: "switched", switchId: runHere.switchId });
       await until(() => homeFrames.some((f) => f.t === "submit"));
-      const decisionsBefore = events.filter((e) => e.event === "placement.decision").length;
+      const decisionsOf = (run: string) => events.filter((e) => e.event === "placement.decision" && e.data.run === run).length;
+      const decisionsBefore = decisionsOf(id);
       await closing.remove(); // the closing turn never ended
       removed = true;
       assert.ok(events.some((e) => e.event === "placement.home-wait-cancelled" && e.data.run === id), "the wait was cancelled by the shutdown");
+      // Meanwhile another run on the other server is decided (as a run of an earlier test can be, late): that is not this run's.
+      const bystander = await local.server.createRun("bystander-closing");
+      const byTab: PipeClient = new PipeClient({ url: local.url, run: bystander.id, token: bystander.secret, tab: "a", mode: "write", onFrame: () => undefined });
+      await byTab.ready;
+      answer = (phase, message) => (message === "teach it to fetch" ? "tab" : phase === "start" ? REMOTE_LOCAL.id : "tab");
+      byTab.send({ t: "submit", text: "teach it to fetch", requestId: "req-x" });
+      await until(() => decisionsOf(bystander.id) === 1);
+      byTab.close();
       await new Promise((r) => setTimeout(r, 1_400)); // past the 700 ms bound: only here is waiting the point (nothing may fire)
       assert.equal(events.filter((e) => e.event === "placement.home-turn-timeout" && e.data.run === id).length, 0, "the wait's timer was cleared");
-      assert.equal(events.filter((e) => e.event === "placement.decision").length, decisionsBefore, "nothing was replayed after shutdown");
+      assert.equal(decisionsOf(id), decisionsBefore, "nothing was replayed after shutdown");
     } finally {
       if (!removed) await closing.remove();
     }

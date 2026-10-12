@@ -64,7 +64,7 @@ for (const b of existsSync(join(dir, "boxes")) ? readdirSync(join(dir, "boxes"))
       continue;
     }
     if (typeof command !== "string") continue;
-    const copied = /^cp -r \/opt\/pda\/train\/skills\/[\w-]+ skills\/([\w-]+)/.exec(command)?.[1];
+    const copied = /(?:^|&& )cp -r \/opt\/pda\/train\/skills\/[\w-]+ skills\/([\w-]+)/.exec(command)?.[1];
     const skill = copied ?? /^pi-run ([\w-]+) -- train-skill/.exec(command)?.[1];
     const step = copied ? "copy" : /--compile-only/.test(command) ? "compile" : /--check /.test(command) ? "check" : /--steps (\d+M)/.exec(command)?.[1];
     if (!skill || !step) continue;

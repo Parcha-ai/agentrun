@@ -791,9 +791,10 @@ export function remoteEnvs(
 export const PI_RUN = `#!/bin/sh
 # pi-run <key> -- <command...>: stop the previous run of <key> on this box (its process group), then run the command.
 # The key is hashed whole (two keys never share a record), and the check, the stop and the record are done under one lock.
+# The records live in PI_RUN_DIR (default /tmp/.pi-run: one set per box); runs with different records never stop each other.
 [ $# -ge 1 ] || { echo "usage: pi-run <key> -- <command...>" >&2; exit 2; }
 key=$1; shift; [ "$1" = "--" ] && shift
-d=/tmp/.pi-run; mkdir -p "$d"
+d=\${PI_RUN_DIR:-/tmp/.pi-run}; mkdir -p "$d"
 k=$(printf %s "$key" | sha256sum | cut -c1-32)
 f="$d/$k.pgid"; l="$d/$k.lock"
 g=$(cut -d' ' -f5 /proc/$$/stat)
