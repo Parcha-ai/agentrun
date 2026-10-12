@@ -77,3 +77,9 @@ test("empty or listless cluster settings are refused instead of silently droppin
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-x", "cluster-skills": ",," }), /at least one skill/);
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-x", "cluster-skills": "" }), /at least one skill/);
 });
+
+test("robot=true turns on the robot's tools on the VM and needs the cluster", () => {
+  assert.equal(modalOptionsFromArgs({ robot: "true", "cluster-size": "2", "cluster-image": "im-x" }).robot, true);
+  assert.equal(modalOptionsFromArgs({}).robot, undefined);
+  assert.throws(() => modalOptionsFromArgs({ robot: "true" }), /needs cluster-size and cluster-image/);
+});
