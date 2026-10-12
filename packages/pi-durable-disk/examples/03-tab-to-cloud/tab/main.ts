@@ -1427,7 +1427,8 @@ async function homeFilesForOffline(): Promise<Map<string, { kind: "file"; data: 
 // workspace; a file the tab was not sent (home/ is not restored) is fetched from the run's disk while online and was brought into the workspace at the checkout.
 const robotMode = new URLSearchParams(location.search).get("robot") === "1";
 if (robotMode) setExtraInstructions(ROBOT_SOPS); // the robot demo: the cloud agent also carries the SOPs for writing the robot and planning a teaching run
-const CREATURE_WRITABLE = new Set(["creature/designs.sqlite", "creature/creature.xml", "creature/body.json", "creature/design.json", "creature/fit.json", "robot/build.json"]);
+// scene.json and attempt.json are the flag beat's (04 goal.ts): where the flag stands, and the page's answer to each `do`, which the tool reads back
+const CREATURE_WRITABLE = new Set(["creature/designs.sqlite", "creature/creature.xml", "creature/body.json", "creature/design.json", "creature/fit.json", "robot/build.json", "creature/scene.json", "creature/attempt.json"]);
 const safePath = (p: unknown): string | undefined => (typeof p === "string" && p.length > 0 && p.length < 200 && !p.startsWith("/") && !p.split("/").some((part) => part === ".." || part === "." || part === "") ? p : undefined);
 const diskReads = new Map<string, { at: number; bytes: Uint8Array | null }>();
 

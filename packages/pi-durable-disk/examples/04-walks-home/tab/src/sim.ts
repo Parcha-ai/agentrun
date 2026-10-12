@@ -15,6 +15,9 @@ export const SUBSTEPS = Math.round(CONTROL_DT / TIMESTEP);
 export const UNTRAINED_SCALE = 0.7;
 export const KICK_STEPS = 12; // physics steps an impulse stays applied: 0.048 s at the 0.004 s timestep
 
+/** A body's state without the clock (Sim.pose, Sim.setPose). */
+export interface Pose { qpos: number[]; qvel: number[]; ctrl: number[]; prevAction: number[]; mode: Mode }
+
 export class Sim {
   readonly mj: MuJoCo;
   readonly model: any;
@@ -27,6 +30,8 @@ export class Sim {
   mode: Mode = 'walk';
   /** With no policy: random actions (a brain that has learned nothing) instead of holding the stand pose. */
   brain: UntrainedBrain | null = null;
+  /** When the brain was attached: its clock (standing, then the ramp) starts there, so a brain attached mid-session (an untrained try) stands first too. */
+  private brainSince = 0;
   prevAction: number[];
   /** A code body's motor joints: where each one sits in qpos and qvel (a body with spring joints has joints the policy never sees). Null: the motors are the joints after the free joint, in order. */
   private motorQpos: number[] | null = null;
@@ -64,6 +69,7 @@ export class Sim {
     this.time = 0;
     this.mode = 'walk';
     this.brain?.reset();
+    this.brainSince = 0;
     this.prevAction.fill(0);
     this.kickLeft = 0;
   }
@@ -104,8 +110,24 @@ export class Sim {
 
   /** Give this creature the untrained brain, or take it away. Attaching one that is not already attached starts it over from its seed, so a creature built again from the same drawing twitches exactly as the first did. */
   attachBrain(brain: UntrainedBrain | null): void {
-    if (brain && brain !== this.brain) brain.reset();
+    if (brain && brain !== this.brain) { brain.reset(); this.brainSince = this.time; }
     this.brain = brain;
+  }
+
+  /** The body as it is now (where it stands, its joints, its velocities, what its motors are told), to put it back with setPose. The clock is not part of it. */
+  pose(): Pose {
+    return { qpos: Array.from(this.data.qpos as ArrayLike<number>), qvel: Array.from(this.data.qvel as ArrayLike<number>), ctrl: Array.from(this.data.ctrl as ArrayLike<number>), prevAction: this.prevAction.slice(), mode: this.mode };
+  }
+
+  /** Put the body back as `pose` found it (after an untrained try): same place, heading, joints and velocities; the clock keeps going. */
+  setPose(pose: Pose): void {
+    for (let i = 0; i < pose.qpos.length; i++) this.data.qpos[i] = pose.qpos[i]!;
+    for (let i = 0; i < pose.qvel.length; i++) this.data.qvel[i] = pose.qvel[i]!;
+    for (let i = 0; i < pose.ctrl.length; i++) this.data.ctrl[i] = pose.ctrl[i]!;
+    this.prevAction = pose.prevAction.slice();
+    this.mode = pose.mode;
+    this.kickLeft = 0;
+    this.mj.mj_forward(this.model, this.data);
   }
 
   /** One policy step (CONTROL_DT): act (or hold the standing pose without a policy), then SUBSTEPS physics steps. */
@@ -119,7 +141,7 @@ export class Sim {
       this.mode = r.mode;
       for (let i = 0; i < r.targets.length; i++) this.data.ctrl[i] = r.targets[i];
     } else if (this.brain) {
-      action = this.brain.next(this.built.standPose.length, this.time);
+      action = this.brain.next(this.built.standPose.length, this.time - this.brainSince);
       for (let i = 0; i < action.length; i++) this.data.ctrl[i] = this.built.standPose[i] + UNTRAINED_SCALE * action[i];
     } else {
       for (let i = 0; i < this.built.standPose.length; i++) this.data.ctrl[i] = this.built.standPose[i];
