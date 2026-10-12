@@ -53,6 +53,7 @@ const port = await freePort();
 const RUN = "st";
 const work = join(dir, "runs", RUN, "work");
 mkdirSync(join(work, "home/skills"), { recursive: true });
+if (process.env.REBUILT === "1" && (fromSource || preset)) throw new Error("REBUILT=1 rebuilds the body.xml of a code-mode folder that has one; this folder is " + (preset ? "a preset-flow snapshot (no body.xml)" : "built here from body.mjs (the build is the rebuild)") + ", so there is nothing to rebuild");
 let xmlSha = "";
 if (fromSource) {
   mkdirSync(join(work, "robot"), { recursive: true });
@@ -139,24 +140,50 @@ devices = device;
     await say("do spin");
     await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === "spin"`, 30_000, 300).catch(() => undefined);
     await sleep(3000);
-    // A creature that is lying down when it is asked for a skill. The policies of a round carry no get-up network (a real round's skills here have none), so a creature that fell cannot rise by itself:
-    // asking for spin must stand it up first, as a policy that arrives does, or the robot lies still where spin was asked.
-    await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }])`);
-    await say("do walk");
-    await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === "walk"`, 30_000, 300).catch(() => undefined);
-    await sleep(2000);
-    let down = { up: 1 };
-    for (let i = 0; i < 4 && down.up > 0.3; i++) { await walks(`w.kick([0, 1], ${400 + 300 * i})`); await sleep(3000); down = await walks<{ up: number }>("({ up: w.app.sim.uprightness() })"); }
+    // A creature that is lying down when it is asked for a skill. The policies of a round carry no get-up network (a real round's skills here have none), so a creature that fell cannot rise by itself.
+    // Two ways it is stood up, each seen on its own: choosing a skill stands it up at once (the page's stood-up event says reason "skill"), and a creature left lying is stood up after standAfterS (reason "fallen").
+    await ev(`window.__stood = []; window.addEventListener("walkshome:stood-up", (e) => window.__stood.push({ ...e.detail, at: performance.now() })); true`);
+    const shoveDown = async () => {
+      for (let i = 0; i < 6; i++) { await walks(`w.kick([0, 1], ${400 + 300 * i})`); const down = await page!.until(`document.getElementById("creature").contentWindow.__walks.app.sim.uprightness() < 0.3`, 6_000, 100).then(() => true, () => false); if (down) return true; }
+      return false;
+    };
+    const doSkill = async (name: string) => { await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: ${JSON.stringify(name)} } } }, { text: "Done." }])`); await say(`do ${name}`); await page!.until(`document.getElementById("creature").contentWindow.__walks.skill() === ${JSON.stringify(name)}`, 30_000, 300).catch(() => undefined); };
     const hasGetup = (JSON.parse(readFileSync(join(trace, "home", skillsHome.skills.spin!.policy), "utf8")) as { getup?: unknown }).getup !== undefined;
-    console.log(`  a shove put it down: up ${down.up.toFixed(2)} (the spin policy has ${hasGetup ? "a" : "no"} get-up network)`);
-    ok("the creature is lying down before spin is asked for", down.up < 0.3, down);
-    await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: "spin" } } }, { text: "Done." }])`);
-    await say("do spin");
-    await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === "spin"`, 30_000, 300).catch(() => undefined);
-    await sleep(3000);
-    const up = await yawRate(6);
-    console.log(`  spin asked for while it lay down: ${JSON.stringify(up)}`);
-    ok("spin asked for while the creature lies down: it is on its feet and turns at at least 1 rad/s", up.up > 0.5 && Math.abs(up.rate) >= 1.0 && up.skill === "spin", up);
+    console.log(`  (the spin policy has ${hasGetup ? "a" : "no"} get-up network)`);
+    // 1. the skill's own stand-up: the fall timer is set out of reach, so only choosing the skill can stand it up (it needs a second skill to switch from)
+    const second = names.find((n) => n !== "spin");
+    if (!second) console.log("  (this folder has only spin: the skill's own stand-up needs another skill to switch from, so only the timer is checked)");
+    else {
+      await doSkill(second);
+      await walks("(w.app.standAfterS = 1e9, true)");
+      await sleep(1500);
+      ok("a shove puts the creature down (the fall timer is set out of reach)", await shoveDown(), await walks("({ up: w.app.sim.uprightness() })"));
+      await ev("window.__stood.length = 0; true");
+      await sleep(4000); // longer than the page's own 3 s: nothing may stand it up while the timer is out of reach
+      ok("with the timer out of reach it lies where it fell, and nothing stood it up", (await walks<number>("w.app.sim.uprightness()")) < 0.3 && (await ev<number>("window.__stood.length")) === 0);
+      await doSkill("spin");
+      await page.until(`window.__stood.some((e) => e.reason === "skill" && e.skill === "spin")`, 10_000, 100).then(() => undefined, () => undefined);
+      const stood = await ev<{ reason: string; skill?: string }[]>("window.__stood");
+      ok("choosing spin stood the lying creature up: a stood-up event with reason skill names spin", stood.some((e) => e.reason === "skill" && e.skill === "spin"), stood);
+      await sleep(2500);
+      const up = await yawRate(6);
+      console.log(`  spin asked for while it lay down: ${JSON.stringify(up)}`);
+      ok("spin asked for while the creature lies down: it is on its feet and turns at at least 1 rad/s", up.up > 0.5 && Math.abs(up.rate) >= 1.0 && up.skill === "spin", up);
+    }
+    // 2. the timer: a creature left lying under a policy with no get-up network is set back on its feet after standAfterS
+    await walks("(w.app.standAfterS = 3, true)");
+    await ev("window.__stood.length = 0; true");
+    ok("a shove puts the spinning creature down again", await shoveDown(), await walks("({ up: w.app.sim.uprightness() })"));
+    await page.until(`window.__stood.some((e) => e.reason === "fallen") || document.getElementById("creature").contentWindow.__walks.app.sim.uprightness() > 0.8`, 20_000, 200).then(() => undefined, () => undefined);
+    const timer = await ev<{ reason: string }[]>("window.__stood");
+    const risen = await walks<number>("w.app.sim.uprightness()");
+    if (timer.length === 0 && risen > 0.8) console.log("  (this policy got up by itself within the delay, so the page's fall timer was not needed; only a policy that stays down shows it)");
+    else {
+      ok("left lying, it is stood up by the page after a few seconds: a stood-up event with reason fallen", timer.some((e) => e.reason === "fallen"), timer);
+      await sleep(2500);
+      const again = await yawRate(6);
+      ok("and it spins again", again.up > 0.5 && Math.abs(again.rate) >= 1.0, again);
+    }
   }
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);

@@ -372,8 +372,11 @@ export type TabToShell = Envelope<
   | { type: "checkpoint-installed"; name: string; kind: "checkpoint" | "final"; checkpoint_n: number; steps: number | null; wall_s: number | null; reported_walk_10s_m: number | null }
   /** No trained policy is installed: the creature stands and goes limp. */
   | { type: "untrained"; reason: string }
-  /** The creature was lying down when a checkpoint landed and was set back on its feet. */
-  | { type: "stood-up"; reason: "checkpoint" }
+  /**
+   * The creature was lying down and was set back on its feet, and why: a policy arrived (a checkpoint or the final one), a skill was chosen (`skill` names it; its policy has no get-up network, so it could not rise
+   * under it), or it stayed down for a few seconds under a policy with no get-up network (`fallen`). Only the first two are a new brain.
+   */
+  | { type: "stood-up"; reason: "checkpoint" | "final" | "skill" | "fallen"; skill?: string }
   /** The browser's own online/offline event, as the tab saw it. */
   | { type: "network"; online: boolean }
   /** Sent once, 10 simulated seconds after the install. */

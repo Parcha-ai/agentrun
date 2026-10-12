@@ -84,6 +84,8 @@ interface App {
   policy: Policy | null; policyName: string;
   running: boolean; acc: number; last: number;
   fallen: boolean; recovering: number | null; // sim time at which a kick was applied and not yet recovered
+  /** Seconds a creature on a policy with no get-up network lies where it fell before it is set back on its feet (a check sets it very high to see a skill's own stand-up on its own). */
+  standAfterS: number;
   placement: { kind: string; label: string };
   /** A trained policy that arrived and is being timed: page ms at the arrival, sim time at the install. */
   arrival: { tracker: ArrivalTracker; simT0: number; name: string } | null;
@@ -126,8 +128,7 @@ let brainFits = true;
 
 /** The skills that came home (home/skills.json), the one the creature is doing, and one asked for before the manifest arrived. */
 let skills: SkillManifest | null = null;
-/** How long a creature whose policy has no get-up network lies where it fell before it is set back on its feet (seconds of simulated time), and when it went down. */
-const STAND_AFTER_S = 3;
+/** When a creature whose policy has no get-up network went down (simulated seconds); it is set back on its feet after `app.standAfterS`. */
 let downSince: number | null = null;
 let skillNow: string | null = null;
 let wantedSkill: string | null = null;
@@ -945,7 +946,7 @@ function tick(now: number) {
     // It is set back on its feet after STAND_AFTER_S, and the page says so (the fall was counted and announced when it happened; this is not a recovery of the policy's, so no kick is counted as recovered).
     if (app.policy && !app.policy.hasGetup && up < 0.3) {
       downSince ??= app.sim.time;
-      if (app.sim.time - downSince > STAND_AFTER_S) { app.sim.standUp(); downSince = null; app.fallen = false; app.recovering = null; post('stood-up', { reason: 'fallen', t: app.sim.time }); toast('set back on its feet'); }
+      if (app.sim.time - downSince > app.standAfterS) { app.sim.standUp(); downSince = null; app.fallen = false; app.recovering = null; post('stood-up', { reason: 'fallen', t: app.sim.time }); toast('set back on its feet'); }
     } else downSince = null;
     if (app.recovering !== null && !app.fallen && app.sim.time - app.recovering > 2 && up > 0.9) {
       app.stats.c.recoveries++;
@@ -997,7 +998,7 @@ async function main() {
       mj, sql, mujocoVersion, view: new View($('view') as HTMLCanvasElement, { lite: new URLSearchParams(location.search).has('lite') }), sketcher, store, storageMode,
       sim: new Sim(mj, built), built, bodySha: await sha256Hex(built.xml), world: null,
       policy: null, policyName: 'untrained', running: true, acc: 0, last: performance.now(),
-      fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
+      fallen: false, recovering: null, standAfterS: 3, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
       training: Object.assign(new TrainingState(), { still: STILL }),
       brain: new UntrainedBrain(), ticker: new Ticker(1), drawStarted: false, clean, hero, phase, offline: !navigator.onLine,
       draft: new DraftCommitter({

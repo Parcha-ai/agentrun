@@ -86,6 +86,9 @@ export function notesFromTabEvent(m: TabToShell, at: number, opts: TabNoteOption
       return out;
     }
     case "stood-up":
+      // from the typed reason: only a policy that arrived is a new brain; a chosen skill or the fall timer is not
+      if (m.reason === "skill") return [note(`It was lying down when it was asked to ${m.skill ?? "do the skill"}, so it was stood up first.`)];
+      if (m.reason === "fallen") return [note("It fell and could not get up on its own, so it was set back on its feet.")];
       return [note("A new version of its brain arrived while it was lying down, and it stood back up.")];
     case "mode-changed": {
       // Only after a kick: at home the untrained creature is simply lying down when the brain lands and gets stood up, which is not "it learned to get back up".
