@@ -91,6 +91,7 @@ MJCF), so a skill reuses every program an earlier skill compiled for that body. 
 is staged, while the thread writes its skill files:
 
 ```sh
+mkdir -p .warm
 setsid nohup train-skill walk --body robot/ --out .warm/walk --init-from '' --compile-only > .warm/walk.log 2>&1 &
 ```
 
