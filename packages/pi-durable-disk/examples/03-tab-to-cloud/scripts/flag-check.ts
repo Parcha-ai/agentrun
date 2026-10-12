@@ -3,6 +3,7 @@
 // answers it once in creature/attempt.json, which `do` reads back, and says where the flag is in creature/scene.json.
 //   TRACE=<folder>  a code-mode run's snapshot: robot/body.xml + home/skills.json + home/skills/*.json. The skills are held back until step 3, as if the cluster brought them home then.
 //   TOOL=1          ask through the agent's own `do` (a scripted cloud model calls it) instead of writing the request into creature/robot.json the way `do` does
+//   CREATURE_DIR=<dir>  a built creature page to serve instead of 04's tab/dist (an older build, for a before and after)
 //   [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] [VIEW=1440x900] node scripts/flag-check.ts
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
@@ -80,7 +81,7 @@ try {
   const manifest = JSON.parse(readFileSync(join(trace, "home/skills.json"), "utf8")) as { default?: string; skills: Record<string, { policy: string; command: number }> };
   for (const e of Object.values(manifest.skills)) copyFileSync(join(trace, "home", e.policy), join(work, "held", e.policy));
   if (!manifest.skills.walk) throw new Error("the folder's skills have no walk");
-  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/", ...(process.env.CREATURE_DIR ? ["--creature-dir", process.env.CREATURE_DIR] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
   let link = "";
   server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
   for (let i = 0; i < 100 && !link; i++) await sleep(100);
@@ -124,6 +125,14 @@ try {
     if (r.exitCode !== 0) throw new Error(`could not write the request into creature/robot.json: ${JSON.stringify(r).slice(0, 300)}`);
     return { id, turn: Promise.resolve(undefined) };
   };
+  /** A skill with no request, as `do` asks for any skill but walk and sprint: through the tool (TOOL=1), or robot.json's skill. */
+  const playSkill = async (skill: string) => {
+    if (tool) { await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: ${JSON.stringify(skill)} } } }, { text: "Done." }])`); await say(`do ${skill}`); return; }
+    const set = `const fs = require("fs"); const f = "creature/robot.json"; const r = JSON.parse(fs.readFileSync(f, "utf8")); r.skill = ${JSON.stringify(skill)}; fs.writeFileSync(f, JSON.stringify(r, null, 1) + "\\n");`;
+    await ev(`demo.exec(${JSON.stringify(`node -e '${set}'`)})`);
+  };
+  const other = Object.keys(manifest.skills).find((s) => s !== "walk" && s !== "sprint");
+  const answerFor = async (id: string) => { const a = await readJson<Attempt>("creature/attempt.json"); return a?.id === id ? a : null; };
   // a robot.json to write the request into: a real robot tool makes it (code mode has none until the agent edits the robot)
   if (!tool) { await ev(`demo.stubCloud([{ call: { name: "rename", arguments: { name: "Rex" } } }, { text: "Done." }])`); await say("call it Rex"); }
 
@@ -152,16 +161,34 @@ try {
   const after = await torso();
   ok("after the try the robot stands again where it stood (within 2 cm, upright)", Math.hypot(after.x - before.x, after.y - before.y) < 0.02 && after.up > 0.95, { before, after });
 
-  // 3. the skills come home: with a flag to walk to, the robot waits for the request instead of walking off on its own
-  await ev(`demo.exec("mkdir -p home/skills && cp held/skills/*.json home/skills/ && cp held/skills.json home/skills.json")`);
+  // 3. the skills come home: with a flag to walk to, the robot waits for the request instead of walking off on its own. Without TOOL=1 the walk's own policy file stays out until step 4 (a request
+  //    that comes before its policy has landed); the tool reads the policies, so with TOOL=1 they all come home now.
+  await ev(`demo.exec(${JSON.stringify(`mkdir -p home/skills && cp held/skills.json home/skills.json && for f in held/skills/*.json; do [ "$f" = held/skills/walk.json ] && [ "${tool ? "" : "hold"}" = hold ] || cp "$f" home/skills/; done`)})`);
   await page.until(`Object.keys(document.getElementById("creature").contentWindow.__walks.skills()?.skills ?? {}).length > 0`, 30_000, 300);
   const home0 = await torso();
   await sleep(4000);
   const home1 = await torso();
   ok("the skills are home and the robot waits: no skill playing, it has not moved (under 5 cm in 4 s)", home1.skill === null && Math.hypot(home1.x - home0.x, home1.y - home0.y) < 0.05, { home0, home1 });
 
+  // 3b. another skill asked for during an untrained try: the try is answered as it stood, the robot put back, and that skill plays at once (not after the try's window)
+  if (!tool && other) {
+    const cut = await ask("walk", false);
+    await page.until(`document.getElementById("creature").contentWindow.__walks.trying()`, 10_000, 100).catch(() => undefined);
+    await sleep(1000);
+    await playSkill(other);
+    const playing = await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === ${JSON.stringify(other)} && !document.getElementById("creature").contentWindow.__walks.trying()`, 4_000, 100).then(() => true, () => false);
+    const cutAnswer = await answerFor(cut.id);
+    ok(`${other} asked for during a try plays within 4 s, and the try is answered cut short (under 3.5 s)`, playing && !!cutAnswer && cutAnswer.seconds < 3.5 && cutAnswer.learned === false, { playing, skill: await walks("w.skill()"), trying: await walks("w.trying()"), cutAnswer });
+  }
+
   // 4. the learned walk: it reaches the flag, the flag has its moment, the page says so
   const walkAsk = await ask("walk", true);
+  if (!tool) {
+    await sleep(2500);
+    const waiting = { answer: await answerFor(walkAsk.id), skill: await walks<string | null>("w.skill() ?? null") };
+    ok("a learned walk asked for before its policy has landed waits for it: not answered, not playing", !waiting.answer && waiting.skill !== "walk", waiting);
+    await ev(`demo.exec("cp held/skills/walk.json home/skills/walk.json")`);
+  }
   await sleep(4000);
   await page.screenshot(join(shots, "flag-3-walking.png"));
   const walked = await answer(walkAsk.id, 24000);
@@ -183,15 +210,20 @@ try {
   const stood = await torso();
   ok("and it stops there: under 15 cm in the next 3 s, upright", Math.hypot(stood.x - atFlag.x, stood.y - atFlag.y) < 0.15 && stood.up > 0.9, { atFlag, stood });
 
+  // 4b. the pane reloads after the walk was answered: robot.json still names walk and its request, and the robot stands (a walk started again would have nothing measuring or stopping it)
+  await ev(`(document.getElementById("creature").contentWindow.location.reload(), true)`);
+  await sleep(1500);
+  await page.until(`(() => { const w = document.getElementById("creature").contentWindow.__walks; return !!w && w.app.built?.code === true && Object.keys(w.skills()?.skills ?? {}).length > 0; })()`, 90_000, 300);
+  await sleep(3000); // robot.json is read within a second
+  const r0 = await torso();
+  await sleep(3000);
+  const r1 = await torso();
+  ok("after a reload the answered walk does not start again: no skill playing, it stands (under 5 cm in 3 s)", r1.skill === null && Math.hypot(r1.x - r0.x, r1.y - r0.y) < 0.05, { r0, r1 });
+
   // 5. any other learned skill is a plain skill change (the agent's do writes no request for it): it plays where the robot stands, and nothing is answered for it
-  const other = Object.keys(manifest.skills).find((s) => s !== "walk" && s !== "sprint");
   if (other) {
     const was = await torso();
-    if (tool) { await ev(`demo.stubCloud([{ call: { name: "do", arguments: { skill: ${JSON.stringify(other)} } } }, { text: "Done." }])`); await say(`do ${other}`); }
-    else {
-      const set = `const fs = require("fs"); const f = "creature/robot.json"; const r = JSON.parse(fs.readFileSync(f, "utf8")); r.skill = ${JSON.stringify(other)}; fs.writeFileSync(f, JSON.stringify(r, null, 1) + "\\n");`;
-      await ev(`demo.exec(${JSON.stringify(`node -e '${set}'`)})`);
-    }
+    await playSkill(other);
     await page.until(`document.getElementById("creature").contentWindow.__walks.skill() === ${JSON.stringify(other)}`, 15_000, 250).catch(() => undefined);
     await sleep(3000);
     const now = await torso();

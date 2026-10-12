@@ -17,7 +17,7 @@ import { DraftCommitter } from './draft.ts';
 import { Ticker, formatDistance } from './trail.ts';
 import { TrainingState } from './training.ts';
 import { Sim, type Pose } from './sim.ts';
-import { Attempt, FLAG, FORWARD_SKILLS, SETTLE_S, parseAttemptRequest, sceneFile, type AttemptRequest, type Ending, type Flag } from './goal.ts';
+import { Attempt, FLAG, FORWARD_SKILLS, SETTLE_S, flagPlan, parseAttemptRequest, sceneFile, type AttemptRequest, type Ending, type Flag } from './goal.ts';
 import { ModelHost } from './modelhost.ts';
 import { MANIFEST_PATH } from './model.ts';
 import { verdictOf } from './guard.ts';
@@ -147,6 +147,8 @@ let attempt: Attempt | null = null;
 let trying: { pose: Pose; settleUntil: number | null } | null = null;
 /** The last request id this page took up: robot.json keeps it until the next `do`, and other edits rewrite the file around it. */
 let takenAttempt: string | null = null;
+/** A learned request whose skill is not playing yet (the manifest or the skill's policy file is still on its way): it starts when the skill does. */
+let pendingRequest: AttemptRequest | null = null;
 
 function toast(text: string) {
   const t = $('toast');
@@ -301,7 +303,8 @@ function updateLabel() {
 
 /** With no policy and no demo stand-in the creature has a brain that has learned nothing: random actions, from the seed each time one is attached. */
 function syncBrain() {
-  app.sim.attachBrain(!app.hero && !app.policy && app.training.state === 'untrained' ? app.brain : null);
+  // an untrained try keeps its brain until its window ends (a skill's file refreshed under it does not stop the twitching)
+  app.sim.attachBrain((trying && trying.settleUntil === null) || (!app.hero && !app.policy && app.training.state === 'untrained') ? app.brain : null);
 }
 
 /** The policy is gone or was never trained: the label, the facts and the final flag go with it. */
@@ -423,9 +426,11 @@ async function applyRobot(text: string) {
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
   }
-  if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
+  // with a flag, the skill and the request go by the flag's rule (goal.ts flagPlan), decided before anything plays: a walk already answered is not started again
+  const plan = flag ? flagPlan(robot.skill ?? null, ...(await requestIn(text))) : { skill: robot.skill ?? null, request: null };
+  if (plan.skill && plan.skill !== skillNow) await switchSkill(plan.skill);
   else if (!robot.skill && skills && !flag && (skillNow !== null || !app.policy) && (skillNow !== skills.default || !app.policy)) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for (with a flag it stands and waits to be asked)
-  await takeAttempt(text);
+  if (plan.request) takeRequest(plan.request);
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
 }
 
@@ -437,7 +442,7 @@ async function onSkillsManifest(text: string) {
   skills = m;
   post('skills-home', { skills: Object.keys(m.skills), default: m.default, labels: Object.fromEntries(Object.entries(m.skills).map(([k, v]) => [k, v.label])) });
   // with a flag to walk to, nothing plays until the agent asks: the room sees the robot go to the flag when the user says so, not on its own as the skills land
-  const want = wantedSkill ?? (app.policy || flag ? null : m.default);
+  const want = wantedSkill ?? pendingRequest?.skill ?? (app.policy || flag ? null : m.default);
   if (want) await switchSkill(want);
   else updateLabel();
   for (const name of [...skillTexts.keys()]) if (!(name in m.skills)) { skillTexts.delete(name); installedSha.delete(name); }
@@ -561,6 +566,7 @@ async function onSkillFile(name: string, text: string) {
   if (!skills?.skills[name]) return;
   await installSkill(name, text);
   if (skillNow === name && (await textSha(text)) !== runningSkillSha) await switchSkill(name, true);
+  else if (pendingRequest?.skill === name && skillNow !== name) await switchSkill(name); // the policy a waiting request needs has landed
 }
 
 /** creature/scene.json, for the agent's `do`: written with each body (the robot starts at the origin). A tab that does not hold the run cannot write it, and `do` then works as it did without a flag. */
@@ -569,16 +575,23 @@ async function writeScene() {
   try { await new ParentBackend(windowBus(), SCENE_PATH).write(new TextEncoder().encode(sceneFile(flag))); } catch { /* not the holder */ }
 }
 
-/** robot.json's `attempt`: a request this page has not taken up is played. One already answered in attempt.json (the page reloaded since) is not played again. */
-async function takeAttempt(text: string) {
-  if (!flag) return;
+/** robot.json's `attempt`, and whether it is done: taken up by this page already, or answered in attempt.json (the page reloaded since: it is not played again). */
+async function requestIn(text: string): Promise<[AttemptRequest | null, boolean]> {
   let req: AttemptRequest | null = null;
-  try { req = parseAttemptRequest((JSON.parse(text) as { attempt?: unknown }).attempt); } catch { return; }
-  if (!req || req.id === takenAttempt) return;
+  try { req = parseAttemptRequest((JSON.parse(text) as { attempt?: unknown }).attempt); } catch { return [null, true]; }
+  if (!req) return [null, true];
+  if (req.id === takenAttempt) return [req, true];
   takenAttempt = req.id;
   const answered = await parentPolicySource(new ParentBackend(windowBus(), ATTEMPT_PATH)).read().catch(() => null);
-  if (answered && answered !== 'unchanged') { try { if ((JSON.parse(answered.text) as { id?: unknown }).id === req.id) return; } catch { /* not an answer */ } }
-  startAttempt(req);
+  if (answered && answered !== 'unchanged') { try { if ((JSON.parse(answered.text) as { id?: unknown }).id === req.id) return [req, true]; } catch { /* not an answer */ } }
+  return [req, false];
+}
+
+/** A fresh request: a try plays now, and so does a learned skill that is playing; one whose skill is not playing yet waits for it (switchSkill starts it). A newer request replaces a waiting one. */
+function takeRequest(req: AttemptRequest) {
+  pendingRequest = null;
+  if (!req.learned || (skillNow === req.skill && app.policy)) startAttempt(req);
+  else pendingRequest = req;
 }
 
 /**
@@ -661,6 +674,8 @@ async function switchSkill(name: string, reload = false) {
   const range = (policy.file as { command_range?: [number, number] }).command_range;
   slider.min = String(range?.[0] ?? 0); slider.max = String(range?.[1] ?? 1); slider.step = 'any'; slider.value = String(entry.command);
   closeArrival();
+  // another skill takes over during an untrained try: the try is answered as it stands and the robot put back, then the skill plays (a refresh of the same skill's file leaves the try running)
+  if (trying && !reload) { if (attempt && !attempt.request.learned) answerAttempt(attempt, null); endTry(); }
   // A round's skills carry no get-up network, so a creature that is lying down cannot rise under the new one (it lies still where the skill was asked for): it is set back on its feet first, as a policy that arrives is
   const standUp = !policy.hasGetup && app.sim.uprightness() < 0.3;
   if (standUp) { app.sim.standUp(); post('stood-up', { reason: 'skill', skill: name, t: app.sim.time }); }
@@ -674,6 +689,7 @@ async function switchSkill(name: string, reload = false) {
   app.fallen = false; app.recovering = null;
   toast(`doing ${entry.label}`);
   post('skill-switched', { skill: name, label: entry.label, command: app.sim.command, fits, stood_up: standUp, mjcf_sha256: policy.file.mjcf_sha256 });
+  if (pendingRequest?.skill === name) { const req = pendingRequest; pendingRequest = null; startAttempt(req); } // the request that waited for this skill
 }
 
 /** The slider is the single source of the command: apply it to the sim (a new Sim starts at 0, which a policy reads as "stand"). */

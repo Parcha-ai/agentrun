@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Attempt, CLOSING_M, CLOSING_WINDOW_S, FLAG, RUN_CAP_S, TRY_S, WALK_CROSSINGS_Y, parseAttemptRequest, sceneFile, type Ending } from '../src/goal.ts';
+import { Attempt, CLOSING_M, CLOSING_WINDOW_S, FLAG, RUN_CAP_S, TRY_S, WALK_CROSSINGS_Y, flagPlan, parseAttemptRequest, sceneFile, type Ending } from '../src/goal.ts';
 import { defaultDesign } from '../src/design.ts';
 import { buildMjcf } from '../src/mjcf.ts';
 import { Sim } from '../src/sim.ts';
@@ -132,4 +132,20 @@ test("a pose taken before a try puts the creature back exactly where and how it 
   assert.ok(sim.time > time, 'the clock keeps going: only the body is put back');
   for (let i = 0; i < 50; i++) sim.step(null);
   assert.ok(sim.uprightness() > 0.99, 'and it stands there');
+});
+
+test("with a flag, a walk or sprint plays only as a fresh request's run: a reload or an edit after its run was answered leaves the robot standing (robot.json keeps the skill)", () => {
+  const walk = { id: 'w1', skill: 'walk', learned: true };
+  assert.deepEqual(flagPlan('walk', walk, true), { skill: null, request: null }, 'answered (a reload): no walk, no request');
+  assert.deepEqual(flagPlan('sprint', { id: 's1', skill: 'sprint', learned: true }, true), { skill: null, request: null });
+  assert.deepEqual(flagPlan('walk', null, false), { skill: null, request: null }, 'a walk with no request at all (an older file) does not start either');
+  assert.deepEqual(flagPlan('walk', walk, false), { skill: 'walk', request: walk }, 'a fresh learned walk: the skill and its run');
+});
+
+test('with a flag, other skills play where the robot stands, and a fresh try is taken up whatever skill robot.json names', () => {
+  const tried = { id: 't1', skill: 'walk', learned: false };
+  assert.deepEqual(flagPlan('spin', { id: 'w1', skill: 'walk', learned: true }, true), { skill: 'spin', request: null }, 'a plain spin after an answered walk');
+  assert.deepEqual(flagPlan('spin', tried, false), { skill: 'spin', request: tried });
+  assert.deepEqual(flagPlan(null, tried, false), { skill: null, request: tried });
+  assert.deepEqual(flagPlan(null, tried, true), { skill: null, request: null }, 'a try already answered is not played again');
 });

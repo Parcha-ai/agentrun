@@ -47,6 +47,17 @@ export function parseAttemptRequest(v: unknown): AttemptRequest | null {
   return { id, skill, learned };
 }
 
+/**
+ * With a flag in the scene, what creature/robot.json asks of the page: the skill to switch to (null: none) and the request to take up (null: none). `done`: the request was taken up already, or
+ * attempt.json answers it. A walk or sprint goes to the flag, so it plays only as a fresh request's run: robot.json keeps the skill after that run was answered (an edit around it, a reload), and
+ * starting it again would send the robot off with nothing measuring or stopping it. Any other skill plays where the robot stands.
+ */
+export function flagPlan(skill: string | null, request: AttemptRequest | null, done: boolean): { skill: string | null; request: AttemptRequest | null } {
+  const fresh = request && !done ? request : null;
+  const forward = !!skill && FORWARD_SKILLS.includes(skill);
+  return { skill: forward && !(fresh?.learned && fresh.skill === skill) ? null : skill, request: fresh };
+}
+
 /** Why an attempt is over: a try's window ran out; a learned run reached the flag, fell, stopped closing on it, or hit the cap. */
 export type Ending = 'window' | 'reached' | 'fell' | 'stalled' | 'cap';
 

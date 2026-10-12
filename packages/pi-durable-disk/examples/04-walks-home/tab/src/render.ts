@@ -7,6 +7,7 @@ import type { Sim } from './sim.ts';
 import { Trail } from './trail.ts';
 import { legOfGeomBody, pairColors } from './colors.ts';
 import { DEFAULT_LOOK, drawFace, sameLook, type FaceKind, type ViewLook } from './look.ts';
+import { CLOTH_H, CLOTH_W, POLE_H, clothGeometry, fitFrame, flagView, type Box } from './flagview.ts';
 
 /** A drawn part of the creature, kept so a new look can recolour or reshape it without rebuilding the simulation. */
 interface Part { mesh: THREE.Mesh; role: 'torso' | 'leg' | 'foot' | 'other'; pair: number; leg: 'thigh' | 'shin'; size: [number, number, number]; base: THREE.Color; geo: THREE.BufferGeometry; /** A code body's tags for this piece (body.json), or undefined on a preset body. */ tags?: string[]; type: number }
@@ -81,16 +82,6 @@ function heroGroundTexture(anisotropy: number): THREE.CanvasTexture {
 
 /** The accent (DESIGN.md: orange is the agent acting now, one thing per screen): the flag the robot walks to. */
 const ACCENT = 0xff8700;
-/** The cloth's size (metres) and the pole's height. */
-const CLOTH_W = 0.34, CLOTH_H = 0.21, POLE_H = 0.8;
-/**
- * The hero camera's direction from what it frames when there is a flag, by the pane's shape: in a tall pane (the laptop's) from behind the robot and to its right, looking down the walk (+x) with the
- * flag ahead and the robot large in front; in a wide one (the phone's strip) from the side, the robot on the left and the flag on the right. Between the two, a blend.
- */
-function flagView(aspect: number): THREE.Vector3 {
-  const k = Math.min(1, Math.max(0, (aspect - 0.9) / 0.8));
-  return new THREE.Vector3(-1, -0.62, 0.42).normalize().lerp(new THREE.Vector3(-0.35, -1, 0.42).normalize(), k).normalize();
-}
 
 /** A soft round shadow (a radial gradient on a plane): the directional shadow alone is faint on a dark floor. */
 function blobTexture(): THREE.CanvasTexture {
@@ -123,10 +114,7 @@ class FlagMark {
     pole.rotation.x = Math.PI / 2; // a cylinder is y-up; the world is z-up
     pole.position.z = POLE_H / 2;
     pole.castShadow = true;
-    // the cloth hangs from the pole's top towards +y, in the y-z plane: it faces down the walk, at the camera behind the robot
-    const geo = new THREE.PlaneGeometry(CLOTH_W, CLOTH_H, 12, 6);
-    geo.rotateY(Math.PI / 2);
-    geo.translate(0, CLOTH_W / 2, POLE_H - CLOTH_H / 2 - 0.01);
+    const geo = clothGeometry(); // from the pole's top towards +y, facing down the walk
     this.rest = (geo.attributes.position!.array as Float32Array).slice();
     this.cloth = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: ACCENT, emissive: ACCENT, emissiveIntensity: 0.28, roughness: 0.7, side: THREE.DoubleSide }));
     this.cloth.castShadow = true;
@@ -523,21 +511,8 @@ export class View {
       rb[3] = Math.max(rb[3]!, gp[3 * g] + r); rb[4] = Math.max(rb[4]!, gp[3 * g + 1] + r); rb[5] = Math.max(rb[5]!, gp[3 * g + 2] + r);
     }
     if (!Number.isFinite(rb[0]!)) { const [x, y] = sim.torsoPos(); const r = this.frameRadius; rb.splice(0, 6, x - r, y - r, 0, x + r, y + r, 2 * this.frameCenterZ); }
-    const boxes = [rb, [f.x - 0.12, f.y - 0.05, 0, f.x + 0.12, f.y + CLOTH_W + 0.05, POLE_H + 0.05]];
-    const lo = [Math.min(boxes[0]![0]!, boxes[1]![0]!), Math.min(boxes[0]![1]!, boxes[1]![1]!), 0];
-    const hi = [Math.max(boxes[0]![3]!, boxes[1]![3]!), Math.max(boxes[0]![4]!, boxes[1]![4]!), Math.max(boxes[0]![5]!, boxes[1]![5]!)];
-    const center = new THREE.Vector3((lo[0]! + hi[0]!) / 2, (lo[1]! + hi[1]!) / 2, (lo[2]! + hi[2]!) / 2);
-    const fwd = dir.clone().negate();
-    const right = new THREE.Vector3().crossVectors(fwd, this.camera.up).normalize();
-    const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
-    const vTan = Math.tan((this.camera.fov * Math.PI) / 360), hTan = vTan * this.camera.aspect;
-    let dist = 0;
-    for (const b of boxes) for (const cx of [b[0]!, b[3]!]) for (const cy of [b[1]!, b[4]!]) for (const cz of [b[2]!, b[5]!]) {
-      const v = new THREE.Vector3(cx, cy, cz).sub(center);
-      const depth = v.dot(fwd);
-      dist = Math.max(dist, depth + Math.abs(v.dot(right)) / hTan, depth + Math.abs(v.dot(up)) / vTan);
-    }
-    return { center, dist: dist * 1.12 }; // a little air, so the label in the corner does not meet a foot
+    const boxes: Box[] = [rb, [f.x - 0.12, f.y - 0.05, 0, f.x + 0.12, f.y + CLOTH_W + 0.05, POLE_H + 0.05]];
+    return fitFrame(boxes, dir, this.camera.fov, this.camera.aspect); // with a little air, so the label in the corner does not meet a foot
   }
 
   /** Keep the whole robot in the pane: the camera's distance from it is set so a sphere of `radius` metres fits the narrower side of the view, whatever the pane's shape. */
