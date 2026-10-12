@@ -74,3 +74,13 @@ describe("the list of the stage's files a checkout caches", () => {
     await assert.rejects(stageFiles(list(500)), /500/);
   });
 });
+
+describe("the creature page's file list (/tab/offline.json)", () => {
+  const list = (body: unknown) => () => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  it("is checked against its own prefix: /tab/ files are accepted there and refused under /show/, and the other way round", async () => {
+    assert.deepEqual(await stageFiles(list({ files: ["/tab/", "/tab/main.js", "/tab/vendor/mujoco.wasm"] }), "/tab/"), ["/tab/", "/tab/main.js", "/tab/vendor/mujoco.wasm"]);
+    await assert.rejects(stageFiles(list({ files: ["/show/main.js"] }), "/tab/"), /only paths under \/tab\//);
+    await assert.rejects(stageFiles(list({ files: ["/tab/main.js"] })), /only paths under \/show\//);
+    await assert.rejects(stageFiles(list({ files: ["/tab/../run/x"] }), "/tab/"), /dot segments/);
+  });
+});
