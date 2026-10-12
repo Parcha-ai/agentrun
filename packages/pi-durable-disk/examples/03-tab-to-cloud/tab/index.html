@@ -143,6 +143,7 @@ body.phone header { padding: 10px 14px; gap: 10px; }
   <div id="badge" class="badge parked"><span class="dot"></span><div><div id="badge-text" class="badge-text">Connecting</div><div id="badge-sub" class="badge-sub"></div></div></div>
   <span id="net" class="net" title="Whether this page can reach the server: the browser's own signal and a ping">…</span>
   <div class="actions">
+    <button id="ws-toggle" class="link" title="The session's files, live">Files</button>
     <div id="switcher" class="switcher" role="group" aria-label="Where the agent runs"></div>
     <span id="handover"></span>
     <button id="takeover" class="link" hidden title="Take the run from the cloud now: its claim is revoked mid-step">take it now</button>
@@ -158,11 +159,12 @@ body.phone header { padding: 10px 14px; gap: 10px; }
 <main>
   <section id="chat"></section>
   <aside id="creature-pane" hidden><iframe id="creature" title="the robot" allow="cross-origin-isolated"></iframe></aside>
-  <aside>
-    <h2>Workspace</h2>
+  <aside id="workspace" aria-label="Workspace files">
+    <h2><span>Workspace</span><button id="ws-close" class="link" title="Close the workspace">close</button></h2>
     <div id="files"></div>
+    <div id="files-empty" class="empty">No files yet.</div>
     <h2><span id="preview-name">select a file</span></h2>
-    <pre id="preview"></pre>
+    <div id="preview"></div>
   </aside>
 </main>
 <footer>
