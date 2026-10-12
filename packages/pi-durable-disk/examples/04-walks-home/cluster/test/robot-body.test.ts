@@ -36,3 +36,11 @@ test("ball feet and weak leg motors are warned about, once each, with what to do
   const weak = warnings(dino.replaceAll("strength: 14", "strength: 10"));
   assert.equal(weak.filter((w) => /^warning: leg motors .*\(10\).* too weak to carry the body: give leg motors strength 14 or more$/.test(w)).length, 1, weak.join("\n"));
 });
+
+test("the starter dog is built the way robot.md asks: flat box feet, leg motors of strength 14, the torso the heaviest part", () => {
+  const dog = readFileSync(join(body, "dog.example.mjs"), "utf8");
+  assert.deepEqual(warnings(dog).filter((w) => /ball|too weak/.test(w)), []);
+  assert.match(dog, /shape: "box", size: \[0\.05, 0\.035, 0\.015\].*friction: "1\.4 0\.05 0\.01"/);
+  assert.equal((dog.match(/strength: 14/g) ?? []).length, 2, "hip and knee");
+  assert.match(dog, /tags: \["torso"\], mass: 6,/);
+});
