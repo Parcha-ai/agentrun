@@ -1,5 +1,5 @@
 // Pi on a phone (?phone=1): the parts that are not the browser. The native template rendered here is llama-server's own, byte for byte (fixtures from
-// llama-server's /apply-template on D1's v3 fine-tune); the lock is D1's grammar, rule for rule (fixtures/robot-v3-lock.gbnf, D1's build_gbnf); the robot's
+// llama-server's /apply-template on D1's v3 fine-tune); the lock is D1's grammar, rule for rule (fixtures/robot-v3-lock.json, D1's build_gbnf); the robot's
 // tools run on a workspace with no computer (files-env.ts); a turn can end on its tools' own words (decoding.closing); the warm-up stops exactly at the user's
 // turn, and a saved state is restored only for the model and the prefix it was made for.
 import { test } from "node:test";
@@ -22,7 +22,7 @@ import type { Llm, RawRequest, ToolChatMessage, ToolChatRequest, ToolChatTool } 
 
 const fixture = (name: string) => new URL(`./fixtures/${name}`, import.meta.url);
 const serving = JSON.parse(readFileSync(fixture("robot-v3-serving.json"), "utf8")) as { system: string; tools: ToolChatTool[] };
-const template = readFileSync(fixture("qwen35-robot-v3.jinja"), "utf8");
+const template = (JSON.parse(readFileSync(fixture("qwen35-robot-v3.template.json"), "utf8")) as { template: string }).template;
 const rendered = JSON.parse(readFileSync(fixture("robot-v3-rendered.json"), "utf8")) as { messages: ToolChatMessage[]; prompt: string }[];
 
 test("the model's template renders the conversation exactly as llama-server does: a request, two calls and their results, a chat turn before a call", () => {
@@ -30,7 +30,7 @@ test("the model's template renders the conversation exactly as llama-server does
 });
 
 test("the lock is D1's whole-schema grammar for the v3 tools, rule for rule", () => {
-  assert.equal(lockGrammar(serving.tools).trim(), readFileSync(fixture("robot-v3-lock.gbnf"), "utf8").trim());
+  assert.equal(lockGrammar(serving.tools).trim(), (JSON.parse(readFileSync(fixture("robot-v3-lock.json"), "utf8")) as { grammar: string }).grammar.trim());
 });
 
 test("a reply in Qwen's call format comes back as calls with arguments typed by the schema; the text around them is the answer", () => {
