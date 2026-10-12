@@ -18,7 +18,7 @@ html, body { background: var(--bg); color: var(--ink); font: 400 16px/1.5 var(--
 /* ---- the header: one slim line ---- */
 header { background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px var(--gutter); gap: 14px; }
 h1 { font: 500 11px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
-.run { font: 400 11px var(--mono); color: var(--muted); opacity: .7; }
+.run { display: none; } /* the run's id is for the operator: it is in the address bar */
 .badge { padding: 0; border-radius: 0; background: none; gap: 8px; color: var(--ink); margin-left: auto; }
 .badge .dot { width: 7px; height: 7px; background: var(--muted); }
 .badge.tab .dot, .badge.offline .dot { background: var(--green); } .badge.cloud .dot { background: var(--purple); } .badge.moving .dot { background: var(--accent); }
