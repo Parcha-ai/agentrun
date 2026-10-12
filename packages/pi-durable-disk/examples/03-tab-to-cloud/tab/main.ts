@@ -255,15 +255,35 @@ const openTools = new Set<string>();
 /** The teach_skills calls that were opened for the reader once already. */
 const autoOpened = new Set<string>();
 
+/**
+ * The chat follows the newest line while the reader is at the bottom, and leaves them alone once they scroll up. "At the bottom" is the reader's last scroll, not a measure taken at each redraw: a diff is drawn
+ * after the redraw that made room for it, so the page keeps growing for a moment, and the follow must hold through that (a resize of any line re-pins it).
+ */
+let following = true;
+const chatSizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => { if (following) { const c = $("chat"); c.scrollTop = c.scrollHeight; } });
+// Only the reader turns the follow off (a scroll up by wheel, finger or the scrollbar); our own pin never does, even when the page has grown again before its scroll event arrives. Reaching the bottom turns it on.
+let readerScrolling = false;
+$("chat").addEventListener("wheel", (e) => { if (e.deltaY < 0) following = false; }, { passive: true });
+$("chat").addEventListener("pointerdown", () => { readerScrolling = true; });
+$("chat").addEventListener("touchstart", () => { readerScrolling = true; }, { passive: true });
+addEventListener("pointerup", () => { readerScrolling = false; });
+addEventListener("touchend", () => { readerScrolling = false; });
+$("chat").addEventListener("scroll", () => {
+  const c = $("chat");
+  if (c.scrollHeight - c.scrollTop - c.clientHeight < 80) following = true;
+  else if (readerScrolling) following = false;
+});
+
 function renderChat(): void {
   const list = $("chat");
-  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
   const items = state.chat.items();
   announceTools(items);
   const echoed = echoedTools(items);
   callThreads = threadsByCall(items.filter((i) => i.kind === "tool" && i.name === "teach_skills").map((i) => i.id), teachThreads.list());
+  chatSizes?.disconnect();
   list.replaceChildren(...items.filter((item) => !(item.kind === "brain" && (item.stage === "moved" || item.stage === "decision"))).map((item) => renderItem(item, echoed)));
-  if (atBottom) list.scrollTop = list.scrollHeight;
+  if (following) list.scrollTop = list.scrollHeight;
+  for (const child of list.children) chatSizes?.observe(child);
   noticeSeen();
 }
 

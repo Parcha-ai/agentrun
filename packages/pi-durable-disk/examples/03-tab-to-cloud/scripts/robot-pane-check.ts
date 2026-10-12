@@ -152,6 +152,21 @@ try {
   ok("and asking for all of it ends at the real end of the log", /epoch 3000 reward 2999$/.test(longTail.full), longTail.full.slice(-80));
   await ev(`document.querySelector("details.thread .output .more").click()`);
   ok("and asking for it shows all of it", await ev<boolean>(`document.querySelector("details.thread .output pre").textContent.startsWith("step 1 ")`));
+  // The chat follows a thread as it grows (the newest tool lines are in view) unless the reader scrolled up.
+  const grow = (from: number, to: number) => ev(`(() => { const e = []; for (let i = ${from}; i < ${to}; i++) { e.push({ type: "entry_appended", entry: { id: "g" + i + "a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "gc" + i, name: "write", arguments: { path: "train/part" + i + ".py", content: Array.from({ length: 30 }, (_, k) => "def f" + k + "(x): return x * " + k).join("\\n") + "\\n" } }] }] } }); e.push({ type: "entry_appended", entry: { id: "g" + i + "r", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "gc" + i, toolName: "write", content: [{ type: "text", text: "wrote" }] }] } }); } demo.thread({ kind: "thread", conversation: 41, teach: 14, name: "spin", gpu: 3, status: "running", events: e }); return true; })()`);
+  const atEnd = () => ev<number>(`(() => { const c = document.getElementById("chat"); return c.scrollHeight - c.scrollTop - c.clientHeight; })()`);
+  await ev(`document.querySelectorAll("details.thread details.tool").forEach((d) => { d.open = true; })`);
+  await ev(`(() => { const c = document.getElementById("chat"); c.scrollTop = c.scrollHeight; c.dispatchEvent(new Event("scroll")); return true; })()`);
+  await grow(100, 106);
+  await ev(`document.querySelectorAll("details.thread details.tool").forEach((d) => { d.open = true; })`); // their diffs are drawn after the redraw: the page grows after the scroll was set
+  await sleep(2500);
+  ok("a thread that grows while the reader is at the bottom: the newest lines stay in view", (await atEnd()) < 8, await atEnd());
+  await ev(`(() => { const c = document.getElementById("chat"); c.dispatchEvent(new WheelEvent("wheel", { deltaY: -240 })); c.scrollTop = 0; c.dispatchEvent(new Event("scroll")); return true; })()`); // the reader scrolls up
+  await grow(106, 112);
+  await ev(`document.querySelectorAll("details.thread details.tool").forEach((d) => { d.open = true; })`);
+  await sleep(1200);
+  ok("and a reader who scrolled up is left where they are", await ev<number>(`document.getElementById("chat").scrollTop`) < 40, await ev(`document.getElementById("chat").scrollTop`));
+  await ev(`(() => { const c = document.getElementById("chat"); c.scrollTop = c.scrollHeight; c.dispatchEvent(new Event("scroll")); return true; })()`);
   await page.screenshot(join(shots, "pane-3c-threads.png"));
   // The workspace: the session's files as a live tree (@pierre/trees); a file picked opens read-only.
   await ev(`document.getElementById("ws-toggle").click()`);
