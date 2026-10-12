@@ -1229,26 +1229,29 @@ let phoneNewChat: (() => Promise<void>) | undefined;
 async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   const params = new URLSearchParams(location.search);
   const marks = state.phone!.marks;
-  let brain: V5Brain | undefined;
-  brain = await startV5Brain(runtime, {
+  const brain = await startV5Brain(runtime, {
     params, marks,
     say: phoneSay,
     log: (line) => state.phone!.log.push(line),
-    report: phoneReport,
+    report: (kind, data) => {
+      if (kind === "turn-start") state.phone!.turnStarted = performance.now(); // the thinking timer counts from here
+      phoneReport(kind, data);
+    },
     conversation: () => state.active ?? runtime.root,
     // the phone has nothing else running wasm: wllama's build patches stay as they are
-  }, () => {
+  }, (b) => {
     state.phone!.ready = true;
+    state.phone!.model = b.model;
+    render(); // the composer opens (canSend reads state.phone.ready)
     ($("input") as HTMLTextAreaElement).placeholder = "Tell the robot what to do: paint it red, make it a spider, spin…";
     ($("input") as HTMLTextAreaElement).focus();
-    state.phone!.model = brain!.model;
     // the robot, now that the brain is in: standing still (no physics) until a skill plays
     if (params.get("pane") !== "0") startRobotPane("&still=1");
   });
   // New chat: a fresh conversation on the same brain and tools, followed from now on; the earlier ones stay in the store, and the robot stays as it is
   phoneNewChat = async () => {
     if (state.chat.busy) return;
-    const fresh = await brain!.newConversation();
+    const fresh = await brain.newConversation();
     try { localStorage.setItem(`phone-conversation:${run}`, String(fresh.id)); } catch { /* not kept across a reload */ }
     await followConversation(runtime, fresh);
     phoneReport("new-chat", {});

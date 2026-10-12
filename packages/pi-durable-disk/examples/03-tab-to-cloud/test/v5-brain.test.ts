@@ -9,7 +9,8 @@ import { FilesEnv, memoryFs } from "../tab/files-env.ts";
 import { lockGrammar, renderNative } from "../tab/native-tools.ts";
 import { narrowEnum, robotLock, signatureTools, signatureView, toNativeTools } from "../tab/native-turn.ts";
 import { PhoneModel } from "../tab/phone-model.ts";
-import { robotStateLine } from "../tab/v5-brain.ts";
+import { robotStateLine, startV5Brain, type V5Host } from "../tab/v5-brain.ts";
+import type { TabRuntime } from "../tab/runtime.ts";
 import { SKILL_NAMES, applyRobotTool, initialRobot, type Design } from "../robot-model.ts";
 import { codeStateLine, stateLine } from "../robot-state-line.ts";
 import { ROBOT_FILE } from "../robot-tools.ts";
@@ -94,4 +95,54 @@ test("narrowing a free skill name or a tag list never widens: a tag the schema d
   const locked = robotLock(shownTools(), { system: tagsServing.system, home: ["walk"], tags: ["torso", "unicorn"] });
   assert.deepEqual(enumOf(locked, "set_color", "part"), ["torso", "all"].sort((a, b) => enumOf(shownTools(), "set_color", "part")!.indexOf(a) - enumOf(shownTools(), "set_color", "part")!.indexOf(b)));
   assert.deepEqual(enumOf(narrowEnum(shownTools(), "skill", ["walk"]), "do", "skill"), ["walk"]);
+});
+
+// ---- startV5Brain, end to end against stand-ins: the order things are set and called in, and the wasm globals ------------------------------------------------------------
+const parts = [{ name: "robot-v5-00001-of-00001.gguf", bytes: 10, sha256: "a".repeat(64) }];
+async function withPage<T>(run: () => Promise<T>): Promise<T> {
+  const real = { fetch: globalThis.fetch, location: (globalThis as { location?: unknown }).location };
+  const files: Record<string, string> = { "https://p.example/models/robot-v5-00001-of-00001.parts.json": JSON.stringify({ parts }), "https://p.example/models/v5t.serving.json": readFileSync(fixture("robot-v5-tags-serving.json"), "utf8") };
+  globalThis.fetch = (async (u: string | URL) => { const body = files[String(u)]; return body === undefined ? new Response("missing", { status: 404 }) : new Response(body); }) as typeof fetch;
+  (globalThis as { location?: unknown }).location = { href: "https://p.example/run/x", origin: "https://p.example" };
+  try { return await run(); } finally { globalThis.fetch = real.fetch; (globalThis as { location?: unknown }).location = real.location; }
+}
+function standIn(order: string[]) {
+  const llm: Llm = { async load() {}, async chat() { return { text: "", tokens: 0 }; }, async loadUrl() { order.push("load"); }, chatTemplate: () => template, async complete() { return { text: "", stoppedBy: "length", promptTokens: 595, outputTokens: 0, ms: 1 }; }, async exit() {} };
+  const registry = agentRegistry(async () => undefined, { switchTool: false, environments: [] });
+  const conversation = { async agent() { return {}; }, async configure() { order.push("configure"); } };
+  const runtime = { models: { setProvider: () => order.push("provider") }, registry, harness: { resume: async () => { order.push("resume"); } }, env: new FilesEnv(memoryFs("/workspace")) } as unknown as TabRuntime;
+  const host = (extra: Partial<V5Host> = {}): V5Host => ({ params: new URLSearchParams("build=asyncify&state=0&model=/models/robot-v5-00001-of-00001.gguf&serving=/models/v5t.serving.json"), marks: {}, say: () => undefined, log: () => undefined, report: () => undefined, conversation: () => conversation as never, makeLlm: () => llm, ...extra });
+  return { runtime, host };
+}
+
+test("startV5Brain gives `ready` the brain, with the lock and the reports already set, and resumes a cut-short turn only after it", async () => {
+  const order: string[] = [];
+  const { runtime, host } = standIn(order);
+  const reports: string[] = [];
+  const brain = await withPage(() => startV5Brain(runtime, host({ report: (kind) => void reports.push(kind) }), (b) => {
+    assert.ok(b.model && typeof b.model.lock === "function" && typeof b.model.onTurn === "function" && typeof b.model.onTurnStart === "function", "everything a turn uses is set when the page is told");
+    assert.equal(b.agent.instructions, tagsServing.system);
+    order.push("ready");
+  }));
+  assert.deepEqual(order, ["load", "provider", "configure", "ready", "resume"], "the provider is in before the conversation is configured, the page is told before a cut-short turn resumes");
+  assert.ok(reports.includes("build") && reports.includes("ready"));
+  assert.equal(brain.build, "asyncify");
+  assert.equal(brain.model.toolsInPrompt, false, "a signature prefix: no tools block");
+});
+
+test("the laptop gets this page's wasm globals back after the model is loaded; the phone's are left as the build selection set them", async () => {
+  const W = WebAssembly as unknown as { Memory: unknown; Suspending?: unknown };
+  const real = { Memory: W.Memory, Suspending: W.Suspending };
+  try {
+    for (const restore of [true, false]) {
+      const { runtime, host } = standIn([]);
+      await withPage(() => startV5Brain(runtime, host({ restoreWasmGlobals: restore })));
+      assert.equal(W.Memory === real.Memory, restore, restore ? "Memory is the page's own again" : "Memory is still the build selection's");
+      assert.equal(W.Suspending, restore ? real.Suspending : undefined, restore ? "Suspending is back" : "Suspending is still hidden (the Asyncify build)");
+      W.Memory = real.Memory; if (real.Suspending !== undefined) W.Suspending = real.Suspending; else Reflect.deleteProperty(WebAssembly, "Suspending");
+    }
+  } finally {
+    W.Memory = real.Memory;
+    if (real.Suspending !== undefined) W.Suspending = real.Suspending;
+  }
 });

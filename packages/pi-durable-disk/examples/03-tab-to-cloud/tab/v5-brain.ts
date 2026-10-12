@@ -5,7 +5,7 @@
 import type { AgentChange, Conversation } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { wllamaLlm, wllamaWith, partReads, partTimes } from "../../04-walks-home/tab/src/llm.ts";
-import type { ToolChatMessage, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
+import type { Llm, ToolChatMessage, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
 import { robotLock, signatureTools, signatureView, servingView, toNativeTools } from "./native-turn.ts";
 import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBuild } from "./phone-model.ts";
@@ -77,6 +77,8 @@ export interface V5Host {
   stateUrl?: string | null;
   /** The model's id on the brain provider. */
   modelId?: string;
+  /** The model backend of a build (default: wllama); a test hands in a stand-in. */
+  makeLlm?: (build: WllamaBuild, logger: { debug(...a: unknown[]): void; log(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void }) => Llm;
 }
 
 export interface V5Brain {
@@ -100,9 +102,9 @@ export interface V5Brain {
 /**
  * Load the model, make it the conversation's brain with the tools it was trained on, read the system prompt and the tools once (a shipped warm state is restored
  * instead), and only then let anything run on it: the hooks every turn uses are set before `ready` is told and before a turn a reload cut short resumes.
- * `ready` runs once the brain can answer, with `resume` the call that resumes such a turn (it needs the provider, the lock and the reports in place).
+ * `ready` runs once the brain can answer, and is given it; the call that resumes such a turn comes after it (it needs the provider, the lock and the reports in place).
  */
-export async function startV5Brain(runtime: TabRuntime, host: V5Host, ready: () => void | Promise<void> = () => undefined): Promise<V5Brain> {
+export async function startV5Brain(runtime: TabRuntime, host: V5Host, ready: (brain: V5Brain) => void | Promise<void> = () => undefined): Promise<V5Brain> {
   const params = host.params;
   const marks = host.marks;
   const modelId = host.modelId ?? V5_MODEL_ID;
@@ -134,7 +136,8 @@ export async function startV5Brain(runtime: TabRuntime, host: V5Host, ready: () 
   const { modelUrl, servingUrl, stateUrl } = v5Urls(params, host);
   const makeModel = (build: WllamaBuild) => {
     const dir = build === "jspi32" ? "/vendor/wllama-jspi32" : "/vendor/wllama-compat";
-    const llm = wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href, wllamaWith({ compat: { worker: new URL(`${dir}/wllama.js`, location.origin).href, wasm: new URL(`${dir}/wllama.wasm`, location.origin).href }, logger: { debug: engineLog("debug"), log: engineLog("log"), warn: engineLog("warn"), error: engineLog("error") } }));
+    const logger = { debug: engineLog("debug"), log: engineLog("log"), warn: engineLog("warn"), error: engineLog("error") };
+    const llm = host.makeLlm ? host.makeLlm(build, logger) : wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href, wllamaWith({ compat: { worker: new URL(`${dir}/wllama.js`, location.origin).href, wasm: new URL(`${dir}/wllama.wasm`, location.origin).href }, logger }));
     const model = new PhoneModel(llm, {
       url: modelUrl,
       threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4),
@@ -222,11 +225,8 @@ export async function startV5Brain(runtime: TabRuntime, host: V5Host, ready: () 
   model.onTurn = (turn) => host.report("turn", turnReport(turn, params.get("report") === "text")); // the reply's words only when the page was opened to send them
   model.onTurnStart = () => host.report("turn-start", {});
   host.say("", `brain ready: loaded in ${(marks.loadMs / 1000).toFixed(1)} s, tools read in ${(marks.warmMs / 1000).toFixed(1)} s (${warm.promptTokens} tokens)`);
-  host.report("ready", { ...marks, restored: warm.restored ? warm.restored.tokens : 0, compat: !("Suspending" in WebAssembly) || undefined, threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4), reads: partReads.count, largestRead: partReads.largest });
-  await ready();
-  // what a reload cut short (a turn in the middle of its model call or its tools) runs now, on the brain that just came up
-  await runtime.harness.resume();
-  return {
+  host.report("ready", { ...marks, restored: warm.restored ? warm.restored.tokens : 0, build, threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4), reads: partReads.count, largestRead: partReads.largest });
+  const result: V5Brain = {
     model, serving, agent, modelUrl, servingUrl, stateUrl, build,
     skillsHome: () => skillsHome,
     async newConversation() {
@@ -236,4 +236,8 @@ export async function startV5Brain(runtime: TabRuntime, host: V5Host, ready: () 
     },
     smallFiles: () => v5SmallFiles({ modelUrl, servingUrl, stateUrl }),
   };
+  await ready(result);
+  // what a reload cut short (a turn in the middle of its model call or its tools) runs now, on the brain that just came up
+  await runtime.harness.resume();
+  return result;
 }
