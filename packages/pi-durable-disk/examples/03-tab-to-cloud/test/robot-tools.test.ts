@@ -30,7 +30,7 @@ async function rig(script: ScriptedTurn[], before?: (dir: string) => void) {
   const root = await harness.root(ctx, { agent: rootAgent("cloud-big") });
   const results = async () => ((await root.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; model?: { role: string; isError?: boolean; toolName?: string; content?: { text?: string }[] }[] }[]).filter((e) => e.kind === "pi.tool-result").reverse().map((e) => ({ name: e.model![0]!.toolName, error: e.model![0]!.isError === true, text: e.model![0]!.content?.map((c) => c.text ?? "").join("") ?? "" }));
   const ask = async (text: string) => void (await (await root.submit({ type: "input", content: text }, ctx)).wait(ctx));
-  return { dir, registry, durable, ask, results, state: () => parseRobot(readFileSync(join(dir, ROBOT_FILE), "utf8")) as RobotState, close: async () => { await harness.close(ctx); rmSync(dir, { recursive: true, force: true }); } };
+  return { agent: () => root.agent(ctx), dir, registry, durable, ask, results, state: () => parseRobot(readFileSync(join(dir, ROBOT_FILE), "utf8")) as RobotState, close: async () => { await harness.close(ctx); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 test("every host registers the nine robot tools, in the schema's order, right after go_online and before the computer", () => {
@@ -161,11 +161,11 @@ test("do(skill) reads the skills that came home from home/skills.json: a skill i
 const DINO_BODY = { name: "dino", tag_list: ["torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "eyes", "plates"], legs: 4 };
 const withBody = (dir: string) => { mkdirSync(join(dir, "robot"), { recursive: true }); writeFileSync(join(dir, "robot/body.json"), JSON.stringify(DINO_BODY)); };
 
-test("on a robot built from code the look tools work on its tags through the real tools, the shape tools refuse with the one sentence, and the first edit takes the body's name", async () => {
+test("on a robot built from code the look tools work on its tags through the real tools, the flat form refuses a preset with the one sentence (the shape tools themselves are not offered), and the first edit takes the body's name", async () => {
   const r = await rig([
     { call: { name: "set_color", arguments: { part: "plates", color: "orange" } } },
     { call: { name: "set_color", arguments: { part: "wings", color: "red" } } },
-    { call: { name: "resize", arguments: { part: "leg_length", factor: 1.2 } } },
+    { call: { name: "update_robot", arguments: { morph: "dog" } } },
     { text: "Done." },
   ], withBody);
   await r.ask("paint the plates orange");
@@ -211,4 +211,29 @@ test("the templates the tool writes are what 04-walks-home/body holds (robot-tem
   // @ts-expect-error: a plain .mjs script, without types
   const { generated } = await import("../scripts/gen-robot-templates.mjs");
   assert.equal(readFileSync(new URL("../robot-templates.ts", import.meta.url), "utf8"), generated);
+});
+
+test("once a body exists as code, the agent is no longer offered the tools that change a preset body: they leave its tool list from the first robot call, and come back for a robot with no code body", async () => {
+  const names = async (r: Awaited<ReturnType<typeof rig>>) => (await r.agent()).tools.map((t) => t.name);
+  const code = await rig([{ call: { name: "set_color", arguments: { part: "plates", color: "orange" } } }, { text: "Done." }], withBody);
+  const before = await names(code);
+  for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok(before.includes(t), `${t} is offered before`);
+  await code.ask("paint the plates orange");
+  const after = await names(code);
+  for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok(!after.includes(t), `${t} is gone once the body is code`);
+  for (const t of ["set_color", "set_shape", "set_face", "rename", "reset", "do", "build_robot", "update_robot"]) assert.ok(after.includes(t), `${t} stays`);
+  await code.close();
+  const preset = await rig([{ call: { name: "set_color", arguments: { part: "legs", color: "red" } } }, { text: "Done." }]);
+  await preset.ask("legs red");
+  const kept = await names(preset);
+  for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok(kept.includes(t), `${t} stays for a preset body`);
+  await preset.close();
+});
+
+test("build_robot hides them too, so the first thing the agent does in code mode is enough", async () => {
+  const r = await rig([{ call: { name: "build_robot", arguments: {} } }, { text: "Done." }], withBody);
+  await r.ask("check the robot");
+  const names = (await r.agent()).tools.map((t) => t.name);
+  assert.ok(!names.includes("morph") && names.includes("build_robot"));
+  await r.close();
 });
