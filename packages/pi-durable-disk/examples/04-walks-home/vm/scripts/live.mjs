@@ -242,8 +242,18 @@ try {
     console.log(`LIVE: then open the link above, and the stage at http://127.0.0.1:${stagePort}/${episode === "obsession" ? "obsession/" : stagePath} in another window; keep both windows visible (not minimized)`);
     step("waiting for your browser to open the link", { serverPort: Number(origin.port), stagePort });
   } else {
-    writer = await unlessStopped(openTab(agentUrl, { width: 1400, height: 800 }));
-    await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", 240_000, "the 03 page to attach as the writer");
+    // The first attach after the run's tree was just removed can fail once (the disk has no directory for it yet): the page is opened again, up to three times.
+    for (let attempt = 1; ; attempt++) {
+      writer = await unlessStopped(openTab(agentUrl, { width: 1400, height: 800 }));
+      try {
+        await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", attempt < 3 ? 40_000 : 240_000, "the 03 page to attach as the writer");
+        break;
+      } catch (error) {
+        if (error instanceof Stopped || attempt >= 3) throw error;
+        step("the 03 page did not attach; opening it again", { attempt });
+        await writer.close().catch(() => {});
+      }
+    }
     step("the 03 page runs the agent");
   }
   // The warm GPU box: ready before anyone is told to start (with the person's browser, it starts warming when their page attaches).
