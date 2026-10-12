@@ -117,8 +117,9 @@ body.phone #phone-retry button { min-height: 44px; }
 #phone-actions { display: none; }
 body.phone #phone-actions { display: flex; justify-content: flex-end; }
 body.phone #new-chat, body.phone #phone-files { min-height: 32px; padding: 4px 6px; }
-/* the workspace on a phone: a sheet over the chat, opened by Files (#phone-files) or by picking a file, closed by its close or a tap outside it */
-body.phone.ws-open aside#workspace { display: grid !important; position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: 100%; height: calc(var(--vvh, 100dvh) * 0.72); z-index: 30; overflow: hidden; border-radius: 14px 14px 0 0; border-top: 1px solid var(--line); box-shadow: 0 -24px 48px #000a; padding: 0 max(12px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px, env(safe-area-inset-left)); }
+/* the workspace on a phone: a sheet over the chat, opened by Files (#phone-files) or by picking a file, closed by its close or a tap outside it. The tree and the
+   preview share it 2 to 3, with no floor for the tree, and on a short screen the sheet takes up to 440 px of it: a picked file always has room */
+body.phone.ws-open aside#workspace { display: grid !important; grid-template-rows: auto minmax(0, 2fr) auto minmax(0, 3fr); position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: 100%; height: max(calc(var(--vvh, 100dvh) * 0.72), min(calc(var(--vvh, 100dvh) - 24px), 440px)); z-index: 30; overflow: hidden; border-radius: 14px 14px 0 0; border-top: 1px solid var(--line); box-shadow: 0 -24px 48px #000a; padding: 0 max(12px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px, env(safe-area-inset-left)); }
 body.phone.ws-open #ws-close { display: inline; min-height: 44px; min-width: 44px; }
 body.phone.ws-open #workspace > h2:first-child { display: flex; justify-content: space-between; align-items: center; }
 body.phone.ws-open::after { content: ""; position: fixed; inset: 0; z-index: 29; background: #0009; }

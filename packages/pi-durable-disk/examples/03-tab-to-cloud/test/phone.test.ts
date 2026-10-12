@@ -639,3 +639,17 @@ test("over ten turns a turn reads the same however long the chat, at batch 128 w
   const restoring = await conversation(128, false);
   assert.ok(restoring[9]! > restoring[2]! * 2, `without the exchanges-first read every turn reads its whole window (${restoring.join(", ")})`);
 });
+
+test("a picked file's text comes from where this page keeps the workspace: the phone's own files, the tab's computer, or the pipe's copy", async () => {
+  const { workspaceText } = await import("../tab/file-text.ts");
+  const { Workspace } = await import("../tab/workspace.ts");
+  const fs = memoryFs("/workspace");
+  const phone = new FilesEnv(fs);
+  assert.ok((await phone.writeFile("creature/robot.json", '{"version":1}', ctx)).ok);
+  assert.equal(await workspaceText({ env: phone, workspace: new Workspace(fs) }, { kind: "file" }, "creature/robot.json"), '{"version":1}', "the phone: its files, with no computer and no copy from the pipe");
+  assert.equal(await workspaceText({ env: phone, workspace: new Workspace(fs) }, { kind: "file" }, "creature/missing.json"), undefined);
+  const computer = { sandbox: { fs: { readText: async (p: string) => `read ${p}` } } };
+  assert.equal(await workspaceText({ env: computer }, undefined, "a.txt"), "read /workspace/a.txt", "the tab's computer");
+  assert.equal(await workspaceText(undefined, { kind: "file", data: Buffer.from("from the pipe").toString("base64") }, "b.txt"), "from the pipe", "a page watching another's run");
+  assert.equal(await workspaceText(undefined, { kind: "file" }, "c.txt"), undefined);
+});
