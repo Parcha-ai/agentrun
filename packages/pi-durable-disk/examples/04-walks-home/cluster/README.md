@@ -53,7 +53,11 @@ Kill the host at any point and open the same store in a new process:
 - A Thread task past its acquire phase keeps the box ID from its checkpoint; one still acquiring gets the same box again.
 - The resubmitted assignment uses the same request ID, so it finds the same submission.
 - An interrupted train_skill reruns. On the box, `pi-run` stops the earlier run of that skill, and the trainer returns at
-  once if the skill already passed or starts again from its warm start.
+  once if the skill already passed or starts again from its warm start. A rerun that finds the skill passed reports the
+  checkpoint and seconds from the box's skill.json, never ones it made up.
+- A thread that ran to its end without passing fails with its saved result in the outcome's `detail`, so the fold keeps
+  its facts (box, checkpoint, seconds, status) rather than reading them from the thread's words.
+- A thread's artifact mirror stops whenever its phase ends, on errors and aborts too.
 
 ## The spike and the tests
 

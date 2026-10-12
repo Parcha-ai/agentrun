@@ -30,10 +30,13 @@ export class FakePool implements ThreadBoxes {
   readonly root: string;
   readonly capacity: number;
   readonly log: (line: object) => void;
-  constructor(root: string, capacity = 8, log: (line: object) => void = () => {}) {
+  /** Skills whose new box already holds a finished run (as after a host died between the trainer's end and the result). */
+  readonly doneBefore: Record<string, { checkpoint: number; seconds: number }>;
+  constructor(root: string, capacity = 8, log: (line: object) => void = () => {}, doneBefore: Record<string, { checkpoint: number; seconds: number }> = {}) {
     this.root = root;
     this.capacity = capacity;
     this.log = log;
+    this.doneBefore = doneBefore;
     mkdirSync(join(root, "pool"), { recursive: true });
   }
   private held(): string[] {
@@ -53,6 +56,11 @@ export class FakePool implements ThreadBoxes {
       if (this.held().length < this.capacity) {
         const boxId = `sb-${thread.skill}-${Date.now().toString(36)}`;
         mkdirSync(join(this.boxDir(boxId), "workspace"), { recursive: true });
+        const done = this.doneBefore[thread.skill];
+        if (done !== undefined) {
+          writeAtomic(join(this.boxDir(boxId), "workspace", "skills", thread.skill, "skill.json"),
+            JSON.stringify({ skill: thread.skill, label: thread.skill, status: "done", passed_at: done.checkpoint, wall_s: done.seconds }));
+        }
         writeAtomic(file, boxId);
         this.event({ event: "pool.create", threadId: thread.threadId, skill: thread.skill, gpu: thread.gpu, boxId });
         return boxId;
@@ -91,6 +99,9 @@ export class FakeBoxEnv extends NodeExecutionEnv {
   private local(path: string): string {
     return path.startsWith("/workspace") ? join(this.dir, path) : path;
   }
+  override readTextFile(path: string, context: Context): ReturnType<NodeExecutionEnv["readTextFile"]> {
+    return super.readTextFile(this.local(path), context);
+  }
   override exec(command: ExecArgs[0], options: ExecArgs[1], context: ExecArgs[2]): ExecReturn {
     if (!Array.isArray(command) || command[0] !== "pi-run" || command[3] !== "train-skill") {
       return Promise.resolve({ ok: false, error: { code: "unsupported", message: "this fake box runs only pi-run <skill> -- train-skill" } } as never);
@@ -122,10 +133,16 @@ export class FakeBoxEnv extends NodeExecutionEnv {
     const passAt = PASS_AT[skill] ?? null;
     const started = Date.now();
     for (let n = 1; n <= MAX_CHECKPOINTS; n++) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, this.tickMs);
-        context.abortSignal?.addEventListener("abort", () => (clearTimeout(timer), reject(new Error("aborted"))), { once: true });
+      // Aborting the call stops this run, and exec reports it as an error result, as a real environment does.
+      const stopped = await new Promise<boolean>((resolve) => {
+        if (context.abortSignal?.aborted) return resolve(true);
+        const timer = setTimeout(() => resolve(false), this.tickMs);
+        context.abortSignal?.addEventListener("abort", () => (clearTimeout(timer), resolve(true)), { once: true });
       });
+      if (stopped) {
+        rmSync(marker, { force: true });
+        return { ok: false, error: { code: "aborted", message: "the run was aborted" } } as never;
+      }
       const passes = passAt !== null && n >= passAt;
       const t = (Date.now() - started) / 1000;
       writeAtomic(join(out, "checkpoints", `ckpt-${n}.json`), JSON.stringify({ checkpoint: n, steps: n * 4096 }));
@@ -148,6 +165,8 @@ export class FakeBoxEnv extends NodeExecutionEnv {
 
 /** D0's ArtifactSync, simplified: mirror box skills/<skill>/ to host work/skills/<skill>/, skipping same size + mtime. */
 export class FakeArtifacts implements ThreadArtifacts {
+  /** Mirrors started and not yet stopped, in this process. */
+  static active = 0;
   private timer: NodeJS.Timeout | undefined;
   copied = 0;
   readonly remote: string;
@@ -159,13 +178,18 @@ export class FakeArtifacts implements ThreadArtifacts {
     this.intervalMs = intervalMs;
   }
   start(): void {
+    if (this.timer !== undefined) return;
+    FakeArtifacts.active++;
     this.timer = setInterval(() => this.copy(), this.intervalMs);
   }
   async flush(): Promise<void> {
     this.copy();
   }
   stop(): void {
+    if (this.timer === undefined) return;
     clearInterval(this.timer);
+    this.timer = undefined;
+    FakeArtifacts.active--;
   }
   private copy(dir = ""): void {
     const from = join(this.remote, dir);

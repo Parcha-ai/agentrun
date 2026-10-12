@@ -10,10 +10,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, dir: { type: "string" } } });
+const { values: a } = parseArgs({ options: { tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, dir: { type: "string" }, "done-before": { type: "string", default: "" } } });
 const dir = a.dir ?? mkdtempSync(join(tmpdir(), "teach-skills-spike-"));
 const host = join(dirname(fileURLToPath(import.meta.url)), "host.ts");
-const run = (mode: string) => spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--capacity", a.capacity!], { stdio: ["ignore", "inherit", "inherit"] });
+const run = (mode: string) =>
+  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--capacity", a.capacity!, ...(a["done-before"] ? ["--done-before", a["done-before"]] : [])], { stdio: ["ignore", "inherit", "inherit"] });
 
 const t0 = Date.now();
 const first = run("first");
@@ -58,9 +59,19 @@ const checks = {
   every_box_released: pool.filter((p) => p.event === "pool.release").length === 8,
   boxes_out_never_above_capacity: peakHeld(pool) <= Number(a.capacity),
   allSettled_folded_all_8_with_one_failure: threads.length === 8 && threads.filter((t: { status: string }) => t.status === "passed").length === 7 && threads.some((t: { skill: string; status: string }) => t.skill === "wave" && t.status === "never-passed"),
+  // wave's thread said only "wave ran out of steps": its status and facts come from the result it saved, not its words.
+  failed_thread_keeps_its_saved_facts: threads.some((t: { skill: string; status: string; boxId: string | null; checkpoint?: number; seconds?: number }) =>
+    t.skill === "wave" && t.status === "never-passed" && t.boxId !== null && t.checkpoint === 8 && t.seconds !== undefined),
   read_thread_answers_from_gpu_3: typeof report.readThread === "string" && /GPU 3 \(backwards\)/.test(report.readThread) && /train_skill/.test(report.readThread),
   no_live_tasks_left: report.tasks_after.length === 0,
 };
+// A skill whose box already held a finished run reports that run's checkpoint and seconds, not zero and the replay's time.
+for (const spec of (a["done-before"] ?? "").split(",").filter(Boolean)) {
+  const [skill, checkpoint, seconds] = spec.split(":");
+  const t = threads.find((x: { skill: string }) => x.skill === skill);
+  (checks as Record<string, boolean>)[`replayed_${skill}_reports_its_saved_run`] =
+    t?.status === "passed" && t.checkpoint === Number(checkpoint) && t.seconds === Number(seconds) && /already passed/.test(t.summary);
+}
 const reruns = report.children.map((c: { box: { boxId: string; skill: string } }) => ({ skill: c.box.skill, runs: runs(c.box.boxId).map((r: { event: string }) => r.event) }));
 const ok = Object.values(checks).every(Boolean);
 const verdict = { ok, dir, capacity: Number(a.capacity), peak_boxes: peakHeld(pool), killed_at_s: killedAt, resume_to_settled_s: report.resume_to_settled_s, checks, reruns, answer: report.answer, ask: report.ask };

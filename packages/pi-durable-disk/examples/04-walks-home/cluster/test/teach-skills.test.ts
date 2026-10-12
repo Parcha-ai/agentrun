@@ -9,11 +9,13 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { foldText, type ThreadResult } from "../teach-skills.ts";
 
-const spike = join(dirname(fileURLToPath(import.meta.url)), "..", "spike", "spike.ts");
+const here = dirname(fileURLToPath(import.meta.url));
+const spike = join(here, "..", "spike", "spike.ts");
+const host = join(here, "..", "spike", "host.ts");
 
-function runSpike(capacity: number) {
+function runSpike(capacity: number, ...extra: string[]) {
   const dir = mkdtempSync(join(tmpdir(), `teach-skills-${capacity}-`));
-  const r = spawnSync(process.execPath, [spike, "--dir", dir, "--tick", "150", "--capacity", String(capacity)], { encoding: "utf8", timeout: 120_000 });
+  const r = spawnSync(process.execPath, [spike, "--dir", dir, "--tick", "150", "--capacity", String(capacity), ...extra], { encoding: "utf8", timeout: 120_000 });
   const verdict = JSON.parse(readFileSync(join(dir, "verdict.json"), "utf8"));
   return { status: r.status, verdict };
 }
@@ -35,6 +37,26 @@ test("a pool of two boxes queues the threads in acquire and still joins all eigh
   for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
   assert.equal(status, 0);
   assert.equal(verdict.peak_boxes, 2);
+});
+
+test("a replay of a skill that already passed reports that run's checkpoint and seconds, not invented ones", () => {
+  const { status, verdict } = runSpike(8, "--done-before", "get-up:4:30");
+  assert.equal(verdict.checks["replayed_get-up_reports_its_saved_run"], true);
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
+});
+
+test("aborting the run mid-way stops every artifact mirror and gives every box back", () => {
+  const dir = mkdtempSync(join(tmpdir(), "teach-skills-abort-"));
+  const r = spawnSync(process.execPath, [host, "--dir", dir, "--mode", "abort", "--tick", "150"], { encoding: "utf8", timeout: 120_000 });
+  assert.equal(r.status, 0, r.stderr);
+  const report = JSON.parse(readFileSync(join(dir, "abort-report.json"), "utf8"));
+  assert.ok(report.mirrorsBefore > 0, "mirrors were running when the run was aborted");
+  assert.equal(report.mirrorsAfter, 0);
+  assert.equal(report.teach, "aborted");
+  assert.deepEqual(report.tasks_after, []);
+  const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(pool.filter((p) => p.event === "pool.release").length, pool.filter((p) => p.event === "pool.create").length);
 });
 
 test("the fold names every thread, passed or not, in its own words", () => {

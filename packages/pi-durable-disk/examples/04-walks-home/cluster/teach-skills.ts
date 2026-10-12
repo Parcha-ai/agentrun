@@ -67,6 +67,8 @@ export interface TeachSkillsOptions {
   readonly command?: (skill: string) => readonly string[];
   /** The children's agent cwd on their box (default /workspace). */
   readonly cwd?: string;
+  /** A skill's output folder on the box, where the trainer keeps skill.json (default <cwd>/skills/<skill>). */
+  readonly skillDir?: (skill: string) => string;
 }
 
 /** What one thread came back with; also each Thread task's result. */
@@ -91,6 +93,8 @@ export type TrainProgress = {
   t?: number;
   passes: boolean;
   exitCode?: number;
+  /** The skill had already passed on this box (a replay after the trainer finished); the facts are its skill.json's. */
+  already?: boolean;
 };
 
 // Task, conversation and entry IDs are numbers in pi-durable's store.
@@ -116,6 +120,9 @@ const defaultCommand = (skill: string) => ["pi-run", skill, "--", "train-skill",
 export function teachSkills(options: TeachSkillsOptions): { readonly teach: Extension; readonly thread: Extension } {
   const command = options.command ?? defaultCommand;
   const cwd = options.cwd ?? "/workspace";
+  const skillDir = options.skillDir ?? ((skill: string) => `${cwd}/skills/${skill}`);
+  /** Each running thread's artifact mirror in this process, so an abort or a retry can stop it. */
+  const mirrors = new Map<number, ThreadArtifacts>();
 
   // ---- the thread's one tool, on its own box ---------------------------------------------------------------------------
   const trainSkill = defineTool({
@@ -129,12 +136,14 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
       const env = api.env;
       if (env === undefined) throw new Error("This thread has no GPU box.");
       const progress: TrainProgress = { skill: args.skill, gpu: box?.gpu ?? 0, status: "starting", checkpoint: 0, passes: false };
-      let chain = api.details(progress, context);
+      // Live details are best effort: a failed or cancelled publish must not outlive the call as an unhandled rejection.
+      let chain = api.details({ ...progress }, context).catch(() => undefined);
       const publish = () => {
         const value = { ...progress };
-        chain = chain.then(() => api.details(value, context));
+        chain = chain.then(() => api.details(value, context)).catch(() => undefined);
       };
       let pending = "";
+      let trained = false;
       const started = Date.now();
       const result = await env.exec(command(args.skill), {
         onOutput: (text, _c, info) => {
@@ -144,35 +153,61 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
           while ((nl = pending.indexOf("\n")) >= 0) {
             const line = pending.slice(0, nl).trim();
             pending = pending.slice(nl + 1);
-            let event: { event?: string; checkpoint?: number; steps?: number; t?: number; passes?: boolean };
+            let event: { event?: string; checkpoint?: number; steps?: number; t?: number; passes?: boolean; passed?: boolean };
             try {
               event = JSON.parse(line);
             } catch {
               continue; // the trainer's stdout is JSON lines; anything else is not progress
             }
+            if (event.event === "skill.start") trained = true;
+            if (event.event === "skill.done") {
+              // A replay of a skill that already passed trains nothing: keep only the facts the trainer states.
+              if (typeof event.checkpoint === "number") progress.checkpoint = event.checkpoint;
+              if (typeof event.t === "number") progress.t = event.t;
+            }
             if (event.event === "skill.checkpoint") {
+              trained = true;
               Object.assign(progress, { status: "training", checkpoint: event.checkpoint ?? progress.checkpoint + 1, steps: event.steps, t: event.t, passes: event.passes === true });
               api.output(`checkpoint ${progress.checkpoint}: ${progress.passes ? "passes its test" : "not yet"}${event.t === undefined ? "" : ` (${Math.round(event.t)} s)`}\n`);
               publish();
             }
           }
         },
-      }, context);
-      await chain;
+      }, context).finally(() => chain);
       if (!result.ok) throw new Error(`The run on the box failed: ${result.error.message}`);
       const code = result.value.exitCode;
       progress.exitCode = code;
       progress.status = code === 0 ? "passed" : code === 3 ? "never-passed" : code === 2 ? "bad-body" : "error";
-      const seconds = progress.t ?? Math.round((Date.now() - started) / 1000);
+      if (code === 0 && !trained) {
+        // The trainer returned at once: the skill had passed before this call (the call is a replay). Its facts are in
+        // the skill's skill.json on the box; without them, report the pass and invent no checkpoint or duration.
+        progress.already = true;
+        const saved = await env.readTextFile(`${skillDir(args.skill)}/skill.json`, context);
+        if (saved.ok) {
+          try {
+            const info = JSON.parse(saved.value) as { passed_at?: unknown; wall_s?: unknown };
+            if (typeof info.passed_at === "number") progress.checkpoint = info.passed_at;
+            if (typeof info.wall_s === "number") progress.t = info.wall_s;
+          } catch {
+            // an unreadable skill.json leaves the facts unknown
+          }
+        }
+      }
+      const seconds = progress.t ?? (trained ? (Date.now() - started) / 1000 : undefined);
+      if (seconds !== undefined) progress.t = seconds;
+      const at = progress.checkpoint > 0 ? ` at checkpoint ${progress.checkpoint}` : "";
+      const took = seconds !== undefined ? `, ${Math.round(seconds)} s after it started` : "";
       const text =
         progress.status === "passed"
-          ? `${args.skill} passed its test at checkpoint ${progress.checkpoint}, ${Math.round(seconds)} s after it started.`
+          ? progress.already
+            ? `${args.skill} had already passed its test on this GPU${at}${took}.`
+            : `${args.skill} passed its test${at}${took}.`
           : progress.status === "never-passed"
-            ? `${args.skill} never passed its test in its steps (${progress.checkpoint} checkpoints, ${Math.round(seconds)} s).`
+            ? `${args.skill} never passed its test in its steps (${progress.checkpoint} checkpoints${seconds !== undefined ? `, ${Math.round(seconds)} s` : ""}).`
             : progress.status === "bad-body"
               ? `${args.skill} could not train: the robot's body is not valid for this trainer.`
               : `${args.skill} stopped with exit code ${code}.`;
-      return { content: [{ type: "text", text }], details: { ...progress, t: seconds }, isError: progress.status !== "passed" };
+      return { content: [{ type: "text", text }], details: { ...progress }, isError: progress.status !== "passed" };
     },
   });
   const thread: Extension = defineExtension({ name: "robot-thread", tools: [trainSkill] });
@@ -195,13 +230,21 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
       run: async (task, runtime, context) => {
         const { conversationId, boxId } = task.state.checkpoint;
         const sync = options.artifacts?.({ boxId, skill: task.input.skill });
-        await sync?.start();
-        const handle = await runtime.conversation(conversationId as ConversationId, context);
-        if (handle === undefined) throw new Error(`thread conversation ${conversationId} is gone`);
-        const submission = await handle.submit({ type: "input", content: threadPrompt(task.input), requestId: `thread:${task.id}` }, context);
-        const settled = await submission.wait(context);
-        await sync?.flush(context);
-        await sync?.stop();
+        await mirrors.get(task.id)?.stop(); // a mirror an earlier invocation of this phase left behind
+        if (sync !== undefined) mirrors.set(task.id, sync);
+        let settled;
+        try {
+          await sync?.start();
+          const handle = await runtime.conversation(conversationId as ConversationId, context);
+          if (handle === undefined) throw new Error(`thread conversation ${conversationId} is gone`);
+          const submission = await handle.submit({ type: "input", content: threadPrompt(task.input), requestId: `thread:${task.id}` }, context);
+          settled = await submission.wait(context);
+          await sync?.flush(context);
+        } finally {
+          // Errors and cancellation too: no mirror keeps copying for a thread that is not running.
+          if (mirrors.get(task.id) === sync) mirrors.delete(task.id);
+          await sync?.stop();
+        }
         await runtime.commit(async (tx) => {
           const result = await readThreadResult(tx, task.input, conversationId as ConversationId, boxId, settled.status === "done" ? settled.answer : undefined);
           return { status: "running", checkpoint: { phase: "release", conversationId, boxId, result } };
@@ -214,13 +257,15 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
           () =>
             r.status === "passed"
               ? { status: "terminal", outcome: { status: "completed", result: r } }
-              : { status: "terminal", outcome: { status: "failed", error: { message: r.summary } } },
+              : { status: "terminal", outcome: { status: "failed", error: { message: r.summary, detail: r } } }, // the fold reads `detail`
           context,
         );
       },
     },
     // Runs after the child conversation (owned work) is aborted: give the box back.
     abort: async (task, runtime, context) => {
+      await mirrors.get(task.id)?.stop();
+      mirrors.delete(task.id);
       await options.boxes.release({ threadId: String(task.id) }, context).catch(() => undefined);
       await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
     },
@@ -253,9 +298,10 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
         const results = threads.map((t, i): ThreadResult => {
           const o = outcomes[i]!;
           if (o.status === "completed") return o.result;
+          // A thread that ran to its end and did not pass saved its result in the failure's detail; use it as saved.
+          if (o.status === "failed" && isThreadResult(o.error?.detail)) return o.error.detail;
           const message = o.status === "failed" ? (o.error?.message ?? "The thread failed.") : "The thread was stopped.";
-          const status = o.status === "aborted" ? "aborted" : /never passed/.test(message) ? "never-passed" : /not valid/.test(message) ? "bad-body" : "error";
-          return { skill: t.skill, gpu: t.gpu, conversationId: t.conversationId, boxId: null, status, summary: message };
+          return { skill: t.skill, gpu: t.gpu, conversationId: t.conversationId, boxId: null, status: o.status === "aborted" ? "aborted" : "error", summary: message };
         });
         await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { threads: results } } }), context);
       },
@@ -335,6 +381,11 @@ async function forkPoint(tx: Tx, conversationId: ConversationId): Promise<EntryI
   throw new Error("teach_skills found no entry to fork at");
 }
 
+function isThreadResult(value: unknown): value is ThreadResult {
+  const v = value as Partial<ThreadResult> | undefined;
+  return typeof v === "object" && v !== null && typeof v.skill === "string" && typeof v.gpu === "number" && typeof v.status === "string" && typeof v.summary === "string";
+}
+
 async function readThreadResult(tx: Tx, input: ThreadInput, conversationId: ConversationId, boxId: string, answer: EntryId | undefined): Promise<ThreadResult> {
   let progress: TrainProgress | undefined;
   for (const entry of (await tx.scanEntries({ conversationId }, 20)).items) {
@@ -368,7 +419,7 @@ function assistantText(entry: EntryRecord | undefined): string {
 export function foldText(threads: readonly ThreadResult[]): string {
   const passed = threads.filter((t) => t.status === "passed").length;
   const lines = threads.map((t) => {
-    const how = t.status === "passed" ? `passed at checkpoint ${t.checkpoint ?? "?"}${t.seconds === undefined ? "" : ` in ${t.seconds} s`}` : t.status.replace("-", " ");
+    const how = t.status === "passed" ? `passed${t.checkpoint === undefined ? "" : ` at checkpoint ${t.checkpoint}`}${t.seconds === undefined ? "" : ` in ${t.seconds} s`}` : t.status.replace("-", " ");
     return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}`;
   });
   return [`${threads.length} threads finished: ${passed} passed${passed === threads.length ? "" : `, ${threads.length - passed} did not`}.`, ...lines, "Each thread's own conversation: read_thread with its skill or GPU number."].join("\n");
