@@ -6,6 +6,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Sim } from './sim.ts';
 import { Trail } from './trail.ts';
 import { legOfGeomBody, pairColors } from './colors.ts';
+import { DEFAULT_LOOK, drawFace, sameLook, type FaceKind, type ViewLook } from './look.ts';
+
+/** A drawn part of the creature, kept so a new look can recolour or reshape it without rebuilding the simulation. */
+interface Part { mesh: THREE.Mesh; role: 'torso' | 'leg' | 'foot' | 'other'; pair: number; leg: 'thigh' | 'shin'; size: [number, number, number]; base: THREE.Color; geo: THREE.BufferGeometry }
 
 const GEOM = { plane: 0, hfield: 1, sphere: 2, capsule: 3, ellipsoid: 4, cylinder: 5, box: 6 } as const;
 
@@ -72,6 +76,9 @@ export class View {
   private readonly ray = new THREE.Raycaster();
   private sun!: THREE.DirectionalLight;
   private bodyMeshes: THREE.Mesh[] = [];
+  private parts: Part[] = [];
+  private look: ViewLook = DEFAULT_LOOK;
+  private face: { kind: FaceKind; mesh: THREE.Mesh } | null = null;
 
   private readonly lite: boolean;
 
@@ -146,6 +153,8 @@ export class View {
     }
     this.meshes = [];
     this.bodyMeshes = [];
+    this.parts = [];
+    this.dropFace();
     this.sim = sim;
     const model = sim.model;
     for (let g = 0; g < model.ngeom; g++) {
@@ -163,6 +172,7 @@ export class View {
       const c = [0, 1, 2, 3].map((k) => model.geom_rgba[4 * g + k]);
       // a leg's capsules take their pair's colours (the same table the sketch draws with); feet, the torso and the terrain keep the MJCF's own
       const leg = type === GEOM.capsule ? legOfGeomBody(sim.mj, model, model.geom_bodyid[g]) : null;
+      const bodyName = model.geom_bodyid[g] > 0 ? (sim.mj.mj_id2name(model, sim.mj.mjtObj.mjOBJ_BODY.value, model.geom_bodyid[g]) ?? '') : '';
       const color = leg ? new THREE.Color(pairColors(leg.pair)[leg.part]) : new THREE.Color(c[0], c[1], c[2]);
       const mat = this.material({ color, roughness: 0.6, metalness: 0.05 });
       const mesh = new THREE.Mesh(geo, mat);
@@ -171,8 +181,69 @@ export class View {
       this.scene.add(mesh);
       this.meshes.push(mesh);
       if (model.geom_bodyid[g] > 0) this.bodyMeshes.push(mesh); // the creature, not the terrain
+      this.parts.push({ mesh, role: leg ? 'leg' : type === GEOM.box && bodyName === 'torso' ? 'torso' : type === GEOM.sphere && model.geom_bodyid[g] > 0 ? 'foot' : 'other', pair: leg?.pair ?? 0, leg: leg?.part ?? 'thigh', size: [s[0], s[1], s[2]], base: color.clone(), geo });
     }
+    this.applyLook();
     this.draw(true);
+  }
+
+  /** What the creature looks like from now on (colours, round or boxy parts, a face): drawn on the current body and on every body after it. The physics is never touched. */
+  setLook(look: ViewLook): void {
+    if (sameLook(look, this.look)) return;
+    this.look = look;
+    this.applyLook();
+  }
+
+  /** What is drawn now, for the page's checks: the torso's and each leg pair's colour as drawn, the geometry kinds, the face. */
+  describeLook(): { torso: string | null; legs: string[]; torsoGeometry: string | null; legGeometry: string | null; face: FaceKind } {
+    const hex = (p: Part) => '#' + (p.mesh.material as THREE.MeshStandardMaterial).color.getHexString();
+    const torso = this.parts.find((p) => p.role === 'torso');
+    const legs = this.parts.filter((p) => p.role === 'leg' && p.leg === 'thigh');
+    const pairs = new Map<number, string>();
+    for (const p of legs) if (!pairs.has(p.pair)) pairs.set(p.pair, hex(p));
+    return { torso: torso ? hex(torso) : null, legs: [...pairs.entries()].sort((x, y) => x[0] - y[0]).map(([, c]) => c), torsoGeometry: torso?.mesh.geometry.type ?? null, legGeometry: legs[0]?.mesh.geometry.type ?? null, face: this.face?.kind ?? 'none' };
+  }
+
+  private dropFace(): void {
+    if (!this.face) return;
+    this.face.mesh.parent?.remove(this.face.mesh);
+    this.face.mesh.geometry.dispose();
+    ((this.face.mesh.material as THREE.MeshBasicMaterial).map as THREE.Texture | null)?.dispose();
+    (this.face.mesh.material as THREE.Material).dispose();
+    this.face = null;
+  }
+
+  private applyLook(): void {
+    const look = this.look;
+    for (const p of this.parts) {
+      const mat = p.mesh.material as THREE.MeshStandardMaterial | THREE.MeshLambertMaterial;
+      if (p.role === 'torso') {
+        mat.color.copy(look.torso ? new THREE.Color(look.torso) : p.base);
+        const want = look.shape.torso === 'round' ? new THREE.SphereGeometry(1, 28, 20).scale(p.size[0] * 1.12, p.size[1] * 1.12, p.size[2] * 1.45) : p.geo;
+        if (p.mesh.geometry !== want) { if (p.mesh.geometry !== p.geo) p.mesh.geometry.dispose(); p.mesh.geometry = want; }
+      } else if (p.role === 'leg') {
+        const own = look.legs[p.pair];
+        mat.color.copy(own ? new THREE.Color(own) : new THREE.Color(pairColors(p.pair)[p.leg]));
+        const want = look.shape.legs === 'boxy' ? new THREE.BoxGeometry(2 * p.size[0], 2 * p.size[0], 2 * (p.size[1] + p.size[0])) : p.geo;
+        if (p.mesh.geometry !== want) { if (p.mesh.geometry !== p.geo) p.mesh.geometry.dispose(); p.mesh.geometry = want; }
+      }
+    }
+    // the face: a drawing on a plane at the torso's nose
+    const torso = this.parts.find((p) => p.role === 'torso');
+    if (look.face === 'none' || !torso) { this.dropFace(); return; }
+    if (this.face?.kind === look.face && this.face.mesh.parent === torso.mesh) return;
+    this.dropFace();
+    const size = 128, c = document.createElement('canvas');
+    c.width = c.height = size;
+    drawFace(c.getContext('2d')!, size, look.face);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const h = Math.min(torso.size[1] * 1.7, torso.size[2] * 1.7);
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(h * 1.4, h * 1.4), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+    plane.rotation.set(Math.PI / 2, Math.PI / 2, 0, 'YXZ'); // facing the nose (+x), upright
+    plane.position.set(torso.size[0] * (look.shape.torso === 'round' ? 1.14 : 1) + 0.002, 0, 0);
+    torso.mesh.add(plane);
+    this.face = { kind: look.face, mesh: plane };
   }
 
   /** True when the pointer at (clientX, clientY) is over a part of the creature. */

@@ -25,6 +25,10 @@ import { View } from './render.ts';
 import { drawThumbnail, Sketcher } from './sketch.ts';
 import { CreatureStore, type Backend, type Backends, type MachineEvent } from './store.ts';
 import { CONTROL_DT } from './mjcf.ts';
+import { parseRobot, bodyKey, COLOR_HEX } from '../../../03-tab-to-cloud/robot-model.ts';
+import { viewLook } from './look.ts';
+import { borrowPolicy, MISMATCH_LABEL } from './robot-fit.ts';
+import { parseSkills, skillPolicyPath, SKILLS_PATH, type SkillManifest } from './skills.ts';
 import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder, parentPolicySource } from './backend.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -105,6 +109,16 @@ const arrivalDedupe = new ArrivalDedupe();
 
 let app: App;
 
+/** The agent's robot state file (the 03 example's robot tools write it) and whether the policy on screen was trained for the body on screen. */
+const ROBOT_PATH = 'creature/robot.json';
+/** False while a borrowed brain drives a body it was not trained for (robot-fit.ts): the robot stumbles and the label says why. */
+let brainFits = true;
+
+/** The skills that came home (home/skills.json), the one the creature is doing, and one asked for before the manifest arrived. */
+let skills: SkillManifest | null = null;
+let skillNow: string | null = null;
+let wantedSkill: string | null = null;
+
 function toast(text: string) {
   const t = $('toast');
   t.textContent = text;
@@ -137,12 +151,14 @@ async function loadVendor() {
 
 /** The body as the trainer and the forks need it: creature.xml byte for byte, and body.json (joint order, stand pose).
  *  Written next to the SQLite files, only when there is a disk behind the page and this tab may write. */
-async function publishBody() {
+async function publishBody(opts: { drawn?: Design } = {}) {
   if (app.storageMode !== 'disk') return;
   const { xml, legs, jointsPerLeg, jointNames, standPose, standHeight } = app.world ? { ...buildMjcf(app.sketcher.get()) } : app.built;
   const enc = new TextEncoder();
   await new ParentBackend(windowBus(), 'creature/creature.xml').write(enc.encode(xml));
   await new ParentBackend(windowBus(), 'creature/body.json').write(enc.encode(JSON.stringify({ legs, jointsPerLeg, jointNames, standPose, standHeight, mjcf_sha256: app.bodySha }, null, 1) + '\n'));
+  // the body as the user drew it, for the agent's robot tools to start from and to undo back to (a body the agent changed is not published here)
+  if (opts.drawn) await new ParentBackend(windowBus(), 'creature/design.json').write(enc.encode(JSON.stringify(opts.drawn) + '\n'));
 }
 
 /** The label on the creature, in plain words: "untrained", "learning: version N", "trained". */
@@ -247,7 +263,8 @@ function startEpisode2(params: URLSearchParams) {
 function updateLabel() {
   const el = $('stateLabel');
   el.dataset.state = app.training.state;
-  el.textContent = app.training.label(app.policyName);
+  el.textContent = app.policy && !brainFits ? MISMATCH_LABEL : app.training.label(app.policyName);
+  document.body.dataset.fit = app.policy && !brainFits ? 'mismatch' : 'fits';
   document.body.dataset.brain = app.training.state; // the page's CSS keys what is shown on it (the big distance only once trained, the learning line)
 }
 
@@ -266,10 +283,10 @@ function clearPolicyState(state: 'untrained' | 'dummy', reason = 'no trained pol
 }
 
 /** Save the body to designs.sqlite; when another machine holds the run, ask the agent to save it instead. */
-async function saveDesign(design: Design) {
+async function saveDesign(design: Design, opts: { robot?: boolean } = {}) {
   try {
     const saved = await app.store.saveDesign(design);
-    await publishBody();
+    await publishBody(opts.robot ? {} : { drawn: design });
     post('design-saved', { id: saved.id, name: design.name, sha256: saved.sha256, mjcf_sha256: app.bodySha });
   } catch (e) {
     if (!(e instanceof NotHolder)) throw e;
@@ -278,7 +295,7 @@ async function saveDesign(design: Design) {
   }
 }
 
-async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?: boolean } = {}) {
+async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?: boolean; borrow?: boolean; robot?: boolean } = {}) {
   const errs = validateDesign(design);
   if (errs.length) { showError(errs.join('\n')); return; }
   showError('');
@@ -289,6 +306,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   // keeps stepping while saves and loads are pending, and a policy with another joint count would otherwise drive the new
   // body with an observation read past its arrays (NaN, and a creature that never recovers).
   const droppedPolicy = !!app.policy && app.policy.file.mjcf_sha256 !== app.bodySha;
+  const old = app.policy, oldName = app.policyName;
   if (droppedPolicy) setPolicy(null, app.policyName === 'dummy trot' ? 'dummy trot' : 'none');
   closeArrival(); // a walk measurement belongs to one body: close it before this one's simulation replaces the clock and the place it samples
   app.built = built;
@@ -298,17 +316,126 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   syncBrain(); // a new body with no policy gets the untrained brain at once
   resetOrigin();
   if (app.phase === 'watch') showThumb(); // the body on screen is the one in the corner
-  if (opts.save !== false) await saveDesign(design);
+  // A robot the agent edited keeps its old brain when the network still fits the new body's joints: it stumbles, and the label says so (robot-fit.ts).
+  const borrowed = droppedPolicy && opts.borrow && old && app.policyName !== 'dummy trot' ? await borrowPolicy(old.file, built.jointNames.length, app.mujocoVersion) : null;
+  if (borrowed) { setPolicy(borrowed, oldName); brainFits = false; updateLabel(); }
+  else if (!droppedPolicy) { brainFits = true; updateLabel(); }
+  if (opts.save !== false) await saveDesign(design, { robot: opts.robot === true });
   // The dummy is generated from the body, so it is rebuilt for the new one.
   if (app.policyName === 'dummy trot') {
     await useDummy();
-  } else if (droppedPolicy) {
+  } else if (droppedPolicy && !borrowed) {
+    brainFits = true;
     // the body it was trained for is gone: this body has no trained policy, whatever the label said
     clearPolicyState('untrained', 'the loaded policy was trained for another body');
     if (keepPolicy) showError('The loaded policy was trained for another body, so it was removed. Load one for this body.');
   }
   applyCommand();
   renderPairs();
+}
+
+/**
+ * The agent's robot state (creature/robot.json) arrived or changed: draw its looks, and when its body is not the one on screen, build that body, keeping the old brain if its network fits (it stumbles)
+ * or going untrained if it does not. The body is saved and published like any other (the trainer reads creature.xml and body.json as before); the drawing the user made stays in creature/design.json.
+ */
+async function applyRobot(text: string) {
+  const robot = parseRobot(text);
+  if (!robot) return; // not a state the robot tools wrote: ignored
+  app.view.setLook(viewLook(robot, COLOR_HEX));
+  const name = $('robotName');
+  name.textContent = robot.name;
+  name.hidden = robot.name === '' || robot.edits === 0;
+  const bodyChanged = bodyKey(robot.design) !== bodyKey(app.sketcher.get());
+  if (bodyChanged) {
+    app.sketcher.set(robot.design);
+    await buildCreature(robot.design, true, { borrow: true, robot: true });
+  }
+  if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
+  post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
+}
+
+/** home/skills.json arrived or changed: remember the skills, and start the one that was asked for (else the default, when the creature has no policy yet). */
+async function onSkillsManifest(text: string) {
+  let m: SkillManifest;
+  try { m = parseSkills(text); } catch (e) { post('skills-refused', { reason: String(e instanceof Error ? e.message : e) }); return; }
+  const seen = performance.now();
+  skills = m;
+  post('skills-home', { skills: Object.keys(m.skills), default: m.default, labels: Object.fromEntries(Object.entries(m.skills).map(([k, v]) => [k, v.label])) });
+  const want = wantedSkill ?? (app.policy ? null : m.default);
+  if (want) await switchSkill(want);
+  await installSkills(m, performance.now() - seen);
+}
+
+/** The policy file's hash of each skill this page has loaded, so a relearned skill (new bytes under the same name) is announced again and an unchanged one is not. */
+const installedSha = new Map<string, string>();
+let installRound = 0;
+
+/**
+ * Every skill of the manifest is read and loaded (as a trained policy, or as an old network borrowed for this body), in the manifest's order, and announced as installed: the stage turns a tile to
+ * "installed in the robot" on it. `sha` is the sha256 of the skill's policy file; `ms_since_manifest` counts from the moment this page saw the manifest. A newer manifest ends this round.
+ */
+async function installSkills(m: SkillManifest, afterManifestMs: number) {
+  const round = ++installRound;
+  const began = performance.now() - afterManifestMs;
+  for (const [name, entry] of Object.entries(m.skills)) {
+    if (round !== installRound) return;
+    const got = await parentPolicySource(new ParentBackend(windowBus(), skillPolicyPath(entry))).read();
+    if (!got || got === 'unchanged') continue;
+    const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(got.text)))].map((x) => x.toString(16).padStart(2, '0')).join('');
+    if (installedSha.get(name) === sha) continue;
+    let fits = true;
+    try {
+      await Policy.load(got.text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
+    } catch (e) {
+      if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) { post('skill-refused', { skill: name, reason: e instanceof Error ? e.message : String(e) }); continue; }
+      if (!(await borrowPolicy(JSON.parse(got.text), app.built.jointNames.length, app.mujocoVersion))) continue;
+      fits = false;
+    }
+    if (round !== installRound) return;
+    installedSha.set(name, sha);
+    post('skill-installed', { skill: name, sha, fits, ms_since_manifest: performance.now() - began });
+  }
+}
+
+/**
+ * Do a skill: that skill's policy (the same network format as any policy, each with its own getup network) takes over at the next control step, and the skill's fixed command goes into the command slot.
+ * A skill trained for the body on screen is loaded as any policy; after a body change the old skill's network is borrowed when it still fits the joints (the robot stumbles: robot-fit.ts).
+ */
+async function switchSkill(name: string) {
+  if (!skills) { wantedSkill = name; return; }
+  const entry = skills.skills[name];
+  const refuse = (reason: string) => { showError(`Skill refused: ${reason}`); post('skill-refused', { skill: name, reason }); };
+  if (!entry) return refuse(`${name} has not come home`);
+  wantedSkill = null;
+  if (skillNow === name && app.policy) return;
+  const got = await parentPolicySource(new ParentBackend(windowBus(), skillPolicyPath(entry))).read();
+  if (!got || got === 'unchanged') return refuse(`${entry.policy} is not on the disk yet`);
+  const nj = app.built.jointNames.length;
+  let policy: Policy | null = null;
+  let fits = true;
+  try {
+    policy = await Policy.load(got.text, { mjcfSha256: app.bodySha, nj, mujocoVersion: app.mujocoVersion });
+  } catch (e) {
+    if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) return refuse(e instanceof PolicyRefused ? e.message : String(e));
+    policy = await borrowPolicy(JSON.parse(got.text), nj, app.mujocoVersion); // trained for another body: it runs only if its network still fits this one
+    fits = false;
+    if (!policy) return refuse(`${name} was trained for another body and does not fit this one`);
+  }
+  showError('');
+  // The skill's own command, exactly: the slider takes this policy's range and no step BEFORE its value is set (a range input snaps a value to its old bounds and step, which turned sprint's 1.2 into 1.0).
+  const slider = document.getElementById('command') as HTMLInputElement;
+  const range = (policy.file as { command_range?: [number, number] }).command_range;
+  slider.min = String(range?.[0] ?? 0); slider.max = String(range?.[1] ?? 1); slider.step = 'any'; slider.value = String(entry.command);
+  closeArrival();
+  setPolicy(policy, `skill: ${entry.label}`); // no sim.reset(): a creature that is up carries on, the next step is the new network's
+  brainFits = fits;
+  skillNow = name;
+  resetOrigin(); // a new behaviour: the distance counts from where it stands now
+  app.training.install('final', provenanceFacts(JSON.parse(got.text)));
+  updateLabel();
+  app.fallen = false; app.recovering = null;
+  toast(`doing ${entry.label}`);
+  post('skill-switched', { skill: name, label: entry.label, command: app.sim.command, fits, mjcf_sha256: policy.file.mjcf_sha256 });
 }
 
 /** The slider is the single source of the command: apply it to the sim (a new Sim starts at 0, which a policy reads as "stand"). */
@@ -325,6 +452,7 @@ function applyCommand() {
 }
 
 function setPolicy(p: Policy | null, name: string) {
+  brainFits = true; // a policy installed here was checked against this body; a borrowed one sets this false right after
   app.policy = p;
   app.policyName = name;
   $('policyName').textContent = name;
@@ -812,7 +940,7 @@ async function main() {
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
+    (window as any).__walks = { get app() { return app; }, look: () => app.view.describeLook(), fits: () => brainFits, skill: () => skillNow, skills: () => skills, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
       // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
       sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
@@ -845,6 +973,18 @@ async function main() {
       }).start();
       // the finished policy, and the live checkpoints of a run in progress (written by rename, one file per checkpoint)
       watch(HOME_POLICY_PATH, 'final');
+      // the skills the cluster taught (one policy each): the manifest names them, the agent's `do` picks one through creature/robot.json
+      new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), SKILLS_PATH)), {
+        sha256: sha256Hex, intervalMs: 1000,
+        onFile: (text) => { warned = false; return onSkillsManifest(text); },
+        onError: quiet(`skills watch ${SKILLS_PATH}`),
+      }).start();
+      // the agent's robot tools write creature/robot.json: looks and body changes reach the creature within a second
+      new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), ROBOT_PATH)), {
+        sha256: sha256Hex, intervalMs: 1000,
+        onFile: (text) => { warned = false; return applyRobot(text); },
+        onError: quiet(`robot watch ${ROBOT_PATH}`),
+      }).start();
       watch(params.get('checkpoints') ?? CHECKPOINT_PATH, 'checkpoint');
     }
     requestAnimationFrame((t) => { app.last = t; tick(t); });

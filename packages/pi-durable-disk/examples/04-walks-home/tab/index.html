@@ -47,6 +47,11 @@ button:disabled { opacity:.4; cursor:default; }
 #stateLabel[data-state=learning] { background:#c98a1a; }
 #stateLabel[data-state=trained] { background:#1f7a4d; }
 #stateLabel[data-state=dummy] { background:#555; font-size:18px; }
+#stateLabel[data-state] { transition: background .2s; }
+body[data-fit=mismatch] #stateLabel { background:#b3261e; font-size:20px; }
+/* the robot's name, when the agent gave it one */
+#robotName { position:absolute; left:14px; top:14px; z-index:4; background:rgba(255,255,255,.88); color:#1c1c1e; padding:6px 14px; border-radius:999px; font:700 18px var(--sans); box-shadow:0 2px 10px rgba(0,0,0,.2); pointer-events:none; }
+#robotName[hidden] { display:none; }
 #offlineBadge { position:absolute; right:14px; top:14px; z-index:4; background:#111; color:#fff; padding:7px 16px; border-radius:999px; font:600 18px var(--sans); box-shadow:0 2px 12px rgba(0,0,0,.25); }
 /* ?clean=1: the creature, one label, nothing else; the sketcher is a pane only in the draw phase */
 body.clean { grid-template-rows:minmax(0,1fr); }
@@ -160,6 +165,7 @@ table.designs td, table.designs th { border-bottom:1px solid var(--line); paddin
     <div id="hud"></div>
     <svg id="dragSvg" hidden style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2"><defs><marker id="arrowHead" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L4,2 L0,4 z" fill="#b3261e"/></marker></defs><line id="dragArrow" x1="0" y1="0" x2="0" y2="0" stroke="#b3261e" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowHead)"/></svg>
     <div id="stateLabel" data-state="untrained">untrained</div>
+    <div id="robotName" hidden></div>
     <div id="modelPanel"><div class="t">The model it trained</div><div id="modelTopic"></div><div id="modelMech"></div><div id="modelProgress"></div><div id="modelQsNote"></div><div id="modelQs"></div><div id="modelThinkNote"></div><div id="modelBadge"></div><div id="modelBadgeSub"></div><div id="modelStatus">waiting for the model to come home</div><div class="bar"><i id="modelBar"></i></div><div id="modelChip"></div></div>
     <div id="stateSub">Your browser plays each version the GPU sends back.</div>
     <div id="offlineBadge" hidden>offline</div>

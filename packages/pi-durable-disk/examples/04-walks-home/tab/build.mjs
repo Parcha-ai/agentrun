@@ -2,7 +2,7 @@
 // imported at runtime by relative URL (same origin, no CDN), and so is wllama's (episode 2); everything else is one esbuild bundle.
 import { build } from 'esbuild';
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,3 +27,15 @@ await build({
 const mjVersion = JSON.parse(readFileSync(join(here, 'node_modules/@mujoco/mujoco/package.json'), 'utf8')).version;
 writeFileSync(join(dist, 'versions.json'), JSON.stringify({ mujoco: mjVersion }) + '\n');
 cpSync(join(here, 'index.html'), join(dist, 'index.html'));
+
+// The files of the page, for a host that serves this folder under /tab/ and caches them at a checkout (the 03 example's /tab/offline.json): every file but the source maps, the page's own document first.
+import { readdirSync, statSync } from 'node:fs';
+const listed = [];
+(function walk(dir) {
+  for (const name of readdirSync(dir).sort()) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) walk(path);
+    else if (!name.endsWith('.map') && name !== 'offline.json') listed.push('/tab/' + relative(dist, path).split('\\').join('/'));
+  }
+})(dist);
+writeFileSync(join(dist, 'offline.json'), JSON.stringify({ files: ['/tab/', ...listed] }) + '\n');
