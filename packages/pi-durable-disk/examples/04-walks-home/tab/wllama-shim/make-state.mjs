@@ -1,4 +1,4 @@
-// A warm state for a model in the page: the prompt prefix every turn shares (the system prompt and the tools, up to the user's turn, as the model's own template
+// A warm state for a model in the page: the prompt prefix every turn shares (the system turn: the system prompt and the tools, as the model's own template
 // renders them), prefilled once by llama-server and saved with its slot save, so a phone restores it in under a second instead of prefilling it for minutes.
 //
 //   node make-state.mjs --server http://127.0.0.1:8080 --serving <model>.serving.json --first <dir>/<model>-00001-of-0000N.gguf --out <dir> [--name <model>.state.bin]
@@ -24,10 +24,9 @@ const post = async (path, body) => {
 };
 
 const full = (await post("/apply-template", { messages: [{ role: "system", content: serving.system }, { role: "user", content: "X" }], tools: serving.tools, chat_template_kwargs: { enable_thinking: false } })).prompt;
-const marker = "<|im_start|>user\n";
-const at = full.lastIndexOf(marker);
+const at = full.indexOf("<|im_start|>user\n");
 if (at < 0) throw new Error("the template has no ChatML user turn to warm up to");
-const prefix = full.slice(0, at + marker.length);
+const prefix = full.slice(0, at); // the system turn, through its <|im_end|>\n: every turn's prompt starts with it, whatever comes next (history, a state line, the user)
 
 await post("/slots/0?action=erase", {});
 const warm = await post("/completion", { prompt: prefix, n_predict: 0, cache_prompt: true }); // nothing generated after the prefix: a hybrid model's recurrent state cannot be cut back

@@ -5,7 +5,7 @@ rebuilds that build from wllama 3.6.1 with two changes, and makes the warm state
 
 | What | Why |
 | --- | --- |
-| llama-server's slot **save / restore / erase**, reached through wllama's existing `rerank` message (`{"slot_action": "restore", "filepath": "/models/state.bin"}`) | The robot model's system prompt and tools are 1255 tokens that every command shares. Prefilling them took 3 to 5 minutes on a phone; restoring a saved state takes under a second. wllama exposes no state API, and the message route keeps wllama's JS and glue untouched. |
+| llama-server's slot **save / restore / erase**, reached through wllama's existing `rerank` message (`{"slot_action": "restore", "filepath": "/models/state.bin"}`) | The robot model's system prompt and tools are a 1252-token system turn that every command shares. Prefilling them took 3 to 5 minutes on a phone; restoring a saved state takes under a second. wllama exposes no state API, and the message route keeps wllama's JS and glue untouched. |
 | Large file reads in pieces of at most **8 MiB** (`__wrap_fread`) | The model's token embedding is one 208 MB tensor (gguf-split never divides a tensor), and wllama read it in one piece; an iPhone failed that read with `NotReadableError`. |
 | A **wasm32 + JSPI** variant with no Asyncify (`dist/jspi32/`, CMake `WLLAMA_JSPI32`) | Safari 27 has JSPI but not memory64, so wllama still takes its compat path there; with JSPI the compat build needs no Asyncify. 8.1 MB instead of 15.4 MB; in Chrome with memory64 hidden it loaded in 8.2 s against 11.5 s and restored in 0.37 s against 0.54 s, with the same replies. A page picks it by feature (`WebAssembly.Suspending`), never by version. |
 
@@ -38,8 +38,9 @@ node make-state.mjs --server http://127.0.0.1:8080 --serving <dir>/<model>.servi
 ```
 
 `<model>.serving.json` is the trainer's serving file (the system prompt and the tools, in order: the model's input as it was scored). The prefix is rendered by
-the server's own template engine up to `<|im_start|>user\n` and prefilled with nothing generated after it: Qwen3.5 is hybrid, its recurrent state cannot be cut
-back, so a state that ends anywhere else would make every command re-read a batch of the prompt. Made twice from the same inputs, the state is byte for byte
+the server's own template engine through the end of the system turn and prefilled with nothing generated after it: Qwen3.5 is hybrid, its recurrent state cannot be cut
+back, so a state that ends anywhere else would make every command re-read a batch of the prompt. The end of the system turn is where every turn agrees,
+whatever follows it (earlier exchanges, a state line, the user's turn). Made twice from the same inputs, the state is byte for byte
 the same.
 
 The sidecar `<name>.json` records the model (its first part's name, the parts' bytes, the GGUF's sha256), the prefix's sha256, the token count, the llama.cpp
@@ -48,6 +49,6 @@ another prompt or template) prefills as before. A state is specific to the llama
 
 ## Measured (headless Chrome, `?compat=1`, the iPhone's path)
 
-- Restore: 1255 tokens, 35.7 MB, 0.3 to 0.6 s, against 175 to 270 s of prefill on the same box.
+- Restore: 1252 to 1255 tokens, 35.6 MB, 0.3 to 0.6 s, against 175 to 270 s of prefill on the same box.
 - After a restore a command reads only its own 10 to 18 tokens; the replies match an in-memory and a cold run.
 - The model loads in 260 reads, the largest 8 MiB.
