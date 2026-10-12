@@ -62,7 +62,7 @@ if (robot && !(Number.isInteger(clusterSize) && clusterSize >= 1)) throw new Err
 const robotSkills = Number(arg("robot-skills", 8));
 // The page that shows the run (served by the stage), and the query the agent's page is opened with.
 const stagePath = arg("stage-path", "");
-const linkQuery = arg("link-query", "golive=1");
+const linkQuery = arg("link-query", "golive=1&robot=1");
 // The model's token budget for the run (a robot session has nine conversations).
 const modelBudget = String(arg("model-budget", robot ? 30_000_000 : 3_000_000));
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
