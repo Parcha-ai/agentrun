@@ -132,28 +132,30 @@ describe("the claim directory", () => {
     // The losing interleaving behind run.test.ts's "a write through the claim directory that fails": the run's write
     // through its open directory (on the thread pool) lands between a recursive removal's walk and its rmdir.
     const t = swappable("claimdir-late-write");
-    let claim: Awaited<ReturnType<typeof openClaimDir>> | undefined;
     try {
-      claim = await openClaimDir(t.root, { fstype: null });
-      t.swap();
-      await persistRecord(claim.at, "{}\n");
-      // One pass, as rmSync(recursive) does it: the walk, a write landing, then the rmdir: CI's ENOTEMPTY.
-      for (const name of readdirSync(t.held)) rmSync(join(t.held, name), { force: true });
-      await persistRecord(claim.at, "{}\n");
-      assert.throws(() => rmdirSync(t.held), (error: unknown) => (error as { code?: string }).code === "ENOTEMPTY");
-      // The helper, the same write forced after its first walk: it walks again and the directory goes.
-      let landed = 0;
-      await removeWhileWritten(t.held, async (attempt) => {
-        if (attempt === 0) {
-          await persistRecord(claim.at, "{}\n");
-          landed++;
-        }
-      });
-      assert.equal(landed, 1, "the write landed after the first walk");
-      assert.equal(existsSync(t.held), false);
-      await assert.rejects(persistRecord(claim.at, "{}\n"), (error: unknown) => (error as { code?: string }).code === "ENOENT", "nothing lands once it is gone");
+      const claim = await openClaimDir(t.root, { fstype: null });
+      try {
+        t.swap();
+        await persistRecord(claim.at, "{}\n");
+        // One pass, as rmSync(recursive) does it: the walk, a write landing, then the rmdir: CI's ENOTEMPTY.
+        for (const name of readdirSync(t.held)) rmSync(join(t.held, name), { force: true });
+        await persistRecord(claim.at, "{}\n");
+        assert.throws(() => rmdirSync(t.held), (error: unknown) => (error as { code?: string }).code === "ENOTEMPTY");
+        // The helper, the same write forced after its first walk: it walks again and the directory goes.
+        let landed = 0;
+        await removeWhileWritten(t.held, async (attempt) => {
+          if (attempt === 0) {
+            await persistRecord(claim.at, "{}\n");
+            landed++;
+          }
+        });
+        assert.equal(landed, 1, "the write landed after the first walk");
+        assert.equal(existsSync(t.held), false);
+        await assert.rejects(persistRecord(claim.at, "{}\n"), (error: unknown) => (error as { code?: string }).code === "ENOENT", "nothing lands once it is gone");
+      } finally {
+        await claim.close();
+      }
     } finally {
-      await claim?.close();
       t.remove();
     }
   });
