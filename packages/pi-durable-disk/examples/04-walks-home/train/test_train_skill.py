@@ -129,6 +129,31 @@ class DiagnoseTest(unittest.TestCase):
   def test_still_changing_says_train_longer(self):
     self.assertIn("train longer", train_skill.diagnose(self.recs([1.0, 0.95, 0.9, 0.85, 0.8, 0.75])))
 
+  def test_a_metric_that_swings_with_no_trend_never_settles_and_points_at_the_body(self):
+    # code6's walk on the starter dog (D4, 2026-10-12): it swung between 0.04 and 0.35 m/s for the second half of 25
+    # checkpoints. "Train longer" sent the thread into a 40M retry that could not help; the dog needed flat feet.
+    code6 = [0.0, 0.004, 0.011, 0.017, 0.016, 0.016, 0.021, 0.02, 0.019, 0.043, 0.166, 0.077, 0.068, 0.346, 0.139, 0.088,
+             0.149, 0.067, 0.231, 0.161, 0.07, 0.074, 0.077, 0.042, 0.123]
+    d = train_skill.diagnose(self.recs(code6))
+    self.assertIn("never settles", d)
+    self.assertIn("check the body", d)
+    self.assertIn("best 0.346 at checkpoint 14", d)
+    self.assertNotIn("train longer (--steps)", d)
+
+  def test_a_metric_that_was_never_measured_says_the_skill_never_happened(self):
+    # get-up on code5's dino: 11 checkpoints, no error, and no value at any (the body never righted from every start).
+    recs = [{"checkpoint": i + 1, "steps": (i + 1) * 1_000_000, "metric": {"name": "slowest get-up", "value": None}} for i in range(11)]
+    d = train_skill.diagnose(recs)
+    self.assertIn("never happened", d)
+    self.assertIn("11 checkpoints", d)
+    self.assertNotIn("train longer", d)
+
+  def test_a_noisy_climb_is_still_changing(self):
+    # The direction flips at every step, but the second half climbs: train longer.
+    d = train_skill.diagnose(self.recs([0.0, 0.02, 0.05, 0.04, 0.08, 0.07, 0.12, 0.11, 0.16, 0.15, 0.2, 0.19, 0.24]))
+    self.assertIn("train longer", d)
+    self.assertNotIn("never settles", d)
+
   def test_a_test_error_between_checkpoints_names_the_right_checkpoint(self):
     # Checkpoint 3's test raised: the plateau still begins at checkpoint 5 (0.91), not at the fourth value's checkpoint.
     recs = self.recs([1.0, 0.97, None, 0.95, 0.91, 0.91, 0.91, 0.91, 0.91])

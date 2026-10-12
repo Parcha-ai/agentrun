@@ -78,7 +78,8 @@ compiles the same training program as before, so prewarmed compile caches still 
 Each checkpoint gets a line in `skill-progress.jsonl` (passes, metric, steps, seconds; a test that raised is a failing
 checkpoint with its error); `policy.json` is the newest passing checkpoint once the run stops. A failed try's skill.json
 says why in a `diagnosis`: the metric never moved (the reward gives no gradient from the standing pose), plateaued (and
-where), was still changing, or test.py raised. Rerunning the same command keeps a skill done for the same body and the
+where), never settles (it swings with no trend: check the body before training longer), was never measured (the skill
+never happened at any checkpoint: check the body can do it), was still changing, or test.py raised. Rerunning the same command keeps a skill done for the same body and the
 same skill files, and retrains anything else. Exit 0 means the skill passed, 3 that it never did, 2 a refused skill or body.
 
 Measured on an H100 (2026-10-12), from scratch on bodies written with the tab's body library: a dinosaur walks at its
