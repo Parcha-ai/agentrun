@@ -33,6 +33,10 @@ function shardUrls(first: string): string[] {
 const VERIFIED = 'wllama-verified:';
 /** The engine's reads of model parts so far: how many, and the largest it asked for at once (a check that a build reads in pieces). */
 export const partReads = { count: 0, largest: 0 };
+/** Where the last load's time went before the engine: fetching parts (and how many bytes), checking them. */
+export const partTimes = { downloadMs: 0, downloaded: 0, verifyMs: 0 };
+/** A part this size or smaller is hashed with WebCrypto in one piece (native, fast); a larger one (the 208 MB token embedding) in slices, so it is never held whole. */
+const WHOLE_HASH = 64 * 1024 * 1024;
 const PIECE = 8 * 1024 * 1024;
 
 /** A part from the cache, checked: its size against the manifest every time, its sha256 once (read through in pieces, so a part that cannot be read fails here, by name). */
@@ -49,9 +53,22 @@ async function verifiedPart(w: Wllama, url: string, want: { bytes: number; sha25
       blob = null;
     }
     if (!blob) {
-      await cm.download(url, { progressCallback: ({ loaded }: { loaded: number }) => o.onProgress(loaded) });
+      const started = performance.now();
+      for (let tries = 1; ; tries++) {
+        try {
+          await cm.download(url, { progressCallback: ({ loaded }: { loaded: number }) => o.onProgress(loaded) });
+          break;
+        } catch (e) {
+          // a phone's network drops a long download now and then (Safari: "Load failed"): twice more, then the error, by name
+          if (tries >= 3) throw new Error(`${name}: the download failed ${tries} times (${e instanceof Error ? e.message : String(e)})`);
+          o.onStatus(`${name}: the download failed (${e instanceof Error ? e.message : String(e)}): trying again`);
+          await new Promise((r) => setTimeout(r, 1000 * tries * tries));
+        }
+      }
       blob = await cm.open(key);
       if (!blob) throw new Error(`${name}: not in the cache after its download`);
+      partTimes.downloadMs += performance.now() - started;
+      partTimes.downloaded += blob.size;
     }
     o.onProgress(blob.size);
     const stamp = `${want?.sha256 ?? ''}:${blob.size}:${(blob as File).lastModified ?? 0}`;
@@ -59,15 +76,22 @@ async function verifiedPart(w: Wllama, url: string, want: { bytes: number; sha25
     try { seen = localStorage.getItem(mark); } catch { /* no storage: check every time */ }
     if (!want?.sha256 || seen === stamp) return blob;
     let problem: string | undefined;
+    const checking = performance.now();
     try {
       o.onStatus(`checking ${name}`);
-      const h = new Sha256();
-      for (let at = 0; at < blob.size; at += PIECE) h.update(new Uint8Array(await blob.slice(at, Math.min(blob.size, at + PIECE)).arrayBuffer()));
-      const got = h.hex();
+      let got: string;
+      if (blob.size <= WHOLE_HASH && globalThis.crypto?.subtle) {
+        got = [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.slice(0, blob.size).arrayBuffer()))].map((x) => x.toString(16).padStart(2, '0')).join('');
+      } else {
+        const h = new Sha256();
+        for (let at = 0; at < blob.size; at += PIECE) h.update(new Uint8Array(await blob.slice(at, Math.min(blob.size, at + PIECE)).arrayBuffer()));
+        got = h.hex();
+      }
       if (got !== want.sha256) problem = `sha256 ${got.slice(0, 12)}, ${want.sha256.slice(0, 12)} expected`;
     } catch (e) {
       problem = `unreadable (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`;
     }
+    partTimes.verifyMs += performance.now() - checking;
     if (!problem) {
       try { localStorage.setItem(mark, stamp); } catch { /* no storage */ }
       return blob;
@@ -147,6 +171,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         // crash cut short; WebKit's NotReadableError) is deleted and fetched again. batch: a hybrid model (Qwen3.5) resumes from a checkpoint before the prompt's
         // last batch, so a small batch keeps what each turn reads again small (D0 measured, batch 64: about 60 tokens per command instead of the whole prompt).
         const urls = shardUrls(url);
+        Object.assign(partTimes, { downloadMs: 0, downloaded: 0, verifyMs: 0 });
         const total = parts?.reduce((n, p) => n + p.bytes, 0) ?? 0;
         const blobs: Blob[] = [];
         let base = 0;

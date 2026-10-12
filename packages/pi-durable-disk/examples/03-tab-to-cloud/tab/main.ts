@@ -33,10 +33,10 @@ import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
 import { servingView } from "./native-turn.ts";
 import { PhoneModel } from "./phone-model.ts";
-import { partReads, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
+import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
-import { cloudAgent } from "../agent.ts";
+import { cloudAgent, rootAgent } from "../agent.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
 import { currentRobot, loadSkills, ROBOT_TOOLS, SKILLS_FILE } from "../robot-tools.ts";
@@ -144,7 +144,7 @@ const state = {
   /** What the pipe acknowledged last when this tab left the run (`workspaceDigest`), and how its step ended. */
   left: undefined as { switchId: string; digest: string; step: string } | undefined,
   /** ?phone=1: what the phone's brain is doing, and what it cost. */
-  phone: undefined as { phase: string; ready: boolean; model?: PhoneModel; marks: Record<string, number>; log: string[] } | undefined,
+  phone: undefined as { phase: string; ready: boolean; model?: PhoneModel; marks: Record<string, number>; log: string[]; turnStarted?: number } | undefined,
 };
 
 const envLabel = (id: string | undefined) => state.environments.find((e) => e.id === id)?.label ?? id ?? "";
@@ -369,6 +369,10 @@ function render(): void {
 function renderStats(): void {
   if (phoneMode) {
     const p = state.phone, last = p?.model?.turns.at(-1);
+    // while a turn runs, the place you type says what the robot is doing, with the time it has taken
+    if (p?.ready) ($("input") as HTMLTextAreaElement).placeholder = state.chat.busy ? `the robot is thinking… ${p.turnStarted ? `${Math.round((performance.now() - p.turnStarted) / 1000)} s` : ""}` : "Tell the robot what to do: paint it red, make it a spider, spin…";
+    $("new-chat").hidden = !p?.ready;
+    ($("new-chat") as HTMLButtonElement).disabled = state.chat.busy;
     $("stats").textContent = p ? [p.marks.loadMs ? `model loaded in ${(p.marks.loadMs / 1000).toFixed(1)} s` : "", p.marks.warmMs ? `prompt read in ${(p.marks.warmMs / 1000).toFixed(1)} s (${p.marks.warmTokens} tokens)` : "", last ? `last turn ${(last.ms / 1000).toFixed(1)} s, ${last.timings?.prompt_n ?? "?"} new prompt tokens, ${last.outputTokens} out` : ""].filter(Boolean).join(" · ") : "";
     return;
   }
@@ -493,6 +497,11 @@ async function followConversation(runtime: TabRuntime, conversation: Conversatio
   stream.start(async (events) => {
     const folded = events.map(merge);
     for (const event of folded) state.chat.apply(event);
+    if (phoneMode) for (const event of folded) {
+      // a turn that failed (the model, its watchdog, the window) is in the chat as a note; the phone's report says it too
+      const m = event.type === "message_end" ? ((event.entry as unknown as { model?: { role?: string; stopReason?: string; errorMessage?: string }[] }).model ?? [])[0] : undefined;
+      if (m?.role === "assistant" && m.stopReason === "error") phoneReport("turn-failed", { error: String(m.errorMessage ?? "").slice(0, 300) });
+    }
     state.client?.view({ kind: "events", events: folded } satisfies ViewEvent);
     if (events.some((e) => e.type === "tool_execution_end" || e.type === "run_end")) await refreshFiles();
     renderChat();
@@ -939,20 +948,34 @@ async function startPhone(): Promise<void> {
   addEventListener("unhandledrejection", (e) => state.phone?.log.push(`unhandled: ${e.reason instanceof Error ? e.reason.message : String(e.reason)}`));
   try {
     const t = performance.now();
-    const store = await openLocalStore(run).catch((e: Error) => { throw new Error(`opening the session's store (SQLite in OPFS): ${e.message}`); });
+    // The store's files are held by one page at a time (OPFS access handles): a page still closing, or another tab of this page, holds them a moment longer. A few
+    // tries, then the reason.
+    let store: LocalStore | undefined;
+    for (let tries = 1; !store; tries++) {
+      try {
+        store = await openLocalStore(run);
+      } catch (e) {
+        if (tries >= 5) throw new Error(`opening the session's store (SQLite in OPFS): ${(e as Error).message}. Another tab of this page may hold it: close it and try again.`);
+        phoneSay(`the session's store is busy (a page still closing, or another tab): trying again (${tries})`, `store busy: ${(e as Error).message}`);
+        await sleepMs(400 * 2 ** tries);
+      }
+    }
     const storeMs = Math.round(performance.now() - t);
     const fs = memoryFs("/workspace");
     const workspace = new Workspace(fs);
     const restored = await workspace.restore(await loadWorkspace(run).catch(() => []));
     const filesMs = Math.round(performance.now() - t) - storeMs;
     const env = new FilesEnv(fs, "phone");
-    const runtime = await startLocal({ storage: store.storage, model: PHONE_MODEL_ID, computer: { env, workspace }, persist: (changes) => applyChanges(run, changes) });
+    const runtime = await startLocal({ storage: store.storage, model: PHONE_MODEL_ID, computer: { env, workspace }, persist: (changes) => applyChanges(run, changes), deferResume: true }); // resumed once the brain is ready (below)
     Object.assign(state.phone!.marks, { storeMs, filesMs, harnessMs: Math.round(performance.now() - t) - storeMs - filesMs });
     state.runtime = runtime;
     state.mode = "offline";
     state.progress = "";
     phoneSay("the session is open; the robot's brain is loading", `session opened in ${Math.round(performance.now() - t)} ms: store ${storeMs}, files ${filesMs}, harness ${state.phone!.marks.harnessMs} (${restored.files} files restored)`);
-    await followConversation(runtime, runtime.root);
+    // the conversation this phone was in (New chat starts another; the earlier ones stay in the store)
+    const keptId = (() => { try { return localStorage.getItem(`phone-conversation:${run}`); } catch { return null; } })();
+    const kept = keptId ? await runtime.harness.conversation(Number(keptId) as never, ctx).catch(() => undefined) : undefined;
+    await followConversation(runtime, kept ?? runtime.root);
     $("chat").scrollTop = $("chat").scrollHeight; // a reload opens on the newest lines
     await startPhoneBrain(runtime);
   } catch (error) {
@@ -982,6 +1005,9 @@ async function savePhoneForOffline(modelFiles: string[]): Promise<void> {
     phoneReport("offline", { error: (e as Error).message.slice(0, 300) });
   }
 }
+
+/** Set once the phone's brain is ready: starts a fresh conversation (the New chat button). */
+let phoneNewChat: (() => Promise<void>) | undefined;
 
 /** The robot's state line (robot-state-line.ts) from its file and the skills that came home, as the window shows it before the user's turn. */
 async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> {
@@ -1070,6 +1096,9 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   state.phone!.model = model;
   state.phone!.log.push(`model read in ${partReads.count} reads, the largest ${(partReads.largest / 1e6).toFixed(1)} MB`);
   marks.loadMs = Math.round(performance.now() - t);
+  // where the load's time went: fetching parts, checking them, the engine reading them in
+  Object.assign(marks, { downloadMs: Math.round(partTimes.downloadMs), downloadedMB: Math.round(partTimes.downloaded / 1e6), verifyMs: Math.round(partTimes.verifyMs), engineMs: Math.round(marks.loadMs - partTimes.downloadMs - partTimes.verifyMs) });
+  state.phone!.log.push(`load ${(marks.loadMs / 1000).toFixed(1)} s: download ${(marks.downloadMs! / 1000).toFixed(1)} s (${marks.downloadedMB} MB), check ${(marks.verifyMs! / 1000).toFixed(1)} s, engine ${(marks.engineMs! / 1000).toFixed(1)} s`);
   runtime.models.setProvider(brainProvider(model, brainModel(PHONE_MODEL_ID, "Qwen3.5-0.8B robot v3 (D1's fine-tune)", Number(params.get("ctx")) || 2048, 200), {
     ...DEFAULT_TOOL_DECODING, mode: "native", callTokens: Math.ceil((budget * 2) / 3), answerTokens: Math.floor(budget / 3), system: serving.system, refine, closing: params.get("closing") === "model" ? "model" : "tool-result",
     // D1's window T7: the earlier exchanges, the robot's state line, then the user's turn; ?window=task: the current task only (the model forgets earlier turns)
@@ -1077,10 +1106,21 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   }));
   const byName = new Map(runtime.registry.snapshot().tools().map((r) => [r.tool.name, r.tool]));
   const tools = serving.tools.map((s) => byName.get(s.function.name)).filter((r): r is NonNullable<typeof r> => r !== undefined); // in the serving file's order
-  const agent = await runtime.root.agent(ctx);
-  if (!(agent.model?.provider === BRAIN_PROVIDER && agent.model.modelId === PHONE_MODEL_ID)) {
-    await runtime.root.configure({ model: { provider: BRAIN_PROVIDER, modelId: PHONE_MODEL_ID }, thinkingLevel: "off", tools, instructions: serving.system }, ctx);
-  }
+  const phoneAgent = { model: { provider: BRAIN_PROVIDER, modelId: PHONE_MODEL_ID }, thinkingLevel: "off" as const, tools, instructions: serving.system };
+  const conversation = state.active ?? runtime.root;
+  const agent = await conversation.agent(ctx);
+  if (!(agent.model?.provider === BRAIN_PROVIDER && agent.model.modelId === PHONE_MODEL_ID)) await conversation.configure(phoneAgent, ctx);
+  // New chat: a fresh conversation on the same brain and tools, followed from now on; the earlier ones stay in the store, and the robot stays as it is
+  phoneNewChat = async () => {
+    if (state.chat.busy) return;
+    const fresh = await runtime.harness.createConversation({ ownership: { kind: "ownerless" }, agent: rootAgent(PHONE_MODEL_ID) }, ctx);
+    await fresh.configure(phoneAgent, ctx);
+    try { localStorage.setItem(`phone-conversation:${run}`, String(fresh.id)); } catch { /* not kept across a reload */ }
+    await followConversation(runtime, fresh);
+    phoneReport("new-chat", {});
+    render();
+    ($("input") as HTMLTextAreaElement).focus();
+  };
   t = performance.now();
   phoneSay("the robot's brain is reading its tools (once)");
   // the tools exactly as the provider sends them (native-turn.ts), so the prefix is the turns' prefix; a shipped warm state for it is restored instead (?state=0: prefill)
@@ -1090,8 +1130,11 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   marks.warmMs = Math.round(performance.now() - t);
   marks.warmTokens = warm.promptTokens;
   state.phone!.ready = true;
+  // what a reload cut short (a turn in the middle of its model call or its tools) runs now, on the brain that just came up
+  await runtime.harness.resume();
   phoneReport("ready", { ...marks, restored: warm.restored ? warm.restored.tokens : 0, compat: !("Suspending" in WebAssembly) || undefined, threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4), reads: partReads.count, largestRead: partReads.largest });
-  model.onTurn = (t) => phoneReport("turn", { ms: t.ms, promptNew: t.timings?.prompt_n ?? null, promptTotal: t.promptTokens, out: t.outputTokens, calls: t.calls.map((c) => c.split("(")[0]) });
+  model.onTurn = (t) => phoneReport("turn", { ms: t.ms, promptNew: t.timings?.prompt_n ?? null, promptTotal: t.promptTokens, out: t.outputTokens, calls: t.calls.map((c) => c.split("(")[0]), text: t.text.slice(0, 160), raw: t.calls.length ? undefined : t.raw.slice(0, 160) });
+  model.onTurnStart = () => { state.phone!.turnStarted = performance.now(); phoneReport("turn-start", {}); };
   phoneSay("", `brain ready: loaded in ${(marks.loadMs / 1000).toFixed(1)} s, tools read in ${(marks.warmMs / 1000).toFixed(1)} s (${warm.promptTokens} tokens)`);
   ($("input") as HTMLTextAreaElement).placeholder = "Tell the robot what to do: paint it red, make it a spider, spin…";
   ($("input") as HTMLTextAreaElement).focus();
@@ -1749,6 +1792,7 @@ $("online").addEventListener("click", () => {
 $("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)));
 // ?phone=1, after a start that failed: try again, or forget the cached model files first
 $("retry").addEventListener("click", () => location.reload());
+$("new-chat").addEventListener("click", () => void phoneNewChat?.().catch((e: Error) => { state.banner = `could not start a new chat: ${e.message}`; render(); }));
 $("retry-clear").addEventListener("click", () => { const u = new URL(location.href); u.searchParams.set("clearcache", "1"); location.href = u.href; });
 setInterval(renderStats, 1000);
 

@@ -30,7 +30,9 @@ export class PhoneModel implements BrainModel {
   private readonly llm: Llm;
   /** Where the model's first part is (its other parts and its manifest sit beside it). */
   get url(): string { return this.o.url; }
-  private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; loadTimeoutMs?: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
+  /** Told when a turn starts (the page shows it as thinking). */
+  onTurnStart: (() => void) | undefined;
+  private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; loadTimeoutMs?: number; /** A turn that has not answered in this long fails, by name (default 180 s). */ turnTimeoutMs?: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
 
   constructor(llm: Llm, o: PhoneModel["o"]) {
     if (!llm.loadUrl || !llm.complete || !llm.chatTemplate) throw new Error("this model backend cannot load from a URL, complete raw, or show its chat template");
@@ -40,7 +42,24 @@ export class PhoneModel implements BrainModel {
       { template: () => llm.chatTemplate!(), complete: (req: RawRequest, signal: AbortSignal): Promise<RawResult> => llm.complete!(req, { signal, sampling: GREEDY }) },
       (t) => { const turn: PhoneTurn = { at: Date.now(), ms: Math.round(t.result.ms), promptTokens: t.result.promptTokens, outputTokens: t.result.outputTokens, grammar: t.grammar, calls: t.result.toolCalls.map((c) => `${c.name}(${c.arguments})`), text: t.result.text, raw: t.raw, prompt: t.prompt, ...(t.timings ? { timings: t.timings } : {}) }; this.turns.push(turn); this.onTurn?.(turn); },
     );
-    this.toolChat = (req, signal) => this.serial(() => locked(req, signal));
+    // A turn never hangs silently: past its time it is stopped and fails by name, and the conversation says so (a turn that vanished is what an iPhone showed).
+    this.toolChat = (req, signal) => this.serial(async () => {
+      this.onTurnStart?.();
+      const limit = this.o.turnTimeoutMs ?? 180_000;
+      const stop = new AbortController();
+      let late = false;
+      const timer = setTimeout(() => { late = true; stop.abort(); }, limit);
+      const relay = () => stop.abort();
+      signal?.addEventListener("abort", relay, { once: true });
+      try {
+        const r = await locked(req, stop.signal);
+        if (late) throw new Error(`the model did not answer in ${Math.round(limit / 1000)} s`);
+        return r;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", relay);
+      }
+    });
   }
 
   /** One request at a time: the engine has one sequence, and a turn must not interleave with the warm-up. */

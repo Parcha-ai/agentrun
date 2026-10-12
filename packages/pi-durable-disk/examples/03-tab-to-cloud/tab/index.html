@@ -114,6 +114,9 @@ body.phone footer { padding: 8px max(12px, env(safe-area-inset-right)) max(8px, 
 body.phone #input { font-size: 16px; height: 44px; min-height: 44px; line-height: 1.4; padding: 10px 12px; }
 body.phone #send { min-height: 44px; min-width: 64px; }
 body.phone #phone-retry button { min-height: 44px; }
+#phone-actions { display: none; }
+body.phone #phone-actions { display: flex; justify-content: flex-end; }
+body.phone #new-chat { min-height: 32px; padding: 4px 6px; }
 body.phone #phone-retry { grid-row: 3; margin: 0; padding: 8px 14px; display: flex; gap: 8px; }
 body.phone #phone-retry[hidden] { display: none; }
 body.phone #checkedout { grid-row: 4; }
@@ -163,6 +166,7 @@ body.phone header { padding: 10px 14px; gap: 10px; }
   </aside>
 </main>
 <footer>
+  <div id="phone-actions"><button id="new-chat" class="link" hidden title="Start a fresh conversation; this one stays">New chat</button></div>
   <div id="composer" hidden>
     <textarea id="input" placeholder="Ask the agent to write something…"></textarea>
     <button id="send" class="primary">Send</button>
