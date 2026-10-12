@@ -93,7 +93,8 @@ const serveArgs = [
   "--port", String(port),
   "--host", "127.0.0.1",
   "--run", run,
-  "--model", "gpt-6-luna",
+  // The cloud agent's model (served by the broker on this host): gpt-6-luna unless the take names another (--agent-model).
+  "--model", arg("agent-model", "gpt-6-luna"),
   "--model-url", "http://127.0.0.1:9421/v1",
   "--budget", budget,
   "--admin-token-file", tokenFile,

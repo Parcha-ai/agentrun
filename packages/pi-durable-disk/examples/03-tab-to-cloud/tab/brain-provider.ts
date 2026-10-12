@@ -15,11 +15,11 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/e
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, Provider, TranscriptContext, Usage } from "@earendil-works/pi-ai";
 import { REFUSAL } from "../../04-walks-home/tab/src/guard.ts";
 import { chatMessages, HELD, type HistoryMode } from "../../04-walks-home/tab/src/history.ts";
-import type { Answered, ChatMsg } from "../../04-walks-home/tab/src/modelhost.ts";
+import type { Answered, ChatMsg, ToolChatMessage } from "../../04-walks-home/tab/src/modelhost.ts";
 import { splitThinking } from "../../04-walks-home/tab/src/thinking.ts";
 import { decodeTurn, toPiContent, type DecodedTurn } from "./decode.ts";
 import { CHARS_PER_TOKEN, CONTEXT_TOKENS, hasTools, toolPrompt } from "./tool-window.ts";
-import { nativeContent, nativeTurn, toolProperties } from "./native-turn.ts";
+import { nativeContent, nativeExchanges, nativeTurn, toolProperties } from "./native-turn.ts";
 import type { ToolChatRequest, ToolChatResult, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
 
 export const BRAIN_PROVIDER = "tab-local";
@@ -68,6 +68,19 @@ export interface ToolDecoding {
   /** Awaited before each native turn is built: refresh whatever `refine` reads (the skills that came home), so a change reaches the very next request. */
   prepare?: () => Promise<void>;
   templateThinking?: boolean;
+  /**
+   * `native`: who speaks after the model's calls come back. "model" (default): the model, a turn of its own (its closing sentence). "tool-result": nobody: the
+   * turn ends on the tools' own result text (written for a person: "The whole robot is now red. ...", "Not done: ..."), so the reply cannot claim more than the
+   * tools did, and the turn costs one model call, not two. A reply with no calls is the model's own words either way.
+   */
+  closing?: "model" | "tool-result";
+  /**
+   * `native`: what of the conversation the model is shown. "task" (default): the current task (native-turn.ts nativeTurn). "exchanges": D1's window T7, the
+   * earlier exchanges, the robot's state line (`stateLine`, read after `prepare`), then the current task, the oldest exchange dropped while `fits` says no.
+   */
+  window?: "task" | "exchanges";
+  stateLine?: () => string | undefined;
+  fits?: (messages: ToolChatMessage[], tools: ToolChatTool[]) => boolean;
   /** A task that has taken this many of the model's own turns without an answer ends with a plain line instead of another model call (a small model stuck repeating one call would otherwise run for ever, each turn about ten seconds). Default 16. */
   maxSteps?: number;
   /** Called once per decoded turn, with how long it took and what it cost. */
@@ -140,9 +153,25 @@ function streamNative(brain: BrainModel, model: Model<string>, context: Transcri
     try {
       const maxTokens = d.answerTokens + d.callTokens;
       await d.prepare?.();
-      const turn = nativeTurn(context.messages as never, { provider: BRAIN_PROVIDER, mode: d.history ?? "none", ...(d.system ? { system: d.system } : {}), ...(d.refine ? { refine: d.refine } : {}), maxChars: Math.max(0, ((d.nCtx ?? 4096) - maxTokens) * CHARS_PER_TOKEN) });
+      const stateLine = d.window === "exchanges" ? d.stateLine?.() : undefined;
+      const turn = d.window === "exchanges"
+        ? nativeExchanges(context.messages as never, { provider: BRAIN_PROVIDER, mode: "none", ...(d.system ? { system: d.system } : {}), ...(d.refine ? { refine: d.refine } : {}), ...(stateLine ? { stateLine } : {}), ...(d.fits ? { fits: d.fits } : {}) })
+        : nativeTurn(context.messages as never, { provider: BRAIN_PROVIDER, mode: d.history ?? "none", ...(d.system ? { system: d.system } : {}), ...(d.refine ? { refine: d.refine } : {}), maxChars: Math.max(0, ((d.nCtx ?? 4096) - maxTokens) * CHARS_PER_TOKEN) });
       if (!turn.messages.some((m) => m.role === "user")) throw new Error("nothing to answer: the conversation has no user message");
       stream.push({ type: "start", partial: output });
+      const lastCall = turn.messages.map((m) => m.role).lastIndexOf("assistant");
+      const results = lastCall >= 0 ? turn.messages.slice(lastCall + 1) : [];
+      if (d.closing === "tool-result" && results.length > 0 && results.every((m) => m.role === "tool")) {
+        // the calls of this task came back: their own words are the reply, no model turn
+        const line = results.map((m) => String(m.content ?? "").trim()).filter(Boolean).join(" ");
+        output.content = [{ type: "text", text: line }];
+        stream.push({ type: "text_start", contentIndex: 0, partial: output });
+        stream.push({ type: "text_delta", contentIndex: 0, delta: line, partial: output });
+        stream.push({ type: "text_end", contentIndex: 0, content: line, partial: output });
+        stream.push({ type: "done", reason: "stop", message: output });
+        stream.end();
+        return;
+      }
       if (turn.steps >= (d.maxSteps ?? DEFAULT_MAX_STEPS)) {
         const line = `I stopped after ${turn.steps} steps without finishing. Tell me how you want me to go on.`;
         output.content = [{ type: "text", text: line }];

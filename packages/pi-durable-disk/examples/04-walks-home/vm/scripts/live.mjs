@@ -64,6 +64,8 @@ const robotSkills = Number(arg("robot-skills", 8));
 // The page that shows the run (served by the stage), and the query the agent's page is opened with.
 const stagePath = arg("stage-path", "");
 const linkQuery = arg("link-query", "golive=1&robot=1");
+// The cloud agent's model, through the broker on this host (the VM reaches it over the link: no key on the VM). Miguel chose gpt-6-sol.
+const agentModel = arg("agent-model", "gpt-6-sol");
 // The model's token budget for the run (a robot session has nine conversations).
 const modelBudget = String(arg("model-budget", robot ? 30_000_000 : 3_000_000));
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
@@ -158,6 +160,7 @@ try {
       "--dir", join(work, "take"),
       "--run", "walks-home",
       "--budget", modelBudget,
+      "--agent-model", agentModel,
       "--evidence-readback",
       "--grace-ms", graceMs,
       ...(ownBrowser ? ["--port", serverPort] : []),
