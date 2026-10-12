@@ -10,6 +10,8 @@ thread's work in its own conversation.
 - Fit them to THIS body: read `robot/body.json` (the motors, the limbs, the tags). Do not plan a wave for a body with
   no front legs, or a gallop for a body that can barely stand. If the user named skills, plan those.
 - "Teach it to move" means: walk, turn-left and turn-right. Add backwards or sprint if the body looks able to.
+- "Teach it to walk to the flag" means walk; add turn-left and turn-right only if the user wants it to steer. Once it
+  has come home, "walk to the flag" shows it.
 - Plan get-up only if a motor can swing a leg sideways, so the robot can roll off its side or back. A body written as
   code shows it in robot/body.json:
   `node -e 'const b=JSON.parse(require("fs").readFileSync("robot/body.json","utf8")); const s=b.joints.filter((j)=>!j.passive&&j.axis[0]!==0).map((j)=>j.name); console.log(s.length?"sideways motors: "+s.join(", "):"no sideways motors")'`

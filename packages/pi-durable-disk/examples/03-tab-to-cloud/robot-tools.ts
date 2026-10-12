@@ -6,6 +6,7 @@ import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { buildRobot } from "./build-robot.ts";
 import { BRAIN_PROVIDER } from "./providers.ts";
+import { FLAG_WAIT, NO_REPORT, readScene, runText, tryText, waitForAttempt } from "./flag-goal.ts";
 import { COLOR_NAMES, FACE_NAMES, LOOK_PARTS, type CodeBody, MORPH_PRESETS, NAME_MAX, RESIZE_PARTS, SHAPE_NAMES, SHAPE_PARTS, SKILL_NAMES, applyRobotTool, applyUpdateRobot, initialRobot, parseRobot, serializeRobot, validateDesign, type Design, type RobotContext, type RobotState } from "./robot-model.ts";
 
 /** The robot's state file, and the design the creature page publishes when it saves the user's drawing (what `reset` returns to). Relative to the workspace. */
@@ -151,15 +152,15 @@ export async function defaultSkill(env: Env, context: Ctx): Promise<string | und
 
 /** One edit at a time per computer: pi runs the calls of one model turn together ("a red spider" is two), and each edit is read-modify-write on the same file, so the later write would drop the earlier one. */
 const lines = new WeakMap<object, Promise<unknown>>();
-function edit(api: ToolApi, context: Ctx, tool: string, args: Record<string, unknown>) {
+function edit(api: ToolApi, context: Ctx, tool: string, args: Record<string, unknown>, attempt?: RobotState["attempt"]) {
   const env = api.env;
-  if (!env) return editNow(api, context, tool, args);
-  const run = (lines.get(env) ?? Promise.resolve()).then(() => editNow(api, context, tool, args));
+  if (!env) return editNow(api, context, tool, args, attempt);
+  const run = (lines.get(env) ?? Promise.resolve()).then(() => editNow(api, context, tool, args, attempt));
   lines.set(env, run.catch(() => undefined));
   return run;
 }
 
-async function editNow(api: ToolApi, context: Ctx, tool: string, args: Record<string, unknown>) {
+async function editNow(api: ToolApi, context: Ctx, tool: string, args: Record<string, unknown>, attempt?: RobotState["attempt"]) {
   const env = api.env;
   if (!env) return text("Not done: there is no computer to keep the robot's file on.", true);
   const body = await loadCodeBody(env, context);
@@ -177,10 +178,43 @@ async function editNow(api: ToolApi, context: Ctx, tool: string, args: Record<st
   if (outcome.kind !== "none") {
     const made = await env.createDir("creature", { recursive: true }, context);
     if (!made.ok && made.error.code !== "invalid") return text(`Not done: the robot's folder could not be made: ${made.error.message}.`, true);
-    const wrote = await env.writeFile(ROBOT_FILE, serializeRobot(outcome.state), context);
+    const wrote = await env.writeFile(ROBOT_FILE, serializeRobot(attempt ? { ...outcome.state, attempt } : outcome.state), context);
     if (!wrote.ok) return text(`Not done: the robot's file could not be written: ${wrote.error.message}.`, true);
   }
   return { ...text(outcome.text), details: { kind: outcome.kind } };
+}
+
+/**
+ * `do` with a place and a goal (flag-goal.ts, D0's page): with a flag in the scene and the cloud agent driving, every
+ * `do` is one measured request, written with this call's id. A skill that has come home starts as always, and the page
+ * reports the run (at the flag, a fall, when it stops closing on the flag, or at 15 s). A skill that has not come home
+ * is tried with the page's untrained brain instead of refused, and fails where everyone can see it. The words come
+ * from the page's report. Without a flag, or with the browser's own model driving, `do` is what it always was.
+ */
+async function doSkill(api: ToolApi, context: Ctx, args: Record<string, unknown>) {
+  const env = api.env;
+  const scene = env ? await readScene(env as never, context as never) : undefined;
+  const driver = scene ? (await api.agent(context as never)).model?.provider : undefined;
+  if (!env || !scene || driver === BRAIN_PROVIDER || typeof args.skill !== "string" || !/^[\w-]{1,40}$/.test(args.skill)) return edit(api, context, "do", args);
+  const skill = args.skill;
+  const learned = (await loadSkills(env, context))[skill] !== undefined;
+  const attempt = { id: api.callId, skill, learned };
+  if (learned) {
+    const started = await edit(api, context, "do", args, attempt);
+    if ((started as { isError?: boolean }).isError) return started;
+    const report = await waitForAttempt(env as never, context as never, attempt.id, { timeoutMs: FLAG_WAIT.runMs });
+    const said = started.content.map((c) => c.text).join("");
+    return { ...text(`${said} ${report ? runText(report) : NO_REPORT}`), details: { kind: "skill", ...(report ? { attempt: report } : {}) } };
+  }
+  // The untrained try: the request alone (the skill the robot is doing stays as it was).
+  const loaded = await load(env, context);
+  if ("problem" in loaded) return text(`Not done: ${loaded.problem}.`, true);
+  const made = await env.createDir("creature", { recursive: true }, context);
+  if (!made.ok && made.error.code !== "invalid") return text(`Not done: the robot's folder could not be made: ${made.error.message}.`, true);
+  const wrote = await env.writeFile(ROBOT_FILE, serializeRobot({ ...loaded, attempt }), context);
+  if (!wrote.ok) return text(`Not done: the robot's file could not be written: ${wrote.error.message}.`, true);
+  const report = await waitForAttempt(env as never, context as never, attempt.id, { timeoutMs: FLAG_WAIT.tryMs });
+  return { ...text(report ? tryText(report) : `Not learned yet: the robot was asked to try ${skill}. ${NO_REPORT}`), details: { kind: "try", ...(report ? { attempt: report } : {}) } };
 }
 
 /** The nine tools and the flat `update_robot` that does the same edits in one call (the two shapes plug onto the same state), as one extension. */
@@ -245,9 +279,9 @@ export function robotTools(): Extension {
       }),
       defineTool({
         name: "do",
-        description: "Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). A skill it has not learned is refused. The body is unchanged: the walking brain still fits.",
+        description: "Make the robot do one of the skills it has learned (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up). The body is unchanged: the walking brain still fits. With a flag in the scene, a skill it has not learned makes it try (an untrained attempt that fails) instead of being refused, and the answer says how far it got and whether it reached the flag; without one, a skill it has not learned is refused.",
         parameters: Type.Object({ skill: Type.String({ pattern: "^[\\w-]{1,40}$", description: "Which skill: the name of one it has learned (the ones in home/skills.json; the usual ones are walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up)." }) }),
-        execute: (args, api, context) => edit(api, context, "do", args),
+        execute: (args, api, context) => doSkill(api, context, args),
       }),
       defineTool({
         name: "build_robot",

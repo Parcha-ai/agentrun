@@ -38,3 +38,12 @@ test("robot.md quotes the dog and the dinosaur examples byte for byte, as the wo
   assert.ok(ROBOT_SOP.includes(body("dog.example.mjs")), "robot.md's dog is dog.example.mjs");
   assert.ok(ROBOT_SOP.includes(body("dino.example.mjs")), "robot.md's dinosaur is dino.example.mjs");
 });
+
+test("robot.md and teach.md tell the agent about the flag: before training a move request tries and offers to teach, after it reports whether it reached the flag", () => {
+  const robot = ROBOT_SOP.replace(/\s+/g, " ");
+  assert.match(robot, /## The flag: a place and a goal/);
+  assert.match(robot, /"Walk to the flag", "go get the flag" or "make it walk" is `do walk` \(or the skill the user names\), whether or not that skill has been taught\./);
+  assert.match(robot, /\*\*Not taught yet:\*\* the robot tries and fails where everyone can see it .* offer to teach it \("Want me to teach it to walk\?"\)\. The try is the point: do not refuse it/);
+  assert.match(robot, /\*\*Taught:\*\* it walks\. Say whether it reached the flag and how long it took, from the result\. Never say it reached the flag unless the result says it did\./);
+  assert.match(TEACH_SOP.replace(/\s+/g, " "), /"Teach it to walk to the flag" means walk; add turn-left and turn-right only if the user wants it to steer\./);
+});

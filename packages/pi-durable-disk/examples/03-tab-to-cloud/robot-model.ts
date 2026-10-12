@@ -96,6 +96,11 @@ export interface RobotState {
   look: Look;
   /** The skill the robot is doing (a policy from home/skills.json); absent: the default one. */
   skill?: string;
+  /**
+   * With a flag in the scene, the last `do` as one measured request (flag-goal.ts): its id (the tool call's), the skill,
+   * and whether it had come home (false: the page plays the untrained try). The page reports it once per id.
+   */
+  attempt?: { id: string; skill: string; learned: boolean };
   /** How many changes the tools made since the drawing. */
   edits: number;
 }
@@ -346,6 +351,7 @@ export function parseRobot(text: string): RobotState | undefined {
   if (!Number.isInteger(s.edits) || (s.edits as number) < 0) return undefined;
   if (validateDesign(s.design).length > 0 || validateDesign(s.original).length > 0) return undefined;
   if (s.skill !== undefined && typeof s.skill !== "string") return undefined;
+  if (s.attempt !== undefined && (typeof s.attempt !== "object" || s.attempt === null || typeof s.attempt.id !== "string" || typeof s.attempt.skill !== "string" || typeof s.attempt.learned !== "boolean")) return undefined;
   return s as RobotState;
 }
 
