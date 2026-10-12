@@ -1315,7 +1315,15 @@ async function connect(mode: "write" | "view", takeover = false, switchId?: stri
     // The computer boots before the tab asks for the run: the pipe holds a claim only for a tab that can use it.
     state.mode = "booting";
     render();
-    await ensureComputer();
+    try {
+      await ensureComputer();
+    } catch (error) {
+      // The computer's package could not be loaded (a server without it answers 404): say what, in the banner, instead of leaving the boot progress up.
+      state.mode = "lost";
+      state.banner = `could not start the computer: ${(error as Error).message}`;
+      render();
+      return;
+    }
   }
   state.mode = "connecting";
   render();
