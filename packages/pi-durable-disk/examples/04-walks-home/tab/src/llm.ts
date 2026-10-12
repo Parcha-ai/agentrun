@@ -210,6 +210,10 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       await make({ default: wasmUrl }).cacheManager.clear();
       try { for (const k of Object.keys(localStorage)) if (k.startsWith(VERIFIED)) localStorage.removeItem(k); } catch { /* no storage */ }
     },
+    async cachedFile(url, want) {
+      if (!w) throw new Error('the model is not loaded');
+      return verifiedPart(w, url, want, { onStatus: () => undefined, onProgress: () => undefined });
+    },
     chatTemplate() { return w?.getChatTemplate() ?? null; },
     async restoreState(state) {
       if (!w) throw new Error('the model is not loaded');

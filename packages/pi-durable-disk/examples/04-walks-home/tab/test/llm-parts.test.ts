@@ -194,3 +194,23 @@ test("an engine load that never finishes fails after its timeout, by name, and i
   assert.ok(Date.now() - started < 2000, "it gave up at its timeout");
   assert.equal(exited, 1, "the stalled engine's worker was let go");
 });
+
+test("a file through the engine's cache (the warm state) is fetched once, then read from the cache; a copy of the wrong size or bytes is fetched again", async () => {
+  const s = setup();
+  s.cache.set(s.key(BASE), new Blob([s.p1 as BlobPart]));
+  s.cache.set(s.key(URL2), new Blob([s.p2 as BlobPart]));
+  await s.llm.loadUrl!(BASE, { threads: 1 });
+  const STATE = 'https://p.example/m/robot.state.bin', state = randomBytes(500);
+  const server = new Map([[STATE, new Uint8Array(state)]]);
+  (s.w.cacheManager as { download: unknown }).download = async (url: string) => { s.log.downloads.push(url.split('/').pop()!); s.cache.set(s.key(url), new Blob([server.get(url)! as BlobPart])); };
+  const want = { bytes: state.length, sha256: sha(state) };
+  const first = await s.llm.cachedFile!(STATE, want);
+  assert.deepEqual(new Uint8Array(await first.slice(0, first.size).arrayBuffer()), new Uint8Array(state));
+  await s.llm.cachedFile!(STATE, want);
+  assert.deepEqual(s.log.downloads, ['robot.state.bin'], 'once: the second read is the cache\'s');
+  s.cache.set(s.key(STATE), new Blob([randomBytes(500) as BlobPart])); // the same size, other bytes (a state made for another prefix under the same name)
+  try { localStorage.clear?.(); } catch { /* no storage in this runtime: the sha256 is checked every time */ }
+  const again = await s.llm.cachedFile!(STATE, want);
+  assert.deepEqual(new Uint8Array(await again.slice(0, again.size).arrayBuffer()), new Uint8Array(state));
+  assert.deepEqual(s.log.downloads, ['robot.state.bin', 'robot.state.bin'], 'the wrong bytes: fetched again');
+});
