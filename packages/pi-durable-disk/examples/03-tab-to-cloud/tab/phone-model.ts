@@ -157,7 +157,7 @@ export class PhoneModel implements BrainModel {
       await this.llm.restoreState!(await this.reopen());
       this.rewarmed = { ms: Math.round(performance.now() - started) };
     } catch (e) {
-      this.rewarmed = { failed: (e as Error).message }; // the turn goes on from wherever the engine is: slower, not wrong
+      this.rewarmed = { failed: e instanceof Error ? e.message : String(e) }; // the turn goes on from wherever the engine is: slower, not wrong
     }
   }
 
