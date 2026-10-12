@@ -4,7 +4,7 @@
 //   node spike.ts [--tick 700] [--capacity 8] [--dir DIR]
 // Prints a JSON verdict; exits 1 if a check fails. Nothing runs but this machine's node and the fakes.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,12 +36,14 @@ const before = JSON.parse(readFileSync(join(dir, "before-resume.json"), "utf8"))
 const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const runs = (box: string) => (existsSync(join(dir, "boxes", box, "runs.jsonl")) ? readFileSync(join(dir, "boxes", box, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
 
-function peakHeld(log: { event: string }[]): number {
-  let held = 0;
+function peakHeld(log: { event: string; boxId?: string }[]): number {
+  // The boxes held at once: a release counts once per box (one retried after the kill is logged twice).
+  const held = new Set<string>();
   let peak = 0;
   for (const p of log) {
-    held += p.event === "pool.create" ? 1 : p.event === "pool.release" ? -1 : 0;
-    peak = Math.max(peak, held);
+    if (p.event === "pool.create" && p.boxId) held.add(p.boxId);
+    if (p.event === "pool.release" && p.boxId) held.delete(p.boxId);
+    peak = Math.max(peak, held.size);
   }
   return peak;
 }
@@ -60,7 +62,8 @@ const checks = {
     const creates = pool.filter((p) => p.event === "pool.create").map((p) => p.threadId);
     return creates.length === 8 && new Set(creates).size === 8;
   })(),
-  every_box_released: pool.filter((p) => p.event === "pool.release").length === 8,
+  // Every thread's box was given back (a release retried after the kill may be logged twice).
+  every_box_released: new Set(pool.filter((p) => p.event === "pool.release").map((p) => p.threadId)).size === 8 && readdirSync(join(dir, "pool")).every((f) => !f.endsWith(".box")),
   boxes_out_never_above_capacity: peakHeld(pool) <= Number(a.capacity),
   allSettled_folded_all_8_with_one_failure: threads.length === 8 && threads.filter((t: { status: string }) => t.status === "passed").length === 7 && threads.some((t: { skill: string; status: string }) => t.skill === "wave" && t.status === "never-passed"),
   // wave's thread said only "wave ran out of steps": its status and facts come from the result it saved, not its words.

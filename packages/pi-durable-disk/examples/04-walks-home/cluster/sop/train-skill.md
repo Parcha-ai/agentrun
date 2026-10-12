@@ -66,14 +66,20 @@ def terms(s):
 
 ## Steps
 1. **Is your skill one of the library's?** These are worked skills in `/opt/pda/train/skills/`, already tuned, each in
-   its directory: walk `walk/`, sprint `sprint/`, backwards `backwards/`, turn-left `turn-left/`, turn-right
-   `turn-right/`, spin `spin/`, wave `wave/`, and get-up `getup/` (no hyphen; its skill.json already says get-up). If
-   yours is one of them, use it as it is:
-   - `cp -r /opt/pda/train/skills/<its directory> skills/<your skill>` (get-up: `cp -r /opt/pda/train/skills/getup skills/get-up`);
-   - `cat skills/<your skill>/test.py` and change only what your brief or this body needs (the target number in
-     test.py, a weight for a heavy or long-legged body). The trainer finds this body's feet and pose itself. Change
-     nothing else, and write no new reward code;
-   - go straight to step 3.
+   its directory: walk `walk/`, sprint `sprint/`, backwards `backwards/`, turn-left
+   `turn-left/`, turn-right `turn-right/`, spin `spin/`, wave `wave/`, and get-up `getup/` (no hyphen; its skill.json
+   already says get-up). If yours is one of them, the library's files ARE your skill:
+   - **Never write or rewrite test.py or reward.py for it**, and keep the test's target even if your brief names
+     another number: the library's test is the pass test for these skills.
+   - Copy it: `cp -r /opt/pda/train/skills/<its directory> skills/<your skill>` (get-up:
+     `cp -r /opt/pda/train/skills/getup skills/get-up`).
+   - Train at once, with no `--compile-only` (nothing to check in a reward you did not change):
+     `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --init-from '' --steps 12M --stop-after-passing 2`
+   - Passed: run the check (step 6) and report.
+   - Not passed: ONE retry. If the diagnosis says still changing, run the same command with `--steps 40M`. Otherwise
+     change one weight in skill.json's `reward_scales` with an edit (not a rewrite) and train at 12M again. If the
+     retry does not pass either, stop and report never passed with the trainer's diagnosis.
+   - Steps 2 to 5 are for skills the library does not have.
 2. **Otherwise, write it from the closest example.** Read `robot/body.json` (its motors, legs and tags), then
    `ls /opt/pda/train/skills` and `cat /opt/pda/train/skills/<closest>/*`. Copy it to `skills/<your skill>`, then
    edit skill.json (its name is your skill), reward.py and test.py for your brief and this body. Make test.py measure
