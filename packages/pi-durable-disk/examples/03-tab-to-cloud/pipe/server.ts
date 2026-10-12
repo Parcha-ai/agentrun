@@ -216,13 +216,16 @@ interface RunState {
   /** Every connection to the run, with what its hello asked for, in the order they came. */
   clients: Map<PipeSocket, { mode: "write" | "view" | "operator"; canRun: boolean }>;
   /** The messages a placement decision is moving the run for, delivered when the move is done, and any that arrived during that move, each placed then. */
-  pendingSubmits: { text: string; requestId: string; task?: { text: string; sent: boolean }; /** Arrived during a move: it has not been placed yet, and is placed (asked again, where it belongs) once the move ends. */ queuedBy?: PipeSocket }[];
+  pendingSubmits: { text: string; requestId: string; task?: { text: string; sent: boolean }; /** Arrived during a move: it has not been placed yet, and is placed (asked again, where it belongs) once the move ends. */ queuedBy?: PipeSocket; /** The placement already decided for it (a message that waited for a turn is not asked about again). */ decided?: PlacementDecision }[];
   /** The placement of one message at a time: a later message waits for the earlier one's decision and move to start. */
   placing: Promise<void>;
   /** The task a placed run is working on; `sent` once its message reached the host that works on it (earlier turns' events do not end it). */
   placedTask: { text: string; sent: boolean } | undefined;
   /** The agent's closing turn at home, while the server waits for it to end (the writer's run_end) before it replays the requests queued during the move home. */
   homeTurn: HomeWait | undefined;
+  /** When the agent was last given a message and has not yet ended its turn (the host's run_end): a placement move would release the pipe under a step that is starting, so a message that needs a move waits for it. */
+  turnSince: number | undefined;
+  turnTimer: NodeJS.Timeout | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
   /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Set from the checkout, and from the mark on the disk (`store/checkout.json`, readMarker) on adopt, hello and the store and checkout routes, so a restarted server finds it too. */
@@ -241,6 +244,8 @@ const UPLOAD_QUEUE_LOW = 2 * Math.ceil((CHUNK_BYTES * 4) / 3);
 
 /** The longest user message written to the request file (characters). */
 const REQUEST_FILE_MAX = 4000;
+/** The longest a running agent turn holds back a message that needs a move (a host that never says its turn ended must not hold it for ever). */
+const TURN_BUSY_MS = 120_000;
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -674,7 +679,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     for (const p of pending) {
       if (p.queuedBy) {
         // Through the one-at-a-time placement, in the order they came; not awaited here (this may run inside that very queue).
-        void placeThenSubmit(state, p.queuedBy, p.text, p.requestId).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+        void placeThenSubmit(state, p.queuedBy, p.text, p.requestId, p.decided).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
         continue;
       }
       await deliverSubmit(state, p.text, p.requestId).catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
@@ -686,12 +691,27 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function deliverSubmit(state: RunState, text: string, requestId: string): Promise<void> {
     const started = Date.now();
     if (state.pipe) {
+      state.turnSince = started;
       state.pipe.broadcast({ t: "submit", text, requestId });
       log("submit.delivered", { run: state.ref.id, to: "pipe", requestId });
     } else if (state.placement.where === "cloud") {
+      state.turnSince = started;
       await options.cloud?.submit?.(state.ref, text, requestId);
       log("submit.delivered", { run: state.ref.id, to: "cloud", requestId, ms: Date.now() - started });
     } else log("submit.undeliverable", { run: state.ref.id, where: state.placement.where, requestId });
+  }
+
+  /** Whether the agent is in the middle of a turn it was given (not ended, and not for longer than the bound). */
+  const turnRunning = (state: RunState): boolean => state.turnSince !== undefined && Date.now() - state.turnSince < TURN_BUSY_MS;
+
+  /** The host says its turn ended: what waited for it is placed now. */
+  function turnEnded(state: RunState): void {
+    state.turnSince = undefined;
+    clearTimeout(state.turnTimer);
+    state.turnTimer = undefined;
+    // The home wait replays what queued behind it when it is over (in order, after the check and the closing turn): not twice.
+    if (state.homeTurn) return;
+    void flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
   }
 
   /**
@@ -726,23 +746,38 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * One message at a time per run: a second one waits for the first one's decision and for its move to start, so two quick messages never
    * ask for two placements at once and none is lost.
    */
-  function placeThenSubmit(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
-    const mine = state.placing.then(() => placeOne(state, socket, text, requestId));
+  function placeThenSubmit(state: RunState, socket: PipeSocket, text: string, requestId: string, decided?: PlacementDecision): Promise<void> {
+    const mine = state.placing.then(() => placeOne(state, socket, text, requestId, decided));
     state.placing = mine.catch(() => undefined);
     return mine;
   }
 
-  async function placeOne(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
+  async function placeOne(state: RunState, socket: PipeSocket, text: string, requestId: string, decided?: PlacementDecision): Promise<void> {
     // An earlier message's move is still going: this one goes to the host the run has when it ends.
     // (and while the home check and the agent's closing turn run: a new move then would release the pipe the check reads through and overtake the requests already queued)
     if (state.switching || state.homeTurn) {
-      state.pendingSubmits.push({ text, requestId, queuedBy: socket });
+      state.pendingSubmits.push({ text, requestId, queuedBy: socket, ...(decided ? { decided } : {}) });
       log("placement.queued", { run: state.ref.id, requestId, behind: state.switching ? "the move" : "the home wait" });
       return;
     }
     if (state.opening) return deliverSubmit(state, text, requestId);
     const current = currentEnv(state.placement);
-    const decision = await decide(state, "start", text);
+    const decision = decided ?? (await decide(state, "start", text));
+    // A message that needs a move waits while the agent's turn runs: a move then would release the pipe under a step that is about to start. One that stays where it is goes on at once.
+    if (decision && decision.choice !== current && environment(decision.choice) && turnRunning(state)) {
+      state.pendingSubmits.push({ text, requestId, queuedBy: socket, decided: decision });
+      log("placement.queued", { run: state.ref.id, requestId, behind: "the running turn" });
+      // A turn that never reports its end does not hold the message for ever.
+      if (!state.turnTimer) {
+        state.turnTimer = setTimeout(() => {
+          state.turnTimer = undefined;
+          if (state.turnSince !== undefined) log("placement.turn-timeout", { run: state.ref.id });
+          turnEnded(state);
+        }, TURN_BUSY_MS + 250);
+        state.turnTimer.unref();
+      }
+      return;
+    }
     const task = { text, sent: false };
     state.placedTask = task;
     // The request goes to the run's disk as bytes before the message goes anywhere, wherever the task will run (the same host included, or a program
@@ -928,8 +963,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       socket.send(frame);
       // A mounted cloud host's events reach the server through this relay, not through a tab's `view` frames: the end of the agent's turn there
       // is read here, once the task's message has reached it (the history a viewer is replayed on attach holds earlier turns' ends).
-      if (frame.t === "event" && options.placer && state.placedTask?.sent && state.placement.where === "cloud" && endsRun(frame.event)) {
-        void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+      if (frame.t === "event" && state.placement.where === "cloud" && endsRun(frame.event)) {
+        const waiting = state.pendingSubmits.some((p) => p.queuedBy);
+        if (options.placer && state.placedTask?.sent && !waiting) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+        // The viewers of a run on a mounted host each relay the same end: the first one counts, and what waited for the turn is placed now.
+        if (state.turnSince !== undefined || waiting) turnEnded(state);
       }
     });
     state.cloudViewers.set(socket, detach);
@@ -963,7 +1001,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       case "view":
         pipe?.view(socket, frame.event);
         if (pipe?.isWriter(socket) && endsRun(frame.event) && state.homeTurn?.armed) state.homeTurn.finish();
-        if (options.placer && state.placedTask && pipe?.isWriter(socket) && endsRun(frame.event)) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+        if (pipe?.isWriter(socket) && endsRun(frame.event)) {
+          const waiting = state.pendingSubmits.some((p) => p.queuedBy);
+          if (options.placer && state.placedTask && !waiting) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+          // A message that came while the turn ran is placed now, as a message of its own (it, not the finished task, decides where the agent goes next).
+          turnEnded(state);
+        }
         return;
       case "ping":
         if (pipe) pipe.ping(socket, frame.at);
@@ -1232,6 +1275,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       clients: new Map(),
       pendingSubmits: [],
       homeTurn: undefined,
+      turnSince: undefined,
+      turnTimer: undefined,
       placing: Promise.resolve(),
       placedTask: undefined,
       decisions: [],
@@ -1688,6 +1733,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       for (const poller of pollers.values()) poller.stop();
       pollers.clear();
       for (const state of runs.values()) {
+        clearTimeout(state.turnTimer);
         // A home wait still open ends here, replaying nothing and leaving no timer.
         if (state.homeTurn) {
           state.homeTurn.cancelled = true;

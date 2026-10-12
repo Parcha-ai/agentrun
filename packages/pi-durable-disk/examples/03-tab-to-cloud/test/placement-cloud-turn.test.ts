@@ -209,3 +209,71 @@ describe("a mounted cloud host that reports its notice (notifiesSwitched)", () =
     page.close();
   });
 });
+
+describe("two messages in quick succession while the agent's turn is running", () => {
+  let local: Awaited<ReturnType<typeof localServer>>;
+  const submitted: string[] = [];
+  const events: { event: string; data: Record<string, unknown> }[] = [];
+  const placer: Placer = {
+    describe: (env) => `criterion of ${env}`,
+    async decide(query) {
+      const choice = query.phase === "done" ? "tab" : /teach/.test(query.message) ? "vm" : "tab";
+      const decision: PlacementDecision = { id: `q-${query.message.length}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 0.9 : 0.1 })), choice, latency_ms: 1, model: "scripted" };
+      return decision;
+    },
+  };
+  const cloud: CloudHost = {
+    environments: [{ id: "vm", label: "A VM", phrase: "a VM", kind: "cloud" }],
+    start: async () => ({ host: "vm-1" }),
+    stop: async () => undefined,
+    attachViewer: async () => () => undefined,
+    submit: async (_ref, text) => void submitted.push(text),
+  };
+  before(async () => {
+    local = await localServer({ cloud, placer, drainMs: 5_000, superviseMs: 60_000, log: (event, data = {}) => events.push({ event, data }) });
+  });
+  after(async () => {
+    await local.remove();
+  });
+
+  it("a message that needs a move waits for the turn that is running in the tab: the tab is never asked to hand over mid-turn", async () => {
+    const { id, secret } = await local.server.createRun("rapid");
+    const tabFrames: PipeFrame[] = [];
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => { tabFrames.push(f); if (f.t === "drain") tab.send({ t: "drained", switchId: f.switchId }); } });
+    await tab.ready;
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: () => undefined });
+    await page.ready;
+    page.send({ t: "submit", text: "change its colour", requestId: "a" }); // stays in the tab: its turn starts
+    page.send({ t: "submit", text: "teach it to move", requestId: "b" }); // needs the VM: arrives while that turn runs
+    await new Promise((r) => setTimeout(r, 700));
+    assert.ok(tabFrames.some((f) => f.t === "submit" && f.text === "change its colour"), "the first message went to the tab");
+    assert.ok(!tabFrames.some((f) => f.t === "drain"), "the tab was not asked to hand the run over while its turn runs");
+    assert.ok(!events.some((e) => e.event === "switch.start" && e.data.run === id), "no move started");
+    assert.ok(!submitted.includes("teach it to move"));
+    // The tab's turn ends: now the message is placed, the tab hands over, and the VM gets it.
+    tab.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
+    for (const end = Date.now() + 10_000; !submitted.includes("teach it to move"); await new Promise((r) => setTimeout(r, 50))) if (Date.now() > end) throw new Error("the message never reached the VM");
+    assert.ok(tabFrames.some((f) => f.t === "drain"), "the tab handed over after its turn");
+    const at = (name: string) => events.findIndex((e) => e.event === name && e.data.run === id);
+    assert.ok(at("switch.start") >= 0);
+    tab.close();
+    page.close();
+  });
+
+  it("a message that stays where it is is not held back by a running turn", async () => {
+    const { id, secret } = await local.server.createRun("rapid-stay");
+    const tabFrames: PipeFrame[] = [];
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => tabFrames.push(f) });
+    await tab.ready;
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: () => undefined });
+    await page.ready;
+    page.send({ t: "submit", text: "one", requestId: "a" });
+    for (const end = Date.now() + 5_000; !tabFrames.some((f) => f.t === "submit" && f.text === "one"); await new Promise((r) => setTimeout(r, 30))) if (Date.now() > end) throw new Error("no first");
+    page.send({ t: "submit", text: "two", requestId: "b" });
+    // Queued behind the turn (the server cannot tell it stays without placing it), then delivered in order once the turn ends.
+    tab.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
+    for (const end = Date.now() + 5_000; !tabFrames.some((f) => f.t === "submit" && f.text === "two"); await new Promise((r) => setTimeout(r, 30))) if (Date.now() > end) throw new Error("the second message was never delivered");
+    tab.close();
+    page.close();
+  });
+});
