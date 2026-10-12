@@ -102,6 +102,8 @@ export class Feed {
   /** An event the page itself heard (the tab's message), folded in like the server's and kept across reconnects. */
   inject(event: ShowEvent): void {
     this.state = this.local.apply(this.state, event);
+    // One source of time: the event was stamped from this clock (state.now plus the time since the last event), so the time since the last event starts over from it.
+    this.receivedAt = performance.now();
     this.notify(event);
   }
 

@@ -50,12 +50,30 @@ export function tabEventsFrom(message: TabMessage, at: number): ShowEvent[] {
   }
 }
 
+/** The run a tab link is for: its `/run/<id>` path segment, null when the link names none. */
+export function runOf(tabUrl: string): string | null {
+  try {
+    return /^\/run\/([^/]+)/.exec(new URL(tabUrl).pathname)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Everything the stage keeps for a tab is scoped to its run, so following another run (the same stage window, a different tab link) never restores or reattaches the previous one's. */
+export function stageKeys(tabUrl: string | null): { run: string | null; eventsKey: string; flagKey: string; windowName: string } {
+  const run = tabUrl === null ? null : runOf(tabUrl);
+  const suffix = run === null ? "" : `:${run}`;
+  return { run, eventsKey: `agentrun-show-tab-events${suffix}`, flagKey: `agentrun-show-tab-opened${suffix}`, windowName: `agent-tab${suffix}` };
+}
+
 export type TabLinkOptions = {
   win: Pick<Window, "open" | "origin">;
   tabUrl: string;
   /** The window name: the same name finds the same tab again after a reload. */
   name: string;
   onEvent?: (message: TabMessage) => void;
+  /** The run the stage follows: a message that is not for it (or does not say) is not believed. Null: the link names no run and the stage cannot tell runs apart. */
+  run?: string | null;
 };
 
 export class TabLink {
@@ -107,6 +125,8 @@ export class TabLink {
   handle(e: MessageEvent): void {
     if (!this.attached || this.tabOrigin === null || e.origin !== this.tabOrigin || e.source !== this.held) return;
     const message = parseTabMessage(e.data);
-    if (message !== null) this.o.onEvent?.(message);
+    if (message === null) return;
+    if (this.o.run !== undefined && this.o.run !== null && message.run !== this.o.run) return;
+    this.o.onEvent?.(message);
   }
 }

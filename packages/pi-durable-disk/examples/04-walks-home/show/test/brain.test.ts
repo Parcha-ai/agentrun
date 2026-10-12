@@ -373,3 +373,21 @@ test("each turn is labelled by the brain that answered it: the trained model aft
   // A check-in with no decision after it: the cloud model answers until a decision says otherwise.
   assert.deepEqual(turnsFromItems([READY, user("2", "b"), home, user("4", "c"), assistant("5", "d")], () => false).map((t) => t.brain === true), [true, false, false]);
 });
+
+// ---- After a check-in or a cloud decision the big pane shows the latest exchange, whichever brain answered it; the local-model line only for a local answer.
+test("the big pane's turns run from the first trained-model turn on, so a cloud exchange after a check-in is the latest one; the local badge is for a local answer only", () => {
+  const ready = brainFromItem(READY)!;
+  const chat = [
+    { id: "1", role: "user" as const, text: "pre-swap question" },
+    { id: "2", role: "agent" as const, text: "pre-swap cloud answer" },
+    { id: "21", role: "user" as const, text: "turn it red", brain: true },
+    { id: "22", role: "agent" as const, text: "Done, it is red.", brain: true, thinking: "hm" },
+    { id: "61", role: "user" as const, text: "teach it to run" },
+    { id: "62", role: "agent" as const, text: "Moving to a GPU." },
+  ];
+  assert.deepEqual(brainTalkTurns(chat).map((t) => t.id), ["21", "22", "61", "62"], "from the first trained-model turn, cloud turns after it included, the pre-swap ones not");
+  assert.equal(brainLocalBadge(ready, chat), null, "the latest answer is the cloud's: no local-model line");
+  assert.ok(brainLocalBadge(ready, chat.slice(0, 4)), "a local answer has it");
+  assert.deepEqual(brainTalkTurns([]), []);
+  assert.deepEqual(brainTalkTurns(chat.slice(0, 2)), [], "before the swap: none");
+});

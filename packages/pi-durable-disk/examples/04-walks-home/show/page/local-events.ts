@@ -18,7 +18,9 @@ function valid(e: unknown): e is ShowEvent {
 }
 
 export class LocalEvents {
-  private events: ShowEvent[] = [];
+  private ring: ShowEvent[] = [];
+  /** The latest event of each kind: a fact that has not changed (the net, the check-in, the homecoming) must outlive any number of later events, so it is kept beside the ring, not in it. */
+  private pinned = new Map<string, ShowEvent>();
   private readonly cap: number;
   private readonly store: EventStore | undefined;
 
@@ -27,15 +29,21 @@ export class LocalEvents {
     this.store = store;
   }
 
+  /** The ring and the pinned latest of each kind, in the order they happened, each once. */
+  private all(): ShowEvent[] {
+    return [...new Set([...this.ring, ...this.pinned.values()])].sort((a, b) => a.at - b.at);
+  }
+
   get size(): number {
-    return this.events.length;
+    return this.all().length;
   }
 
   apply(state: ShowState, event: ShowEvent): ShowState {
-    this.events.push(event);
-    if (this.events.length > this.cap) this.events.shift();
+    this.ring.push(event);
+    if (this.ring.length > this.cap) this.ring.shift();
+    this.pinned.set(event.t, event);
     try {
-      this.store?.set(JSON.stringify(this.events));
+      this.store?.set(JSON.stringify(this.all()));
     } catch {
       // storage that is full or refused: the events still work for this page's life
     }
@@ -51,10 +59,13 @@ export class LocalEvents {
       return;
     }
     if (!Array.isArray(raw)) return;
-    this.events = raw.filter(valid).slice(-this.cap);
+    const events = raw.filter(valid);
+    this.ring = events.slice(-this.cap);
+    this.pinned = new Map();
+    for (const e of events) this.pinned.set(e.t, e);
   }
 
   replay(state: ShowState): ShowState {
-    return this.events.reduce(reduce, state);
+    return this.all().reduce(reduce, state);
   }
 }

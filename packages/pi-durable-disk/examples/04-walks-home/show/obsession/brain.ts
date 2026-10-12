@@ -57,14 +57,18 @@ export function brainCaptions(b: Brain, at: number): Note[] {
   }
 }
 
-/** The turns of the conversation whose brain is the trained model: those after the swap. */
-export const brainTalkTurns = (chat: readonly ChatTurn[]): ChatTurn[] => chat.filter((t) => t.brain === true);
+/** The turns the big pane draws its latest exchange from: from the first trained-model turn on, whichever brain answered after it (a check-in or a cloud decision puts the cloud model back, and the pane then shows its exchange). */
+export const brainTalkTurns = (chat: readonly ChatTurn[]): ChatTurn[] => {
+  const first = chat.findIndex((t) => t.brain === true);
+  return first < 0 ? [] : chat.slice(first);
+};
 
 /** The line under the big answer: only for a tab-local provider, from the entry's own size and first-answer speed, and only once an answer is complete. */
 export function brainLocalBadge(b: Brain | null, chat: readonly ChatTurn[]): { line: string; sub: string } | null {
   if (b === null || b.stage !== "ready" || b.provider !== "tab-local") return null;
   const latest = [...brainTalkTurns(chat)].reverse().find((t) => t.role === "agent");
-  if (!latest || latest.streaming === true) return null;
+  // The local-model line is for a local answer only.
+  if (!latest || latest.streaming === true || latest.brain !== true) return null;
   const rate = b.tokensPerS !== null && b.tokensPerS > 0 ? `${b.tokensPerS.toFixed(1)} tokens/s on its first answer` : "speed not measured";
   return { line: `running in this tab: ${b.bytes !== null ? `${mb(b.bytes)} · ` : ""}${rate} · no model server`, sub: LOCAL_SUB };
 }

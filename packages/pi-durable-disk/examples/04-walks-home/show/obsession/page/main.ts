@@ -30,7 +30,7 @@ import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
 import { obsessionReply } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
 import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
-import { TabLink, tabEventsFrom } from "../../page/tab-link.ts";
+import { TabLink, stageKeys, tabEventsFrom } from "../../page/tab-link.ts";
 import { apiRoot, apiUrl, pageParams } from "../../page/api-base.ts";
 
 const params = pageParams(location.href, location.hash);
@@ -40,18 +40,18 @@ const API = apiRoot(location.href, params.get("api"));
 if (params.get("tab")) $("tab").hidden = true;
 else $<HTMLIFrameElement>("tab").setAttribute("src", API === new URL("/", location.href).toString() ? "/tab/?clean=1&banner=1&episode=2" : apiUrl(API, "tab/?clean=1&banner=1&episode=2"));
 
-const EVENTS_KEY = "agentrun-show-tab-events";
+const KEYS = stageKeys(params.get("tab"));
 const feed = new Feed(API, {
   get: () => {
     try {
-      return sessionStorage.getItem(EVENTS_KEY);
+      return sessionStorage.getItem(KEYS.eventsKey);
     } catch {
       return null;
     }
   },
   set: (value) => {
     try {
-      sessionStorage.setItem(EVENTS_KEY, value);
+      sessionStorage.setItem(KEYS.eventsKey, value);
     } catch {
       // no storage: the page still works until it is reloaded
     }
@@ -61,17 +61,16 @@ feed.restore();
 
 // The agent's tab (the 03 page) when the stage is given one: ?tab=<its link>. The stage opens it with window.open, keeps the handle, and takes its events by postMessage (page/tab-link.ts), all in
 // the browser, so it keeps working when the network is off. After a reload of this page the tab is found again by name, never navigated.
-const TAB_FLAG = "agentrun-show-tab-opened";
 const flag = (set?: boolean): boolean => {
   try {
-    if (set !== undefined) sessionStorage.setItem(TAB_FLAG, set ? "1" : "");
-    return sessionStorage.getItem(TAB_FLAG) === "1";
+    if (set !== undefined) sessionStorage.setItem(KEYS.flagKey, set ? "1" : "");
+    return sessionStorage.getItem(KEYS.flagKey) === "1";
   } catch {
     return false;
   }
 };
 const tabLink = params.get("tab")
-  ? new TabLink({ win: window, tabUrl: params.get("tab")!, name: "agent-tab", onEvent: (m) => { for (const e of tabEventsFrom(m, feed.captionNow())) feed.inject(e); } })
+  ? new TabLink({ win: window, tabUrl: params.get("tab")!, name: KEYS.windowName, run: KEYS.run, onEvent: (m) => { for (const e of tabEventsFrom(m, feed.captionNow())) feed.inject(e); } })
   : null;
 if (tabLink) {
   window.addEventListener("message", (e) => tabLink.handle(e));

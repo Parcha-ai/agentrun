@@ -152,3 +152,59 @@ test("a stored value that is not the tab's events (damaged, or from another vers
   for (let i = 0; i < 6; i++) big.apply(emptyState(), { t: "net", at: i, net: { online: i % 2 === 0, reason: null } });
   assert.equal(big.size, 3);
 });
+
+// ---- Scoped to the run: the stage followed to run B must not restore A's events or reattach A's window, and a message for another run is not believed.
+import { stageKeys, runOf } from "../page/tab-link.ts";
+
+test("the run is the tab link's /run/<id>; everything the stage keeps for a tab (events, the opened flag, the window's name) is scoped to it", () => {
+  assert.equal(runOf("http://127.0.0.1:8790/run/rt?golive=1#secret"), "rt");
+  assert.equal(runOf("http://h/run/walks-home-demo/"), "walks-home-demo");
+  assert.equal(runOf("http://h/other"), null);
+  assert.equal(runOf("not a url"), null);
+  const a = stageKeys("http://h/run/a#s");
+  const b = stageKeys("http://h/run/b#s");
+  assert.notEqual(a.eventsKey, b.eventsKey);
+  assert.notEqual(a.flagKey, b.flagKey);
+  assert.notEqual(a.windowName, b.windowName);
+  assert.equal(a.run, "a");
+  assert.equal(stageKeys(null).run, null);
+  assert.equal(stageKeys(null).eventsKey, stageKeys("http://h/nothing").eventsKey, "no run: one shared key, as before");
+});
+
+test("a message is accepted only for the run the stage follows: another run's, and one that does not say, are not believed", () => {
+  const tab = new FakeTab();
+  const got: unknown[] = [];
+  const link = new TabLink({ win: fakeWindow({ "agent-tab-b": tab }) as never, tabUrl: `${TAB}/run/b`, name: "agent-tab-b", run: "b", onEvent: (e) => got.push(e) });
+  link.open();
+  const msg = (run: unknown) => ({ origin: TAB, source: tab, data: { source: "walks-home-tab", type: "net", ...(run === undefined ? {} : { run }), online: false }, }) as unknown as MessageEvent;
+  link.handle(msg("a"));
+  link.handle(msg(undefined));
+  assert.equal(got.length, 0);
+  link.handle(msg("b"));
+  assert.equal(got.length, 1);
+  // A link that names no run keeps the old behaviour: it cannot tell runs apart.
+  const anon = new TabLink({ win: fakeWindow({ "agent-tab": tab }) as never, tabUrl: `${TAB}/`, name: "agent-tab", onEvent: (e) => got.push(e) });
+  anon.open();
+  anon.handle(msg("anything"));
+  assert.equal(got.length, 2);
+});
+
+test("the pinned facts: the latest net, check-in and homecoming survive any number of later events, in memory and after a reload", () => {
+  const store = memoryStore();
+  const local = new LocalEvents(5, store);
+  let s = emptyState();
+  s = local.apply(s, { t: "net", at: 1, net: { online: false, reason: "x" } });
+  s = local.apply(s, { t: "checkin", at: 2, checkin: { phase: "done", head: "7", files: 1, changes: 1, ms: 9, message: null, code: null, resumed: false } });
+  for (let i = 0; i < 300; i++) s = local.apply(s, { t: "tools", at: 10 + i, tools: [{ id: `c${i}`, name: "bash", args: "{}", output: "", status: "done" }] });
+  assert.equal(local.size <= 5 + 6, true, "the ring is bounded; only the pinned latest of each kind sit beside it");
+  const replayed = local.replay(emptyState());
+  assert.equal(replayed.net?.online, false, "the only net event was not evicted");
+  assert.equal(replayed.checkin?.phase, "done");
+  assert.equal(replayed.tools[0]!.id, "c299", "and the tools are the latest");
+  const reloaded = new LocalEvents(5, store);
+  reloaded.restore();
+  const again = reloaded.replay(emptyState());
+  assert.equal(again.net?.online, false);
+  assert.equal(again.checkin?.phase, "done");
+  assert.equal(again.tools[0]!.id, "c299");
+});
