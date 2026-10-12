@@ -11,7 +11,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" }, kill: { type: "boolean", default: false }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false }, unmeasured: { type: "boolean", default: false } } });
+const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" }, kill: { type: "boolean", default: false }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false }, unmeasured: { type: "boolean", default: false }, unsettled: { type: "boolean", default: false } } });
+// Each of these flags plans a different third skill, and the checks follow it: one at a time, refused before anything runs.
+if ([a["new-skill"], a.unmeasured, a.unsettled].filter(Boolean).length > 1) {
+  console.error("spike_plan: pick one of --new-skill, --unmeasured and --unsettled");
+  process.exit(2);
+}
 const dir = a.dir ?? mkdtempSync(join(tmpdir(), "teach-plan-"));
 const host = join(dirname(fileURLToPath(import.meta.url)), "host.ts");
 const deadline = a["deadline-ms"];
@@ -19,7 +24,7 @@ const deadline = a["deadline-ms"];
 // starts after it has passed, so the deadline must come from the store, not a fresh clock.
 const kill = !deadline || a.kill;
 const run = (mode: string) =>
-  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : []), ...(a["status-throws"] ? ["--status-throws"] : []), ...(a["new-skill"] ? ["--new-skill"] : []), ...(a.unmeasured ? ["--unmeasured"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
+  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : []), ...(a["status-throws"] ? ["--status-throws"] : []), ...(a["new-skill"] ? ["--new-skill"] : []), ...(a.unmeasured ? ["--unmeasured"] : []), ...(a.unsettled ? ["--unsettled"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
 const exit = (p: ReturnType<typeof run>) => new Promise<number>((r) => p.once("exit", (c) => r(c ?? 1)));
 
 let killed = false;
@@ -50,8 +55,14 @@ const mid: Listed[] | undefined = existsSync(join(dir, "mid.json")) ? JSON.parse
 const after: Listed[] = report.threads_of ?? [];
 // --new-skill: the third skill is one the library does not have (bow), made from its closest library skill (wave).
 const NEW_SKILL = a["new-skill"] ? "bow" : undefined;
-// --unmeasured: the third is get-up, which the trainer finds never happened on this body (no retry, a report).
-const third = NEW_SKILL ?? (a.unmeasured ? "get-up" : "wave");
+// --unmeasured: the third is get-up, which the trainer finds never happened on this body; --unsettled: turn-right, whose
+// metric never settles (feet that roll). Either way the thread reports after one try, in its own words.
+const third = NEW_SKILL ?? (a.unmeasured ? "get-up" : a.unsettled ? "turn-right" : "wave");
+const BODY_FIRST = a.unmeasured
+  ? { trainer: "self-righting was never measured", said: "get-up cannot be done on this body: it never happened in training, since its legs have no sideways joints to roll it over." }
+  : a.unsettled
+    ? { trainer: "yaw rate never settles", said: "turn-right never settled, so I stopped after one try: the body likely needs flat feet with friction before it can learn this." }
+    : undefined;
 const planned = ["walk", "spin", third];
 // What each thread ran on its box, as TRAIN_SOP's steps (a command rerun after the restart counts once).
 const ladder: Record<string, string[]> = {};
@@ -112,9 +123,9 @@ if (!deadline) {
       ? // A skill the library lacks starts from the closest one: copied, its skill.json and test.py edited, one reward
         // term added, compiled (its reward changed), trained, checked. Never a fresh file tree.
         ladder.bow?.join() === "copy,edit:skill.json,edit:test.py,edit:reward.py,compile,12M,check"
-      : a.unmeasured
-        ? // Was never measured: the body cannot do it, so the thread reports after its one try, with no 40M and no edit.
-          ladder["get-up"]?.join() === "copy,12M"
+      : BODY_FIRST
+        ? // Was never measured / never settles: the body, so the thread reports after its one try, with no 40M and no edit.
+          ladder[third]?.join() === "copy,12M"
         : ladder.wave?.join() === "copy,12M,edit:skill.json,12M");
 }
 // A skill the library lacks, whatever the outcome: its thread starts with the copy and writes at most one file (reward.py).
@@ -143,7 +154,7 @@ if (a["status-throws"]) {
   // stored deadline has already passed, so it is stopped at once). wave never passes; bow (4 checkpoints after its copy,
   // edits and compile) may pass before the deadline or be stopped by it.
   // get-up (--unmeasured) reports after its one short try, so it may be done before the deadline.
-  const thirdMay = NEW_SKILL ? ["passed", "timed-out"] : a.unmeasured ? ["never-passed", "timed-out"] : ["timed-out"];
+  const thirdMay = NEW_SKILL ? ["passed", "timed-out"] : BODY_FIRST ? ["never-passed", "timed-out"] : ["timed-out"];
   const slowFolded = by("spin")?.status === "timed-out" && thirdMay.includes(by(third)?.status ?? "");
   if (kill) checks.deadline_survives_the_restart = killed && slowFolded;
   else {
@@ -157,8 +168,10 @@ if (a["status-throws"]) {
     (NEW_SKILL ? by(NEW_SKILL)?.status === "passed" && by(NEW_SKILL)?.checkpoint === 4 : by(third)?.status === "never-passed");
   // A run that never passed carries the trainer's diagnosis from skill.json into its result and the fold's text.
   if (!NEW_SKILL) {
-    const said = a.unmeasured ? "self-righting was never measured" : "never moved";
+    const said = BODY_FIRST?.trainer ?? "never moved";
     checks.never_passed_carries_the_diagnosis = ((by(third) as { reason?: string } | undefined)?.reason ?? "").startsWith(said) && new RegExp(`${third}: never passed\\..*Trainer: ${said}`).test(report.teachResult?.text ?? "");
+    // Each diagnosis is reported in its own words: the body's limit (never measured), or what the body needs (never settles).
+    if (BODY_FIRST) checks.the_thread_reports_its_diagnosis_in_its_own_words = (report.teachResult?.text ?? "").includes(`${third}: never passed. ${BODY_FIRST.said}`);
   }
   checks.read_thread_answers_from_gpu_3 = typeof report.readThread === "string" && new RegExp(`GPU 3 \\(${third}\\)`).test(report.readThread) && /bash/.test(report.readThread);
 }
