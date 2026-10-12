@@ -4,6 +4,7 @@
 // runs in. Every result names the provider and version that made it, and a derivation's cache key includes them.
 
 import type { VisionEnv } from "./env.js";
+import { firstLine } from "./misses.js";
 import type { ImageProcessor } from "./image.js";
 import type { Kind } from "./kinds.js";
 
@@ -70,7 +71,7 @@ export function detectOnce(provider: Provider, env: VisionEnv): Promise<Detectio
   let detection = byEnv.get(env.id);
   if (!detection) {
     detection = (async () => provider.detect(env))().catch((error: unknown): Detection =>
-      ({ available: false, needs: provider.name, reason: `detect failed: ${String((error as Error)?.message ?? error).split("\n")[0]}` }));
+      ({ available: false, needs: provider.name, reason: `detect failed: ${firstLine(error)}` }));
     byEnv.set(env.id, detection);
   }
   return detection;

@@ -33,6 +33,8 @@ export type LookRecord = {
     readonly cost_usd?: number | null;
     readonly provider?: string;
     readonly derived?: readonly string[];
+    /** Set when the result's unit ids did not match its image blocks and every block was looked at on its own. */
+    readonly units_dropped?: string;
   };
   /** The answer, "shown to the model natively", or the miss. */
   readonly body: string;
@@ -92,7 +94,7 @@ export function receiptFacts(record: LookRecord): Record<string, string | number
     ["original", f.original], ["shown", f.shown], ["shown_blocks", f.shown_blocks], ["shown_bytes", f.shown_bytes],
     ["sha256", f.sha256], ["kind", f.kind], ["fragment", f.fragment], ["fit", f.fit?.reduction], ["key", f.key],
     ["tokens_in", f.tokens_in], ["tokens_out", f.tokens_out], ["cost_usd", f.cost_usd === null ? "unknown" : f.cost_usd],
-    ["provider", f.provider], ["derived", f.derived?.join(", ")],
+    ["provider", f.provider], ["derived", f.derived?.join(", ")], ["units_dropped", f.units_dropped],
   ];
   return Object.fromEntries(lines.filter((line): line is [string, string | number] => line[1] !== undefined && line[1] !== ""));
 }
