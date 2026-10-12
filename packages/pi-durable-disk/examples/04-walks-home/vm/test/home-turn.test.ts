@@ -77,6 +77,7 @@ async function homeCheckWords(skills: readonly string[]): Promise<string> {
 /** A teaching run and the server's home turn after it, with these skills home; what the page draws and what the model was told. */
 async function teachAndComeHome(skills: readonly string[]) {
   setExtraInstructions(ROBOT_CODE_INSTRUCTIONS);
+  let harness: Harness | undefined;
   try {
     const registry = agentRegistry(async () => undefined, { switchTool: false });
     registry.install(teachStub);
@@ -84,7 +85,7 @@ async function teachAndComeHome(skills: readonly string[]) {
     const seen: { system: string; home?: string }[] = [];
     models.setProvider(sol(seen));
     // `models as never`: the workspace has two copies of pi-ai (pi-durable's own, and this package's), the same at runtime.
-    const harness = await Harness.open(new MemoryStorage(), { models: models as never, registry, settings: { extensions: [teachStub] } }, ctx);
+    harness = await Harness.open(new MemoryStorage(), { models: models as never, registry, settings: { extensions: [teachStub] } }, ctx);
     const root = await harness.root(ctx, { agent: rootAgent("cloud-big") });
     await (await root.submit({ type: "input", content: `teach it to ${skills.join(" and ")}`, requestId: "u1" }, ctx)).wait(ctx);
     // The server's home turn after the move, as server.ts builds it.
@@ -96,12 +97,13 @@ async function teachAndComeHome(skills: readonly string[]) {
       if (!page.next) break;
       cursor = page.next;
     }
-    await harness.close(ctx);
     const view = new ChatView();
     view.apply({ type: "snapshot", entries: entries.reverse(), tools: [] } as never);
     const said = view.items().filter((i) => i.kind === "assistant").map((i) => (i as { text?: string }).text ?? "");
     return { said, drawn: JSON.stringify(view.items()), seen, home: seen.find((t) => t.home)?.home ?? "" };
   } finally {
+    // Closed whatever happened above: a failed turn or check must not leave the harness open.
+    await harness?.close(ctx);
     setExtraInstructions("");
   }
 }
