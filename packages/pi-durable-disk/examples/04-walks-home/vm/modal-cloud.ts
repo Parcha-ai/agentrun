@@ -127,6 +127,8 @@ export interface ModalCloudOptions {
    */
   readonly cluster?: {
     readonly size: number;
+    /** Remove the boxes after this many minutes unused (nobody holds one, nobody waits, no command ran); the next request makes them again. Default: never. */
+    readonly idleMinutes?: number;
     /** Extra boxes created alongside the `size` needed, so a slow one cannot hold up the start (they cost like any other box). */
     readonly spares?: number;
     readonly image: string;
@@ -251,6 +253,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       ? new GpuPool({
           size: options.cluster.size,
           ...(options.cluster.spares ? { spares: options.cluster.spares } : {}),
+          ...(options.cluster.idleMinutes ? { idleMs: options.cluster.idleMinutes * 60_000 } : {}),
           log: options.log,
           closeWaitMs: options.closeWaitMs ?? 60_000,
           create: async (index, signal) => {
@@ -335,6 +338,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       holds: mine,
       exec: async (box, argv, o) => {
         if (!mine(box)) throw new Error("no thread of this run holds that box");
+        pool.touch();
         const sb = await sdk.sandboxes.fromId(box);
         // Its own session, with its group's id on the box in a file: when the link that asked for the command is gone, the group is killed (a trainer nobody reads is only a cost).
         const pidFile = `/tmp/.pda-rpc/${randomBytes(6).toString("hex")}`;

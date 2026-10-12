@@ -288,3 +288,49 @@ describe("the GPU pool: a spare box", () => {
     assert.deepEqual(w.removed.sort(), ["sb-0", "sb-1"], "the straggler that landed during close was removed too");
   });
 });
+
+describe("the GPU pool: idle timeout", () => {
+  it("removes its boxes after sitting unused, leaves them alone while a thread holds one, and makes them again on the next request", async () => {
+    let made = 0;
+    const removed: string[] = [];
+    const logs: string[] = [];
+    const pool = new GpuPool({
+      size: 2,
+      log: (event) => void logs.push(event),
+      create: async () => {
+        const index = made++;
+        return { id: `sb-${index}`, name: `box-${index}`, index: index % 2 };
+      },
+      remove: async (box) => (removed.push(box.id), true),
+      idleMs: 200,
+      watchMs: 0,
+    });
+    await pool.start();
+    const a = await pool.acquire("a"); // a thread holds a box: the pool is in use
+    await new Promise((r) => setTimeout(r, 450));
+    assert.deepEqual(removed, [], "nothing removed while a thread holds a box");
+    pool.release("a");
+    await new Promise((r) => setTimeout(r, 450));
+    assert.deepEqual(removed.sort(), ["sb-0", "sb-1"], "both boxes removed after the pool sat unused");
+    assert.ok(logs.includes("pool.idle-timeout"));
+    assert.deepEqual(pool.status().boxes.map((b) => b.state), ["idle", "idle"]);
+    // The next request makes boxes again and is served.
+    const b = await pool.acquire("b");
+    assert.ok(logs.includes("pool.wake"));
+    assert.notEqual(b.id, a.id, "a new box, not the removed one");
+    await pool.close();
+    assert.ok(removed.join(",").includes(b.id), "and it is removed at close");
+  });
+
+  it("a command running in a box keeps the pool from going idle (touch)", async () => {
+    const removed: string[] = [];
+    const pool = new GpuPool({ size: 1, log: () => undefined, create: async (index) => ({ id: `sb-${index}`, name: "b", index }), remove: async (box) => (removed.push(box.id), true), idleMs: 200, watchMs: 0 });
+    await pool.start();
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 80));
+      pool.touch();
+    }
+    assert.deepEqual(removed, [], "kept alive by activity");
+    await pool.close();
+  });
+});

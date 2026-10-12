@@ -51,6 +51,8 @@ const clusterImage = arg("cluster-image", "");
 const clusterReady = arg("cluster-ready", "");
 // Boxes made beyond the ones needed: a straggler among them cannot hold up "ready" (they cost like the others).
 const clusterSpares = Number(arg("cluster-spares", robot ? 1 : 0));
+// The boxes are removed after this long unused (a parked or forgotten run must not leave GPUs burning); the next request makes them again. 0: never.
+const clusterIdle = Number(arg("cluster-idle-min", robot ? 20 : 0));
 const clusterReadyTimeout = arg("cluster-ready-timeout-s", "");
 // The skill each box warms for (box 0 first): with a pool of 2, a fast skill and a slow one.
 const clusterSkills = arg("cluster-skills", "walk,spin,sprint,backwards,turn-left,turn-right,get-up,wave");
@@ -172,6 +174,7 @@ try {
             "--cloud-arg", "robot=true",
             "--cloud-arg", `cluster-size=${clusterSize}`,
             "--cloud-arg", `cluster-spares=${clusterSpares}`,
+            ...(clusterIdle > 0 ? ["--cloud-arg", `cluster-idle-minutes=${clusterIdle}`] : []),
             "--cloud-arg", `cluster-image=${clusterImage}`,
             "--cloud-arg", `cluster-ttl-minutes=${arg("ttl", 45)}`,
             "--cloud-arg", "cluster-cpu=8",

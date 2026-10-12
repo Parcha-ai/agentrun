@@ -90,3 +90,8 @@ test("cluster-spares is a whole number of extra boxes", () => {
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "-1" }), /whole number/);
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "x" }), /whole number/);
 });
+
+test("cluster-idle-minutes is a positive number of minutes", () => {
+  assert.equal(modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-idle-minutes": "20" }).cluster?.idleMinutes, 20);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-idle-minutes": "0" }), /positive number/);
+});
