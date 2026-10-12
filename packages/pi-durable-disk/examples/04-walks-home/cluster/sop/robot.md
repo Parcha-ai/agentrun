@@ -1,7 +1,8 @@
 # Writing the robot
 
-The robot is code you write: `robot/body.mjs`. It builds the body from parts with the helper in `robot/lib.mjs`,
-which is provided; never edit it. "Make a dinosaur robot" means writing a body that looks like a dinosaur: a body,
+The robot is code you write: `robot/body.mjs`. It builds the body from parts with the helper in `robot/lib.mjs`.
+`build_robot` puts the helper, `robot/build.mjs` and two examples (`robot/dog.example.mjs`, `robot/dino.example.mjs`) in
+the workspace; never edit lib.mjs or build.mjs. "Make a dinosaur robot" means writing a body that looks like a dinosaur: a body,
 legs, a neck, a head, a tail, plates, its colours. There is no menu of presets and no fixed number of legs. Write what
 was asked for, then build it, read what came back, and fix your own code until it builds and stands.
 
@@ -39,21 +40,31 @@ becomes decoration.
   Put the mass low and between the feet, and use wide feet for a heavy body.
 - **Weight:** 1 to 30 kg in total, with the torso the heaviest piece. Tails, necks and decorations stay light.
 - **Springs:** a long neck or tail is a passive spring, not a motor (the dinosaur below has 8 motors and 10 springs).
-- **Motors first:** list the legs (every chain with motors) before the neck, the tail and any other springy part in a
-  node's \`children\`, and never put a passive joint above a motor. The trainer and the page drive the motors in that
-  order.
-- **Feet:** the last piece of each leg is its foot, and any shape works (a sphere, a flat box). It is the piece that
-  touches the floor.
+- **Springs below motors:** along one limb, the motors come before the springs; a spring joint above a motor is
+  refused (build.mjs says which joint and how to fix it). Across limbs it doesn't matter: the limbs with motors are put
+  first for you, so a tail can be listed before the legs.
+- **Names you don't write:** the root body is named torso, each leg's foot `<body>_foot`, and the keyframes stand and
+  home. The foot is the last piece at the tip of a limb tagged legs, and any shape works. If the tip is not the foot,
+  mark the foot piece with `foot: true`.
 
-## Check it: build_robot
-Call `build_robot` after every change. It runs your file, compiles the body in MuJoCo, drops it, and answers:
-- `Built dino: 32 pieces, 8 motors, 10 spring joints, 11.0 kg, stands 0.39 m high. Tags: ...`: done. Tell the user in
-  one sentence what you built.
-- `Not built: body.mjs: <message> (line N)`: a JavaScript error in your file. Fix that line.
-- `Not built: MuJoCo: <error>`: it names the element and the attribute. Fix that value.
-- `Built, but it does not stand: ...`: check the stand angles, that the legs reach the floor, and where the mass is.
-Warnings (mass, sizes, motor count) are advice, not refusals. Read them and decide. Never claim it built or stands
-unless build_robot said so.
+## Build and check it, after every change
+1. Run `node robot/build.mjs`. It runs your file and writes `robot/body.xml` and `robot/body.json`. It prints one
+   summary line (pieces, motors, springs, kilograms, standing height, tags) and any warnings, or the error in your file
+   (`body.mjs: <message>`). Fix the error and run it again.
+2. Call `build_robot`. The robot page compiles the body in MuJoCo, holds its standing pose for 3 s, shows it, and
+   answers:
+   - `Built dino: 32 pieces, 8 motors, 10 spring joints, 10.99 kg, stands 0.389 m high. Tags: ...`: done. Tell the user
+     in one sentence what you built.
+   - `Not built: MuJoCo: <error>`: it names the element and the attribute. Fix that value. The robot on screen stays as
+     it was.
+   - Warnings such as does not stand, collapses, mass, or no motors: check the stand angles, that the legs reach the
+     floor, and where the mass is.
+Warnings are advice, not refusals: read them and decide. Never claim it built or stands unless build_robot said so.
+
+## Changing it later
+Its size, its legs and its shape change by editing `robot/body.mjs` and building again; the robot's resize, scale,
+set_legs and morph tools refuse on a body built from code. The look tools still work on it by tag: set_color with a
+part such as tail, plates or wings; set_shape; set_face on the head; rename; reset back to the body's own colours.
 
 ## After a body change
 Skills taught to an earlier body do not fit a new body: the robot stumbles until it learns them again. When the body
