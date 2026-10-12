@@ -86,6 +86,21 @@ first passing checkpoint in 83 s (3.9M steps), an odd-proportioned hexapod in 27
 reward (crouch) took the dinosaur two tries, the second passing at 202 s (18M). A body from a warm-start family walks in
 about 20 s.
 
+A body written as code keeps one compile cache for all its skills (`~/.cache/pda-skill/body-<sha>.tar.gz`, keyed by its
+MJCF), so a skill reuses every program an earlier skill compiled for that body. Prewarm it on the box right after the body
+is staged, while the thread writes its skill files:
+
+```sh
+setsid nohup train-skill walk --body robot/ --out .warm/walk --init-from '' --compile-only > .warm/walk.log 2>&1 &
+```
+
+A skill run started while that prewarm is still compiling waits for it (`skill.waiting-for-compile`, then
+`skill.compile-ready`; at most 10 min) instead of compiling the same programs beside it. Measured on the dinosaur (H100,
+8 CPU): spin passes at 50.6 to 58.9 s with the body's cache warm, against 73 s with a cold one; the walk's own programs
+all hit, and a skill with other `env` settings or its own `reward.py` still compiles its step (spin: 3 programs, 17 s).
+Starting a skill from the body's own walk checkpoint (`--init-from`) made it slower, not faster: spin 93 to 99 s, and
+crouch did not pass in 40M steps.
+
 ### The GPU box contract
 
 A thread's box runs the cluster image. On every box:

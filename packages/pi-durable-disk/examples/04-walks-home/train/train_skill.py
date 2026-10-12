@@ -23,13 +23,18 @@ absent. It can also be robot.json or a Design, built with the tab's own buildMjc
   skill-progress.jsonl   per checkpoint: passes, metric (from test.py), steps, t (seconds since the start), error
   checkpoints/ckpt-N.json, policy.json (the newest checkpoint; once the run stops, the newest that passed)
   work/                  the trainer's own state and log (progress.jsonl)
-Stdout: one JSON line per event (skill.start, train.start, skill.checkpoint, skill.test-error, skill.done).
+Stdout: one JSON line per event (skill.start, train.start, skill.checkpoint, skill.test-error, skill.done; and
+skill.waiting-for-compile / skill.compile-ready when a compile-only run on the same body is still filling its cache).
+Compile cache: a body written as code (an MJCF directory, body.json derived) keeps one for all its skills
+(~/.cache/pda-skill/body-<sha>.tar.gz), so `train-skill walk --body DIR --out X --compile-only` right after the body is
+built prewarms every later skill on it; a skill run waits for that prewarm (up to 10 min) instead of racing it. Other
+bodies key it by the skill (warm-box).
 --check POLICY runs test.py once on a policy file (the shipped policy.json, or any checkpoint) and prints skill.check.
 Exit 0 when the skill passed, 3 when it never did, 2 when the skill directory or the body is refused (the line says why).
 """
 from __future__ import annotations
 
-import argparse, hashlib, importlib.util, json, math, os, re, shutil, subprocess, sys, time, traceback
+import argparse, contextlib, fcntl, hashlib, importlib.util, json, math, os, re, shutil, subprocess, sys, time, traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -87,10 +92,56 @@ def canonical(skill: str) -> str:
   return skill.replace("_", "-").replace("get-up", "getup")
 
 
-def compile_cache(skill: str) -> str:
-  """Where a skill's compile cache lives on this machine unless --compile-cache says otherwise (outside OUT). Keyed by
-  the skill directory's name, which is what warm-box warms."""
-  return os.path.join(os.path.expanduser("~"), ".cache", "pda-skill", f"{canonical(skill)}.tar.gz")
+def compile_cache(key: str) -> str:
+  """Where a compile cache lives on this machine unless --compile-cache says otherwise (outside OUT): a skill's name, which
+  is what warm-box warms, or body-<sha> for a body written as code (default_cache)."""
+  return os.path.join(os.path.expanduser("~"), ".cache", "pda-skill", f"{canonical(key)}.tar.gz")
+
+
+def default_cache(skill: dict, body_arg: str, body_dir: str, sha: str) -> str:
+  """The compile cache a run uses unless --compile-cache names one. A body derived here from its MJCF (a body written as
+  code) keeps one cache for all its skills, keyed by its MJCF: jax keys each entry by its program, so a skill reuses every
+  program another skill (or a compile-only prewarm) already compiled for this body. Every other body (the default, the
+  presets, a drawn robot.json) keys it by the skill, as warm-box fills it."""
+  derived = os.path.isdir(body_arg) and os.path.abspath(body_dir) != os.path.abspath(body_arg)
+  return compile_cache(f"body-{sha[:16]}" if derived else os.path.basename(os.path.normpath(skill["dir"])))
+
+
+@contextlib.contextmanager
+def compile_lock(cache: str):
+  """Held by a compile-only run for as long as it fills `cache` (an exclusive flock on <cache>.lock), so a skill run on the
+  same body waits for it (wait_for_compile) instead of compiling the same programs beside it. The lock dies with the
+  process, so a prewarm that crashed holds nothing."""
+  os.makedirs(os.path.dirname(os.path.abspath(cache)), exist_ok=True)
+  fd = os.open(f"{cache}.lock", os.O_CREAT | os.O_RDWR, 0o644)
+  try:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    yield
+  finally:
+    os.close(fd)
+
+
+def wait_for_compile(cache: str, timeout_s: float = 600.0, on_wait=None) -> tuple[float, bool]:
+  """Wait while a compile-only run holds `cache` (compile_lock); on_wait() once, when there is something to wait for.
+  Returns (seconds waited, whether it finished): after timeout_s the run goes ahead and compiles for itself."""
+  os.makedirs(os.path.dirname(os.path.abspath(cache)), exist_ok=True)
+  fd = os.open(f"{cache}.lock", os.O_CREAT | os.O_RDWR, 0o644)
+  t0, told = time.time(), False
+  try:
+    while True:
+      try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return time.time() - t0, True
+      except BlockingIOError:
+        if not told and on_wait:
+          on_wait()
+        told = True
+        if time.time() - t0 >= timeout_s:
+          return time.time() - t0, False
+        time.sleep(0.25)
+  finally:
+    os.close(fd)
 
 
 def settle_policy(out: str, checkpoint: int) -> None:
@@ -250,7 +301,7 @@ def trainer_command(skill: dict, body_dir: str, out: str, steps: str, init_from:
   """train.py's command line. The trainer runs with this directory as its cwd, so every path in it is absolute, whatever
   cwd train-skill ran from. init_from: a checkpoint directory, 'auto', or empty (from scratch)."""
   ab = os.path.abspath
-  cache = cache or compile_cache(os.path.basename(os.path.normpath(skill["dir"])))
+  cache = cache or compile_cache(os.path.basename(os.path.normpath(skill["dir"])))  # main passes default_cache's
   cmd = [sys.executable, os.path.join(HERE, "train.py"), "--mjcf", ab(os.path.join(body_dir, "creature.xml")),
          "--body", ab(os.path.join(body_dir, "body.json")), "--universe", ab(os.path.join(out, "universe.json")),
          "--work", ab(os.path.join(out, "work")), *TAKE, "--steps", steps, "--compile-cache", ab(cache),
@@ -325,10 +376,12 @@ def main() -> int:
   write_json(os.path.join(out, "skill.json"), meta)
   print(json.dumps({"event": "skill.start", **meta}), flush=True)
 
-  cmd = trainer_command(skill, body_dir, out, a.steps, init_from, a.compile_cache, a.compile_only)
-  os.makedirs(os.path.dirname(cmd[cmd.index("--compile-cache") + 1]), exist_ok=True)
+  cache = a.compile_cache or default_cache(skill, a.body, body_dir, sha)
+  cmd = trainer_command(skill, body_dir, out, a.steps, init_from, cache, a.compile_only)
+  os.makedirs(os.path.dirname(os.path.abspath(cache)), exist_ok=True)
   if a.compile_only:
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=HERE)
+    with compile_lock(cache):  # a skill run on this body waits for this prewarm instead of compiling beside it
+      r = subprocess.run(cmd, capture_output=True, text=True, cwd=HERE)
     meta.update(status="compiled" if r.returncode == 0 else "failed", wall_s=round(time.time() - t0, 1))
     if r.returncode:
       meta["error"] = (r.stdout + r.stderr).strip()[-2000:]
@@ -336,6 +389,9 @@ def main() -> int:
     print(json.dumps({"event": "skill.compiled", **meta}), flush=True)
     return r.returncode
   import skilltest
+  waited, ready = wait_for_compile(cache, on_wait=lambda: print(json.dumps({"event": "skill.waiting-for-compile", "cache": cache}), flush=True))
+  if waited >= 0.25:
+    print(json.dumps({"event": "skill.compile-ready", "waited_s": round(waited, 1), "finished": ready}), flush=True)
   p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=HERE)
   streak, passed_at, last_pass, tail, records = 0, None, None, [], []
   prog = open(os.path.join(out, "skill-progress.jsonl"), "a")
