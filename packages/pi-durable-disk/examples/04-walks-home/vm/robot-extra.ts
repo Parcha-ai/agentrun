@@ -96,11 +96,11 @@ export async function stageCurrentBody(work: string, threads: readonly Pick<Thre
 export const ROBOT_FILE = "creature/robot.json";
 export const BOX_ROBOT_FILE = "/workspace/robot.json";
 /**
- * The robot the agent wrote as code (D3's `node robot/build.mjs`): the MJCF and the joint/tag file of the body the page runs. On a box they are the thread's `body/` (body.xml, body.json;
- * creature.xml too, the name the trainer's directory form reads), so a skill trains for the body the page shows, not for the preset in robot.json.
+ * The robot the agent wrote as code (D3's `node robot/build.mjs`): the MJCF and the joint/tag file of the body the page runs. On a box they are /workspace/robot/ (body.xml, body.json), the same
+ * folder name the agent has on its own disk, so a skill trains for the body the page shows, not for the preset in robot.json.
  */
 export const CODE_BODY_FILES = { xml: "robot/body.xml", json: "robot/body.json" } as const;
-export const BOX_BODY_DIR = "/workspace/body";
+export const BOX_BODY_DIR = "/workspace/robot";
 
 /** Write `bytes` to `path` on a box (a binary-safe `cat`, parents made). */
 async function putFile(box: RemoteBox, path: string, bytes: Uint8Array): Promise<void> {
@@ -119,7 +119,7 @@ export function hasCodeBody(work: string): boolean {
   return existsSync(join(work, CODE_BODY_FILES.xml)) && existsSync(join(work, CODE_BODY_FILES.json));
 }
 
-/** The thread's training command: for the body the page runs (body/ on the box) when the robot is code, for the preset's robot.json otherwise. */
+/** The thread's training command: for the body the page runs (/workspace/robot on the box) when the robot is code, for the preset's robot.json otherwise. */
 export function trainCommand(work: string): (skill: string) => readonly string[] {
   return (skill) => ["pi-run", skill, "--", "train-skill", skill, "--body", hasCodeBody(work) ? BOX_BODY_DIR : BOX_ROBOT_FILE, "--out", `/workspace/skills/${skill}`];
 }
@@ -138,12 +138,11 @@ export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: str
         return undefined;
       });
       if (robot) await putFile(box, BOX_ROBOT_FILE, robot);
-      // A robot written as code: the body the page runs goes to the box as the thread's body/ (both files or neither).
+      // A robot written as code: the body the page runs goes to the box as /workspace/robot/ (both files or neither).
       const xml = await readFile(join(work, CODE_BODY_FILES.xml)).catch(() => undefined);
       const json = xml ? await readFile(join(work, CODE_BODY_FILES.json)).catch(() => undefined) : undefined;
       if (xml && json) {
         await putFile(box, `${BOX_BODY_DIR}/body.xml`, xml);
-        await putFile(box, `${BOX_BODY_DIR}/creature.xml`, xml);
         await putFile(box, `${BOX_BODY_DIR}/body.json`, json);
       } else if (xml) log("robot.code-body-incomplete", { thread: threadId, missing: CODE_BODY_FILES.json });
       log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0, codeBody: Boolean(xml && json) });
