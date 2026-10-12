@@ -6,7 +6,7 @@
 //   env(target)      a conversation with a box in its robot.box doc runs its tools there (D0's RemoteEnv over the link's box); any other, here;
 //   artifacts        the box's /workspace/skills/<skill>/ to <work>/skills/<skill>/ (D0's ArtifactSync), the trainer's own state left on the box.
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync, rmSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,10 @@ export async function runAssembleSkills(work: string, options: { script?: string
   });
   const lines = out.text.trim().split("\n").filter(Boolean);
   if (out.code !== 0) throw new Error(`assemble-skills exited ${out.code}: ${lines.slice(-3).join(" | ").slice(0, 400)}`);
+  // The round's summary travels home with the skills, so the server's home check (which reads what the browser holds) can say what this round trained.
+  const summary = join(dir, "round.json"), copy = join(work, "home", "round.json");
+  if (existsSync(summary)) copyFileSync(summary, copy);
+  else rmSync(copy, { force: true });
   for (const line of lines.reverse()) {
     try {
       const event = JSON.parse(line) as { event?: string; skills?: unknown };

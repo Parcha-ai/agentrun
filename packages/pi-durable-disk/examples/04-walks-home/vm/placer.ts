@@ -27,7 +27,7 @@ export const LABELS: Readonly<Record<string, string>> = { tab: "Browser", "modal
 
 /** The skills the last round trained (the keys of `skills` in work/skills/round.json, the assembler's summary); none when the summary is absent or unreadable. */
 async function roundSkills(read: (path: string) => Promise<Uint8Array | undefined>): Promise<string[]> {
-  const bytes = await read("skills/round.json").catch(() => undefined);
+  const bytes = await read("home/round.json").catch(() => undefined);
   if (!bytes?.length) return [];
   try {
     const round = JSON.parse(new TextDecoder().decode(bytes)) as { version?: unknown; skills?: unknown };

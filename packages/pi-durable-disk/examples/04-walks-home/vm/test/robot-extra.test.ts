@@ -1,7 +1,7 @@
 // The robot's extra of the cloud app, with a fake link: a thread's acquire asks the server for its box, puts pi-run and the session's robot.json
 // on it, and a release gives the box back; without a link the extra refuses to load (the threads' boxes are the server's).
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -104,6 +104,14 @@ test("assembling the skills home: the program's arguments follow what trained, i
     writeFileSync(join(work, "skills", "get-up", "skill.json"), "{}");
     await runAssembleSkills(work, { script });
     assert.deepEqual(argsOf(), [join(work, "skills"), "--home", join(work, "home"), "--default", "walk"]);
+    // The round's summary travels home with the skills (the server's home check reads what the browser holds); a stale one is not left behind when this round wrote none.
+    mkdirSync(join(work, "home"), { recursive: true });
+    writeFileSync(join(work, "skills", "round.json"), '{"version":1,"skills":{"walk":{}}}');
+    await runAssembleSkills(work, { script });
+    assert.equal(readFileSync(join(work, "home", "round.json"), "utf8"), '{"version":1,"skills":{"walk":{}}}');
+    rmSync(join(work, "skills", "round.json"));
+    await runAssembleSkills(work, { script });
+    assert.equal(existsSync(join(work, "home", "round.json")), false);
     // A refusal says what the program said.
     process.env.FAKE_REFUSE = "1";
     await assert.rejects(runAssembleSkills(work, { script }), /exited 2: refused: no get-up/);
