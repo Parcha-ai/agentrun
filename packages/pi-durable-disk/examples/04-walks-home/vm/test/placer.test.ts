@@ -1,7 +1,7 @@
 // The demo's placer: criteria one line per environment, Jev as the only judge, and a refusal to start without its key. Tests judge with a fixed table.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import placerModule, { buildPlacer, CRITERIA, LABELS } from "../placer.ts";
+import placerModule, { buildPlacer, CRITERIA, HOME_PROMPT_ROBOT, LABELS } from "../placer.ts";
 import type { JudgeRunner } from "../../../03-tab-to-cloud/placement.ts";
 
 const logs: string[] = [];
@@ -220,4 +220,12 @@ test("the robot placement question is asked with the skills the robot already ha
   // Without a way to read the run's files the question is asked as before.
   await placer.decide({ phase: "start", message: "make it spin", current: "tab", environments: ["tab", "modal-vm"] });
   assert.deepEqual(seen[1], { task: "make it spin", running_now_in: "tab" });
+});
+
+test("the robot's home prompt asks for one new line (back, and what to try), not the result again", () => {
+  assert.match(HOME_PROMPT_ROBOT, /you already told them how the teaching went before the move: do not repeat it\./);
+  assert.match(HOME_PROMPT_ROBOT, /Say one short line that adds only what is new: that you are back in their browser, and one thing they can try now, naming one skill from the list in the server's check below: "Back in your browser\. Try: make it <that skill>\."/);
+  assert.doesNotMatch(HOME_PROMPT_ROBOT, /Try: make it spin/, "the example names no skill that may not be home");
+  assert.match(HOME_PROMPT_ROBOT, /If the check says NO, say instead, plainly and in simple words, that the last step did not work and which skills are missing\./);
+  assert.doesNotMatch(HOME_PROMPT_ROBOT, /name how many|how it went for their robot's skills/);
 });

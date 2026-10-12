@@ -28,6 +28,13 @@ library's files as they are.
 
 ## After teach_skills returns
 It returns one line per thread: passed (with the checkpoint and seconds), never passed, timed out, or an error. That
-status comes from the trainer's own files, not from the thread's words. Tell the user in two or three sentences what
-the robot can do now and what it could not learn, and offer to retry the ones that failed with a changed brief. The
-user can ask what happened on any GPU: answer with `read_thread`.
+status comes from the trainer's own files, not from the thread's words. Give the result once, here: tell the user in
+two or three sentences what the robot can do now and what it could not learn, and offer to retry the ones that failed
+with a changed brief. Do not say you are moving or coming back: the move home follows on its own. The user can ask
+what happened on any GPU: answer with `read_thread`.
+
+## Back home after teaching
+When the server says you are back in the user's browser, the user has already read the result. Reply with one short
+line that adds only what is new: that you are back, and one thing to try, naming one skill from the server's list of
+skills that came home ("Back in your browser. Try: make it <that skill>."). Do not repeat the result. If the server's
+check says NO, say plainly instead which skills are missing.

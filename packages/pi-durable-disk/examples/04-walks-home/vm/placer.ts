@@ -85,7 +85,7 @@ export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array
 }
 
 /** The agent's one home line for the robot episode: bounded by the server's check below it. */
-export const HOME_PROMPT_ROBOT = "You are back in your user's browser. Say one short, plain sentence to your user: that you are back in their browser, and how it went for their robot's skills, saying no more than the server's check below says: if it says the skills are home and installed you may say the robot has learned them and name how many; if it says NO, say plainly that the last step did not work and which skills are missing, in simple words. Do not mention files, commands or training details.";
+export const HOME_PROMPT_ROBOT = "You are back in your user's browser, and you already told them how the teaching went before the move: do not repeat it. Say one short line that adds only what is new: that you are back in their browser, and one thing they can try now, naming one skill from the list in the server's check below: \"Back in your browser. Try: make it <that skill>.\" If the check says NO, say instead, plainly and in simple words, that the last step did not work and which skills are missing. Do not mention files, commands or training details.";
 
 /**
  * Is the work's result in place? The rules the tab's own loader decides on: its `Policy.load` (the very function the browser runs, imported
