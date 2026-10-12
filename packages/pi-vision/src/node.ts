@@ -96,12 +96,19 @@ function killGroup(pid: number | undefined) {
   try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
 }
 
+type ExecOptions = NonNullable<Parameters<VisionEnv["exec"]>[1]>;
+
+/** The Node port: a `VisionEnv` whose `exec` also takes pi's `inheritEnv`. A call that says `inheritEnv: false` names
+ *  the program's whole environment in its own `env`. */
+export type NodeVisionEnv = Omit<VisionEnv, "exec"> & {
+  exec(command: Parameters<VisionEnv["exec"]>[0], options: (ExecOptions & { inheritEnv?: boolean }) | undefined, context: VisionContext): ReturnType<VisionEnv["exec"]>;
+};
+
 /** `env` is the whole environment of every program this environment starts; without it, `inheritedEnv()`. A call's own
- *  `env` is added over either, and is the whole of it when the call says `inheritEnv: false`, pi's switch for a caller
- *  that names a program's environment itself. */
-export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): VisionEnv {
+ *  `env` is added over either, and is the whole of it when the call says `inheritEnv: false`. */
+export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): NodeVisionEnv {
   const at = (path: string) => (isAbsolute(path) ? resolve(path) : resolve(env.cwd, path));
-  const env: VisionEnv = {
+  const env: NodeVisionEnv = {
     id: "node:local",
     cwd: options.cwd,
     readBinaryFile: (path, context) => attempt(context, async () => new Uint8Array(await readFile(at(path), { signal: context.abortSignal }))),
@@ -140,7 +147,7 @@ export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): VisionE
       const argv = typeof command === "string" ? ["/bin/sh", "-c", command] : command;
       if (!argv[0]) return fail("spawn_error", "empty argv: no program to run");
       if (run?.timeout !== undefined && !(Number.isFinite(run.timeout) && run.timeout > 0)) return fail("timeout", "timeout must be a positive number of seconds");
-      const own = (run as { inheritEnv?: boolean } | undefined)?.inheritEnv === false;
+      const own = run?.inheritEnv === false;
       return new Promise<Result<{ exitCode: number }>>((settle) => {
         let child: ChildProcess;
         try {

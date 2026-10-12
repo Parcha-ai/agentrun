@@ -6,7 +6,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { createRegistry, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CallContext, CallSetup, ToolResult, VisionEnv } from "../../src/index.js";
-import { DEFAULT_LIMITS } from "../../src/index.js";
+import { DEFAULT_LIMITS, visionContext } from "../../src/index.js";
 import { callContext, createVisionExtension, modelsEyes, piResult, type ModelsDoor } from "../../src/durable.js";
 import { inheritedEnv, nodeVisionEnv } from "../../src/node.js";
 
@@ -22,7 +22,12 @@ const handBuilt: CallSetup = { limits: DEFAULT_LIMITS, eyes: undefined, scope: {
 // A host names the environment its programs get: its own in full (its choice), or the default and more.
 const passesItsOwn = createVisionExtension({ evidence: { file: async () => null }, scope: (id) => ({ label: id, deriveDir: `media/${id}` }), env: process.env });
 const andMore: VisionEnv = nodeVisionEnv({ cwd: "/", env: { ...inheritedEnv(), FONTCONFIG_PATH: "/etc/fonts" } });
+// The Node port is a VisionEnv, and its own `exec` takes pi's switch without a cast; the port's type alone does not.
+const port = nodeVisionEnv({ cwd: "/" });
+const named = () => port.exec(["true"], { env: { ONLY: "this" }, inheritEnv: false }, visionContext());
+// @ts-expect-error `inheritEnv` is not part of the port every environment satisfies.
+const unnamed = () => env.exec(["true"], { env: { ONLY: "this" }, inheritEnv: false }, visionContext());
 // @ts-expect-error a door without `completeSimple` cannot look.
 const blind: ModelsDoor = { getModel: () => undefined };
 
-void [door, eyes, result, call, env, blind, handBuilt, passesItsOwn, andMore];
+void [door, eyes, result, call, env, blind, handBuilt, passesItsOwn, andMore, named, unnamed];
