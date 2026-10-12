@@ -175,7 +175,11 @@ test("robot episode: teaching or relearning goes to the VM, everything else stay
   assert.equal(await ask("paint it red"), "tab");
   assert.equal(await ask("Teach it to move."), "modal-vm");
   assert.equal(await ask("Go learn your new body."), "modal-vm");
+  assert.equal(await ask("Relearn the skills for this body"), "modal-vm");
+  assert.equal(await ask("teach the robot to spin and wave"), "modal-vm");
   assert.equal(await ask("Teach it to move.", "done"), "tab");
+  // Near misses that only mention skills or training stay in the browser.
+  for (const text of ["list its skills", "what skills do you have?", "paint the train red", "make a train station", "show me what you learned", "can it spin?", "I want to learn how this works"]) assert.equal(await ask(text), "tab", text);
 
   const skills = (names: string[]) => bytes(JSON.stringify({ skills: names }));
   const ok = await checkHomeSkills(files({ "home/skills.json": skills(["walk", "spin"]), "home/skills/walk.json": bytes("{}"), "home/skills/spin.json": bytes("{}") }), 2);
@@ -186,4 +190,11 @@ test("robot episode: teaching or relearning goes to the VM, everything else stay
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]) }))).reason, /not written: walk/);
   assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("{}") }), 8)).reason, /1 of the 8 skills/);
   assert.match((await checkHomeSkills(files({ "home/skills.json": bytes("{\"skills\":[]}") }))).reason, /lists no skill/);
+  // Repeated names count once (and are refused), a broken or non-object skill file does not pass, and a name that is not a plain skill name is refused.
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk", "walk"]), "home/skills/walk.json": bytes("{}") }), 2)).reason, /more than once: walk/);
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes('{"policy":') }))).reason, /not valid JSON objects: home\/skills\/walk\.json/);
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["walk"]), "home/skills/walk.json": bytes("[1]") }))).reason, /not valid JSON objects/);
+  assert.match((await checkHomeSkills(files({ "home/skills.json": skills(["../creature/robot"]), "home/skills/../creature/robot.json": bytes("{}") }))).reason, /not a plain skill name/);
+  // The index as D2/D3 write it: an object of skills.
+  assert.equal((await checkHomeSkills(files({ "home/skills.json": bytes('{"version":1,"default":"walk","skills":{"walk":{},"turn-left":{}}}'), "home/skills/walk.json": bytes("{}"), "home/skills/turn-left.json": bytes("{}") }), 2)).ok, true);
 });

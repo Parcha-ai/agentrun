@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForFile, waitForStage } from "../../show/scripts/cdp.mjs";
 import { startScreencast } from "../../show/scripts/screencast.mjs";
+import { agentLink } from "../agent-link.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..", "..", "show");
@@ -212,6 +213,9 @@ try {
   const linkFile = status.linkFile;
   const link = readFileSync(linkFile, "utf8").trim();
   step("the take's 03 server is up", { origin: status.origin, mode: status.mode });
+  // The agent's page, built once: the robot's page also needs the switches for going offline and back (D3's ?golive=1), whoever opens it (the person's browser,
+  // this box's Chrome, a reopen); the fragment (the run's secret) stays last.
+  const agentUrl = robot ? agentLink(link, linkQuery) : link;
 
   // 2. the stage, following the run's link
   const stagePort = Number(arg("port", 8760));
@@ -224,13 +228,12 @@ try {
     // The person's browser is the agent's tab: print the link once (the fragment is the run's secret) and the tunnel that reaches both servers.
     const origin = new URL(link);
     // The robot's page also needs the switches for going offline and back (D3's ?golive=1); the fragment (the run's secret) stays last.
-    const shown = robot && !origin.search ? link.replace("#", `?${linkQuery}#`) : link;
-    console.log(`LIVE: open this link in your browser; it is the agent's tab. Anyone with it can take over the run, so do not share it: ${shown}`);
+    console.log(`LIVE: open this link in your browser; it is the agent's tab. Anyone with it can take over the run, so do not share it: ${agentUrl}`);
     console.log(`LIVE: reach both servers from your machine with: ssh -N -o ServerAliveInterval=5 -L ${origin.port}:127.0.0.1:${origin.port} -L ${stagePort}:127.0.0.1:${stagePort} ubuntu@<this box's tailnet address>`);
     console.log(`LIVE: then open the link above, and the stage at http://127.0.0.1:${stagePort}/${episode === "obsession" ? "obsession/" : stagePath} in another window; keep both windows visible (not minimized)`);
     step("waiting for your browser to open the link", { serverPort: Number(origin.port), stagePort });
   } else {
-    writer = await unlessStopped(openTab(link, { width: 1400, height: 800 }));
+    writer = await unlessStopped(openTab(agentUrl, { width: 1400, height: 800 }));
     await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", 240_000, "the 03 page to attach as the writer");
     step("the 03 page runs the agent");
   }
@@ -254,7 +257,7 @@ try {
     const alive = ownBrowser ? 1 : await Promise.race([writer.eval("1").catch(() => 0), sleep(3000).then(() => 0)]);
     if (!alive) {
       step("the 03 page went away; opening it again");
-      writer = await openTab(link, { width: 1400, height: 800 }).catch(() => undefined);
+      writer = await openTab(agentUrl, { width: 1400, height: 800 }).catch(() => undefined);
       if (!writer) break;
     }
     if (Date.now() > until_.getTime()) {

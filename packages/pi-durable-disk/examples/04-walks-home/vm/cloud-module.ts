@@ -48,6 +48,8 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
       }))
     : undefined;
   if ((args["cluster-size"] === undefined) !== (args["cluster-image"] === undefined)) throw new Error("--cloud-arg cluster-size and cluster-image go together");
+  if (args["cluster-image"] !== undefined && args["cluster-image"].trim() === "") throw new Error("--cloud-arg cluster-image= is empty: name the trainer image");
+  if (args["cluster-skills"] !== undefined && args["cluster-skills"].split(",").map((k) => k.trim()).filter(Boolean).length === 0) throw new Error(`--cloud-arg cluster-skills=${args["cluster-skills"]}: name at least one skill`);
   if (args["cluster-size"] !== undefined && !Number.isInteger(Number(args["cluster-size"]))) throw new Error(`--cloud-arg cluster-size=${args["cluster-size"]}: a whole number`);
   if (args["cluster-start"] !== undefined && args["cluster-start"] !== "attach" && args["cluster-start"] !== "now") throw new Error(`--cloud-arg cluster-start=${args["cluster-start"]}: attach or now`);
   if (args["cluster-size"] === undefined && Object.keys(args).some((k) => k.startsWith("cluster-"))) throw new Error("--cloud-arg cluster-* need cluster-size and cluster-image");
@@ -77,7 +79,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
             ...(args["cluster-ready"] ? { readyCommand: args["cluster-ready"] } : {}),
             ...(number("cluster-ready-timeout-s") ? { readyTimeoutMs: number("cluster-ready-timeout-s")! * 1000 } : {}),
             ...(number("cluster-placement-s") ? { placementTimeoutMs: number("cluster-placement-s")! * 1000 } : {}),
-            ...(args["cluster-skills"] ? { skills: args["cluster-skills"].split(",").map((k) => k.trim()).filter(Boolean) } : {}),
+            ...(args["cluster-skills"] !== undefined ? { skills: args["cluster-skills"].split(",").map((k) => k.trim()).filter(Boolean) } : {}),
             ...(args["cluster-start"] ? { start: args["cluster-start"] as "attach" | "now" } : {}),
           },
         }

@@ -35,6 +35,16 @@ export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
 };
 
 /**
+ * A request to TEACH the robot skills (or to relearn them for a new body), as opposed to one that merely mentions skills or training ("list its
+ * skills", "paint the train red"): teaching is "teach it ...", "go learn your new body", "relearn" or "retrain". Only these move the session to the
+ * VM and its cluster; the rest stays in the browser.
+ */
+export function isTeachRequest(text: string): boolean {
+  const t = text.toLowerCase();
+  return /\bteach\s+(it|her|him|them|my robot|the robot|your robot)\b/.test(t) || /\b(go\s+)?learn\s+(its|your|the|a)?\s*new\s+bod(y|ies)\b/.test(t) || /\b(relearn|retrain)\b/.test(t) || /\bteach\b.*\b(skills?|to\s+(walk|run|move|spin|sprint|wave|turn|get up))\b/.test(t);
+}
+
+/**
  * The robot episode's stand-in client: a request to teach or relearn skills goes to the Modal VM (the session runs there while its threads
  * train on the cluster), anything else, and every "done" question, stays in the browser. The cluster boxes are not environments of the
  * switcher: the session on the VM lends them to its threads.
@@ -42,11 +52,9 @@ export const scriptedJudge: JudgeRunner = async ({ state, questions }) => {
 export const scriptedRobotJudge: JudgeRunner = async ({ state, questions }) => {
   const question = questions.where!;
   const ids = Object.keys(question.criteria);
-  const text = JSON.stringify(state).toLowerCase();
-  const done = /the agent finished the task/.test(text);
+  const done = /the agent finished the task/.test(JSON.stringify(state).toLowerCase());
   const byCriterion = (re: RegExp) => ids.find((id) => re.test(question.criteria[id] ?? ""));
-  const cluster = /teach|learn|relearn|train|skill|new body/.test(text);
-  const want = !done && cluster ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
+  const want = !done && isTeachRequest(String((state as { task?: unknown } | null)?.task ?? "")) ? byCriterion(/Linux VM/) : byCriterion(/browser tab/i);
   const choice = want ?? ids[0]!;
   const probabilities = Object.fromEntries(ids.map((id) => [id, id === choice ? 0.94 : 0.06 / Math.max(1, ids.length - 1)]));
   return { answers: { where: { type: "choice", choice, probabilities } }, model: "scripted" };
@@ -68,11 +76,29 @@ export async function checkHomeSkills(read: (path: string) => Promise<Uint8Array
   const listed = (index as { skills?: unknown } | null)?.skills ?? index;
   const names = Array.isArray(listed) ? listed.map((s) => (typeof s === "string" ? s : String((s as { name?: unknown; id?: unknown })?.name ?? (s as { id?: unknown })?.id ?? ""))).filter(Boolean) : listed && typeof listed === "object" ? Object.keys(listed) : [];
   if (names.length === 0) return { ok: false, reason: "the skills index lists no skill" };
+  const odd = names.filter((n) => !/^[a-z0-9][a-z0-9_-]{0,40}$/.test(n));
+  if (odd.length > 0) return { ok: false, reason: `the skills index has a name that is not a plain skill name: ${odd.map((n) => JSON.stringify(n.slice(0, 40))).join(", ")}` };
+  const distinct = [...new Set(names)];
+  if (distinct.length !== names.length) return { ok: false, reason: `the skills index names a skill more than once: ${names.filter((n, i) => names.indexOf(n) !== i).join(", ")}` };
   const missing: string[] = [];
-  for (const name of names) if (!(await read(`home/skills/${name}.json`))?.length) missing.push(name);
+  const broken: string[] = [];
+  for (const name of distinct) {
+    const file = await read(`home/skills/${name}.json`);
+    if (!file?.length) {
+      missing.push(name);
+      continue;
+    }
+    try {
+      const value = JSON.parse(new TextDecoder().decode(file)) as unknown;
+      if (value === null || typeof value !== "object" || Array.isArray(value)) broken.push(name);
+    } catch {
+      broken.push(name);
+    }
+  }
   if (missing.length > 0) return { ok: false, reason: `skills listed but not written: ${missing.join(", ")}` };
-  if (expected > 0 && names.length < expected) return { ok: false, reason: `${names.length} of the ${expected} skills came home` };
-  return { ok: true, reason: `${names.length} skills are home and installed: ${names.join(", ")}.` };
+  if (broken.length > 0) return { ok: false, reason: `skill files that are not valid JSON objects: ${broken.map((n) => `home/skills/${n}.json`).join(", ")}` };
+  if (expected > 0 && distinct.length < expected) return { ok: false, reason: `${distinct.length} of the ${expected} skills came home` };
+  return { ok: true, reason: `${distinct.length} skills are home and installed: ${distinct.join(", ")}.` };
 }
 
 /** The agent's one home line for the robot episode: bounded by the server's check below it. */

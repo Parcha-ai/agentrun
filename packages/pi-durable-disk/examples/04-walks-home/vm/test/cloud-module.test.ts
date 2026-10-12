@@ -70,3 +70,10 @@ test("cluster arguments become the cluster option, and a half-given or unknown o
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "0", "cluster-image": "im-x" }), /positive number/);
   assert.throws(() => modalOptionsFromArgs({ "cluster-cpu": "8" }), /need cluster-size/);
 });
+
+test("empty or listless cluster settings are refused instead of silently dropping the pool or warming for an undefined skill", () => {
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "" }), /cluster-image= is empty/);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "   " }), /empty/);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-x", "cluster-skills": ",," }), /at least one skill/);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-x", "cluster-skills": "" }), /at least one skill/);
+});
