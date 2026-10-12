@@ -40,9 +40,12 @@ type OutputOpts = { expanded: boolean; onToggle?: (expanded: boolean) => void; r
 
 function outputBlock(text: string, opts: OutputOpts): HTMLElement {
   // Only the end of a huge output is read for events (a partial first line is dropped): the page does not parse megabytes to show eight lines.
-  const read = text.length > OUT_FULL ? text.slice(text.indexOf("\n", text.length - OUT_FULL) + 1) : text;
+  const cut = text.length > OUT_FULL ? text.indexOf("\n", text.length - OUT_FULL) + 1 : 0;
+  const read = cut > 0 ? text.slice(cut) : text.length > OUT_FULL ? text.slice(-OUT_FULL) : text;
+  let before = 0; // the lines left unread before `read`, so the counts the reader sees are exact
+  for (let i = text.indexOf("\n"); i >= 0 && i < cut; i = text.indexOf("\n", i + 1)) before++;
   const h = humanizeOutput(read);
-  return h.recognized === 0 ? rawOutputBlock(text, opts) : trainerBlock(h.lines, text, opts);
+  return h.recognized === 0 ? rawOutputBlock(text, opts) : trainerBlock(h.lines, text, opts, before);
 }
 
 /** The raw text, with its last lines (see outputBlock). */
@@ -76,10 +79,10 @@ function rawOutputBlock(text: string, opts: OutputOpts): HTMLElement {
 const QUIET_ROWS = 400;
 const QUIET_LINE = 400;
 
-function trainerBlock(all: readonly OutputLine[], text: string, opts: OutputOpts): HTMLElement {
+function trainerBlock(all: readonly OutputLine[], text: string, opts: OutputOpts, before = 0): HTMLElement {
   // The quiet view has limits of its own (the raw view keeps the output's): the last rows only, each clipped, with a note of what is left out, so a huge mixed log cannot flood the page.
   const lines = all.slice(-QUIET_ROWS).map((l) => (l.text.length > QUIET_LINE ? { ...l, text: `${l.text.slice(0, QUIET_LINE)}…` } : l));
-  const omitted = all.length - lines.length;
+  const omitted = all.length - lines.length + before; // rows the quiet view leaves out, counting the lines never read
   const wrap = el("div", "output trainer");
   const mode = el("button", "more", opts.raw ? "quiet view" : "raw output");
   mode.setAttribute("type", "button");
