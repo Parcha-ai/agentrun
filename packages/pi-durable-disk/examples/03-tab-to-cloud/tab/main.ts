@@ -1128,6 +1128,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   // the tools exactly as the provider sends them (native-turn.ts), so the prefix is the turns' prefix; a shipped warm state for it is restored instead (?state=0: prefill)
   const stateUrl = params.get("state") === "0" ? undefined : new URL(params.get("state") ?? "/models/qwen35-0.8b-robot-v5-Q4_0.state.bin", location.href).href;
   model.toolsInPrompt = !signature;
+  model.stemFirst = params.get("stem") === "1"; // the exchanges-first read, on trial
   const warm = await step("reading the tools", () => model.warm(serving.system, refine(toNativeTools(tools)), stateUrl ? { url: stateUrl, onSkip: (why) => state.phone!.log.push(`no warm state restored: ${why}`) } : undefined));
   if (warm.restored) state.phone!.log.push(`warm state restored: ${warm.restored.tokens} tokens, ${Math.round(warm.restored.bytes / 1e6)} MB in ${warm.ms} ms`);
   marks.warmMs = Math.round(performance.now() - t);

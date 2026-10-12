@@ -533,6 +533,7 @@ test("a T7 turn reads its earlier exchanges on their own first, so the next turn
   const { llm, calls } = fakeLlm({ restore: async (b) => ({ tokens: 1252, bytes: b.size }) });
   llm.cachedFile = async () => new Blob([new Uint8Array(64)]);
   const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  model.stemFirst = true;
   const parts = JSON.stringify({ parts: [{ name: "robot-v3-00001-of-00007.gguf", bytes: 1, sha256: "a".repeat(64) }] });
   const sidecar = JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: ["a".repeat(64)] }, prefixSha256: await sha(PREFIX), bytes: 64 });
   await withFetch({ [`${state}.json`]: sidecar, "https://p.example/m/robot-v3.parts.json": parts }, async () => { await model.load(); await model.warm(serving.system, serving.tools, { url: state }); });

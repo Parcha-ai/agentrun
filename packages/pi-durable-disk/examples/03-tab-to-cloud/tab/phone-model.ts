@@ -116,6 +116,8 @@ export class PhoneModel implements BrainModel {
   onTurnStart: (() => void) | undefined;
   /** False for a signature prefix (the system text lists the tools): every prompt, the warm-up's too, renders with no tools block. */
   toolsInPrompt = true;
+  /** Read a T7 window's earlier exchanges on their own before each turn (see `resume`). Off: measured in Chrome it did not yet leave the checkpoint expected. */
+  stemFirst = false;
   private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; loadTimeoutMs?: number; /** A turn that has not answered in this long fails, by name (default 180 s). */ turnTimeoutMs?: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
 
   constructor(llm: Llm, o: PhoneModel["o"]) {
@@ -179,7 +181,7 @@ export class PhoneModel implements BrainModel {
       }
     }
     const next: string[] = [];
-    const stem = stemOf(prompt, this.warmPrompt);
+    const stem = this.stemFirst ? stemOf(prompt, this.warmPrompt) : undefined;
     if (stem !== undefined && stem.length > reach()) {
       const r = await this.llm.complete!({ prompt: stem, maxTokens: 0 }, { signal, sampling: GREEDY });
       this.stemmed = { tokens: r.promptTokens, ms: Math.round(r.ms ?? 0) };
