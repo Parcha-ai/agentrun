@@ -240,6 +240,8 @@ interface RunState {
   homeTurn: HomeWait | undefined;
   /** The wait for the writer to come back after its socket closed: the lines that arrive meanwhile queue behind it. Cancelled when the server closes. */
   writerGrace: { cancelled: boolean; comingAt: number | undefined } | undefined;
+  /** When a page that can run the run asked in the moment after the writer's socket closed, before the grace began: the grace counts it. */
+  pageComingAt: number | undefined;
   /** When the agent was last given a message and has not yet ended its turn (the host's run_end): a placement move would release the pipe under a step that is starting, so a message that needs a move waits for it. */
   turnSince: number | undefined;
   /** Messages whose placement is in progress (asked of the placer, or waiting their turn behind another): the end of a turn must not send the agent home under them. */
@@ -546,7 +548,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (bound <= 0) return false;
     const poll = options.writerReturnPollMs ?? 50;
     const started = Date.now();
-    const wait: { cancelled: boolean; comingAt: number | undefined } = { cancelled: false, comingAt: undefined };
+    const wait: { cancelled: boolean; comingAt: number | undefined } = { cancelled: false, comingAt: state.pageComingAt };
+    state.pageComingAt = undefined;
     state.writerGrace = wait;
     const horizon = (): number => (wait.comingAt === undefined ? bound : Math.min(options.writerReturnMaxMs ?? 90_000, Math.max(bound, wait.comingAt - started + (options.writerBootMs ?? 60_000))));
     let outcome: "returned" | "expired" | "superseded" | "closed" = "expired";
@@ -1034,7 +1037,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
       const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, env: writerEnv, ...(move ? { move } : {}), ...(options.placer ? { placed: true } : {}) });
-      if (role === "writer") clearTimeout(state.checkinTimer);
+      if (role === "writer") {
+        clearTimeout(state.checkinTimer);
+        state.pageComingAt = undefined; // the page that asked early is here
+      }
       if (role === "viewer") socket.send(await viewingFrame(state));
       else {
         for (const [viewer, detach] of state.cloudViewers) {
@@ -1070,8 +1076,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const viewing = await viewingFrame(state);
     // A page that can run the run asks during the grace (it was refreshed): it is told the run waits for it, so it attaches as the writer by itself, and the grace waits for it to boot.
     const client = state.clients.get(socket);
-    if (state.writerGrace && client?.canRun && client.mode !== "view" && viewing.t === "viewing") {
-      state.writerGrace.comingAt ??= Date.now();
+    const waiting = state.writerGrace !== undefined || state.pipe?.writerLeft === true;
+    if (waiting && client?.canRun && client.mode !== "view" && viewing.t === "viewing") {
+      if (state.writerGrace) state.writerGrace.comingAt ??= Date.now();
+      else state.pageComingAt ??= Date.now();
       log("placement.writer-coming", { run: state.ref.id });
       socket.send({ ...viewing, placement: { where: "parked", detail: "your browser is coming back" } });
     } else socket.send(viewing);
@@ -1417,6 +1425,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       pendingSubmits: [],
       homeTurn: undefined,
       writerGrace: undefined,
+      pageComingAt: undefined,
       turnSince: undefined,
       placingCount: 0,
       cloudEpoch: 0,

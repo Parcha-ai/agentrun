@@ -118,6 +118,8 @@ type Writer = {
   restoring: boolean;
   /** The page said its runtime is up (writer-ready): a line sent to it now can run. */
   pageReady: boolean;
+  /** Its socket closed: it is declared gone a moment later (a refreshed page can ask for the run in that moment). */
+  detached?: boolean;
 };
 
 /**
@@ -296,6 +298,12 @@ export class RunPipe {
   get writerReady(): boolean {
     const writer = this.#writer;
     return writer !== undefined && !writer.dead && !writer.attaching && !writer.restoring && writer.pageReady;
+  }
+
+  /** The writer's socket closed and it is not yet declared gone: a refresh in its first moment. */
+  get writerLeft(): boolean {
+    const writer = this.#writer;
+    return writer !== undefined && !writer.dead && writer.detached === true;
   }
 
   /** The writer's page says its runtime is up. */
@@ -503,7 +511,10 @@ export class RunPipe {
   detach(socket: PipeSocket): void {
     this.#viewers.delete(socket);
     const writer = this.#writer;
-    if (writer && writer.socket === socket && !writer.dead) writer.lastPing = Math.min(writer.lastPing, Date.now() - (this.#options.writerGraceMs ?? 3_000) + 250);
+    if (writer && writer.socket === socket && !writer.dead) {
+      writer.detached = true;
+      writer.lastPing = Math.min(writer.lastPing, Date.now() - (this.#options.writerGraceMs ?? 3_000) + 250);
+    }
   }
 
   ping(socket: PipeSocket, at: number): void {

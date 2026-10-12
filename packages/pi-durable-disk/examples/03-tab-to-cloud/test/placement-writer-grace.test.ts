@@ -237,6 +237,27 @@ describe("a page that comes back booting", () => {
     page.close();
   });
 
+  it("tells a page that asks in the instant between the socket closing and the writer being declared gone, and the grace then waits for it", async () => {
+    const { id, secret } = await local.server.createRun("fast-reload");
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+    await tab.ready;
+    tab.close();
+    await new Promise((r) => setTimeout(r, 30)); // the reloaded page is quick: its hello lands before the pipe declares the writer gone (about 250 ms after the close)
+    assert.equal(ofRun(id, "pipe.writer-gone").length, 0, "the writer is not declared gone yet");
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "operator", canRun: true, onFrame: () => undefined });
+    const first = (await page.ready) as { t: string; placement: { where: string } };
+    assert.equal(first.placement.where, "parked", "told the run waits for it");
+    await new Promise((r) => setTimeout(r, 1_200)); // booting: past the plain 0.4 s of grace
+    assert.equal(ofRun(id, "cloud.started").length, 0);
+    const back: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+    await back.ready;
+    back.send({ t: "writer-ready" });
+    await until(() => ofRun(id, "placement.writer-grace").length === 1 || ofRun(id, "cloud.started").length === 1, 8_000);
+    assert.equal(ofRun(id, "cloud.started").length, 0, "the run never went to the cloud");
+    back.close();
+    page.close();
+  });
+
   it("does not wait longer for a plain viewer, which is not offered the run either", async () => {
     const { id, secret } = await dropWriter("plain-viewer");
     const viewer: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "view", onFrame: () => undefined });
