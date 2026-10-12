@@ -4,6 +4,7 @@
 // miss. Nothing is kept: every file a call derives is read back and removed before it returns.
 
 import type { MissCode } from "./contract.js";
+import { ProviderMiss } from "./derive.js";
 import { visionContext } from "./env.js";
 import { formatFragment } from "./fragments.js";
 import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
@@ -26,11 +27,8 @@ export type VideoProvider = Provider & Required<Pick<Provider, "frames" | "clip"
 };
 
 /** A typed miss a provider raises, with the text the model reads. */
-export class VideoMiss extends Error {
-  constructor(readonly code: MissCode, message: string) {
-    super(message);
-    this.name = "VideoMiss";
-  }
+export class VideoMiss extends ProviderMiss {
+  override readonly name = "VideoMiss";
 }
 
 type Failure = { readonly ok: false; readonly code: MissCode; readonly text: string };

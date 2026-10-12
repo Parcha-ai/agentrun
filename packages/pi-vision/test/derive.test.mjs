@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdir } from "node:fs/promises";
 import { after, test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { ProviderMiss, derivations, derivedName, viaProviders, visionContext } from "@parcha/pi-vision";
+import { OfficeMissError, ProviderMiss, VideoMiss, derivations, derivedName, viaProviders, visionContext } from "@parcha/pi-vision";
 import { fixtureDir } from "@parcha/pi-vision/testing";
 
 const dir = await fixtureDir("pi-vision-derive-");
@@ -95,6 +95,19 @@ test("every distinct cause is named once with the providers that gave it, and th
   for (const code of ["unsupported", "needs"]) {
     assert.equal((await run([provider("a")], {}, failing(new ProviderMiss(code, "x")))).miss.code, code);
   }
+});
+
+test("the office and video misses are provider misses that keep their own class and name, and viaProviders reads their codes", async () => {
+  for (const [Miss, name, kind, capability] of [[OfficeMissError, "OfficeMissError", "office", "office"], [VideoMiss, "VideoMiss", "video", "clip"]]) {
+    const miss = new Miss("over_budget", "too long");
+    assert.ok(miss instanceof Miss && miss instanceof ProviderMiss && miss instanceof Error);
+    assert.deepEqual([miss.name, miss.code, miss.message], [name, "over_budget", "too long"]);
+    for (const code of ["unreadable", "over_budget", "unsupported", "needs"]) {
+      const out = await viaProviders({ env, providers: [provider("a", { kinds: [kind], capabilities: [capability] })] }, { kind, capability, what: "it" }, failing(new Miss(code, `${code} here`)));
+      assert.deepEqual(out, { ok: false, miss: { code, detail: `${code} here (a)` } }, `${name} ${code}`);
+    }
+  }
+  assert.equal(new ProviderMiss("needs", "x").name, "ProviderMiss");
 });
 
 test("providers that cannot run here say what they need; one that runs and fails decides the code instead", async () => {
