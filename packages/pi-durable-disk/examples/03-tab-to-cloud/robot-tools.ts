@@ -4,7 +4,8 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import { COLOR_NAMES, COLOR_PARTS, FACE_NAMES, MORPH_PRESETS, NAME_MAX, RESIZE_PARTS, SHAPE_NAMES, SHAPE_PARTS, SKILL_NAMES, applyRobotTool, applyUpdateRobot, initialRobot, parseRobot, serializeRobot, validateDesign, type Design, type RobotContext, type RobotState } from "./robot-model.ts";
+import { buildRobot } from "./build-robot.ts";
+import { COLOR_NAMES, FACE_NAMES, LOOK_PARTS, type CodeBody, MORPH_PRESETS, NAME_MAX, RESIZE_PARTS, SHAPE_NAMES, SHAPE_PARTS, SKILL_NAMES, applyRobotTool, applyUpdateRobot, initialRobot, parseRobot, serializeRobot, validateDesign, type Design, type RobotContext, type RobotState } from "./robot-model.ts";
 
 /** The robot's state file, and the design the creature page publishes when it saves the user's drawing (what `reset` returns to). Relative to the workspace. */
 export const ROBOT_FILE = "creature/robot.json";
@@ -14,7 +15,11 @@ export const SKILLS_FILE = "home/skills.json";
 export const POLICY_FILE = "home/policy.json";
 
 /** The nine tools' names, in the order they are registered and offered. */
-export const ROBOT_TOOLS = ["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "do", "update_robot"] as const;
+export const ROBOT_TOOLS = ["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "do", "build_robot", "update_robot"] as const;
+/** A body the agent wrote as code: the files its build leaves in the workspace, and the page's report. */
+export const BODY_FILE = "robot/body.json";
+export const BODY_XML = "robot/body.xml";
+export const BUILD_FILE = "robot/build.json";
 
 /** The creature page's own default body, for a robot whose drawing was never published (04-walks-home/tab/src/design.ts `defaultDesign`). */
 const DRAWN_DEFAULT: Design = { version: 1, name: "quadruped", legDof: 3, torso: { length: 0.5, width: 0.22, height: 0.1 }, legs: [{ x: 0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }, { x: -0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }] };
@@ -46,6 +51,19 @@ async function load(env: Env, context: Ctx): Promise<RobotState | { problem: str
   return initialRobot(DRAWN_DEFAULT);
 }
 
+/** The robot as a body written as code (robot/body.json, written by `node robot/build.mjs`), or none: the name, the tags it has, how many legs. */
+export async function loadCodeBody(env: Env, context: Ctx): Promise<CodeBody | undefined> {
+  const have = await env.readTextFile(BODY_FILE, context);
+  if (!have.ok) return undefined;
+  try {
+    const b = JSON.parse(have.value) as { name?: unknown; tag_list?: unknown; legs?: unknown };
+    if (typeof b.name !== "string" || !Array.isArray(b.tag_list)) return undefined;
+    return { name: b.name, tags: b.tag_list.filter((t): t is string => typeof t === "string"), legs: typeof b.legs === "number" ? b.legs : 0 };
+  } catch {
+    return undefined;
+  }
+}
+
 /** The skills this robot has: from home/skills.json, else walk when a single policy came home, else none. */
 export async function loadSkills(env: Env, context: Ctx): Promise<Record<string, { label?: string; command?: number }>> {
   const have = await env.readTextFile(SKILLS_FILE, context);
@@ -73,13 +91,15 @@ function edit(env: Env | undefined, context: Ctx, tool: string, args: Record<str
 }
 
 async function editNow(env: Env | undefined, context: Ctx, tool: string, args: Record<string, unknown>) {
+  if (!env) return text("Not done: there is no computer to keep the robot's file on.", true);
+  const body = await loadCodeBody(env, context);
   const apply = async (state: RobotState) => {
     const skills = tool === "do" || (tool === "update_robot" && args.skill !== undefined) ? await loadSkills(env!, context) : {};
-    return tool === "update_robot" ? applyUpdateRobot(state, args, { skills }) : applyRobotTool(state, tool, args, { skills });
+    return tool === "update_robot" ? applyUpdateRobot(state, args, { skills, ...(body ? { body } : {}) }) : applyRobotTool(state, tool, args, { skills, ...(body ? { body } : {}) });
   };
-  if (!env) return text("Not done: there is no computer to keep the robot's file on.", true);
-  const state = await load(env, context);
-  if ("problem" in state) return text(`Not done: ${state.problem}.`, true);
+  const loaded = await load(env, context);
+  if ("problem" in loaded) return text(`Not done: ${loaded.problem}.`, true);
+  const state = body && loaded.edits === 0 ? { ...loaded, name: body.name } : loaded; // a body written as code starts out with the name its file gave it
   const outcome = await apply(state);
   if (outcome.kind === "refused") return { ...text(outcome.text, true), details: { kind: outcome.kind } };
   if (outcome.kind !== "none") {
@@ -100,13 +120,13 @@ export function robotTools(): Extension {
       defineTool({
         name: "set_color",
         description: "Paint a part of the robot a colour. Looks only: the walking brain still fits.",
-        parameters: Type.Object({ part: oneOf(COLOR_PARTS, "Which part: the torso, all the legs, the front legs, the back legs, or the whole robot."), color: oneOf(COLOR_NAMES, "The colour.") }),
+        parameters: Type.Object({ part: oneOf(LOOK_PARTS, "Which part, by its tag (torso, head, neck, tail, legs, front_legs, back_legs, arms, wings, eyes, jaw, belly, plates, horns, spikes, decoration), or all for the whole robot. A part the robot does not have is refused."), color: oneOf(COLOR_NAMES, "The colour.") }),
         execute: (args, api, context) => edit(api.env, context, "set_color", args),
       }),
       defineTool({
         name: "set_shape",
         description: "Make the torso or the legs boxy or round. Looks only: the walking brain still fits.",
-        parameters: Type.Object({ part: oneOf(SHAPE_PARTS, "Which part."), shape: oneOf(SHAPE_NAMES, "The shape.") }),
+        parameters: Type.Object({ part: oneOf(LOOK_PARTS, "Which part, by its tag, or all. On a robot built from the preset bodies only torso and legs can be reshaped."), shape: oneOf(SHAPE_NAMES, "The shape.") }),
         execute: (args, api, context) => edit(api.env, context, "set_shape", args),
       }),
       defineTool({
@@ -158,6 +178,16 @@ export function robotTools(): Extension {
         execute: (args, api, context) => edit(api.env, context, "do", args),
       }),
       defineTool({
+        name: "build_robot",
+        description: "Check the robot you built: put the helper files in robot/ if they are missing, then report what the creature page made of robot/body.xml (compiled in MuJoCo, held at its standing pose for 3 s): its pieces, motors, weight, how high it stands, its tags, any warning, or MuJoCo's own error. First write robot/body.mjs and run `node robot/build.mjs`.",
+        parameters: Type.Object({}),
+        execute: async (_args, api, context) => {
+          if (!api.env) return text("Not built: there is no computer to keep the robot's files on.", true);
+          const r = await buildRobot(api.env as never, context as never, { sha256: async (t) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, "0")).join("") });
+          return text(r.text, r.isError);
+        },
+      }),
+      defineTool({
         name: "update_robot",
         description: "Change the robot in one call: any of reset, morph, scale, legs, color (with the part it paints), face and name, applied in that order. A body change means the walking brain no longer fits.",
         parameters: Type.Object({
@@ -166,7 +196,7 @@ export function robotTools(): Extension {
           scale: Type.Optional(factor),
           legs: Type.Optional(Type.Unsafe<2 | 3 | 4 | 6>({ type: "integer", enum: [2, 3, 4, 6], description: "How many pairs of legs (2 or 3) or legs (4 or 6)." })),
           color: Type.Optional(oneOf(COLOR_NAMES, "The colour.")),
-          part: Type.Optional(oneOf(COLOR_PARTS, "The part to paint; the whole robot when absent.")),
+          part: Type.Optional(oneOf(LOOK_PARTS, "The part to paint, by its tag; the whole robot when absent.")),
           face: Type.Optional(oneOf(FACE_NAMES, "The face; none removes it.")),
           name: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX, description: `The new name, 1 to ${NAME_MAX} characters.` })),
           skill: Type.Optional(oneOf(SKILL_NAMES, "A skill the robot has learned, done last.")),

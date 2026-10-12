@@ -1,5 +1,9 @@
 // The robot as code: the helper's output compiles in MuJoCo, the bodies in the examples stand up, and the facts the creature page needs come out of it (tags, motors, colours).
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 // @ts-expect-error: plain .mjs files shipped to the agent's workspace, without types
 import { build, chain, mirror, robot } from '../../body/lib.mjs';
@@ -66,4 +70,82 @@ test('a compile error is a message the author can act on, and a wrong spec is re
   assert.throws(() => build(robot('x', { shape: 'sphere', size: [0.1], color: 'chartreuse' })), /neither a name/);
   const bad = build(robot('bad', { shape: 'sphere', size: [0.1], mass: 1, children: [{ name: 'a', pos: [0, 0, 0], shape: 'sphere', size: [-1] }] }));
   assert.throws(() => mj.MjModel.from_xml_string(bad.xml), (e: unknown) => /size|positive|negative/i.test(String((e as Error).message ?? e)), 'MuJoCo says what is wrong');
+});
+
+/** The keyframe's torso height comes from forward kinematics at the standing pose, so the robot starts with its feet on the floor: it neither drops from a height nor starts inside the floor. */
+test('the keyframe height puts the lowest point of the body at the floor: the settled height is within 2 cm of the start, for a dog, a dinosaur and a lump', () => {
+  for (const [name, spec] of [['dog', dog], ['dino', dino], ['lump', robot('lump', { shape: 'sphere', size: [0.2], color: 'red' })]] as const) {
+    const b = build(spec);
+    const model = mj.MjModel.from_xml_string(b.xml);
+    const data = new mj.MjData(model);
+    mj.mj_resetDataKeyframe(model, data, 0);
+    mj.mj_forward(model, data);
+    const z0 = data.qpos[2];
+    for (let i = 0; i < 750; i++) mj.mj_step(model, data);
+    assert.ok(Math.abs(data.qpos[2] - z0) < 0.02, `${name}: starts at ${z0.toFixed(3)} m, settles at ${data.qpos[2].toFixed(3)} m`);
+    assert.equal(b.json.stand_height_m, z0);
+  }
+});
+
+test('body.json says what the look tools and the trainer need: motors in order, tags and the vocabulary present, the leg count, the face anchor, warnings for what looks wrong', () => {
+  const n = build(dino);
+  assert.equal(n.json.legs, 4);
+  assert.deepEqual(n.json.tag_list, ['torso', 'head', 'neck', 'tail', 'legs', 'front_legs', 'back_legs', 'eyes', 'jaw', 'belly', 'plates']);
+  assert.deepEqual(n.json.face, { tag: 'head', at: [0.1, 0, 0.02] });
+  assert.equal(n.json.motors.length, 8);
+  assert.deepEqual(n.warnings, []);
+  const untagged = build(robot('x', { shape: 'sphere', size: [0.1], mass: 0.05, children: [{ name: 'a', pos: [0, 0, 0], shape: 'sphere', size: [0.01] }] }));
+  assert.deepEqual(untagged.json.tag_list, ['torso', 'decoration'], 'an untagged piece is decoration');
+  assert.ok(untagged.warnings.some((w: string) => /no trainable joints/.test(w)) && untagged.warnings.some((w: string) => /very light/.test(w)));
+});
+
+test('node robot/build.mjs runs the agent\'s body file: it writes body.xml and body.json and prints one summary line; an error in the file is the exit message', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'robot-build-'));
+  try {
+    mkdirSync(join(dir, 'robot'));
+    for (const f of ['lib.mjs', 'build.mjs']) copyFileSync(new URL(`../../body/${f}`, import.meta.url), join(dir, 'robot', f));
+    copyFileSync(new URL('../../body/dino.example.mjs', import.meta.url), join(dir, 'robot', 'body.mjs'));
+    const run = () => spawnSync(process.execPath, ['robot/build.mjs'], { cwd: dir, encoding: 'utf8' });
+    const ok = run();
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.match(ok.stdout, /^wrote robot\/body\.xml and robot\/body\.json: 32 pieces, 8 motors, 10 spring joints, 10\.99 kg, standing height 0\.\d+ m\. Tags: torso, head, neck, tail, legs, front_legs, back_legs, eyes, jaw, belly, plates\./);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'robot/body.json'), 'utf8')).legs, 4);
+    assert.match(readFileSync(join(dir, 'robot/body.xml'), 'utf8'), /<key name="home"/);
+    writeFileSync(join(dir, 'robot', 'body.mjs'), 'import { robot } from "./lib.mjs";\nexport default robot("x", { shape: "box" });\n');
+    const bad = run();
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /^body\.mjs: .*needs size/);
+    writeFileSync(join(dir, 'robot', 'body.mjs'), 'throw new Error("my dinosaur has no head");\n');
+    assert.match(run().stderr, /^body\.mjs: my dinosaur has no head/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the names the trainer looks for are written for every body: a root body "torso", a keyframe "stand" (and "home"), and a foot geom at the tip of each leg', () => {
+  for (const spec of [dog, dino]) {
+    const b = build(spec);
+    assert.match(b.xml, /<body name="torso" /);
+    assert.match(b.xml, /<key name="stand" /);
+    assert.match(b.xml, /<key name="home" /);
+    const feet = b.xml.match(/name="[^"]*_foot"/g) ?? [];
+    assert.equal(feet.length, 4, `four feet: ${feet.join(' ')}`);
+  }
+  const renamed = build(robot('x', { name: 'trunk', shape: 'sphere', size: [0.1], mass: 1 }));
+  assert.match(renamed.xml, /<body name="torso" /, 'the root is torso whatever the file calls it');
+});
+
+test('motors come first in the joint order whatever order the file lists its limbs in, and a spring above a motor is refused with the way out', () => {
+  const springsFirst = robot('t', {
+    shape: 'box', size: [0.2, 0.1, 0.05], mass: 2,
+    children: [
+      { name: 'tailA', pos: [-0.2, 0, 0], tags: ['tail'], joint: { axis: [0, 1, 0], range: [-0.4, 0.4], passive: true }, shape: 'capsule', from: [0, 0, 0], to: [-0.1, 0, 0], size: [0.02], mass: 0.1 },
+      { name: 'legA', pos: [0.1, 0.1, 0], tags: ['legs'], joint: { axis: [0, 1, 0], range: [-1, 1], stand: 0 }, shape: 'capsule', from: [0, 0, 0], to: [0, 0, -0.2], size: [0.02], mass: 0.1 },
+    ],
+  });
+  const b = build(springsFirst);
+  assert.deepEqual(b.joints.map((j: { passive: boolean }) => j.passive), [false, true], 'the leg is walked before the tail although the file lists the tail first');
+  assert.equal(b.motors.length, 1);
+  const above = robot('u', { shape: 'box', size: [0.2, 0.1, 0.05], mass: 2, children: [{ name: 'spine', pos: [0, 0, 0.05], joint: { axis: [0, 1, 0], range: [-0.3, 0.3], passive: true }, shape: 'sphere', size: [0.03], mass: 0.1, children: [{ name: 'jaw', pos: [0.1, 0, 0], joint: { axis: [0, 1, 0], range: [0, 0.5] }, shape: 'sphere', size: [0.02], mass: 0.05 }] }] });
+  assert.throws(() => build(above), /the spring joint spine_j sits above the motor jaw_j: along a limb the motors must come before the springs/);
+  const flagged = build(robot('f', { shape: 'box', size: [0.2, 0.1, 0.05], mass: 2, children: [{ name: 'leg', pos: [0, 0.1, 0], tags: ['legs'], joint: { axis: [0, 1, 0], range: [-1, 1] }, shape: 'capsule', from: [0, 0, 0], to: [0, 0, -0.2], size: [0.02], mass: 0.1, geoms: [{ shape: 'sphere', size: [0.03], pos: [0, 0, -0.2], foot: true, mass: 0.05 }, { shape: 'sphere', size: [0.01], pos: [0, 0, 0], mass: 0.01 }] }] }));
+  assert.match(flagged.xml, /size="0\.03" name="leg_foot"/, 'a piece flagged foot is the foot even when it is not the last');
 });

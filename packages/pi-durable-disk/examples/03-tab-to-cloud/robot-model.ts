@@ -38,6 +38,16 @@ export const SHAPE_NAMES = ["boxy", "round"] as const;
 export type ShapeName = (typeof SHAPE_NAMES)[number];
 export const COLOR_PARTS = ["torso", "legs", "front_legs", "back_legs", "all"] as const;
 export const SHAPE_PARTS = ["torso", "legs"] as const;
+/** The tags a body written as code can have, and the look tools address (a copy of 04-walks-home/body/lib.mjs's list; a test holds them equal). */
+export const TAG_VOCABULARY = ["torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "arms", "wings", "eyes", "jaw", "belly", "plates", "horns", "spikes", "decoration"] as const;
+/** The parts the look tools accept: every tag, and the whole robot. A body says which of them it has. */
+export const LOOK_PARTS = ["all", ...TAG_VOCABULARY] as const;
+/** The robot is a body the agent wrote as code (robot/body.json): its name, the tags it has, how many legs. */
+export interface CodeBody { name: string; tags: readonly string[]; legs: number }
+export const CODE_BODY_REFUSAL = "Not done: this robot is built from code (robot/body.mjs), so its size, legs and shape change by editing that file, not with this tool.";
+const words = (tag: string) => (tag === "all" ? "whole robot" : tag.replace(/_/g, " "));
+const PLURAL = new Set(["legs", "front_legs", "back_legs", "eyes", "plates", "horns", "spikes", "arms", "wings"]);
+const verb = (tag: string) => (tag === "all" || !PLURAL.has(tag) ? "is" : "are");
 export const RESIZE_PARTS = ["torso_length", "torso_width", "torso_height", "leg_length", "leg_thickness"] as const;
 /** What a small native-template model is told (D1's scorer prompt, verbatim: the tool-selection numbers were measured with exactly this text). */
 export const ROBOT_SYSTEM = "You control a small walking robot that lives in the user's browser. When the user asks to change the robot, call the tools that make that change. When the user is chatting or asks about something else, answer in one short sentence and do not call a tool.";
@@ -58,6 +68,9 @@ export interface Look {
   legs: (ColorName | null)[];
   shape: { torso: ShapeName; legs: ShapeName };
   face: FaceName;
+  /** A body written as code: a colour per tag (`all` for the whole robot) and a shape per tag. Absent on the preset bodies. */
+  tags?: Record<string, ColorName | null>;
+  shapes?: Record<string, ShapeName>;
 }
 
 export interface RobotState {
@@ -77,7 +90,7 @@ export interface RobotState {
 
 export type ToolKind = "looks" | "body" | "skill" | "none" | "refused";
 /** What the tools need to know about the run beyond the state: the skills that came home, with their labels. */
-export interface RobotContext { skills?: Readonly<Record<string, { label?: string; command?: number }>> }
+export interface RobotContext { skills?: Readonly<Record<string, { label?: string; command?: number }>>; /** Present when the robot is a body written as code. */ body?: CodeBody }
 export interface ToolOutcome { state: RobotState; text: string; kind: ToolKind }
 
 export const LOOKS_ONLY = "Looks only: the walking brain still fits.";
@@ -138,7 +151,18 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
   switch (tool) {
     case "set_color": {
       const part = args.part, color = args.color;
-      if (!COLOR_PARTS.includes(part as never)) return refuse(prev, `part must be one of ${COLOR_PARTS.join(", ")}.`);
+      if (context.body) {
+        const parts = ["all", ...context.body.tags];
+        if (!parts.includes(part as string)) return refuse(prev, `this robot has no ${words(String(part))}; its parts are: ${parts.map(words).join(", ")}.`);
+        if (!COLOR_NAMES.includes(color as never)) return refuse(prev, `color must be one of ${COLOR_NAMES.join(", ")}.`);
+        const t = { ...(state.look.tags ?? {}) };
+        if (part === "all") for (const k of Object.keys(t)) delete t[k];
+        t[part as string] = color as ColorName;
+        state.look.tags = t;
+        return done("looks", `The ${words(String(part))} ${verb(String(part))} now ${color}.`);
+      }
+      if (!LOOK_PARTS.includes(part as never)) return refuse(prev, `part must be one of ${LOOK_PARTS.join(", ")}.`);
+      if (!COLOR_PARTS.includes(part as never)) return refuse(prev, `this robot has no ${words(String(part))}; its parts are: ${COLOR_PARTS.map(words).join(", ")}.`);
       if (!COLOR_NAMES.includes(color as never)) return refuse(prev, `color must be one of ${COLOR_NAMES.join(", ")}.`);
       const c = color as ColorName;
       const n = state.design.legs.length;
@@ -151,6 +175,18 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
     }
     case "set_shape": {
       const part = args.part, shape = args.shape;
+      if (context.body) {
+        const parts = ["all", ...context.body.tags];
+        if (!parts.includes(part as string)) return refuse(prev, `this robot has no ${words(String(part))}; its parts are: ${parts.map(words).join(", ")}.`);
+        if (!SHAPE_NAMES.includes(shape as never)) return refuse(prev, `shape must be one of ${SHAPE_NAMES.join(", ")}.`);
+        const t = { ...(state.look.shapes ?? {}) };
+        if (part === "all") for (const k of Object.keys(t)) delete t[k];
+        t[part as string] = shape as ShapeName;
+        state.look.shapes = t;
+        return done("looks", `The ${words(String(part))} ${verb(String(part))} now ${shape}.`);
+      }
+      if (!LOOK_PARTS.includes(part as never)) return refuse(prev, `part must be one of ${LOOK_PARTS.join(", ")}.`);
+      if (!SHAPE_PARTS.includes(part as never) && part !== "all") return refuse(prev, `this robot has no ${words(String(part))} to reshape; it has torso and legs.`);
       if (!SHAPE_PARTS.includes(part as never)) return refuse(prev, `part must be one of ${SHAPE_PARTS.join(", ")}.`);
       if (!SHAPE_NAMES.includes(shape as never)) return refuse(prev, `shape must be one of ${SHAPE_NAMES.join(", ")}.`);
       state.look.shape[part as "torso" | "legs"] = shape as ShapeName;
@@ -170,6 +206,7 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       return done("looks", `The robot is now called ${name}.`);
     }
     case "resize": {
+      if (context.body) return { state: prev, text: CODE_BODY_REFUSAL, kind: "refused" };
       const part = args.part, factor = args.factor;
       if (!RESIZE_PARTS.includes(part as never)) return refuse(prev, `part must be one of ${RESIZE_PARTS.join(", ")}.`);
       if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.5 || factor > 2) return refuse(prev, "factor must be a number from 0.5 to 2.");
@@ -210,6 +247,7 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       return done("body", result);
     }
     case "scale": {
+      if (context.body) return { state: prev, text: CODE_BODY_REFUSAL, kind: "refused" };
       const factor = args.factor;
       if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.5 || factor > 2) return refuse(prev, "factor must be a number from 0.5 to 2.");
       const d = state.design;
@@ -227,6 +265,7 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       return done("body", clipped ? `The robot is now ${x(r4(reach))} the size, as ${factor > 1 ? "big" : "small"} as the limits allow (you asked for ${x(factor)}).` : `The robot is now ${x(factor)} the size.`);
     }
     case "set_legs": {
+      if (context.body) return { state: prev, text: CODE_BODY_REFUSAL, kind: "refused" };
       const pairs = args.pairs;
       if (pairs !== 2 && pairs !== 3) return refuse(prev, "pairs must be 2 (four legs) or 3 (six legs).");
       const d = state.design;
@@ -242,6 +281,7 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       return done("body", `The robot now has ${pairs * 2} legs.`);
     }
     case "morph": {
+      if (context.body) return { state: prev, text: CODE_BODY_REFUSAL, kind: "refused" };
       const preset = args.preset;
       if (!MORPH_PRESETS.includes(preset as never)) return refuse(prev, `preset must be one of ${MORPH_PRESETS.join(", ")}.`);
       if (preset === "original") {
@@ -268,6 +308,12 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       return done("skill", `The robot is now doing ${skill}${label && label !== skill ? ` (${label})` : ""}. ${skillTail(state)}`);
     }
     case "reset": {
+      if (context.body) {
+        state.look = defaultLook();
+        state.name = context.body.name;
+        delete state.skill;
+        return { state: { ...state, edits: 0 }, text: `Everything is back to the robot's own colours and face. ${LOOKS_ONLY}`, kind: "looks" };
+      }
       state.design = clone(state.original);
       state.look = defaultLook();
       state.name = state.original.name;
@@ -297,7 +343,9 @@ function validLook(l: unknown): l is Look {
   if (!k || typeof k !== "object") return false;
   const colour = (c: unknown) => c === null || COLOR_NAMES.includes(c as never);
   return colour(k.torso) && Array.isArray(k.legs) && k.legs.length === 3 && k.legs.every(colour)
-    && !!k.shape && SHAPE_NAMES.includes(k.shape.torso as never) && SHAPE_NAMES.includes(k.shape.legs as never) && FACE_NAMES.includes(k.face as never);
+    && !!k.shape && SHAPE_NAMES.includes(k.shape.torso as never) && SHAPE_NAMES.includes(k.shape.legs as never) && FACE_NAMES.includes(k.face as never)
+    && (k.tags === undefined || (typeof k.tags === "object" && k.tags !== null && Object.values(k.tags).every(colour)))
+    && (k.shapes === undefined || (typeof k.shapes === "object" && k.shapes !== null && Object.values(k.shapes).every((v) => SHAPE_NAMES.includes(v as never))));
 }
 
 export const serializeRobot = (s: RobotState): string => `${JSON.stringify(s, null, 1)}\n`;

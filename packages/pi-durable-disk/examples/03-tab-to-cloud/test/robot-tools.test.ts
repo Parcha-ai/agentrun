@@ -11,6 +11,9 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { agentRegistry, rootAgent } from "../agent.ts";
 import { GO_ONLINE_TOOL } from "../offline-tools.ts";
 import { ROBOT_FILE, ROBOT_TOOLS } from "../robot-tools.ts";
+import { createHash } from "node:crypto";
+import { ROBOT_TEMPLATES } from "../robot-templates.ts";
+import { buildRobot, provisionRobotFiles } from "../build-robot.ts";
 import { BODY_CHANGED, LOOKS_ONLY, parseRobot, type RobotState } from "../robot-model.ts";
 import { scriptedCloud, type ScriptedTurn, type SeenRequest } from "../tab/scripted-cloud.ts";
 
@@ -39,7 +42,7 @@ test("every host registers the nine robot tools, in the schema's order, right af
 
 test("the tools' schemas carry the enums and bounds the model is told", () => {
   const tool = (name: string) => agentRegistry(async () => undefined, {}).snapshot().tools().find((t) => t.tool.name === name)!.tool.parameters as { properties: Record<string, { enum?: unknown[]; minimum?: number; maximum?: number; maxLength?: number }>; required?: string[] };
-  assert.deepEqual(tool("set_color").properties.part!.enum, ["torso", "legs", "front_legs", "back_legs", "all"]);
+  assert.deepEqual(tool("set_color").properties.part!.enum, ["all", "torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "arms", "wings", "eyes", "jaw", "belly", "plates", "horns", "spikes", "decoration"]);
   assert.deepEqual(tool("set_color").properties.color!.enum, ["red", "orange", "yellow", "green", "blue", "purple", "pink", "white", "black", "gray", "brown"]);
   assert.deepEqual(tool("set_color").required, ["part", "color"], "argument order: part, color");
   assert.deepEqual(tool("set_legs").properties.pairs!.enum, [2, 3]);
@@ -153,4 +156,59 @@ test("do(skill) reads the skills that came home from home/skills.json: a skill i
   await single.ask("walk");
   assert.equal(single.state().skill, "walk", "a run with only home/policy.json has the one skill, walk");
   await single.close();
+});
+
+const DINO_BODY = { name: "dino", tag_list: ["torso", "head", "neck", "tail", "legs", "front_legs", "back_legs", "eyes", "plates"], legs: 4 };
+const withBody = (dir: string) => { mkdirSync(join(dir, "robot"), { recursive: true }); writeFileSync(join(dir, "robot/body.json"), JSON.stringify(DINO_BODY)); };
+
+test("on a robot built from code the look tools work on its tags through the real tools, the shape tools refuse with the one sentence, and the first edit takes the body's name", async () => {
+  const r = await rig([
+    { call: { name: "set_color", arguments: { part: "plates", color: "orange" } } },
+    { call: { name: "set_color", arguments: { part: "wings", color: "red" } } },
+    { call: { name: "resize", arguments: { part: "leg_length", factor: 1.2 } } },
+    { text: "Done." },
+  ], withBody);
+  await r.ask("paint the plates orange");
+  const [a, b, c] = await r.results();
+  assert.equal(a!.text, `The plates are now orange. ${LOOKS_ONLY}`);
+  assert.equal(r.state().look.tags?.plates, "orange");
+  assert.equal(r.state().name, "dino", "the name the body file gave it");
+  assert.equal(b!.error, true);
+  assert.match(b!.text, /^Not done: this robot has no wings; its parts are: whole robot, torso, head, neck, tail, legs, front legs, back legs, eyes, plates\.$/);
+  assert.equal(c!.error, true);
+  assert.equal(c!.text, "Not done: this robot is built from code (robot/body.mjs), so its size, legs and shape change by editing that file, not with this tool.");
+  await r.close();
+});
+
+test("build_robot puts the helper files in the workspace, says there is no robot yet, then reports what the page found; MuJoCo's error comes back as the tool result", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "build-robot-"));
+  try {
+    const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+    const sha = (t: string) => Promise.resolve(createHash("sha256").update(t).digest("hex"));
+    const first = await buildRobot(env as never, ctx as never, { sha256: sha });
+    assert.equal(first.isError, false);
+    assert.match(first.text, /^No robot is built yet\. The helper files are in place \(robot\/lib\.mjs, robot\/build\.mjs, robot\/examples\/dog\.mjs, robot\/examples\/dino\.mjs\)\. Write robot\/body\.mjs/);
+    for (const [path, content] of Object.entries(ROBOT_TEMPLATES)) assert.equal(readFileSync(join(dir, "robot", path), "utf8"), content, path);
+    assert.deepEqual(await provisionRobotFiles(env as never, ctx as never), [], "nothing to write the second time");
+    writeFileSync(join(dir, "robot/body.xml"), "<mujoco/>");
+    writeFileSync(join(dir, "robot/body.json"), JSON.stringify(DINO_BODY));
+    const xmlSha = await sha("<mujoco/>");
+    writeFileSync(join(dir, "robot/build.json"), JSON.stringify({ sha: xmlSha, ok: true, errors: [], warnings: ["it is leaning after 3 s at its stand angles (up 0.7)"], report: { pieces: 32, joints: 18, motors: 8, mass_kg: 10.99, settled_height_m: 0.389, tags: ["torso", "legs"] } }));
+    const built = await buildRobot(env as never, ctx as never, { sha256: sha, timeoutMs: 200, sleep: async () => undefined });
+    assert.equal(built.isError, false);
+    assert.equal(built.text, "Built dino: 32 pieces, 8 motors, 10 spring joints, 10.99 kg, stands 0.389 m high. Tags: torso, legs. Warning: it is leaning after 3 s at its stand angles (up 0.7)");
+    writeFileSync(join(dir, "robot/build.json"), JSON.stringify({ sha: xmlSha, ok: false, errors: ["MuJoCo: Error: XML Error: Schema violation: unrecognized attribute 'sizee' in element geom"], warnings: [] }));
+    const bad = await buildRobot(env as never, ctx as never, { sha256: sha, timeoutMs: 200, sleep: async () => undefined });
+    assert.equal(bad.isError, true);
+    assert.equal(bad.text, "Not built: MuJoCo: Error: XML Error: Schema violation: unrecognized attribute 'sizee' in element geom");
+    writeFileSync(join(dir, "robot/build.json"), JSON.stringify({ sha: "an older body", ok: true, errors: [], warnings: [], report: { pieces: 1, joints: 1, motors: 1, mass_kg: 1, settled_height_m: 1, tags: [] } }));
+    const stale = await buildRobot(env as never, ctx as never, { sha256: sha, timeoutMs: 50, sleep: async () => new Promise((r) => setTimeout(r, 20)) });
+    assert.match(stale.text, /^Written, but not checked: the creature page did not report on this body within 20 s/, "a report for another body is not this body's");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the templates the tool writes are what 04-walks-home/body holds (robot-templates.ts is generated: run scripts/gen-robot-templates.mjs)", async () => {
+  // @ts-expect-error: a plain .mjs script, without types
+  const { generated } = await import("../scripts/gen-robot-templates.mjs");
+  assert.equal(readFileSync(new URL("../robot-templates.ts", import.meta.url), "utf8"), generated);
 });

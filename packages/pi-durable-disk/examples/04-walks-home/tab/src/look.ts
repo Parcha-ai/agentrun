@@ -11,14 +11,19 @@ export interface ViewLook {
   legs: (string | null)[];
   shape: { torso: ShapeKind; legs: ShapeKind };
   face: FaceKind;
+  /** A body written as code: CSS colour and shape per tag (the last tag of a piece that has an entry wins, then `all`); absent on the preset bodies. */
+  byTag?: Record<string, string>;
+  shapeByTag?: Record<string, ShapeKind>;
 }
 
 export const DEFAULT_LOOK: ViewLook = { torso: null, legs: [null, null, null], shape: { torso: 'boxy', legs: 'round' }, face: 'none' };
 
 /** The look a robot state asks for: the named colours become CSS, everything else is copied. `names` is robot-model.ts's COLOR_HEX. */
-export function viewLook(state: { look: { torso: string | null; legs: (string | null)[]; shape: { torso: ShapeKind; legs: ShapeKind }; face: FaceKind } }, names: Readonly<Record<string, string>>): ViewLook {
+export function viewLook(state: { look: { torso: string | null; legs: (string | null)[]; shape: { torso: ShapeKind; legs: ShapeKind }; face: FaceKind; tags?: Record<string, string | null>; shapes?: Record<string, ShapeKind> } }, names: Readonly<Record<string, string>>): ViewLook {
   const hex = (c: string | null) => (c === null ? null : names[c] ?? null);
-  return { torso: hex(state.look.torso), legs: state.look.legs.map(hex), shape: { ...state.look.shape }, face: state.look.face };
+  const byTag: Record<string, string> = {};
+  for (const [tag, c] of Object.entries(state.look.tags ?? {})) { const h = hex(c); if (h) byTag[tag] = h; }
+  return { torso: hex(state.look.torso), legs: state.look.legs.map(hex), shape: { ...state.look.shape }, face: state.look.face, ...(state.look.tags ? { byTag } : {}), ...(state.look.shapes ? { shapeByTag: { ...state.look.shapes } } : {}) };
 }
 
 export const sameLook = (a: ViewLook, b: ViewLook): boolean => JSON.stringify(a) === JSON.stringify(b);

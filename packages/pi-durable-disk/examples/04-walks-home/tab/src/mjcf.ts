@@ -38,6 +38,8 @@ export interface Built {
   standPose: number[];
   /** Torso centre height that puts the feet on the ground in the standing pose. */
   standHeight: number;
+  /** A body the agent wrote as code (codebody.ts): `jointNames` are its motor joints (the ones a policy drives); the body may have more joints (springs: a tail, a neck), so the simulation looks the motors' places up by name. */
+  code?: boolean;
 }
 
 const f = (n: number) => String(Math.round(n * 1e6) / 1e6);

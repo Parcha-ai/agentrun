@@ -9,7 +9,7 @@ import { legOfGeomBody, pairColors } from './colors.ts';
 import { DEFAULT_LOOK, drawFace, sameLook, type FaceKind, type ViewLook } from './look.ts';
 
 /** A drawn part of the creature, kept so a new look can recolour or reshape it without rebuilding the simulation. */
-interface Part { mesh: THREE.Mesh; role: 'torso' | 'leg' | 'foot' | 'other'; pair: number; leg: 'thigh' | 'shin'; size: [number, number, number]; base: THREE.Color; geo: THREE.BufferGeometry }
+interface Part { mesh: THREE.Mesh; role: 'torso' | 'leg' | 'foot' | 'other'; pair: number; leg: 'thigh' | 'shin'; size: [number, number, number]; base: THREE.Color; geo: THREE.BufferGeometry; /** A code body's tags for this piece (body.json), or undefined on a preset body. */ tags?: string[]; type: number }
 
 const GEOM = { plane: 0, hfield: 1, sphere: 2, capsule: 3, ellipsoid: 4, cylinder: 5, box: 6 } as const;
 
@@ -94,6 +94,9 @@ export class View {
   private hemi!: THREE.HemisphereLight;
   private floor!: THREE.Mesh;
   private hero = false;
+  /** A code body's piece names to tags (robot/body.json): set before setSim; null on a preset body. */
+  private tagMap: Record<string, string[]> | null = null;
+  private faceTag = 'head';
   /** A soft contact shadow under the robot (hero look): the directional shadow alone is faint on a dark floor. */
   private blob: THREE.Mesh | null = null;
   /** The robot's size as a radius in metres, and the camera's direction from it: what the framing keeps the whole robot inside the pane with. */
@@ -170,6 +173,12 @@ export class View {
     return this.lite ? new THREE.MeshLambertMaterial({ color: p.color, map: p.map }) : new THREE.MeshStandardMaterial(p);
   }
 
+  /** The tags of a body written as code, by piece name (null for a preset body), and the tag its face is drawn on. Takes effect at the next setSim. */
+  setTags(tags: Record<string, string[]> | null, faceTag = 'head'): void {
+    this.tagMap = tags;
+    this.faceTag = faceTag;
+  }
+
   /** Rebuild the meshes for a (new) sim. */
   setSim(sim: Sim): void {
     // a part whose looks swapped its geometry (round torso, boxy legs) still owns the original: both are released
@@ -199,7 +208,8 @@ export class View {
       else { this.meshes.push(new THREE.Mesh()); continue; }
       const c = [0, 1, 2, 3].map((k) => model.geom_rgba[4 * g + k]);
       // a leg's capsules take their pair's colours (the same table the sketch draws with); feet, the torso and the terrain keep the MJCF's own
-      const leg = type === GEOM.capsule ? legOfGeomBody(sim.mj, model, model.geom_bodyid[g]) : null;
+      const geomName = this.tagMap ? (sim.mj.mj_id2name(model, sim.mj.mjtObj.mjOBJ_GEOM.value, g) ?? '') : '';
+      const leg = !this.tagMap && type === GEOM.capsule ? legOfGeomBody(sim.mj, model, model.geom_bodyid[g]) : null;
       const bodyName = model.geom_bodyid[g] > 0 ? (sim.mj.mj_id2name(model, sim.mj.mjtObj.mjOBJ_BODY.value, model.geom_bodyid[g]) ?? '') : '';
       const color = leg ? new THREE.Color(pairColors(leg.pair)[leg.part]) : new THREE.Color(c[0], c[1], c[2]);
       const mat = this.material({ color, roughness: 0.6, metalness: 0.05 });
@@ -209,7 +219,7 @@ export class View {
       this.scene.add(mesh);
       this.meshes.push(mesh);
       if (model.geom_bodyid[g] > 0) this.bodyMeshes.push(mesh); // the creature, not the terrain
-      this.parts.push({ mesh, role: leg ? 'leg' : type === GEOM.box && bodyName === 'torso' ? 'torso' : type === GEOM.sphere && model.geom_bodyid[g] > 0 ? 'foot' : 'other', pair: leg?.pair ?? 0, leg: leg?.part ?? 'thigh', size: [s[0], s[1], s[2]], base: color.clone(), geo });
+      this.parts.push({ mesh, role: leg ? 'leg' : type === GEOM.box && bodyName === 'torso' ? 'torso' : type === GEOM.sphere && model.geom_bodyid[g] > 0 ? 'foot' : 'other', pair: leg?.pair ?? 0, leg: leg?.part ?? 'thigh', size: [s[0], s[1], s[2]], base: color.clone(), geo , type, ...(this.tagMap ? { tags: this.tagMap[geomName] ?? ['decoration'] } : {}) });
     }
     this.applyLook();
     this.draw(true);
@@ -241,9 +251,36 @@ export class View {
     this.face = null;
   }
 
+  /** A piece of a body written as code: colour and shape by its tags (the last tag with an entry wins, then `all`), the MJCF's own colour where nothing was asked. */
+  private applyTagLook(p: Part, look: ViewLook): void {
+    const mat = p.mesh.material as THREE.MeshStandardMaterial | THREE.MeshLambertMaterial;
+    const pick = <T,>(table: Record<string, T> | undefined): T | undefined => {
+      if (!table) return undefined;
+      for (let i = p.tags!.length - 1; i >= 0; i--) { const v = table[p.tags![i]!]; if (v !== undefined) return v; }
+      return table.all;
+    };
+    const color = pick(look.byTag);
+    mat.color.copy(color ? new THREE.Color(color) : p.base);
+    const shape = pick(look.shapeByTag);
+    const [a, b, c] = p.size;
+    let want: THREE.BufferGeometry = p.geo;
+    if (shape === 'round' && p.type !== GEOM.sphere && p.type !== GEOM.ellipsoid) {
+      const half = p.type === GEOM.box ? [a, b, c] : p.type === GEOM.capsule || p.type === GEOM.cylinder ? [a, a, b + (p.type === GEOM.capsule ? a : 0)] : [a, b, c];
+      want = new THREE.SphereGeometry(1, 24, 16).scale(half[0]! * 1.12, half[1]! * 1.12, half[2]! * 1.12);
+    } else if (shape === 'boxy' && p.type !== GEOM.box) {
+      const half = p.type === GEOM.capsule || p.type === GEOM.cylinder ? [a, a, b + (p.type === GEOM.capsule ? a : 0)] : p.type === GEOM.ellipsoid ? [a, b, c] : [a, a, a];
+      want = new THREE.BoxGeometry(2 * half[0]!, 2 * half[1]!, 2 * half[2]!);
+    }
+    if (p.mesh.geometry !== want) {
+      if (p.mesh.geometry !== p.geo) p.mesh.geometry.dispose();
+      p.mesh.geometry = want;
+    }
+  }
+
   private applyLook(): void {
     const look = this.look;
     for (const p of this.parts) {
+      if (p.tags) { this.applyTagLook(p, look); continue; }
       const mat = p.mesh.material as THREE.MeshStandardMaterial | THREE.MeshLambertMaterial;
       if (p.role === 'torso') {
         mat.color.copy(look.torso ? new THREE.Color(look.torso) : p.base);
@@ -257,9 +294,9 @@ export class View {
       }
     }
     // the face: a drawing on a plane at the torso's nose
-    const torso = this.parts.find((p) => p.role === 'torso');
+    const torso = this.parts.find((p) => p.tags ? p.tags.includes(this.faceTag) : p.role === 'torso') ?? this.parts.find((p) => p.tags?.includes('torso')); // a code body's face goes on its head piece, else its torso
     if (look.face === 'none' || !torso) { this.dropFace(); return; }
-    const noseX = torso.size[0] * (look.shape.torso === 'round' ? 1.14 : 1) + 0.002; // the torso's nose moves when its shape does, so the face follows even when it stays the same face
+    const noseX = torso.size[0] * (torso.tags ? 1.02 : look.shape.torso === 'round' ? 1.14 : 1) + 0.002; // the torso's nose moves when its shape does, so the face follows even when it stays the same face
     if (this.face?.kind === look.face && this.face.mesh.parent === torso.mesh) { this.face.mesh.position.x = noseX; return; }
     this.dropFace();
     const size = 128, c = document.createElement('canvas');
