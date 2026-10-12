@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkinFromData, homecomingFromData, netFromData, routingFromData } from "../selftools.ts";
-import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml, toolSummary } from "../selftools-view.ts";
+import { checkinFromData, homecomingFromData, netFromData, routingFromData } from "../robot-events.ts";
+import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml, toolSummary } from "../robot-view.ts";
 import type { ToolRow } from "../types.ts";
 
 // What the stage says about the tab's own events: only the events' fields. Nothing here is a number the event did not carry.

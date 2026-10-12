@@ -1,7 +1,7 @@
 // The stage's link to the agent's tab. The stage opens the tab with window.open and keeps the handle; the tab posts its events (`{source: "walks-home-tab", type, run, ...}`) to its opener with the
 // stage's origin as the target, never "*"; the stage accepts a message only from the tab's origin AND the window it holds. It is all in-browser, so it keeps working when the network is off.
 // After a stage reload the handle is gone: window.open("", name) returns the same tab without navigating it (window.open(url, name) would reload the tab and lose its state).
-import { checkinFromData, homecomingFromData, homecomingLoadedFromData, netFromData, parseTabMessage, routingFromData, toolsFromData } from "../selftools.ts";
+import { checkinFromData, homecomingFromData, homecomingLoadedFromData, netFromData, parseTabMessage, routingFromData, toolsFromData } from "../robot-events.ts";
 import type { ShowEvent } from "../types.ts";
 
 /** The tab's URL with the stage's own origin as `stage=`: the page posts to its opener with exactly that origin. Only http and https; a `stage` that is not ours is replaced. */

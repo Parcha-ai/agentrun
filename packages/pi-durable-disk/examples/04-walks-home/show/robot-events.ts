@@ -1,4 +1,4 @@
-// The tab's own events for the self-tools beats, as the stage reads them. Pure. D3's 03 page tells the stage what happens in three ways: a DOM event `walkshome:<type>` on the page, the same
+// The tab's own events for the robot demo beats, as the stage reads them. Pure. D3's 03 page tells the stage what happens in three ways: a DOM event `walkshome:<type>` on the page, the same
 // as a message `{source: "walks-home-tab", type, run, ...detail}` to the stage that opened it, and `brain` entries in the transcript (chat-items.ts reads those). The stage never guesses:
 // a field an event did not carry is null, a field of the wrong type is null, and an event that lacks what it is about is nothing.
 import type { Checkin, Homecoming, Net, Routing, ToolRow } from "./types.ts";

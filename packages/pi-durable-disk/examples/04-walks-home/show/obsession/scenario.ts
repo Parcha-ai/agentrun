@@ -106,17 +106,17 @@ export class ScenarioObsession {
   private trainEnd: number;
   /** The brain swap rehearsal: "ready" (the 03 page loads the trained model and it becomes the agent's brain) or "fail" (the load fails and the agent keeps its brain); null: no brain entries at all. */
   private brainMode: "ready" | "fail" | null;
-  /** The self-tools rehearsal: the tab's own events (net, decisions, tool calls, check-in, homecoming bytes), in the shapes the tab emits. Its values are scripted. */
-  private selftools: boolean;
+  /** The robot rehearsal: the tab's own events (net, decisions, tool calls, check-in, homecoming bytes), in the shapes the tab emits. Its values are scripted. */
+  private robot: boolean;
   /** The swap has happened: what the viewer types from now on is answered by the trained model, as the 03 page would. */
   private swapped = false;
   private trained: ObsessionTrain;
 
   /** `modelDisk`: a directory laid out by the tab's make-model-disk script; served to the tab once the scripted training is over. */
   /** `gate`: the teach step stops at D1's real-person gate (a rehearsal of the stop). `fallback`: the train half is the real run where the clamp was eased. */
-  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean; brain?: "ready" | "fail"; selftools?: boolean } = {}) {
+  constructor(options: { origin?: number; modelDisk?: string; gate?: boolean; fallback?: boolean; think?: boolean; brain?: "ready" | "fail"; robot?: boolean } = {}) {
     this.gate = options.gate === true;
-    this.selftools = options.selftools === true && options.brain === "ready";
+    this.robot = options.robot === true && options.brain === "ready";
     this.brainMode = options.brain ?? null;
     this.find = findSchedule({ think: options.think === true });
     this.asked = options.think ? ((FIND_THINK.find((l) => l.event === "topic")?.topic as string | undefined) ?? "its topic") : "the Golden Gate Bridge";
@@ -285,12 +285,12 @@ export class ScenarioObsession {
       this.at(doneAt + 1, () => this.brainEntry("loading"));
       this.at(doneAt + 16, () => this.brainEntry(this.brainMode === "fail" ? "failed" : "ready"));
       this.at(doneAt + 17, () => this.agent(this.brainMode === "fail" ? "The small model did not load, so I am still thinking with my own brain. Ask me anything." : "I'm back in your browser, and my brain is now the small model I trained. Ask me anything."));
-      if (this.selftools) this.selftoolsBeats(doneAt);
+      if (this.robot) this.robotBeats(doneAt);
     }
   }
 
   /** The beats after the swap, scripted: the bytes the homecoming put on the wire, the tab going offline (a rule picks the model in the tab) and writing code with its tools, then back online (a check-in, and Jev picks the cloud). */
-  private selftoolsBeats(doneAt: number): void {
+  private robotBeats(doneAt: number): void {
     const at = (s: number, e: ShowEvent) => this.at(s, () => this.emit({ ...e, at: this.clock } as ShowEvent));
     const decision = (brain: "tab-local" | "cloud", reason: string, jev: number | null): ShowEvent => ({
       t: "routing",

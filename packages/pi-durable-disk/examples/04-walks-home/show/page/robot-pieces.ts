@@ -1,7 +1,7 @@
 // The robot demo's stage pieces, mounted by any stage page that has their elements (obsession/page and the v2 page): the net pill, the decision card, the check-in and homecoming lines, the
-// robot-change card and the tool strip (the agent's tab's own events: selftools-view.ts), the tab link (window.open, page/tab-link.ts) and the eight tiles with the one robot (threads-view.ts,
+// robot-change card and the tool strip (the agent's tab's own events: robot-view.ts), the tab link (window.open, page/tab-link.ts) and the eight tiles with the one robot (threads-view.ts,
 // D2's per-skill files read from the run's disk). A page that lacks an element skips that piece; with no tab and no threads every piece is empty.
-import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../selftools-view.ts";
+import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../robot-view.ts";
 import { LandingDriver, threadsHtml } from "../threads-view.ts";
 import type { Note, ShowState } from "../types.ts";
 import { apiUrl } from "./api-base.ts";
@@ -121,7 +121,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
         pill.title = net.title;
       }
     }
-    const side = el("selftools");
+    const side = el("robotside");
     if (side) side.innerHTML = card + lines.map((l, i) => (l === null ? "" : `<div class="line${i === 0 && state.checkin?.phase === "failed" ? " bad" : ""}">${esc(l)}</div>`)).join("");
     const strip = el("toolstrip");
     if (strip) {

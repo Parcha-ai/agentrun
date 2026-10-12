@@ -11,7 +11,7 @@
 // (SHOW_PIPE_ROLE=view) is refused both, with the pipe's own reason.
 import { ChatView } from "../../03-tab-to-cloud/tab/chat-view.ts";
 import { brainFromItem, turnsFromItems } from "./chat-items.ts";
-import { checkinFromItem, routingFromItem, toolsFromItems } from "./selftools.ts";
+import { checkinFromItem, routingFromItem, toolsFromItems } from "./robot-events.ts";
 import { untag, type PipeFrame, type Tagged } from "../../03-tab-to-cloud/wire.ts";
 import { parseDecision } from "./decision.ts";
 import { emptyState, reduce } from "./reduce.ts";
@@ -309,7 +309,7 @@ export class PipeTranslator {
       this.brainSeen.add(key);
       out.push({ t: "brain", at: this.at(), brain });
     }
-    // The self-tools beats: each decision and each check-in of the transcript once, and the current task's tool calls whenever they change.
+    // The robot demo beats: each decision and each check-in of the transcript once, and the current task's tool calls whenever they change.
     for (const item of items) {
       const r = routingFromItem(item);
       if (r !== null && !this.entriesSeen.has(`decision|${r.id}`)) {

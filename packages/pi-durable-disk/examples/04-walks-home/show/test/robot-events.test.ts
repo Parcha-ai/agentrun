@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkinFromData, homecomingFromData, homecomingLoadedFromData, netFromData, parseTabMessage, routingFromData, toolsFromItems } from "../selftools.ts";
+import { checkinFromData, homecomingFromData, homecomingLoadedFromData, netFromData, parseTabMessage, routingFromData, toolsFromItems } from "../robot-events.ts";
 import { emptyState, fold, reduce } from "../reduce.ts";
 import type { ShowEvent } from "../types.ts";
 
-// The tab's own events for the self-tools beats (D3's d3/check-in): DOM events `walkshome:<type>` and the same as messages {source: "walks-home-tab", type, run, ...detail}. The shapes
+// The tab's own events for the robot demo beats (D3's d3/check-in): DOM events `walkshome:<type>` and the same as messages {source: "walks-home-tab", type, run, ...detail}. The shapes
 // below are the ones its code builds (announce() in tab/main.ts, brainEvent() in brain-router.ts, planHomecoming in the 04 tab); a field a message did not carry is null here.
 const DECISION = { event: "brain.decision", brain: "tab-local", answering: "the model in this tab", reason: "a simple task the model in this tab handles", confidence: 0.99, decidedBy: "jev", ms: 412, probabilities: { local: 0.99, cloud: 0.01 } };
 const RULE = { event: "brain.decision", brain: "tab-local", answering: "the model in this tab", reason: "offline: the model in this tab is the only brain", confidence: null, decidedBy: "rule", ms: 0 };
@@ -115,7 +115,7 @@ test("the fold: net, check-in, homecoming and tools replace what they held; a ro
 // ---- The transcript's side: D3's ChatView items for the decision (stage "decision"), the check-in (stage "home") and the tool calls reach the stage's state through the real pipe feed.
 import { tag } from "../../../03-tab-to-cloud/wire.ts";
 import { PipeTranslator } from "../pipe-feed.ts";
-import { checkinFromItem, routingFromItem } from "../selftools.ts";
+import { checkinFromItem, routingFromItem } from "../robot-events.ts";
 
 const DECISION_ITEM = { kind: "brain", stage: "decision", id: "31", text: "the model in this tab answers this one: a simple task the model in this tab handles (Jev 99%).", data: DECISION };
 const HOME_ITEM = { kind: "brain", stage: "home", id: "44", text: "Checked in: this run is back on the server, with 3 files written offline. The same conversation goes on, answered by the cloud model.", data: { head: "h-14", files: 3, changes: 5, ms: 1204 } };
@@ -155,11 +155,11 @@ test("the pipe feed says each decision and check-in once, and the current task's
   assert.deepEqual(s.tools.map((t) => t.output), ["wrote 14 bytes"]);
 });
 
-// ---- The rehearsal: SHOW_OBSESSION_SELFTOOLS=1 plays the beats' events in the shapes the tab emits, so the pieces can be seen and checked without a tab. Its values are scripted.
+// ---- The rehearsal: SHOW_OBSESSION_ROBOT=1 plays the beats' events in the shapes the tab emits, so the pieces can be seen and checked without a tab. Its values are scripted.
 import { ScenarioObsession } from "../obsession/scenario.ts";
 
-test("the self-tools rehearsal plays: homecoming bytes, offline with a rule's decision and tool calls, back online with a check-in and a cloud decision; without the option none of it", () => {
-  const sc = new ScenarioObsession({ origin: 0, think: true, brain: "ready", selftools: true });
+test("the robot rehearsal plays: homecoming bytes, offline with a rule's decision and tool calls, back online with a check-in and a cloud decision; without the option none of it", () => {
+  const sc = new ScenarioObsession({ origin: 0, think: true, brain: "ready", robot: true });
   sc.begin();
   sc.advance(900_000);
   const e = sc.events;
@@ -185,7 +185,7 @@ test("the self-tools rehearsal plays: homecoming bytes, offline with a rule's de
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const REAL = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/self-tools-real-run.json", import.meta.url)), "utf8")) as { events: { type: string; detail: Record<string, unknown> }[]; items: unknown[] };
+const REAL = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/robot-real-run.json", import.meta.url)), "utf8")) as { events: { type: string; detail: Record<string, unknown> }[]; items: unknown[] };
 
 test("every event of the real run is read: its decisions by their own fields, its check-in with the numeric head", () => {
   const decisions = REAL.events.filter((e) => e.type === "brain").map((e) => routingFromData(e.detail));
