@@ -149,6 +149,8 @@ let trying: { pose: Pose; settleUntil: number | null } | null = null;
 let takenAttempt: string | null = null;
 /** A learned request whose skill is not playing yet (the manifest or the skill's policy file is still on its way): it starts when the skill does. */
 let pendingRequest: AttemptRequest | null = null;
+/** After a walk to the flag is over, the robot comes to rest in its standing pose with no policy until this simulated time (the hero look then stops simulating it). */
+let settling: number | null = null;
 
 function toast(text: string) {
   const t = $('toast');
@@ -633,10 +635,18 @@ function answerAttempt(a: Attempt, ending: Ending | null) {
   } else {
     if (ending === 'reached') { app.view.reachFlag(); post('reached-flag', { ...report }); toast('reached the flag'); }
     else post('ran', { ...report, ending });
-    // a forward skill is a walk to the flag: once it is over (there, or not getting there) it stands, as the agent's state line then says (command 0 is "stand" to a policy; the walk's range starts
-    // at 0). One cut short by another skill or request leaves the command to what takes over.
-    if (ending && FORWARD_SKILLS.includes(report.skill)) { ($('command') as HTMLInputElement).value = '0'; applyCommand(); }
+    // a forward skill is a walk to the flag: once it is over (there, or not getting there) the robot stops, as the agent's state line then says. Its policy is dropped rather than told a command of
+    // 0, which a sprint's range ([1.0, 1.4]) does not reach. One cut short by another skill or request leaves the robot to what takes over.
+    if (ending && FORWARD_SKILLS.includes(report.skill)) standStill();
   }
+}
+
+/** A walk to the flag is over: the skill stops (its policy is dropped, whatever its command range) and the robot settles into its standing pose for a moment before the hero look stops simulating it. */
+function standStill() {
+  setPolicy(null, 'none');
+  skillNow = null;
+  settling = app.sim.time + SETTLE_S;
+  updateLabel();
 }
 
 /** An untrained try is over: the robot is put back exactly where and how it stood. */
@@ -1032,20 +1042,21 @@ let lastStillDraw = 0;
 
 function tick(now: number) {
   requestAnimationFrame(tick);
-  if (!economy.frame(now, pointerDown || cameraDown, !!app.policy || !!trying)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
+  if (!economy.frame(now, pointerDown || cameraDown, !!app.policy || !!trying || settling !== null)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
   // A hitch (GC, a busy machine) is made up by stepping more next frame, up to half a second of simulation, so the creature
   // never falls behind the wall clock; beyond that the backlog is dropped. Physics is cheap (about 1 ms per control step).
   const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
   app.last = now;
   const t0 = performance.now();
   // the hero look, or ?still=1 (the phone's pane), with no policy stands in its pose: no physics until a skill plays (the untrained brain's random moves would topple it)
-  if (app.running && !((app.hero || STILL) && !app.policy && !trying)) {
+  if (app.running && !((app.hero || STILL) && !app.policy && !trying && settling === null)) {
     app.acc += dt;
     let n = 0;
     while (app.acc >= CONTROL_DT && n < MAX_STEPS_PER_FRAME) {
       app.sim.step(trying ? null : app.policy); // an untrained try: the brain that has learned nothing drives, whatever skill is loaded
       if (attempt) { const [x, y] = app.sim.torsoPos(); const e = attempt.sample(app.sim.time, x, y, app.sim.uprightness()); if (e) answerAttempt(attempt, e); }
       if (trying?.settleUntil != null && app.sim.time >= trying.settleUntil) endTry();
+      if (settling !== null && (app.policy || app.sim.time >= settling)) { if (!app.policy && app.sim.uprightness() < 0.3) app.sim.standUp(); settling = null; } // at rest (on its feet, if the run ended in a fall), or a skill took over
       const q = app.sim.data.qpos;
       app.stats.step(app.sim.time, Number.isFinite(q[0] + q[1] + q[2] + q[3] + q[4]), app.expectReset);
       app.expectReset = false;
@@ -1075,7 +1086,7 @@ function tick(now: number) {
   }
   const t1 = performance.now();
   // still and skill-less, nothing moves: a few frames a second keep a change to the robot's looks on screen at a fraction of the work (the phone's main thread also runs the model's reads)
-  if (!(STILL && !app.policy && !trying) || now - lastStillDraw > 250) { app.view.draw(); lastStillDraw = now; }
+  if (!(STILL && !app.policy && !trying && settling === null) || now - lastStillDraw > 250) { app.view.draw(); lastStillDraw = now; }
   if (app.clean) showDistance();
   hud();
   app.stats.frame(now, t1 - t0, performance.now() - t1);

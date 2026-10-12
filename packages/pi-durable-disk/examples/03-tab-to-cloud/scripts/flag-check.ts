@@ -81,6 +81,13 @@ try {
   const manifest = JSON.parse(readFileSync(join(trace, "home/skills.json"), "utf8")) as { default?: string; skills: Record<string, { policy: string; command: number }> };
   for (const e of Object.values(manifest.skills)) copyFileSync(join(trace, "home", e.policy), join(work, "held", e.policy));
   if (!manifest.skills.walk) throw new Error("the folder's skills have no walk");
+  // a sprint, when the folder has none (without TOOL=1): the walk's own network with a sprint's command range, which does not reach 0 (step 6: it must stop all the same when its run is over)
+  if (!tool && !manifest.skills.sprint) {
+    const walkFile = JSON.parse(readFileSync(join(trace, "home", manifest.skills.walk.policy), "utf8")) as Record<string, unknown>;
+    writeFileSync(join(work, "held/skills/sprint.json"), JSON.stringify({ ...walkFile, command_range: [1.0, 1.4] }));
+    manifest.skills.sprint = { policy: "skills/sprint.json", command: 1.0 };
+    writeFileSync(join(work, "held/skills.json"), JSON.stringify({ ...manifest, skills: { ...manifest.skills, sprint: { policy: "skills/sprint.json", command: 1.0, label: "sprint" } } }));
+  }
   server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/", ...(process.env.CREATURE_DIR ? ["--creature-dir", process.env.CREATURE_DIR] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
   let link = "";
   server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
@@ -255,6 +262,16 @@ try {
     const cutRun = await answerFor(cutWalk.id);
     const after = { attempt: await walks("w.attempt()"), command: await walks<number>("w.app.sim.command") };
     ok(`${other} asked for during the walk's run: the run is answered as ${other} takes over, and ${other} plays at its own command`, !!cutRun && cutRun.learned && !cutRun.reached_flag && after.attempt === null && Math.abs(after.command - manifest.skills[other]!.command) < 1e-9, { cutRun, after });
+  }
+  // 6. a forward skill whose policy's command range does not reach 0 (a sprint, [1.0, 1.4]) stops too once its run is answered: there, short of it, or fallen
+  if (!tool && manifest.skills.sprint) {
+    const sprintAsk = await ask("sprint", true);
+    const sprinted = await answer(sprintAsk.id, 24000);
+    await sleep(2000); // it comes to rest
+    const s0 = await torso();
+    await sleep(3000);
+    const s1 = await torso();
+    ok("a sprint's run is answered, and then it stops though its command range does not reach 0: no skill playing, under 15 cm in 3 s", !!sprinted.attempt && sprinted.attempt.learned && s1.skill === null && Math.hypot(s1.x - s0.x, s1.y - s0.y) < 0.15, { sprinted: sprinted.attempt, s0, s1 });
   }
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);
