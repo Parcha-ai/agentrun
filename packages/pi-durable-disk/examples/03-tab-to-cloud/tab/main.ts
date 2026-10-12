@@ -1053,7 +1053,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
       url: new URL(params.get("model") ?? "/models/qwen35-0.8b-robot-v5-Q4_0-00001-of-00007.gguf", location.href).href,
       threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4),
       nCtx: Number(params.get("ctx")) || 2048,
-      batch: Number(params.get("batch")) || 64,
+      batch: Number(params.get("batch")) || 128, // n_batch = n_ubatch: a turn's tail (state line and user, under 128 tokens) is one batch, so its checkpoint sits where the next turn leaves it (PhoneModel.resume)
       maxTokens: 300,
       loadTimeoutMs: params.get("stall") === build ? 1 : loadTimeoutMs,
       onProgress: (loaded, total) => phoneSay(loaded < total ? `the robot's brain is downloading: ${Math.round(loaded / 1e6)} of ${Math.round(total / 1e6)} MB` : `the robot's brain is loading into memory (${build} build)`),
@@ -1128,7 +1128,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   // the tools exactly as the provider sends them (native-turn.ts), so the prefix is the turns' prefix; a shipped warm state for it is restored instead (?state=0: prefill)
   const stateUrl = params.get("state") === "0" ? undefined : new URL(params.get("state") ?? "/models/qwen35-0.8b-robot-v5-Q4_0.state.bin", location.href).href;
   model.toolsInPrompt = !signature;
-  model.stemFirst = params.get("stem") === "1"; // the exchanges-first read, on trial
+  model.stemFirst = params.get("stem") !== "0"; // the exchanges-first read (?stem=0: the warm state restored before every turn instead)
   const warm = await step("reading the tools", () => model.warm(serving.system, refine(toNativeTools(tools)), stateUrl ? { url: stateUrl, onSkip: (why) => state.phone!.log.push(`no warm state restored: ${why}`) } : undefined));
   if (warm.restored) state.phone!.log.push(`warm state restored: ${warm.restored.tokens} tokens, ${Math.round(warm.restored.bytes / 1e6)} MB in ${warm.ms} ms`);
   marks.warmMs = Math.round(performance.now() - t);

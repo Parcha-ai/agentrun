@@ -116,8 +116,8 @@ export class PhoneModel implements BrainModel {
   onTurnStart: (() => void) | undefined;
   /** False for a signature prefix (the system text lists the tools): every prompt, the warm-up's too, renders with no tools block. */
   toolsInPrompt = true;
-  /** Read a T7 window's earlier exchanges on their own before each turn (see `resume`). Off: measured in Chrome it did not yet leave the checkpoint expected. */
-  stemFirst = false;
+  /** Read a T7 window's earlier exchanges on their own before each turn (see `resume`; it needs a batch of 128 or more). Off: the warm state is restored before every turn. */
+  stemFirst = true;
   private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; loadTimeoutMs?: number; /** A turn that has not answered in this long fails, by name (default 180 s). */ turnTimeoutMs?: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
 
   constructor(llm: Llm, o: PhoneModel["o"]) {
@@ -158,13 +158,15 @@ export class PhoneModel implements BrainModel {
 
   /**
    * Before a completion: put the engine where this prompt resumes cheaply, and leave a checkpoint where the next turn's will. Qwen3.5 is hybrid: its recurrent
-   * state cannot be cut back, so llama-server resumes a prompt that leaves the engine's sequence from its last checkpoint before that point, and it checkpoints a
-   * prompt only 64 and 4 tokens before its end (n_batch 64). T7's next turn leaves this one's prompt where its state line began, some 90 tokens before the end,
-   * so neither is of use: a reloaded conversation re-read its whole prompt, system turn included (D0 measured 1,437 tokens, 169 s in desktop Chrome).
+   * state cannot be cut back, so llama-server resumes a prompt that leaves the engine's sequence from its last checkpoint before that point. At wllama's commit
+   * it takes a checkpoint at the start of a request's last batch (min(n_batch, n_ubatch + 4) tokens from the end) and 4 tokens from the end, and a request that
+   * takes one drops every earlier request's but the oldest. T7's next turn leaves this one's prompt where its state line began: with nothing there, a turn
+   * re-read its whole window (D0 measured 1,437 tokens, 169 s in desktop Chrome, on a reloaded conversation).
    * - A prompt that starts with none of the points (a window that dropped its oldest exchange, a new chat, a reload) has the warm state restored first, from the
    *   engine's cache (about 0.3 s).
-   * - The window's earlier exchanges (the prompt up to the message before the user's, T7's state line) are read on their own first, so a checkpoint sits 4 tokens
-   *   before where the next turn's prompt leaves this one: a turn then reads its newest exchange, the state line and the user, however long the window.
+   * - With `stemFirst`, the window's earlier exchanges (the prompt up to T7's state line) are read on their own first, so the turn's own request reads only its
+   *   tail (state line and user: about 66 tokens) and, with a batch of 128, takes its checkpoint where the tail begins: the next turn resumes there and reads its
+   *   newest exchange and its tail, however long the window (native llama-server, 10 turns: 161 tokens a turn, against 933 by the tenth with a restore a turn).
    */
   private async resume(prompt: string, signal: AbortSignal): Promise<void> {
     this.rewarmed = undefined;
