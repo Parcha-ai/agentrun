@@ -345,7 +345,7 @@ export class View {
     const vHalf = (this.camera.fov * Math.PI) / 360;
     const hHalf = Math.atan(Math.tan(vHalf) * this.camera.aspect);
     const half = Math.min(vHalf, hHalf);
-    const dist = (this.frameRadius * 1.0) / Math.sin(half); // the robot fills the narrower side of the pane with a little air
+    const dist = (this.frameRadius * 1.1) / Math.sin(half); // the robot fills the narrower side of the pane with a little air
     this.camera.position.copy(t).addScaledVector(dir, dist);
     this.framedAspect = this.camera.aspect;
     this.controls.update();

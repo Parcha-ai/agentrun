@@ -33,17 +33,21 @@ try {
   const ev = async (expr) => { const r = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails)); return r.result.value; };
   const inner = (expr) => ev(`document.getElementById('app').contentWindow.eval(${JSON.stringify(expr)})`);
   for (let i = 0; i < 150; i++) { if ((await inner("document.getElementById('status')?.textContent").catch(() => null)) === 'ready') break; await sleep(200); }
-  const waitEvent = async (type, since, ms = 30000) => { for (let t = 0; t < ms; t += 200) { const n = await ev(`events.slice(${since}).find(e => e.type === ${JSON.stringify(type)}) ?? null`); if (n) return n; await sleep(200); } return null; };
+  const waitEvent = async (type, since, ms = 30000) => { for (let t = 0; t < ms; t += 200) { const n = await ev(`events.slice(${since}).find(e => e.type === ${JSON.stringify(type)}) ?? null`); if (n) return n; await sleep(200); } throw new Error(`no ${type} event within ${ms} ms`); };
   const put = (path, text) => ev(`disk[${JSON.stringify(path)}] = new TextEncoder().encode(${JSON.stringify(text)})`);
   const shot = async (name) => writeFileSync(`${out}/robot-${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   const label = () => inner("document.getElementById('stateLabel').textContent");
 
+  // every corner of every part's bounding box, in the part's world place, projected through the camera: nothing of the robot may leave the view (a centre test would pass a clipped corner or a leg end)
+  const inFrame = () => inner(`(() => { const v = __walks.app.view; v.camera.updateMatrixWorld(); let worst = 0; for (const m of v.meshes) { const g = m.geometry; if (!g.attributes.position) continue; if (!g.boundingBox) g.computeBoundingBox(); const b = g.boundingBox; if (!isFinite(b.min.x) || (m.geometry.type === 'PlaneGeometry')) continue; m.updateMatrix(); const e = m.matrix.elements; for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) { const px = e[0]*x + e[4]*y + e[8]*z + e[12], py = e[1]*x + e[5]*y + e[9]*z + e[13], pz = e[2]*x + e[6]*y + e[10]*z + e[14]; const q = new (v.camera.position.constructor)(px, py, pz).project(v.camera); worst = Math.max(worst, Math.abs(q.x), Math.abs(q.y)); } } return worst; })()`);
+  const contained = async (name) => { await sleep(400); const w = await inFrame(); ok(`the whole robot (every corner of every part) is inside the view: ${name}`, w < 1.0, w); };
   const prefix = process.argv[3] ?? 'hero';
-  const size = (w, h, mobile = false) => S('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile });
+  const size = (w, h) => S('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile: false }); // not `mobile`: the harness page has no viewport meta and a mobile viewport would lay it out 980 px wide
   const snap = async (name) => { await sleep(1500); writeFileSync(`${out}/${prefix}-${name}.png`, Buffer.from((await S('Page.captureScreenshot', { format: 'png' })).data, 'base64')); console.log(`shot ${prefix}-${name}.png ${JSON.stringify(await inner('(() => { const v = __walks.app.view; return { dist: +v.camera.position.distanceTo(v.controls.target).toFixed(2), r: v.frameRadius, aspect: +v.camera.aspect.toFixed(2), hero: v.hero, body: __walks.app.bodySha.slice(0,8) }; })()').catch(() => null))}`); };
   // no skills yet: no policy (the page's untrained state), at the phone strip
-  await size(390, 340, true);
+  await size(390, 340);
   await snap('phone-strip-no-skills');
+  await contained('phone strip 390x340, no skills');
   await size(660, 760);
   await snap('laptop-no-skills');
   // what the pane must not show, and what it must say
@@ -56,7 +60,9 @@ try {
   let n = await ev('events.length');
   await put('home/policy.json', policyText);
   await waitEvent('policy-arrived', n);
-  const inFrame = () => inner(`(() => { const v = __walks.app.view, d = __walks.app.sim.data; let worst = 0; for (let g = 0; g < v.meshes.length; g++) { const m = v.meshes[g]; if (!m.geometry.attributes.position || m === v.meshes[0]) continue; const p = new (v.camera.position.constructor)(d.geom_xpos[3*g], d.geom_xpos[3*g+1], d.geom_xpos[3*g+2]).project(v.camera); worst = Math.max(worst, Math.abs(p.x), Math.abs(p.y)); } return worst; })()`);
+  const clock = await inner('__walks.app.sim.time');
+  await sleep(1500);
+  ok('once the policy has arrived the simulation runs (the robot is not frozen in its pose)', (await inner('__walks.app.sim.time')) > clock + 0.5, { clock, now: await inner('__walks.app.sim.time') });
   let robot = initialRobot(defaultDesign(2));
   for (const [tool, args] of [['set_color', { part: 'torso', color: 'blue' }], ['set_color', { part: 'legs', color: 'orange' }], ['set_face', { face: 'happy' }]]) robot = applyRobotTool(robot, tool, args).state;
   n = await ev('events.length');
@@ -64,21 +70,32 @@ try {
   await waitEvent('robot-changed', n);
   await sleep(2500);
   await snap('laptop-walking');
-  await size(390, 340, true);
+  await contained('laptop pane 660x760, walking');
+  await size(390, 340);
   await snap('phone-strip-walking');
-  await size(390, 844, true);
+  await contained('phone strip 390x340, walking');
+  await size(390, 844);
   await snap('phone-full-walking');
+  await contained('the whole phone 390x844');
+  // a long name and the stumble caption at the phone strip: two rows, never meeting
+  const longName = applyRobotTool(applyRobotTool(initialRobot(defaultDesign(2)), 'rename', { name: 'A rather long robot name for a narrow phone strip' }).state, 'resize', { part: 'leg_length', factor: 1.2 }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(longName));
+  await waitEvent('robot-changed', n);
+  await size(390, 340);
+  await sleep(800);
+  const rows = await inner(`(() => { const a = document.getElementById('robotName').getBoundingClientRect(), b = document.getElementById('stateLabel').getBoundingClientRect(); return { nameBottom: a.bottom, labelTop: b.top, labelText: document.getElementById('stateLabel').textContent, nameWidth: a.width, labelWidth: b.width, pane: innerWidth }; })()`);
+  ok('a long name and the stumble caption do not touch at 390 px (the name is on the top row, the caption wraps at the bottom)', /stumbling/.test(rows.labelText) && rows.nameBottom <= rows.labelTop && rows.nameWidth <= rows.pane - 28 && rows.labelWidth <= rows.pane - 28, rows);
   const spider = applyRobotTool(applyRobotTool(initialRobot(defaultDesign(2)), 'morph', { preset: 'spider' }).state, 'set_color', { part: 'all', color: 'red' }).state;
   n = await ev('events.length');
   await put('creature/robot.json', serializeRobot(spider));
   await waitEvent('robot-changed', n);
   await size(660, 760);
   await snap('laptop-red-spider');
-  const worst = await inFrame();
-  ok('the whole robot is inside the pane (every part projects inside the view)', worst < 0.98, worst);
-  await size(390, 236, true);
+  await contained('laptop pane 660x760, a red spider');
+  await size(390, 236);
   await snap('phone-strip-keyboard-up');
-  ok('and still with the keyboard up (a 390x236 strip)', (await inFrame()) < 0.98, await inFrame());
+  await contained('keyboard up, 390x236');
   ok('the screenshots were taken', true);
 } catch (e) {
   console.log(`FAIL ${e.message}`);
