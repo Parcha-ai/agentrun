@@ -113,7 +113,8 @@ html body #vcaptionwrap { background: none; }
   html body.v2 #badge .track { width: 100%; }
   html body.v2 #badge .memory { display: none; }
   html body #net { top: 14px; right: var(--gutter); }
-  html body #opentab, html body #spark { display: none !important; }
+  html body #spark { display: none !important; }
+  html body #opentab { left: auto; right: var(--gutter); bottom: auto; top: 44px; z-index: 9; }
   html body #decisionwrap { left: 16px; right: 16px; top: 120px; }
   html body #threads { padding: 12px 12px 56px; overflow-y: auto; }
   html body #threads[data-phase="learning"] { inset: 0; }

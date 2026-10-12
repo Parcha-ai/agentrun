@@ -83,7 +83,19 @@ try {
       expect("nothing scrolls sideways", m.scrollW <= m.innerW, m);
       expect("the composer is in view, 44 px tall with 16 px type (a phone zooms anything smaller)", m.inputBottom <= m.innerH && m.inputH >= 44 && m.inputFont >= 16, m);
       expect("the network pill does not sit on the place's words", m.net === null || m.net.left >= m.badge.right - 1 || m.net.top >= m.badge.bottom - 1, m);
+      // Every tile can be read: the pane scrolls, so each tile is scrolled into view in turn and must sit inside the pane, with none of its text cut off.
+      const rows = JSON.parse(await tab.eval(`JSON.stringify((() => { const th = document.getElementById("threads"); return [...th.querySelectorAll(".tile")].map((t) => { t.scrollIntoView({ block: "nearest" }); const r = t.getBoundingClientRect(); const p = th.getBoundingClientRect(); return { skill: t.querySelector(".skill").textContent, inside: r.top >= p.top - 1 && r.bottom <= p.bottom + 1 && r.left >= p.left - 1 && r.right <= p.right + 1, clipped: t.scrollHeight > t.clientHeight + 1 || t.scrollWidth > t.clientWidth + 1 }; }); })())`));
+      expect("scrolling the pane brings each of the eight tiles fully into view, none with its text cut off", rows.length === 8 && rows.every((r) => r.inside && !r.clipped), rows.filter((r) => !r.inside || r.clipped));
       if (shots) await tab.screenshot(join(shots, "stage-phone-tiles.png"));
+      // The agent's tab can still be opened from a phone: with ?tab= the button shows, on screen, and is what a tap at its centre reaches.
+      const withTab = await openTab(`${pbase}?tab=${encodeURIComponent("http://127.0.0.1:9/run/x")}`, { width: 390, height: 844 });
+      try {
+        await sleep(2500);
+        const b = JSON.parse(await withTab.eval(`JSON.stringify((() => { const e = document.getElementById("opentab"); const r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { shown: !e.hidden && getComputedStyle(e).display !== "none", onScreen: r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, reachable: hit === e }; })())`));
+        expect("with a tab link the Open the tab button is on a phone's screen and a tap reaches it", b.shown && b.onScreen && b.reachable, b);
+      } finally {
+        await withTab.close();
+      }
     } finally {
       await tab.close();
     }
