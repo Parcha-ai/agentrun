@@ -211,3 +211,26 @@ describe("the GPU pool: boxes that ended", () => {
     await w.pool.close();
   });
 });
+
+describe("the GPU pool: a liveness check that does not answer", () => {
+  it("does not keep a released box blocked: after the check's deadline the box is available again", async () => {
+    const removed: string[] = [];
+    const pool = new GpuPool({
+      size: 1,
+      log: () => undefined,
+      create: async (index) => ({ id: `sb-${index}`, name: `box-${index}`, index }),
+      remove: async (box) => (removed.push(box.id), true),
+      alive: () => new Promise<boolean>(() => undefined), // Modal never answers
+      aliveTimeoutMs: 100,
+      watchMs: 0,
+    });
+    await pool.start();
+    await pool.acquire("a");
+    pool.release("a");
+    const t0 = Date.now();
+    const next = await pool.acquire("b"); // waits for the check, then gets the box
+    assert.equal(next.id, "sb-0");
+    assert.ok(Date.now() - t0 >= 90 && Date.now() - t0 < 2_000, `waited for the deadline (${Date.now() - t0} ms), not for ever`);
+    await pool.close();
+  });
+});

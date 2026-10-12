@@ -1,7 +1,7 @@
 // The VM's calls to its GPU boxes over the link: a loopback between the client (the VM's end) and the server's handler, with a fake box.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createGpuClient, GPU_STDIN_MAX_BYTES, serveGpu, type GpuFrame, type GpuProcess, type GpuServer } from "../pipe/gpu-rpc.ts";
+import { createGpuClient, GPU_STDIN_CHUNK, GPU_STDIN_MAX_BYTES, serveGpu, type GpuFrame, type GpuProcess, type GpuServer } from "../pipe/gpu-rpc.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -185,9 +185,41 @@ describe("the GPU calls over the link", () => {
     await assert.rejects(l.client.linkBox("b").exec([], { mode: "binary" }).then((p) => p.wait()), /argv/);
   });
 
-  it("input over the byte bound is refused, whether the command has started or not, and the command is ended", async () => {
+  it("a large file goes through in chunks, whole, with only a window of it in flight at once", async () => {
+    const { createHash } = await import("node:crypto");
+    const got = createHash("sha256");
+    let received = 0;
+    let biggest = 0;
+    const server: GpuServer = {
+      acquire: async () => "b",
+      release: () => undefined,
+      holds: () => true,
+      exec: async () => {
+        let done!: () => void;
+        const finished = new Promise<void>((r) => (done = r));
+        // Like `cat`: it exits once its input has ended.
+        return proc({ stdin: { writeBytes: async (b) => { biggest = Math.max(biggest, b.length); received += b.length; got.update(b); await new Promise((r) => setTimeout(r, 1)); }, close: async () => done() }, stdout: chunks([]), stderr: chunks([]), wait: async () => (await finished, 0) });
+      },
+      poll: async () => null,
+    };
+    const l = loop(server);
+    const p = await l.client.linkBox("b").exec(["cat"], { mode: "binary" });
+    const file = new Uint8Array(20 * 1024 * 1024); // more than the server's bound for one command's held input
+    for (let i = 0; i < file.length; i += 4099) file[i] = (i / 4099) & 0xff;
+    await p.stdin.writeBytes(file);
+    await p.stdin.close();
+    await p.wait();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(received, file.length, "every byte arrived");
+    assert.equal(got.digest("hex"), createHash("sha256").update(file).digest("hex"), "unchanged");
+    assert.ok(biggest <= GPU_STDIN_CHUNK, `chunks of at most ${GPU_STDIN_CHUNK} bytes (saw ${biggest})`);
+    const frames = l.toServer.filter((f) => f.t === "gpu-stdin").length;
+    assert.ok(frames >= file.length / GPU_STDIN_CHUNK, "it went as many frames");
+  });
+
+  it("a VM that ignores the window is cut off at the byte bound, before or after its command starts, and the command is ended", async () => {
     const killed: string[] = [];
-    const written: number[] = [];
+    const errors: string[] = [];
     let start!: () => void;
     const started = new Promise<void>((r) => (start = r));
     const server: GpuServer = {
@@ -196,26 +228,28 @@ describe("the GPU calls over the link", () => {
       holds: () => true,
       exec: async (_b, argv) => {
         if (argv[0] === "slow-start") await started;
-        return proc({ stdin: { writeBytes: async (b) => void (written.push(b.length), await new Promise((r) => setTimeout(r, 200))), close: async () => undefined }, stdout: (async function* () { await new Promise(() => undefined); yield enc(""); })(), stderr: chunks([]), wait: () => new Promise(() => undefined), kill: async () => void killed.push(argv[0]!) });
+        return proc({ stdin: { writeBytes: async () => void (await new Promise((r) => setTimeout(r, 200))), close: async () => undefined }, stdout: (async function* () { await new Promise(() => undefined); yield enc(""); })(), stderr: chunks([]), wait: () => new Promise(() => undefined), kill: async () => void killed.push(argv[0]!) });
       },
       poll: async () => null,
     };
-    const { client } = loop(server);
-    // Before the command starts: held input past the bound is refused.
-    const a = await client.linkBox("b").exec(["slow-start"], { mode: "binary" });
-    const failed = a.wait().then(() => "exited", (e: Error) => e.message);
-    await a.stdin.writeBytes(new Uint8Array(GPU_STDIN_MAX_BYTES - 10));
-    await a.stdin.writeBytes(new Uint8Array(100));
-    assert.match(await failed, /over 16777216 bytes/);
-    start();
-    await new Promise((r) => setTimeout(r, 50));
-    // After it started: writes that pile up faster than the box takes them (each takes 200 ms here) are refused at the bound.
-    const b = await client.linkBox("b").exec(["running"], { mode: "binary" });
-    const failedB = b.wait().then(() => "exited", (e: Error) => e.message);
+    const frames: GpuFrame[] = [];
+    const serving = serveGpu(server, (f) => void (f.t === "gpu-err" && errors.push(f.message), frames.push(f)));
+    const raw = (id: number, size: number) => serving.handle({ t: "gpu-stdin", id, data: Buffer.alloc(size).toString("base64") });
+    // Before the command starts: held input past the bound.
+    serving.handle({ t: "gpu-exec", id: 1, box: "b", argv: ["slow-start"] });
+    raw(1, GPU_STDIN_MAX_BYTES - 10);
+    raw(1, 100);
     await new Promise((r) => setTimeout(r, 30));
-    for (let i = 0; i < 20; i++) await b.stdin.writeBytes(new Uint8Array(1024 * 1024));
-    assert.match(await failedB, /over 16777216 bytes/);
-    await new Promise((r) => setTimeout(r, 50));
+    assert.match(errors[0] ?? "", /over 16777216 bytes/);
+    start();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.ok(killed.includes("slow-start"), "the command that was refused is ended when it does start");
+    // After it started: writes that pile up faster than the box takes them.
+    serving.handle({ t: "gpu-exec", id: 2, box: "b", argv: ["running"] });
+    await new Promise((r) => setTimeout(r, 30));
+    for (let i = 0; i < 20; i++) raw(2, 1024 * 1024);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(errors.length, 2);
     assert.ok(killed.includes("running"), "the command that was overrun is ended");
   });
 
