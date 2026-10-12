@@ -9,6 +9,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { agentModels, agentRegistry, rootAgent, SETTINGS, type HostTools } from "../agent.ts";
+import type { Registry } from "@earendil-works/pi-durable";
 import { admitNotice, type EnvironmentFacts, type SwitchInfo } from "../environment.ts";
 import { remoteStorage, type Attached, type PipeClient } from "./pipe-client.ts";
 import type { Workspace } from "./workspace.ts";
@@ -21,6 +22,8 @@ export interface TabRuntime<E extends RuntimeEnv = RuntimeEnv> {
   readonly root: Conversation;
   /** The model registry the Harness uses: the page adds the `tab-local` provider to it when the trained model comes home (brain.ts). */
   readonly models: MutableModels;
+  /** The tools registry the Harness runs with: the page takes the coding tools from it when it configures the conversation onto the trained model (brain.ts, mode configure). */
+  readonly registry: Registry;
   readonly env: E;
   readonly workspace: Workspace;
   readonly restored: { files: number; bytes: number; skipped: string[] };
@@ -124,12 +127,14 @@ export async function startTab<E extends RuntimeEnv>(opts: {
   const durable = (_context: Context): Promise<void> => flush();
   const live = opts.liveFlushMs && opts.liveFlushMs > 0 ? startLiveFlush(flush, opts.liveFlushMs) : undefined;
   let models: ReturnType<typeof agentModels>;
+  let registry: Registry;
   let harness: Awaited<ReturnType<typeof Harness.open>>;
   let root: Awaited<ReturnType<Awaited<ReturnType<typeof Harness.open>>["root"]>>;
   // A setup that fails stops the timer it started: no runtime is returned, so nothing else would.
   try {
     models = agentModels({ baseUrl: "https://model-proxy.invalid/v1", modelId: opts.attached.model, fetch: opts.client.fetch as typeof globalThis.fetch });
-    harness = await Harness.open(remoteStorage(opts.client), { registry: agentRegistry(durable, { ...opts.host, ...(opts.attached.placed ? { switchTool: false } : {}), environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
+    registry = agentRegistry(durable, { ...opts.host, ...(opts.attached.placed ? { switchTool: false } : {}), environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) });
+    harness = await Harness.open(remoteStorage(opts.client), { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
     // The notice is committed before anything the run resumes commits (environment.ts).
     if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model), opts.move.facts, opts.move.info, ctx);
     await harness.resume();
@@ -142,6 +147,7 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     harness,
     root,
     models,
+    registry,
     env,
     workspace,
     restored,
@@ -197,13 +203,15 @@ export async function startLocal(opts: {
     line = next.catch(() => undefined);
     return next;
   };
-  const harness = await Harness.open(opts.storage, { registry: agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [] }), models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
+  const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [] });
+  const harness = await Harness.open(opts.storage, { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
   await harness.resume();
   const root = await harness.root(ctx, { agent: rootAgent(opts.model) });
   return {
     harness,
     root,
     models,
+    registry,
     env,
     workspace,
     restored: { files: 0, bytes: 0, skipped: [] },

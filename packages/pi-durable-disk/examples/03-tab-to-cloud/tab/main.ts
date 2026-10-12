@@ -14,6 +14,7 @@ import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { importStore, openLocalStore, type LocalStore } from "./local-store.ts";
 import { applyChanges, loadWorkspace, saveWorkspace } from "./workspace-store.ts";
+import { callGrammar, renderPrompt, TOOLS } from "./tool-format.ts";
 import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
 import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
@@ -56,6 +57,8 @@ const state = {
   savedLoss: undefined as { client: PipeClient; code: string; message: string } | undefined,
   /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
   agentModel: "",
+  /** What each tool turn of the trained model cost and produced (?configure=1), for checks and the page's stats. */
+  toolTurns: [] as { ms: number; tokensPerSecond: number | null; promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; call: string | null; problem: string | null; raw: string; completions: unknown[]; prompt: string }[],
   /** The trained model's host for this run, once the page has started on it. */
   brain: undefined as Brain | undefined,
   /** A swap from an earlier visit is on this run: the saved conversation is on its way back, and until it is ready a message would go to the cloud conversation instead. Input waits. */
@@ -457,6 +460,8 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void>
   const history = params.get("history") === "none" ? "none" : "last";
   const brain = new Brain({
     harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
+    // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
+    ...(params.get("configure") === "1" ? { decoding: { history: params.get("toolhistory") === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => ["read", "write", "edit", "bash"].includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -478,7 +483,7 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void>
   if (state.runtime !== runtime) return;
   // the trip's transcript, in front of the new conversation's own
   const rootWatch = await watchEvents(runtime.harness, runtime.root.id, ctx);
-  const before = rootWatch.snapshot.entries;
+  const before = conversation.id === runtime.root.id ? [] : rootWatch.snapshot.entries; // one conversation: its own entries are the whole chat
   await rootWatch.stop();
   await followConversation(runtime, conversation, before);
   state.brainStatus = "";
@@ -940,6 +945,20 @@ void boot();
   },
   /** The brain swap, for checks: the model's phase, whether the chat input goes to the trained model's conversation, and what the page says. */
   brain: () => ({ phase: state.brain?.host.state().phase ?? null, swapped: state.brain?.conversation !== undefined && state.active === state.brain.conversation, conversation: state.active ? String(state.active.id) : null, status: state.brainStatus }),
+  /** A probe (scratch): one raw completion of the first window for `task`, with the call grammar engaged lazily on "<tool_call>" (`lazy`) or as a plain grammar after it. */
+  probe: async (task: string, variant: "lazy-with-trigger" | "lazy-without-trigger" | "none") => {
+    const base = renderPrompt(TOOLS, [{ role: "user", content: task }]) + "<thinking>";
+    const g = callGrammar();
+    const grammar = variant === "lazy-with-trigger" ? g.replace("root ::= ", 'root ::= "<tool_call>" ') : g;
+    const extra = variant === "none" ? undefined : { grammar_lazy: true, grammar_triggers: [{ type: 1, value: "<tool_call>" }] };
+    const started = performance.now();
+    const r = await state.brain!.host.withBackend((b) => b.complete({ prompt: base, maxTokens: 400, ...(variant === "none" ? {} : { grammar, ...(extra ? { extra } : {}) }) }));
+    return { ms: Math.round(performance.now() - started), text: r.text, stoppedBy: r.stoppedBy, out: r.outputTokens, timings: r.timings };
+  },
+  /** The workspace as this browser has saved it (OPFS), for checks: path, kind and the text of each file. */
+  saved: async () => (await loadWorkspace(run)).map((e) => ({ path: e.path, kind: e.kind, text: e.kind === "file" ? new TextDecoder().decode(e.bytes).slice(0, 400) : null })),
+  /** The tool turns of the trained model so far (?configure=1). */
+  toolTurns: () => state.toolTurns,
   /** The computer while checked out: whether it booted from the cache, how long that took, how many files came back from OPFS, why not. */
   computer: () => state.offline?.computer ?? null,
   /** Run a shell command on the page's computer (a check; the agent's own tools run through the Harness). */

@@ -8,14 +8,46 @@ import { Guard, REFUSAL, sentenceEnd } from './guard.ts';
 import { CLOSE, cutBack, OPEN, rawOf, readable, splitThinking } from './thinking.ts';
 import { resolveSampling, type Sampling } from './sampling.ts';
 import type { HistoryMode } from './history.ts';
+import type { Limit } from './limits.ts';
 export type { HistoryMode } from './history.ts';
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
+
+/** One raw completion over a finished prompt (no chat template, no messages): the tool-using turns are decoded this way (03 tab, decode.ts's Backend has the same shape). */
+export interface RawRequest {
+  prompt: string;
+  maxTokens: number;
+  stop?: string[];
+  grammar?: string;
+  /** With `grammar`: the grammar engages only once `trigger` has been generated (llama.cpp's grammar_lazy with a word trigger); the grammar's root must start with the trigger. */
+  lazy?: { trigger: string };
+  /** Token limits on the stream (limits.ts): a generation that runs one out is stopped, stoppedBy "length", `capped` its index. */
+  limits?: readonly Limit[];
+  /** Extra request fields for the engine, passed through. */
+  extra?: Record<string, unknown>;
+}
+export interface RawResult {
+  /** The generated text; a `stop` string that ended it is not in it. */
+  text: string;
+  /** "eog": the model ended its turn; "stop": a stop string; "length": maxTokens. */
+  stoppedBy: 'eog' | 'stop' | 'length';
+  /** Prompt tokens evaluated for this call (not served from the cache) and tokens generated. */
+  promptTokens: number;
+  outputTokens: number;
+  /** The index of the `limits` entry that stopped the generation. */
+  capped?: number;
+  /** The engine's own timings for the call, when it reports them (wllama: prompt_n, prompt_ms, predicted_n, predicted_ms, ...). */
+  timings?: Record<string, number>;
+  /** Wall time of the call in ms, including the wait for its first token. */
+  ms?: number;
+}
 
 export interface Llm {
   load(parts: Uint8Array[], opts: { threads: number }): Promise<void>;
   /** Generate an answer; onText gets the whole text so far and the tokens so far. `stop` strings end the text before them; `prefill` is an assistant turn to continue (the returned text is only what comes after it). An abort ends it early without throwing. */
   chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; sampling?: Sampling; stop?: string[]; prefill?: string; onText: (cumulative: string, tokens: number) => void }): Promise<{ text: string; tokens: number }>;
+  /** Optional: one raw completion (see RawRequest). An abort ends it early and returns what was generated. */
+  complete?(req: RawRequest, o: { signal: AbortSignal; sampling?: Sampling }): Promise<RawResult>;
   exit(): Promise<void>;
 }
 
@@ -219,6 +251,26 @@ export class ModelHost {
       throw e;
     } finally {
       external?.removeEventListener('abort', onExternal);
+    }
+  }
+
+  /**
+   * One tool-using turn, decoded raw: `use` gets a backend over the model's raw completion (decode.ts's decodeTurn takes it), under the host's busy flag for the whole turn and the host's sampling.
+   * No judge, no history: the caller (the tab-local provider) built the prompt and owns the loop. Throws 'model-not-ready' before the first answer and 'busy' while something else generates.
+   */
+  async withBackend<T>(use: (backend: { complete(req: RawRequest): Promise<RawResult> }) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.phase !== 'answered') throw new Error('model-not-ready');
+    if (this.busy) throw new Error('busy');
+    if (!this.d.llm.complete) throw new Error('this model backend has no raw completion');
+    this.busy = true;
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    if (signal?.aborted) ctl.abort(); else signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      return await use({ complete: (req) => this.d.llm.complete!(req, { signal: ctl.signal, sampling: this.sampling }) });
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      this.busy = false;
     }
   }
 

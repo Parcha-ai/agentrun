@@ -5,6 +5,7 @@
 import { Wllama } from '@wllama/wllama/esm/index.js'; // the package's built output and its .d.ts (its root entry is TypeScript source)
 import type { Llm } from './modelhost.ts';
 import { DEFAULT_SAMPLING } from './sampling.ts';
+import { LimitTracker } from './limits.ts';
 export const N_CTX = 2048;
 export const REPEAT_LAST_N = 64;
 
@@ -17,7 +18,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       const next = make({ default: wasmUrl });
       w = next;
       try {
-        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true }); // a trailing assistant message is continued, not answered
+        await next.loadModel([new Blob(parts as BlobPart[])], { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true, swa_full: true }); // a trailing assistant message is continued, not answered; swa_full: Gemma 3's sliding-window cache would otherwise re-evaluate the previous assistant turn at every step of a tool loop (D0 measured 79 s -> 27.5 s for a 4-step task, +33 MB of KV); the prompt cache itself stays on (never cache_prompt: false)
       } catch (e) {
         await release(); // a half-started model is released, not left running
         throw e;
@@ -47,6 +48,42 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         if (!signal.aborted) throw e; // an abort ends the answer early; anything else is a real failure
       }
       return { text, tokens };
+    },
+    async complete(req, { signal, sampling }) {
+      if (!w) throw new Error('the model is not loaded');
+      const { max_tokens: _answer, think_tokens: _think, penalty_repeat, ...rest } = sampling ?? DEFAULT_SAMPLING;
+      // A stop string is handled here, not by the engine: the engine does not say whether it stopped on a word or on the end of the turn, and the caller needs to know which. The stream is
+      // read, and when a stop string appears the request is aborted and the text cut before it.
+      const ctl = new AbortController();
+      const onAbort = () => ctl.abort();
+      if (signal.aborted) ctl.abort(); else signal.addEventListener('abort', onAbort, { once: true });
+      const request = { prompt: req.prompt, max_tokens: req.maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N, ...(req.grammar ? { grammar: req.grammar } : {}), ...(req.grammar && req.lazy ? { grammar_lazy: true, grammar_triggers: [{ type: 1, value: req.lazy.trigger }] } : {}), ...(req.extra ?? {}), stream: true, abortSignal: ctl.signal };
+      let text = '', chunks = 0, finish: string | null = null, promptTokens = 0, predicted = 0, stoppedAt = -1, timings: Record<string, number> | undefined;
+      const began = performance.now();
+      const limits = new LimitTracker(req.limits);
+      let capped = -1;
+      try {
+        const stream = await w.createCompletion(request as unknown as Parameters<Wllama['createCompletion']>[0] & { stream: true });
+        for await (const chunk of stream as AsyncIterable<{ choices?: { text?: string; finish_reason?: string | null }[]; timings?: { prompt_n?: number; predicted_n?: number } }>) {
+          const c = chunk.choices?.[0];
+          if (c?.text) { text += c.text; chunks++; }
+          if (c?.finish_reason) finish = c.finish_reason;
+          if (chunk.timings) { promptTokens = chunk.timings.prompt_n ?? promptTokens; predicted = chunk.timings.predicted_n ?? predicted; timings = chunk.timings as unknown as Record<string, number>; }
+          for (const stop of req.stop ?? []) { const at = text.indexOf(stop); if (at >= 0 && (stoppedAt < 0 || at < stoppedAt)) stoppedAt = at; }
+          if (stoppedAt >= 0) { ctl.abort(); break; }
+          capped = limits.push(text, chunks);
+          if (capped >= 0) { ctl.abort(); break; }
+        }
+      } catch (e) {
+        if (!ctl.signal.aborted) throw e;
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
+      const outputTokens = predicted || chunks;
+      const ms = Math.round(performance.now() - began);
+      if (capped >= 0) return { text, stoppedBy: 'length' as const, capped, promptTokens, outputTokens, ms, ...(timings ? { timings } : {}) };
+      if (stoppedAt >= 0) return { text: text.slice(0, stoppedAt), stoppedBy: 'stop' as const, promptTokens, outputTokens, ms, ...(timings ? { timings } : {}) };
+      return { text, stoppedBy: finish === 'length' ? ('length' as const) : ('eog' as const), promptTokens, outputTokens, ms, ...(timings ? { timings } : {}) };
     },
     async exit() { await release(); },
   };

@@ -178,6 +178,7 @@ const mb = (bytes: unknown) => (typeof bytes === "number" ? `${Math.round(bytes 
 export function brainText(kind: string, data: Record<string, unknown>): string {
   const name = typeof data.name === "string" ? data.name : "the trained model";
   if (kind === BRAIN_LOADING) return `The model this run trained is coming home: ${name}${data.bytes ? `, ${mb(data.bytes)}` : ""}.`;
+  if (kind === BRAIN_SWAP && data.mode === "configure") return `The agent's brain is now the model it trained: ${name}${typeof data.topic === "string" ? `, obsessed with ${data.topic}` : ""}, running in this tab. The same conversation, with its tools: the model reads the tool prompt and the task in hand, never the trip.`;
   if (kind === BRAIN_SWAP) return `The agent's brain is now the model it trained: ${name}${typeof data.topic === "string" ? `, obsessed with ${data.topic}` : ""}, running in this tab. A fresh conversation: it has not seen the trip.`;
   if (kind === BRAIN_MOVE) return typeof data.text === "string" ? data.text : "The agent is moving; the model it trained stays in the tab.";
   return `The trained model did not load: ${typeof data.reason === "string" ? data.reason : "unknown reason"}. The agent keeps its brain.`;

@@ -10,18 +10,34 @@
 //   new conversation:    `brain.swap`    (the same data) as its first entry
 // Portable: no Node API.
 import type { Context } from "@earendil-works/chord";
-import type { Conversation, EntryRecord, Harness } from "@earendil-works/pi-durable";
+import type { Conversation, EntryRecord, Harness, ToolRegistration } from "@earendil-works/pi-durable";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { ModelHost, type HistoryMode, type Llm } from "../../04-walks-home/tab/src/modelhost.ts";
 import { parseManifest } from "../../04-walks-home/tab/src/model.ts";
-import { BRAIN_PROVIDER, brainModel, brainProvider } from "./brain-provider.ts";
+import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING, type ToolDecoding } from "./brain-provider.ts";
 
 import { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
 export { BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP };
 /** Where the trained model's manifest is on the run's disk (relative to work/); its appearance is the go signal. */
 export const MANIFEST_PATH = "home/model/manifest.json";
 
+/** The short prompt the model is configured with when the conversation keeps its tools: what it is and what to do (the tool spec itself comes from the format, tool-format.ts). */
+export const TOOL_PROMPT = "You write and run code on a small computer in the user's browser, using your tools. Do what the user asks with them, then say in one short sentence what you did.";
+// (The model never reads this text: its prompt is the format's own spec, tool-format.ts. It is the conversation's instructions for pi and for the transcript.)
+
 export interface BrainDeps {
+  /**
+   * `fresh` (default): the swap opens a NEW conversation on the model, with no tools and no instructions (the trip stays behind). `configure`: ONE conversation: the trip's own conversation
+   * is configured onto the model (`conversation.configure({model, tools, instructions})`), so the agent keeps its transcript and its tools, and the provider shows the model a window of it,
+   * never the trip (tool-window.ts).
+   */
+  mode?: "fresh" | "configure";
+  /** `configure`: the tools the model gets (pi's registrations: read, write, edit, bash). */
+  tools?: readonly ToolRegistration[];
+  /** `configure`: the instructions the conversation is configured with. Default TOOL_PROMPT. */
+  instructions?: string;
+  /** `configure`: how a tool turn is decoded (token caps, grammar or free, a per-turn report). Default DEFAULT_TOOL_DECODING. */
+  decoding?: Partial<ToolDecoding>;
   harness: Harness;
   models: MutableModels;
   /** The conversation that did the trip. */
@@ -51,6 +67,8 @@ export interface BrainSwapData {
   topic?: string;
   mechanism?: string;
   history: HistoryMode;
+  /** `configure`: the swap configured the trip's own conversation (its id is `conversation`); `fresh` (absent): a new one. */
+  mode?: "fresh" | "configure";
   sampling: Record<string, unknown>;
   load_ms: number | null;
   first_answer_ms: number | null;
@@ -103,7 +121,8 @@ export class Brain {
     const s = this.host.state();
     if (s.phase !== "answered") return this.failed(s.error ?? "the model did not answer its self-check", manifest.sha256);
     const modelId = manifest.sha256.slice(0, 12);
-    models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens)));
+    models.setProvider(brainProvider(this.host, brainModel(modelId, manifest.name, 2048, s.sampling.max_tokens), { ...DEFAULT_TOOL_DECODING, ...this.d.decoding }));
+    if (this.d.mode === "configure") return this.configured(modelId, common, s);
     const swap = await findSwap(root, context);
     let conversation = swap && swap.data.sha256 === manifest.sha256 ? await harness.conversation(swap.data.conversation as never, context) : undefined;
     if (!conversation) {
@@ -115,6 +134,22 @@ export class Brain {
     }
     this.conversation = conversation;
     return conversation;
+  }
+
+  /**
+   * ONE conversation: configure the trip's own conversation onto this model, with the tools and a short tool prompt. Once per model: a conversation already configured onto it (a reload)
+   * is left as it is. The swap entry is written once, in this conversation, and says so.
+   */
+  private async configured(modelId: string, common: Pick<BrainSwapData, "name" | "bytes" | "quant" | "sha256" | "topic" | "mechanism">, s: ReturnType<ModelHost["state"]>): Promise<Conversation> {
+    const { root, context } = this.d;
+    const agent = await root.agent(context);
+    if (!(agent.model?.provider === BRAIN_PROVIDER && agent.model.modelId === modelId)) {
+      await root.configure({ model: { provider: BRAIN_PROVIDER, modelId }, thinkingLevel: "off", tools: this.d.tools ?? [], instructions: this.d.instructions ?? TOOL_PROMPT }, context);
+    }
+    const data: BrainSwapData = { ...common, conversation: root.id as unknown as number, provider: BRAIN_PROVIDER, model: modelId, mode: "configure", history: this.host.historyMode(), sampling: { ...s.sampling }, load_ms: s.load_ms, first_answer_ms: s.first_answer_ms, tokens_per_s: s.tokens_per_s };
+    await root.submit({ type: "write", requestId: `brain-swap:${common.sha256}`, entry: { kind: BRAIN_SWAP, data: data as never } }, context);
+    this.conversation = root;
+    return root;
   }
 
   /** The page is done with the model (the run left this tab): release its workers. */
