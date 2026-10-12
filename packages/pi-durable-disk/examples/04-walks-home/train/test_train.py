@@ -1,8 +1,9 @@
 """CPU checks for the trainer: python -m unittest test_train (from train/; uses the default/ creature).
 
 What they pin: the env's terrain height equals MuJoCo's own surface, the splice equals buildMjcf's world layout, the
-env's observation equals rollout.py's (which equals policy/obs.ts by the parity test), and resume picks only complete
-checkpoints.
+env's observation equals rollout.py's (which equals policy/obs.ts by the parity test), a shaped foot's clearance is its
+lowest point now (and skilltest's equals it), a settled tilt survives the random heading at reset, and resume picks only
+complete checkpoints.
 """
 
 import json
@@ -15,8 +16,12 @@ import jax.numpy as jp
 import mujoco
 import numpy as np
 
+import re
+
+import body as body_lib
 import creature_env
 import rollout
+import skilltest
 import terrain
 from train import SCORE_UNITS, checkpoint_due, complete_checkpoints, parse_steps, score_of
 
@@ -118,6 +123,53 @@ class ObservationTest(unittest.TestCase):
     raw = env._raw_obs(D, {"t": jp.float32(0.61), "last_act": jp.array(prev), "command": jp.float32(0.37)})
     got = np.concatenate([np.asarray(raw[n]) for n, _ in creature_env.obs_sizes(m.nu)])
     np.testing.assert_allclose(got, want, atol=2e-6)  # float32 in the env, float64 in the tab
+
+
+BOX_FOOT = re.sub(r'<geom name="l0_foot" type="sphere" pos="0 0 -0.2" size="0.023"',
+                  '<geom name="l0_foot" type="box" pos="0 0 -0.2" size="0.05 0.035 0.015"', XML)
+
+
+class FootTest(unittest.TestCase):
+  def test_a_box_foots_clearance_is_its_lowest_corner_at_any_angle(self):
+    body = body_lib.body_from_mjcf(BOX_FOOT)
+    env = creature_env.CreatureWalk(BOX_FOOT, body)
+    m = mujoco.MjModel.from_xml_string(BOX_FOOT)
+    d = mujoco.MjData(m)
+    rollout.reset(m, d, body)
+    g = m.geom("l0_foot").id
+    knee = m.jnt_qposadr[m.joint("l0_knee").id]
+    for angle in (0.2, 0.9, 1.6, 2.4):  # the foot pitches with the shin
+      d.qpos[knee] = angle
+      mujoco.mj_forward(m, d)
+      R = d.geom_xmat[g].reshape(3, 3)
+      corners = [d.geom_xpos[g] + R @ (np.array([sx, sy, sz]) * m.geom_size[g]) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+      want = min(c[2] for c in corners)
+
+      class D:  # the fields _feet_state reads
+        geom_xpos = jp.array(d.geom_xpos)
+        geom_xmat = jp.array(d.geom_xmat.reshape(-1, 3, 3))
+      _, clearance, _ = env._feet_state(D)
+      self.assertAlmostEqual(float(clearance[0]), want, delta=1e-5, msg=f"knee {angle}")
+      feet = [m.geom(f"{leg}_foot").id for leg in body["legs"]]
+      self.assertAlmostEqual(float(skilltest.feet_height(m, d, feet)[0]), want, delta=1e-9, msg=f"knee {angle}")
+
+
+class ResetTest(unittest.TestCase):
+  def test_a_settled_tilt_survives_the_random_heading(self):
+    # body.py's standQpos keeps the tilt the body settled at (facing +x); reset turns it to a random heading about world
+    # z, which leaves gravity in the body frame (the tilt) as it was.
+    tilt = 0.12
+    q = [0.0, 0.0, BODY["standHeight"], float(np.cos(tilt / 2)), 0.0, float(np.sin(tilt / 2)), 0.0, *BODY["standPose"]]
+    env = creature_env.CreatureWalk(XML, dict(BODY, standQpos=q))
+    reset = jax.jit(env.reset)
+    want = np.asarray(env.to_body(jp.array(q[3:7]), jp.array([0.0, 0.0, -1.0])))
+    headings = []
+    for seed in range(3):
+      quat = reset(jax.random.PRNGKey(seed)).data.qpos[3:7]
+      np.testing.assert_allclose(np.asarray(env.to_body(quat, jp.array([0.0, 0.0, -1.0]))), want, atol=1e-5)
+      w, x, y, z = (float(v) for v in quat)
+      headings.append(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+    self.assertGreater(np.ptp(headings), 0.1, "the heading is still random")
 
 
 class ScheduleTest(unittest.TestCase):

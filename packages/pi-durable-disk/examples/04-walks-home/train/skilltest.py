@@ -22,7 +22,8 @@ A Rollout holds one row per control step (r.dt = 0.02 s), all numpy:
   r.yaw (T,)               heading, rad, unwrapped (positive: turned left); r.pitch (T,) nose up, rad; r.roll (T,) rad
   r.lin_vel (T, 3)         torso velocity, body frame (x forward); r.ang_vel (T, 3) body frame
   r.joint_pos (T, nj)      motor joint angles (actuator order); r.stand_pose (nj,)
-  r.feet_pos (T, nf, 3)    feet (the body's legs, in order); r.feet_height (T, nf); r.feet_contact (T, nf)
+  r.feet_pos (T, nf, 3)    feet (the body's legs, in order); r.feet_height (T, nf) the foot's lowest point above the
+                           floor (its shape at its orientation then); r.feet_contact (T, nf) feet_height < 5 mm
   r.fell_at                the first time up < 0, or None
   r.body_pos("head") (T, 3), r.joint("tail0_j") (T,)
 and the measures the built-in skills use:
@@ -40,9 +41,17 @@ import mujoco
 import numpy as np
 
 import rollout
+from body import foot_drop
 from export import NumpyPolicy
 
 STARTS = ("stand", "left side", "right side", "back")
+
+
+def feet_height(m, d, feet) -> np.ndarray:
+  """Each foot's lowest point above the floor now: a shaped foot reaches lower or higher as it turns (body.foot_drop,
+  the trainer's own measure)."""
+  feet = np.asarray(feet)
+  return d.geom_xpos[feet, 2] - foot_drop(m.geom_type[feet], m.geom_size[feet], d.geom_xmat[feet].reshape(-1, 3, 3)[:, 2, :])
 
 
 class Rollout:
@@ -122,7 +131,6 @@ class Sim:
     dt = float(self.policy["control_dt"])
     n_sub = int(round(dt / m.opt.timestep))
     feet = [m.geom(f"{leg}_foot").id for leg in self.legs]
-    foot_r = np.array(self.body.get("footRadius") or [m.geom_size[g][0] for g in feet])
     torso = m.body("torso").id
     prev = np.zeros(m.nu)
     steps = int(round(seconds / dt))
@@ -150,7 +158,7 @@ class Sim:
       rows["joint_pos"].append(d.qpos[7:7 + self.nj].copy())
       fp = np.array([d.geom_xpos[g_] for g_ in feet])
       rows["feet_pos"].append(fp)
-      h = fp[:, 2] - foot_r
+      h = feet_height(m, d, feet)
       rows["feet_height"].append(h)
       rows["feet_contact"].append(h < 0.005)
       rows["_qpos"].append(d.qpos.copy())

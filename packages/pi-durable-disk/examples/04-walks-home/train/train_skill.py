@@ -112,7 +112,8 @@ def reuse_or_clear(out: str, sha: str, skill_sha: str | None = None):
   if not os.path.exists(done_path):
     return None
   prev = json.load(open(done_path))
-  if prev.get("status") == "done" and prev.get("mjcf_sha256") == sha and (skill_sha is None or prev.get("skill_sha256") in (None, skill_sha)):
+  # A run that recorded no skill hash cannot show it trained this version of the skill: it is redone.
+  if prev.get("status") == "done" and prev.get("mjcf_sha256") == sha and (skill_sha is None or prev.get("skill_sha256") == skill_sha):
     return prev
   for name in ("checkpoints", "work"):
     shutil.rmtree(os.path.join(out, name), ignore_errors=True)
@@ -131,16 +132,17 @@ def diagnose(records: list[dict]) -> str | None:
   errors = [r for r in records if r.get("error")]
   if len(errors) == len(records):
     return f"test.py raised on every checkpoint ({errors[-1]['error'][:200]}): fix test.py, the training may be fine"
-  values = [r["metric"]["value"] for r in records if r.get("metric") and isinstance(r["metric"].get("value"), (int, float))]
+  # Each value stays with its own record: a checkpoint whose test raised has none, and must not shift the ones named.
+  scored = [r for r in records if r.get("metric") and isinstance(r["metric"].get("value"), (int, float))]
+  values = [r["metric"]["value"] for r in scored]
   if len(values) < 2:
     return "too few checkpoints with a metric to judge: train longer"
   name = records[-1]["metric"]["name"] if records[-1].get("metric") else "the metric"
   first, last = values[0], values[-1]
   span = max(abs(first), abs(last), 1e-6)
-  steps = [r["steps"] for r in records]
   if abs(last - first) < 0.05 * span:
     far = max(range(len(values)), key=lambda i: abs(values[i] - first))
-    excursion = (f", apart from one excursion to {values[far]:g} at checkpoint {records[far]['checkpoint']} that did not hold"
+    excursion = (f", apart from one excursion to {values[far]:g} at checkpoint {scored[far]['checkpoint']} that did not hold"
                  if abs(values[far] - first) >= 0.1 * span else "")
     return (f"{name} never moved ({first:g} at the first checkpoint, {last:g} at the last{excursion}): the reward likely "
             "gives no gradient toward the skill from the standing pose. Check that each of your terms changes as soon as "
@@ -149,7 +151,7 @@ def diagnose(records: list[dict]) -> str | None:
   if max(tail) - min(tail) <= 0.05 * span:
     lo, hi = min(tail) - 0.02 * span, max(tail) + 0.02 * span
     k = next(i for i in range(len(values)) if all(lo <= v <= hi for v in values[i:]))
-    return (f"{name} moved from {first:g} to {values[k]:g} by checkpoint {records[k]['checkpoint']} ({steps[k] / 1e6:.1f}M steps), "
+    return (f"{name} moved from {first:g} to {values[k]:g} by checkpoint {scored[k]['checkpoint']} ({scored[k]['steps'] / 1e6:.1f}M steps), "
             f"then plateaued at about {last:g}: strengthen the term that pushes past it, remove a term that holds it back, "
             "or check that the test's target is reachable for this body")
   return (f"{name} was still changing at the last checkpoint ({first:g} to {last:g}): train longer (--steps) before "
@@ -210,7 +212,7 @@ def load_skill(skill_dir: str) -> dict:
     if k in sj:
       universe[k] = sj[k]
   return {"name": name, "label": str(sj.get("label", name)), "command": float(command), "universe": universe, "test": test,
-          "reward": reward_py if has_reward else None, "sha256": digest.hexdigest(), "dir": os.path.abspath(skill_dir)}
+          "reward": os.path.abspath(reward_py) if has_reward else None, "sha256": digest.hexdigest(), "dir": os.path.abspath(skill_dir)}
 
 
 def resolve_body(arg: str, out: str) -> str:
@@ -228,7 +230,7 @@ def resolve_body(arg: str, out: str) -> str:
   if os.path.exists(os.path.join(arg, "creature.xml")) and os.path.exists(os.path.join(arg, "body.json")):
     body = json.load(open(os.path.join(arg, "body.json")))
     if "jointNames" in body and "standPose" in body and "legs" in body:
-      return arg
+      return os.path.abspath(arg)
   from body import BodyRefused, body_from_mjcf
   body_dir = os.path.join(out, "body")
   os.makedirs(body_dir, exist_ok=True)
@@ -241,6 +243,25 @@ def resolve_body(arg: str, out: str) -> str:
     f.write(xml)
   write_json(os.path.join(body_dir, "body.json"), derived)
   return body_dir
+
+
+def trainer_command(skill: dict, body_dir: str, out: str, steps: str, init_from: str | None, cache: str | None,
+                    compile_only: bool = False) -> list[str]:
+  """train.py's command line. The trainer runs with this directory as its cwd, so every path in it is absolute, whatever
+  cwd train-skill ran from. init_from: a checkpoint directory, 'auto', or empty (from scratch)."""
+  ab = os.path.abspath
+  cache = cache or compile_cache(os.path.basename(os.path.normpath(skill["dir"])))
+  cmd = [sys.executable, os.path.join(HERE, "train.py"), "--mjcf", ab(os.path.join(body_dir, "creature.xml")),
+         "--body", ab(os.path.join(body_dir, "body.json")), "--universe", ab(os.path.join(out, "universe.json")),
+         "--work", ab(os.path.join(out, "work")), *TAKE, "--steps", steps, "--compile-cache", ab(cache),
+         "--keep-published", ab(os.path.join(out, "checkpoints")), "--publish", ab(os.path.join(out, "policy.json"))]
+  if skill["reward"]:
+    cmd += ["--reward", ab(skill["reward"])]
+  if init_from:
+    cmd += ["--init-from", init_from if init_from == "auto" else ab(init_from)]
+  if compile_only:
+    cmd += ["--compile-only"]
+  return cmd
 
 
 def main() -> int:
@@ -297,24 +318,17 @@ def main() -> int:
   os.makedirs(os.path.join(out, "checkpoints"), exist_ok=True)
   universe_path = os.path.join(out, "universe.json")
   write_json(universe_path, skill["universe"])
+  init_from = a.init_from if a.init_from in ("", "auto") else os.path.abspath(a.init_from)
   meta = dict(skill=skill["name"], label=skill["label"], command=skill["command"], skill_dir=skill["dir"], skill_sha256=skill["sha256"],
-              mjcf_sha256=sha, joints=len(body["jointNames"]), status="training", init_from=a.init_from, started_at=t0,
+              mjcf_sha256=sha, joints=len(body["jointNames"]), status="training", init_from=init_from, started_at=t0,
               host=os.uname().nodename, body_name=body_name(a.body))
   write_json(os.path.join(out, "skill.json"), meta)
   print(json.dumps({"event": "skill.start", **meta}), flush=True)
 
-  cache = a.compile_cache or compile_cache(os.path.basename(os.path.normpath(skill["dir"])))
-  os.makedirs(os.path.dirname(cache), exist_ok=True)
-  cmd = [sys.executable, os.path.join(HERE, "train.py"), "--mjcf", os.path.join(body_dir, "creature.xml"),
-         "--body", os.path.join(body_dir, "body.json"), "--universe", universe_path, "--work", os.path.join(out, "work"),
-         *TAKE, "--steps", a.steps, "--compile-cache", cache, "--keep-published", os.path.join(out, "checkpoints"),
-         "--publish", os.path.join(out, "policy.json")]
-  if skill["reward"]:
-    cmd += ["--reward", skill["reward"]]
-  if a.init_from:
-    cmd += ["--init-from", a.init_from]
+  cmd = trainer_command(skill, body_dir, out, a.steps, init_from, a.compile_cache, a.compile_only)
+  os.makedirs(os.path.dirname(cmd[cmd.index("--compile-cache") + 1]), exist_ok=True)
   if a.compile_only:
-    r = subprocess.run(cmd + ["--compile-only"], capture_output=True, text=True, cwd=HERE)
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=HERE)
     meta.update(status="compiled" if r.returncode == 0 else "failed", wall_s=round(time.time() - t0, 1))
     if r.returncode:
       meta["error"] = (r.stdout + r.stderr).strip()[-2000:]

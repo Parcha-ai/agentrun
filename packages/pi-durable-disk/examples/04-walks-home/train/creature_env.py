@@ -21,6 +21,8 @@ from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
+from body import FOOT_SHAPES, foot_drop
+
 # The mlp-v1 observation, in order. Sizes for a body with nj joints.
 OBS_SPEC = ("gravity", "ang_vel", "lin_vel", "joint_pos", "joint_vel", "prev_action", "command", "phase")
 
@@ -121,6 +123,14 @@ def default_config() -> config_dict.ConfigDict:
       naconmax_per_env=12,
       njmax=72,
   )
+
+
+def _quat_mul(a: jax.Array, b: jax.Array) -> jax.Array:
+  """The rotation b, then a (w, x, y, z)."""
+  aw, ax, ay, az = a[0], a[1], a[2], a[3]
+  bw, bx, by, bz = b[0], b[1], b[2], b[3]
+  return jp.array([aw * bw - ax * bx - ay * by - az * bz, aw * bx + ax * bw + ay * bz - az * by,
+                   aw * by - ax * bz + ay * bw + az * bx, aw * bz + ax * by - ay * bx + az * bw])
 
 
 def _f32(x):
@@ -252,6 +262,8 @@ class CreatureWalk(mjx_env.MjxEnv):
       q0[3] = 1.0
       q0[7:7 + self._nj] = self._body["standPose"]
     self._init_q = jp.array(q0, dtype=jp.float32)
+    # A settled pose keeps the tilt the body stood at (body.py stands it facing +x); reset turns it to a random heading.
+    self._stand_tilt = "standQpos" in self._body
     lowers, uppers = m.jnt_range[1:1 + self._nj].T
     mid, half = (lowers + uppers) / 2, (uppers - lowers) / 2
     f = self._config.soft_joint_pos_limit_factor
@@ -262,11 +274,17 @@ class CreatureWalk(mjx_env.MjxEnv):
     self._torso = m.body("torso").id
     legs = list(self._body["legs"])
     self._feet = np.array([m.geom(f"{leg}_foot").id for leg in legs])
-    # The foot's lowest point below its centre: measured for any shape (body.py footRadius), else a sphere's radius.
-    # (Without footRadius this is the old expression exactly: a dtype on a float64 array would add a conversion program,
-    # and a body that compiled before must compile the same programs so its cache still hits.)
-    self._foot_r = (jp.array(np.asarray(self._body["footRadius"], dtype=np.float32)) if "footRadius" in self._body
-                    else jp.array(m.geom_size[self._feet, 0]))
+    # The foot's lowest point below its centre. Sphere feet (every preset body): the radius, the old expression exactly,
+    # so a body that compiled before compiles the same programs and its cache still hits. Any other shape reaches lower
+    # or higher as it turns, so it is measured at every step from the foot's orientation (body.foot_drop).
+    types = m.geom_type[self._feet]
+    bad = [legs[k] for k, t in enumerate(types) if int(t) not in FOOT_SHAPES]
+    if bad:
+      raise ValueError(f"feet {bad}: a foot is a sphere, capsule, cylinder, box or ellipsoid")
+    if (types == mujoco.mjtGeom.mjGEOM_SPHERE).all():
+      self._foot_r, self._foot_types, self._foot_sizes = jp.array(m.geom_size[self._feet, 0]), None, None
+    else:
+      self._foot_r, self._foot_types, self._foot_sizes = None, np.asarray(types), np.asarray(m.geom_size[self._feet], dtype=np.float32)
     self._nfeet = len(legs)
     # Diagonal trot: leg k of pair p on side s is in phase group (p + s) % 2.
     self._trot_group = jp.array([((k // 2) + (k % 2)) % 2 for k in range(self._nfeet)])
@@ -337,7 +355,9 @@ class CreatureWalk(mjx_env.MjxEnv):
 
   def _feet_state(self, data: mjx.Data):
     p = data.geom_xpos[self._feet]
-    clearance = p[:, 2] - self._foot_r - self._ground_height(p[:, :2])
+    drop = (self._foot_r if self._foot_types is None
+            else foot_drop(self._foot_types, self._foot_sizes, data.geom_xmat[self._feet][:, 2, :], xp=jp))
+    clearance = p[:, 2] - drop - self._ground_height(p[:, :2])
     contact = clearance < 0.005
     return p, clearance, contact
 
@@ -397,7 +417,8 @@ class CreatureWalk(mjx_env.MjxEnv):
     qpos = qpos.at[0:3].add(spawn)
     qpos = qpos.at[0:2].add(jax.random.uniform(k1, (2,), minval=-jitter, maxval=jitter))
     yaw = jax.random.uniform(k2, minval=-jp.pi, maxval=jp.pi)
-    qpos = qpos.at[3:7].set(jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)]))
+    turn = jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)])
+    qpos = qpos.at[3:7].set(_quat_mul(turn, qpos[3:7]) if self._stand_tilt else turn)
     qpos = qpos.at[self._qs].add(jax.random.uniform(k3, (self._nj,), minval=-0.1, maxval=0.1))
     qvel = jp.zeros(self._mj_model.nv).at[0:6].set(jax.random.uniform(k4, (6,), minval=-0.3, maxval=0.3))
     # Getup practice: some episodes start dropped from 0.3 m above stance in a uniformly random orientation.

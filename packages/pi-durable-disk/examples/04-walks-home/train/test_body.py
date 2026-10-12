@@ -2,7 +2,8 @@
 
 What they pin: a body built by the tab derives exactly the body.json the trainer used before; a body with a joint on a
 spring (no motor) after the motors is accepted and its passive joint kept in the start pose; a passive joint before a
-motor, or a body without named feet, is refused with what to fix; a flat foot is measured by its height, not a radius.
+motor, a body without named feet, or a control that is not a position target, is refused with what to fix; a flat foot is
+measured by its height, not a radius, and a foot's lowest point follows its orientation.
 """
 
 import json
@@ -10,7 +11,10 @@ import os
 import re
 import unittest
 
-from body import BodyRefused, body_from_mjcf
+import mujoco
+import numpy as np
+
+from body import BodyRefused, body_from_mjcf, foot_drop
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XML = open(os.path.join(HERE, "default", "creature.xml")).read()
@@ -51,6 +55,44 @@ class BodyTest(unittest.TestCase):
     b = body_from_mjcf(xml)
     self.assertGreaterEqual(b["footRadius"][0], 0.015)
     self.assertLess(b["footRadius"][0], 0.05, "not the box's half length, which a sphere's radius would be")
+
+
+  def test_a_motor_or_velocity_actuator_is_refused(self):
+    # The policy sends joint-angle targets: a motor (a torque) or a velocity actuator would read them as something else.
+    for kind in ('<motor name="l0_hip_a" joint="l0_hip" gear="1" ctrlrange="-2.5 2.5"/>',
+                 '<velocity name="l0_hip_a" joint="l0_hip" kv="1" ctrlrange="-2.5 2.5"/>'):
+      xml = re.sub(r'<position name="l0_hip_a"[^>]*/>', kind, XML)
+      with self.assertRaisesRegex(BodyRefused, "position"):
+        body_from_mjcf(xml)
+
+
+class FootDropTest(unittest.TestCase):
+  def test_the_lowest_point_follows_the_orientation(self):
+    # Each shape at random orientations: foot_drop equals the depth of its lowest point, from the shape's own surface.
+    rng = np.random.default_rng(3)
+    G = mujoco.mjtGeom
+    def lowest(t, size, R):
+      if t == int(G.mjGEOM_BOX):
+        corners = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]) * size
+        return -min((R @ c)[2] for c in corners)
+      # sample the surface densely: points on a unit sphere, mapped onto the shape
+      u = rng.normal(size=(20000, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
+      if t == int(G.mjGEOM_ELLIPSOID):
+        pts = u * size
+      elif t == int(G.mjGEOM_CAPSULE):
+        pts = u * size[0] + np.outer(np.sign(u[:, 2]), [0, 0, size[1]])
+      else:  # cylinder: the rim circles and the caps
+        a = rng.uniform(0, 2 * np.pi, 20000)
+        pts = np.stack([size[0] * np.cos(a), size[0] * np.sin(a), rng.choice([-1, 1], 20000) * size[1]], axis=1)
+      return -min((pts @ R.T)[:, 2])
+    for t, size in ((int(G.mjGEOM_BOX), [0.05, 0.035, 0.015]), (int(G.mjGEOM_ELLIPSOID), [0.06, 0.04, 0.02]),
+                    (int(G.mjGEOM_CAPSULE), [0.02, 0.05, 0]), (int(G.mjGEOM_CYLINDER), [0.03, 0.04, 0]), (int(G.mjGEOM_SPHERE), [0.023, 0, 0])):
+      for _ in range(5):
+        q = rng.normal(size=4); q /= np.linalg.norm(q)
+        R = np.zeros(9); mujoco.mju_quat2Mat(R, q); R = R.reshape(3, 3)
+        got = foot_drop(np.array([t]), np.array([size], dtype=float), R[2][None, :])[0]
+        want = size[0] if t == int(G.mjGEOM_SPHERE) else lowest(t, np.array(size, dtype=float), R)
+        self.assertAlmostEqual(got, want, delta=1e-3 if t in (int(G.mjGEOM_BOX), int(G.mjGEOM_SPHERE)) else 2e-3, msg=f"type {t}")
 
 
 if __name__ == "__main__":
