@@ -40,3 +40,64 @@ describe("the cloud link", () => {
     assert.equal(proxy.spent, 15);
   });
 });
+
+describe("the GPU boxes over the cloud link", () => {
+  const PORT2 = 18796;
+  let model: Awaited<ReturnType<typeof modelStub>>;
+  let link: CloudLink;
+  const dialers: LinkDialer[] = [];
+  before(async () => {
+    model = await modelStub(() => "x");
+    link = await startCloudLink({ port: PORT2, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+  });
+  after(async () => {
+    for (const d of dialers) d.close();
+    await link.close();
+    await model.close();
+  });
+  const proxy = () => new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 });
+  const enc = (s: string) => new TextEncoder().encode(s);
+  async function* once(s: string) {
+    yield enc(s);
+  }
+  const until = async (check: () => boolean) => {
+    for (const end = Date.now() + 5_000; !check(); await new Promise((r) => setTimeout(r, 25))) if (Date.now() > end) throw new Error("timed out");
+  };
+
+  it("a host with no boxes from the server is refused cleanly, and one with boxes runs a command through the link", async () => {
+    const plain = dialLink({ url: `ws://127.0.0.1:${PORT2}/`, token: "tok", proxy: proxy(), log: () => undefined, retryMs: 100 });
+    dialers.push(plain);
+    await until(() => true);
+    await new Promise((r) => setTimeout(r, 300));
+    await assert.rejects(link.gpu.acquire("t1"), /no GPU boxes/);
+    plain.close();
+    await new Promise((r) => setTimeout(r, 200));
+    const held = new Set<string>();
+    const gpu = dialLink({
+      url: `ws://127.0.0.1:${PORT2}/`,
+      token: "tok",
+      proxy: proxy(),
+      log: () => undefined,
+      retryMs: 100,
+      gpu: {
+        acquire: async (thread) => (held.add("box-9"), `box-9:${thread}`),
+        release: () => undefined,
+        holds: (box) => box.startsWith("box-9"),
+        exec: async (_box, argv) => ({ stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: once(`ran ${argv.join(" ")}`), stderr: once(""), wait: async () => 0 }),
+        poll: async () => null,
+      },
+    });
+    dialers.push(gpu);
+    await until(() => true);
+    let box = "";
+    for (const end = Date.now() + 5_000; !box; await new Promise((r) => setTimeout(r, 100))) {
+      if (Date.now() > end) throw new Error("the host never got its box");
+      box = await link.gpu.acquire("t2").catch(() => "");
+    }
+    const p = await link.gpu.linkBox(box).exec(["echo", "hi"], { mode: "binary" });
+    let out = "";
+    for await (const c of p.stdout) out += new TextDecoder().decode(c);
+    assert.equal(out, "ran echo hi");
+    assert.equal(await p.wait(), 0);
+  });
+});

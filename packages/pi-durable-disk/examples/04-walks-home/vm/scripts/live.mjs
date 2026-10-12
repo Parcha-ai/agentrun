@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForFile, waitForStage } from "../../show/scripts/cdp.mjs";
 import { startScreencast } from "../../show/scripts/screencast.mjs";
+import { agentLink } from "../agent-link.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..", "..", "show");
@@ -39,8 +40,26 @@ const graceMs = arg("grace-ms", ownBrowser ? "180000" : "30000");
 const openWaitMs = Number(arg("open-wait-ms", 1_800_000));
 // The placement question's client: scripted until the key exists ("jev" needs TYPESAFE_API_KEY in the server's environment).
 const placerClient = arg("placer", "scripted");
-// The episode: "walks" (a creature learns to walk) or "model" (a language model is trained and comes home as a large file nobody restores).
+// The episode: "walks" (a creature learns to walk), "model" or "obsession" (a language model is trained and comes home as a large file nobody restores), or
+// "robot" (one session on a Modal VM forks threads that train skills on a pool of GPU boxes, all of them coming home to the browser).
 const episode = arg("episode", "walks");
+if (!["walks", "model", "obsession", "robot"].includes(episode)) throw new Error(`--episode is walks, model, obsession or robot, not ${episode}`);
+const robot = episode === "robot";
+// Robot: the cluster's boxes (a pool of 2 until the whole flow passes, then 8), their image, and what a box runs to show it is ready.
+const clusterSize = Number(arg("cluster-size", 2));
+const clusterImage = arg("cluster-image", "");
+const clusterReady = arg("cluster-ready", "");
+// The skill each box warms for (box 0 first): with a pool of 2, a fast skill and a slow one.
+const clusterSkills = arg("cluster-skills", "walk,spin,sprint,backwards,turn-left,turn-right,get-up,wave");
+if (robot && !clusterImage) throw new Error("--cluster-image names D2's skill-trainer image");
+if (robot && !(Number.isInteger(clusterSize) && clusterSize >= 1)) throw new Error("--cluster-size is a whole number of boxes");
+// How many skills the teach step is for (the home check says "N of M came home" against it).
+const robotSkills = Number(arg("robot-skills", 8));
+// The page that shows the run (served by the stage), and the query the agent's page is opened with.
+const stagePath = arg("stage-path", "");
+const linkQuery = arg("link-query", "golive=1");
+// The model's token budget for the run (a robot session has nine conversations).
+const modelBudget = String(arg("model-budget", robot ? 30_000_000 : 3_000_000));
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
 const warmCommandsFile = arg("warm-commands-file", "");
 // How long the user looks at the flopping creature before asking; the warm-up (about a minute) runs in that time and in the agent's first turn.
@@ -52,8 +71,8 @@ const tabDir = process.env.TAB_DIR;
 const policyDir = process.env.POLICY_DIR ?? join(show, "page", "policy");
 if (!tabDir) throw new Error("TAB_DIR names D3's tab app dist");
 if (ownBrowser && !/^\d+$/.test(serverPort)) throw new Error("--server-port is a port number");
-if (!gpuImage) throw new Error("--gpu-image names D2's training image");
-if (!gpuNoteFile) throw new Error("--gpu-note-file holds the note the GPU notice carries (D2's command)");
+if (!robot && !gpuImage) throw new Error("--gpu-image names D2's training image");
+if (!robot && !gpuNoteFile) throw new Error("--gpu-note-file holds the note the GPU notice carries (D2's command)");
 process.env.CDP_URL = cdpUrl;
 const work = join(homedir(), "tmp-d4take", `take-${Date.now().toString(36)}`);
 mkdirSync(work, { recursive: true, mode: 0o700 });
@@ -61,7 +80,7 @@ mkdirSync(dirname(out), { recursive: true });
 
 // The user's one sentence. Everything else the agent knows comes from its instructions and the notice of the machine it is on.
 const SAY = process.env.TAKE_SAY ?? "teach it to walk";
-const GPU_NOTE = readFileSync(gpuNoteFile, "utf8").trim();
+const GPU_NOTE = robot ? "" : readFileSync(gpuNoteFile, "utf8").trim();
 
 const kids = [];
 // The host's wrapper that gives a command the disk's credentials (WITH_ARCHIL names it; default: on PATH).
@@ -132,7 +151,7 @@ try {
       "--mount-root", mountRoot,
       "--dir", join(work, "take"),
       "--run", "walks-home",
-      "--budget", "3000000",
+      "--budget", modelBudget,
       "--evidence-readback",
       "--grace-ms", graceMs,
       ...(ownBrowser ? ["--port", serverPort] : []),
@@ -140,31 +159,46 @@ try {
       "--cloud-module", join(here, "..", "cloud-module.ts"),
       "--placer-module", join(here, "..", "placer.ts"),
       ...(placerClient ? ["--placer-arg", `client=${placerClient}`] : []),
-      ...(episode !== "walks" ? ["--placer-arg", `episode=${episode === "obsession" ? "obsession" : "model"}`, "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
+      ...(episode !== "walks" && !robot ? ["--placer-arg", `episode=${episode === "obsession" ? "obsession" : "model"}`, "--placer-arg", `home-wait-ms=${arg("home-wait-ms", 120000)}`, "--no-restore", "home/model/", "--tab-writable-extra", "creature/model-loaded.json", "--openai", "--judge-model", "gpt-4.1-mini", "--judge-url", "https://api.openai.com/v1", "--judge-key-env", "OPENAI_API_KEY"] : []),
+      // The robot: the session is moved to the Modal VM by the placer's "teach" rule; the model files and skills are not restored into the tab (they travel as chunks and files).
+      ...(robot ? ["--placer-arg", "episode=robot", "--placer-arg", `skills=${robotSkills}`, "--no-restore", "home/"] : []),
       ...(placerClient === "jev" ? ["--typesafe"] : []),
-      "--cloud-arg", "vm=false",
-      "--cloud-arg", "warm=gpu",
-      // A session may hold several tasks: when the agent is back in the tab the next box starts warming, and a move waits for it (up to 8 minutes).
-      ...(episode === "obsession" ? ["--cloud-arg", "rewarm=true", "--remote-start-ms", "480000"] : []),
-      ...(warmCommandsFile ? ["--cloud-arg", `warm-commands-file=${warmCommandsFile}`, "--cloud-arg", "warm-env=XLA_PYTHON_CLIENT_PREALLOCATE=false"] : []),
-      "--cloud-arg", `gpu-image=${gpuImage}`,
-      "--cloud-arg", "gpu-type=H100",
-      // The box's own lifetime is the backstop when this script or the server is killed: the prewarm, the take and margin, not the default 45 minutes.
-      ...(episode === "obsession"
+      ...(robot
         ? [
-            "--cloud-arg", "gpu-cpu=8",
-            "--cloud-arg", "gpu-memory-mib=196608",
-            "--cloud-arg", "gpu-volume=pda-demo-d2-obsession:/vol",
-            "--cloud-arg", `gpu-start-file=${join(here, "..", "obsession-box.txt")}`,
-            "--cloud-arg", "gpu-start-env=OPENAI_API_KEY",
-            "--cloud-arg", "gpu-ready=grep -q engine.ready /var/tmp/engine.log",
-            "--cloud-arg", "gpu-ready-timeout-s=600",
+            // The session's VM mounts the disk (the default transport) and the cluster's boxes start when the first page takes the run.
+            "--cloud-arg", `cluster-size=${clusterSize}`,
+            "--cloud-arg", `cluster-image=${clusterImage}`,
+            "--cloud-arg", `cluster-ttl-minutes=${arg("ttl", 45)}`,
+            "--cloud-arg", "cluster-cpu=8",
+            "--cloud-arg", "cluster-memory-mib=65536",
+            "--cloud-arg", `cluster-skills=${clusterSkills}`,
+            ...(clusterReady ? ["--cloud-arg", `cluster-ready=${clusterReady}`] : []),
           ]
-        : []),
-      "--cloud-arg", `gpu-ttl-minutes=${arg("ttl", 45)}`,
-      ...(arg("gpu-cpu", "") ? ["--cloud-arg", `gpu-cpu=${arg("gpu-cpu", "")}`] : []),
-      ...(arg("gpu-memory-mib", "") ? ["--cloud-arg", `gpu-memory-mib=${arg("gpu-memory-mib", "")}`] : []),
-      "--cloud-arg", `gpu-note=${GPU_NOTE}`,
+        : [
+        "--cloud-arg", "vm=false",
+        "--cloud-arg", "warm=gpu",
+        // A session may hold several tasks: when the agent is back in the tab the next box starts warming, and a move waits for it (up to 8 minutes).
+        ...(episode === "obsession" ? ["--cloud-arg", "rewarm=true", "--remote-start-ms", "480000"] : []),
+        ...(warmCommandsFile ? ["--cloud-arg", `warm-commands-file=${warmCommandsFile}`, "--cloud-arg", "warm-env=XLA_PYTHON_CLIENT_PREALLOCATE=false"] : []),
+        "--cloud-arg", `gpu-image=${gpuImage}`,
+        "--cloud-arg", "gpu-type=H100",
+        // The box's own lifetime is the backstop when this script or the server is killed: the prewarm, the take and margin, not the default 45 minutes.
+        ...(episode === "obsession"
+          ? [
+              "--cloud-arg", "gpu-cpu=8",
+              "--cloud-arg", "gpu-memory-mib=196608",
+              "--cloud-arg", "gpu-volume=pda-demo-d2-obsession:/vol",
+              "--cloud-arg", `gpu-start-file=${join(here, "..", "obsession-box.txt")}`,
+              "--cloud-arg", "gpu-start-env=OPENAI_API_KEY",
+              "--cloud-arg", "gpu-ready=grep -q engine.ready /var/tmp/engine.log",
+              "--cloud-arg", "gpu-ready-timeout-s=600",
+            ]
+          : []),
+        "--cloud-arg", `gpu-ttl-minutes=${arg("ttl", 45)}`,
+        ...(arg("gpu-cpu", "") ? ["--cloud-arg", `gpu-cpu=${arg("gpu-cpu", "")}`] : []),
+        ...(arg("gpu-memory-mib", "") ? ["--cloud-arg", `gpu-memory-mib=${arg("gpu-memory-mib", "")}`] : []),
+        "--cloud-arg", `gpu-note=${GPU_NOTE}`,
+        ]),
       "--cloud-arg", "regions=us-east",
       "--cloud-arg", "prefix=pda-demo-d4-",
       "--cloud-arg", "app=pda-demo-d4",
@@ -179,6 +213,9 @@ try {
   const linkFile = status.linkFile;
   const link = readFileSync(linkFile, "utf8").trim();
   step("the take's 03 server is up", { origin: status.origin, mode: status.mode });
+  // The agent's page, built once: the robot's page also needs the switches for going offline and back (D3's ?golive=1), whoever opens it (the person's browser,
+  // this box's Chrome, a reopen); the fragment (the run's secret) stays last.
+  const agentUrl = robot ? agentLink(link, linkQuery) : link;
 
   // 2. the stage, following the run's link
   const stagePort = Number(arg("port", 8760));
@@ -190,27 +227,37 @@ try {
   if (ownBrowser) {
     // The person's browser is the agent's tab: print the link once (the fragment is the run's secret) and the tunnel that reaches both servers.
     const origin = new URL(link);
-    console.log(`LIVE: open this link in your browser; it is the agent's tab. Anyone with it can take over the run, so do not share it: ${link}`);
+    // The robot's page also needs the switches for going offline and back (D3's ?golive=1); the fragment (the run's secret) stays last.
+    console.log(`LIVE: open this link in your browser; it is the agent's tab. Anyone with it can take over the run, so do not share it: ${agentUrl}`);
     console.log(`LIVE: reach both servers from your machine with: ssh -N -o ServerAliveInterval=5 -L ${origin.port}:127.0.0.1:${origin.port} -L ${stagePort}:127.0.0.1:${stagePort} ubuntu@<this box's tailnet address>`);
-    console.log(`LIVE: then open the link above, and the stage at http://127.0.0.1:${stagePort}/${episode === "obsession" ? "obsession/" : ""} in another window; keep both windows visible (not minimized)`);
+    console.log(`LIVE: then open the link above, and the stage at http://127.0.0.1:${stagePort}/${episode === "obsession" ? "obsession/" : stagePath} in another window; keep both windows visible (not minimized)`);
     step("waiting for your browser to open the link", { serverPort: Number(origin.port), stagePort });
   } else {
-    writer = await unlessStopped(openTab(link, { width: 1400, height: 800 }));
+    writer = await unlessStopped(openTab(agentUrl, { width: 1400, height: 800 }));
     await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", 240_000, "the 03 page to attach as the writer");
     step("the 03 page runs the agent");
   }
   // The warm GPU box: ready before anyone is told to start (with the person's browser, it starts warming when their page attaches).
+  if (robot) {
+    // Every box of the pool has come up or failed; a pool where none came up is a failed start.
+    const count = (event) => (readFileSync(join(work, "take", "server.log"), "utf8").match(new RegExp(`"event":"${event}"`, "g")) ?? []).length;
+    await until(() => count("cluster.box-up") + count("pool.box-failed") >= clusterSize, ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
+    const up = count("cluster.box-up");
+    if (up === 0) throw new Error("no GPU box came up");
+    step("the cluster", { up, failed: count("pool.box-failed"), of: clusterSize });
+  } else {
   await until(() => readFileSync(join(work, "take", "server.log"), "utf8").includes('"remote.ready"'), ownBrowser ? openWaitMs : episode === "obsession" ? 900_000 : 240_000, "the warm GPU box");
+  }
   const readyAt = new Date();
   const until_ = new Date(readyAt.getTime() + Number(arg("ttl", 45)) * 60_000);
-  step("LIVE: ready", { url: `http://127.0.0.1:${stagePort}/`, gpuBoxExpiresAt: until_.toISOString().slice(11, 19) + "Z", ttlMinutes: Number(arg("ttl", 45)) });
+  step("LIVE: ready", { url: `http://127.0.0.1:${stagePort}/${stagePath}`, gpuBoxExpiresAt: until_.toISOString().slice(11, 19) + "Z", ttlMinutes: Number(arg("ttl", 45)) });
   // Keep going until told to stop; if the 03 page's tab goes away, open it again (the agent needs a place to start).
   while (!stopping) {
     await sleep(5000);
     const alive = ownBrowser ? 1 : await Promise.race([writer.eval("1").catch(() => 0), sleep(3000).then(() => 0)]);
     if (!alive) {
       step("the 03 page went away; opening it again");
-      writer = await openTab(link, { width: 1400, height: 800 }).catch(() => undefined);
+      writer = await openTab(agentUrl, { width: 1400, height: 800 }).catch(() => undefined);
       if (!writer) break;
     }
     if (Date.now() > until_.getTime()) {

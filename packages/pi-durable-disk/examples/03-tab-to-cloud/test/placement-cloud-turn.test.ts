@@ -163,3 +163,49 @@ describe("a message that arrives while the agent is on its way home", () => {
     home.close();
   });
 });
+
+describe("a mounted cloud host that reports its notice (notifiesSwitched)", () => {
+  let local: Awaited<ReturnType<typeof localServer>>;
+  const submitted: string[] = [];
+  let api: { switched(ref: unknown, switchId: string): void } | undefined;
+  const placer: Placer = {
+    describe: (env) => `criterion of ${env}`,
+    async decide(query) {
+      const choice = query.phase === "done" ? "tab" : /teach/.test(query.message) ? "vm" : "tab";
+      const decision: PlacementDecision = { id: `n-${query.phase}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 0.9 : 0.1 })), choice, latency_ms: 1, model: "scripted" };
+      return decision;
+    },
+  };
+  const cloud: CloudHost = {
+    environments: [{ id: "vm", label: "A VM", phrase: "a VM", kind: "cloud" }],
+    notifiesSwitched: true,
+    bind: (server) => void (api = server as never),
+    start: async (ref, run) => {
+      // The host's agent commits its notice shortly after it started, and says so.
+      setTimeout(() => api?.switched(ref, (run as { move: { id: string } }).move.id), 300);
+      return { host: "vm-1" };
+    },
+    stop: async () => undefined,
+    attachViewer: async () => () => undefined,
+    submit: async (_ref, text) => void submitted.push(text),
+  };
+  before(async () => {
+    local = await localServer({ cloud, placer, drainMs: 5_000, superviseMs: 60_000 });
+  });
+  after(async () => {
+    await local.remove();
+  });
+
+  it("delivers the message the move was for to the host once the host reports its notice", async () => {
+    const { id, secret } = await local.server.createRun("notified");
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && tab.send({ t: "drained", switchId: f.switchId }) });
+    await tab.ready;
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: () => undefined });
+    await page.ready;
+    page.send({ t: "submit", text: "teach it to move", requestId: "n1" });
+    for (const end = Date.now() + 10_000; submitted.length === 0; await new Promise((r) => setTimeout(r, 50))) if (Date.now() > end) throw new Error("the message never reached the host");
+    assert.deepEqual(submitted, ["teach it to move"]);
+    tab.close();
+    page.close();
+  });
+});

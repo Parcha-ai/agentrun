@@ -2,6 +2,7 @@
 // ModelProxy, redial while the run is there, and relay the run's agent events to whoever subscribed. The connection
 // carries a bearer token the server gave the host at start.
 import WebSocket from "ws";
+import { isGpuFrame, serveGpu, type GpuFrame, type GpuServer } from "./gpu-rpc.ts";
 import type { ModelProxy } from "./model-proxy.ts";
 
 type Frame =
@@ -9,7 +10,8 @@ type Frame =
   | { t: "model-abort"; id: number }
   | { t: "event"; kind: "snapshot" | "events"; data: unknown }
   | { t: "switch"; to: string; reason?: string; ask: string }
-  | { t: "switched"; switchId: string };
+  | { t: "switched"; switchId: string }
+  | GpuFrame;
 
 export type LinkEvent = { kind: "snapshot" | "events"; data: unknown };
 
@@ -28,6 +30,8 @@ export function dialLink(opts: {
   onSwitch?: (to: string, reason: string) => Promise<{ switchId: string }>;
   /** The host's agent has the notice of move `switchId` committed. */
   onSwitched?: (switchId: string) => void;
+  /** The GPU boxes this run's host may use (the cluster beat): the host asks for a box and runs commands in it through this link. Absent: the host's gpu calls are refused. */
+  gpu?: GpuServer;
   log: (event: string, data?: Record<string, unknown>) => void;
   retryMs?: number;
 }): LinkDialer {
@@ -43,8 +47,14 @@ export function dialLink(opts: {
       opts.log("link.dialed");
       if (listeners.size > 0) askWatch();
     });
+    const gpu = opts.gpu ? serveGpu(opts.gpu, (out) => void (ws.readyState === ws.OPEN && ws.send(JSON.stringify(out))), opts.log) : undefined;
     ws.on("message", (data) => {
       const frame = JSON.parse(String(data)) as Frame;
+      if (isGpuFrame(frame)) {
+        if (gpu) gpu.handle(frame);
+        else if ("id" in frame && frame.t !== "gpu-ok" && frame.t !== "gpu-data" && frame.t !== "gpu-exit" && frame.t !== "gpu-err") ws.send(JSON.stringify({ t: "gpu-err", id: frame.id, message: "this server has no GPU boxes for the run" } satisfies GpuFrame));
+        return;
+      }
       if (frame.t === "event") {
         for (const listener of listeners) listener({ kind: frame.kind, data: frame.data });
         return;
@@ -77,6 +87,7 @@ export function dialLink(opts: {
         .finally(() => aborts.delete(frame.id));
     });
     ws.on("close", (code) => {
+      gpu?.close();
       for (const abort of aborts.values()) abort.abort();
       aborts.clear();
       if (!closed) setTimeout(connect, opts.retryMs ?? 2_000);

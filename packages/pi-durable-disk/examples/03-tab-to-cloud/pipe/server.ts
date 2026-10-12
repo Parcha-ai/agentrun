@@ -684,8 +684,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   /** A user's message to the host that runs the run: the writer tab or remote host through the pipe, the cloud host through its link. */
   async function deliverSubmit(state: RunState, text: string, requestId: string): Promise<void> {
-    if (state.pipe) state.pipe.broadcast({ t: "submit", text, requestId });
-    else if (state.placement.where === "cloud") await options.cloud?.submit?.(state.ref, text, requestId);
+    const started = Date.now();
+    if (state.pipe) {
+      state.pipe.broadcast({ t: "submit", text, requestId });
+      log("submit.delivered", { run: state.ref.id, to: "pipe", requestId });
+    } else if (state.placement.where === "cloud") {
+      await options.cloud?.submit?.(state.ref, text, requestId);
+      log("submit.delivered", { run: state.ref.id, to: "cloud", requestId, ms: Date.now() - started });
+    } else log("submit.undeliverable", { run: state.ref.id, where: state.placement.where, requestId });
   }
 
   /**
