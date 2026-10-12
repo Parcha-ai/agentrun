@@ -8,6 +8,7 @@
 // the same skill is marked running stops it first (here it already died with the host, so it is only recorded).
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { ThreadArtifacts, ThreadBoxes } from "../teach-skills.ts";
@@ -16,8 +17,12 @@ type ExecArgs = Parameters<NodeExecutionEnv["exec"]>;
 type ExecReturn = ReturnType<NodeExecutionEnv["exec"]>;
 
 /** Checkpoints a skill needs before it passes (D2's measured seconds / ~7 s per checkpoint); wave never passes here. */
-export const PASS_AT: Record<string, number | null> = { walk: 3, sprint: 3, backwards: 6, "turn-left": 5, "turn-right": 5, spin: 6, "get-up": 6, wave: null };
+export const PASS_AT: Record<string, number | null> = { walk: 3, sprint: 3, backwards: 6, "turn-left": 5, "turn-right": 5, spin: 6, "get-up": 6, wave: null, bow: 4 };
 export const MAX_CHECKPOINTS = 8;
+/** The library's files as the image bakes them (04-walks-home/train/skills/ → /opt/pda/train/skills/): a copy is the real files. */
+const LIBRARY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "train", "skills");
+/** The trainer's own reward terms (creature_env.REWARD_TERMS): a skill's reward.py may not reuse these names. */
+const BUILTIN_TERMS = ["tracking_lin_vel", "tracking_yaw", "lin_vel_z", "ang_vel_xy", "orientation", "base_height", "torques", "action_rate", "energy", "pose", "stand_still", "dof_pos_limits", "feet_air_time", "feet_slip", "feet_clearance", "feet_height", "trot_clock", "upright", "alive", "termination"];
 /** D2's worked skills, as the image ships them: skill name → its directory in /opt/pda/train/skills/ (get-up's has no hyphen). */
 export const EXAMPLES: Readonly<Record<string, string>> = { walk: "walk", sprint: "sprint", backwards: "backwards", "turn-left": "turn-left", "turn-right": "turn-right", spin: "spin", wave: "wave", "get-up": "getup" };
 
@@ -171,6 +176,19 @@ export class FakeBoxEnv extends NodeExecutionEnv {
         say(`${JSON.stringify({ event: "skill.refused", error: why })}\n`);
         return { ok: true, value: { exitCode: 2 } } as never;
       }
+      // D2's rule for a skill's own reward terms, checked as the trainer compiles: every name in reward.py's dict is
+      // weighted in skill.json's reward_scales, and none reuses a built-in name.
+      const reward = await this.readTextFile(`${skillDir}/reward.py`, context);
+      if (reward.ok && !t.includes("--check")) {
+        const scales = (JSON.parse(config.ok ? config.value : "{}") as { reward_scales?: Record<string, number> }).reward_scales ?? {};
+        const terms = [...(/return\s*\{([\s\S]*)\}/.exec(reward.value)?.[1] ?? "").matchAll(/"([A-Za-z_]\w*)"\s*:/g)].map((m) => m[1]!);
+        const wrong = terms.length === 0 ? "reward.py returns no terms" : terms.map((n) => (BUILTIN_TERMS.includes(n) ? `reward.py's term ${n} reuses a built-in name` : !(n in scales) ? `reward.py's term ${n} has no weight in skill.json's reward_scales` : "")).find(Boolean);
+        if (wrong) {
+          writeAtomic(outJson, JSON.stringify({ skill: t[1], status: "failed", error: wrong, passed_at: null }));
+          say(`${wrong}\n`);
+          return { ok: true, value: { exitCode: 1 } } as never;
+        }
+      }
       if (t.includes("--compile-only")) {
         writeAtomic(outJson, JSON.stringify({ skill: t[1], status: "compiled", passed_at: null }));
         say("compiled: the skill dir and the body are fine\n");
@@ -202,8 +220,7 @@ export class FakeBoxEnv extends NodeExecutionEnv {
         say(`cp: cannot create directory '${t[3]}': No such file or directory\n`);
         return { ok: true, value: { exitCode: 1 } } as never;
       }
-      writeAtomic(join(dest, "skill.json"), JSON.stringify({ name, label: name, command: 0, reward_scales: { feet_air_time: 1 }, env: {} }));
-      writeAtomic(join(dest, "test.py"), `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${name}", "value": 0, "unit": "", "target": ">= 1.0"}\n`);
+      for (const file of readdirSync(join(LIBRARY, example))) writeAtomic(join(dest, file), readFileSync(join(LIBRARY, example, file), "utf8"));
       return { ok: true, value: { exitCode: 0 } } as never;
     }
     if (t[0] === "cat" && t.length === 2) {

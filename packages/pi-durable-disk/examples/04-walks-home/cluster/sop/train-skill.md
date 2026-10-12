@@ -80,10 +80,40 @@ def terms(s):
      change one weight in skill.json's `reward_scales` with an edit (not a rewrite) and train at 12M again. If the
      retry does not pass either, stop and report never passed with the trainer's diagnosis.
    - Steps 2 to 5 are for skills the library does not have.
-2. **Otherwise, write it from the closest example.** Read `robot/body.json` (its motors, legs and tags), then
-   `ls /opt/pda/train/skills` and `cat /opt/pda/train/skills/<closest>/*`. Copy it to `skills/<your skill>` (`mkdir -p skills` first), then
-   edit skill.json (its name is your skill), reward.py and test.py for your brief and this body. Make test.py measure
-   exactly the quantity the brief names, against the brief's number, over the 10 s rollout.
+2. **Not in the library? Start from the closest library skill, never from an empty directory.**
+   - The closest: a pose held in place (bow, sit, rear up) or a part that moves while the robot stands starts from
+     `wave`; turning or dancing in place from `spin`; going somewhere (hop forward, trot, run) from `walk`, `sprint` or
+     `backwards`.
+   - Copy it under your skill's name: `mkdir -p skills && cp -r /opt/pda/train/skills/<closest> skills/<your skill>`.
+     Then edit skill.json: `name` is your skill and `label` a few plain words. Keep its `env` and its `reward_scales`,
+     except the term that does the library skill's own thing (wave's `feet_height`) and any that fights your pose
+     (`pose`, `stand_still`, `base_height` for a low one): set those to 0.
+   - Check that the body can make the motion. List the part's joints with their axes (here the tail):
+     `python3 -c "import json,re; b=json.load(open('robot/body.json')); bodies={re.sub(r'(_g\d+)?_geom$','',g) for g,t in b['tags'].items() if 'tail' in t}; print([(j['name'], j['axis'], 'spring' if j['passive'] else 'motor') for j in b['joints'] if j['body'] in bodies])"`
+     A joint turns about its axis: `[0, 1, 0]` pitches (up and down, a nod), `[0, 0, 1]` yaws (side to side), `[1, 0, 0]`
+     rolls. A spring has no motor: the robot moves it only through its body's motion. If the motion needs an axis the
+     part does not have (a side-to-side wag on a tail whose joints all pitch), do not train a stand-in: report that this
+     body cannot make it and what would (a joint turning that way there, which is a body change).
+   - The trainer names parts by MuJoCo name, never by tag: `s.joint("tail0_j")`, `s.body_pos("head")` and `s.pitch` in a
+     reward; `r.joint(name)`, `r.body_pos(name)` and `r.pitch` (one value per step) in a test.
+   - Edit test.py: keep its rollout, its fall check and its standing check, and change only the metric to your pose or
+     part and the brief's number. A bow (the nose held down):
+     ```python
+     down = r.share(r.pitch < -0.25, after_s=2)  # nose down, after the first 2 s
+     ok = r.fell_at is None and down >= 0.6 and r.total_mps() <= 0.15
+     return ok, {"name": "bow", "value": round(down, 2), "unit": "share of time", "target": ">= 0.6"}
+     ```
+     Sitting or rearing up is the other way: `r.pitch > 0.25`.
+   - Write reward.py with ONE term for it, dense (it pays a little from the standing pose on) and named unlike the
+     trainer's own terms, and give it a weight in skill.json's `reward_scales` (start at 3.0):
+     ```python
+     import jax.numpy as jp
+
+     def terms(s):
+         return {"bow_pitch": jp.exp(-((s.pitch + 0.3) / 0.25) ** 2)}  # the nose 0.3 rad down
+     ```
+   - That is the whole change: one skill.json edit, one test.py edit and a small reward.py. Then compile (step 3) and
+     train (step 4).
 3. **Compile first, and after every reward.py edit** (about 1 min):
    `pi-run <your skill> -- train-skill --skill-dir /workspace/skills/<your skill> --body /workspace/robot --out /workspace/runs/<your skill> --init-from '' --compile-only`
    - It ends with status `compiled` in `runs/<your skill>/skill.json`, or `failed` with the reward.py traceback under
