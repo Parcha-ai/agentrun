@@ -203,3 +203,21 @@ test("robot episode: the placer asks with the robot's own criteria, takes the ju
   // The index as D2/D3 write it: an object of skills.
   assert.equal((await checkHomeSkills(files({ "home/skills.json": bytes('{"version":1,"default":"walk","skills":{"walk":{},"turn-left":{}}}'), "home/skills/walk.json": bytes("{}"), "home/skills/turn-left.json": bytes("{}") }), 2)).ok, true);
 });
+
+test("the robot placement question is asked with the skills the robot already has, read from the run's index; no index, a broken one or odd names give none", async () => {
+  const { robotContext } = await import("../placer.ts");
+  const files = (m: Record<string, string>) => async (path: string) => (m[path] === undefined ? undefined : new TextEncoder().encode(m[path]));
+  assert.deepEqual(await robotContext(files({ "home/skills.json": '{"version":1,"skills":{"walk":{},"spin":{}}}' })), { skills_already_taught: ["walk", "spin"] });
+  assert.deepEqual(await robotContext(files({ "home/skills.json": '{"skills":["walk",{"name":"wave"}]}' })), { skills_already_taught: ["walk", "wave"] });
+  assert.deepEqual(await robotContext(files({})), { skills_already_taught: [] });
+  assert.deepEqual(await robotContext(files({ "home/skills.json": "nope" })), { skills_already_taught: [] });
+  assert.deepEqual(await robotContext(files({ "home/skills.json": '{"skills":{"../etc":{},"ok-1":{}}}' })), { skills_already_taught: ["ok-1"] });
+  // The judge receives them next to the task, through the placer the module builds for the robot episode.
+  const seen: unknown[] = [];
+  const placer = buildPlacer(options({ episode: "robot", skills: "8" }), async (params) => (seen.push(params.state), fixedJudge({ "start: make it spin": "tab" })(params)));
+  await placer.decide({ phase: "start", message: "make it spin", current: "tab", environments: ["tab", "modal-vm"], read: files({ "home/skills.json": '{"skills":{"spin":{}}}' }) });
+  assert.deepEqual(seen[0], { task: "make it spin", running_now_in: "tab", skills_already_taught: ["spin"] });
+  // Without a way to read the run's files the question is asked as before.
+  await placer.decide({ phase: "start", message: "make it spin", current: "tab", environments: ["tab", "modal-vm"] });
+  assert.deepEqual(seen[1], { task: "make it spin", running_now_in: "tab" });
+});
