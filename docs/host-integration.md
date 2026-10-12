@@ -35,6 +35,19 @@ Store the workflow digest together with interpreter, adapter and policy versions
 
 Existing flat graphs retain their older effect keys. Repeated calls with the same label, transport and resolved input can reuse a memoized result, including across loop iterations. Use `call.poll` for repeated status checks and include an operation identifier for distinct effects. New composed graphs use path-scoped keys; this does not migrate old stores.
 
+## Decision receipts
+
+Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `verify` review) is one decision. Supply `recordDecision(receipt, exchange)` to keep them:
+
+- It is awaited before the answers reach state, an event or a branch. If it rejects, the node fails with `WorkflowDecisionRecordError` and nothing acted on the answers.
+- A `DecisionReceipt` holds the questions, the answers as they came back, the `rule` that turns them into an `action` (every threshold included) and the action. `rederiveDecision(receipt)` recomputes the action from the receipt alone, so a stored decision can be explained, or evaluated under another threshold, without a model call.
+- `receipt.id` is the request's identity: its execution path, kind and position among its node's requests, with the questions and a hash of the state it asked about. The same request asked again has the same id. The decision events (`judge.answered`, `route.chosen`, `ask.evaluated`, `verify.answered`) carry it as `decision_id`; a sift's `judge.answered` carries `decision_ids`, one per request. `runJudge` receives it as `decisionId`.
+- `status` is `answered`, `failed` (the judge rejected, or its answers were refused; what came back is kept) or `cancelled` (the request's signal was aborted before it settled, so whether it was served is not known). A request is recorded in every case, before its failure is thrown.
+- A sift over `maxQuestionsPerRequest` or `maxStateBytesPerRequest` sends several requests and records one receipt for each. `request.items` lists the positions in the sifted list a request covers, and its action names kept items by their position in that request. When one request fails, the requests still in flight are cancelled and recorded as `cancelled`, a request that had already answered keeps its `answered` receipt, and no event names any of them: the sift decided nothing.
+- `exchange.request` is the request as `runJudge` received it, and `exchange.result` is the object `runJudge` returned, so a host reads back anything of its own it put there.
+
+To make decisions durable across a restart, also supply `recovery.decision(id)`. When it returns an `answered` receipt, its answers are used and the judge is not asked again: a resumed run decides what the interrupted run decided, including a loop's `until: ask` and a route whose branch had already started. Such a decision is not recorded again and its event carries `replayed: true`. Any other receipt, or none, means the request is asked. A receipt is evidence of what was decided, not of what was committed: the node's commit is still `recovery.commit`.
+
 ## Host policy around generative nodes
 
 A host often has policy that is not part of the workflow language: a duty paragraph for the node that emits the terminal record, runtime metadata the model reports beside its record, an artifact field only the host can fill. `deps.hostPolicy` carries that policy as application code. Nothing in a workflow document can name or reach it, so a candidate workflow cannot change its host's channels.

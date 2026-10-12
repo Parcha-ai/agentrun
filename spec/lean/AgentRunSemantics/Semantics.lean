@@ -599,11 +599,13 @@ def eval (O : Oracle) : Node → ExecPath → Addr → String → State → Run
       | .error e => (.failed e, [])
       | .ok () => match getPathS s itemsPath with
         | some (.arr items) =>
-          if items.length * questions > O.questionLimit then
-            (.failed (.engine label "questions exceed maxQuestionsPerRequest"), [])
-          else if items.isEmpty then
+          if items.isEmpty then
             (.ok (s.set as (.obj [("items", .arr []), ("values", .arr []), ("answers", .arr []),
               ("kept", .arr [])])), [])
+          -- One item's questions must fit a request. Items past the limit go in further requests,
+          -- which the oracle answers as one: the split is not observable in state.
+          else if questions > O.questionLimit then
+            (.failed (.engine label "questions exceed maxQuestionsPerRequest"), [])
           else match promptState label s st with
             | .error e => (.failed e, [])
             | .ok base => match O.sift ctx (.obj [("state", base), ("items", .arr items)]) items.length with

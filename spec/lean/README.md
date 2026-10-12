@@ -43,7 +43,7 @@ A theorem sees only what the engine does with an oracle's answer. Behavior insid
 | Oracle | Folds together | Invisible to the theorems |
 | --- | --- | --- |
 | `gen`, `report` (`runNode`) | The adapter session, `normalizeStringNullsForSchema`, the transport schema, `decodeSubmission`, stage-schema validation, `mergeStageDelta`'s filter to declared properties, and the whole `verify` loop with its `runJudge` drives | Which properties the filter drops, whether a submission is schema-valid, how many review drives ran and what they saw, and the `$verify` record's contents. The model only knows the value lands at the node's key, plus `$verify` and `$host` |
-| `judge`, `pick`, `sift`, `route` without `valuePath`, `ask` (`runJudge`) | `validateAnswers`, `answersToValue`, the sidecar, sift's keep threshold, the question-count guard for static question sets | Answer validation failures other than as an adapter error, how confidences become values, and which items sift keeps and why |
+| `judge`, `pick`, `sift`, `route` without `valuePath`, `ask` (`runJudge`) | `validateAnswers`, `answersToValue`, the sidecar, sift's keep threshold, a sift's split into several requests under the host's limits, the question-count guard for static question sets | Answer validation failures other than as an adapter error, how confidences become values, which items sift keeps and why, and how many requests a sift sends |
 | `effect` (`runEffect`) | Attempts, retry classes, backoff, deadlines, polling (`until`, `fail_when`, `interval_s`), memo reads and writes, the result schema check, `EffectOutcomeUnknownError` and late settlement | Every timing and retry property, and whether a poll ends. A `call` is one atomic answer, so F8 cannot be expressed in the model |
 | `code` | Compiling and running the JavaScript transform | Anything the code does besides returning a value. Validation's code probes are not modeled |
 | `schemaOk` | TypeBox `Check` against resolved schemas | Every schema-content rule |
@@ -126,7 +126,7 @@ cd spec/lean && lake exe validator-sweep .lake/validator-corpus.json
 
 ## Add a conformance case
 
-1. Write `conformance/<name>.json` with `workflow`, `input`, and a `script` of adapter answers keyed by execution path (`gen`, `judge`, `effect`, `after`).
+1. Write `conformance/<name>.json` with `workflow`, `input`, and a `script` of adapter answers keyed by execution path (`gen`, `judge`, `effect`, `after`). A sift's `judge` entry is `{"items": [{"answers": {...}, "keep": true}, ...]}`, one entry per item with the keep verdict the model's oracle returns, so one script serves however many requests the interpreter splits the sift into. An optional `limits.maxQuestionsPerRequest` sets the host limit for the case (default 256).
 2. Record the TypeScript result with `npm run build`, then `node spec/lean/conformance/record.mjs spec/lean/conformance/<name>.json`. The recorder also fills each code node's return value. Review the diff: a recorded change is a behavior change.
 3. Run `lake exe conformance`. The model must agree before the case lands.
 
