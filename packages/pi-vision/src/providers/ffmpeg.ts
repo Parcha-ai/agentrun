@@ -7,10 +7,6 @@ import { VIDEO_REENCODE_EDGE, VIDEO_REENCODE_FPS } from "../core/limits.js";
 import { detectOnce, type MadeBy, type ProviderCall, type ProviderSource } from "../core/provider.js";
 import { VideoMiss, type VideoFacts, type VideoProvider } from "../core/video.js";
 
-/** The host's mediabunny module, as its namespace import gives it. The package never resolves mediabunny itself, so its
- *  MPL-2.0 code would come with the host's install; this release does not use it. */
-export type MediabunnyModule = Readonly<Record<string, unknown>>;
-
 /** How long a probe, one frame and one window may run, in seconds: the unit of an environment's `exec` timeout. */
 const PROBE_TIMEOUT_S = 30;
 const FRAME_TIMEOUT_S = 60;
@@ -42,7 +38,7 @@ function jpegSize(b: Uint8Array): { width: number; height: number } | null {
   return null;
 }
 
-export function ffmpegProvider(options: { mediabunny?: MediabunnyModule } = {}): VideoProvider {
+export function ffmpegProvider(): VideoProvider {
   const ctx = (call: ProviderCall) => visionContext(call.signal);
   const at = (call: ProviderCall, name: string) => `${call.tempDir.replace(/\/+$/, "")}/${name}`;
 

@@ -74,12 +74,12 @@ are always there; programs run in the environment the agent's shell runs in, nev
 | docx and odt text; pptx and odp slides in order, with notes; xlsx and ods cells with value, formula and stored value | the package's own reader (`office-js`) on `fflate` (MIT) and `@xmldom/xmldom` (MIT) | |
 | RTF | its source text | |
 | An office document as it looks | a `needs` miss; its text still comes back | LibreOffice's `soffice` (MPL-2.0, run as a program) |
-| Video: probe, frames, windows | a `needs` miss; a file under the inline budget still goes to a route that takes video | ffmpeg and ffprobe (LGPL or GPL, run as programs); a host's `mediabunny` (MPL-2.0) is accepted by `ffmpegProvider` and not used yet |
+| Video: probe, frames, windows | a `needs` miss; a file under the inline budget still goes to a route that takes video | ffmpeg and ffprobe (LGPL or GPL, run as programs) |
 
 `@earendil-works/pi-durable`, `@earendil-works/pi-ai` and `@earendil-works/chord` (1.0.4 to 1.1.x) are optional peers,
-for the adapter and the pi-ai eyes, and Photon is one for the default image processor. sharp and mediabunny are never
-resolved by this package: a host that wants them passes its own module (`sharpImages(sharp)`,
-`ffmpegProvider({ mediabunny })`), so their LGPL and MPL code stays with the host's install.
+for the adapter and the pi-ai eyes, and Photon is one for the default image processor. sharp is never resolved by this
+package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL code stays with the host's
+install.
 
 ## Develop
 
