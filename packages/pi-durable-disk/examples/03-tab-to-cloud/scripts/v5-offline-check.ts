@@ -105,7 +105,7 @@ try {
     await sleep(1500);
     await page.until("globalThis.demo && demo.state.mode === 'offline'", 300_000, 500);
     await page.until("demo.v5().ready || /did not load/.test(demo.state.banner)", 600_000, 1000);
-    await page.until(`demo.items().some((i) => i.kind === "tool" && i.name === "set_color" && /torso/.test(JSON.stringify(i.args ?? "") + (i.output ?? "")))`, 240_000, 1000).catch(() => undefined);
+    await page.until(`demo.items().some((i) => i.kind === "tool" && i.name === "set_color" && i.status !== "running" && /torso/.test(JSON.stringify(i.args ?? "") + (i.output ?? "")))`, 240_000, 1000).catch(() => undefined);
     const after = await ev<Item[]>("demo.items()");
     const r = await robotJson();
     ok("offline reload: the brain loads again from the cache and the turn the reload cut short resumes on it (the torso is blue)", r.look?.tags?.torso === "blue", { tags: r.look?.tags, items: after.slice(-4), banner: await ev("demo.state.banner") });
