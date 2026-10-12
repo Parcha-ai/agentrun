@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PINNED_STD, SWITCH, assemble, assembleHome } from '../assemble-skills.ts';
@@ -64,4 +65,14 @@ test('no get-up network: refused, unless the run asks for the skills without one
   assert.deepEqual(Object.keys(m.skills).sort(), ['spin', 'walk']);
   const w = JSON.parse(readFileSync(join(root, 'home', 'skills', 'walk.json'), 'utf8'));
   assert.equal(w.getup, undefined);
+});
+
+test('leaves out what the page would refuse, the same skills as the Python twin (shared fixtures)', async () => {
+  const fix = fileURLToPath(new URL('./fixtures/assemble/', import.meta.url));
+  const expected = JSON.parse(readFileSync(join(fix, 'expected.json'), 'utf8'));
+  const home = mkdtempSync(join(tmpdir(), 'assemble-fix-'));
+  assert.equal(await assembleHome(join(fix, 'skills'), home), 0);
+  const m = JSON.parse(readFileSync(join(home, 'skills.json'), 'utf8'));
+  assert.deepEqual(Object.keys(m.skills).sort(), expected.skills);
+  for (const name of Object.keys(expected.left_out)) assert.ok(!existsSync(join(home, 'skills', `${name}.json`)), name);
 });

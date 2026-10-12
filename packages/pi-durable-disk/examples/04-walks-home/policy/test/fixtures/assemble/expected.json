@@ -1,0 +1,15 @@
+{
+ "about": "Both assemblers (train/assemble_skills.py, policy/assemble-skills.ts) bring home exactly these skills and leave out the rest; each left-out policy breaks one rule of policy.ts Policy.load.",
+ "skills": [
+  "get-up",
+  "walk"
+ ],
+ "left_out": {
+  "sprint": "layer width chain",
+  "spin": "unsupported activation",
+  "wave": "weights shorter than in x out",
+  "backwards": "a zero std",
+  "turn-left": "a slice size the body does not have",
+  "turn-right": "a head wider than the get-up network's"
+ }
+}

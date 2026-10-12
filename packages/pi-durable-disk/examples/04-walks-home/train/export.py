@@ -190,6 +190,71 @@ def combine(walk: dict[str, Any], getup: dict[str, Any], below_up: float = 0.3, 
   return out
 
 
+# What the tab's policy runtime (policy/policy.ts Policy.load) refuses, so an assembler never ships a file the page
+# cannot load. Slice sizes are policy/obs.ts sliceSize; nj is the walking network's output width.
+SLICE_SIZES = {"gravity": 3, "ang_vel": 3, "lin_vel": 3, "command": 1, "phase": 2}
+PER_JOINT_SLICES = ("joint_pos", "joint_vel", "prev_action")
+ACTIVATIONS = ("tanh", "elu", "relu", "silu", "none")
+
+
+def _network_refusal(net: dict[str, Any], nj: int, clock: Any, where: str) -> str | None:
+  od = 0
+  for sl in net["obs"]["spec"]:
+    size = nj if sl["name"] in PER_JOINT_SLICES else SLICE_SIZES.get(sl["name"])
+    if size is None:
+      return f"{where}unknown obs slice {sl['name']}"
+    if sl["size"] != size:
+      return f"{where}obs slice {sl['name']} has size {sl['size']}, the body needs {size}"
+    od += size
+  if len(net["obs"]["mean"]) != od or len(net["obs"]["std"]) != od:
+    return f"{where}obs mean/std length differs from obs.spec"
+  if any(not (sd > 0) for sd in net["obs"]["std"]):
+    return f"{where}obs std must be positive"
+  if any(sl["name"] == "phase" for sl in net["obs"]["spec"]) and not (clock and clock.get("gait_hz", 0) > 0):
+    return f"{where}phase needs clock.gait_hz"
+  if not net.get("layers"):
+    return f"{where}no layers"
+  width = od
+  for i, layer in enumerate(net["layers"]):
+    if layer["in"] != width:
+      return f"{where}layer {i} takes {layer['in']}, previous width is {width}"
+    if layer["act"] not in ACTIVATIONS:
+      return f"{where}layer {i}: activation {layer['act']} not supported"
+    w, b = base64.b64decode(layer["w"]), base64.b64decode(layer["b"])
+    if len(w) != 4 * layer["in"] * layer["out"] or len(b) != 4 * layer["out"]:
+      return f"{where}layer {i}: weight shapes do not match in/out"
+    width = layer["out"]
+  if width != nj:
+    return f"{where}policy outputs {width} actions, the body has {nj} actuators"
+  return None
+
+
+def refusal(policy: dict[str, Any]) -> str | None:
+  """Why the tab's policy runtime would refuse this file for its own body, or None when it loads."""
+  if policy.get("format") != "mlp-v1":
+    return f"unknown format {policy.get('format')}"
+  if policy.get("spec_version") != 1:
+    return f"unknown spec_version {policy.get('spec_version')}"
+  if not policy.get("layers"):
+    return "no layers"
+  nj = policy["layers"][-1]["out"]
+  why = _network_refusal(policy, nj, policy.get("clock"), "")
+  if why:
+    return why
+  getup = policy.get("getup")
+  if getup:
+    net = {"layers": getup["layers"], "obs": getup.get("obs", policy["obs"]), "act": getup.get("act", policy["act"])}
+    why = _network_refusal(net, nj, policy.get("clock"), "getup: ")
+    if why:
+      return why
+    sw = getup.get("switch") or {}
+    if not (0 <= sw.get("below_up", -1) < sw.get("above_up", -1) <= 1):
+      return "getup.switch must be {below_up, above_up} with 0 <= below_up < above_up <= 1"
+  if not abs(policy.get("control_dt", 0) - 0.02) < 1e-9:
+    return f"control_dt {policy.get('control_dt')}, the tab steps at 0.02"
+  return None
+
+
 class _Net:
   def __init__(self, net: dict[str, Any], top: dict[str, Any] | None = None):
     top = top or net

@@ -7,9 +7,10 @@ network inside (export.combine, so a fall is caught in every skill, as home/poli
   {"version": 1, "body_mjcf_sha256": ..., "default": "walk", "skills": {"<name>": {"policy": "skills/<name>.json",
    "command": <the skill's fixed command>, "label": "<what the stage says>"}}}
 The get-up skill itself is the walk at command 0 with the get-up network (it stands up and stays standing). Every file is
-written by rename, the manifest last. A skill trained for another body, or one that cannot be combined, is left out and
-named. With no get-up network (no get-up thread and no --getup) it refuses, unless --without-getup: a dry run's skills then
-come home without one. Pure numpy. policy/assemble-skills.ts is its TypeScript twin, for a session host without python.
+written by rename, the manifest last. A skill trained for another body, one that cannot be combined, or one the page's
+policy runtime would refuse (export.refusal) is left out and named. With no get-up network (no get-up thread and no
+--getup) it refuses, unless --without-getup: a dry run's skills then come home without one. Pure numpy.
+policy/assemble-skills.ts is its TypeScript twin, for a session host without python.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import argparse, json, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from export import combine, dumps  # noqa: E402
+from export import combine, dumps, refusal  # noqa: E402
 
 
 def write(path: str, text: str) -> None:
@@ -75,6 +76,10 @@ def main() -> int:
       out = combine(pol, getup_pol) if getup_pol else pol
     except ValueError as e:
       left_out[name] = str(e)
+      continue
+    why = refusal(out)  # the page's own load checks (policy.ts), as the TypeScript twin runs them
+    if why:
+      left_out[name] = f"refused by the policy runtime: {why}"
       continue
     write(os.path.join(a.home, "skills", f"{name}.json"), dumps(out))
     skills[name] = {"policy": f"skills/{name}.json", "command": command, "label": meta.get("label", name)}
