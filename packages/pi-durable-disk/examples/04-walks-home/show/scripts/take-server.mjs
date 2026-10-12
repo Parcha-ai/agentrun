@@ -108,6 +108,8 @@ const serveArgs = [
   ...(cloudModule ? ["--cloud-module", cloudModule, ...cloudArgs.flatMap((a) => ["--cloud-arg", a])] : []),
   // With the TypeSafe key (--typesafe), the page's brain router asks Jev too.
   ...(process.argv.includes("--typesafe") ? ["--brain-judge", "jev"] : []),
+  // The folder of the offline brain's files (D0's serve.ts --models-dir: served under /models/ with the page's isolation headers).
+  ...(arg("models-dir", "") ? ["--models-dir", arg("models-dir", "")] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
   ...noRestore.flatMap((p) => ["--no-restore", p]),
   ...judgeArgs,

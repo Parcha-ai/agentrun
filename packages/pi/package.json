@@ -29,7 +29,7 @@
   "scripts": {
     "build": "node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json && node ../../scripts/render-pi-skill.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test --test-timeout=240000 --test-force-exit test/*.test.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.87.0"
