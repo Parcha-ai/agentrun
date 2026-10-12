@@ -3,14 +3,14 @@
 //   desktop=true        a desktop in the VM and the computer tool                    regions=us-east,...    where Modal may place sandboxes
 //   app=NAME prefix=P   the Modal app and the sandbox names                          warm=true|gpu          keep one pipe VM (or the GPU box) ready (rewarm=true: and again after each return to the tab) (with gpu: warm-commands-file=F warm-env=K=V,.. warm-delay-ms=N compile the creature ahead)
 //   vm=false            offer only the GPU environment
-//   cluster-size=N cluster-image=im-...   the robot cluster: N GPU boxes created at start and lent one per thread (cluster-type=H100 cluster-cpu=N cluster-memory-mib=N cluster-ttl-minutes=N cluster-ready=CMD cluster-ready-timeout-s=N cluster-placement-s=N cluster-start=attach|now)
+//   cluster-size=N cluster-image=im-...   the robot cluster: N GPU boxes created at start and lent one per thread (cluster-type=H100 cluster-cpu=N cluster-memory-mib=N cluster-ttl-minutes=N cluster-ready=CMD cluster-ready-timeout-s=N cluster-placement-s=N cluster-start=attach|now cluster-skills=walk,spin,...)
 //   gpu-image=im-...    offers modal-gpu: this image, gVisor, on the pipe            gpu-type=H100 gpu-note=TEXT   (note: what the agent runs there)
 // MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the environment.
 import { readFileSync } from "node:fs";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start"]);
+const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start", "cluster-skills"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
@@ -77,6 +77,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
             ...(args["cluster-ready"] ? { readyCommand: args["cluster-ready"] } : {}),
             ...(number("cluster-ready-timeout-s") ? { readyTimeoutMs: number("cluster-ready-timeout-s")! * 1000 } : {}),
             ...(number("cluster-placement-s") ? { placementTimeoutMs: number("cluster-placement-s")! * 1000 } : {}),
+            ...(args["cluster-skills"] ? { skills: args["cluster-skills"].split(",").map((k) => k.trim()).filter(Boolean) } : {}),
             ...(args["cluster-start"] ? { start: args["cluster-start"] as "attach" | "now" } : {}),
           },
         }

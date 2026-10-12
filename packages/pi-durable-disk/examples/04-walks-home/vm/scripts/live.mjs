@@ -48,6 +48,8 @@ const robot = episode === "robot";
 const clusterSize = Number(arg("cluster-size", 2));
 const clusterImage = arg("cluster-image", "");
 const clusterReady = arg("cluster-ready", "");
+// The skill each box warms for (box 0 first): with a pool of 2, a fast skill and a slow one.
+const clusterSkills = arg("cluster-skills", "walk,spin,sprint,backwards,turn-left,turn-right,get-up,wave");
 if (robot && !clusterImage) throw new Error("--cluster-image names D2's skill-trainer image");
 if (robot && !(Number.isInteger(clusterSize) && clusterSize >= 1)) throw new Error("--cluster-size is a whole number of boxes");
 // How many skills the teach step is for (the home check says "N of M came home" against it).
@@ -168,6 +170,7 @@ try {
             "--cloud-arg", `cluster-ttl-minutes=${arg("ttl", 45)}`,
             "--cloud-arg", "cluster-cpu=8",
             "--cloud-arg", "cluster-memory-mib=65536",
+            "--cloud-arg", `cluster-skills=${clusterSkills}`,
             ...(clusterReady ? ["--cloud-arg", `cluster-ready=${clusterReady}`] : []),
           ]
         : [

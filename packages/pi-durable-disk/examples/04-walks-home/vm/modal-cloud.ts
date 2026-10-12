@@ -129,8 +129,13 @@ export interface ModalCloudOptions {
     readonly cpu?: number;
     readonly memoryMiB?: number;
     readonly ttlMinutes?: number;
-    /** Run in each box as the readiness check (polled every 5 s until it exits 0). Absent: a box is ready when it answers an exec. */
+    /**
+     * Run in each box as the readiness check (polled every 5 s until it exits 0). `{skill}` is replaced by the box's own skill (see `skills`), `{index}` by its
+     * number. Absent: a box is ready when it answers an exec. `/workspace` is made on every box first.
+     */
     readonly readyCommand?: string;
+    /** The skill each box warms for, box 0 first (a box beyond the list wraps around). */
+    readonly skills?: readonly string[];
     readonly readyTimeoutMs?: number;
     readonly placementTimeoutMs?: number;
     /** When the boxes start: "attach" (default: when the first page takes the run, so a server nobody opens costs nothing) or "now" (when this cloud is made). */
@@ -178,7 +183,7 @@ export type ModalCloud = CloudHost & {
   hostLabel: string;
   desktop(ref: RunRef): { url: string; screenshot(): Promise<Uint8Array> } | undefined;
   /** The cluster's boxes (with `cluster`): their state now, and a promise that settles when every box has come up or failed. */
-  cluster?: { status(): PoolStatus; /** Start the boxes (once) and resolve when each has come up or failed. */ start(): Promise<void> };
+  cluster?: { status(): PoolStatus; /** Start the boxes (once) and resolve when each has come up or failed. */ start(): Promise<void>; /** What the session on the VM may ask of the boxes (the link serves it); exposed for a smoke test that talks to the boxes without a VM. */ gpu: GpuServer };
 };
 
 export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud> {
@@ -254,7 +259,9 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
               const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
               const deadline = Date.now() + (cluster.readyTimeoutMs ?? 300_000);
               for (;;) {
-                const r = await clusterClient.exec(box, cluster.readyCommand ? `bash -c ${q(cluster.readyCommand)}` : "true", 120).catch((e: Error) => ({ exitCode: 1, result: e.message }));
+                const skill = (cluster.skills ?? ["walk"])[index % (cluster.skills ?? ["walk"]).length]!;
+                const ready = cluster.readyCommand?.replaceAll("{skill}", skill).replaceAll("{index}", String(index));
+                const r = await clusterClient.exec(box, `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`, 180).catch((e: Error) => ({ exitCode: 1, result: e.message }));
                 if (r.exitCode === 0) break;
                 if (Date.now() > deadline) throw new Error(`GPU box ${index} was not ready in ${Math.round((cluster.readyTimeoutMs ?? 300_000) / 1000)} s: ${r.result.trim().slice(-200)}`);
                 await new Promise((res) => setTimeout(res, 5_000));
@@ -614,7 +621,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     // The VM's instance tells the server over its link when its agent's notice is committed, so the move is timed to that moment.
     notifiesSwitched: true,
     ...(options.rewarm && options.warm ? { rewarm: true as const } : {}),
-    ...(pool ? { cluster: { status: () => pool.status(), start: startCluster } } : {}),
+    ...(pool && gpuServer ? { cluster: { status: () => pool.status(), start: startCluster, gpu: gpuServer } } : {}),
     environments: [...(options.offerVm === false && gpuEnv ? [] : [env]), ...(gpuEnv ? [gpuEnv] : [])] as readonly Environment[],
 
     bind(api) {

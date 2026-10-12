@@ -61,8 +61,8 @@ test("gpu-cpu and gpu-memory-mib size the GPU sandbox (a large model needs more 
 });
 
 test("cluster arguments become the cluster option, and a half-given or unknown one is an error", () => {
-  const o = modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-abc", "cluster-cpu": "8", "cluster-memory-mib": "65536", "cluster-ttl-minutes": "40", "cluster-ready": "true", "cluster-ready-timeout-s": "120", "cluster-start": "now" });
-  assert.deepEqual(o.cluster, { size: 2, image: "im-abc", cpu: 8, memoryMiB: 65536, ttlMinutes: 40, readyCommand: "true", readyTimeoutMs: 120_000, start: "now" });
+  const o = modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-abc", "cluster-cpu": "8", "cluster-memory-mib": "65536", "cluster-ttl-minutes": "40", "cluster-ready": "true", "cluster-ready-timeout-s": "120", "cluster-start": "now", "cluster-skills": "walk, spin" });
+  assert.deepEqual(o.cluster, { size: 2, image: "im-abc", cpu: 8, memoryMiB: 65536, ttlMinutes: 40, readyCommand: "true", readyTimeoutMs: 120_000, skills: ["walk", "spin"], start: "now" });
   assert.equal(modalOptionsFromArgs({}).cluster, undefined);
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2" }), /go together/);
   assert.throws(() => modalOptionsFromArgs({ "cluster-image": "im-x" }), /go together/);
